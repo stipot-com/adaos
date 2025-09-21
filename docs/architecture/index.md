@@ -12,7 +12,7 @@
 - **Services** — бизнес-логика (SkillManager, ScenarioManager, политики, sandbox).  
 - **Adapters** — реализации портов (git, sqlite, keyring, fs, runtime).  
 - **Apps** — CLI, API и bootstrap.  
-- **SDK** — утилиты и совместимость.  
+- **SDK** — интерфейс для LLM программиста.  
 - **Integrations** — внешние проекты (Inimatic, Rhasspy, OVOS).  
 
 ---
