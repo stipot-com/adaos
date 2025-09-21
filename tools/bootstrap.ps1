@@ -172,7 +172,7 @@ Next steps (in separate terminals):
      npm run start
 
 Tips:
- • List installed Python: py -0p
- • Switch venv version: delete .venv and re-run bootstrap
+ - List installed Python: py -0p
+ - Switch venv version: delete .venv and re-run bootstrap
 '@
 Write-Host $helpText

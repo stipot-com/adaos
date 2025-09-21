@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/bootstrap.sh — унифицированный bootstrap (macOS/Linux)
 set -euo pipefail
-
+SUBMODULE_PATH="src/adaos/integrations/inimatic"
 # --- helpers ---------------------------------------------------------------
 
 log()   { printf "\033[36m▶ %s\033[0m\n" "$*"; }
@@ -107,8 +107,8 @@ open_subshell_help() {
      npm run start
 
 подсказки:
- • сменить версию venv — удалите .venv и перезапустите bootstrap
- • строгая проверка lock: BOOTSTRAP_STRICT_LOCK=1 (тогда падать, если npm ci не прошёл)
+ - сменить версию venv — удалите .venv и перезапустите bootstrap
+ - строгая проверка lock: BOOTSTRAP_STRICT_LOCK=1 (тогда падать, если npm ci не прошёл)
 EOF
   # start an interactive subshell with venv sourced and help printed
   if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
