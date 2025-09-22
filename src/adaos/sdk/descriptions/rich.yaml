@@ -1,377 +1,793 @@
-events: []
 meta:
-  generated_at: '2025-09-14T22:26:20Z'
-  git_sha: 22bae5e
+  generated_at: '2025-09-20T22:37:06+00:00'
+  git_sha: b897415
   py: '3.12'
 tools:
-- examples: []
-  kind: tool
+- kind: tool
+  name: manage.scenarios.bind.set
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.set_binding
+  summary: set scenario binding metadata
   meta:
-    idempotent: null
+    stability: experimental
+    idempotent: true
     side_effects: null
     since: null
-    stability: experimental
     version: null
-  module: adaos.sdk.manage.scenarios
+  examples:
+  - 'manage.scenarios.bind.set(request_id=''req-11'', scenario=''onboarding'', binding={''skill'':
+    ''welcome''})'
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: scenario
+      annotation: str
+    - name: binding
+      annotation: Mapping[str, Any]
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      scenario:
+        type: string
+        minLength: 1
+      binding:
+        type: object
+      dry_run:
+        type: boolean
+        default: false
+    required:
+    - request_id
+    - scenario
+    - binding
+    additionalProperties: true
+  output_schema: &id001
+    type: object
+    properties:
+      request_id:
+        type: string
+      status:
+        type: string
+      dry_run:
+        type: boolean
+      result:
+        type:
+        - object
+        - array
+        - string
+        - number
+        - boolean
+        - 'null'
+      trace_id:
+        type: string
+      meta:
+        type: object
+      stored_at:
+        type: string
+        format: date-time
+    required:
+    - request_id
+    - status
+    - dry_run
+    additionalProperties: true
+- kind: tool
   name: manage.scenarios.create
+  module: adaos.sdk.manage.scenarios
   qualname: adaos.sdk.manage.scenarios.create
-  signature: (sid:str,template:str="template")->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    - default: template
-      name: template
-      type: str
-    returns:
-      type: str
-  summary: create scenario from template
-- examples: []
-  kind: tool
+  summary: create a scenario from a template
   meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.install
-  qualname: adaos.sdk.manage.scenarios.install
-  signature: (sid:str)->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    returns:
-      type: str
-  summary: install (pull) scenario into runtime
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.uninstall
-  qualname: adaos.sdk.manage.scenarios.uninstall
-  signature: (sid:str)->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    returns:
-      type: str
-  summary: uninstall scenario from runtime
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.pull
-  qualname: adaos.sdk.manage.scenarios.pull
-  signature: (sid:str)->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    returns:
-      type: str
-  summary: pull/update scenario sources
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
     stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
     version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.push
-  qualname: adaos.sdk.manage.scenarios.push
-  signature: (sid:str,message:Optional[str]=null,signoff:bool=false)->str
+  examples:
+  - manage.scenarios.create('demo')
   signature_detail:
     args:
-    - name: sid
-      type: str
-    - default: null
-      name: message
-      type: Optional[str]
-    - default: false
-      name: signoff
-      type: bool
+    - name: scenario_id
+      annotation: str
+    - name: template
+      annotation: str
+      default: template
     returns:
-      type: str
-  summary: commit & push scenario changes
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.list_installed
-  qualname: adaos.sdk.manage.scenarios.list_installed
-  signature: ()->List[str]
-  signature_detail:
-    args: []
-    returns:
-      type: List[str]
-  summary: list installed scenarios
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: experimental
-    version: null
-  module: adaos.sdk.manage.scenarios
+      annotation: str
+- kind: tool
   name: manage.scenarios.delete
+  module: adaos.sdk.manage.scenarios
   qualname: adaos.sdk.manage.scenarios.delete
-  signature: (sid:str)->bool
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    returns:
-      type: bool
-  summary: delete scenario locally
-- examples: []
-  kind: tool
+  summary: delete scenario directory
   meta:
+    stability: experimental
     idempotent: null
     side_effects: null
     since: null
-    stability: experimental
     version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    returns:
+      annotation: bool
+- kind: tool
+  name: manage.scenarios.install
   module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.read_proto
-  qualname: adaos.sdk.manage.scenarios.read_proto
-  signature: (sid:str)->Dict[str, Any]
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    returns:
-      type: Dict[str, Any]
-  summary: read scenario prototype JSON
-- examples: []
-  kind: tool
+  qualname: adaos.sdk.manage.scenarios.install
+  summary: install scenario into workspace
   meta:
+    stability: stable
     idempotent: null
     side_effects: null
     since: null
-    stability: experimental
     version: null
+  examples:
+  - manage.scenarios.install('greet_on_boot')
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    returns:
+      annotation: str
+- kind: tool
+  name: manage.scenarios.list
   module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.write_proto
-  qualname: adaos.sdk.manage.scenarios.write_proto
-  signature: (sid:str,data:Dict[str, Any])->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    - name: data
-      type: Dict[str, Any]
-    returns:
-      type: str
-  summary: write scenario prototype JSON
-- examples: []
-  kind: tool
+  qualname: adaos.sdk.manage.scenarios.list_installed
+  summary: list installed scenarios
   meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: experimental
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.read_bindings
-  qualname: adaos.sdk.manage.scenarios.read_bindings
-  signature: (sid:str,user:str)->Dict[str, Any]
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    - name: user
-      type: str
-    returns:
-      type: Dict[str, Any]
-  summary: read scenario bindings for user
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: experimental
-    version: null
-  module: adaos.sdk.manage.scenarios
-  name: manage.scenarios.write_bindings
-  qualname: adaos.sdk.manage.scenarios.write_bindings
-  signature: (sid:str,user:str,data:Dict[str, Any])->str
-  signature_detail:
-    args:
-    - name: sid
-      type: str
-    - name: user
-      type: str
-    - name: data
-      type: Dict[str, Any]
-    returns:
-      type: str
-  summary: write scenario bindings for user
-- examples:
-  - skills.create('demo_skill')
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
     stability: stable
-    version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.create
-  qualname: adaos.sdk.manage.skills.create
-  signature: (name:str,template:str="demo_skill",register:bool=true,push:bool=true)->str
-  signature_detail:
-    args:
-    - name: name
-      type: str
-    - default: demo_skill
-      name: template
-      type: str
-    - default: true
-      name: register
-      type: bool
-    - default: true
-      name: push
-      type: bool
-    returns:
-      type: str
-  summary: create skill from template
-- examples: []
-  kind: tool
-  meta:
     idempotent: null
     side_effects: null
     since: null
-    stability: stable
     version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.install
-  qualname: adaos.sdk.manage.skills.install
-  signature: (name:str)->str
-  signature_detail:
-    args:
-    - name: name
-      type: str
-    returns:
-      type: str
-  summary: install skill into runtime
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.uninstall
-  qualname: adaos.sdk.manage.skills.uninstall
-  signature: (name:str)->str
-  signature_detail:
-    args:
-    - name: name
-      type: str
-    returns:
-      type: str
-  summary: uninstall skill from runtime
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: experimental
-    version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.pull
-  qualname: adaos.sdk.manage.skills.pull
-  signature: (name:str)->str
-  signature_detail:
-    args:
-    - name: name
-      type: str
-    returns:
-      type: str
-  summary: pull skill sources
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: experimental
-    version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.push
-  qualname: adaos.sdk.manage.skills.push
-  signature: (name:str,message:str,signoff:bool=false)->str
-  signature_detail:
-    args:
-    - name: name
-      type: str
-    - name: message
-      type: str
-    - default: false
-      name: signoff
-      type: bool
-    returns:
-      type: str
-  summary: push local changes of a skill
-- examples: []
-  kind: tool
-  meta:
-    idempotent: null
-    side_effects: null
-    since: null
-    stability: stable
-    version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.list_installed
-  qualname: adaos.sdk.manage.skills.list_installed
-  signature: ()->List[str]
+  examples: []
   signature_detail:
     args: []
     returns:
-      type: List[str]
-  summary: list installed skills
-- examples: []
-  kind: tool
+      annotation: list[str]
+- kind: tool
+  name: manage.scenarios.pull
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.pull
+  summary: pull scenario sources
   meta:
+    stability: experimental
     idempotent: null
     side_effects: null
     since: null
-    stability: experimental
     version: null
-  module: adaos.sdk.manage.skills
-  name: manage.skills.install_all
-  qualname: adaos.sdk.manage.skills.install_all
-  signature: (limit:Optional[int]=null)->List[str]
+  examples: []
   signature_detail:
     args:
-    - default: null
-      name: limit
-      type: Optional[int]
+    - name: scenario_id
+      annotation: str
     returns:
-      type: List[str]
-  summary: best-effort bulk install
+      annotation: str
+- kind: tool
+  name: manage.scenarios.push
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.push
+  summary: push local scenario changes
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    - name: message
+      annotation: Optional[str]
+      default: null
+    - name: signoff
+      annotation: bool
+      default: false
+    returns:
+      annotation: str
+- kind: tool
+  name: manage.scenarios.read_bindings
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.read_bindings
+  summary: read scenario bindings for a user
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    - name: user
+      annotation: str
+    returns:
+      annotation: Mapping[str, Any]
+- kind: tool
+  name: manage.scenarios.read_proto
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.read_proto
+  summary: read scenario manifest
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    returns:
+      annotation: Mapping[str, Any]
+- kind: tool
+  name: manage.scenarios.toggle
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.toggle
+  summary: enable or disable a scenario
+  meta:
+    stability: stable
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - manage.scenarios.toggle(request_id='req-10', scenario='onboarding', enabled=True)
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: scenario
+      annotation: str
+    - name: enabled
+      annotation: bool
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      scenario:
+        type: string
+        minLength: 1
+      enabled:
+        type: boolean
+      dry_run:
+        type: boolean
+        default: false
+    required:
+    - request_id
+    - scenario
+    - enabled
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: manage.scenarios.uninstall
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.uninstall
+  summary: remove an installed scenario
+  meta:
+    stability: stable
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - manage.scenarios.uninstall('greet_on_boot')
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    returns:
+      annotation: str
+- kind: tool
+  name: manage.scenarios.write_bindings
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.write_bindings
+  summary: write scenario bindings for a user
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    - name: user
+      annotation: str
+    - name: data
+      annotation: Mapping[str, Any]
+    returns:
+      annotation: str
+- kind: tool
+  name: manage.scenarios.write_proto
+  module: adaos.sdk.manage.scenarios
+  qualname: adaos.sdk.manage.scenarios.write_proto
+  summary: write scenario manifest
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples: []
+  signature_detail:
+    args:
+    - name: scenario_id
+      annotation: str
+    - name: data
+      annotation: Mapping[str, Any]
+    returns:
+      annotation: str
+- kind: tool
+  name: manage.self.state.get
+  module: adaos.sdk.manage.self
+  qualname: adaos.sdk.manage.self.state_get
+  summary: read a value from the skill-scoped state store
+  meta:
+    stability: stable
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - manage.self.state.get(key='profile')
+  signature_detail:
+    args:
+    - name: key
+      annotation: str
+    - name: default
+      annotation: Any | None
+      default: null
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      key:
+        type: string
+        minLength: 1
+      default:
+        type:
+        - object
+        - array
+        - string
+        - number
+        - boolean
+        - 'null'
+        description: Value returned when key is absent.
+    required:
+    - key
+    additionalProperties: false
+  output_schema:
+    type: object
+    properties:
+      key:
+        type: string
+      value:
+        type:
+        - object
+        - array
+        - string
+        - number
+        - boolean
+        - 'null'
+    required:
+    - key
+    additionalProperties: true
+- kind: tool
+  name: manage.self.state.put
+  module: adaos.sdk.manage.self
+  qualname: adaos.sdk.manage.self.state_put
+  summary: persist a value into the skill-scoped state store
+  meta:
+    stability: stable
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - 'manage.self.state.put(request_id=''req-1'', key=''profile'', value={''lang'':
+    ''en''})'
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: key
+      annotation: str
+    - name: value
+      annotation: Any
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      dry_run:
+        type: boolean
+        default: false
+      key:
+        type: string
+        minLength: 1
+      value:
+        type:
+        - object
+        - array
+        - string
+        - number
+        - boolean
+        - 'null'
+    required:
+    - request_id
+    - key
+    - value
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: manage.self.update.request
+  module: adaos.sdk.manage.self
+  qualname: adaos.sdk.manage.self.request_update
+  summary: request runtime to refresh or pull the current skill
+  meta:
+    stability: experimental
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - manage.self.update.request(request_id='sync-1')
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: dry_run
+      annotation: bool
+      default: false
+    - name: note
+      annotation: str | None
+      default: null
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      dry_run:
+        type: boolean
+        default: false
+      note:
+        type: string
+    required:
+    - request_id
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: manage.self.validate
+  module: adaos.sdk.manage.self
+  qualname: adaos.sdk.manage.self.validate
+  summary: validate the currently active skill
+  meta:
+    stability: stable
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - manage.self.validate()
+  signature_detail:
+    args:
+    - name: strict
+      annotation: bool
+      default: false
+    - name: probe_tools
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      strict:
+        type: boolean
+        default: false
+      probe_tools:
+        type: boolean
+        default: false
+    additionalProperties: false
+  output_schema:
+    type: object
+    properties:
+      ok:
+        type: boolean
+      issues:
+        type: array
+        items:
+          type: object
+          properties:
+            level:
+              type: string
+            code:
+              type: string
+            message:
+              type: string
+            where:
+              type:
+              - string
+              - 'null'
+          required:
+          - level
+          - code
+          - message
+          additionalProperties: true
+    required:
+    - ok
+    - issues
+    additionalProperties: true
+- kind: tool
+  name: manage.skills.install
+  module: adaos.sdk.manage.skills
+  qualname: adaos.sdk.manage.skills.install
+  summary: install a skill from catalog or git
+  meta:
+    stability: stable
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - skills.install(request_id='req-42', skill='weather_skill')
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: skill
+      annotation: str
+    - name: pin
+      annotation: str | None
+      default: null
+    - name: strict
+      annotation: bool
+      default: true
+    - name: probe_tools
+      annotation: bool
+      default: false
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      skill: &id002
+        type: string
+        minLength: 1
+      pin:
+        type: string
+      strict:
+        type: boolean
+        default: true
+      probe_tools:
+        type: boolean
+        default: false
+      dry_run:
+        type: boolean
+        default: false
+    required:
+    - request_id
+    - skill
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: manage.skills.list
+  module: adaos.sdk.manage.skills
+  qualname: adaos.sdk.manage.skills.list_installed
+  summary: list installed skills with registry metadata
+  meta:
+    stability: stable
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - skills.list()
+  signature_detail:
+    args: []
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties: {}
+    additionalProperties: false
+  output_schema:
+    type: object
+    properties:
+      skills:
+        type: array
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            installed:
+              type: boolean
+            active_version:
+              type:
+              - string
+              - 'null'
+            repo_url:
+              type:
+              - string
+              - 'null'
+            pin:
+              type:
+              - string
+              - 'null'
+          required:
+          - name
+          - installed
+          additionalProperties: true
+    required:
+    - skills
+    additionalProperties: false
+- kind: tool
+  name: manage.skills.uninstall
+  module: adaos.sdk.manage.skills
+  qualname: adaos.sdk.manage.skills.uninstall
+  summary: remove an installed skill
+  meta:
+    stability: stable
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - skills.uninstall(request_id='req-99', skill='weather_skill')
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: skill
+      annotation: str
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      skill: *id002
+      dry_run:
+        type: boolean
+        default: false
+    required:
+    - request_id
+    - skill
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: resources.request
+  module: adaos.sdk.manage.resources
+  qualname: adaos.sdk.manage.resources.request
+  summary: create a resource ticket for operators
+  meta:
+    stability: experimental
+    idempotent: true
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - 'resources.request(request_id=''ticket-1'', category=''hardware'', details={''cpu'':
+    ''gpu''})'
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    - name: category
+      annotation: str
+    - name: details
+      annotation: Mapping[str, Any] | None
+      default: null
+    - name: dry_run
+      annotation: bool
+      default: false
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+      category:
+        type: string
+        minLength: 1
+      details:
+        type: object
+      dry_run:
+        type: boolean
+        default: false
+    required:
+    - request_id
+    - category
+    additionalProperties: true
+  output_schema: *id001
+- kind: tool
+  name: resources.status
+  module: adaos.sdk.manage.resources
+  qualname: adaos.sdk.manage.resources.status
+  summary: lookup the status of a resource request
+  meta:
+    stability: experimental
+    idempotent: null
+    side_effects: null
+    since: null
+    version: null
+  examples:
+  - resources.status(request_id='ticket-1')
+  signature_detail:
+    args:
+    - name: request_id
+      annotation: str
+    returns:
+      annotation: Mapping[str, Any]
+  input_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+        minLength: 1
+    required:
+    - request_id
+    additionalProperties: false
+  output_schema:
+    type: object
+    properties:
+      request_id:
+        type: string
+      status:
+        type: string
+      details:
+        type:
+        - object
+        - 'null'
+    required:
+    - request_id
+    - status
+    additionalProperties: true
+events: []

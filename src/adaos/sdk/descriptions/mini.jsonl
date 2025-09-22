@@ -1,18 +1,22 @@
-{"k": "tool", "n": "scenarios.create", "sig": "(sid:str,template:str=\"template\")->str", "s": "create scenario from template", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.install", "sig": "(sid:str)->str", "s": "install (pull) scenario into runtime", "ex": [], "st": "stable"}
-{"k": "tool", "n": "scenarios.uninstall", "sig": "(sid:str)->str", "s": "uninstall scenario from runtime", "ex": [], "st": "stable"}
-{"k": "tool", "n": "scenarios.pull", "sig": "(sid:str)->str", "s": "pull/update scenario sources", "ex": [], "st": "stable"}
-{"k": "tool", "n": "scenarios.push", "sig": "(sid:str,message:Optional[str]=null,signoff:bool=false)->str", "s": "commit & push scenario changes", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.list_installed", "sig": "()->List[str]", "s": "list installed scenarios", "ex": [], "st": "stable"}
-{"k": "tool", "n": "scenarios.delete", "sig": "(sid:str)->bool", "s": "delete scenario locally", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.read_proto", "sig": "(sid:str)->Dict[str, Any]", "s": "read scenario prototype JSON", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.write_proto", "sig": "(sid:str,data:Dict[str, Any])->str", "s": "write scenario prototype JSON", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.read_bindings", "sig": "(sid:str,user:str)->Dict[str, Any]", "s": "read scenario bindings for user", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "scenarios.write_bindings", "sig": "(sid:str,user:str,data:Dict[str, Any])->str", "s": "write scenario bindings for user", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "skills.create", "sig": "(name:str,template:str=\"demo_skill\",register:bool=true,push:bool=true)->str", "s": "create skill from template", "ex": ["skills.create('demo_skill')"], "st": "stable"}
-{"k": "tool", "n": "skills.install", "sig": "(name:str)->str", "s": "install skill into runtime", "ex": [], "st": "stable"}
-{"k": "tool", "n": "skills.uninstall", "sig": "(name:str)->str", "s": "uninstall skill from runtime", "ex": [], "st": "stable"}
-{"k": "tool", "n": "skills.pull", "sig": "(name:str)->str", "s": "pull skill sources", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "skills.push", "sig": "(name:str,message:str,signoff:bool=false)->str", "s": "push local changes of a skill", "ex": [], "st": "experimental"}
-{"k": "tool", "n": "skills.list_installed", "sig": "()->List[str]", "s": "list installed skills", "ex": [], "st": "stable"}
-{"k": "tool", "n": "skills.install_all", "sig": "(limit:Optional[int]=null)->List[str]", "s": "best-effort bulk install", "ex": [], "st": "experimental"}
+{"k":"tool","n":"manage.scenarios.bind.set","s":"set scenario binding metadata","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.create","s":"create a scenario from a template","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.delete","s":"delete scenario directory","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.install","s":"install scenario into workspace","st":"stable"}
+{"k":"tool","n":"manage.scenarios.list","s":"list installed scenarios","st":"stable"}
+{"k":"tool","n":"manage.scenarios.pull","s":"pull scenario sources","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.push","s":"push local scenario changes","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.read_bindings","s":"read scenario bindings for a user","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.read_proto","s":"read scenario manifest","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.toggle","s":"enable or disable a scenario","st":"stable"}
+{"k":"tool","n":"manage.scenarios.uninstall","s":"remove an installed scenario","st":"stable"}
+{"k":"tool","n":"manage.scenarios.write_bindings","s":"write scenario bindings for a user","st":"experimental"}
+{"k":"tool","n":"manage.scenarios.write_proto","s":"write scenario manifest","st":"experimental"}
+{"k":"tool","n":"manage.self.state.get","s":"read a value from the skill-scoped state store","st":"stable"}
+{"k":"tool","n":"manage.self.state.put","s":"persist a value into the skill-scoped state store","st":"stable"}
+{"k":"tool","n":"manage.self.update.request","s":"request runtime to refresh or pull the current skill","st":"experimental"}
+{"k":"tool","n":"manage.self.validate","s":"validate the currently active skill","st":"stable"}
+{"k":"tool","n":"manage.skills.install","s":"install a skill from catalog or git","st":"stable"}
+{"k":"tool","n":"manage.skills.list","s":"list installed skills with registry metadata","st":"stable"}
+{"k":"tool","n":"manage.skills.uninstall","s":"remove an installed skill","st":"stable"}
+{"k":"tool","n":"resources.request","s":"create a resource ticket for operators","st":"experimental"}
+{"k":"tool","n":"resources.status","s":"lookup the status of a resource request","st":"experimental"}
