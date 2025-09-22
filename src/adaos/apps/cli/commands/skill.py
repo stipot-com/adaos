@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import traceback
+from typing import Optional
 
 import typer
 
@@ -21,6 +22,16 @@ from adaos.services.skill.runtime import (
 )
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
+from adaos.apps.cli.root_ops import (
+    RootCliError,
+    archive_bytes_to_b64,
+    assert_safe_name,
+    create_zip_bytes,
+    ensure_registration,
+    load_root_cli_config,
+    push_skill_draft,
+    run_preflight_checks,
+)
 
 app = typer.Typer(help=_("cli.help_skill"))
 
@@ -42,6 +53,18 @@ def _mgr() -> SkillManager:
     repo = ctx.skills_repo
     reg = SqliteSkillRegistry(ctx.sql)
     return SkillManager(repo=repo, registry=reg, git=ctx.git, paths=ctx.paths, bus=getattr(ctx, "bus", None), caps=ctx.caps)
+
+
+def _resolve_skill_path(target: str) -> Path:
+    candidate = Path(target).expanduser()
+    if candidate.exists():
+        return candidate.resolve()
+    ctx = get_ctx()
+    root = Path(ctx.paths.skills_dir())
+    candidate = (root / target).resolve()
+    if candidate.exists():
+        return candidate
+    raise typer.BadParameter(_("cli.skill.push.not_found", name=target))
 
 
 @_run_safe
@@ -142,19 +165,84 @@ def reconcile_fs_to_db():
 @app.command("push")
 def push_command(
     skill_name: str = typer.Argument(..., help=_("cli.skill.push.name_help")),
-    message: str = typer.Option(..., "--message", "-m", help=_("cli.commit_message.help")),
+    message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
     signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
+    name_override: Optional[str] = typer.Option(None, "--name", help=_("cli.skill.push.name_override_help")),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_("cli.option.dry_run")),
+    no_preflight: bool = typer.Option(False, "--no-preflight", help=_("cli.option.no_preflight")),
+    subnet_name: Optional[str] = typer.Option(None, "--subnet-name", help=_("cli.option.subnet_name")),
 ):
     """
     Закоммитить изменения ТОЛЬКО внутри подпапки навыка и выполнить git push.
     Защищён политиками: skills.manage + git.write + net.git.
     """
-    mgr = _mgr()
-    res = mgr.push(skill_name, message, signoff=signoff)
-    if res in {"nothing-to-push", "nothing-to-commit"}:
-        typer.echo(_("cli.skill.push.nothing"))
+    if message is not None:
+        mgr = _mgr()
+        res = mgr.push(skill_name, message, signoff=signoff)
+        if res in {"nothing-to-push", "nothing-to-commit"}:
+            typer.echo(_("cli.skill.push.nothing"))
+        else:
+            typer.echo(_("cli.skill.push.done", name=skill_name, revision=res))
+        return
+
+    if signoff:
+        typer.echo(_("cli.push.signoff_ignored"))
+
+    try:
+        config = load_root_cli_config()
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if dry_run:
+        typer.echo(_("cli.preflight.skipped_dry_run"))
+    elif not no_preflight:
+        try:
+            run_preflight_checks(config, dry_run=False, echo=typer.echo)
+        except RootCliError as err:
+            typer.secho(str(err), fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+    try:
+        config = ensure_registration(config, dry_run=dry_run, subnet_name=subnet_name, echo=typer.echo)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    skill_path = _resolve_skill_path(skill_name)
+
+    target_name = name_override or skill_path.name
+    try:
+        assert_safe_name(target_name)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    try:
+        archive_bytes = create_zip_bytes(skill_path)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    archive_b64 = archive_bytes_to_b64(archive_bytes)
+
+    try:
+        stored = push_skill_draft(
+            config,
+            node_id=config.node_id,
+            name=target_name,
+            archive_b64=archive_b64,
+            dry_run=dry_run,
+            echo=typer.echo,
+        )
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if dry_run:
+        typer.echo(_("cli.skill.push.root.dry_run", path=stored))
     else:
-        typer.echo(_("cli.skill.push.done", name=skill_name, revision=res))
+        typer.secho(_("cli.skill.push.root.success", path=stored), fg=typer.colors.GREEN)
 
 
 @_run_safe
@@ -162,6 +250,7 @@ def push_command(
 def cmd_create(name: str, template: str = typer.Option("demo_skill", "--template", "-t")):
     p = scaffold_create(name, template=template)
     typer.echo(_("cli.skill.create.created", path=p))
+    typer.echo(_("cli.skill.create.hint_push", name=name))
 
 
 @_run_safe

@@ -17,6 +17,15 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.scaffold import create as scaffold_create
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
+from adaos.apps.cli.root_ops import (
+    RootCliError,
+    assert_safe_name,
+    create_zip_bytes,
+    ensure_registration,
+    load_root_cli_config,
+    run_preflight_checks,
+    store_scenario_draft,
+)
 
 app = typer.Typer(help=_("cli.help_scenario"))
 
@@ -136,17 +145,78 @@ def uninstall_cmd(name: str = typer.Argument(..., help=_("cli.scenario.uninstall
 @app.command("push")
 def push_cmd(
     scenario_name: str = typer.Argument(..., help=_("cli.scenario.push.name_help")),
-    message: str = typer.Option(..., "--message", "-m", help=_("cli.commit_message.help")),
+    message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
     signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
+    name_override: Optional[str] = typer.Option(None, "--name", help=_("cli.scenario.push.name_override_help")),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_("cli.option.dry_run")),
+    no_preflight: bool = typer.Option(False, "--no-preflight", help=_("cli.option.no_preflight")),
+    subnet_name: Optional[str] = typer.Option(None, "--subnet-name", help=_("cli.option.subnet_name")),
 ):
     """Commit changes inside a scenario directory and push to remote."""
 
-    mgr = _mgr()
-    result = mgr.push(scenario_name, message, signoff=signoff)
-    if result in {"nothing-to-push", "nothing-to-commit"}:
-        typer.echo(_("cli.scenario.push.nothing"))
+    if message is not None:
+        mgr = _mgr()
+        result = mgr.push(scenario_name, message, signoff=signoff)
+        if result in {"nothing-to-push", "nothing-to-commit"}:
+            typer.echo(_("cli.scenario.push.nothing"))
+        else:
+            typer.echo(_("cli.scenario.push.done", name=scenario_name, revision=result))
+        return
+
+    if signoff:
+        typer.echo(_("cli.push.signoff_ignored"))
+
+    try:
+        config = load_root_cli_config()
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if dry_run:
+        typer.echo(_("cli.preflight.skipped_dry_run"))
+    elif not no_preflight:
+        try:
+            run_preflight_checks(config, dry_run=False, echo=typer.echo)
+        except RootCliError as err:
+            typer.secho(str(err), fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+    try:
+        config = ensure_registration(config, dry_run=dry_run, subnet_name=subnet_name, echo=typer.echo)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    scenario_dir = _resolve_scenario_dir(scenario_name)
+    target_name = name_override or scenario_dir.name
+    try:
+        assert_safe_name(target_name)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    try:
+        archive_bytes = create_zip_bytes(scenario_dir)
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    try:
+        stored = store_scenario_draft(
+            node_id=config.node_id,
+            name=target_name,
+            archive_bytes=archive_bytes,
+            dry_run=dry_run,
+            echo=typer.echo,
+        )
+    except RootCliError as err:
+        typer.secho(str(err), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if dry_run:
+        typer.echo(_("cli.scenario.push.root.dry_run", path=stored))
     else:
-        typer.echo(_("cli.scenario.push.done", name=scenario_name, revision=result))
+        typer.secho(_("cli.scenario.push.root.success", path=stored), fg=typer.colors.GREEN)
 
 
 def _scenario_root() -> Path:
@@ -155,6 +225,22 @@ def _scenario_root() -> Path:
     if candidate.exists():
         return candidate
     return ctx_base
+
+
+def _resolve_scenario_dir(target: str) -> Path:
+    candidate = Path(target).expanduser()
+    if candidate.is_file():
+        candidate = candidate.parent
+    if candidate.exists():
+        return candidate.resolve()
+    ctx = get_ctx()
+    base = Path(ctx.paths.scenarios_dir())
+    candidate = (base / target).resolve()
+    if candidate.is_file():
+        candidate = candidate.parent
+    if candidate.exists():
+        return candidate
+    raise typer.BadParameter(_("cli.scenario.push.not_found", name=target))
 
 
 def _scenario_path(scenario_id: str, override: Optional[str]) -> Path:
