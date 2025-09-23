@@ -13,3 +13,7 @@ src/adaos/store/
 .adaos/skill_db.sqlite
 .adaos/node.yaml
 .adaos/state/
+src/adaos/integrations/inimatic/backend/ssl/adaos_root
+src/adaos/integrations/inimatic/backend/ssl/adaos_root.pub
+src/adaos/integrations/inimatic/backend/ssl/ca.crt
+src/adaos/integrations/inimatic/backend/ssl/ca.key

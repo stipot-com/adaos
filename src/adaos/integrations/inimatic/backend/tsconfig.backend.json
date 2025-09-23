@@ -1,6 +1,6 @@
 {
 	"compileOnSave": false,
-	"ts-node": { "esm": true },
+	"ts-node": { "esm": true, "experimentalResolver": true },
 	"compilerOptions": {
 		"baseUrl": "./",
 		"outDir": "../dist/out-tsc",
@@ -14,10 +14,11 @@
 		"declaration": false,
 		"downlevelIteration": true,
 		"experimentalDecorators": true,
-		"moduleResolution": "node",
+		"moduleResolution": "NodeNext",
+		"types": ["node"],
 		"importHelpers": true,
 		"target": "ESNext",
-		"module": "ESNext",
+		"module": "NodeNext",
 		"esModuleInterop": true,
 		"lib": ["es2018", "dom"],
 		"useDefineForClassFields": false,

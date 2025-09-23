@@ -1,4 +1,4 @@
-
+import 'dotenv/config'
 import express from 'express'
 import https from 'https'
 import path from 'path'
@@ -9,11 +9,13 @@ import fs from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { randomBytes, createHash } from 'node:crypto'
 import type { PeerCertificate, TLSSocket } from 'node:tls'
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
-import { installAdaosBridge } from './adaos-bridge.js'
-import { CertificateAuthority } from './pki.js'
-import { ForgeManager, type DraftKind } from './forge.js'
-import { getPolicy } from './policy.js'
+import { installAdaosBridge } from './adaos-bridge.ts'
+import { CertificateAuthority } from './pki.ts'
+import { ForgeManager, type DraftKind } from './forge.ts'
+import { getPolicy } from './policy.ts'
 
 type FollowerData = {
 	followerName: string
@@ -71,6 +73,20 @@ declare global {
 	}
 }
 
+function readPemFromEnvOrFile(valName: string, fileName: string): string {
+	const v = process.env[valName];
+	if (v && v.includes('-----BEGIN')) {
+		// поддержка варианта с \n в строке, если вдруг останется
+		return v.replace(/\\n/g, '\n').trim() + '\n';
+	}
+	const f = process.env[fileName];
+	if (f) {
+		const text = readFileSync(resolve(f), 'utf8');
+		return text.trim() + '\n';
+	}
+	throw new Error(`Environment variable ${valName} is required (or set ${fileName})`);
+}
+
 function normalizePem(value: string): string {
 	return value.includes('\n') ? value.replace(/\n/g, '\n') : value
 }
@@ -86,8 +102,12 @@ function requireEnv(name: string): string {
 const HOST = process.env['HOST'] ?? '0.0.0.0'
 const PORT = Number.parseInt(process.env['PORT'] ?? '3030', 10)
 const ROOT_TOKEN = process.env['ROOT_TOKEN'] ?? 'dev-root-token'
-const CA_KEY_PEM = normalizePem(requireEnv('CA_KEY_PEM'))
-const CA_CERT_PEM = normalizePem(requireEnv('CA_CERT_PEM'))
+const CA_KEY_PEM = readPemFromEnvOrFile('CA_KEY_PEM', 'CA_KEY_PEM_FILE');
+const CA_CERT_PEM = readPemFromEnvOrFile('CA_CERT_PEM', 'CA_CERT_PEM_FILE');
+/* TODO
+const TLS_KEY_PEM  = readPemFromEnvOrFile('TLS_KEY_PEM',  'TLS_KEY_PEM_FILE');
+const TLS_CERT_PEM = readPemFromEnvOrFile('TLS_CERT_PEM', 'TLS_CERT_PEM_FILE');
+*/
 const TLS_KEY_PEM = normalizePem(process.env['TLS_KEY_PEM'] ?? CA_KEY_PEM)
 const TLS_CERT_PEM = normalizePem(process.env['TLS_CERT_PEM'] ?? CA_CERT_PEM)
 const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
