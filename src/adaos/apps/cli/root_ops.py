@@ -79,8 +79,10 @@ def load_root_cli_config() -> RootCliConfig:
 
 def save_root_cli_config(config: RootCliConfig) -> None:
     path = _config_path()
-    path.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2) + "
-", encoding="utf-8")
+    path.write_text(
+        json.dumps(asdict(config), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _parse_key_pair(data: Optional[dict]) -> KeyPairPaths:
