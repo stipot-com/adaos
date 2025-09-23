@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import AdmZip from 'adm-zip'
-import simpleGit, { SimpleGit } from 'simple-git'
+import { simpleGit, type SimpleGit } from 'simple-git'
 
 export type DraftKind = 'skills' | 'scenarios'
 
@@ -78,26 +78,26 @@ export class ForgeManager {
 			}
 			const env = this.gitEnv()
 			const gitDir = path.join(this.options.workdir, '.git')
-			if (!fs.existsSync(gitDir)) {
-				const parent = path.dirname(this.options.workdir)
-				await mkdir(parent, { recursive: true })
-				const workdirExists = fs.existsSync(this.options.workdir)
-				if (workdirExists) {
-					const entries = fs.readdirSync(this.options.workdir)
-					if (entries.length > 0) {
-						throw new Error(
-							`forge workdir ${this.options.workdir} exists and is not empty`
-						)
-					}
-				}
-				await simpleGit({ baseDir: parent, env }).clone(
-					this.options.repoUrl,
-					this.options.workdir
-				)
-			}
+                        if (!fs.existsSync(gitDir)) {
+                                const parent = path.dirname(this.options.workdir)
+                                await mkdir(parent, { recursive: true })
+                                const workdirExists = fs.existsSync(this.options.workdir)
+                                if (workdirExists) {
+                                        const entries = fs.readdirSync(this.options.workdir)
+                                        if (entries.length > 0) {
+                                                throw new Error(
+                                                        `forge workdir ${this.options.workdir} exists and is not empty`
+                                                )
+                                        }
+                                }
+                                const parentGit = simpleGit({ baseDir: parent })
+                                parentGit.env(env)
+                                await parentGit.clone(this.options.repoUrl, this.options.workdir)
+                        }
 
-			await mkdir(this.options.workdir, { recursive: true })
-			this.git = simpleGit({ baseDir: this.options.workdir, env })
+                        await mkdir(this.options.workdir, { recursive: true })
+                        this.git = simpleGit({ baseDir: this.options.workdir })
+                        this.git.env(env)
 			await this.git.addConfig('user.name', this.options.authorName)
 			await this.git.addConfig('user.email', this.options.authorEmail)
 			await this.sync()

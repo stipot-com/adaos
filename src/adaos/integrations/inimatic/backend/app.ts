@@ -12,10 +12,10 @@ import type { PeerCertificate, TLSSocket } from 'node:tls'
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { installAdaosBridge } from './adaos-bridge.ts'
-import { CertificateAuthority } from './pki.ts'
-import { ForgeManager, type DraftKind } from './forge.ts'
-import { getPolicy } from './policy.ts'
+import { installAdaosBridge } from './adaos-bridge.js'
+import { CertificateAuthority } from './pki.js'
+import { ForgeManager, type DraftKind } from './forge.js'
+import { getPolicy } from './policy.js'
 
 type FollowerData = {
 	followerName: string
@@ -220,8 +220,9 @@ function getPeerCertificate(req: express.Request): PeerCertificate | null {
 }
 
 function parseClientIdentity(cert: PeerCertificate): ClientIdentity | null {
-	const subject = cert.subject as Record<string, string>
-	const cn = subject?.CN || subject?.cn
+        const subject = cert.subject
+        const subjectRecord = subject as unknown as Partial<Record<string, string>> | undefined
+        const cn = subjectRecord?.['CN'] ?? subjectRecord?.['cn']
 	if (!cn) {
 		return null
 	}
@@ -232,9 +233,9 @@ function parseClientIdentity(cert: PeerCertificate): ClientIdentity | null {
 		}
 		return { type: 'hub', subnetId }
 	}
-	if (cn.startsWith('node:')) {
-		const nodeId = cn.slice('node:'.length)
-		const org = subject?.O || subject?.o
+        if (cn.startsWith('node:')) {
+                const nodeId = cn.slice('node:'.length)
+                const org = subjectRecord?.['O'] ?? subjectRecord?.['o']
 		if (!nodeId || !org || !org.startsWith('subnet:')) {
 			return null
 		}

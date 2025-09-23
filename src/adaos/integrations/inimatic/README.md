@@ -52,16 +52,9 @@ export PATH=${PATH}:$ANDROID_HOME/tools:$ANDROID_HOME/platform-tools:$GRADLE_PAT
 export PATH="$PATH:$GRADLE_PATH"
 ```
 
-## Deployment 
-```
-sudo su
-# for env deployment
-./deployment/env_deploy.sh
-# for build frontend
-./deployment/frontend_deploy.sh
-# for build backend
-./deployment/backend_deploy.sh
-```
+## Deployment
+
+See [`deployment/README.md`](deployment/README.md) for the Traefik-based Docker Compose setup, production rollout guide, and CI/CD pipeline details.
 
 ## Run Android app in development mode
 ```

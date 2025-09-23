@@ -7,4 +7,5 @@ COPY ./ /inimatic
 RUN npm run ${BUILD_SCRIPT}
 FROM nginx:latest
 COPY --from=build /inimatic/www /usr/share/nginx/html
-EXPOSE 8081
+COPY ./deployment/nginx/default.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080
