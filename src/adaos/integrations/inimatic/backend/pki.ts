@@ -24,13 +24,17 @@ export type IssueResult = {
 
 export class CertificateAuthority {
         private readonly caCert: forge.pki.Certificate
-        private readonly caKey: forge.pki.PrivateKey
+        private readonly caKey: forge.pki.rsa.PrivateKey
         private readonly defaultValidityDays: number
 
         constructor(options: CertificateAuthorityOptions) {
                 const { certPem, keyPem, defaultValidityDays } = options
                 this.caCert = forge.pki.certificateFromPem(certPem)
-                this.caKey = forge.pki.privateKeyFromPem(keyPem)
+                const privateKey = forge.pki.privateKeyFromPem(keyPem)
+                if (!isRsaPrivateKey(privateKey)) {
+                        throw new Error('Only RSA private keys are supported for the certificate authority')
+                }
+                this.caKey = privateKey
                 this.defaultValidityDays = defaultValidityDays ?? 365
         }
 
@@ -87,4 +91,8 @@ export class CertificateAuthority {
 function generateSerialNumber(): string {
         const bytes = forge.random.getBytesSync(16)
         return forge.util.bytesToHex(bytes)
+}
+
+function isRsaPrivateKey(key: forge.pki.PrivateKey): key is forge.pki.rsa.PrivateKey {
+        return typeof (key as forge.pki.rsa.PrivateKey).n !== 'undefined'
 }
