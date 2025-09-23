@@ -1,5 +1,12 @@
 (window as any).global = window;
-import * as process from 'process';
+import process from 'process';
+
+declare global {
+  interface Window {
+    process: typeof process;
+  }
+}
+
 window.process = process;
 
 /**
