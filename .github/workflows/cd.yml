@@ -1,0 +1,85 @@
+name: inimatic CD
+
+on:
+  push:
+    branches: [rev2026]
+    paths:
+      - 'src/adaos/integrations/inimatic/**'
+      - '.github/workflows/cd.yml'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/adaos/integrations/inimatic
+          file: src/adaos/integrations/inimatic/deployment/backend.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/inimatic-backend:latest
+            ghcr.io/${{ github.repository_owner }}/inimatic-backend:rev2026-${{ steps.meta.outputs.short_sha }}
+          cache-from: type=gha,scope=inimatic-backend
+          cache-to: type=gha,scope=inimatic-backend,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/adaos/integrations/inimatic
+          file: src/adaos/integrations/inimatic/deployment/frontend.Dockerfile
+          push: true
+          build-args: |
+            BUILD_SCRIPT=buildprod
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/inimatic-frontend:latest
+            ghcr.io/${{ github.repository_owner }}/inimatic-frontend:rev2026-${{ steps.meta.outputs.short_sha }}
+          cache-from: type=gha,scope=inimatic-frontend
+          cache-to: type=gha,scope=inimatic-frontend,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: ${{ github.ref == 'refs/heads/rev2026' }}
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            REPO_DIR=${REPO_DIR:-adaos}
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              git clone https://github.com/${{ github.repository }} "$REPO_DIR"
+            fi
+            cd "$REPO_DIR"
+            git fetch origin rev2026
+            git reset --hard origin/rev2026
+            cd src/adaos/integrations/inimatic
+            ./deployment/deploy.sh

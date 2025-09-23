@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer'
 import forge from 'node-forge'
 
 export type CertificateSubject = {
@@ -44,7 +43,11 @@ export class CertificateAuthority {
 
                 const certificate = forge.pki.createCertificate()
                 certificate.serialNumber = generateSerialNumber()
-                certificate.publicKey = csr.publicKey
+                const publicKey = csr.publicKey
+                if (!publicKey) {
+                        throw new Error('CSR does not contain a public key')
+                }
+                certificate.publicKey = publicKey
 
                 const now = new Date()
                 certificate.validity.notBefore = new Date(now.getTime() - 60_000)
@@ -66,9 +69,9 @@ export class CertificateAuthority {
                         { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
                         {
                                 name: 'subjectKeyIdentifier',
-                                subjectKeyIdentifier: forge.pki.getPublicKeyFingerprint(csr.publicKey, {
-                                        type: 'buffer',
-                                }) as Buffer,
+                                subjectKeyIdentifier: forge.pki.getPublicKeyFingerprint(publicKey, {
+                                        type: 'SubjectPublicKeyInfo',
+                                }) as forge.util.ByteStringBuffer,
                         },
                 ])
 

@@ -5,5 +5,5 @@ COPY ./package*.json /inimatic_backend
 RUN npm install --force
 COPY ./backend /inimatic_backend/backend
 RUN npm run build:api
-EXPOSE 3031
+EXPOSE 3030
 CMD ["npm", "run", "serve:api"]
