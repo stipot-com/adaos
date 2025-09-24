@@ -23,9 +23,9 @@ COPY ./backend ./backend
 
 # 5) компилируем backend напрямую, минуя скрипты npm (чтобы точно не дергать nx)
 #    используем фиксированную версию tsc, чтобы не зависеть от devDeps корня
-RUN npx -y typescript@5.6.3 tsc -p backend/tsconfig.backend.json
+RUN npx --yes --package typescript@5.6.3 tsc -p backend/tsconfig.backend.json
 
 EXPOSE 3030
 
 # 6) запускаем собранный JS (без ts-node)
-CMD ["node", "backend/dist/app.js"]
+CMD ["node", "dist/out-tsc/app.js"]
