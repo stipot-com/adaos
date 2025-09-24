@@ -88,8 +88,8 @@ deploy:
           # 1) Сначала создаём .env из секрета (сохраняем все переносы)
           mkdir -p deployment
           cat > deployment/.env <<'EOF_ENV'
-${{ secrets.INIMATIC_ENV }}
-EOF_ENV
+          ${{ secrets.INIMATIC_ENV }}
+          EOF_ENV
           chmod 600 deployment/.env
 
           # 2) (опц.) логин в GHCR, если образы приватные
@@ -106,4 +106,3 @@ EOF_ENV
           $COMPOSE ps
       env:
         GHCR_PAT: ${{ secrets.GHCR_PAT }}
-
