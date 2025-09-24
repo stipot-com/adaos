@@ -59,27 +59,51 @@ jobs:
           cache-from: type=gha,scope=inimatic-frontend
           cache-to: type=gha,scope=inimatic-frontend,mode=max
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: ${{ github.ref == 'refs/heads/rev2026' }}
-    steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            REPO_DIR=${REPO_DIR:-adaos}
-            if [ ! -d "$REPO_DIR/.git" ]; then
-              git clone https://github.com/${{ github.repository }} "$REPO_DIR"
-            fi
-            cd "$REPO_DIR"
-            git fetch origin rev2026
-            git reset --hard origin/rev2026
-            cd src/adaos/integrations/inimatic
-            ./deployment/deploy.sh
+deploy:
+  runs-on: ubuntu-latest
+  needs: build-and-push
+  if: ${{ github.ref == 'refs/heads/rev2026' }}
+  steps:
+    - name: Deploy over SSH
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DEPLOY_HOST }}
+        username: ${{ secrets.DEPLOY_USER }}
+        key: ${{ secrets.DEPLOY_KEY }}
+        # port: ${{ secrets.DEPLOY_PORT }}   # ← либо задай секрет, либо просто убери строку (будет 22)
+        script_stop: true
+        script: |
+          set -euo pipefail
+
+          REPO_DIR=${REPO_DIR:-adaos}
+          if [ ! -d "$REPO_DIR/.git" ]; then
+            git clone https://github.com/${{ github.repository }} "$REPO_DIR"
+          fi
+
+          cd "$REPO_DIR"
+          git fetch origin rev2026
+          git reset --hard origin/rev2026
+          cd src/adaos/integrations/inimatic
+
+          # 1) Сначала создаём .env из секрета (сохраняем все переносы)
+          mkdir -p deployment
+          cat > deployment/.env <<'EOF_ENV'
+${{ secrets.INIMATIC_ENV }}
+EOF_ENV
+          chmod 600 deployment/.env
+
+          # 2) (опц.) логин в GHCR, если образы приватные
+          if [ -n "${GHCR_PAT:-}" ]; then
+            echo "$GHCR_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || true
+          fi
+
+          # 3) Поднимаем через compose
+          export COMPOSE_PROJECT_NAME=inimatic
+          COMPOSE="docker compose -f ./deployment/docker-compose.yaml --project-directory ./ --env-file ./deployment/.env"
+
+          $COMPOSE pull || true
+          $COMPOSE up -d --remove-orphans --wait
+          $COMPOSE ps
+      env:
+        GHCR_PAT: ${{ secrets.GHCR_PAT }}
+
