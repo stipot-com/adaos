@@ -5,7 +5,7 @@ import { Component } from '@angular/core';
 	template: `
   <div class="p-3">
     <h2>Member</h2>
-    <p>The node panel will appear here (render via skills)!000!</p>
+    <p>The node panel will appear here (render via skills)!0000!</p>
   </div>`
 })
 export class MemberComponent { }

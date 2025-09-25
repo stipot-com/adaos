@@ -64,6 +64,34 @@ jobs:
     needs: build-and-push
     if: ${{ github.ref == 'refs/heads/rev2026' }}
     steps:
+      - name: Checkout (для путей/скриптов — опционально)
+        uses: actions/checkout@v4
+
+      # 1) Сначала готовим и заливаем файлы
+      - name: Prepare secret files
+        run: |
+          umask 077
+          mkdir -p secrets_to_copy
+          printf '%s\n' "${{ secrets.GH_APP_PRIVATE_KEY }}" > secrets_to_copy/gh_app_private_key.pem
+          printf '%s\n' "${{ secrets.INIMATIC_ENV }}" > secrets_to_copy/.env
+
+          # На всякий случай удалим \r, если секрет вставили с CRLF
+          sed -i 's/\r$//' secrets_to_copy/gh_app_private_key.pem
+          sed -i 's/\r$//' secrets_to_copy/.env
+
+      - name: Upload secrets via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }} # <-- используем тот же ключ, что и в ssh ниже
+          source: |
+            secrets_to_copy/gh_app_private_key.pem
+            secrets_to_copy/.env
+          target: /home/deploy/adaos/src/adaos/integrations/inimatic/deployment/
+          strip_components: 1
+
+      # 2) Потом деплой по SSH
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -71,6 +99,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script_stop: true
+          # request_pty не нужен — меньше шансов на «артефакты»
           script: |
             set -euo pipefail
             REPO_DIR=${REPO_DIR:-adaos}
@@ -82,29 +111,9 @@ jobs:
             git reset --hard origin/rev2026
             cd src/adaos/integrations/inimatic
 
-            # 3) docker compose
-            export COMPOSE_PROJECT_NAME=inimatic
-            COMPOSE="sudo -n docker compose -f ./deployment/docker-compose.yaml --project-directory ./ --env-file ./deployment/.env"
+            # Жёстко задаём имя проекта флагом -p
+            COMPOSE='sudo -n docker compose -p inimatic -f ./deployment/docker-compose.yaml --project-directory ./ --env-file ./deployment/.env'
+
             $COMPOSE pull || true
             $COMPOSE up -d --remove-orphans --wait
             $COMPOSE ps
-      - name: Prepare secret files
-        run: |
-          umask 077
-          mkdir -p secrets_to_copy
-          # ключ GitHub App
-          printf '%s\n' "${{ secrets.GH_APP_PRIVATE_KEY }}" > secrets_to_copy/gh_app_private_key.pem
-          # .env для compose
-          printf '%s\n' "${{ secrets.INIMATIC_ENV }}" > secrets_to_copy/.env
-
-      - name: Upload secrets via SCP
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: |
-            secrets_to_copy/gh_app_private_key.pem
-            secrets_to_copy/.env
-          target: /home/deploy/adaos/src/adaos/integrations/inimatic/deployment/
-          strip_components: 1
