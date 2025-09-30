@@ -265,7 +265,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/healthz', (_req, res) => {
-	res.json({ ok: true, time: new Date().toISOString(), mtls: true })
+	res.json({ ok: true, ver: "0.1.0", time: new Date().toISOString(), mtls: true })
 })
 
 app.post('/v1/bootstrap_token', async (req, res) => {
