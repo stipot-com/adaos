@@ -96,6 +96,20 @@ class CliGitClient(GitClient):
                 lines.append(path)
                 sp.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def sparse_reapply(self, dir: StrOrPath) -> None:
+        try:
+            _run_git(["sparse-checkout", "reapply"], cwd=dir)
+        except GitError:
+            # Non sparse worktrees raise an error — ignore silently to keep idempotent.
+            pass
+
+    def rm_cached(self, dir: StrOrPath, path: str) -> None:
+        try:
+            _run_git(["rm", "--cached", "-r", "--ignore-unmatch", path], cwd=dir)
+        except GitError:
+            # Nothing tracked for the path — ignore.
+            pass
+
     def changed_files(self, dir: StrOrPath, subpath: Optional[str] = None) -> list[str]:
         # untracked (-o) + modified (-m), исключая игнор по .gitignore
         args = ["ls-files", "-m", "-o", "--exclude-standard"]

@@ -103,8 +103,10 @@ class SkillManager:
         self.reg.unregister(name)
         root = self.ctx.paths.workspace_dir()
         # в тестах/без .git — только реестр, без git операций
-        if os.getenv("ADAOS_TESTING") == "1" or not (root / ".git").exists():
-            return f"uninstalled: {name} (registry-only{' test-mode' if test_mode else ''})"
+        test_mode = os.getenv("ADAOS_TESTING") == "1"
+        if test_mode or not (root / ".git").exists():
+            suffix = " test-mode" if test_mode else ""
+            return f"uninstalled: {name} (registry-only{suffix})"
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]
         ensure_clean(self.ctx.git, str(root), prefixed)

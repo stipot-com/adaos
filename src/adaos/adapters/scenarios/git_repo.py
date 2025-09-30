@@ -5,13 +5,14 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 import yaml
 
+from adaos.adapters.git.workspace import SparseWorkspace, wait_for_materialized
 from adaos.domain import SkillId, SkillMeta  # если есть ScenarioId/ScenarioMeta — замени здесь
-from adaos.ports.paths import PathProvider
 from adaos.ports.git import GitClient
+from adaos.ports.paths import PathProvider
 from adaos.ports.scenarios import ScenarioRepository
 
 try:
@@ -78,11 +79,7 @@ def _read_catalog(paths: PathProvider) -> list[str]:
 
 @dataclass
 class GitScenarioRepository(ScenarioRepository):
-    """
-    Унифицированный адаптер сценариев:
-      - monorepo mode: если задан monorepo_url (и, опционально, monorepo_branch)
-      - fs mode (multi-repo): если monorepo_url не задан — каждый сценарий отдельным git-репо
-    """
+    """Scenario repository backed by the shared monorepo workspace."""
 
     def __init__(
         self,
@@ -96,6 +93,24 @@ class GitScenarioRepository(ScenarioRepository):
         self.git = git
         self.monorepo_url = url
         self.monorepo_branch = branch
+
+    def _candidate_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        primary = Path(self.paths.scenarios_dir())
+        roots.append(primary)
+        cache_attr = getattr(self.paths, "scenarios_cache_dir", None)
+        if cache_attr:
+            cache_root = cache_attr() if callable(cache_attr) else cache_attr
+            if cache_root:
+                roots.append(Path(cache_root) / "scenarios")
+        uniq: list[Path] = []
+        seen: set[Path] = set()
+        for root in roots:
+            resolved = root.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                uniq.append(root)
+        return uniq
 
     def _root(self) -> Path:
         cache_dir = getattr(self.paths, "scenarios_cache_dir", None)
@@ -127,22 +142,22 @@ class GitScenarioRepository(ScenarioRepository):
     def list(self) -> list[SkillMeta]:
         self.ensure()
         items: List[SkillMeta] = []
-        root = self.paths.workspace_dir()
-        scenarios_root = self.paths.scenarios_dir()
-        if not scenarios_root.exists():
-            return items
-        for ch in sorted(scenarios_root.iterdir()):
-            if ch.is_dir() and not ch.name.startswith("."):
-                items.append(_read_manifest(ch))
+        for root in self._candidate_roots():
+            if not root.exists():
+                continue
+            for ch in sorted(root.iterdir()):
+                if ch.is_dir() and not ch.name.startswith("."):
+                    items.append(_read_manifest(ch))
         return items
 
     def get(self, scenario_id: str) -> Optional[SkillMeta]:
         self.ensure()
-        p = self.paths.scenarios_dir() / scenario_id
-        if p.exists():
-            m = _read_manifest(p)
-            if m.id.value == scenario_id:
-                return m
+        for root in self._candidate_roots():
+            p = root / scenario_id
+            if p.exists():
+                m = _read_manifest(p)
+                if m.id.value == scenario_id:
+                    return m
         for m in self.list():
             if m.id.value == scenario_id:
                 return m
@@ -157,34 +172,47 @@ class GitScenarioRepository(ScenarioRepository):
         branch: Optional[str] = None,
         dest_name: Optional[str] = None,
     ) -> SkillMeta:
-        """
-        monorepo mode: ref = имя сценария (подкаталог монорепо); URL запрещён.
-        fs mode:      ref = полный git URL; dest_name опционален.
-        """
+        """Install a scenario into the workspace using sparse checkout."""
+
         self.ensure()
-        name = ref.strip()
-        p: Path = self.paths.scenarios_dir() / name
         name = ref.strip()
         if not _NAME_RE.match(name):
             raise ValueError("invalid scenario name")
-        self.git.sparse_init(str(self.paths.workspace_dir()), cone=False)
-        self.git.sparse_add(str(self.paths.workspace_dir()), f"scenarios/{name}")
-        self.git.pull(str(self.paths.workspace_dir()))
-            
-        if not p.exists():
-            raise FileNotFoundError(f"scenario '{name}' not present after sync")
-        return _read_manifest(p)
+
+        workspace_root = self.paths.workspace_dir()
+        sparse = SparseWorkspace(self.git, workspace_root)
+        target = f"scenarios/{name}"
+        sparse.update(add=[target])
+        self.git.pull(str(workspace_root))
+
+        scenario_dir: Path = self.paths.scenarios_dir() / name
+        try:
+            wait_for_materialized(scenario_dir, files=_MANIFEST_NAMES)
+        except FileNotFoundError as exc:  # pragma: no cover - defensive logging
+            sparse.update(remove=[target])
+            self.git.rm_cached(str(workspace_root), target)
+            raise FileNotFoundError(f"scenario '{name}' not present after sync") from exc
+        return _read_manifest(scenario_dir)
 
     # --- uninstall ---
 
     def uninstall(self, scenario_id: str) -> None:
         self.ensure()
+        workspace_root = self.paths.workspace_dir()
+        sparse = SparseWorkspace(self.git, workspace_root)
+        target = f"scenarios/{scenario_id}"
+        sparse.update(remove=[target])
+        self.git.rm_cached(str(workspace_root), target)
+
         p = self.paths.scenarios_dir() / scenario_id
         if not p.exists():
-            raise FileNotFoundError(f"scenario '{scenario_id}' not found")
+            return
+
         if remove_tree:
             ctx = getattr(self.paths, "ctx", None)
             fs = getattr(ctx, "fs", None) if ctx else None
             remove_tree(str(p), fs=fs)  # type: ignore[arg-type]
         else:
             shutil.rmtree(p)
+        if p.exists():  # pragma: no cover - defensive fallback
+            raise FileExistsError(f"scenario '{scenario_id}' still present after uninstall")
