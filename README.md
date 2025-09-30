@@ -1,8 +1,8 @@
 # AdaOS
 
-![AdaOS CI](https://github.com/stipot/adaos/actions/workflows/ci.yml/badge.svg)
+![AdaOS CI](https://github.com/stipot-com/adaos/actions/workflows/ci.yml/badge.svg)
 
-[Документация](https://stipot.github.io/adaos/)
+[Документация](https://stipot-com.github.io/adaos/)
 
 ## Установка
 
