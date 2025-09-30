@@ -139,9 +139,6 @@ class GitSkillRepository(SkillRepository):
         # monorepo: ожидаем имя скилла из каталога
         if not _NAME_RE.match(name):
             raise ValueError("invalid skill name")
-        """ catalog = set(_read_catalog(self.paths))
-        if catalog and name not in catalog:
-            raise ValueError(f"skill '{name}' not found in catalog") """
         # sparse checkout только нужного подкаталога
         self.git.sparse_init(str(self.paths.workspace_dir()), cone=False)
         self.git.sparse_add(str(self.paths.workspace_dir()), f"skills/{name}")

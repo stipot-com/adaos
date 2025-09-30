@@ -33,15 +33,6 @@ class ScenarioManager:
         self.repo, self.reg, self.git, self.paths, self.bus, self.caps = repo, registry, git, paths, bus, caps
         self.ctx: AgentContext = get_ctx()
 
-    def _cache_root(self) -> Path:
-        getter = getattr(self.paths, "scenarios_cache_dir", None)
-        if getter is not None:
-            value = getter() if callable(getter) else getter
-        else:
-            base = getattr(self.paths, "scenarios_dir")
-            value = base() if callable(base) else base
-        return Path(value)
-
     def list_installed(self) -> list[SkillRecord]:
         self.caps.require("core", "scenarios.manage")
         return self.reg.list()
@@ -54,7 +45,7 @@ class ScenarioManager:
     def sync(self) -> None:
         self.caps.require("core", "scenarios.manage", "net.git")
         self.repo.ensure()
-        root = self._cache_root()
+        root = self.ctx.paths.workspace_dir()
         names = [r.name for r in self.reg.list()]
         prefixed = [f"scenarios/{n}" for n in names]
         self.git.sparse_init(str(root), cone=False)
@@ -68,8 +59,6 @@ class ScenarioManager:
         name = name.strip()
         if not _name_re.match(name):
             raise ValueError("invalid scenario name")
-
-        self.repo.ensure()
 
         self.reg.register(name, pin=pin)
         try:
@@ -90,9 +79,12 @@ class ScenarioManager:
         self.caps.require("core", "scenarios.manage", "net.git")
         self.repo.ensure()
         self.reg.unregister(name)
-        root = self._cache_root()
+        root = self.ctx.paths.workspace_dir()
         names = [r.name for r in self.reg.list()]
         prefixed = [f"scenarios/{n}" for n in names]
+        # в тестах/без .git — только реестр, без git операций
+        if os.getenv("ADAOS_TESTING") == "1" or not (root / ".git").exists():
+            return f"uninstalled: {name} (registry-only{' test-mode' if test_mode else ''})"        
         self.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.git.sparse_set(str(root), prefixed, no_cone=True)
@@ -105,7 +97,7 @@ class ScenarioManager:
 
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.caps.require("core", "scenarios.manage", "git.write", "net.git")
-        root = self._cache_root()
+        root = self.ctx.paths.workspace_dir()
         if not (Path(root) / ".git").exists():
             raise RuntimeError("Scenarios repo is not initialized. Run `adaos scenario sync` once.")
         sub = name.strip()

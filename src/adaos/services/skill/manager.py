@@ -53,7 +53,7 @@ class SkillManager:
     def sync(self) -> None:
         self.caps.require("core", "skills.manage", "net.git")
         self.ctx.skills_repo.ensure()
-        root = self.ctx.paths.skills_dir()
+        root = self.ctx.paths.workspace_dir()
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]
         ensure_clean(self.ctx.git, str(root), prefixed)
@@ -102,9 +102,8 @@ class SkillManager:
             return f"uninstalled: {name} (not found)"
         self.reg.unregister(name)
         root = self.ctx.paths.workspace_dir()
-        test_mode = os.getenv("ADAOS_TESTING") == "1"
         # в тестах/без .git — только реестр, без git операций
-        if test_mode or not (root / ".git").exists():
+        if os.getenv("ADAOS_TESTING") == "1" or not (root / ".git").exists():
             return f"uninstalled: {name} (registry-only{' test-mode' if test_mode else ''})"
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]

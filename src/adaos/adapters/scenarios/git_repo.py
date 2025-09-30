@@ -114,21 +114,21 @@ class GitScenarioRepository(ScenarioRepository):
     def _ensure_monorepo(self) -> None:
         if os.getenv("ADAOS_TESTING") == "1":
             return
-        self.git.ensure_repo(str(self._root()), self.monorepo_url, branch=self.monorepo_branch)
+        self.git.ensure_repo(str(self.paths.workspace_dir()), self.monorepo_url, branch=self.monorepo_branch)
 
     def ensure(self) -> None:
         if self.monorepo_url:
             self._ensure_monorepo()
         else:
-            self._root().mkdir(parents=True, exist_ok=True)
+            self.paths.scenarios_dir().mkdir(parents=True, exist_ok=True)
 
     # --- list / get ---
 
     def list(self) -> list[SkillMeta]:
         self.ensure()
         items: List[SkillMeta] = []
-        root = self._root()
-        scenarios_root = root / "scenarios"
+        root = self.paths.workspace_dir()
+        scenarios_root = self.paths.scenarios_dir()
         if not scenarios_root.exists():
             return items
         for ch in sorted(scenarios_root.iterdir()):
@@ -138,7 +138,7 @@ class GitScenarioRepository(ScenarioRepository):
 
     def get(self, scenario_id: str) -> Optional[SkillMeta]:
         self.ensure()
-        p = self._root() / "scenarios" / scenario_id
+        p = self.paths.scenarios_dir() / scenario_id
         if p.exists():
             m = _read_manifest(p)
             if m.id.value == scenario_id:
@@ -162,37 +162,24 @@ class GitScenarioRepository(ScenarioRepository):
         fs mode:      ref = полный git URL; dest_name опционален.
         """
         self.ensure()
-        root = self._root()
-
-        if self.monorepo_url:
-            name = ref.strip()
-            if not _NAME_RE.match(name):
-                raise ValueError("invalid scenario name")
-            catalog = set(_read_catalog(self.paths))
-            if catalog and name not in catalog:
-                raise ValueError(f"scenario '{name}' not found in catalog")
-            self.git.sparse_init(str(root), cone=False)
-            self.git.sparse_add(str(root), f"scenarios/{name}")
-            self.git.pull(str(root))
-            p = self._scenario_dir(root, name)
-            if not p.exists():
-                raise FileNotFoundError(f"scenario '{name}' not present after sync")
-            return _read_manifest(p)
-
-        # fs mode
-        if not _looks_like_url(ref):
-            raise ValueError("ожидаю полный Git URL (multi-repo). " "если вы в монорежиме — задайте ADAOS_SCENARIOS_MONOREPO_URL и вызывайте install(<scenario_name>)")
-        root.mkdir(parents=True, exist_ok=True)
-        name = dest_name or _repo_basename_from_url(ref)
-        dest = root / name
-        self.git.ensure_repo(str(dest), ref, branch=branch)
-        return _read_manifest(dest)
+        name = ref.strip()
+        p: Path = self.paths.scenarios_dir() / name
+        name = ref.strip()
+        if not _NAME_RE.match(name):
+            raise ValueError("invalid scenario name")
+        self.git.sparse_init(str(self.paths.workspace_dir()), cone=False)
+        self.git.sparse_add(str(self.paths.workspace_dir()), f"scenarios/{name}")
+        self.git.pull(str(self.paths.workspace_dir()))
+            
+        if not p.exists():
+            raise FileNotFoundError(f"scenario '{name}' not present after sync")
+        return _read_manifest(p)
 
     # --- uninstall ---
 
     def uninstall(self, scenario_id: str) -> None:
         self.ensure()
-        p = self._scenario_dir(self._root(), scenario_id)
+        p = self.paths.scenarios_dir() / scenario_id
         if not p.exists():
             raise FileNotFoundError(f"scenario '{scenario_id}' not found")
         if remove_tree:
