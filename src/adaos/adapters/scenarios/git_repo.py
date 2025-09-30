@@ -20,7 +20,7 @@ try:
 except Exception:  # pragma: no cover
     remove_tree = None
 
-_MANIFEST_NAMES = ("scenario.yaml", "manifest.yaml", "adaos.scenario.yaml")
+_MANIFEST_NAMES = ["scenario.yaml"]
 _CATALOG_FILE = "scenarios.yaml"
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
