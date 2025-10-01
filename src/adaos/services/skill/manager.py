@@ -30,6 +30,7 @@ from adaos.services.skill.tests_runner import TestResult, run_tests
 from adaos.skills.runtime_runner import execute_tool
 from adaos.services.skill.validation import SkillValidationService, ValidationReport
 from adaos.services.secrets.service import SecretsService
+from adaos.services.skill.secrets_backend import SkillSecretsBackend
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
@@ -50,80 +51,6 @@ class PolicyDefaults:
     telemetry_enabled: bool
     sandbox_memory_mb: int | None = None
     sandbox_cpu_seconds: float | None = None
-
-
-class _SkillSecretsBackend:
-    """Simple JSON-backed secrets store scoped to a single skill runtime."""
-
-    def __init__(self, path: Path):
-        self._path = path
-
-    def _load(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        if not self._path.exists():
-            return {"profile": {}, "global": {}}
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
-        return {"profile": {}, "global": {}}
-
-    def _save(self, data: Dict[str, Dict[str, Dict[str, Any]]]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def put(self, key: str, value: str, *, scope: str = "profile", meta: Dict[str, Any] | None = None) -> None:
-        data = self._load()
-        bucket = data.setdefault(scope, {})
-        bucket[key] = {"value": value, "meta": meta or {}}
-        self._save(data)
-
-    def get(self, key: str, *, default: str | None = None, scope: str = "profile") -> str | None:
-        data = self._load()
-        bucket = data.get(scope, {})
-        record = bucket.get(key)
-        if not isinstance(record, dict):
-            return default
-        return record.get("value", default)
-
-    def delete(self, key: str, *, scope: str = "profile") -> None:
-        data = self._load()
-        bucket = data.get(scope, {})
-        if key in bucket:
-            bucket.pop(key)
-            self._save(data)
-
-    def list(self, *, scope: str = "profile") -> list[Dict[str, Any]]:
-        data = self._load()
-        bucket = data.get(scope, {})
-        return [
-            {"key": k, "meta": (rec.get("meta") if isinstance(rec, dict) else {})}
-            for k, rec in sorted(bucket.items())
-        ]
-
-    def import_items(self, items: Iterable[Dict[str, Any]], *, scope: str = "profile") -> int:
-        data = self._load()
-        bucket = data.setdefault(scope, {})
-        count = 0
-        for item in items:
-            key = item.get("key")
-            value = item.get("value")
-            if not key or value is None:
-                continue
-            bucket[key] = {"value": str(value), "meta": item.get("meta") or {}}
-            count += 1
-        self._save(data)
-        return count
-
-    def export_items(self, *, scope: str = "profile") -> list[Dict[str, Any]]:
-        data = self._load()
-        bucket = data.get(scope, {})
-        return [
-            {"key": k, "value": rec.get("value"), "meta": rec.get("meta") or {}}
-            for k, rec in bucket.items()
-            if isinstance(rec, dict)
-        ]
 
 
 class SkillManager:
@@ -269,11 +196,20 @@ class SkillManager:
         if prefixed:
             self.ctx.git.sparse_set(str(root), prefixed, no_cone=True)
         self.ctx.git.pull(str(root))
-        remove_tree(
-            str(root / "skills" / name),
-            fs=self.ctx.paths.ctx.fs if hasattr(self.ctx.paths, "ctx") else get_ctx().fs,
-        )
+        remove_error: Exception | None = None
+        try:
+            remove_tree(
+                str(root / "skills" / name),
+                fs=self.ctx.paths.ctx.fs if hasattr(self.ctx.paths, "ctx") else get_ctx().fs,
+            )
+        except PermissionError as exc:
+            remove_error = exc
         self.cleanup_runtime(name, purge_data=True)
+        if remove_error is not None:
+            raise RuntimeError(
+                f"не удалось удалить рабочую копию навыка '{name}'. Закройте файлы под "
+                f"путем {(root / 'skills' / name)} и повторите попытку."
+            ) from remove_error
         emit(self.bus, "skill.uninstalled", {"id": name}, "skill.mgr")
 
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
@@ -346,11 +282,17 @@ class SkillManager:
         slot = env.build_slot_paths(version, slot_name)
 
         try:
+            staged_dir = self._stage_skill_sources(skill_dir, slot)
+        except Exception:
+            env.cleanup_slot(version, slot_name)
+            raise
+
+        try:
             interpreter, python_paths = self._prepare_runtime_environment(
                 env=env,
                 slot=slot,
                 manifest=manifest,
-                skill_dir=skill_dir,
+                skill_dir=staged_dir,
             )
         except Exception:
             env.cleanup_slot(version, slot_name)
@@ -365,13 +307,13 @@ class SkillManager:
             python_paths=python_paths,
             defaults=defaults,
             policy_overrides=policy_overrides,
-            skill_dir=skill_dir,
+            skill_dir=staged_dir,
         )
 
         tests: Dict[str, TestResult] = {}
         if run_tests:
             log_file = slot.logs_dir / "tests.log"
-            tests = run_tests(skill_dir, log_path=log_file)
+            tests = run_tests(staged_dir, log_path=log_file)
             if any(result.status != "passed" for result in tests.values()):
                 env.cleanup_slot(version, slot_name)
                 raise RuntimeError("skill tests failed")
@@ -521,25 +463,16 @@ class SkillManager:
         """Run the optional setup tool for a skill."""
 
         status = self.runtime_status(name)
-        env = self._runtime_env(name)
+        if not status.get("ready", True):
+            pending_version = status.get("pending_version") or status.get("version")
+            raise RuntimeError(
+                f"skill '{name}' version {pending_version or '<unknown>'} is not activated. "
+                "Run 'adaos skill activate' before setup."
+            )
+
         manifest_path = Path(status["resolved_manifest"])
-        version = status.get("version")
-        slot_name = status.get("active_slot")
-        ready = status.get("ready", True)
-
-        if not ready:
-            slot_name = status.get("pending_slot") or slot_name
-            version = status.get("pending_version") or version
-            if not slot_name or not version:
-                raise RuntimeError("skill has no prepared slot available for setup")
-            env.prepare_version(version)
-            metadata = env.read_version_metadata(version)
-            slot_paths = env.build_slot_paths(version, slot_name)
-            slot_meta = metadata.get("slots", {}).get(slot_name, {})
-            manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
-
         if not manifest_path.exists():
-            raise RuntimeError("skill runtime is not prepared; install the skill first")
+            raise RuntimeError("skill runtime is not prepared; install and activate the skill first")
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         tools = manifest.get("tools") or {}
@@ -550,8 +483,7 @@ class SkillManager:
             name,
             "setup",
             {},
-            allow_inactive=not ready,
-            slot=slot_name,
+            allow_inactive=False,
         )
 
     def run_tool(
@@ -625,7 +557,7 @@ class SkillManager:
         previous = ctx.skill_ctx.get()
         prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
         prev_secrets = ctx.secrets
-        ctx.secrets = SecretsService(_SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
+        ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
         execution_timeout = timeout or tool_spec.get("timeout_seconds")
         def _call_tool() -> Any:
             with use_ctx(ctx):
@@ -701,6 +633,15 @@ class SkillManager:
         if runtime_type == "python":
             return self._prepare_python_runtime(env=env, slot=slot, manifest=manifest, runtime_cfg=runtime_cfg, skill_dir=skill_dir)
         raise NotImplementedError(f"runtime type '{runtime_type}' is not supported")
+
+    def _stage_skill_sources(self, source: Path, slot: SkillSlotPaths) -> Path:
+        destination = slot.source_dir
+        if destination.exists():
+            self._remove_tree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        ignore = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "*.pyo", ".runtime")
+        shutil.copytree(source, destination, ignore=ignore)
+        return destination
 
     def _prepare_python_runtime(
         self,

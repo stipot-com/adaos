@@ -56,6 +56,7 @@ class SkillSlotPaths:
     version: str
     slot: str
     root: Path
+    source_dir: Path
     env_dir: Path
     venv_dir: Path
     node_modules_dir: Path
@@ -169,7 +170,7 @@ class SkillRuntimeEnvironment:
 
     def _ensure_slot(self, slot_root: Path) -> None:
         slot_root.mkdir(parents=True, exist_ok=True)
-        for name in ("env", "venv", "node_modules", "bin", "cache", "logs", "tmp"):
+        for name in ("src", "env", "venv", "node_modules", "bin", "cache", "logs", "tmp"):
             (slot_root / name).mkdir(parents=True, exist_ok=True)
         keep = slot_root / ".keep"
         if not keep.exists():
@@ -185,6 +186,7 @@ class SkillRuntimeEnvironment:
             version=version,
             slot=slot,
             root=slot_root,
+            source_dir=slot_root / "src",
             env_dir=slot_root / "env",
             venv_dir=slot_root / "venv",
             node_modules_dir=slot_root / "node_modules",
