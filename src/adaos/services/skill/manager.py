@@ -24,7 +24,7 @@ from adaos.services.fs.safe_io import remove_tree
 from adaos.services.git.safe_commit import sanitize_message, check_no_denied
 from adaos.services.git.workspace_guard import ensure_clean
 from adaos.services.settings import Settings
-from adaos.services.agent_context import AgentContext, get_ctx
+from adaos.services.agent_context import AgentContext, get_ctx, use_ctx
 from adaos.services.skill.runtime_env import SkillRuntimeEnvironment, SkillSlotPaths
 from adaos.services.skill.tests_runner import TestResult, run_tests
 from adaos.skills.runtime_runner import execute_tool
@@ -627,6 +627,16 @@ class SkillManager:
         prev_secrets = ctx.secrets
         ctx.secrets = SecretsService(_SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
         execution_timeout = timeout or tool_spec.get("timeout_seconds")
+        def _call_tool() -> Any:
+            with use_ctx(ctx):
+                return execute_tool(
+                    skill_dir,
+                    module=module,
+                    attr=attr,
+                    payload=payload,
+                    extra_paths=extra_paths,
+                )
+
         try:
             if not ctx.skill_ctx.set(name, skill_dir):
                 raise RuntimeError(f"failed to establish context for skill '{name}'")
@@ -636,27 +646,14 @@ class SkillManager:
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(
-                        execute_tool,
-                        skill_dir,
-                        module=module,
-                        attr=attr,
-                        payload=payload,
-                        extra_paths=extra_paths,
-                    )
+                    future = pool.submit(_call_tool)
                     try:
                         result = future.result(timeout=execution_timeout)
                     except FuturesTimeoutError as exc:
                         future.cancel()
                         raise TimeoutError(f"tool '{target_tool}' timed out after {execution_timeout} seconds") from exc
             else:
-                result = execute_tool(
-                    skill_dir,
-                    module=module,
-                    attr=attr,
-                    payload=payload,
-                    extra_paths=extra_paths,
-                )
+                result = _call_tool()
         finally:
             ctx.secrets = prev_secrets
             if previous is None:
