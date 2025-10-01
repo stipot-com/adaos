@@ -1,354 +1,325 @@
-# src\adaos\apps\cli\commands\skill.py
+"""Skill lifecycle CLI commands for the runtime environment."""
+
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+import subprocess
 from pathlib import Path
-import traceback
 from typing import Optional
 
 import typer
 
 from adaos.sdk.data.i18n import _
 from adaos.services.agent_context import get_ctx
-from adaos.services.skill.manager import SkillManager
-from adaos.services.skill.runtime import (
-    SkillPrepError,
-    SkillPrepMissingFunctionError,
-    SkillPrepScriptNotFoundError,
-    SkillRuntimeError,
-    run_skill_handler_sync,
-    run_skill_prep,
-)
-from adaos.services.skill.scaffold import create as scaffold_create
-from adaos.adapters.db import SqliteSkillRegistry
-from adaos.apps.cli.root_ops import (
-    RootCliError,
-    archive_bytes_to_b64,
-    assert_safe_name,
-    create_zip_bytes,
-    ensure_registration,
-    fetch_policy,
-    load_root_cli_config,
-    push_skill_draft,
-    run_preflight_checks,
-)
+from adaos.services.skill.enrich import load_manifest
+from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
+from adaos.services.skill.runtime_service import InstallResult, SkillRuntimeService
+from adaos.services.skill.tests_runner import TestResult
+
 
 app = typer.Typer(help=_("cli.help_skill"))
 
 
-def _run_safe(func):
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            if os.getenv("ADAOS_CLI_DEBUG") == "1":
-                traceback.print_exc()
-            raise
-
-    return wrapper
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-def _mgr() -> SkillManager:
-    ctx = get_ctx()
-    repo = ctx.skills_repo
-    reg = SqliteSkillRegistry(ctx.sql)
-    return SkillManager(repo=repo, registry=reg, git=ctx.git, paths=ctx.paths, bus=getattr(ctx, "bus", None), caps=ctx.caps)
+def _service() -> SkillRuntimeService:
+    return SkillRuntimeService(get_ctx())
 
 
-def _workspace_root() -> Path:
-    ctx = get_ctx()
-    attr = getattr(ctx.paths, "skills_workspace_dir", None)
-    if attr is not None:
-        value = attr() if callable(attr) else attr
-    else:
-        base = getattr(ctx.paths, "skills_dir")
-        value = base() if callable(base) else base
-    return Path(value).expanduser().resolve()
+def _parse_name_version(name_version: str) -> tuple[str, Optional[str]]:
+    if "@" in name_version:
+        name, version = name_version.split("@", 1)
+        return name.strip(), version.strip() or None
+    return name_version.strip(), None
 
 
-def _resolve_skill_path(target: str) -> Path:
-    candidate = Path(target).expanduser()
-    if candidate.exists():
-        return candidate.resolve()
-    root = _workspace_root()
-    candidate = (root / target).resolve()
-    if candidate.exists():
-        return candidate
-    raise typer.BadParameter(_("cli.skill.push.not_found", name=target))
-
-
-@_run_safe
-@app.command("list")
-def list_cmd(
-    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
-    show_fs: bool = typer.Option(False, "--fs", help=_("cli.option.fs")),
-):
-    """
-    Список установленных навыков из реестра.
-    JSON-формат: {"skills": [{"name": "...", "version": "..."}, ...]}
-    """
-    mgr = _mgr()
-    rows = mgr.list_installed()  # SkillRecord[]
-
-    if json_output:
-        payload = {
-            "skills": [
-                {
-                    "name": r.name,
-                    # тестам важен только name, но version полезно оставить
-                    "version": getattr(r, "active_version", None) or "unknown",
-                }
-                for r in rows
-                # оставляем только действительно установленные (если поле есть)
-                if bool(getattr(r, "installed", True))
-            ]
-        }
-        typer.echo(json.dumps(payload, ensure_ascii=False))
-        return
-
-    if not rows:
-        typer.echo(_("skill.list.empty"))
-    else:
-        for r in rows:
-            if not bool(getattr(r, "installed", True)):
-                continue
-            av = getattr(r, "active_version", None) or "unknown"
-            typer.echo(_("cli.skill.list.item", name=r.name, version=av))
-
-    if show_fs:
-        present = {m.id.value for m in mgr.list_present()}
-        desired = {r.name for r in rows if bool(getattr(r, "installed", True))}
-        missing = desired - present
-        extra = present - desired
-        if missing:
-            typer.echo(_("cli.skill.fs_missing", items=", ".join(sorted(missing))))
-        if extra:
-            typer.echo(_("cli.skill.fs_extra", items=", ".join(sorted(extra))))
-
-
-@_run_safe
-@app.command("sync")
-def sync():
-    """Применяет sparse-set к набору из реестра и делает pull."""
-    mgr = _mgr()
-    mgr.sync()
-    typer.echo(_("cli.skill.sync.done"))
-
-
-@_run_safe
-@app.command("uninstall")
-def uninstall(name: str):
-    mgr = _mgr()
-    mgr.uninstall(name)
-    typer.echo(_("cli.skill.uninstall.done", name=name))
-
-
-@_run_safe
-@app.command("reconcile-fs-to-db")
-def reconcile_fs_to_db():
-    """Обходит {skills_dir} и проставляет installed=1 для найденных папок (кроме .git).
-    Не трогает active_version/repo_url.
-    """
-    mgr = _mgr()
-    ctx = get_ctx()
-    root = Path(ctx.paths.skills_dir())
-    if not root.exists():
-        typer.echo(_("cli.skill.reconcile.missing_root"))
-        raise typer.Exit(1)
-    found = []
-    for name in os.listdir(root):
-        if name == ".git":
-            continue
-        p = root / name
-        if p.is_dir():
-            mgr.reg.register(name)  # installed=1
-            found.append(name)
-    typer.echo(
-        _(
-            "cli.skill.reconcile.added",
-            items=", ".join(found) if found else _("cli.skill.reconcile.empty"),
-        )
+def _echo_install_result(result: InstallResult) -> None:
+    typer.secho(
+        f"installed {result.skill} v{result.version} into slot {result.slot}",
+        fg=typer.colors.GREEN,
     )
+    if result.tests:
+        typer.echo(_format_tests(result.tests))
+    typer.echo(f"resolved manifest: {result.resolved_manifest}")
 
 
-@_run_safe
-@app.command("push")
-def push_command(
-    skill_name: str = typer.Argument(..., help=_("cli.skill.push.name_help")),
-    message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
-    signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
-    name_override: Optional[str] = typer.Option(None, "--name", help=_("cli.skill.push.name_override_help")),
-    dry_run: bool = typer.Option(False, "--dry-run", help=_("cli.option.dry_run")),
-    no_preflight: bool = typer.Option(False, "--no-preflight", help=_("cli.option.no_preflight")),
-    subnet_name: Optional[str] = typer.Option(None, "--subnet-name", help=_("cli.option.subnet_name")),
-    show_policy: bool = typer.Option(
-        False,
-        "--policy",
-        help="Fetch and display Root policy before pushing.",
-    ),
-):
-    """
-    Закоммитить изменения ТОЛЬКО внутри подпапки навыка и выполнить git push.
-    Защищён политиками: skills.manage + git.write + net.git.
-    """
-    if message is not None:
-        mgr = _mgr()
-        res = mgr.push(skill_name, message, signoff=signoff)
-        if res in {"nothing-to-push", "nothing-to-commit"}:
-            typer.echo(_("cli.skill.push.nothing"))
-        else:
-            typer.echo(_("cli.skill.push.done", name=skill_name, revision=res))
-        return
+def _format_tests(tests: dict[str, TestResult]) -> str:
+    parts = []
+    for name, outcome in tests.items():
+        parts.append(f"{name}={outcome.status}")
+    return "tests: " + ", ".join(parts)
 
-    if signoff:
-        typer.echo(_("cli.push.signoff_ignored"))
 
-    try:
-        config = load_root_cli_config()
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
+def _load_resolved(manifest_path: Path) -> dict:
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    if dry_run:
-        typer.echo(_("cli.preflight.skipped_dry_run"))
-    elif not no_preflight:
-        try:
-            run_preflight_checks(config, dry_run=False, echo=typer.echo)
-        except RootCliError as err:
-            typer.secho(str(err), fg=typer.colors.RED)
-            raise typer.Exit(1)
 
-    try:
-        config = ensure_registration(config, dry_run=dry_run, subnet_name=subnet_name, echo=typer.echo)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    if show_policy:
-        if dry_run:
-            typer.echo(
-                f"[dry-run] GET {config.root_base.rstrip('/')}/v1/policy using node certificate"
-            )
-        else:
-            try:
-                policy = fetch_policy(config)
-            except RootCliError as err:
-                typer.secho(str(err), fg=typer.colors.RED)
-                raise typer.Exit(1)
-            typer.echo(json.dumps(policy, ensure_ascii=False, indent=2))
-
-    skill_path = _resolve_skill_path(skill_name)
-
-    target_name = name_override or skill_path.name
-    try:
-        assert_safe_name(target_name)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    try:
-        archive_bytes = create_zip_bytes(skill_path)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    archive_b64 = archive_bytes_to_b64(archive_bytes)
-    archive_hash = hashlib.sha256(archive_bytes).hexdigest()
-
-    try:
-        stored = push_skill_draft(
-            config,
-            node_id=config.node_id,
-            name=target_name,
-            archive_b64=archive_b64,
-            sha256=archive_hash,
-            dry_run=dry_run,
-            echo=typer.echo,
+def _deprecated(name: str):
+    def handler(*_args, **_kwargs):
+        typer.secho(
+            f"Command '{name}' is deprecated. Please use 'adaos skill install' and 'adaos skill activate'.",
+            fg=typer.colors.YELLOW,
         )
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
 
-    if dry_run:
-        typer.echo(_("cli.skill.push.root.dry_run", path=stored))
-    else:
-        typer.secho(_("cli.skill.push.root.success", path=stored), fg=typer.colors.GREEN)
+    return handler
 
 
-@_run_safe
-@app.command("create")
-def cmd_create(name: str, template: str = typer.Option("demo_skill", "--template", "-t")):
-    p = scaffold_create(name, template=template)
-    typer.echo(_("cli.skill.create.created", path=p))
-    typer.echo(_("cli.skill.create.hint_push", name=name))
+# ---------------------------------------------------------------------------
+# Lifecycle commands
+# ---------------------------------------------------------------------------
 
 
-@_run_safe
 @app.command("install")
-def cmd_install(name: str):
-    mgr = _mgr()
-    result = mgr.install(name, validate=False)
-    if isinstance(result, tuple):
-        meta, report = result
-    elif hasattr(result, "id"):
-        meta, report = result, None
+def install_cmd(
+    name: str = typer.Argument(..., help="skill name, optionally with @version"),
+    test: bool = typer.Option(False, "--test", help="run runtime tests during install"),
+    slot: Optional[str] = typer.Option(None, "--slot", help="target slot A or B"),
+):
+    service = _service()
+    skill, version = _parse_name_version(name)
+    try:
+        result = service.install(skill, version_override=version, run_tests=test, preferred_slot=slot)
+    except Exception as exc:  # pragma: no cover - CLI surface
+        typer.secho(f"install failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    _echo_install_result(result)
+
+
+@app.command("activate")
+def activate_cmd(
+    name: str,
+    slot: Optional[str] = typer.Option(None, "--slot", help="slot to activate"),
+    version: Optional[str] = typer.Option(None, "--version", help="explicit version"),
+):
+    service = _service()
+    try:
+        active = service.activate(name, version=version, slot=slot)
+    except Exception as exc:  # pragma: no cover - CLI surface
+        typer.secho(f"activate failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"skill {name} now active on slot {active}", fg=typer.colors.GREEN)
+
+
+@app.command("rollback")
+def rollback_cmd(name: str):
+    service = _service()
+    try:
+        slot = service.rollback(name)
+    except Exception as exc:  # pragma: no cover
+        typer.secho(f"rollback failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"rolled back {name} to slot {slot}", fg=typer.colors.YELLOW)
+
+
+@app.command("status")
+def status_cmd(name: str, json_output: bool = typer.Option(False, "--json", help="machine readable output")):
+    service = _service()
+    try:
+        status = service.status(name)
+    except Exception as exc:
+        typer.secho(f"status failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(status, ensure_ascii=False, indent=2))
     else:
-        typer.echo(str(result))
-        return
-    typer.echo(
-        _(
-            "cli.skill.install.done",
-            name=meta.id.value if hasattr(meta, "id") else name,
-            version=getattr(meta, "version", ""),
-            path=getattr(meta, "path", ""),
-        )
-    )
-    if report is not None and hasattr(report, "ok") and not report.ok:
-        typer.echo(str(report))
+        typer.echo(f"skill: {status['name']}")
+        typer.echo(f"version: {status['version']}")
+        typer.echo(f"active slot: {status['active_slot']}")
+        typer.echo(f"resolved manifest: {status['resolved_manifest']}")
+        if status.get("tests"):
+            typer.echo("tests: " + ", ".join(f"{k}={v}" for k, v in status["tests"].items()))
 
 
 @app.command("run")
-def run(
-    skill: str = typer.Argument(..., help=_("cli.skill.run.name_help")),
-    topic: str = typer.Option("nlp.intent.weather.get", "--topic", "-t", help=_("cli.skill.run.topic_help")),
-    payload: str = typer.Option("{}", "--payload", "-p", help=_("cli.skill.run.payload_help")),
+def run_cmd(
+    name: str,
+    tool: str,
+    payload: str = typer.Option("{}", "--json", help="JSON payload for the tool"),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="override timeout in seconds"),
 ):
-    """Execute a skill handler locally using the configured workspace."""
-
+    service = _service()
     try:
-        payload_obj = json.loads(payload) if payload else {}
-        if not isinstance(payload_obj, dict):
-            raise ValueError(_("cli.skill.run.payload_type_error"))
+        status = service.status(name)
     except Exception as exc:
-        raise typer.BadParameter(_("cli.skill.run.payload_invalid", error=str(exc)))
-
+        typer.secho(f"run failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    manifest = _load_resolved(Path(status["resolved_manifest"]))
+    tool_spec = manifest.get("tools", {}).get(tool)
+    if not tool_spec:
+        typer.secho(f"tool '{tool}' not found in resolved manifest", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    command = tool_spec.get("command")
+    if not command:
+        typer.secho("resolved manifest missing command", fg=typer.colors.RED)
+        raise typer.Exit(1)
     try:
-        result = run_skill_handler_sync(skill, topic, payload_obj)
-    except SkillRuntimeError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        input_payload = json.dumps(json.loads(payload or "{}"))
+    except json.JSONDecodeError as exc:
+        typer.secho(f"invalid payload: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    proc = subprocess.run(
+        command,
+        input=input_payload,
+        text=True,
+        capture_output=True,
+        timeout=timeout or tool_spec.get("timeout_seconds"),
+    )
+    if proc.returncode != 0:
+        typer.secho(proc.stdout, fg=typer.colors.RED)
+        typer.secho(proc.stderr, fg=typer.colors.RED)
+        raise typer.Exit(proc.returncode)
+    typer.echo(proc.stdout.strip())
 
-    typer.echo(_("cli.skill.run.success", result=repr(result)))
 
-
-@app.command("prep")
-def prep_command(skill_name: str):
-    """Запуск стадии подготовки (discover) для навыка"""
+@app.command("uninstall")
+def uninstall_cmd(name: str, purge_data: bool = typer.Option(False, "--purge-data", help="remove durable data")):
+    service = _service()
     try:
-        result = run_skill_prep(skill_name)
-    except SkillPrepScriptNotFoundError:
-        print(f"[red]{_('skill.prep.not_found', skill_name=skill_name)}[/red]")
-        raise typer.Exit(code=1)
-    except SkillPrepMissingFunctionError:
-        print(f"[red]{_('skill.prep.missing_func', skill_name=skill_name)}[/red]")
-        raise typer.Exit(code=1)
-    except SkillPrepError as exc:
-        print(f"[red]{_('skill.prep.failed', reason=str(exc))}[/red]")
-        raise typer.Exit(code=1)
+        service.uninstall(name, purge_data=purge_data)
+    except Exception as exc:
+        typer.secho(f"uninstall failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"skill {name} uninstalled", fg=typer.colors.GREEN)
 
-    if result.get("status") == "ok":
-        print(f"[green]{_('skill.prep.success', skill_name=skill_name)}[/green]")
+
+@app.command("gc")
+def gc_cmd(name: Optional[str] = typer.Option(None, "--name", help="skill to clean")):
+    ctx = get_ctx()
+    skills_root = Path(ctx.paths.skills_dir())
+    targets = [name] if name else [p.name for p in skills_root.glob("*") if p.is_dir()]
+    for skill in targets:
+        env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill)
+        active_version = env.resolve_active_version()
+        for version in env.list_versions():
+            if version == active_version:
+                continue
+            for slot in ("A", "B"):
+                env.cleanup_slot(version, slot)
+            version_root = env.version_root(version)
+            if version_root.exists():
+                for child in version_root.iterdir():
+                    if child.is_file():
+                        child.unlink()
+                try:
+                    version_root.rmdir()
+                except OSError:
+                    pass
+        typer.echo(f"gc {skill}: kept version {active_version or 'none'}")
+
+
+@app.command("doctor")
+def doctor_cmd(name: str):
+    ctx = get_ctx()
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=name)
+    version = env.resolve_active_version()
+    if not version:
+        typer.echo("no installed versions")
+        return
+    slot = env.read_active_slot(version)
+    slot_paths = env.build_slot_paths(version, slot)
+    items = {
+        "skill_root": str((Path(ctx.paths.skills_dir()) / name).resolve()),
+        "runtime_root": str(env.runtime_root.resolve()),
+        "active_slot": slot,
+        "resolved_manifest": str(slot_paths.resolved_manifest),
+    }
+    typer.echo(json.dumps(items, ensure_ascii=False, indent=2))
+
+
+@app.command("migrate")
+def migrate_cmd(name: Optional[str] = typer.Option(None, "--name", help="specific skill to migrate")):
+    typer.secho("Legacy skill installs are deprecated. Re-run 'adaos skill install' to migrate.", fg=typer.colors.YELLOW)
+    if name:
+        install_cmd(name)
+
+
+@app.command("lint")
+def lint_cmd(path: str):
+    target = Path(path).resolve()
+    try:
+        manifest = load_manifest(target)
+    except FileNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    required = {"name", "version", "tools"}
+    missing = [key for key in required if key not in manifest]
+    if missing:
+        typer.secho(f"manifest missing keys: {', '.join(missing)}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho("lint passed", fg=typer.colors.GREEN)
+
+
+@app.command("scaffold")
+def scaffold_cmd(name: str):
+    ctx = get_ctx()
+    target = Path(ctx.paths.skills_dir()) / name
+    target.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "name": name,
+        "version": "0.1.0",
+        "runtime": {"type": "python", "module": "handlers.main"},
+        "tools": [
+            {
+                "name": "echo",
+                "entry": "handlers.main:echo",
+                "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+                "output_schema": {"type": "object"},
+            }
+        ],
+    }
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    handlers = target / "handlers"
+    handlers.mkdir(exist_ok=True)
+    (handlers / "__init__.py").write_text("", encoding="utf-8")
+    (handlers / "main.py").write_text(
+        """def echo(text: str | None = None) -> dict:\n    return {\"ok\": True, \"text\": text or \"\"}\n""",
+        encoding="utf-8",
+    )
+    tests_dir = target / "runtime" / "tests" / "smoke"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    (tests_dir / "test_import.py").write_text(
+        """import importlib; importlib.import_module('handlers.main')\n""",
+        encoding="utf-8",
+    )
+    typer.secho(f"scaffold created at {target}", fg=typer.colors.GREEN)
+
+
+# legacy commands kept for compatibility
+
+
+@app.command("list")
+def list_cmd(json_output: bool = typer.Option(False, "--json", help="output machine readable format")):
+    ctx = get_ctx()
+    skills_root = Path(ctx.paths.skills_dir())
+    runtime_root = skills_root / ".runtime"
+    items = []
+    if runtime_root.exists():
+        for skill_dir in runtime_root.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill_dir.name)
+            versions = env.list_versions()
+            if not versions:
+                continue
+            items.append({"name": skill_dir.name, "version": env.resolve_active_version() or versions[-1]})
+    payload = {"skills": items}
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
     else:
-        reason = result.get("reason", "unknown")
-        print(f"[red]{_('skill.prep.failed', reason=reason)}[/red]")
+        for item in items:
+            typer.echo(f"{item['name']} ({item['version']})")
+
+
+@app.command("create")
+def create_cmd(name: str, template: str = typer.Option("demo_skill", "--template", help="legacy template name")):
+    typer.secho("'skill create' is deprecated; use 'skill scaffold' instead", fg=typer.colors.YELLOW)
+    scaffold_cmd(name)
+
+
+app.command("sync")(_deprecated("sync"))
+app.command("push")(_deprecated("push"))
+app.command("prep")(_deprecated("prep"))
+
