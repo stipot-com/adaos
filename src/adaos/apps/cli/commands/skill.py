@@ -4,15 +4,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import traceback
+from pathlib import Path
 from typing import Optional
 
 import typer
 
 from adaos.sdk.data.i18n import _
 from adaos.services.agent_context import get_ctx
-from adaos.services.skill.manager import SkillManager
+from adaos.services.skill.manager import RuntimeInstallResult, SkillManager
 from adaos.services.skill.runtime import (
     SkillPrepError,
     SkillPrepMissingFunctionError,
@@ -21,6 +21,8 @@ from adaos.services.skill.runtime import (
     run_skill_handler_sync,
     run_skill_prep,
 )
+from adaos.services.skill.update import SkillUpdateService
+from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.cli.root_ops import (
@@ -79,6 +81,17 @@ def _resolve_skill_path(target: str) -> Path:
     raise typer.BadParameter(_("cli.skill.push.not_found", name=target))
 
 
+def _echo_runtime_install(result: RuntimeInstallResult) -> None:
+    typer.secho(
+        f"installed {result.name} v{result.version} into slot {result.slot}",
+        fg=typer.colors.GREEN,
+    )
+    if result.tests:
+        summary = ", ".join(f"{name}={out.status}" for name, out in result.tests.items())
+        typer.echo(f"tests: {summary}")
+    typer.echo(f"resolved manifest: {result.resolved_manifest}")
+
+
 @_run_safe
 @app.command("list")
 def list_cmd(
@@ -131,10 +144,11 @@ def list_cmd(
 @_run_safe
 @app.command("sync")
 def sync():
-    """Применяет sparse-set к набору из реестра и делает pull."""
-    mgr = _mgr()
-    mgr.sync()
-    typer.echo(_("cli.skill.sync.done"))
+    """Deprecated: use ``adaos skill migrate`` instead."""
+    typer.secho(
+        "'skill sync' is deprecated. Use 'adaos skill migrate' to refresh skills.",
+        fg=typer.colors.YELLOW,
+    )
 
 
 @_run_safe
@@ -286,10 +300,26 @@ def cmd_create(name: str, template: str = typer.Option("demo_skill", "--template
 
 
 @_run_safe
+@app.command("scaffold")
+def cmd_scaffold(name: str, template: str = typer.Option("demo_skill", "--template", help="skill template name")):
+    path = scaffold_create(name, template=template)
+    typer.secho(f"scaffold created at {path}", fg=typer.colors.GREEN)
+
+
+@_run_safe
 @app.command("install")
-def cmd_install(name: str):
+def cmd_install(
+    name: str,
+    test: bool = typer.Option(False, "--test", help="run runtime tests during install"),
+    slot: Optional[str] = typer.Option(None, "--slot", help="target slot A or B"),
+):
     mgr = _mgr()
-    result = mgr.install(name, validate=False)
+    try:
+        result = mgr.install(name, validate=False)
+    except Exception as exc:
+        typer.secho(f"install failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
     if isinstance(result, tuple):
         meta, report = result
     elif hasattr(result, "id"):
@@ -297,20 +327,22 @@ def cmd_install(name: str):
     else:
         typer.echo(str(result))
         return
-    typer.echo(
-        _(
-            "cli.skill.install.done",
-            name=meta.id.value if hasattr(meta, "id") else name,
-            version=getattr(meta, "version", ""),
-            path=getattr(meta, "path", ""),
-        )
-    )
+
     if report is not None and hasattr(report, "ok") and not report.ok:
-        typer.echo(str(report))
+        typer.secho(str(report), fg=typer.colors.YELLOW)
+
+    skill_name = meta.id.value if meta and hasattr(meta, "id") else name
+    try:
+        runtime = mgr.prepare_runtime(skill_name, run_tests=test, preferred_slot=slot)
+    except Exception as exc:
+        typer.secho(f"runtime preparation failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    _echo_runtime_install(runtime)
 
 
-@app.command("run")
-def run(
+@app.command("run-handler")
+def run_handler(
     skill: str = typer.Argument(..., help=_("cli.skill.run.name_help")),
     topic: str = typer.Option("nlp.intent.weather.get", "--topic", "-t", help=_("cli.skill.run.topic_help")),
     payload: str = typer.Option("{}", "--payload", "-p", help=_("cli.skill.run.payload_help")),
@@ -330,6 +362,154 @@ def run(
         raise typer.BadParameter(str(exc)) from exc
 
     typer.echo(_("cli.skill.run.success", result=repr(result)))
+
+
+@app.command("run")
+def run_tool(
+    name: str,
+    tool: str,
+    payload: str = typer.Option("{}", "--json", help="JSON payload for the tool"),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="override timeout in seconds"),
+):
+    try:
+        payload_obj = json.loads(payload or "{}")
+    except json.JSONDecodeError as exc:
+        typer.secho(f"invalid payload: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    mgr = _mgr()
+    try:
+        result = mgr.run_tool(name, tool, payload_obj, timeout=timeout)
+    except Exception as exc:
+        typer.secho(f"run failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    typer.echo(json.dumps(result, ensure_ascii=False))
+
+
+@_run_safe
+@app.command("activate")
+def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), version: Optional[str] = typer.Option(None, "--version")):
+    mgr = _mgr()
+    try:
+        target = mgr.activate_runtime(name, version=version, slot=slot)
+    except Exception as exc:
+        typer.secho(f"activate failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"skill {name} now active on slot {target}", fg=typer.colors.GREEN)
+
+
+@_run_safe
+@app.command("rollback")
+def rollback(name: str):
+    mgr = _mgr()
+    try:
+        slot = mgr.rollback_runtime(name)
+    except Exception as exc:
+        typer.secho(f"rollback failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"rolled back {name} to slot {slot}", fg=typer.colors.YELLOW)
+
+
+@_run_safe
+@app.command("status")
+def status(name: str, json_output: bool = typer.Option(False, "--json", help="machine readable output")):
+    mgr = _mgr()
+    try:
+        state = mgr.runtime_status(name)
+    except Exception as exc:
+        typer.secho(f"status failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    if json_output:
+        typer.echo(json.dumps(state, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"skill: {state['name']}")
+    typer.echo(f"version: {state['version']}")
+    typer.echo(f"active slot: {state['active_slot']}")
+    typer.echo(f"resolved manifest: {state['resolved_manifest']}")
+    tests = state.get("tests") or {}
+    if tests:
+        typer.echo("tests: " + ", ".join(f"{k}={v}" for k, v in tests.items()))
+
+
+@_run_safe
+@app.command("gc")
+def gc(name: Optional[str] = typer.Option(None, "--name", help="skill to clean")):
+    mgr = _mgr()
+    cleaned = mgr.gc_runtime(name)
+    for skill, versions in cleaned.items():
+        removed = ", ".join(versions) if versions else "nothing"
+        typer.echo(f"gc {skill}: removed {removed}")
+
+
+@_run_safe
+@app.command("doctor")
+def doctor(name: str):
+    mgr = _mgr()
+    try:
+        info = mgr.doctor_runtime(name)
+    except Exception as exc:
+        typer.secho(f"doctor failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.echo(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+@_run_safe
+@app.command("migrate")
+def migrate(
+    name: Optional[str] = typer.Option(None, "--name", help="skill to migrate"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="report without applying changes"),
+):
+    service = SkillUpdateService(get_ctx())
+    if not name:
+        typer.secho("specify --name to migrate a skill", fg=typer.colors.YELLOW)
+        return
+    try:
+        result = service.request_update(name, dry_run=dry_run)
+    except FileNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.echo(
+        f"{name}: {'updated' if result.updated else 'up-to-date'}"
+        + (f" (version {result.version})" if result.version else "")
+    )
+
+
+@_run_safe
+@app.command("lint")
+def lint(path: str = typer.Argument(".", help="path to skill directory")):
+    target = Path(path).resolve()
+    if not target.exists():
+        typer.secho(f"path not found: {target}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    ctx = get_ctx()
+    previous = ctx.skill_ctx.get()
+    try:
+        if not ctx.skill_ctx.set(target.name, target):
+            ctx.skill_ctx.set(target.name, target)
+        report = SkillValidationService(ctx).validate(
+            skill_name=target.name,
+            strict=False,
+            install_mode=False,
+            probe_tools=False,
+        )
+    finally:
+        if previous is None:
+            ctx.skill_ctx.clear()
+        else:
+            ctx.skill_ctx.set(previous.name, Path(previous.path))
+
+    if report.ok:
+        typer.secho("lint passed", fg=typer.colors.GREEN)
+        return
+
+    for issue in report.issues:
+        location = f" ({issue.where})" if issue.where else ""
+        typer.echo(f"[{issue.level}] {issue.code}: {issue.message}{location}")
+    raise typer.Exit(1)
 
 
 @app.command("prep")
