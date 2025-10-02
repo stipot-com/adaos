@@ -226,7 +226,15 @@ def _run_direct(cmd: list[str], *, cwd: Path, extra_env: dict | None = None):
     env = dict(os.environ)
     if extra_env:
         env.update({k: v for k, v in (extra_env or {}).items() if isinstance(k, str) and isinstance(v, str)})
-    p = subprocess.run(cmd, cwd=str(cwd), env=env, text=True, capture_output=True)
+    p = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     return p.returncode, p.stdout, p.stderr
 
 
