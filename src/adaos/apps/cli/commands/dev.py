@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import json
+import logging
+import os
 
 import typer
 
@@ -24,6 +27,14 @@ def _http_client() -> RootHttpClient:
     return RootHttpClient()
 
 
+def _debug_enabled() -> bool:
+    for name in ("DEBUG", "ADAOS_CLI_DEBUG"):
+        value = os.getenv(name, "").strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+    return False
+
+
 def _pki_paths() -> dict[str, Path]:
     base = node_base_dir()
     pki_dir = base / "pki"
@@ -42,9 +53,41 @@ def _print_error(message: str) -> None:
 
 
 def _handle_root_error(exc: Exception) -> None:
+    logger = logging.getLogger(__name__)
     if isinstance(exc, RootHttpError):
-        detail = exc.error_code or "request failed"
-        _print_error(f"Root API error ({detail}): {exc}")
+        status_info = []
+        if exc.status_code:
+            status_info.append(f"status={exc.status_code}")
+        if exc.error_code:
+            status_info.append(f"code={exc.error_code}")
+        status_display = f" ({', '.join(status_info)})" if status_info else ""
+        _print_error(f"Root API error{status_display}: {exc}")
+        logger.error(
+            "root_api_error",
+            extra={
+                "extra": {
+                    "status": exc.status_code,
+                    "code": exc.error_code,
+                    "message": str(exc),
+                }
+            },
+        )
+        debug_enabled = _debug_enabled()
+        if exc.payload:
+            if debug_enabled:
+                pretty = json.dumps(exc.payload, ensure_ascii=False, indent=2)
+                typer.echo("Server response payload:")
+                typer.echo(pretty)
+            else:
+                typer.echo("Set DEBUG=1 or ADAOS_CLI_DEBUG=1 to print server payload details.")
+        log_path = Path.home() / ".adaos" / "logs" / "adaos.log"
+        typer.echo(f"Detailed logs: {log_path}")
+        message_lower = str(exc).lower()
+        if "certificate" in message_lower:
+            typer.echo(
+                "Verify backend TLS configuration. Run 'src/adaos/integrations/inimatic/backend/ssl/check_certs.sh' "
+                "to inspect required certificate links."
+            )
     elif isinstance(exc, RootAuthError):
         _print_error(str(exc))
     else:

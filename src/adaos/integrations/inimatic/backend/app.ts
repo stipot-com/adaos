@@ -16,6 +16,7 @@ import { installAdaosBridge } from './adaos-bridge.js'
 import { CertificateAuthority } from './pki.js'
 import { ForgeManager, type DraftKind } from './forge.js'
 import { getPolicy } from './policy.js'
+import { resolveLocale, translate, type Locale, type MessageParams } from './i18n.js'
 
 type FollowerData = {
 	followerName: string
@@ -94,12 +95,56 @@ type DeviceAuthorization = {
         approved: boolean
 }
 
+class HttpError extends Error {
+        status: number
+        code: string
+        params?: MessageParams
+
+        constructor(status: number, code: string, params?: MessageParams, message?: string) {
+                super(message ?? code)
+                this.status = status
+                this.code = code
+                this.params = params
+        }
+}
+
+function respondError(
+        req: express.Request,
+        res: express.Response,
+        status: number,
+        code: string,
+        params?: MessageParams,
+): void {
+        const locale = req.locale ?? resolveLocale(req)
+        const message = translate(locale, `errors.${code}`, params)
+        res.status(status).json({ error: code, message })
+}
+
+function handleError(
+        req: express.Request,
+        res: express.Response,
+        error: unknown,
+        fallback?: { status?: number; code?: string; params?: MessageParams },
+): void {
+        if (error instanceof HttpError) {
+                respondError(req, res, error.status, error.code, error.params)
+                return
+        }
+        console.error('unexpected backend error', error)
+        if (fallback) {
+                respondError(req, res, fallback.status ?? 500, fallback.code ?? 'internal_error', fallback.params)
+        } else {
+                respondError(req, res, 500, 'internal_error')
+        }
+}
+
 declare global {
         namespace Express {
                 interface Request {
                         auth?: ClientIdentity
                         ownerAuth?: OwnerRecord
                         ownerAccessToken?: string
+                        locale?: Locale
                 }
         }
 }
@@ -154,6 +199,10 @@ const policy = getPolicy()
 const MAX_ARCHIVE_BYTES = policy.max_archive_mb * 1024 * 1024
 
 const app = express()
+app.use((req, _res, next) => {
+        req.locale = resolveLocale(req)
+        next()
+})
 app.use(express.json({ limit: '64mb' }))
 
 const server = https.createServer(
@@ -259,17 +308,17 @@ function authenticateOwnerBearer(req: express.Request, res: express.Response, ne
         const header = req.header('Authorization') ?? ''
         const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : ''
         if (!token || !accessIndex.has(token)) {
-                res.status(401).json({ error: 'invalid_token' })
+                respondError(req, res, 401, 'invalid_token')
                 return
         }
         const ownerId = accessIndex.get(token)!
         const owner = owners.get(ownerId)
         if (!owner) {
-                res.status(401).json({ error: 'invalid_token' })
+                respondError(req, res, 401, 'invalid_token')
                 return
         }
         if (owner.accessToken !== token || owner.accessExpiresAt.getTime() <= Date.now()) {
-                res.status(401).json({ error: 'token_expired' })
+                respondError(req, res, 401, 'token_expired')
                 return
         }
         req.ownerAuth = owner
@@ -279,11 +328,11 @@ function authenticateOwnerBearer(req: express.Request, res: express.Response, ne
 
 function requireJsonField(body: unknown, field: string): string {
         if (!body || typeof body !== 'object') {
-                throw new Error(`${field} is required`)
+                throw new HttpError(400, 'missing_field', { field })
         }
         const value = (body as Record<string, unknown>)[field]
         if (typeof value !== 'string' || value.trim() === '') {
-                throw new Error(`${field} is required`)
+                throw new HttpError(400, 'missing_field', { field })
         }
         return value.trim()
 }
@@ -318,42 +367,42 @@ function generateNodeId(): string {
 }
 
 function assertSafeName(name: string): void {
-	if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
-		throw new Error('invalid name')
-	}
-	if (path.basename(name) !== name) throw new Error('invalid name')
+        if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
+                throw new HttpError(400, 'invalid_name')
+        }
+        if (path.basename(name) !== name) throw new HttpError(400, 'invalid_name')
 }
 
 
 function decodeArchive(archiveB64: string): Buffer {
-	try {
-		return Buffer.from(archiveB64, 'base64')
-	} catch (error) {
-		throw new Error('invalid archive encoding')
-	}
+        try {
+                return Buffer.from(archiveB64, 'base64')
+        } catch (error) {
+                throw new HttpError(400, 'invalid_archive_encoding')
+        }
 }
 
 function verifySha256(buffer: Buffer, expected?: string): void {
-	if (!expected) {
-		return
-	}
-	const normalized = expected.trim().toLowerCase()
-	const actual = createHash('sha256').update(buffer).digest('hex').toLowerCase()
-	if (normalized !== actual) {
-		throw new Error('sha256 mismatch')
-	}
+        if (!expected) {
+                return
+        }
+        const normalized = expected.trim().toLowerCase()
+        const actual = createHash('sha256').update(buffer).digest('hex').toLowerCase()
+        if (normalized !== actual) {
+                throw new HttpError(400, 'sha256_mismatch')
+        }
 }
 
 async function useBootstrapToken(token: string): Promise<Record<string, unknown>> {
-	const key = `bootstrap:${token}`
-	const value = await redisClient.get(key)
-	if (!value) {
-		throw new Error('invalid bootstrap token')
-	}
-	await redisClient.del(key)
-	try {
-		return JSON.parse(value)
-	} catch {
+        const key = `bootstrap:${token}`
+        const value = await redisClient.get(key)
+        if (!value) {
+                throw new HttpError(401, 'invalid_bootstrap_token')
+        }
+        await redisClient.del(key)
+        try {
+                return JSON.parse(value)
+        } catch {
 		return {}
 	}
 }
@@ -427,7 +476,7 @@ rootRouter.post('/auth/owner/start', (req, res) => {
         try {
                 ownerId = requireJsonField(req.body, 'owner_id')
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'owner_id required' })
+                handleError(req, res, error, { status: 400, code: 'missing_field', params: { field: 'owner_id' } })
                 return
         }
         const deviceCode = generateToken('dc')
@@ -462,21 +511,21 @@ rootRouter.post('/auth/owner/poll', (req, res) => {
         try {
                 deviceCode = requireJsonField(req.body, 'device_code')
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'device_code required' })
+                handleError(req, res, error, { status: 400, code: 'missing_field', params: { field: 'device_code' } })
                 return
         }
         const auth = deviceAuthorizations.get(deviceCode)
         if (!auth) {
-                res.status(400).json({ error: 'invalid_device_code' })
+                respondError(req, res, 400, 'invalid_device_code')
                 return
         }
         if (auth.expiresAt.getTime() <= Date.now()) {
                 deviceAuthorizations.delete(deviceCode)
-                res.status(400).json({ error: 'expired_token' })
+                respondError(req, res, 400, 'expired_token')
                 return
         }
         if (!auth.approved) {
-                res.status(400).json({ error: 'authorization_pending' })
+                respondError(req, res, 400, 'authorization_pending')
                 return
         }
         const owner = ensureOwnerRecord(auth.ownerId)
@@ -499,17 +548,17 @@ rootRouter.post('/auth/owner/refresh', (req, res) => {
         try {
                 refreshToken = requireJsonField(req.body, 'refresh_token')
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'refresh_token required' })
+                handleError(req, res, error, { status: 400, code: 'missing_field', params: { field: 'refresh_token' } })
                 return
         }
         const ownerId = refreshIndex.get(refreshToken)
         if (!ownerId) {
-                res.status(401).json({ error: 'invalid_refresh_token' })
+                respondError(req, res, 401, 'invalid_refresh_token')
                 return
         }
         const owner = owners.get(ownerId)
         if (!owner || owner.refreshToken !== refreshToken) {
-                res.status(401).json({ error: 'invalid_refresh_token' })
+                respondError(req, res, 401, 'invalid_refresh_token')
                 return
         }
         const { token, expiresAt } = issueAccessToken(owner)
@@ -545,7 +594,7 @@ rootRouter.post('/owner/hubs', authenticateOwnerBearer, (req, res) => {
         try {
                 hubId = requireJsonField(req.body, 'hub_id')
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'hub_id required' })
+                handleError(req, res, error, { status: 400, code: 'missing_field', params: { field: 'hub_id' } })
                 return
         }
         let hub = owner.hubs.get(hubId)
@@ -568,13 +617,13 @@ rootRouter.post('/pki/enroll', authenticateOwnerBearer, (req, res) => {
                 hubId = requireJsonField(req.body, 'hub_id')
                 csrPem = requireJsonField(req.body, 'csr_pem')
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'invalid request' })
+                handleError(req, res, error, { status: 400, code: 'invalid_request' })
                 return
         }
         const ttlDays = parseTtl((req.body as Record<string, unknown> | undefined)?.['ttl'])
         const hub = owner.hubs.get(hubId)
         if (!hub || hub.revoked) {
-                res.status(404).json({ error: 'hub_not_registered' })
+                respondError(req, res, 404, 'hub_not_registered')
                 return
         }
         hub.lastSeen = new Date()
@@ -586,7 +635,8 @@ rootRouter.post('/pki/enroll', authenticateOwnerBearer, (req, res) => {
                 })
                 res.json({ cert_pem: result.certificatePem, chain_pem: CA_CERT_PEM })
         } catch (error) {
-                res.status(400).json({ error: error instanceof Error ? error.message : 'certificate issue failed' })
+                console.error('pki enrollment failed', error)
+                handleError(req, res, error, { status: 400, code: 'certificate_issue_failed' })
         }
 })
 
@@ -621,11 +671,11 @@ if (process.env['DEBUG_ENDPOINTS'] === 'true') {
 app.use('/v1', rootRouter)
 
 app.post('/v1/bootstrap_token', async (req, res) => {
-	const token = req.header('X-Root-Token') ?? ''
-	if (!token || token !== ROOT_TOKEN) {
-		res.status(401).json({ error: 'unauthorized' })
-		return
-	}
+        const token = req.header('X-Root-Token') ?? ''
+        if (!token || token !== ROOT_TOKEN) {
+                respondError(req, res, 401, 'unauthorized')
+                return
+        }
 	const meta = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>
 	const oneTimeToken = randomBytes(24).toString('hex')
 	const expiresAt = new Date(Date.now() + BOOTSTRAP_TOKEN_TTL_SECONDS * 1000)
@@ -638,37 +688,38 @@ app.post('/v1/bootstrap_token', async (req, res) => {
 })
 
 app.post('/v1/subnets/register', async (req, res) => {
-	const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
-	if (!bootstrapToken) {
-		res.status(401).json({ error: 'bootstrap token required' })
-		return
-	}
-	try {
-		await useBootstrapToken(bootstrapToken)
-	} catch (error) {
-		res.status(401).json({ error: 'invalid bootstrap token' })
-		return
-	}
+        const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
+        if (!bootstrapToken) {
+                respondError(req, res, 401, 'bootstrap_token_required')
+                return
+        }
+        try {
+                await useBootstrapToken(bootstrapToken)
+        } catch (error) {
+                handleError(req, res, error, { status: 401, code: 'invalid_bootstrap_token' })
+                return
+        }
 
-	const csrPem = typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
-	if (!csrPem) {
-		res.status(400).json({ error: 'csr_pem is required' })
-		return
-	}
+        const csrPem = typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+        if (!csrPem) {
+                respondError(req, res, 400, 'bootstrap_csr_required')
+                return
+        }
 	const subnetName = typeof req.body?.subnet_name === 'string' ? req.body.subnet_name : undefined
 
 	const subnetId = generateSubnetId()
 	let certPem: string
-	try {
-		const result = certificateAuthority.issueClientCertificate({
-			csrPem,
-			subject: { commonName: `subnet:${subnetId}` },
-		})
-		certPem = result.certificatePem
-	} catch (error) {
-		res.status(400).json({ error: error instanceof Error ? error.message : 'certificate issue failed' })
-		return
-	}
+        try {
+                const result = certificateAuthority.issueClientCertificate({
+                        csrPem,
+                        subject: { commonName: `subnet:${subnetId}` },
+                })
+                certPem = result.certificatePem
+        } catch (error) {
+                console.error('subnet certificate issue failed', error)
+                handleError(req, res, error, { status: 400, code: 'certificate_issue_failed' })
+                return
+        }
 
 	await forgeManager.ensureSubnet(subnetId)
 	await redisClient.hSet(
@@ -689,62 +740,63 @@ app.post('/v1/subnets/register', async (req, res) => {
 })
 
 app.post('/v1/nodes/register', async (req, res) => {
-	const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
-	let subnetId: string | undefined
+        const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
+        let subnetId: string | undefined
 
-	if (bootstrapToken) {
-		try {
-			await useBootstrapToken(bootstrapToken)
-		} catch (error) {
-			res.status(401).json({ error: 'invalid bootstrap token' })
-			return
-		}
-		const bodySubnet = typeof req.body?.subnet_id === 'string' ? req.body.subnet_id : undefined
-		if (!bodySubnet) {
-			res.status(400).json({ error: 'subnet_id is required when using bootstrap token' })
-			return
-		}
-		subnetId = bodySubnet
-	} else {
-		const identity = getClientIdentity(req)
-		if (!identity || identity.type !== 'hub') {
-			res.status(401).json({ error: 'hub client certificate required' })
-			return
-		}
-		subnetId = identity.subnetId
-		const bodySubnet = typeof req.body?.subnet_id === 'string' ? req.body.subnet_id : undefined
-		if (bodySubnet && bodySubnet !== subnetId) {
-			res.status(400).json({ error: 'subnet_id does not match certificate' })
-			return
-		}
-	}
+        if (bootstrapToken) {
+                try {
+                        await useBootstrapToken(bootstrapToken)
+                } catch (error) {
+                        handleError(req, res, error, { status: 401, code: 'invalid_bootstrap_token' })
+                        return
+                }
+                const bodySubnet = typeof req.body?.subnet_id === 'string' ? req.body.subnet_id : undefined
+                if (!bodySubnet) {
+                        respondError(req, res, 400, 'subnet_required_with_bootstrap')
+                        return
+                }
+                subnetId = bodySubnet
+        } else {
+                const identity = getClientIdentity(req)
+                if (!identity || identity.type !== 'hub') {
+                        respondError(req, res, 401, 'hub_certificate_required')
+                        return
+                }
+                subnetId = identity.subnetId
+                const bodySubnet = typeof req.body?.subnet_id === 'string' ? req.body.subnet_id : undefined
+                if (bodySubnet && bodySubnet !== subnetId) {
+                        respondError(req, res, 400, 'subnet_certificate_mismatch')
+                        return
+                }
+        }
 
-	if (!subnetId) {
-		res.status(400).json({ error: 'subnet_id is required' })
-		return
-	}
+        if (!subnetId) {
+                respondError(req, res, 400, 'subnet_required')
+                return
+        }
 
-	const csrPem = typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
-	if (!csrPem) {
-		res.status(400).json({ error: 'csr_pem is required' })
-		return
-	}
+        const csrPem = typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+        if (!csrPem) {
+                respondError(req, res, 400, 'csr_required')
+                return
+        }
 
 	const nodeId = generateNodeId()
 	let certPem: string
-	try {
-		const result = certificateAuthority.issueClientCertificate({
-			csrPem,
-			subject: {
-				commonName: `node:${nodeId}`,
-				organizationName: `subnet:${subnetId}`,
-			},
-		})
-		certPem = result.certificatePem
-	} catch (error) {
-		res.status(400).json({ error: error instanceof Error ? error.message : 'certificate issue failed' })
-		return
-	}
+        try {
+                const result = certificateAuthority.issueClientCertificate({
+                        csrPem,
+                        subject: {
+                                commonName: `node:${nodeId}`,
+                                organizationName: `subnet:${subnetId}`,
+                        },
+                })
+                certPem = result.certificatePem
+        } catch (error) {
+                console.error('node certificate issue failed', error)
+                handleError(req, res, error, { status: 400, code: 'certificate_issue_failed' })
+                return
+        }
 
 	await forgeManager.ensureSubnet(subnetId)
 	await forgeManager.ensureNode(subnetId, nodeId)
@@ -760,18 +812,18 @@ app.post('/v1/nodes/register', async (req, res) => {
 const mtlsRouter = express.Router()
 
 mtlsRouter.use((req, res, next) => {
-	const tlsSocket = req.socket as TLSSocket
-	if (!tlsSocket.authorized) {
-		res.status(401).json({ error: 'client certificate required' })
-		return
-	}
-	const identity = getClientIdentity(req)
-	if (!identity) {
-		res.status(403).json({ error: 'invalid client certificate' })
-		return
-	}
-	req.auth = identity
-	next()
+        const tlsSocket = req.socket as TLSSocket
+        if (!tlsSocket.authorized) {
+                respondError(req, res, 401, 'client_certificate_required')
+                return
+        }
+        const identity = getClientIdentity(req)
+        if (!identity) {
+                respondError(req, res, 403, 'invalid_client_certificate')
+                return
+        }
+        req.auth = identity
+        next()
 })
 
 mtlsRouter.get('/policy', (_req, res) => {
@@ -779,41 +831,41 @@ mtlsRouter.get('/policy', (_req, res) => {
 })
 
 const createDraftHandler = (kind: DraftKind): express.RequestHandler => async (req, res) => {
-	const identity = req.auth
-	if (!identity || identity.type !== 'node') {
-		res.status(403).json({ error: 'node client certificate required' })
-		return
-	}
+        const identity = req.auth
+        if (!identity || identity.type !== 'node') {
+                respondError(req, res, 403, 'node_certificate_required')
+                return
+        }
 
-	const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
-	if (!nodeId || nodeId !== identity.nodeId) {
-		res.status(403).json({ error: 'node_id mismatch' })
-		return
-	}
-	const name = typeof req.body?.name === 'string' ? req.body.name : ''
-	const archiveB64 = typeof req.body?.archive_b64 === 'string' ? req.body.archive_b64 : ''
-	const sha256 = typeof req.body?.sha256 === 'string' ? req.body.sha256 : undefined
-	if (!name || !archiveB64) {
-		res.status(400).json({ error: 'name and archive_b64 are required' })
-		return
-	}
+        const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+        if (!nodeId || nodeId !== identity.nodeId) {
+                respondError(req, res, 403, 'node_mismatch')
+                return
+        }
+        const name = typeof req.body?.name === 'string' ? req.body.name : ''
+        const archiveB64 = typeof req.body?.archive_b64 === 'string' ? req.body.archive_b64 : ''
+        const sha256 = typeof req.body?.sha256 === 'string' ? req.body.sha256 : undefined
+        if (!name || !archiveB64) {
+                respondError(req, res, 400, 'archive_fields_required')
+                return
+        }
 
-	let archive: Buffer
-	try {
-		assertSafeName(name)
-		archive = decodeArchive(archiveB64)
-		if (!archive.length) {
-			throw new Error('archive is empty')
-		}
-		if (archive.length > MAX_ARCHIVE_BYTES) {
-			res.status(413).json({ error: 'archive exceeds allowed size' })
-			return
-		}
-		verifySha256(archive, sha256)
-	} catch (error) {
-		res.status(400).json({ error: error instanceof Error ? error.message : 'invalid archive' })
-		return
-	}
+        let archive: Buffer
+        try {
+                assertSafeName(name)
+                archive = decodeArchive(archiveB64)
+                if (!archive.length) {
+                        throw new HttpError(400, 'archive_empty')
+                }
+                if (archive.length > MAX_ARCHIVE_BYTES) {
+                        respondError(req, res, 413, 'archive_too_large')
+                        return
+                }
+                verifySha256(archive, sha256)
+        } catch (error) {
+                handleError(req, res, error, { status: 400, code: 'invalid_archive' })
+                return
+        }
 
 	const started = Date.now()
 	try {
@@ -842,42 +894,42 @@ const createDraftHandler = (kind: DraftKind): express.RequestHandler => async (r
 			}),
 		)
 		res.json({ ok: true, stored_path: result.storedPath, commit: result.commitSha })
-	} catch (error) {
-		console.error('failed to store draft', error)
-		res.status(500).json({ error: 'failed to store draft' })
-	}
+        } catch (error) {
+                console.error('failed to store draft', error)
+                handleError(req, res, error, { status: 500, code: 'draft_store_failed' })
+        }
 }
 
 mtlsRouter.post('/skills/draft', createDraftHandler('skills'))
 mtlsRouter.post('/scenarios/draft', createDraftHandler('scenarios'))
 
 mtlsRouter.post('/skills/pr', (req, res) => {
-	const identity = req.auth
-	if (!identity || identity.type !== 'hub') {
-		res.status(403).json({ error: 'hub client certificate required' })
-		return
-	}
-	const name = typeof req.body?.name === 'string' ? req.body.name : ''
-	const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
-	if (!name || !nodeId) {
-		res.status(400).json({ error: 'name and node_id are required' })
-		return
-	}
-	res.json({ ok: true, pr_url: 'https://github.com/stipot-com/adaos-registry/pull/mock-skill' })
+        const identity = req.auth
+        if (!identity || identity.type !== 'hub') {
+                respondError(req, res, 403, 'hub_certificate_required')
+                return
+        }
+        const name = typeof req.body?.name === 'string' ? req.body.name : ''
+        const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+        if (!name || !nodeId) {
+                respondError(req, res, 400, 'name_and_node_required')
+                return
+        }
+        res.json({ ok: true, pr_url: 'https://github.com/stipot-com/adaos-registry/pull/mock-skill' })
 })
 
 mtlsRouter.post('/scenarios/pr', (req, res) => {
-	const identity = req.auth
-	if (!identity || identity.type !== 'hub') {
-		res.status(403).json({ error: 'hub client certificate required' })
-		return
-	}
-	const name = typeof req.body?.name === 'string' ? req.body.name : ''
-	const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
-	if (!name || !nodeId) {
-		res.status(400).json({ error: 'name and node_id are required' })
-		return
-	}
+        const identity = req.auth
+        if (!identity || identity.type !== 'hub') {
+                respondError(req, res, 403, 'hub_certificate_required')
+                return
+        }
+        const name = typeof req.body?.name === 'string' ? req.body.name : ''
+        const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+        if (!name || !nodeId) {
+                respondError(req, res, 400, 'name_and_node_required')
+                return
+        }
 	res.json({ ok: true, pr_url: 'https://github.com/stipot-com/adaos-registry/pull/mock-scenario' })
 })
 

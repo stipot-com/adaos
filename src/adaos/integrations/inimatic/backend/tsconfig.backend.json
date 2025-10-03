@@ -14,15 +14,16 @@
 		"declaration": false,
 		"downlevelIteration": true,
 		"experimentalDecorators": true,
-		"moduleResolution": "NodeNext",
-		"types": ["node"],
-		"importHelpers": true,
-		"skipLibCheck": true,
-		"target": "ES2022",
-		"module": "NodeNext",
-		"esModuleInterop": true,
-		"lib": ["es2018", "dom"],
-		"useDefineForClassFields": false,
-		"allowSyntheticDefaultImports": true
-	}
+                "moduleResolution": "NodeNext",
+                "types": ["node"],
+                "importHelpers": true,
+                "skipLibCheck": true,
+                "target": "ES2022",
+                "module": "NodeNext",
+                "esModuleInterop": true,
+                "lib": ["es2018", "dom"],
+                "useDefineForClassFields": false,
+                "allowSyntheticDefaultImports": true,
+                "resolveJsonModule": true
+        }
 }

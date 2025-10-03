@@ -11,6 +11,8 @@ services:
             timeout: 3s
             retries: 10
             start_period: 5s
+        volumes:
+            - redis_data:/data
         networks:
             - internal
 
@@ -240,6 +242,7 @@ secrets:
         file: ./secrets/gh_app_private_key.pem
 volumes:
     traefik_letsencrypt: {}
+    redis_data: {}
 
 networks:
     proxy:
