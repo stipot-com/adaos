@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import https from 'https'
 import path from 'path'
+import type { IncomingMessage } from 'http'
 import { v4 as uuidv4 } from 'uuid'
 import { Server, Socket } from 'socket.io'
 import { createClient } from 'redis'
@@ -206,6 +207,19 @@ app.use((req, _res, next) => {
 })
 app.use(express.json({ limit: '64mb' }))
 
+function withLeadingSlash(value: string, fallback: string): string {
+        const trimmed = value.trim()
+        if (!trimmed) {
+                return fallback
+        }
+        return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
+const SOCKET_PATH = withLeadingSlash(process.env['SOCKET_PATH'] ?? '/socket.io', '/socket.io')
+const SOCKET_CHANNEL_NS = withLeadingSlash(process.env['SOCKET_CHANNEL_NS'] ?? '/adaos', '/adaos')
+const SOCKET_CHANNEL_VERSION = (process.env['SOCKET_CHANNEL_VERSION'] ?? 'v1').trim() || 'v1'
+const SOCKET_LEGACY_FALLBACK_ENABLED = (process.env['SOCKET_LEGACY_FALLBACK'] ?? '1') !== '0'
+
 const server = https.createServer(
 	{
 		key: TLS_KEY_PEM,
@@ -218,10 +232,82 @@ const server = https.createServer(
 )
 
 const io = new Server(server, {
-	cors: { origin: '*' },
-	pingTimeout: 10000,
-	pingInterval: 10000,
+        cors: { origin: '*' },
+        pingTimeout: 10000,
+        pingInterval: 10000,
+        path: SOCKET_PATH,
 })
+
+function extractHandshakeToken(req: IncomingMessage, searchParams: URLSearchParams): string | undefined {
+        const authHeader = req.headers['authorization']
+        if (Array.isArray(authHeader)) {
+                for (const header of authHeader) {
+                        const token = extractBearer(header)
+                        if (token) {
+                                return token
+                        }
+                }
+        } else if (typeof authHeader === 'string') {
+                const token = extractBearer(authHeader)
+                if (token) {
+                        return token
+                }
+        }
+
+        for (const candidate of ['token', 'auth[token]', 'authToken', 'auth_token']) {
+                const value = searchParams.get(candidate)
+                if (value && value.trim()) {
+                        return value.trim()
+                }
+        }
+
+        for (const [key, value] of searchParams.entries()) {
+                if (value && value.trim() && /token\]?$/i.test(key)) {
+                        return value.trim()
+                }
+        }
+
+        return undefined
+}
+
+function extractBearer(headerValue: string): string | undefined {
+        const trimmed = headerValue.trim()
+        if (!trimmed) {
+                return undefined
+        }
+        const match = trimmed.match(/^Bearer\s+(.+)$/i)
+        return match ? match[1].trim() : undefined
+}
+
+io.engine.allowRequest = (req, callback) => {
+        try {
+                const url = new URL(req.url ?? '', 'http://localhost')
+                const searchParams = url.searchParams
+
+                if (searchParams.has('sid')) {
+                        callback(null, true)
+                        return
+                }
+
+                const namespace = searchParams.get('nsp') ?? '/'
+                const token = extractHandshakeToken(req, searchParams)
+
+                if (token) {
+                        callback(null, true)
+                        return
+                }
+
+                if (namespace === '/' && SOCKET_LEGACY_FALLBACK_ENABLED) {
+                        callback(null, true)
+                        return
+                }
+
+                callback('Unauthorized', false)
+        } catch (error) {
+                console.error('socket allowRequest error', error)
+                callback('Unauthorized', false)
+        }
+}
 
 installAdaosBridge(app, server)
 
@@ -1015,213 +1101,226 @@ function saveFileChunk(sessionId: string, fileName: string, content: Array<numbe
 	)
 }
 
-io.on('connection', (socket) => {
-	console.log(socket.id)
+const registerSocketHandlers = (socket: Socket) => {
+        const namespace = socket.nsp
+        console.log(socket.id)
 
-	socket.on('disconnecting', async () => {
-		const rooms = Array.from(socket.rooms).filter((roomId) => roomId != socket.id)
-		if (!rooms.length) return
+        if (namespace.name === SOCKET_CHANNEL_NS) {
+                socket.emit('channel_version', SOCKET_CHANNEL_VERSION)
+        }
 
-		const sessionId = rooms[0]
-		console.log('disconnect', socket.id, socket.rooms, sessionId)
-		const sessionData: UnionSessionData = JSON.parse((await redisClient.get(sessionId))!)
+        socket.on('disconnecting', async () => {
+                const rooms = Array.from(socket.rooms).filter((roomId) => roomId != socket.id)
+                if (!rooms.length) return
 
-		if (sessionData == null) {
-			socket.to(sessionId).emit('initiator_disconnect')
-			return
-		}
+                const sessionId = rooms[0]
+                console.log('disconnect', socket.id, socket.rooms, sessionId)
+                const sessionData: UnionSessionData = JSON.parse((await redisClient.get(sessionId))!)
 
-		const isInitiator = sessionData.initiatorSocketId === socket.id
-		if (isInitiator) {
-			if (sessionData.type === 'public') {
-				await Promise.all(
-					sessionData.fileNames.map((item) => {
-						const filePath = FILESPATH + item.timestamp + '_' + item.fileName
+                if (sessionData == null) {
+                        socket.to(sessionId).emit('initiator_disconnect')
+                        return
+                }
 
-						return new Promise<void>((resolve) => fs.unlink(filePath, () => resolve()))
-					}),
-				)
-			}
+                const isInitiator = sessionData.initiatorSocketId === socket.id
+                if (isInitiator) {
+                        if (sessionData.type === 'public') {
+                                await Promise.all(
+                                        sessionData.fileNames.map((item) => {
+                                                const filePath = FILESPATH + item.timestamp + '_' + item.fileName
 
-			socket.to(sessionId).emit('initiator_disconnect')
-			io.socketsLeave(sessionId)
-			await redisClient.del(sessionId)
-		} else {
-			io.to(sessionData.initiatorSocketId).emit(
-				'follower_disconnect',
-				sessionData.followers[socket.id],
-			)
+                                                return new Promise<void>((resolve) => fs.unlink(filePath, () => resolve()))
+                                        }),
+                                )
+                        }
 
-			delete sessionData.followers[socket.id]
-			await redisClient.set(sessionId, JSON.stringify(sessionData))
-		}
-	})
+                        socket.to(sessionId).emit('initiator_disconnect')
+                        namespace.socketsLeave(sessionId)
+                        await redisClient.del(sessionId)
+                } else {
+                        namespace.to(sessionData.initiatorSocketId).emit(
+                                'follower_disconnect',
+                                sessionData.followers[socket.id],
+                        )
 
-	socket.on('add_initiator', async (type) => {
-		const guid = uuidv4()
-		let sessionData: UnionSessionData
-		if (type === 'private') {
-			sessionData = {
-				initiatorSocketId: socket.id,
-				followers: {},
-				timestamp: new Date(),
-				type: type,
-			}
-		} else {
-			sessionData = {
-				initiatorSocketId: socket.id,
-				followers: {},
-				timestamp: new Date(),
-				type: type,
-				fileNames: [],
-			}
-		}
+                        delete sessionData.followers[socket.id]
+                        await redisClient.set(sessionId, JSON.stringify(sessionData))
+                }
+        })
 
-		await redisClient.set(guid, JSON.stringify(sessionData))
-		await redisClient.expire(guid, 3600)
+        socket.on('add_initiator', async (type) => {
+                const guid = uuidv4()
+                let sessionData: UnionSessionData
+                if (type === 'private') {
+                        sessionData = {
+                                initiatorSocketId: socket.id,
+                                followers: {},
+                                timestamp: new Date(),
+                                type: type,
+                        }
+                } else {
+                        sessionData = {
+                                initiatorSocketId: socket.id,
+                                followers: {},
+                                timestamp: new Date(),
+                                type: type,
+                                fileNames: [],
+                        }
+                }
 
-		socket.join(guid)
-		socket.emit('session_id', guid)
-	})
+                await redisClient.set(guid, JSON.stringify(sessionData))
+                await redisClient.expire(guid, 3600)
 
-	async function sendToPublicFollower(socket: Socket, emitObject: any) {
-		return new Promise<void>((resolve) => {
-			socket.emit('communication', emitObject, () => resolve())
-		})
-	}
+                socket.join(guid)
+                socket.emit('session_id', guid)
+        })
 
-	async function distributeSessionFiles(socket: Socket, fileNames: Array<{ fileName: string; timestamp: string }>) {
-		const chunksize = 64 * 1024
+        async function sendToPublicFollower(targetSocket: Socket, emitObject: any) {
+                return new Promise<void>((resolve) => {
+                        targetSocket.emit('communication', emitObject, () => resolve())
+                })
+        }
 
-		for (const item of fileNames) {
-			const filePath = FILESPATH + item.timestamp + '_' + item.fileName
-			const readStream = fs.createReadStream(filePath, {
-				highWaterMark: chunksize,
-			})
+        async function distributeSessionFiles(targetSocket: Socket, fileNames: Array<{ fileName: string; timestamp: string }>) {
+                const chunksize = 64 * 1024
 
-			const size = (await stat(filePath)).size
+                for (const item of fileNames) {
+                        const filePath = FILESPATH + item.timestamp + '_' + item.fileName
+                        const readStream = fs.createReadStream(filePath, {
+                                highWaterMark: chunksize,
+                        })
 
-			await sendToPublicFollower(socket, {
-				type: 'transferFile',
-				fileName: item.fileName,
-				size,
-			})
+                        const size = (await stat(filePath)).size
 
-			for await (const chunk of readStream) {
-				await sendToPublicFollower(socket, {
-					type: 'writeFile',
-					fileName: item.fileName,
-					content: Array.from(new Uint8Array(chunk as Buffer)),
-					size,
-				})
-			}
+                        await sendToPublicFollower(targetSocket, {
+                                type: 'transferFile',
+                                fileName: item.fileName,
+                                size,
+                        })
 
-			await sendToPublicFollower(socket, {
-				type: 'fileTransfered',
-				fileName: item.fileName,
-			})
-		}
-	}
+                        for await (const chunk of readStream) {
+                                await sendToPublicFollower(targetSocket, {
+                                        type: 'writeFile',
+                                        fileName: item.fileName,
+                                        content: Array.from(new Uint8Array(chunk as Buffer)),
+                                        size,
+                                })
+                        }
 
-	socket.on('set_session_data', async (sessionId: string, sessionData: SessionData) => {
-		if (!isValidGuid(sessionId)) {
-			console.error('sessionId must be in guid format')
-			return
-		}
+                        await sendToPublicFollower(targetSocket, {
+                                type: 'fileTransfered',
+                                fileName: item.fileName,
+                        })
+                }
+        }
 
-		await redisClient.set(sessionId, JSON.stringify(sessionData))
-		await redisClient.expire(sessionId, 3600)
-	})
+        socket.on('set_session_data', async (sessionId: string, sessionData: SessionData) => {
+                if (!isValidGuid(sessionId)) {
+                        console.error('sessionId must be in guid format')
+                        return
+                }
 
-	socket.on('join_session', async ({ followerName, sessionId }: FollowerData) => {
-		if (!isValidGuid(sessionId)) {
-			console.error('sessionId must be in guid format')
-			return
-		}
+                await redisClient.set(sessionId, JSON.stringify(sessionData))
+                await redisClient.expire(sessionId, 3600)
+        })
 
-		let sessionData: UnionSessionData | null
-		try {
-			const sessionString = await redisClient.get(sessionId)
-			sessionData = sessionString ? JSON.parse(sessionString) : null
-		} catch (error) {
-			console.error(error)
-			return
-		}
+        socket.on('join_session', async ({ followerName, sessionId }: FollowerData) => {
+                if (!isValidGuid(sessionId)) {
+                        console.error('sessionId must be in guid format')
+                        return
+                }
 
-		if (sessionData == null) {
-			socket.emit('session_unavailable')
-			return
-		}
+                let sessionData: UnionSessionData | null
+                try {
+                        const sessionString = await redisClient.get(sessionId)
+                        sessionData = sessionString ? JSON.parse(sessionString) : null
+                } catch (error) {
+                        console.error(error)
+                        return
+                }
 
-		if (sessionData.followers[socket.id]) {
-			return
-		}
+                if (sessionData == null) {
+                        socket.emit('session_unavailable')
+                        return
+                }
 
-		if (sessionData.type === 'public') {
-			socket.emit('session_type', 'public')
-			await socket.join(sessionId)
-			sessionData.followers[socket.id] = followerName
-			await redisClient.set(sessionId, JSON.stringify(sessionData))
-			await distributeSessionFiles(socket, sessionData.fileNames)
-			return
-		}
+                if (sessionData.followers[socket.id]) {
+                        return
+                }
 
-		socket.join(sessionId)
-		sessionData.followers[socket.id] = followerName
-		await redisClient.set(sessionId, JSON.stringify(sessionData))
+                if (sessionData.type === 'public') {
+                        socket.emit('session_type', 'public')
+                        await socket.join(sessionId)
+                        sessionData.followers[socket.id] = followerName
+                        await redisClient.set(sessionId, JSON.stringify(sessionData))
+                        await distributeSessionFiles(socket, sessionData.fileNames)
+                        return
+                }
 
-		socket.emit('session_type', 'private')
-		io.to(sessionData.initiatorSocketId).emit('follower_connect', followerName)
-	})
+                socket.join(sessionId)
+                sessionData.followers[socket.id] = followerName
+                await redisClient.set(sessionId, JSON.stringify(sessionData))
 
-	socket.on('set_session_public_files', async ({ sessionId, fileNames }) => {
-		const sessionString = await redisClient.get(sessionId)
-		const sessionData: PublicSessionData = sessionString ? JSON.parse(sessionString) : null
+                socket.emit('session_type', 'private')
+                namespace.to(sessionData.initiatorSocketId).emit('follower_connect', followerName)
+        })
 
-		if (sessionData == null) {
-			socket.emit('session_unavailable')
-			return
-		}
+        socket.on('set_session_public_files', async ({ sessionId, fileNames }) => {
+                const sessionString = await redisClient.get(sessionId)
+                const sessionData: PublicSessionData = sessionString ? JSON.parse(sessionString) : null
 
-		sessionData.fileNames = fileNames
-		await redisClient.set(sessionId, JSON.stringify(sessionData))
-	})
+                if (sessionData == null) {
+                        socket.emit('session_unavailable')
+                        return
+                }
 
-	socket.on('communication', async ({ isInitiator, sessionId, data }: CommunicationData) => {
-		if (!isValidGuid(sessionId)) {
-			console.error('sessionId must be in guid format')
-			return
-		}
+                sessionData.fileNames = fileNames
+                await redisClient.set(sessionId, JSON.stringify(sessionData))
+        })
 
-		if (isInitiator) {
-			const firstValue = data['values'][0]
+        socket.on('communication', async ({ isInitiator, sessionId, data }: CommunicationData) => {
+                if (!isValidGuid(sessionId)) {
+                        console.error('sessionId must be in guid format')
+                        return
+                }
 
-			if (firstValue['type'] === 'transferFile') {
-				const safeFileName = safeBasename(firstValue['fileName'])
-				const pathToFile = FILESPATH + firstValue['timestamp'] + '_' + safeFileName
-				await new Promise<void>((resolve) =>
-					fs.unlink(pathToFile, () => resolve()),
-				)
-				delete openedStreams[sessionId][safeFileName]
-				cleanupSessionBucket(sessionId)
-			}
+                if (isInitiator) {
+                        const firstValue = data['values'][0]
 
-			io.to(sessionId).emit('communication', data)
-			return
-		}
+                        if (firstValue['type'] === 'transferFile') {
+                                const safeFileName = safeBasename(firstValue['fileName'])
+                                const pathToFile = FILESPATH + firstValue['timestamp'] + '_' + safeFileName
+                                await new Promise<void>((resolve) =>
+                                        fs.unlink(pathToFile, () => resolve()),
+                                )
+                                delete openedStreams[sessionId][safeFileName]
+                                cleanupSessionBucket(sessionId)
+                        }
 
-		const sessionData = (await redisClient.get(sessionId))!
-		const initiatorSocketId = (JSON.parse(sessionData) as SessionData).initiatorSocketId
+                        namespace.to(sessionId).emit('communication', data)
+                        return
+                }
 
-		const messageType = data['type']
+                const sessionData = (await redisClient.get(sessionId))!
+                const initiatorSocketId = (JSON.parse(sessionData) as SessionData).initiatorSocketId
 
-		if (messageType === 'writeFile') {
-			await saveFileChunk(sessionId, data['fileName'], data['content'])
-		}
+                const messageType = data['type']
 
-		io.to(initiatorSocketId).emit('communication', data)
-	})
-})
+                if (messageType === 'writeFile') {
+                        await saveFileChunk(sessionId, data['fileName'], data['content'])
+                }
+
+                namespace.to(initiatorSocketId).emit('communication', data)
+        })
+}
+
+io.on('connection', registerSocketHandlers)
+
+if (SOCKET_CHANNEL_NS !== '/') {
+        const nsv1 = io.of(SOCKET_CHANNEL_NS)
+        nsv1.use((socket, next) => next())
+        nsv1.on('connection', (socket) => registerSocketHandlers(socket))
+}
 
 function closeStreams() {
 	for (const sessionId of Object.keys(openedStreams)) {
