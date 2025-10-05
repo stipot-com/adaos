@@ -1,8 +1,38 @@
-import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Injectable } from '@angular/core';
 
 export type AdaosEvent = { type: string;[k: string]: any };
 export interface AdaosConfig { baseUrl: string; token?: string | null; }
+
+export interface SubnetRegisterRequest {
+        csr_pem: string;
+        fingerprint: string;
+        owner_token: string;
+        hints?: any;
+        idempotencyKey?: string;
+}
+
+export interface SubnetRegisterData {
+        subnet_id: string;
+        hub_device_id: string;
+        cert_pem: string;
+}
+
+export interface SubnetRegisterResponse {
+        data: SubnetRegisterData | null;
+        event_id: string;
+        server_time_utc: string;
+}
+
+const ROOT_BASE = (() => {
+        const value = (window as any).__ADAOS_ROOT_BASE__ ?? 'http://127.0.0.1:3030';
+        return typeof value === 'string' ? value.replace(/\/$/, '') : 'http://127.0.0.1:3030';
+})();
+
+function rootAbs(path: string) {
+        const rel = path.startsWith('/') ? path : `/${path}`;
+        return `${ROOT_BASE}${rel}`;
+}
 
 @Injectable({ providedIn: 'root' })
 export class AdaosClient {
@@ -47,4 +77,31 @@ export class AdaosClient {
 	callSkill<T = any>(skill: string, method: string, body?: any) {
 		return this.post<T>(`/api/skills/${skill}/${method}`, body ?? {});
 	}
+}
+
+export async function subnetRegister(req: SubnetRegisterRequest): Promise<SubnetRegisterResponse> {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (req.idempotencyKey) headers['Idempotency-Key'] = req.idempotencyKey;
+        const response = await fetch(rootAbs('/v1/subnets/register'), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                        csr_pem: req.csr_pem,
+                        fingerprint: req.fingerprint,
+                        owner_token: req.owner_token,
+                        hints: req.hints ?? null,
+                }),
+        });
+        if (!response.ok) throw new Error(`subnetRegister failed: ${response.status}`);
+        return response.json();
+}
+
+export async function subnetRegisterStatus(fingerprint: string, ownerToken?: string): Promise<SubnetRegisterResponse> {
+        const token = ownerToken ?? (window as any).__ADAOS_ROOT_OWNER_TOKEN__;
+        if (!token) throw new Error('owner token required');
+        const response = await fetch(rootAbs(`/v1/subnets/register/status?fingerprint=${encodeURIComponent(fingerprint)}`), {
+                headers: { 'X-Owner-Token': token },
+        });
+        if (!response.ok) throw new Error(`subnetRegisterStatus failed: ${response.status}`);
+        return response.json();
 }
