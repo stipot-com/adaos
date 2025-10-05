@@ -1,0 +1,37 @@
+# Default configuration for the foundational SQLite-backed RootAuthority backend.
+# Values can be overridden by supplying a custom configuration file when
+# instantiating the backend. All durations are expressed in seconds unless
+# stated otherwise.
+
+hmac_audit_key: "insecure-default-change-me"
+context_hmac_key: "insecure-default-change-me"
+error_verbosity: "minimal"
+idempotency_ttl: 600
+clock_skew_tolerance_seconds: 90
+
+rate_limits:
+  device: 10
+  qr: 10
+  auth: 20
+rate_limit_window: 60
+
+lifetimes:
+  access_token_seconds: 480
+  refresh_token_seconds: 14400
+  channel_token_seconds: 300
+  device_code_seconds: 600
+  qr_session_seconds: 300
+  challenge_seconds: 120
+  consent_ttl_seconds: 1200
+  hub_certificate_days: 30
+  member_certificate_days: 21
+  subnet_ca_days: 7
+  intermediate_certificate_days: 180
+
+root_ca_private_key_pem: null
+root_ca_certificate_pem: null
+intermediate_rotation_margin_days: 30
+
+revoke_hint_ttl_seconds: 30
+ca_common_name: "AdaOS Root CA"
+
