@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import zipfile
@@ -9,8 +10,12 @@ from pathlib import Path
 from typing import Callable, Literal, Optional
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from urllib.parse import quote
 
 from adaos.apps.bootstrap import get_ctx
+from adaos.services.crypto.pki import generate_rsa_key, make_csr, write_private_key
 
 DEFAULT_ROOT_BASE = "https://127.0.0.1:3030"
 DEFAULT_ADAOS_BASE = "http://127.0.0.1:8777"
@@ -136,16 +141,20 @@ def _do_request(
     cert: Optional[tuple[str, str]] = None,
     verify: str | bool | None = None,
 ) -> httpx.Response:
+    client_params: dict[str, object] = {}
+    if cert is not None:
+        client_params["cert"] = cert
+    if verify is not None:
+        client_params["verify"] = verify
     try:
-        response = httpx.request(
-            method,
-            url,
-            json=json_body,
-            headers=headers,
-            timeout=timeout,
-            cert=cert,
-            verify=verify,
-        )
+        with httpx.Client(**client_params) as client:
+            response = client.request(
+                method,
+                url,
+                json=json_body,
+                headers=headers,
+                timeout=timeout,
+            )
     except httpx.RequestError as exc:
         raise RootCliError(f"{method} {url} failed: {exc}") from exc
     if response.status_code >= 400:
@@ -414,8 +423,8 @@ def keys_dir() -> Path:
 
 
 _KEY_FILENAMES: dict[Literal['hub_key', 'hub_cert', 'node_key', 'node_cert', 'ca_cert'], str] = {
-    'hub_key': 'hub.key',
-    'hub_cert': 'hub.cert',
+    'hub_key': 'hub_private.pem',
+    'hub_cert': 'hub_cert.pem',
     'node_key': 'node.key',
     'node_cert': 'node.cert',
     'ca_cert': 'ca.cert',
@@ -426,13 +435,90 @@ def key_path(kind: Literal['hub_key', 'hub_cert', 'node_key', 'node_cert', 'ca_c
     return keys_dir() / _KEY_FILENAMES[kind]
 
 
+def ensure_hub_keypair() -> tuple[Path, rsa.RSAPrivateKey]:
+    desired = key_path('hub_key')
+    legacy = keys_dir() / 'hub.key'
+    path = desired if desired.exists() else legacy if legacy.exists() else desired
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+        except ValueError as exc:  # pragma: no cover - corrupted key material
+            raise RootCliError(f"Invalid hub private key at {path}") from exc
+    else:
+        key = generate_rsa_key()
+        write_private_key(path, key)
+    if path != desired and path.exists():
+        desired.write_bytes(path.read_bytes())
+        try:
+            desired.chmod(0o600)
+        except PermissionError:
+            pass
+        path = desired
+    return path, key
+
+
+def build_csr(common_name: str, key: rsa.RSAPrivateKey) -> str:
+    return make_csr(common_name, None, key)
+
+
+def fingerprint_for_key(key: rsa.RSAPrivateKey) -> str:
+    public_bytes = key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return "sha256:" + hashlib.sha256(public_bytes).hexdigest()
+
+
+def submit_subnet_registration(
+    config: RootCliConfig,
+    *,
+    csr_pem: str,
+    fingerprint: str,
+    owner_token: str,
+    idempotency_key: Optional[str] = None,
+) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    response = _plain_request(
+        "POST",
+        _root_url(config, "/v1/subnets/register"),
+        config=config,
+        json_body={"csr_pem": csr_pem, "fingerprint": fingerprint, "owner_token": owner_token},
+        headers=headers,
+    )
+    return response.json()
+
+
+def fetch_registration_status(
+    config: RootCliConfig,
+    *,
+    fingerprint: str,
+    owner_token: str,
+) -> dict:
+    headers = {"X-Owner-Token": owner_token}
+    encoded = quote(fingerprint, safe="")
+    response = _plain_request(
+        "GET",
+        _root_url(config, f"/v1/subnets/register/status?fingerprint={encoded}"),
+        config=config,
+        headers=headers,
+    )
+    return response.json()
+
+
 __all__ = [
     "RootCliConfig",
     "RootCliError",
     "archive_bytes_to_b64",
     "assert_safe_name",
+    "build_csr",
     "create_zip_bytes",
     "ensure_registration",
+    "ensure_hub_keypair",
+    "fetch_registration_status",
+    "fingerprint_for_key",
     "fetch_policy",
     "keys_dir",
     "key_path",
@@ -440,5 +526,6 @@ __all__ = [
     "push_skill_draft",
     "push_scenario_draft",
     "run_preflight_checks",
+    "submit_subnet_registration",
     "save_root_cli_config",
 ]

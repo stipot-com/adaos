@@ -8,11 +8,13 @@ import os
 
 import typer
 
+from adaos.apps.cli import root_ops
 from adaos.services.crypto.pki import generate_rsa_key, make_csr, write_pem, write_private_key
 from adaos.services.node_config import ensure_hub, load_node, node_base_dir, save_node
 from adaos.services.root.client import RootHttpClient, RootHttpError
 from adaos.services.root.keyring import KeyringUnavailableError, load_refresh
 from adaos.services.root.service import OwnerHubsService, PkiService, RootAuthError, RootAuthService
+from adaos.services.id_gen import new_id
 
 app = typer.Typer(help="Developer utilities for Root integration")
 root_app = typer.Typer(help="Root owner operations")
@@ -92,6 +94,89 @@ def _handle_root_error(exc: Exception) -> None:
         _print_error(str(exc))
     else:
         _print_error(str(exc))
+
+
+def _hub_enroll(
+    owner_token: Optional[str] = typer.Option(
+        None,
+        "--owner-token",
+        envvar="ADAOS_ROOT_OWNER_TOKEN",
+        help="Owner token issued by root for subnet enrollment",
+    ),
+    idempotency_key: Optional[str] = typer.Option(
+        None,
+        "--idem-key",
+        help="Override Idempotency-Key header",
+    ),
+) -> None:
+    token = owner_token or os.getenv("ADAOS_ROOT_OWNER_TOKEN")
+    if not token:
+        _print_error("Owner token is required. Set ADAOS_ROOT_OWNER_TOKEN or use --owner-token.")
+        raise typer.Exit(1)
+
+    try:
+        config = root_ops.load_root_cli_config()
+    except root_ops.RootCliError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+
+    try:
+        key_path, key = root_ops.ensure_hub_keypair()
+    except root_ops.RootCliError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+
+    fingerprint = root_ops.fingerprint_for_key(key)
+    csr_pem = root_ops.build_csr("adaos-hub", key)
+    idem_key = idempotency_key or new_id()
+
+    try:
+        response = root_ops.submit_subnet_registration(
+            config,
+            csr_pem=csr_pem,
+            fingerprint=fingerprint,
+            owner_token=token,
+            idempotency_key=idem_key,
+        )
+    except root_ops.RootCliError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+
+    data = response.get("data") or {}
+    subnet_id = data.get("subnet_id")
+    hub_device_id = data.get("hub_device_id")
+    cert_pem = data.get("cert_pem")
+    if not isinstance(subnet_id, str) or not isinstance(hub_device_id, str) or not isinstance(cert_pem, str):
+        _print_error("Root response is missing subnet registration data.")
+        raise typer.Exit(1)
+
+    cert_path = root_ops.key_path("hub_cert")
+    try:
+        write_pem(cert_path, cert_pem)
+    except Exception as exc:  # noqa: BLE001
+        _print_error(f"Failed to save hub certificate: {exc}")
+        raise typer.Exit(1)
+
+    config.subnet_id = subnet_id
+    config.keys.hub.key = str(key_path)
+    config.keys.hub.cert = str(cert_path)
+    try:
+        root_ops.save_root_cli_config(config)
+    except root_ops.RootCliError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+
+    typer.secho("Hub registration complete.", fg=typer.colors.GREEN)
+    typer.echo(f"Subnet ID: {subnet_id}")
+    typer.echo(f"Hub device ID: {hub_device_id}")
+    typer.echo(f"Hub private key: {key_path}")
+    typer.echo(f"Hub certificate: {cert_path}")
+
+
+_hub_enroll_help = "Register the local hub with the root service using a silent owner token flow."
+app.command("hub-enroll", help=_hub_enroll_help)(_hub_enroll)
+app.command("hub_enroll", help=_hub_enroll_help)(_hub_enroll)
+app.command("hub-register", help=_hub_enroll_help)(_hub_enroll)
 
 
 @root_app.command("login")

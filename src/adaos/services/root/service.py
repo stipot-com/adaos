@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable
-import time
+from typing import Any, Callable, Iterable
 
 from adaos.services.node_config import NodeConfig, RootOwnerProfile, ensure_hub, save_node
 
 from .client import RootHttpClient, RootHttpError
 from .keyring import KeyringUnavailableError, delete_refresh, load_refresh, save_refresh
+from adaos.adapters.db import sqlite as sqlite_db
+from adaos.apps.api.auth import require_owner_token
+from adaos.services.id_gen import new_id
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+
 
 
 class RootAuthError(RuntimeError):
@@ -42,6 +50,12 @@ def _root_state(cfg: NodeConfig) -> dict:
 class RootAuthService:
     http: RootHttpClient
     clock_skew: timedelta = timedelta(seconds=30)
+
+    @staticmethod
+    def resolve_owner(token: str) -> str:
+        require_owner_token(token)
+        owner_id = os.getenv("ADAOS_ROOT_OWNER_ID") or "local-owner"
+        return owner_id
 
     def login_owner(
         self,
@@ -177,6 +191,61 @@ class RootAuthService:
                 pass
         cfg.root = None
         save_node(cfg)
+
+    @staticmethod
+    def register_subnet(owner_token: str, csr_pem: str, fingerprint: str, hints: Any | None = None) -> dict:
+        owner_id = RootAuthService.resolve_owner(owner_token)
+        ca_state = sqlite_db.ca_load()
+        ca_key = serialization.load_pem_private_key(ca_state["ca_key_pem"].encode("utf-8"), password=None)
+        ca_cert = x509.load_pem_x509_certificate(ca_state["ca_cert_pem"].encode("utf-8"))
+
+        subnet = sqlite_db.subnet_get_or_create(owner_id)
+        existing_device = sqlite_db.device_get_by_fingerprint(subnet["subnet_id"], fingerprint)
+        now = datetime.now(timezone.utc)
+
+        if existing_device:
+            cert_pem = existing_device["cert_pem"]
+            issued_at = existing_device["issued_at"]
+            expires_at = existing_device["expires_at"]
+            device_id = existing_device["device_id"]
+        else:
+            try:
+                csr = x509.load_pem_x509_csr(csr_pem.encode("utf-8"))
+            except ValueError as exc:  # pragma: no cover - invalid CSR handling
+                raise RootAuthError("invalid CSR") from exc
+            if not csr.is_signature_valid:
+                raise RootAuthError("CSR signature invalid")
+
+            serial = int(ca_state["next_serial"])
+            not_before = now - timedelta(minutes=1)
+            not_after = now + timedelta(days=365)
+            builder = (
+                x509.CertificateBuilder()
+                .subject_name(csr.subject)
+                .issuer_name(ca_cert.subject)
+                .public_key(csr.public_key())
+                .serial_number(serial)
+                .not_valid_before(not_before)
+                .not_valid_after(not_after)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            )
+            for extension in csr.extensions:
+                builder = builder.add_extension(extension.value, extension.critical)
+            certificate = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+            cert_pem = certificate.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+            issued_at = int(now.timestamp())
+            expires_at = int(not_after.timestamp())
+            device = sqlite_db.device_upsert_hub(subnet["subnet_id"], fingerprint, cert_pem, issued_at, expires_at)
+            device_id = device["device_id"]
+            sqlite_db.ca_update_serial(serial + 1)
+        envelope_time = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        event_id = new_id()
+        data = {
+            "subnet_id": subnet["subnet_id"],
+            "hub_device_id": device_id,
+            "cert_pem": cert_pem,
+        }
+        return {"data": data, "event_id": event_id, "server_time_utc": envelope_time}
 
 
 @dataclass
