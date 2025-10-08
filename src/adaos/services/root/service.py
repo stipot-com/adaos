@@ -546,7 +546,10 @@ class RootDeveloperService:
         try:
             start = client.device_authorize(verify=authorize_verify)
         except RootHttpError as exc:
-            fallback = self._maybe_retry_with_mtls(cfg, exc)
+            try:
+                fallback = self._maybe_retry_with_mtls(cfg, exc)
+            except RootServiceError as mtls_exc:
+                raise mtls_exc from exc
             if not fallback:
                 raise RootServiceError(str(exc)) from exc
             authorize_verify, authorize_cert = fallback
@@ -656,15 +659,21 @@ class RootDeveloperService:
             return None
         try:
             cert_path, key_path, verify = self._mtls_material(cfg)
-        except RootServiceError:
-            return None
+        except RootServiceError as exc:
+            raise RootServiceError(
+                f"{exc} (required for client certificate authentication)"
+            ) from exc
         return verify, (cert_path, key_path)
 
     @staticmethod
     def _should_retry_with_mtls(exc: RootHttpError) -> bool:
-        if exc.error_code in {"invalid_client_certificate", "client_certificate_required"}:
+        if exc.error_code in {
+            "invalid_client_certificate",
+            "client_certificate_required",
+            "client_certificate_missing",
+        }:
             return True
-        if exc.status_code == 403 and "certificate" in str(exc).lower():
+        if exc.status_code in {400, 401, 403} and "certificate" in str(exc).lower():
             return True
         return False
 
