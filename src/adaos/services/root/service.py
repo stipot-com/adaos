@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import os
+import shutil
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable
+from pathlib import Path
+from typing import Any, Callable, Iterable, Literal, Mapping
 
-from adaos.services.node_config import NodeConfig, RootOwnerProfile, ensure_hub, save_node
+from adaos.services.crypto.pki import generate_rsa_key, make_csr, write_pem, write_private_key
+from adaos.services.node_config import NodeConfig, RootOwnerProfile, ensure_hub, load_node, save_node
 
 from .client import RootHttpClient, RootHttpError
 from .keyring import KeyringUnavailableError, delete_refresh, load_refresh, save_refresh
@@ -16,6 +23,7 @@ from adaos.services.id_gen import new_id
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 
@@ -292,4 +300,469 @@ class PkiService:
         return self.http.pki_enroll(token, hub_id, csr_pem, ttl)
 
 
-__all__ = ["RootAuthService", "OwnerHubsService", "PkiService", "RootAuthError"]
+# ---------------------------------------------------------------------------
+# Developer workflow helpers
+# ---------------------------------------------------------------------------
+
+
+class RootServiceError(RuntimeError):
+    """Raised when developer workflow operations fail."""
+
+
+@dataclass(slots=True)
+class DeviceAuthorization:
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str | None
+    interval: int
+    expires_in: int
+
+
+@dataclass(slots=True)
+class RootInitResult:
+    subnet_id: str
+    reused: bool
+    hub_key_path: Path
+    hub_cert_path: Path
+    ca_cert_path: Path | None
+    workspace_path: Path
+
+
+@dataclass(slots=True)
+class RootLoginResult:
+    owner_id: str
+    workspace_path: Path
+    subnet_id: str | None = None
+
+
+@dataclass(slots=True)
+class ArtifactCreateResult:
+    kind: str
+    name: str
+    owner_id: str
+    path: Path
+
+
+@dataclass(slots=True)
+class ArtifactPushResult:
+    kind: str
+    name: str
+    stored_path: str
+    sha256: str
+    bytes_uploaded: int
+
+
+_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".venv",
+    "node_modules",
+    "dist",
+    "build",
+    ".idea",
+}
+_SKIP_FILES = {".DS_Store"}
+
+
+def assert_safe_name(name: str) -> None:
+    if not name or not name.strip():
+        raise RootServiceError("Name must not be empty")
+
+
+def _should_skip(path: Path) -> bool:
+    for part in path.parts[:-1]:
+        if part in _SKIP_DIRS:
+            return True
+    if path.name in _SKIP_FILES:
+        return True
+    if path.suffix in {".pyc", ".pyo"}:
+        return True
+    return False
+
+
+def create_zip_bytes(root: Path) -> bytes:
+    if not root.exists():
+        raise RootServiceError(f"Path not found: {root}")
+    root = root.expanduser().resolve()
+    if not root.is_dir():
+        raise RootServiceError(f"Expected directory at {root}")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root)
+            if _should_skip(relative):
+                continue
+            if path.is_dir():
+                continue
+            zf.write(path, arcname=str(relative))
+    return buffer.getvalue()
+
+
+def archive_bytes_to_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def fingerprint_for_key(key: rsa.RSAPrivateKey) -> str:
+    public_bytes = key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return "sha256:" + hashlib.sha256(public_bytes).hexdigest()
+
+
+def _home_relative(path: Path) -> str:
+    try:
+        rel = path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return str(path)
+    return str(Path("~") / rel)
+
+
+def _templates_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "templates"
+
+
+def _template_path(name: str) -> Path:
+    candidate = _templates_dir() / name
+    if not candidate.exists():
+        raise RootServiceError(f"Template '{name}' not found at {candidate}")
+    return candidate
+
+
+def _copy_template(src: Path, dst: Path) -> None:
+    if dst.exists():
+        raise RootServiceError(f"Target already exists: {dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst)
+
+
+def _ensure_keep_file(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    keep = directory / ".keep"
+    if not keep.exists():
+        keep.write_text("", encoding="utf-8")
+
+
+def _insecure_tls_enabled() -> bool:
+    value = os.getenv("ADAOS_INSECURE_TLS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+class RootDeveloperService:
+    """High-level orchestration for Root developer workflows."""
+
+    def __init__(
+        self,
+        *,
+        config_loader: Callable[[], NodeConfig] | None = None,
+        config_saver: Callable[[NodeConfig], None] | None = None,
+        client_factory: Callable[[NodeConfig], RootHttpClient] | None = None,
+    ) -> None:
+        self._load_config = config_loader or load_node
+        self._save_config = config_saver or save_node
+        self._client_factory = client_factory
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def init(self, *, root_token: str | None = None, metadata: Mapping[str, Any] | None = None) -> RootInitResult:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or os.getenv("ADAOS_ROOT_TOKEN")
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+
+        key_path, private_key = self._ensure_hub_keypair(cfg)
+        fingerprint = fingerprint_for_key(private_key)
+        csr_pem = make_csr("adaos-hub", None, private_key).replace("\r\n", "\n").strip() + "\n"
+
+        verify = self._plain_verify(cfg)
+        client = self._client(cfg)
+        meta_payload: dict[str, Any] = {"fingerprint": fingerprint}
+        if metadata:
+            meta_payload.update(metadata)
+        bootstrap = client.request_bootstrap_token(token, meta=meta_payload, verify=verify)
+        bootstrap_token = bootstrap.get("one_time_token") or bootstrap.get("token")
+        if not isinstance(bootstrap_token, str) or not bootstrap_token:
+            raise RootServiceError("Root did not return bootstrap token")
+
+        previous_subnet = cfg.subnet_id
+        registration = client.register_subnet(
+            csr_pem,
+            bootstrap_token=bootstrap_token,
+            verify=verify,
+        )
+
+        subnet_id = registration.get("subnet_id")
+        cert_pem = registration.get("cert_pem")
+        ca_pem = registration.get("ca_pem")
+        if not isinstance(subnet_id, str) or not subnet_id:
+            raise RootServiceError("Root response missing subnet_id")
+        if not isinstance(cert_pem, str) or not cert_pem.strip():
+            raise RootServiceError("Root response missing hub certificate")
+
+        cert_path = cfg.hub_cert_path()
+        write_pem(cert_path, cert_pem)
+
+        ca_path: Path | None = None
+        if isinstance(ca_pem, str) and ca_pem.strip():
+            ca_path = cfg.ca_cert_path()
+            write_pem(ca_path, ca_pem)
+            cfg.root_settings.ca_cert = _home_relative(ca_path)
+
+        cfg.subnet_settings.id = subnet_id
+        cfg.subnet_id = subnet_id
+        cfg.subnet_settings.hub.key = _home_relative(key_path)
+        cfg.subnet_settings.hub.cert = _home_relative(cert_path)
+
+        self._save_config(cfg)
+
+        workspace = self._prepare_workspace(cfg, owner="pending_owner")
+
+        reused = bool(registration.get("reused")) or previous_subnet == subnet_id
+        return RootInitResult(
+            subnet_id=subnet_id,
+            reused=reused,
+            hub_key_path=key_path,
+            hub_cert_path=cert_path,
+            ca_cert_path=ca_path,
+            workspace_path=workspace,
+        )
+
+    def login(
+        self,
+        *,
+        on_authorize: Callable[[DeviceAuthorization], None] | None = None,
+    ) -> RootLoginResult:
+        cfg = self._load_config()
+        verify = self._plain_verify(cfg)
+        client = self._client(cfg)
+
+        start = client.device_authorize(verify=verify)
+        device_code = start.get("device_code")
+        user_code = start.get("user_code") or start.get("user_code_short")
+        verification_uri = start.get("verification_uri") or start.get("verification_uri_complete")
+        verification_complete = start.get("verification_uri_complete")
+        interval = max(int(start.get("interval", 5)), 1)
+        expires_in = int(start.get("expires_in", 600))
+        if not isinstance(device_code, str) or not isinstance(user_code, str) or not isinstance(verification_uri, str):
+            raise RootServiceError("Root did not return device authorization data")
+
+        auth = DeviceAuthorization(
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri=verification_uri,
+            verification_uri_complete=verification_complete if isinstance(verification_complete, str) else None,
+            interval=interval,
+            expires_in=expires_in,
+        )
+        if on_authorize:
+            on_authorize(auth)
+
+        deadline = time.monotonic() + auth.expires_in
+        delay = 0
+        while time.monotonic() < deadline:
+            if delay:
+                time.sleep(delay)
+            try:
+                result = client.device_poll(auth.device_code, verify=verify)
+            except RootHttpError as exc:
+                code = exc.error_code or ""
+                if code == "authorization_pending":
+                    delay = auth.interval
+                    continue
+                if code == "slow_down":
+                    auth.interval += 5
+                    delay = auth.interval
+                    continue
+                if code in {"expired_token", "expired_device_code"}:
+                    raise RootServiceError("Device authorization expired before completion") from exc
+                raise RootServiceError(str(exc)) from exc
+            else:
+                token = result
+                break
+        else:
+            raise RootServiceError("Device authorization expired before completion")
+
+        owner_id = token.get("owner_id")
+        subnet_id = token.get("subnet_id") if isinstance(token, Mapping) else None
+        if not isinstance(owner_id, str) or not owner_id:
+            raise RootServiceError("Root did not return owner_id")
+
+        cfg.root_settings.owner.owner_id = owner_id
+        if isinstance(subnet_id, str) and subnet_id:
+            cfg.subnet_settings.id = subnet_id
+            cfg.subnet_id = subnet_id
+
+        workspace = self._activate_workspace(cfg, owner_id)
+        self._save_config(cfg)
+        return RootLoginResult(owner_id=owner_id, workspace_path=workspace, subnet_id=subnet_id if isinstance(subnet_id, str) else None)
+
+    def create_skill(self, name: str) -> ArtifactCreateResult:
+        return self._create_artifact("skills", name, template="skill_default")
+
+    def create_scenario(self, name: str) -> ArtifactCreateResult:
+        return self._create_artifact("scenarios", name, template="scenario_default")
+
+    def push_skill(self, name: str) -> ArtifactPushResult:
+        return self._push_artifact("skills", name)
+
+    def push_scenario(self, name: str) -> ArtifactPushResult:
+        return self._push_artifact("scenarios", name)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _client(self, cfg: NodeConfig) -> RootHttpClient:
+        if self._client_factory:
+            return self._client_factory(cfg)
+        base_url = cfg.root_settings.base_url or "https://api.inimatic.com"
+        return RootHttpClient(base_url=base_url)
+
+    def _plain_verify(self, cfg: NodeConfig) -> str | bool:
+        ca = cfg.root_settings.ca_cert
+        if ca:
+            path = Path(ca).expanduser()
+            if not path.exists():
+                raise RootServiceError(f"CA certificate not found at {path}")
+            return str(path)
+        if _insecure_tls_enabled():
+            return False
+        return True
+
+    def _mtls_material(self, cfg: NodeConfig) -> tuple[str, str, str]:
+        ca_path = cfg.ca_cert_path()
+        cert_path = cfg.hub_cert_path()
+        key_path = cfg.hub_key_path()
+        for label, path in ("CA certificate", ca_path), ("hub certificate", cert_path), ("hub private key", key_path):
+            if not path.exists():
+                raise RootServiceError(f"{label} not found at {path}; run 'adaos dev root init' first")
+        return str(cert_path), str(key_path), str(ca_path)
+
+    def _ensure_hub_keypair(self, cfg: NodeConfig) -> tuple[Path, rsa.RSAPrivateKey]:
+        key_path = cfg.hub_key_path()
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        if key_path.exists():
+            try:
+                private_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+            except ValueError as exc:  # pragma: no cover - corrupted key
+                raise RootServiceError(f"Invalid hub private key at {key_path}") from exc
+        else:
+            private_key = generate_rsa_key()
+            write_private_key(key_path, private_key)
+        cfg.subnet_settings.hub.key = _home_relative(key_path)
+        return key_path, private_key
+
+    def _prepare_workspace(self, cfg: NodeConfig, *, owner: str) -> Path:
+        workspace_root = cfg.workspace_path()
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        target = workspace_root / owner
+        for sub in ("skills", "scenarios", "uploads"):
+            _ensure_keep_file(target / sub)
+        return target
+
+    def _activate_workspace(self, cfg: NodeConfig, owner_id: str) -> Path:
+        workspace_root = cfg.workspace_path()
+        pending = workspace_root / "pending_owner"
+        target = workspace_root / owner_id
+        if pending.exists():
+            if target.exists():
+                for child in pending.iterdir():
+                    destination = target / child.name
+                    if destination.exists():
+                        continue
+                    child.rename(destination)
+                try:
+                    pending.rmdir()
+                except OSError:
+                    pass
+            else:
+                pending.rename(target)
+        target.mkdir(parents=True, exist_ok=True)
+        for sub in ("skills", "scenarios", "uploads"):
+            _ensure_keep_file(target / sub)
+        return target
+
+    def _owner_workspace(self, cfg: NodeConfig) -> tuple[str, Path]:
+        owner = cfg.owner_id or "pending_owner"
+        path = cfg.workspace_path() / owner
+        if not path.exists():
+            path = self._prepare_workspace(cfg, owner=owner)
+        else:
+            for sub in ("skills", "scenarios", "uploads"):
+                _ensure_keep_file(path / sub)
+        return owner, path
+
+    def _create_artifact(self, kind: Literal["skills", "scenarios"], name: str, *, template: str) -> ArtifactCreateResult:
+        assert_safe_name(name)
+        cfg = self._load_config()
+        owner, workspace = self._owner_workspace(cfg)
+        target = workspace / kind / name
+        template_path = _template_path(template)
+        _copy_template(template_path, target)
+        return ArtifactCreateResult(kind=kind.rstrip("s"), name=name, owner_id=owner, path=target)
+
+    def _push_artifact(self, kind: Literal["skills", "scenarios"], name: str) -> ArtifactPushResult:
+        cfg = self._load_config()
+        owner_id = cfg.owner_id
+        if not owner_id:
+            raise RootServiceError("Owner is not configured; run 'adaos dev root login' first")
+        _, workspace = self._owner_workspace(cfg)
+        source = workspace / kind / name
+        if not source.exists():
+            raise RootServiceError(f"{kind[:-1].capitalize()} '{name}' not found at {source}")
+        archive_bytes = create_zip_bytes(source)
+        archive_b64 = archive_bytes_to_b64(archive_bytes)
+        digest = hashlib.sha256(archive_bytes).hexdigest()
+        cert_path, key_path, ca_path = self._mtls_material(cfg)
+        client = self._client(cfg)
+        node_id = cfg.node_settings.id or cfg.node_id
+        if kind == "skills":
+            response = client.push_skill_draft(
+                name=name,
+                archive_b64=archive_b64,
+                node_id=node_id,
+                verify=ca_path,
+                cert=(cert_path, key_path),
+                sha256=digest,
+            )
+        else:
+            response = client.push_scenario_draft(
+                name=name,
+                archive_b64=archive_b64,
+                node_id=node_id,
+                verify=ca_path,
+                cert=(cert_path, key_path),
+                sha256=digest,
+            )
+        stored = response.get("stored_path")
+        if not isinstance(stored, str) or not stored:
+            raise RootServiceError("Root did not return stored_path")
+        return ArtifactPushResult(
+            kind=kind.rstrip("s"),
+            name=name,
+            stored_path=stored,
+            sha256=digest,
+            bytes_uploaded=len(archive_bytes),
+        )
+
+
+__all__ = [
+    "RootAuthService",
+    "OwnerHubsService",
+    "PkiService",
+    "RootAuthError",
+    "RootDeveloperService",
+    "RootServiceError",
+    "DeviceAuthorization",
+    "RootInitResult",
+    "RootLoginResult",
+    "ArtifactCreateResult",
+    "ArtifactPushResult",
+    "assert_safe_name",
+    "create_zip_bytes",
+    "archive_bytes_to_b64",
+    "fingerprint_for_key",
+]
