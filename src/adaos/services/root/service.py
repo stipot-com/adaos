@@ -625,11 +625,13 @@ class RootDeveloperService:
         ca = cfg.root_settings.ca_cert
         if ca:
             path = Path(ca).expanduser()
-            if path.exists():
-                return str(path)
             default_ca_path = Path("~/.adaos/keys/ca.cert").expanduser()
-            if path != default_ca_path:
-                raise RootServiceError(f"CA certificate not found at {path}")
+            if path.exists():
+                if path != default_ca_path:
+                    return str(path)
+            else:
+                if path != default_ca_path:
+                    raise RootServiceError(f"CA certificate not found at {path}")
         if _insecure_tls_enabled():
             return False
         return True
