@@ -156,17 +156,19 @@ def _hub_enroll(
         _print_error(str(exc))
         raise typer.Exit(1)
 
-    data = response.get("data") or {}
-    subnet_id = data.get("subnet_id")
-    hub_device_id = data.get("hub_device_id")
-    cert_pem = data.get("cert_pem")
-    if not isinstance(subnet_id, str) or not isinstance(hub_device_id, str) or not isinstance(cert_pem, str):
+    subnet_id = response.get("subnet_id")
+    cert_pem = response.get("cert_pem")
+    ca_pem = response.get("ca_pem")
+    if not isinstance(subnet_id, str) or not isinstance(cert_pem, str):
         _print_error("Root response is missing subnet registration data.")
         raise typer.Exit(1)
 
     cert_path = root_ops.key_path("hub_cert")
+    ca_path = root_ops.key_path("ca_cert")
     try:
         write_pem(cert_path, cert_pem)
+        if isinstance(ca_pem, str) and ca_pem.strip():
+            write_pem(ca_path, ca_pem)
     except Exception as exc:  # noqa: BLE001
         _print_error(f"Failed to save hub certificate: {exc}")
         raise typer.Exit(1)
@@ -174,6 +176,8 @@ def _hub_enroll(
     config.subnet_id = subnet_id
     config.keys.hub.key = str(key_path)
     config.keys.hub.cert = str(cert_path)
+    if isinstance(ca_pem, str) and ca_pem.strip():
+        config.keys.ca = str(ca_path)
     try:
         root_ops.save_root_cli_config(config)
     except root_ops.RootCliError as exc:
@@ -182,15 +186,14 @@ def _hub_enroll(
 
     typer.secho("Hub registration complete.", fg=typer.colors.GREEN)
     typer.echo(f"Subnet ID: {subnet_id}")
-    typer.echo(f"Hub device ID: {hub_device_id}")
     typer.echo(f"Hub private key: {key_path}")
     typer.echo(f"Hub certificate: {cert_path}")
+    if isinstance(ca_pem, str) and ca_pem.strip():
+        typer.echo(f"CA certificate: {ca_path}")
 
 
 _hub_enroll_help = "Register the local hub with the root service using a silent owner token flow."
 app.command("hub-enroll", help=_hub_enroll_help)(_hub_enroll)
-app.command("hub_enroll", help=_hub_enroll_help)(_hub_enroll)
-app.command("hub-register", help=_hub_enroll_help)(_hub_enroll)
 
 
 @root_app.command("login")

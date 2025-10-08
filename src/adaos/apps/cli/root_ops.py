@@ -484,8 +484,8 @@ def submit_subnet_registration(
     config: RootCliConfig,
     *,
     csr_pem: str,
-    fingerprint: str,
-    owner_token: str,
+    fingerprint: str,  # можно проигнорировать на сервере
+    owner_token: str,  # TODO remove
     idempotency_key: Optional[str] = None,
 ) -> dict:
     one_time = issue_bootstrap_token(config, meta={"fingerprint": fingerprint})
@@ -493,7 +493,8 @@ def submit_subnet_registration(
     headers = {"Content-Type": "application/json", "X-Bootstrap-Token": one_time}
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
-
+    if config.bootstrap_token:
+        headers["X-Bootstrap-Token"] = config.bootstrap_token
     resp = _plain_request(
         "POST",
         _root_url(config, "/v1/subnets/register"),
