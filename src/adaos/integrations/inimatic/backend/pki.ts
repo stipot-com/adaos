@@ -73,19 +73,22 @@ export class CertificateAuthority {
 		const days = options.validityDays ?? this.defaultValidityDays;
 		certificate.validity.notAfter = new Date(now.getTime() + days * 86400_000);
 
+		const UTF8STRING = (forge.asn1 as any).Type.UTF8STRING as unknown as forge.asn1.Class;
+
 		const attrs: forge.pki.CertificateField[] = [
-			{ name: 'commonName', value: subject.commonName, type: 'utf8String' },
+			{ name: 'commonName', value: subject.commonName, valueTagClass: UTF8STRING },
 		];
+
 		if (subject.organizationName) {
-			attrs.push({ name: 'organizationName', value: subject.organizationName, type: 'utf8String' });
+			attrs.push({ name: 'organizationName', value: subject.organizationName, valueTagClass: UTF8STRING });
 		}
+
 		certificate.setSubject(attrs);
-		certificate.setIssuer(this.caCert.subject.attributes);
 
 		certificate.setExtensions([
 			{ name: 'basicConstraints', cA: false },
 			{ name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
-			{ name: 'extKeyUsage', clientAuth: true }, // корректный id для EKU в forge
+			{ name: 'extKeyUsage', clientAuth: true }, // именно extKeyUsage
 			{
 				name: 'subjectKeyIdentifier',
 				subjectKeyIdentifier: forge.pki.getPublicKeyFingerprint(certificate.publicKey, {
@@ -96,13 +99,8 @@ export class CertificateAuthority {
 
 		certificate.sign(this.caKey, forge.md.sha256.create());
 
-		// На всякий случай нормализуем переводы строк (не обязательно, но приятно)
 		const pem = forge.pki.certificateToPem(certificate).replace(/\r\n/g, '\n').trim() + '\n';
-
-		return {
-			certificatePem: pem,
-			serialNumber: certificate.serialNumber,
-		};
+		return { certificatePem: pem, serialNumber: certificate.serialNumber };
 	}
 }
 
