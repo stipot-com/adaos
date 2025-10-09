@@ -73,16 +73,16 @@ export class CertificateAuthority {
 		const days = options.validityDays ?? this.defaultValidityDays;
 		certificate.validity.notAfter = new Date(now.getTime() + days * 86400_000);
 
-		const UTF8STRING = (forge.asn1 as any).Type.UTF8STRING as unknown as forge.asn1.Class;
 		const { asn1 } = forge;
+		const UTF8STRING_TAG: number = (asn1 as any)?.Type?.UTF8 ?? 12;
 		const attrs: forge.pki.CertificateField[] = [
-			{ name: 'commonName', value: subject.commonName, valueTagClass: asn1.Type.UTF8STRING as any },
+			{ name: 'commonName', value: subject.commonName, valueTagClass: UTF8STRING_TAG as any },
 		];
 		if (subject.organizationName) {
-			attrs.push({ name: 'organizationName', value: subject.organizationName, valueTagClass: asn1.Type.UTF8STRING as any });
+			attrs.push({ name: 'organizationName', value: subject.organizationName, valueTagClass: UTF8STRING_TAG as any });
 		}
-		certificate.setSubject(attrs);
-		certificate.setIssuer(this.caCert.subject.attributes);
+		certificate.setSubject(attrs as any);
+		certificate.setIssuer(this.caCert.subject.attributes as any);
 
 		certificate.setExtensions([
 			{ name: 'basicConstraints', cA: false },
