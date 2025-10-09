@@ -5,6 +5,7 @@ from typing import Dict, List
 
 import typer
 
+from adaos.services.node_config import displayable_path
 from adaos.services.root.service import (
     DeviceAuthorization,
     RootDeveloperService,
@@ -30,13 +31,8 @@ def _service() -> RootDeveloperService:
 def _display_path(path: Path | None) -> str:
     if path is None:
         return "—"
-    try:
-        resolved = path.expanduser().resolve()
-        home = Path.home().resolve()
-        relative = resolved.relative_to(home)
-    except (FileNotFoundError, ValueError):
-        return str(path)
-    return str(Path("~") / relative)
+    rendered = displayable_path(path)
+    return rendered if rendered is not None else str(path)
 
 
 def _print_error(message: str) -> None:

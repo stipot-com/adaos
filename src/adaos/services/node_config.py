@@ -204,7 +204,22 @@ class NodeConfig:
 
 def _expand_path(value: str | None, fallback: str) -> Path:
     target = value or fallback
-    return Path(target).expanduser()
+    candidate = Path(str(target))
+    base = _base_dir()
+
+    if candidate.is_absolute():
+        return candidate
+
+    text = str(candidate).replace("\\", "/")
+    if text.startswith("~"):
+        if text.startswith("~/.adaos"):
+            suffix = text.split("~/.adaos", 1)[1].lstrip("/\\")
+            if suffix:
+                return base / Path(suffix)
+            return base
+        return candidate.expanduser()
+
+    return base / candidate
 
 
 def _stringify_path(value: str | None) -> str | None:
@@ -215,14 +230,45 @@ def _stringify_path(value: str | None) -> str | None:
         resolved = candidate.resolve(strict=False)  # type: ignore[arg-type]
     except TypeError:  # pragma: no cover - compatibility with Python <3.12
         resolved = candidate
+
+    base = _base_dir()
+    try:
+        base_resolved = base.resolve(strict=False)
+    except TypeError:  # pragma: no cover - compatibility with Python <3.12
+        base_resolved = base
+
+    try:
+        relative_base = resolved.relative_to(base_resolved)
+    except ValueError:
+        pass
+    else:
+        default_base = _default_base_dir()
+        try:
+            default_resolved = default_base.resolve(strict=False)
+        except TypeError:  # pragma: no cover
+            default_resolved = default_base
+        if base_resolved == default_resolved:
+            return str(Path("~") / ".adaos" / relative_base)
+        if not relative_base.parts:
+            return str(base_resolved)
+        return str(base_resolved / relative_base)
+
     home = Path.home().resolve()
     try:
-        relative = resolved.relative_to(home)
+        relative_home = resolved.relative_to(home)
     except ValueError:
         return str(candidate)
-    if not relative.parts:
+    if not relative_home.parts:
         return "~"
-    return str(Path("~") / relative)
+    return str(Path("~") / relative_home)
+
+
+def displayable_path(value: Path | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return _stringify_path(str(value))
+    return _stringify_path(value)
 
 
 def _settings_to_dict(settings: Any) -> dict[str, Any]:
