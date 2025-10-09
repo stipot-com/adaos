@@ -3,6 +3,7 @@ import forge from 'node-forge'
 type ForgeCertificate = ReturnType<typeof forge.pki.certificateFromPem>
 type ForgeRsaPrivateKey = forge.pki.rsa.PrivateKey
 type ForgeCertificationRequest = ReturnType<typeof forge.pki.certificationRequestFromPem>
+type ForgeSubjectAttribute = ForgeCertificate['subject']['attributes'][number]
 
 export type CertificateSubject = {
 	commonName: string
@@ -73,21 +74,18 @@ export class CertificateAuthority {
 			throw new Error('CSR does not contain a public key')
 		}
 
-		const cert = forge.pki.createCertificate()
-		cert.serialNumber = generateSerialNumber()
-		cert.publicKey = publicKey
+                const cert = forge.pki.createCertificate()
+                cert.serialNumber = generateSerialNumber()
+                cert.publicKey = publicKey
 
-		const now = Date.now()
-		cert.validity.notBefore = new Date(now - 60_000)
-		const days = options.validityDays ?? this.defaultValidityDays
-		cert.validity.notAfter = new Date(now + days * 24 * 60 * 60 * 1000)
+                const now = Date.now()
+                cert.validity.notBefore = new Date(now - 60_000)
+                const days = options.validityDays ?? this.defaultValidityDays
+                cert.validity.notAfter = new Date(now + days * 24 * 60 * 60 * 1000)
 
-		const attrs: any[] = [{ name: 'commonName', value: subject.commonName }]
-		if (subject.organizationName) {
-			attrs.push({ name: 'organizationName', value: subject.organizationName })
-		}
-		cert.setSubject(attrs)
-		cert.setIssuer(this.caCert.subject.attributes)
+                const subjectAttrs = buildSubjectAttributes(csr, subject)
+                cert.setSubject(subjectAttrs)
+                cert.setIssuer(this.caCert.subject.attributes)
 
 		// Расширения (SKI по hash, AKI из CA)
 		const exts: any[] = [
@@ -116,14 +114,51 @@ export class CertificateAuthority {
 }
 
 function normalizePem(input: string): string {
-	return input.replace(/\r\n/g, '\n').trim() + '\n'
+        return input.replace(/\r\n/g, '\n').trim() + '\n'
+}
+
+function buildSubjectAttributes(csr: ForgeCertificationRequest, subject: CertificateSubject): ForgeSubjectAttribute[] {
+        const attrs: ForgeSubjectAttribute[] = Array.isArray(csr.subject?.attributes)
+                ? csr.subject.attributes.map((attr) => ({ ...attr }))
+                : []
+
+        const upsert = (name: string, shortName: string, type: string, value?: string) => {
+                if (!value) {
+                        return
+                }
+                const existing = attrs.find(
+                        (attr) => attr.type === type || attr.name === name || attr.shortName === shortName,
+                )
+                if (existing) {
+                        existing.value = value
+                        existing.name = name
+                        existing.shortName = shortName
+                        existing.type = type
+                        return
+                }
+                attrs.push({ name, shortName, type, value })
+        }
+
+        upsert('commonName', 'CN', forge.pki.oids['commonName'], subject['commonName'])
+        upsert(
+                'organizationName',
+                'O',
+                forge.pki.oids['organizationName'],
+                subject['organizationName'],
+        )
+
+        if (attrs.length === 0) {
+                throw new Error('Certificate subject is empty')
+        }
+
+        return attrs
 }
 
 function generateSerialNumber(): string {
-	const bytes = forge.random.getBytesSync(16)
-	const hex = forge.util.bytesToHex(bytes)
-	const first = (parseInt(hex.slice(0, 2), 16) & 0x7f).toString(16).padStart(2, '0')
-	return first + hex.slice(2)
+        const bytes = forge.random.getBytesSync(16)
+        const hex = forge.util.bytesToHex(bytes)
+        const first = (parseInt(hex.slice(0, 2), 16) & 0x7f).toString(16).padStart(2, '0')
+        return first + hex.slice(2)
 }
 
 function isRsaPrivateKey(key: forge.pki.PrivateKey): key is ForgeRsaPrivateKey {

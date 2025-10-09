@@ -1,7 +1,6 @@
 # src\adaos\apps\cli\commands\skill.py
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import traceback
@@ -26,17 +25,6 @@ from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
-from adaos.apps.cli.root_ops import (
-    RootCliError,
-    archive_bytes_to_b64,
-    assert_safe_name,
-    create_zip_bytes,
-    ensure_registration,
-    fetch_policy,
-    load_root_cli_config,
-    push_skill_draft,
-    run_preflight_checks,
-)
 
 app = typer.Typer(help=_("cli.help_skill"))
 
@@ -214,102 +202,25 @@ def push_command(
     skill_name: str = typer.Argument(..., help=_("cli.skill.push.name_help")),
     message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
     signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
-    name_override: Optional[str] = typer.Option(None, "--name", help=_("cli.skill.push.name_override_help")),
-    dry_run: bool = typer.Option(False, "--dry-run", help=_("cli.option.dry_run")),
-    no_preflight: bool = typer.Option(False, "--no-preflight", help=_("cli.option.no_preflight")),
-    subnet_name: Optional[str] = typer.Option(None, "--subnet-name", help=_("cli.option.subnet_name")),
-    show_policy: bool = typer.Option(
-        False,
-        "--policy",
-        help="Fetch and display Root policy before pushing.",
-    ),
 ):
     """
     Закоммитить изменения ТОЛЬКО внутри подпапки навыка и выполнить git push.
     Защищён политиками: skills.manage + git.write + net.git.
     """
-    if message is not None:
-        mgr = _mgr()
-        res = mgr.push(skill_name, message, signoff=signoff)
-        if res in {"nothing-to-push", "nothing-to-commit"}:
-            typer.echo(_("cli.skill.push.nothing"))
-        else:
-            typer.echo(_("cli.skill.push.done", name=skill_name, revision=res))
-        return
-
-    if signoff:
-        typer.echo(_("cli.push.signoff_ignored"))
-
-    try:
-        config = load_root_cli_config()
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    if dry_run:
-        typer.echo(_("cli.preflight.skipped_dry_run"))
-    elif not no_preflight:
-        try:
-            run_preflight_checks(config, dry_run=False, echo=typer.echo)
-        except RootCliError as err:
-            typer.secho(str(err), fg=typer.colors.RED)
-            raise typer.Exit(1)
-
-    try:
-        config = ensure_registration(config, dry_run=dry_run, subnet_name=subnet_name, echo=typer.echo)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    if show_policy:
-        if dry_run:
-            typer.echo(
-                f"[dry-run] GET {config.root_base.rstrip('/')}/v1/policy using node certificate"
-            )
-        else:
-            try:
-                policy = fetch_policy(config)
-            except RootCliError as err:
-                typer.secho(str(err), fg=typer.colors.RED)
-                raise typer.Exit(1)
-            typer.echo(json.dumps(policy, ensure_ascii=False, indent=2))
-
-    skill_path = _resolve_skill_path(skill_name)
-
-    target_name = name_override or skill_path.name
-    try:
-        assert_safe_name(target_name)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    try:
-        archive_bytes = create_zip_bytes(skill_path)
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    archive_b64 = archive_bytes_to_b64(archive_bytes)
-    archive_hash = hashlib.sha256(archive_bytes).hexdigest()
-
-    try:
-        stored = push_skill_draft(
-            config,
-            node_id=config.node_id,
-            name=target_name,
-            archive_b64=archive_b64,
-            sha256=archive_hash,
-            dry_run=dry_run,
-            echo=typer.echo,
+    if message is None:
+        typer.secho(
+            "Root publishing via 'adaos skill push' has moved to 'adaos dev skill push'.",
+            fg=typer.colors.YELLOW,
         )
-    except RootCliError as err:
-        typer.secho(str(err), fg=typer.colors.RED)
+        typer.echo("Use --message/-m to push commits or run 'adaos dev skill push <name>'.")
         raise typer.Exit(1)
 
-    if dry_run:
-        typer.echo(_("cli.skill.push.root.dry_run", path=stored))
+    mgr = _mgr()
+    res = mgr.push(skill_name, message, signoff=signoff)
+    if res in {"nothing-to-push", "nothing-to-commit"}:
+        typer.echo(_("cli.skill.push.nothing"))
     else:
-        typer.secho(_("cli.skill.push.root.success", path=stored), fg=typer.colors.GREEN)
+        typer.echo(_("cli.skill.push.done", name=skill_name, revision=res))
 
 
 @_run_safe

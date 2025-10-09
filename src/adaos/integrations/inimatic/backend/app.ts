@@ -197,6 +197,7 @@ const FORGE_WORKDIR = process.env['FORGE_WORKDIR']
 const SKILL_FORGE_KEY_PREFIX = 'forge:skills'
 const SCENARIO_FORGE_KEY_PREFIX = 'forge:scenarios'
 const BOOTSTRAP_TOKEN_TTL_SECONDS = 600
+const HUB_FINGERPRINT_HASH = 'root:hub_fingerprints'
 
 const policy = getPolicy()
 const MAX_ARCHIVE_BYTES = policy.max_archive_mb * 1024 * 1024
@@ -514,32 +515,37 @@ function getPeerCertificate(req: express.Request): PeerCertificate | null {
 }
 
 function parseClientIdentity(cert: PeerCertificate): ClientIdentity | null {
-	const subject = cert.subject
-	const subjectRecord = subject as unknown as Partial<Record<string, string>> | undefined
-	const cn = subjectRecord?.['CN'] ?? subjectRecord?.['cn']
-	if (!cn) {
-		return null
-	}
-	if (cn.startsWith('subnet:')) {
-		const subnetId = cn.slice('subnet:'.length)
-		if (!subnetId) {
-			return null
-		}
-		return { type: 'hub', subnetId }
-	}
-	if (cn.startsWith('node:')) {
-		const nodeId = cn.slice('node:'.length)
-		const org = subjectRecord?.['O'] ?? subjectRecord?.['o']
-		if (!nodeId || !org || !org.startsWith('subnet:')) {
-			return null
-		}
-		const subnetId = org.slice('subnet:'.length)
-		if (!subnetId) {
-			return null
-		}
-		return { type: 'node', subnetId, nodeId }
-	}
-	return null
+        const subject = cert.subject
+        const subjectRecord = subject as unknown as Partial<Record<string, string>> | undefined
+        const cn = subjectRecord?.['CN'] ?? subjectRecord?.['cn']
+        if (!cn) {
+                console.warn('mTLS identity parse failed: missing common name', { subject: subjectRecord })
+                return null
+        }
+        if (cn.startsWith('subnet:')) {
+                const subnetId = cn.slice('subnet:'.length)
+                if (!subnetId) {
+                        console.warn('mTLS identity parse failed: empty subnet common name', { subject: subjectRecord })
+                        return null
+                }
+                return { type: 'hub', subnetId }
+        }
+        if (cn.startsWith('node:')) {
+                const nodeId = cn.slice('node:'.length)
+                const org = subjectRecord?.['O'] ?? subjectRecord?.['o']
+                if (!nodeId || !org || !org.startsWith('subnet:')) {
+                        console.warn('mTLS identity parse failed: node subject missing subnet binding', { subject: subjectRecord })
+                        return null
+                }
+                const subnetId = org.slice('subnet:'.length)
+                if (!subnetId) {
+                        console.warn('mTLS identity parse failed: empty subnet organization', { subject: subjectRecord })
+                        return null
+                }
+                return { type: 'node', subnetId, nodeId }
+        }
+        console.warn('mTLS identity parse failed: unsupported common name', { subject: subjectRecord })
+        return null
 }
 
 function getClientIdentity(req: express.Request): ClientIdentity | null {
@@ -806,27 +812,45 @@ app.post('/v1/subnets/register', async (req, res) => {
 	const bootstrapToken = req.header('X-Bootstrap-Token') ?? '';
 	if (!bootstrapToken) { /* ... */ }
 
-	try {
-		await useBootstrapToken(bootstrapToken);
-		console.log('register: bootstrap token OK, dt=%dms', Date.now() - t0);
-	} catch (e) { /* ... */ }
+        let bootstrapMeta: Record<string, unknown> = {};
+        try {
+                bootstrapMeta = await useBootstrapToken(bootstrapToken);
+                console.log('register: bootstrap token OK, dt=%dms', Date.now() - t0);
+        } catch (e) { /* ... */ }
 
 	const csrPemRaw = typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null;
 	if (!csrPemRaw) { /* ... */ }
 	const csrPem = csrPemRaw.replace(/\r\n/g, '\n').trim() + '\n';
 
-	const subnetId = generateSubnetId();
-	let certPem: string;
-	try {
-		certPem = certificateAuthority.issueClientCertificate({
-			csrPem,
-			subject: { commonName: `subnet:${subnetId}` },
-		}).certificatePem;
-		console.log('register: cert issued v2, dt=%dms', Date.now() - t0);
-	} catch (e) {
-		console.error('register: issue cert failed:', (e as any)?.message);
-		return handleError(req, res, e, { status: 400, code: 'certificate_issue_failed' });
-	}
+        const fingerprintRaw = typeof bootstrapMeta['fingerprint'] === 'string' ? (bootstrapMeta['fingerprint'] as string) : undefined;
+        let reused = false;
+        let subnetId = '';
+        if (fingerprintRaw) {
+                try {
+                        const existingSubnet = await redisClient.hGet(HUB_FINGERPRINT_HASH, fingerprintRaw);
+                        if (existingSubnet) {
+                                subnetId = existingSubnet;
+                                reused = true;
+                                console.log('register: reusing subnet %s for fingerprint %s', existingSubnet, fingerprintRaw);
+                        }
+                } catch (error) {
+                        console.warn('register: failed to lookup fingerprint reuse', { fingerprint: fingerprintRaw, error });
+                }
+        }
+        if (!subnetId) {
+                subnetId = generateSubnetId();
+        }
+        let certPem: string;
+        try {
+                certPem = certificateAuthority.issueClientCertificate({
+                        csrPem,
+                        subject: { commonName: `subnet:${subnetId}`, organizationName: `subnet:${subnetId}` },
+                }).certificatePem;
+                console.log('register: cert issued v2, dt=%dms', Date.now() - t0);
+        } catch (e) {
+                console.error('register: issue cert failed:', (e as any)?.message);
+                return handleError(req, res, e, { status: 400, code: 'certificate_issue_failed' });
+        }
 
 	try {
 		console.log('register: on before ensureSubnet')
@@ -837,19 +861,27 @@ app.post('/v1/subnets/register', async (req, res) => {
 		return handleError(req, res, e, { status: 500, code: 'draft_store_failed' });
 	}
 
-	await redisClient.hSet(
-		'root:subnets',
-		subnetId,
-		JSON.stringify({ subnet_id: subnetId, created_at: Date.now() }),
-	);
-	console.log('register: redis saved, dt=%dms', Date.now() - t0);
+        await redisClient.hSet(
+                'root:subnets',
+                subnetId,
+                JSON.stringify({ subnet_id: subnetId, created_at: Date.now() }),
+        );
+        if (fingerprintRaw) {
+                try {
+                        await redisClient.hSet(HUB_FINGERPRINT_HASH, fingerprintRaw, subnetId);
+                } catch (error) {
+                        console.warn('register: failed to store fingerprint mapping', { fingerprint: fingerprintRaw, error });
+                }
+        }
+        console.log('register: redis saved, dt=%dms', Date.now() - t0);
 
-	res.status(201).json({
-		subnet_id: subnetId,
-		cert_pem: certPem,
-		ca_pem: CA_CERT_PEM,
-		forge: { repo: FORGE_GIT_URL, path: `subnets/${subnetId}` },
-	});
+        res.status(201).json({
+                subnet_id: subnetId,
+                cert_pem: certPem,
+                ca_pem: CA_CERT_PEM,
+                forge: { repo: FORGE_GIT_URL, path: `subnets/${subnetId}` },
+                reused,
+        });
 	console.log('register: done, total=%dms', Date.now() - t0);
 });
 

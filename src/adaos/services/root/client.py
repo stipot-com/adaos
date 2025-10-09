@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 
 import httpx
+import ssl
 
 
 class RootHttpError(RuntimeError):
+    """Raised when the Root API returns an error response."""
+
     def __init__(self, message: str, *, status_code: int, error_code: str | None = None, payload: Any | None = None):
         super().__init__(message)
         self.status_code = status_code
@@ -16,19 +19,11 @@ class RootHttpError(RuntimeError):
 
 @dataclass(slots=True)
 class RootHttpClient:
-    """Typed HTTP client for the Inimatic Root API."""
+    """HTTP client for the Inimatic Root API."""
 
-    timeout: float = 15.0
     base_url: str = "https://api.inimatic.com"
-    _client: httpx.Client | None = None
-
-    def __post_init__(self) -> None:
-        if not self._client:
-            self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
-
-    def close(self) -> None:
-        if self._client:
-            self._client.close()
+    timeout: float = 15.0
+    verify: str | bool | ssl.SSLContext = True
 
     def _request(
         self,
@@ -37,14 +32,23 @@ class RootHttpClient:
         *,
         json: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-        client: httpx.Client | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        if client is None:
-            client = self._client
-        assert client is not None
+        request_headers: MutableMapping[str, str] | None = None
+        if headers:
+            request_headers = {str(k): str(v) for k, v in headers.items()}
+        effective_verify = self.verify if verify is None else verify
         try:
-            response = client.request(method, path, json=json, headers=headers)
-        except httpx.RequestError as exc:  # pragma: no cover - network errors in tests
+            with httpx.Client(
+                base_url=self.base_url,
+                timeout=timeout or self.timeout,
+                verify=effective_verify,
+                cert=cert,
+            ) as client:
+                response = client.request(method, path, json=json, headers=request_headers)
+        except httpx.RequestError as exc:  # pragma: no cover - network errors are environment specific
             raise RootHttpError(f"{method} {path} failed: {exc}", status_code=0) from exc
 
         content: Any | None = None
@@ -68,7 +72,9 @@ class RootHttpClient:
 
         return content
 
-    # Owner auth
+    # ------------------------------------------------------------------
+    # Legacy owner authentication endpoints (used by internal services)
+    # ------------------------------------------------------------------
     def owner_start(self, owner_id: str) -> dict:
         return dict(self._request("POST", "/v1/auth/owner/start", json={"owner_id": owner_id}))
 
@@ -83,7 +89,7 @@ class RootHttpClient:
         result = self._request("GET", "/v1/whoami", headers=headers)
         return dict(result) if isinstance(result, Mapping) else {}
 
-    # Owner hubs
+    # Owner hubs --------------------------------------------------------
     def owner_hubs_list(self, access_token: str) -> list[dict]:
         headers = {"Authorization": f"Bearer {access_token}"}
         result = self._request("GET", "/v1/owner/hubs", headers=headers)
@@ -96,7 +102,7 @@ class RootHttpClient:
         payload = {"hub_id": hub_id}
         return dict(self._request("POST", "/v1/owner/hubs", headers=headers, json=payload))
 
-    # PKI
+    # PKI ---------------------------------------------------------------
     def pki_enroll(self, access_token: str, hub_id: str, csr_pem: str, ttl: str | None) -> dict:
         headers = {"Authorization": f"Bearer {access_token}"}
         payload: dict[str, Any] = {"hub_id": hub_id, "csr_pem": csr_pem}
@@ -104,38 +110,105 @@ class RootHttpClient:
             payload["ttl"] = ttl
         return dict(self._request("POST", "/v1/pki/enroll", headers=headers, json=payload))
 
-    # Legacy bootstrap
-    def subnets_register(self, csr_pem: str, bootstrap_token: str, subnet_name: str | None) -> dict:
-        payload: dict[str, Any] = {"csr_pem": csr_pem}
-        if subnet_name:
-            payload["subnet_name"] = subnet_name
-        headers = {"X-Bootstrap-Token": bootstrap_token}
-        return dict(self._request("POST", "/v1/subnets/register", json=payload, headers=headers))
+    # ------------------------------------------------------------------
+    # Root bootstrap & developer endpoints
+    # ------------------------------------------------------------------
+    def request_bootstrap_token(
+        self,
+        root_token: str,
+        *,
+        meta: Mapping[str, Any] | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        payload = dict(meta or {})
+        return dict(self._request("POST", "/v1/bootstrap_token", json=payload, headers=headers, verify=verify, timeout=30.0))
 
-    def nodes_register(
+    def register_subnet(
         self,
         csr_pem: str,
         *,
-        bootstrap_token: str | None,
-        mtls: tuple[str, str, str] | None,
-        subnet_id: str | None = None,
+        bootstrap_token: str,
+        verify: str | bool | ssl.SSLContext | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
-        payload: dict[str, Any] = {"csr_pem": csr_pem}
-        if subnet_id:
-            payload["subnet_id"] = subnet_id
-        headers: dict[str, str] | None = None
-        if bootstrap_token:
-            headers = {"X-Bootstrap-Token": bootstrap_token}
-        if mtls:
-            cert_path, key_path, ca_path = mtls
-            with httpx.Client(
-                base_url=self.base_url,
-                timeout=self.timeout,
-                cert=(cert_path, key_path),
-                verify=ca_path,
-            ) as mtls_client:
-                return dict(self._request("POST", "/v1/nodes/register", json=payload, client=mtls_client))
-        return dict(self._request("POST", "/v1/nodes/register", json=payload, headers=headers))
+        headers: dict[str, str] = {"X-Bootstrap-Token": bootstrap_token}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        payload = {"csr_pem": csr_pem}
+        return dict(self._request("POST", "/v1/subnets/register", json=payload, headers=headers, verify=verify, timeout=120.0))
+
+    def device_authorize(
+        self,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict:
+        body = dict(payload or {})
+        return dict(self._request("POST", "/v1/device/authorize", json=body, verify=verify, cert=cert))
+
+    def device_poll(
+        self,
+        device_code: str,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        body = {"device_code": device_code}
+        return dict(self._request("POST", "/v1/device/poll", json=body, verify=verify, cert=cert))
+
+    def push_skill_draft(
+        self,
+        *,
+        name: str,
+        archive_b64: str,
+        node_id: str | None,
+        verify: str | bool | ssl.SSLContext,
+        cert: tuple[str, str],
+        sha256: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"name": name, "archive_b64": archive_b64}
+        if node_id:
+            payload["node_id"] = node_id
+        if sha256:
+            payload["sha256"] = sha256
+        return dict(
+            self._request(
+                "POST",
+                "/v1/skills/draft",
+                json=payload,
+                verify=verify,
+                cert=cert,
+                timeout=120.0,
+            )
+        )
+
+    def push_scenario_draft(
+        self,
+        *,
+        name: str,
+        archive_b64: str,
+        node_id: str | None,
+        verify: str | bool | ssl.SSLContext,
+        cert: tuple[str, str],
+        sha256: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"name": name, "archive_b64": archive_b64}
+        if node_id:
+            payload["node_id"] = node_id
+        if sha256:
+            payload["sha256"] = sha256
+        return dict(
+            self._request(
+                "POST",
+                "/v1/scenarios/draft",
+                json=payload,
+                verify=verify,
+                cert=cert,
+                timeout=120.0,
+            )
+        )
 
 
 __all__ = ["RootHttpClient", "RootHttpError"]
