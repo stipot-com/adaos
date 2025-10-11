@@ -12,7 +12,7 @@ cd adaos
 
 # mac/linux:
 bash tools/bootstrap.sh
-source venv/bin/activate
+source ./.venv/bin/activate
 # windows (PowerShell):
 ./tools/bootstrap.ps1
 . .\.venv\Scripts\Activate.ps1
