@@ -8,11 +8,10 @@ from adaos.ports import EventBus, GitClient, Capabilities
 from adaos.ports.paths import PathProvider
 from adaos.ports.scenarios import ScenarioRepository
 from adaos.services.eventbus import emit
-from adaos.services.agent_context import get_ctx
+from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.fs.safe_io import remove_tree
 from adaos.services.git.safe_commit import sanitize_message, check_no_denied
 from adaos.adapters.db import SqliteScenarioRegistry
-from adaos.services.agent_context import AgentContext
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
@@ -62,6 +61,7 @@ class ScenarioManager:
 
         self.reg.register(name, pin=pin)
         try:
+            # TODO move test_mode to global ctx (single truth)
             test_mode = os.getenv("ADAOS_TESTING") == "1"
             if test_mode:
                 return f"installed: {name} (registry-only{' test-mode' if test_mode else ''})"
@@ -83,8 +83,9 @@ class ScenarioManager:
         names = [r.name for r in self.reg.list()]
         prefixed = [f"scenarios/{n}" for n in names]
         # в тестах/без .git — только реестр, без git операций
-        if os.getenv("ADAOS_TESTING") == "1" or not (root / ".git").exists():
-            return f"uninstalled: {name} (registry-only{' test-mode' if test_mode else ''})"        
+        test_mode = os.getenv("ADAOS_TESTING") == "1"
+        if test_mode or not (root / ".git").exists():
+            return f"uninstalled: {name} (registry-only{' test-mode' if test_mode else ''})"
         self.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.git.sparse_set(str(root), prefixed, no_cone=True)

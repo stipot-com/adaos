@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Mapping, Tuple
+from adaos.services.agent_context import AgentContext, get_ctx
 
 from adaos.services.crypto.pki import generate_rsa_key, make_csr, write_pem, write_private_key
 from adaos.services.node_config import (
@@ -473,6 +474,7 @@ class RootDeveloperService:
         self._load_config = config_loader or load_node
         self._save_config = config_saver or save_node
         self._client_factory = client_factory
+        self.ctx: AgentContext = get_ctx()
 
     # ------------------------------------------------------------------
     # Public API
@@ -1021,12 +1023,32 @@ class RootDeveloperService:
         cfg = self._load_config()
         owner, workspace = self._owner_workspace(cfg)
         target = workspace / kind / name
-        template_path = _template_path(template)
+        print("workspace_log", workspace, target)
+        template_path = self.ctx.paths.scenario_templates_dir() if kind == "scenarios" else self.ctx.paths.skill_templates_dir()
         _copy_template(template_path, target)
         return ArtifactCreateResult(kind=kind.rstrip("s"), name=name, owner_id=owner, path=target)
 
+    def _mtls_material_for_role(self, cfg: NodeConfig, role: Literal["hub", "node"]) -> tuple[str, str, ssl.SSLContext]:
+        ca_path = cfg.ca_cert_path()
+        if role == "hub":
+            cert_path = cfg.hub_cert_path()
+            key_path = cfg.hub_key_path()
+            role_name = "hub"
+        else:
+            cert_path = cfg.node_cert_path()
+            key_path = cfg.node_key_path()
+            role_name = "node"
+
+        for label, path in (f"{role_name} certificate", cert_path), (f"{role_name} private key", key_path), ("CA certificate", ca_path):
+            if not path.exists():
+                raise RootServiceError(f"{label} not found at {path}; run 'adaos dev node register' (for node) or '... root init' (for hub) first")
+
+        verify = self._load_verify_context(ca_path)
+        return str(cert_path), str(key_path), verify
+
     def _push_artifact(self, kind: Literal["skills", "scenarios"], name: str) -> ArtifactPushResult:
         cfg = self._load_config()
+
         owner_id = cfg.owner_id
         if not owner_id:
             raise RootServiceError("Owner is not configured; run 'adaos dev root login' first")
@@ -1037,7 +1059,7 @@ class RootDeveloperService:
         archive_bytes = create_zip_bytes(source)
         archive_b64 = archive_bytes_to_b64(archive_bytes)
         digest = hashlib.sha256(archive_bytes).hexdigest()
-        cert_path, key_path, verify = self._mtls_material(cfg)
+        cert_path, key_path, verify = self._mtls_material_for_role(cfg, "node")
         client = self._client(cfg)
         node_id = cfg.node_settings.id or cfg.node_id
         if kind == "skills":
