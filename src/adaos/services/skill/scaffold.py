@@ -77,6 +77,7 @@ def create(
     version: str = "0.1.0",
 ) -> Path:
     """
+    Deprecated. Moved to adaos dev skill create
     Создаёт новый навык из локального шаблона и (опционально) регистрирует его в БД.
     Если push=True — коммитит поддерево навыка в монорепо и пушит.
     """

@@ -121,7 +121,10 @@ def create(
     push: bool = False,
     version: str = "0.1.0",
 ) -> Path:
-    """Create a scenario skeleton from a template inside the monorepo."""
+    """
+    Deprecated. Moved to adaos dev skill create
+    Create a scenario skeleton from a template inside the monorepo.
+    """
 
     if not _NAME_RE.match(name):
         raise ValueError("invalid scenario name")
