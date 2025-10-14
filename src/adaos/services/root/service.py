@@ -372,6 +372,17 @@ class TemplateResolutionError(RootServiceError):
             self.exit_code = exit_code
 
 
+class ArtifactNotFoundError(RootServiceError):
+    """Raised when a requested artifact is missing from the dev workspace."""
+
+    exit_code: int = 3
+
+    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
+        super().__init__(message)
+        if exit_code is not None:
+            self.exit_code = exit_code
+
+
 @dataclass(slots=True)
 class DeviceAuthorization:
     device_code: str
@@ -416,6 +427,16 @@ class ArtifactPushResult:
     stored_path: str
     sha256: str
     bytes_uploaded: int
+    version: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True)
+class ArtifactDeleteResult:
+    kind: str
+    name: str
+    owner_id: str
+    path: Path
     version: str | None = None
     updated_at: str | None = None
 
@@ -969,6 +990,76 @@ class RootDeveloperService:
         )
         return result
 
+    def delete_skill(self, name: str) -> ArtifactDeleteResult:
+        cfg = self._load_config()
+        node_id = cfg.node_settings.id or cfg.node_id
+        emit(self.ctx.bus, "root.dev.skill.delete.start", {"name": name, "node_id": node_id}, "root.dev")
+        try:
+            result = self._delete_artifact(cfg, "skills", name)
+        except ArtifactNotFoundError:
+            emit(
+                self.ctx.bus,
+                "root.dev.skill.delete.missing",
+                {"name": name, "node_id": node_id},
+                "root.dev",
+            )
+            raise
+        except Exception:
+            emit(
+                self.ctx.bus,
+                "root.dev.skill.delete.error",
+                {"name": name, "node_id": node_id},
+                "root.dev",
+            )
+            raise
+        emit(
+            self.ctx.bus,
+            "dev.skills.deleted",
+            {
+                "name": result.name,
+                "node_id": node_id,
+                "version": result.version,
+                "updated_at": result.updated_at,
+            },
+            "root.dev",
+        )
+        return result
+
+    def delete_scenario(self, name: str) -> ArtifactDeleteResult:
+        cfg = self._load_config()
+        node_id = cfg.node_settings.id or cfg.node_id
+        emit(self.ctx.bus, "root.dev.scenario.delete.start", {"name": name, "node_id": node_id}, "root.dev")
+        try:
+            result = self._delete_artifact(cfg, "scenarios", name)
+        except ArtifactNotFoundError:
+            emit(
+                self.ctx.bus,
+                "root.dev.scenario.delete.missing",
+                {"name": name, "node_id": node_id},
+                "root.dev",
+            )
+            raise
+        except Exception:
+            emit(
+                self.ctx.bus,
+                "root.dev.scenario.delete.error",
+                {"name": name, "node_id": node_id},
+                "root.dev",
+            )
+            raise
+        emit(
+            self.ctx.bus,
+            "dev.scenarios.deleted",
+            {
+                "name": result.name,
+                "node_id": node_id,
+                "version": result.version,
+                "updated_at": result.updated_at,
+            },
+            "root.dev",
+        )
+        return result
+
     def list_skills(self) -> list[ArtifactListItem]:
         cfg = self._load_config()
         node_id = cfg.node_settings.id or cfg.node_id
@@ -1252,59 +1343,19 @@ class RootDeveloperService:
             return None
 
     def _workspace_root(self, cfg: NodeConfig) -> Path:
-        node_id = cfg.node_settings.id or cfg.node_id
-        return self.ctx.paths.workspace_dir() / "dev" / node_id
+        hub_id = cfg.node_settings.id or cfg.node_id or "pending_hub"
+        return (self.ctx.paths.base_dir() / "dev" / hub_id).resolve()
 
     def _prepare_workspace(self, cfg: NodeConfig, *, owner: str) -> Path:
-        previous_root = cfg.workspace_path()
         workspace_root = self._workspace_root(cfg)
         workspace_root.mkdir(parents=True, exist_ok=True)
-
-        if previous_root != workspace_root:
-            legacy_root = previous_root / owner
-            if legacy_root.exists() and legacy_root.is_dir():
-                for child in legacy_root.iterdir():
-                    destination = workspace_root / child.name
-                    if destination.exists():
-                        continue
-                    child.rename(destination)
-                try:
-                    legacy_root.rmdir()
-                except OSError:
-                    pass
-
-        legacy_target = workspace_root / owner
-        if legacy_target.exists() and legacy_target.is_dir():
-            for child in legacy_target.iterdir():
-                destination = workspace_root / child.name
-                if destination.exists():
-                    continue
-                child.rename(destination)
-            try:
-                legacy_target.rmdir()
-            except OSError:
-                pass
-
         for sub in ("skills", "scenarios", "uploads"):
             _ensure_keep_file(workspace_root / sub)
-
         cfg.dev_settings.workspace = _config_path_value(workspace_root)
         return workspace_root
 
     def _activate_workspace(self, cfg: NodeConfig, owner_id: str) -> Path:
-        workspace_root = self._prepare_workspace(cfg, owner=owner_id)
-        pending = workspace_root / "pending_owner"
-        if pending.exists() and pending.is_dir():
-            for child in pending.iterdir():
-                destination = workspace_root / child.name
-                if destination.exists():
-                    continue
-                child.rename(destination)
-            try:
-                pending.rmdir()
-            except OSError:
-                pass
-        return workspace_root
+        return self._prepare_workspace(cfg, owner=owner_id)
 
     def _owner_workspace(self, cfg: NodeConfig) -> tuple[str, Path]:
         owner = cfg.owner_id or "pending_owner"
@@ -1365,11 +1416,36 @@ class RootDeveloperService:
         items.sort(key=lambda item: (_parse_timestamp(item.updated_at), item.name.lower()), reverse=True)
         return items
 
+    def _delete_artifact(
+        self,
+        cfg: NodeConfig,
+        kind: Literal["skills", "scenarios"],
+        name: str,
+    ) -> ArtifactDeleteResult:
+        owner = cfg.owner_id or "pending_owner"
+        workspace = self._prepare_workspace(cfg, owner=owner)
+        target = workspace / kind / name
+        if not target.exists() or not target.is_dir():
+            raise ArtifactNotFoundError(f"{kind[:-1].capitalize()} '{name}' not found at {target}")
+
+        manifest_name, version, updated_at = self._artifact_manifest_info(target, kind)
+        shutil.rmtree(target)
+
+        result = ArtifactDeleteResult(
+            kind=kind.rstrip("s"),
+            name=manifest_name,
+            owner_id=owner,
+            path=target,
+            version=version,
+            updated_at=updated_at,
+        )
+        self._save_config(cfg)
+        return result
+
     def _workspace_templates_dir(self, kind: Literal["skills", "scenarios"]) -> Path:
-        paths = self.ctx.paths
         if kind == "scenarios":
-            return (paths.scenarios_workspace_dir() / "templates").resolve()
-        return (paths.skills_workspace_dir() / "templates").resolve()
+            return self.ctx.paths.scenarios_workspace_dir()
+        return self.ctx.paths.skills_workspace_dir()
 
     def _builtin_templates_dir(self, kind: Literal["skills", "scenarios"]) -> Path:
         if kind == "scenarios":
@@ -1584,11 +1660,13 @@ __all__ = [
     "RootDeveloperService",
     "RootServiceError",
     "TemplateResolutionError",
+    "ArtifactNotFoundError",
     "DeviceAuthorization",
     "RootInitResult",
     "RootLoginResult",
     "ArtifactCreateResult",
     "ArtifactPushResult",
+    "ArtifactDeleteResult",
     "ArtifactListItem",
     "assert_safe_name",
     "create_zip_bytes",

@@ -9,7 +9,9 @@ import typer
 from adaos.services.node_config import displayable_path
 from adaos.services.root.service import (
     DeviceAuthorization,
+    ArtifactDeleteResult,
     ArtifactListItem,
+    ArtifactNotFoundError,
     RootDeveloperService,
     RootInitResult,
     RootLoginResult,
@@ -61,7 +63,6 @@ def _echo_artifact_list(items: List[ArtifactListItem], json_output: bool) -> Non
         payload = [
             {
                 "name": item.name,
-                "path": _display_path(item.path),
                 "version": item.version,
                 "updated_at": item.updated_at,
             }
@@ -74,13 +75,12 @@ def _echo_artifact_list(items: List[ArtifactListItem], json_output: bool) -> Non
         typer.echo("No artifacts found.")
         return
 
-    headers = ["Name", "Version", "Updated", "Path"]
+    headers = ["Name", "Version", "Updated"]
     rows = [
         [
             item.name,
             item.version or "—",
             item.updated_at or "—",
-            _display_path(item.path) or str(item.path),
         ]
         for item in items
     ]
@@ -91,6 +91,15 @@ def _echo_artifact_list(items: List[ArtifactListItem], json_output: bool) -> Non
     typer.echo(separator)
     for row in rows:
         typer.echo("  ".join(str(row[i]).ljust(widths[i]) for i in range(len(headers))))
+
+
+def _echo_delete_result(kind_label: str, result: ArtifactDeleteResult) -> None:
+    typer.secho(f"{kind_label} '{result.name}' deleted.", fg=typer.colors.GREEN)
+    typer.echo(f"Location: {_display_path(result.path)}")
+    if result.version:
+        typer.echo(f"Last version: {result.version}")
+    if result.updated_at:
+        typer.echo(f"Last updated: {result.updated_at}")
 
 
 @root_app.command("init")
@@ -203,6 +212,29 @@ def skill_list(json_output: bool = typer.Option(False, "--json", help="Render ou
     _echo_artifact_list(items, json_output)
 
 
+@skill_app.command("delete")
+def skill_delete(
+    name: str,
+    yes: bool = typer.Option(False, "--yes", help="Delete without confirmation."),
+) -> None:
+    if not yes:
+        confirm = typer.confirm(f"Delete skill '{name}' from the dev workspace?", default=False)
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    service = _service()
+    try:
+        result = service.delete_skill(name)
+    except ArtifactNotFoundError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(exc.exit_code)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    _echo_delete_result("Skill", result)
+
+
 @scenario_app.command("create")
 def scenario_create(
     name: str,
@@ -249,3 +281,26 @@ def scenario_list(json_output: bool = typer.Option(False, "--json", help="Render
         _print_error(str(exc))
         raise typer.Exit(1)
     _echo_artifact_list(items, json_output)
+
+
+@scenario_app.command("delete")
+def scenario_delete(
+    name: str,
+    yes: bool = typer.Option(False, "--yes", help="Delete without confirmation."),
+) -> None:
+    if not yes:
+        confirm = typer.confirm(f"Delete scenario '{name}' from the dev workspace?", default=False)
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    service = _service()
+    try:
+        result = service.delete_scenario(name)
+    except ArtifactNotFoundError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(exc.exit_code)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    _echo_delete_result("Scenario", result)
