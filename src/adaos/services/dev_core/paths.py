@@ -2,35 +2,48 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
 from adaos.services.agent_context import get_ctx
 from adaos.services.fs.safe_io import ensure_dir
-from adaos.services.node_config import NodeConfig, load_node
+from adaos.services.node_config import load_node
 
 from .types import DevContext, Kind
 
 
-def _ctx_node_config() -> NodeConfig:
-    return load_node()
-
-
-def _expand(path: str) -> Path:
-    return Path(os.path.expanduser(path)).resolve()
+def _resolve_subnet(ctx: DevContext) -> str:
+    if ctx.subnet_id:
+        return ctx.subnet_id
+    node = load_node()
+    return node.subnet_id_value
 
 
 def dev_root(ctx: DevContext) -> str:
-    cfg = _ctx_node_config()
-    subnet = ctx.subnet_id or cfg.subnet_id_value
-    base = cfg.dev_settings.workspace or "~/.adaos/dev"
-    root = _expand(base) / subnet
+    agent = get_ctx()
+    subnet = _resolve_subnet(ctx)
+    root = agent.paths.dev_root_dir(subnet)
+    ensure_tree(str(root))
+    return str(root)
+
+
+def dev_kind_root(ctx: DevContext, kind: Kind) -> str:
+    agent = get_ctx()
+    subnet = _resolve_subnet(ctx)
+    if kind == "skill":
+        root = agent.paths.dev_skills_dir(subnet)
+    else:
+        root = agent.paths.dev_scenarios_dir(subnet)
     ensure_tree(str(root))
     return str(root)
 
 
 def dev_path(ctx: DevContext, kind: Kind, name: str) -> str:
-    root = Path(dev_root(ctx))
-    target = root / f"{kind}s" / name
+    agent = get_ctx()
+    subnet = _resolve_subnet(ctx)
+    if kind == "skill":
+        target = agent.paths.dev_skill_path(subnet, name)
+    else:
+        target = agent.paths.dev_scenario_path(subnet, name)
     ensure_tree(str(target.parent))
     return str(target)
 

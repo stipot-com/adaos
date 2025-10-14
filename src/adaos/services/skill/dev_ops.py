@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -12,6 +13,9 @@ from typing import Dict, List, Optional
 from adaos.services.agent_context import get_ctx
 from adaos.services.fs.safe_io import remove_tree
 
+from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.root.service import RootDeveloperService
+from adaos.services.skill.manager import SkillManager
 from ..dev_core import events, manifest, paths, semver, templates
 from ..dev_core.errors import EDevNotFound
 from ..dev_core.types import (
@@ -38,8 +42,7 @@ from adaos.services.skill.validation import SkillValidationService
 
 
 def _item_root(ctx: DevContext, kind: Kind, name: str) -> Path:
-    root = Path(paths.dev_root(ctx)) / f"{kind}s" / name
-    return root
+    return Path(paths.dev_path(ctx, kind, name))
 
 
 def _ensure_item(ctx: DevContext, kind: Kind, name: str) -> Path:
@@ -66,6 +69,28 @@ def _build_item(ctx: DevContext, kind: Kind, name: str, root: Path) -> DevItem:
         prototype=str(data.get("prototype")) if data.get("prototype") is not None else None,
         updated_at=updated_at,
     )
+
+
+def _workspace_path(kind: Kind, name: str) -> Path:
+    agent_ctx = get_ctx()
+    if kind == "skill":
+        base = Path(agent_ctx.paths.skills_workspace_dir())
+    else:
+        base = Path(agent_ctx.paths.scenarios_workspace_dir())
+    return base / name
+
+
+def _sync_to_workspace(kind: Kind, name: str, source: Path) -> tuple[Path, bool]:
+    agent_ctx = get_ctx()
+    target = _workspace_path(kind, name)
+    existed = target.exists()
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    agent_ctx.fs.require_write(str(parent))
+    if target.exists():
+        remove_tree(str(target), agent_ctx.fs)
+    shutil.copytree(source, target)
+    return target, existed
 
 
 def create(input: CreateInput) -> CreateResult:
@@ -108,7 +133,7 @@ def create(input: CreateInput) -> CreateResult:
 def list(input: ListInput) -> ListResult:
     ctx = input.ctx
     kind = input.kind
-    base = Path(paths.dev_root(ctx)) / f"{kind}s"
+    base = Path(paths.dev_kind_root(ctx, kind))
     items: List[DevItem] = []
     if base.exists():
         for entry in sorted(base.iterdir()):
@@ -235,8 +260,18 @@ def push(input: PushInput) -> PushResult:
     previous = data.get("version")
     new_version = semver.bump(previous, input.bump)
     data["version"] = new_version
+    upload_metadata: Optional[Dict[str, str]] = None
     if not input.dry_run:
         manifest.write(str(root), kind, data)
+        workspace_path, _ = _sync_to_workspace(kind, input.name, root)
+        service = RootDeveloperService()
+        result = service.push_skill(input.name)
+        upload_metadata = {
+            "stored_path": result.stored_path,
+            "sha256": result.sha256,
+            "bytes_uploaded": str(result.bytes_uploaded),
+            "workspace_path": str(workspace_path),
+        }
     item = _build_item(ctx, kind, input.name, root)
     payload = {
         "kind": kind,
@@ -249,6 +284,8 @@ def push(input: PushInput) -> PushResult:
         "user": ctx.user,
         "dry_run": input.dry_run,
     }
+    if upload_metadata:
+        payload["upload"] = upload_metadata
     event_id = events.emit_pushed(payload)
     return PushResult(
         item=item,
@@ -256,7 +293,7 @@ def push(input: PushInput) -> PushResult:
         version=new_version,
         previous_version=previous if previous is not None else None,
         dry_run=input.dry_run,
-        upload_metadata=None,
+        upload_metadata=upload_metadata,
         emitted=[event_id],
     )
 
@@ -267,11 +304,27 @@ def publish(input: PublishInput) -> PublishResult:
     root = _ensure_item(ctx, kind, input.name)
     data = manifest.read(str(root), kind)
     previous = data.get("version")
-    new_version = semver.bump(previous, input.bump) if input.bump else previous
-    if new_version:
-        data["version"] = new_version
-        if not input.dry_run:
-            manifest.write(str(root), kind, data)
+    new_version = semver.bump(previous, input.bump)
+    data["version"] = new_version
+    agent_ctx = get_ctx()
+    commit_sha: Optional[str] = None
+    created = False
+    workspace_path: Optional[Path] = None
+    if not input.dry_run:
+        manifest.write(str(root), kind, data)
+        workspace_path, existed = _sync_to_workspace(kind, input.name, root)
+        created = not existed
+        registry = SqliteSkillRegistry(agent_ctx.sql)
+        manager = SkillManager(
+            repo=agent_ctx.skills_repo,
+            registry=registry,
+            git=agent_ctx.git,
+            paths=agent_ctx.paths,
+            bus=getattr(agent_ctx, "bus", None),
+            caps=agent_ctx.caps,
+        )
+        message = "initial commit" if created else "skill updated"
+        commit_sha = manager.push(input.name, message=message)
     item = _build_item(ctx, kind, input.name, root)
     payload = {
         "kind": kind,
@@ -285,11 +338,16 @@ def publish(input: PublishInput) -> PublishResult:
         "dry_run": input.dry_run,
         "force": input.force,
     }
+    if workspace_path is not None:
+        payload["workspace_path"] = str(workspace_path)
+        payload["created"] = created
+    if commit_sha is not None:
+        payload["commit"] = commit_sha
     event_id = events.emit_registry_published(payload)
     return PublishResult(
         item=item,
         ok=True,
-        version=str(new_version) if new_version is not None else "",
+        version=new_version,
         previous_version=previous if previous is not None else None,
         dry_run=input.dry_run,
         emitted=[event_id],

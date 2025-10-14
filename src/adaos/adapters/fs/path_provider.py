@@ -64,6 +64,21 @@ class PathProvider:
     def scenarios_dir(self) -> Path:
         return self.scenarios_workspace_dir()
 
+    def dev_root_dir(self, subnet_id: str) -> Path:
+        return (self.base / "dev" / subnet_id).resolve()
+
+    def dev_skills_dir(self, subnet_id: str) -> Path:
+        return (self.dev_root_dir(subnet_id) / "skills").resolve()
+
+    def dev_scenarios_dir(self, subnet_id: str) -> Path:
+        return (self.dev_root_dir(subnet_id) / "scenarios").resolve()
+
+    def dev_skill_path(self, subnet_id: str, name: str) -> Path:
+        return (self.dev_skills_dir(subnet_id) / name).resolve()
+
+    def dev_scenario_path(self, subnet_id: str, name: str) -> Path:
+        return (self.dev_scenarios_dir(subnet_id) / name).resolve()
+
     def models_dir(self) -> Path:
         return (self.base / "models").resolve()
 
