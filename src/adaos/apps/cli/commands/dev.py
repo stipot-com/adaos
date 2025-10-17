@@ -448,38 +448,40 @@ def dev_skill_validate(
 
 
 @_run_safe
-@scenario_app.command("validate")
-def validate_cmd(
-    scenario_id: str = typer.Argument(..., help=_("cli.scenario.validate.name_help")),
-    path: Optional[Path] = typer.Option(None, "--path", help=_("cli.scenario.validate.path_help")),
-    json_output: bool = typer.Option(False, "--json", help="machine readable output"),
+@skill_app.command("test", help=_("cli.skill.test.help"))
+def cmd_test(
+    name: str = typer.Argument(..., help=_("cli.skill.test.name_help")),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ) -> None:
     """
-    Validate scenario from workspace (default), dev space, or explicit --path.
+    DEV-only: запускает тесты навыка из DEV-пространства.
+    Тесты ищутся в <dev>/skills/<name>/tests/**/*.py, логи — в <dev>/skills/<name>/logs/.
     """
-    ctx = get_ctx()
-    if path:
-        scenario_path = Path(path).expanduser().resolve()
-        if scenario_path.is_dir():
-            scenario_path = scenario_path
-        else:
-            # если указали путь до файла – поддержим и это
-            scenario_path = scenario_path.parent
-    else:
-        scenario_path = ctx.paths.dev_scenarios_dir()
-    scenario_path = scenario_path / scenario_id
-    model = load_scenario(scenario_path)
-    runtime = ScenarioRuntime()
-    errors = runtime.validate(model)
+    mgr = _mgr()
+    try:
+        results = mgr.run_dev_skill_tests(name)
+    except Exception as exc:
+        typer.secho(f"test failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
 
     if json_output:
-        payload = {"ok": not bool(errors), "errors": errors, "scenario_id": model.id}
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-        raise typer.Exit(0 if not errors else 1)
+        typer.echo(json.dumps({k: asdict(v) for k, v in results.items()}, ensure_ascii=False, indent=2))
+        if any(res.status != "passed" for res in results.values()):
+            raise typer.Exit(1)
+        return
 
-    if errors:
-        typer.secho(_("cli.scenario.validate.errors"), fg=typer.colors.RED)
-        for err in errors:
-            typer.echo(_("cli.scenario.validate.error_item", error=str(err)))
-        raise typer.Exit(code=1)
-    typer.secho(_("cli.scenario.validate.success", scenario_id=model.id), fg=typer.colors.GREEN)
+    if not results:
+        typer.echo("no tests discovered")
+        return
+
+    failed = False
+    for test_name, result in results.items():
+        detail = f" ({result.detail})" if getattr(result, "detail", None) else ""
+        typer.echo(f"{test_name}: {result.status}{detail}")
+        if result.status != "passed":
+            failed = True
+
+    if failed:
+        raise typer.Exit(1)
+
+    typer.secho("tests passed", fg=typer.colors.GREEN)

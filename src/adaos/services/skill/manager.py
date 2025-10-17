@@ -1116,3 +1116,71 @@ class SkillManager:
             path.rmdir()
         except OSError:
             pass
+
+    def run_dev_skill_tests(self, name: str) -> Dict[str, TestResult]:
+        """Запуск тестов DEV-навыка прямо из исходников (без install/slots/.runtime).
+        - Ищем тесты в <dev>/skills/<name>/tests/**/*.py (pytest discovery).
+        - Логи пишем в <dev>/skills/<name>/logs/tests.dev.log.
+        - Запрещаем произвольные пути; только внутри DEV root.
+        """
+        self.caps.require("core", "skills.manage")
+
+        sub = name.strip()
+        if not _name_re.match(sub):
+            raise ValueError("invalid skill name")
+
+        dev_root = Path(self.ctx.paths.dev_skills_dir()).resolve()
+        skill_dir = (dev_root / sub).resolve()
+        try:
+            skill_dir.relative_to(dev_root)
+        except ValueError:
+            raise PermissionError("skill path escapes dev root")
+        if not skill_dir.exists() or not skill_dir.is_dir():
+            raise FileNotFoundError(f"skill '{name}' not found in DEV at {skill_dir}")
+
+        # Манифест нужен только для подсказок рантайма; отсутствие не фатально
+        try:
+            manifest = self._load_manifest(skill_dir)
+        except FileNotFoundError:
+            manifest = {}
+
+        runtime_info = manifest.get("runtime", {}) or {}
+        interpreter_value = runtime_info.get("interpreter")
+        interpreter = Path(interpreter_value) if interpreter_value else Path(sys.executable)
+
+        # PYTHONPATH: из манифеста + корень пакета AdaOS (безопасно)
+        python_paths: list[str] = [p for p in runtime_info.get("python_paths", []) if p]
+        package_dir = getattr(self.ctx.paths, "package_dir", None)
+        if callable(package_dir):
+            package_dir = package_dir()
+        package_root = Path(package_dir).resolve().parent if package_dir else None
+        if package_root:
+            python_paths.append(str(package_root))
+
+        # Директория логов — в корне навыка (не .runtime)
+        logs_dir = skill_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / "tests.dev.log"
+
+        # skill_env: ./ .skill_env.json приоритетно, иначе — из манифеста (если задан)
+        skill_env_path: Path | None = None
+        local_env = skill_dir / ".skill_env.json"
+        if local_env.exists():
+            skill_env_path = local_env
+        else:
+            skill_env_raw = runtime_info.get("skill_env")
+            if skill_env_raw:
+                skill_env_path = Path(skill_env_raw)
+
+        # Запускаем тесты: источник — каталог навыка; pytest сам найдёт tests/**/*.py
+        return run_tests(
+            skill_dir,  # skill_source
+            log_path=log_path,  # <skill>/logs/tests.dev.log
+            interpreter=interpreter,  # sys.executable или из манифеста
+            python_paths=python_paths,  # из манифеста + package_root
+            skill_env_path=skill_env_path,  # опционально
+            skill_name=name,
+            skill_version=manifest.get("version") or "dev",
+            slot_current_dir=skill_dir,  # для совместимости сигнатуры; слотов нет
+            dev_mode=True,
+        )
