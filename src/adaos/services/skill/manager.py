@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,9 @@ from adaos.services.skill.secrets_backend import SkillSecretsBackend
 from adaos.services.skill.resolver import SkillPathResolver
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -71,6 +75,26 @@ class SkillManager:
         self.caps = caps
         self.settings = settings
         self.ctx: AgentContext = get_ctx()
+
+    def _nlu_register(self, name: str) -> None:
+        try:
+            from adaos.services.nlu.registry import registry as nlu_registry
+        except Exception:  # pragma: no cover - registry optional in tests
+            return
+        try:
+            nlu_registry.register(name)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("NLU: failed to register skill=%s", name)
+
+    def _nlu_unregister(self, name: str) -> None:
+        try:
+            from adaos.services.nlu.registry import registry as nlu_registry
+        except Exception:  # pragma: no cover
+            return
+        try:
+            nlu_registry.unregister(name)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("NLU: failed to unregister skill=%s", name)
 
     def list_installed(self) -> list[SkillRecord]:
         self.caps.require("core", "skills.manage")
@@ -295,6 +319,7 @@ class SkillManager:
         # если записи нет — считаем idempotent
         rec = self.reg.get(name)
         if not rec:
+            self._nlu_unregister(name)
             return f"uninstalled: {name} (not found)"
         self.reg.unregister(name)
         root = self.ctx.paths.workspace_dir()
@@ -302,6 +327,7 @@ class SkillManager:
         test_mode = os.getenv("ADAOS_TESTING") == "1"
         if test_mode or not (root / ".git").exists():
             suffix = " test-mode" if test_mode else ""
+            self._nlu_unregister(name)
             return f"uninstalled: {name} (registry-only{suffix})"
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]
@@ -322,6 +348,7 @@ class SkillManager:
         if remove_error is not None:
             raise RuntimeError(f"не удалось удалить рабочую копию навыка '{name}'. Закройте файлы под " f"путем {(root / 'skills' / name)} и повторите попытку.") from remove_error
         emit(self.bus, "skill.uninstalled", {"id": name}, "skill.mgr")
+        self._nlu_unregister(name)
 
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.caps.require("core", "skills.manage", "git.write", "net.git")
@@ -492,6 +519,7 @@ class SkillManager:
         history["last_active_at"] = datetime.now(timezone.utc).isoformat()
         env.write_version_metadata(target_version, metadata)
         self._smoke_import(env=env, name=name, version=target_version)
+        self._nlu_register(name)
         return target_slot
 
     def rollback_runtime(self, name: str) -> str:
@@ -500,7 +528,9 @@ class SkillManager:
         if not version:
             raise RuntimeError("no active version")
         env.prepare_version(version)
-        return env.rollback_slot(version)
+        slot = env.rollback_slot(version)
+        self._nlu_register(name)
+        return slot
 
     def runtime_status(self, name: str) -> Dict[str, Any]:
         env = self._runtime_env(name)

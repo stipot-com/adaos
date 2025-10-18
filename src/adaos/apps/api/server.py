@@ -1,4 +1,5 @@
 # src/adaos/api/server.py
+import logging
 from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -18,8 +19,13 @@ from adaos.services.nlu.context import DialogContext
 from adaos.services.nlu.arbiter import arbitrate
 from adaos.services.eventbus import emit, EVENT_NLU_INTERPRETATION
 from adaos.services.observe import start_observer, stop_observer
+from adaos.services.nlu.registry import registry as nlu_registry
+from adaos.adapters.db import SqliteSkillRegistry
 
 bootstrap_app()
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -41,6 +47,18 @@ async def lifespan(app: FastAPI):
     # 4) поднимаем наблюдатель и выполняем boot-последовательность
     await start_observer()
     await run_boot_sequence(app)
+
+    ctx = get_ctx()
+    registry = SqliteSkillRegistry(ctx.sql)
+    try:
+        installed = [rec.name for rec in registry.list() if getattr(rec, "installed", True)]
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("NLU: failed to list installed skills")
+        installed = []
+    if installed:
+        nlu_registry.load_all_active(installed)
+    else:
+        nlu_registry.load_all_active([])
 
     try:
         yield
@@ -132,9 +150,17 @@ class InterpretReq(BaseModel):
 @_nlu_router.post("/interpret")
 def nlu_interpret(req: InterpretReq):
     ctx = get_ctx()
-    user_home_city = "Berlin, DE"
-    event = arbitrate(req.text, req.lang, user_home_city, _dialog_ctx)
-    emit(ctx.bus, EVENT_NLU_INTERPRETATION, event["payload"], source="api.nlu")
+    event = arbitrate(req.text, req.lang, _dialog_ctx)
+    payload = event["payload"]
+    emit(ctx.bus, EVENT_NLU_INTERPRETATION, payload, source="api.nlu")
+    chosen = payload.get("chosen", {})
+    logger.info(
+        "NLU: chosen intent=%s skill=%s slots=%s trace=%s",
+        chosen.get("intent"),
+        chosen.get("skill"),
+        chosen.get("slots"),
+        event.get("trace_id"),
+    )
     return event
 
 

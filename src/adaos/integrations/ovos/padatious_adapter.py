@@ -1,4 +1,4 @@
-"""Minimal Padatious/regex adapter used for weather NLU."""
+"""Minimal Padatious/registry-backed adapter."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ except Exception:  # pragma: no cover - any failure falls back to regex
     IntentContainer = None  # type: ignore
 
 
+from adaos.services.nlu.registry import registry as nlu_registry
+
+
 class OvosCandidate(dict):
     """Simple candidate structure with intent, score and slots."""
 
@@ -18,20 +21,21 @@ class OvosCandidate(dict):
         super().__init__(intent=intent, score=score, slots=slots or {})
 
 
-_WEATHER_RE = re.compile(r"(кака[яой]|что\s+по)?\s*погод[аеуы]", re.IGNORECASE)
-_PLACE_RE = re.compile(r"(?:в|по)\s+([a-zA-Zа-яА-ЯёЁ\-]+)")
+_SLOT_RE = re.compile(r"\{([^{}]+)\}")
+_TOKEN_RE = re.compile(r"[\w\-ёЁ]+", re.IGNORECASE)
 
 
-def _fallback_candidates(text: str) -> List[OvosCandidate]:
-    slots: Dict[str, Any] = {}
-    place_match = _PLACE_RE.search(text)
-    if place_match:
-        slots["place_raw"] = place_match.group(1)
-    has_weather = bool(_WEATHER_RE.search(text))
-    if has_weather or slots:
-        score = 0.82 if has_weather else 0.72
-        return [OvosCandidate("weather.show", score=score, slots=slots)]
-    return []
+def _keywords(utterance: str) -> List[str]:
+    stripped = _SLOT_RE.sub(" ", utterance)
+    return [token.lower() for token in _TOKEN_RE.findall(stripped)]
+
+
+def _heuristic_match(text: str, utterance: str) -> bool:
+    tokens = _keywords(utterance)
+    if not tokens:
+        return False
+    lowered = text.lower()
+    return all(token in lowered for token in tokens)
 
 
 def parse_candidates(text: str, lang: str = "ru") -> List[OvosCandidate]:
@@ -62,7 +66,28 @@ def parse_candidates(text: str, lang: str = "ru") -> List[OvosCandidate]:
             slots = dict(intent_data.get("matches", {}))
             candidates.append(OvosCandidate(intent, score, slots))
 
+    registry_state = nlu_registry.get()
+
     if not candidates:
-        candidates = _fallback_candidates(text_norm)
+        for skill, skill_spec in registry_state.items():
+            for intent in skill_spec.intents:
+                for utterance in intent.utterances:
+                    tokens = _keywords(utterance)
+                    if _heuristic_match(text_norm, utterance):
+                        score = min(0.9, 0.6 + 0.05 * len(tokens))
+                        candidate = OvosCandidate(intent.name, score=score, slots={})
+                        candidate["skill"] = skill
+                        candidates.append(candidate)
+                        break
+
+    if candidates:
+        for candidate in candidates:
+            if candidate.get("skill"):
+                continue
+            intent_name = candidate.get("intent")
+            for skill, skill_spec in registry_state.items():
+                if any(intent.name == intent_name for intent in skill_spec.intents):
+                    candidate["skill"] = skill
+                    break
 
     return candidates
