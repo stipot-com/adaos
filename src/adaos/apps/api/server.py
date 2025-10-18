@@ -1,5 +1,5 @@
 # src/adaos/api/server.py
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -13,6 +13,10 @@ from adaos.adapters.audio.tts.native_tts import NativeTTS
 
 from adaos.apps.bootstrap import bootstrap_app
 from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
+from adaos.services.agent_context import get_ctx
+from adaos.services.nlu.context import DialogContext
+from adaos.services.nlu.arbiter import arbitrate
+from adaos.services.eventbus import emit, EVENT_NLU_INTERPRETATION
 from adaos.services.observe import start_observer, stop_observer
 
 bootstrap_app()
@@ -114,3 +118,24 @@ async def health_ready():
     if not is_ready():
         raise HTTPException(status_code=503, detail="not ready")
     return {"ok": True, "adaos": {"version": BUILD_INFO.version, "build_date": BUILD_INFO.build_date}}
+
+
+_nlu_router = APIRouter(prefix="/nlu", tags=["nlu"])
+_dialog_ctx = DialogContext()
+
+
+class InterpretReq(BaseModel):
+    text: str
+    lang: str = "ru"
+
+
+@_nlu_router.post("/interpret")
+def nlu_interpret(req: InterpretReq):
+    ctx = get_ctx()
+    user_home_city = "Berlin, DE"
+    event = arbitrate(req.text, req.lang, user_home_city, _dialog_ctx)
+    emit(ctx.bus, EVENT_NLU_INTERPRETATION, event["payload"], source="api.nlu")
+    return event
+
+
+app.include_router(_nlu_router)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import typer, sys, os
+import typer, sys, os, json
 from typing import Optional
 from pathlib import Path
 from adaos.apps.cli.i18n import _
@@ -33,6 +33,36 @@ def _try_start_android_service():
         return False
 
 
+def _run_nlu_demo(endpoint: str = "http://127.0.0.1:8777") -> None:
+    try:
+        import httpx
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        typer.echo(f"[NLU] httpx is required for demo mode: {exc}")
+        return
+
+    typer.echo("[NLU] Demo mode. Type phrases and press Enter (Ctrl+D to exit).")
+    with httpx.Client(base_url=endpoint, timeout=5.0) as client:
+        for line in sys.stdin:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                resp = client.post("/nlu/interpret", json={"text": text, "lang": "ru"})
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                typer.echo(f"[NLU] HTTP error {exc.response.status_code}: {exc.response.text}")
+                continue
+            except httpx.RequestError as exc:
+                typer.echo(f"[NLU] request error: {exc}")
+                continue
+            try:
+                payload = resp.json()
+            except ValueError:
+                typer.echo(f"[NLU] invalid JSON: {resp.text}")
+                continue
+            typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 @app.command("say")
 def say(
     text: str = typer.Argument(..., help="Текст для озвучивания"),
@@ -57,11 +87,16 @@ def start(
     device: str = typer.Option(None, "--device", help="Устройство"),
     echo: bool = typer.Option(True, "--echo", help="Эхо-тест"),
     model_path: str = typer.Option(None, "--model-path", help="Путь к модели"),
+    nlu_demo: bool = typer.Option(False, "--nlu-demo", help="Запустить NLU демонстрацию", show_default=False),
     use_android_service: bool = True,
 ):
     """
     Запускает офлайн-слушатель (Vosk). Ctrl+C для выхода.
     """
+    if nlu_demo:
+        _run_nlu_demo()
+        return
+
     external = None
     if use_android_service and _is_android():
         ok = _try_start_android_service()

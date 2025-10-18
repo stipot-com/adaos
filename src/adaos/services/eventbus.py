@@ -8,6 +8,8 @@ from typing import Callable, Awaitable, Any, DefaultDict, List
 from adaos.domain import Event
 from adaos.ports import EventBus
 
+EVENT_NLU_INTERPRETATION = "nlu.interpretation"
+
 Handler = Callable[[Event], Any] | Callable[[Event], Awaitable[Any]]
 
 
