@@ -14,8 +14,10 @@ cd adaos
 bash tools/bootstrap.sh
 source ./.venv/bin/activate
 # windows (PowerShell):
+# Если  Невозможно загрузить файл ..., так как выполнение сценариев отключено в этой системе.
+Set-ExecutionPolicy RemoteSigned -Scope Process
 ./tools/bootstrap.ps1
-. .\.venv\Scripts\Activate.ps1
+./.venv/Scripts/Activate.ps1
 
 # install dev core (optional)
 pip install -e ".[dev]"
