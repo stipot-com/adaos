@@ -1,0 +1,36 @@
+{
+	"prep.ask_default_city": "Введите город по умолчанию для прогноза погоды: ",
+	"prep.ask_api_key": "Введите ключ API для OpenWeatherMap: ",
+	"prep.ask_api_entry_point": "Введите точку входа API: ",
+	"prep.test_internet_access": "Проверка доступа к интернету...",
+	"prep.fail_internet": "Ошибка доступа к интернету",
+	"prep.test_weather_api": "Проверка API погоды...",
+	"prep.fail_weather_api": "Ошибка доступа к API погоды",
+	"prep.unexpected_error": "Произошла непредвиденная ошибка",
+	"prep.summary_header": "Краткое описание подготовки",
+	"prep.collected_resources": "Собранные ресурсы",
+	"prep.tested_hypotheses": "Проверено Гипотезы",
+	"prep.failed_header": "Подготовка не выполнена",
+	"prep.reason": "Причина",
+	"prep.weather.api_error": "Ошибка API погоды",
+	"prep.weather.success": "В городе {city} температура {temp}. {description}",
+	"runtime.weather.setup.missing": "Требуется ключ API погоды",
+	"runtime.weather.setup.saved": "Ключ API погоды сохранён",
+	"runtime.weather.errors.missing_api_config": "Ключ API погоды не настроен",
+	"runtime.weather.errors.missing_city": "Требуется город",
+	"runtime.weather.errors.request": "Запрос погоды не выполнен: {reason}",
+	"runtime.weather.errors.status": "API погоды вернул статус {status}",
+	"runtime.weather.errors.invalid_json": "API погоды вернул недопустимый JSON",
+	"runtime.weather.errors.invalid_response": "API погоды вернул недопустимые данные",
+	"runtime.weather.errors.generic": "Данные о погоде недоступны",
+	"nlu": {
+		"location": {
+			"map": {
+				"берлин": "Berlin, DE",
+				"берлине": "Berlin, DE",
+				"лондон": "London, GB",
+				"лондоне": "London, GB"
+			}
+		}
+	}
+}

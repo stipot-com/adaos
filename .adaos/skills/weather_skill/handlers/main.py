@@ -11,7 +11,7 @@ from adaos.sdk.core.decorators import subscribe, tool
 from adaos.sdk.data import secrets as skill_secrets
 from adaos.sdk.data.bus import emit
 from adaos.sdk.data.context import get_current_skill, set_current_skill
-from adaos.sdk.data.i18n import _
+from adaos.sdk.data.i18n import _, I18n
 from adaos.sdk.data.skill_memory import get as memory_get, set as memory_set
 
 
@@ -200,6 +200,12 @@ async def on_weather_intent(evt) -> None:
         trace_id=evt.trace_id,
     )
 
+def resolve_location(token: str, lang: str = "ru"):
+    if not token:
+        return None
+    mapping = I18n(lang).data("nlu.location.map") or {}
+    canon = mapping.get(token.lower())
+    return (canon, 0.9) if canon else None
 
 __all__ = [
     "handle",

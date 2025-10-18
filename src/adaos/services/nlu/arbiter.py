@@ -117,7 +117,12 @@ def arbitrate(text: str, lang: str, ctx: DialogContext) -> Dict[str, Any]:
     registry_state = nlu_registry.get()
 
     candidates_raw = parse_candidates(text, lang)
-    candidates_filtered = [c for c in candidates_raw if registry_state.get(str(c.get("skill")))]
+    # ВАЖНО: если реестр ещё пуст (первый запуск / навыки не подгружены),
+    # НЕ фильтруем — иначе потеряем даже regex-фолбэк.
+    if registry_state:
+        candidates_filtered = [c for c in candidates_raw if registry_state.get(str(c.get("skill")))]
+    else:
+        candidates_filtered = list(candidates_raw)
 
     if not candidates_filtered:
         last = ctx.get_last()
@@ -131,16 +136,21 @@ def arbitrate(text: str, lang: str, ctx: DialogContext) -> Dict[str, Any]:
                 }
             ]
         else:
+            # Нет кандидатов вообще: всё равно возвращаем entities (например, дату),
+            # и ставим осмысленный dialog_act.
+            entities = []
+            if date_norm:
+                entities.append({"type": "datetime", "value": date_norm, "conf": _DEFAULT_ENTITY_CONF})
             candidates = [_sanitize_candidate(c) for c in candidates_raw]
             event = {
                 "type": EVENT_NLU_INTERPRETATION,
                 "trace_id": normalizer.new_uuid(),
                 "payload": {
                     "raw": {"text": text, "lang": lang},
-                    "entities": [],
+                    "entities": entities,
                     "candidates": candidates,
                     "chosen": {},
-                    "dialog_act": "EXECUTE",
+                    "dialog_act": "ASK_CLARIFICATION",
                 },
             }
             return event

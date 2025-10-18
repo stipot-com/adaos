@@ -14,6 +14,7 @@ cd adaos
 bash tools/bootstrap.sh
 source ./.venv/bin/activate
 # windows (PowerShell):
+Set-ExecutionPolicy Unrestricted -Scope Process
 ./tools/bootstrap.ps1
 . .\.venv\Scripts\Activate.ps1
 

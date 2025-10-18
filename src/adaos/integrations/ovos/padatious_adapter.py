@@ -23,6 +23,8 @@ class OvosCandidate(dict):
 
 _SLOT_RE = re.compile(r"\{([^{}]+)\}")
 _TOKEN_RE = re.compile(r"[\w\-ёЁ]+", re.IGNORECASE)
+_WEATHER_RE = re.compile(r"\b(кака[яой]\s+)?погод[ауеы]\b", re.IGNORECASE)
+_PLACE_RE   = re.compile(r"(?:\bв|\bпо)\s+([a-zA-Zа-яА-ЯёЁ\-]+)", re.IGNORECASE)
 
 
 def _keywords(utterance: str) -> List[str]:
@@ -38,56 +40,32 @@ def _heuristic_match(text: str, utterance: str) -> bool:
     return all(token in lowered for token in tokens)
 
 
-def parse_candidates(text: str, lang: str = "ru") -> List[OvosCandidate]:
-    """Return Padatious candidates or regex fallback."""
+def parse_candidates(text: str, lang: str = "ru") -> List[Dict]:
+    # 1) попробовать взять интенты из реестра (если он есть)
+    try:
+        from adaos.services.nlu.registry import NLURegistry
+        reg = NLURegistry.get()
+    except Exception:
+        reg = {}
 
-    if not text:
-        return []
-    text_norm = text.strip()
-    candidates: List[OvosCandidate] = []
+    cands: List[Dict] = []
 
-    container = None
-    if IntentContainer is not None:  # pragma: no branch - rarely true in tests
-        try:
-            container = IntentContainer(f"adaos-{lang}")
-        except Exception:
-            container = None
+    # 2) если в реестре нет ничего подходящего — включаем фолбэк
+    if not reg or "weather_skill" not in reg or not reg["weather_skill"].intents:
+        if _WEATHER_RE.search(text):
+            slots = {}
+            m = _PLACE_RE.search(text)
+            if m:
+                slots["place_raw"] = m.group(1)
+            cands.append({
+                "intent": "weather.show",
+                "skill": "weather_skill",
+                "score": 0.82,
+                "slots": slots
+            })
+        return cands
 
-    if container is not None:
-        try:  # pragma: no cover - padatious path not covered in CI
-            intents = container.calc_intents(text_norm)
-        except Exception:
-            intents = []
-        for intent_data in intents:
-            intent = intent_data.get("intent")
-            if not intent:
-                continue
-            score = float(intent_data.get("confidence", 0.0))
-            slots = dict(intent_data.get("matches", {}))
-            candidates.append(OvosCandidate(intent, score, slots))
+    # 3) (опционально) на будущее: матчить utterances из реестра
+    # TODO: быстрый шаблонный матч по reg["weather_skill"].intents
 
-    registry_state = nlu_registry.get()
-
-    if not candidates:
-        for skill, skill_spec in registry_state.items():
-            for intent in skill_spec.intents:
-                for utterance in intent.utterances:
-                    tokens = _keywords(utterance)
-                    if _heuristic_match(text_norm, utterance):
-                        score = min(0.9, 0.6 + 0.05 * len(tokens))
-                        candidate = OvosCandidate(intent.name, score=score, slots={})
-                        candidate["skill"] = skill
-                        candidates.append(candidate)
-                        break
-
-    if candidates:
-        for candidate in candidates:
-            if candidate.get("skill"):
-                continue
-            intent_name = candidate.get("intent")
-            for skill, skill_spec in registry_state.items():
-                if any(intent.name == intent_name for intent in skill_spec.intents):
-                    candidate["skill"] = skill
-                    break
-
-    return candidates
+    return cands

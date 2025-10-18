@@ -55,10 +55,16 @@ async def lifespan(app: FastAPI):
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("NLU: failed to list installed skills")
         installed = []
-    if installed:
-        nlu_registry.load_all_active(installed)
-    else:
-        nlu_registry.load_all_active([])
+    try:
+        loaded = nlu_registry.load_all_active(installed or [])
+        # полезные логи на старте
+        loaded_names = sorted(list(loaded.keys()))
+        if loaded_names:
+            logger.info("NLU: loaded for skills: %s", ", ".join(loaded_names))
+        else:
+            logger.warning("NLU: no skills loaded (registry empty)")
+    except Exception:
+        logger.exception("NLU: bootstrap failed during load_all_active()")
 
     try:
         yield
@@ -152,6 +158,7 @@ def nlu_interpret(req: InterpretReq):
     ctx = get_ctx()
     event = arbitrate(req.text, req.lang, _dialog_ctx)
     payload = event["payload"]
+    # если emit ожидает сигнатуру без bus — замените на emit(EVENT_NLU_INTERPRETATION, payload, source="api.nlu")
     emit(ctx.bus, EVENT_NLU_INTERPRETATION, payload, source="api.nlu")
     chosen = payload.get("chosen", {})
     logger.info(

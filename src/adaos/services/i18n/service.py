@@ -95,3 +95,10 @@ class I18nService:
 
         self._cache_skill[key] = data
         return data
+    def translate_data(self, key: str, *, lang: str,
+                       skill_path: Path | None = None, skill_id: str | None = None) -> Any:
+        """
+        Возвращает сырое значение по dotted-ключу (dict/list/str), без .format().
+        """
+        messages = self._load_messages(lang=lang, skill_path=skill_path, skill_id=skill_id)
+        return self._dig(messages, key)  # та же внутренняя утилита, что использует translate

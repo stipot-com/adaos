@@ -1,22 +1,22 @@
 # yaml-language-server: $schema=../../../src/adaos/abi/skill.schema.json
 # .adaos\skills\weather_skill\skill.yaml
 name: weather_skill
-version: "2.0.0"
+version: '2.0.0'
 description: Навык для получения текущей погоды на сегодня
 runtime:
-  python: "3.11"
+  python: '3.11'
 dependencies:
   - requests>=2.31
 events:
   subscribe:
-    - "nlp.intent.weather.get"
+    - 'nlp.intent.weather.get'
   publish:
-    - "ui.notify"
-default_tool: "get_weather"
+    - 'ui.notify'
+default_tool: 'get_weather'
 tools:
-  - name: "get_weather"
+  - name: 'get_weather'
     description: Возвращает текущие погодные данные по городу
-    entry: "handlers.main:get_weather"
+    entry: 'handlers.main:get_weather'
     input_schema:
       type: object
       required: [city]
@@ -31,9 +31,9 @@ tools:
         temp: { type: number }
         description: { type: string }
         error: { type: string }
-  - name: "setup"
+  - name: 'setup'
     description: Сохраняет ключ API для погодного сервиса в секретах навыка
-    entry: "handlers.main:setup"
+    entry: 'handlers.main:setup'
     input_schema:
       type: object
       properties:
@@ -47,3 +47,22 @@ tools:
         ok: { type: boolean }
         message: { type: string }
         error: { type: string }
+nlu:
+  intents:
+    - name: weather.show
+      utterances:
+        - 'какая погода {date?} {place?}'
+        - 'погода {date?} {place?}'
+        - '{date?} погода {place?}'
+      slots:
+        date: { type: datetime, required: false }
+        place: { type: location, required: false }
+      disambiguation:
+        inherit: ['date']
+        defaults: { place: '@home_city' }
+  locales:
+    ru:
+      resources:
+        location_map: 'locales/ru/location_map.tsv'
+  resolvers:
+    location: 'weather_skill.resolvers:resolve_location'
