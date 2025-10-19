@@ -18,6 +18,7 @@ from adaos.sdk.data.skill_memory import get as memory_get, set as memory_set
 
 DEFAULT_API_ENDPOINT = "https://api.openweathermap.org/data/2.5/weather"
 _PLACE_RE = re.compile(r"(?:\bв|\bпо)\s+([A-Za-zА-Яа-яЁё\-]+)")
+_CANON_RE = re.compile(r"^[A-Za-z][A-Za-z\-\s]+,\s*[A-Za-z]{2}$")
 
 def _output(message: str) -> None:
     print(message)
@@ -194,7 +195,7 @@ async def on_weather_intent(evt) -> None:
                 city=data["city"],
                 temp=data["temp"],
                 description=data["description"],
-            )
+            )	
         },
         actor=evt.actor,
         source="weather_skill",
@@ -203,22 +204,34 @@ async def on_weather_intent(evt) -> None:
 
 def resolve_location(*, text: str, lang: str = "ru",
                      slots: Dict[str, Any] | None = None,
-                     resources: Dict[str, Any] | None = None) -> Optional[Tuple[str, float]]:
-    # 1) достаём токен из слота или из текста
+                     resources: Dict[str, Any] | None = None
+                     ) -> Optional[Tuple[str, float]]:
     token = (slots or {}).get("place_raw")
+
     if not token:
         m = _PLACE_RE.search(text or "")
-        if m:
-            token = m.group(1)
+        token = m.group(1) if m else None
+
     if not token:
         return None
 
-    # 2) карта синонимов из i18n; если нет/не dict — пустая
-    mapping = I18n(lang).data("nlu.location.map")
-    if not isinstance(mapping, dict):
-        mapping = {}
+    token = str(token).strip().rstrip("?.!,;")
 
-    canon = mapping.get(str(token).lower())
-    return (canon, 0.9) if canon else None
+    # 1) Если уже "City, CC" — принимаем как есть
+    if _CANON_RE.match(token):
+        return (token, 0.95)
+
+    # 2) Иначе — пробуем карту синонимов из ресурсов
+    mapping = (resources or {}).get("location_map") or {}
+    canon = mapping.get(token.lower())
+    if canon:
+        return (canon, 0.9)
+
+    # 3) Мягкий фолбэк: если токен латиницей без кода страны — можно принять как есть
+    #    (или верни None, если хочешь требовать только "City, CC")
+    if re.fullmatch(r"[A-Za-z][A-Za-z\-\s]+", token):
+        return (token, 0.6)
+
+    return None
 
 __all__ = [*__all__, "resolve_location"] if "__all__" in globals() else ["resolve_location"]
