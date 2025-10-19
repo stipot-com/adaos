@@ -6,6 +6,7 @@ import json
 from typing import Dict, Optional, Tuple
 
 import requests
+import re
 
 from adaos.sdk.core.decorators import subscribe, tool
 from adaos.sdk.data import secrets as skill_secrets
@@ -16,7 +17,7 @@ from adaos.sdk.data.skill_memory import get as memory_get, set as memory_set
 
 
 DEFAULT_API_ENDPOINT = "https://api.openweathermap.org/data/2.5/weather"
-
+_PLACE_RE = re.compile(r"(?:\bв|\bпо)\s+([A-Za-zА-Яа-яЁё\-]+)")
 
 def _output(message: str) -> None:
     print(message)
@@ -200,18 +201,24 @@ async def on_weather_intent(evt) -> None:
         trace_id=evt.trace_id,
     )
 
-def resolve_location(token: str, lang: str = "ru"):
+def resolve_location(*, text: str, lang: str = "ru",
+                     slots: Dict[str, Any] | None = None,
+                     resources: Dict[str, Any] | None = None) -> Optional[Tuple[str, float]]:
+    # 1) достаём токен из слота или из текста
+    token = (slots or {}).get("place_raw")
+    if not token:
+        m = _PLACE_RE.search(text or "")
+        if m:
+            token = m.group(1)
     if not token:
         return None
-    mapping = I18n(lang).data("nlu.location.map") or {}
-    canon = mapping.get(token.lower())
+
+    # 2) карта синонимов из i18n; если нет/не dict — пустая
+    mapping = I18n(lang).data("nlu.location.map")
+    if not isinstance(mapping, dict):
+        mapping = {}
+
+    canon = mapping.get(str(token).lower())
     return (canon, 0.9) if canon else None
 
-__all__ = [
-    "handle",
-    "handle_intent",
-    "get_weather",
-    "setup",
-    "on_weather_intent",
-]
-
+__all__ = [*__all__, "resolve_location"] if "__all__" in globals() else ["resolve_location"]

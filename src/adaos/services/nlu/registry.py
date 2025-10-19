@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from importlib import import_module
+import importlib
+import importlib.util
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Dict, Iterable, List
@@ -15,7 +17,6 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.skill.resolver import SkillPathResolver
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass(slots=True)
 class IntentDisambiguation:
@@ -134,7 +135,7 @@ class NLURegistry:
         location_path = resolvers_cfg.get("location")
         if not location_path:
             raise _SkipSkill("missing resolvers.location")
-        resolvers = {"location": self._import_resolver(location_path)}
+        resolvers = {"location": self._import_resolver(location_path, skill_id=skill, skill_path=skill_dir)}
         intents = self._parse_intents(intents_cfg)
         if not intents:
             raise _SkipSkill("no valid intents")
@@ -198,14 +199,42 @@ class NLURegistry:
             return mapping
         return path.read_text(encoding="utf-8")
 
-    def _import_resolver(self, dotted: str) -> Callable[..., Any]:
+    def _import_resolver(self, dotted: str, *, skill_id: str, skill_path: Path) -> Callable[..., Any]:
+        """
+        Импортирует callable по пути вида:
+          - 'pkg.mod:func' (абсолютный)
+          - 'handlers.main:func' / 'resolvers:func' (относительно каталога навыка)
+          - 'weather_skill.handlers.main:func' (с префиксом skill_id)
+        """
         if ":" not in dotted:
             raise _SkipSkill(f"invalid resolver path: {dotted}")
         module_name, attr = dotted.split(":", 1)
         try:
+            # пробуем стандартный импорт
             module = import_module(module_name)
-        except Exception as exc:
-            raise _SkipSkill(f"cannot import module {module_name}: {exc}") from exc
+        except Exception:
+            # пробуем загрузить модуль относительно директории навыка
+            rel = module_name
+            if rel.startswith(skill_id + "."):
+                rel = rel[len(skill_id) + 1 :]
+            candidate = skill_path / rel.replace(".", "/")
+            file_py = candidate.with_suffix(".py") 
+            if file_py.exists():
+                spec = importlib.util.spec_from_file_location(
+                    f"adaos.skills.{skill_id}.{rel.replace('.', '_')}", str(file_py)
+                )
+            elif (  candidate  / "__init__.py").exists(): 
+                spec = importlib.util.spec_from_file_location(
+                    f"adaos.skills.{skill_id}.{rel.replace('.', '_')}",
+                    str(candidate / "__init__.py"),
+                )
+            else:
+                raise _SkipSkill(f"cannot import module {module_name}: not found near skill")
+            if not spec or not spec.loader:
+                raise _SkipSkill(f"cannot import module {module_name}: invalid spec")
+            module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(module)  # type: ignore[assignment]
+
         try:
             resolver = getattr(module, attr)
         except AttributeError as exc:

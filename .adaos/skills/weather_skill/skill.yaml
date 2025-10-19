@@ -60,9 +60,5 @@ nlu:
       disambiguation:
         inherit: ['date']
         defaults: { place: '@home_city' }
-  locales:
-    ru:
-      resources:
-        location_map: 'locales/ru/location_map.tsv'
   resolvers:
-    location: 'weather_skill.resolvers:resolve_location'
+    location: "handlers.main:resolve_location"
