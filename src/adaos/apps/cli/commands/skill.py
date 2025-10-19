@@ -208,10 +208,6 @@ def push_command(
     Защищён политиками: skills.manage + git.write + net.git.
     """
     if message is None:
-        typer.secho(
-            "Root publishing via 'adaos skill push' has moved to 'adaos dev skill push'.",
-            fg=typer.colors.YELLOW,
-        )
         typer.echo("Use --message/-m to push commits or run 'adaos dev skill push <name>'.")
         raise typer.Exit(1)
 
