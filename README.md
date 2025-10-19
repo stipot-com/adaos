@@ -16,7 +16,7 @@ source ./.venv/bin/activate
 # windows (PowerShell):
 Set-ExecutionPolicy Unrestricted -Scope Process
 ./tools/bootstrap.ps1
-. .\.venv\Scripts\Activate.ps1
+./.venv/Scripts/Activate.ps1
 
 # install dev core (optional)
 pip install -e ".[dev]"

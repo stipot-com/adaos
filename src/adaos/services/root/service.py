@@ -647,7 +647,7 @@ class RootDeveloperService:
         emit(self.ctx.bus, "root.dev.init.start", {"node_id": node_id}, "root.dev")
 
         try:
-            token = root_token or os.getenv("ROOT_TOKEN") or os.getenv("ADAOS_ROOT_TOKEN")
+            token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
             if not token:
                 raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
 
