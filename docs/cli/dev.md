@@ -1,86 +1,84 @@
 # adaos dev
 
-Команды для работы в dev-пространстве текущего сабнета.
+Рабочие команды для dev-пространства (.adaos/dev/<subnet_id>) и локальной проверки навыков.
 
 ---
 
-## Список dev-артефактов
+## Подготовка dev-окружения
 
-- [x] реализация
-
-```bash
-adaos dev skill list [--json]
-adaos dev scenario list [--json]
-```
-
-Выводит навыки и сценарии из `base/dev/{subnet_id}/skills` и `base/dev/{subnet_id}/scenarios`.
-
-## Удаление артефактов
-
-- [x] реализация
-
-```bash
-adaos dev skill delete <NAME> [--yes]
-adaos dev scenario delete <NAME> [--yes]
-```
-
-Удаляет каталоги артефактов. Если не найден — завершает с кодом 3.
-Флаг `--yes` пропускает подтверждение.
-
----
-
-## Публикация артефактов
-
-- [x] реализация
-
-```bash
-adaos dev skill publish <NAME> [--bump patch|minor|major] [--force] [--dry-run]
-adaos dev scenario publish <NAME> [--bump patch|minor|major] [--force] [--dry-run]
-```
-
-Переносит артефакт в workspace и публикует его в root-реестре.
-
-- `--bump` — часть семантической версии для инкремента (по умолчанию `patch`);
-- `--force` — игнорировать различия манифестов;
-- `--dry-run` — предварительный просмотр без внесения изменений.
-
-После публикации отправляется событие
-`registry.skill.published` или `registry.scenario.published`.
-
----
-
-## Регистрация и логин сабнета
-
-- [x] реализация
+- [x] обязательные шаги
 
 ```bash
 adaos dev root init
 adaos dev root login
 ```
 
-- `init` — инициализация и получение сертификата подсети от root-сервера.
-- `login` — авторизация через устройство/QR-код.
+`init` выполняет первичную инициализацию dev-пространства, `login` подтверждает доступ через устройство или QR.
 
-## Валидация
-
-- [x] реализация
+## Просмотр артефактов
 
 ```bash
-adaos dev skill publish <NAME>
+adaos dev skill list [--json]
+adaos dev scenario list [--json]
 ```
 
-## Тестирование
+Команды перечисляют содержимое директорий `base/dev/{subnet_id}/skills` и `.../scenarios`.
 
-- [ ] реализация
+## Создание артефактов
+
+```bash
+adaos dev skill create <NAME> [--template template_name_from_workspace]
+adaos dev scenario create <NAME> [--template template_name_from_workspace]
+```
+
+## Удаление артефактов
+
+```bash
+adaos dev skill delete <NAME> [--yes]
+adaos dev scenario delete <NAME> [--yes]
+```
+
+Флаг `--yes` отключает подтверждение.
+
+## Публикация в Root
+
+```bash
+adaos dev skill publish <NAME> [--bump patch|minor|major] [--force] [--dry-run]
+adaos dev scenario publish <NAME> [--bump patch|minor|major] [--force] [--dry-run]
+```
+
+## Работа с DEV-runtime навыка
+
+```bash
+adaos dev skill activate <NAME> [--slot A|B] [--version VERSION]
+adaos dev skill status <NAME> [--json]
+adaos dev skill rollback <NAME>
+```
+
+`status` и `rollback` работают с runtime по адресу `.adaos/dev/<subnet>/skills/.runtime/<name>`.
+
+## Подготовка и валидация навыка
+
+```bash
+adaos dev skill lint <NAME|PATH>
+adaos dev skill prep <NAME>
+```
+
+`lint` выполняет мягкую проверку каталога навыка, `prep` запускает `prep/prepare.py` для активного DEV-runtime.
+
+## Тестирование навыка
 
 ```bash
 adaos dev skill test <NAME>
+adaos dev skill test <NAME> --runtime
 ```
 
-## Запуск
+Без `--runtime` тесты запускаются из исходников `skills/<name>/tests`. С `--runtime` используется `.runtime/<version>/slots/current/src/skills/<name>/tests`; при отсутствии подкаталогов `smoke|contract|e2e-dryrun` выполняется общий `pytest` по адресу, полученному от PathProvider.
 
-- [ ] реализация
+## Настройка и запуск инструментов
 
 ```bash
-adaos dev skill run <NAME>
+adaos dev skill setup <NAME>
+adaos dev skill run <NAME> [TOOL] [--json PAYLOAD]
 ```
+

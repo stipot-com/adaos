@@ -23,7 +23,12 @@ from adaos.services.root.service import (
     RootServiceError,
     TemplateResolutionError,
 )
-from adaos.services.skill.manager import SkillManager
+from adaos.services.skill.runtime import (
+    SkillPrepError,
+    SkillPrepMissingFunctionError,
+    SkillPrepScriptNotFoundError,
+    run_dev_skill_prep,
+)
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help="Developer utilities for Root and Forge workflows.")
@@ -522,8 +527,79 @@ def dev_skill_validate(
 
 
 @_run_safe
+@skill_app.command("lint")
+def dev_skill_lint(
+    target: str = typer.Argument(".", help="skill path or DEV skill name"),
+):
+    """
+    Run relaxed validation (lint) for a DEV skill resolving via PathProvider.
+    """
+
+    mgr = _mgr()
+    candidate = Path(target).expanduser()
+
+    try:
+        if candidate.exists():
+            resolved = candidate.resolve()
+            report = mgr.validate_skill(
+                resolved.name,
+                strict=False,
+                probe_tools=False,
+                path=resolved,
+            )
+        else:
+            report = mgr.validate_skill(
+                target,
+                strict=False,
+                probe_tools=False,
+                source="dev",
+            )
+    except FileNotFoundError as exc:
+        typer.secho(f"lint failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        typer.secho(f"lint failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    if report.ok:
+        typer.secho("lint passed", fg=typer.colors.GREEN)
+        return
+
+    for issue in report.issues:
+        location = f" ({issue.where})" if getattr(issue, "where", None) else ""
+        typer.echo(f"[{issue.level}] {issue.code}: {issue.message}{location}")
+    raise typer.Exit(1)
+
+
+@_run_safe
+@skill_app.command("prep")
+def dev_skill_prep(skill_name: str) -> None:
+    """Execute the DEV skill preparation helper (prep/prepare.py)."""
+
+    try:
+        result = run_dev_skill_prep(skill_name)
+    except SkillPrepScriptNotFoundError:
+        print(f"[red]{_('skill.prep.not_found', skill_name=skill_name)}[/red]")
+        raise typer.Exit(code=1)
+    except SkillPrepMissingFunctionError:
+        print(f"[red]{_('skill.prep.missing_func', skill_name=skill_name)}[/red]")
+        raise typer.Exit(code=1)
+    except SkillPrepError as exc:
+        print(f"[red]{_('skill.prep.failed', reason=str(exc))}[/red]")
+        raise typer.Exit(code=1)
+
+    if result.get("status") == "ok":
+        print(f"[green]{_('skill.prep.success', skill_name=skill_name)}[/green]")
+        return
+
+    reason = result.get("reason", "unknown")
+    print(f"[red]{_('skill.prep.failed', reason=reason)}[/red]")
+    raise typer.Exit(code=1)
+
+
+@_run_safe
 @skill_app.command("test", help=_("cli.skill.test.help"))
-def cmd_test(
+def dev_skill_test(
     name: str = typer.Argument(..., help=_("cli.skill.test.name_help")),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
     runtime: bool = typer.Option(False, "--runtime", help="run tests from the DEV runtime slot instead of source tree"),
@@ -655,3 +731,54 @@ def dev_skill_activate(
         typer.secho(f"activate failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
     typer.secho(f"skill {name} now active on slot {target}", fg=typer.colors.GREEN)
+
+
+@_run_safe
+@skill_app.command("status")
+def dev_skill_status(
+    name: str = typer.Argument(..., help="skill name in DEV space"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+) -> None:
+    mgr = _mgr()
+    try:
+        state = mgr.dev_runtime_status(name)
+    except Exception as exc:
+        typer.secho(f"status failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    if json_output:
+        typer.echo(json.dumps(state, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"skill: {state['name']}")
+    typer.echo(f"version: {state['version']}")
+    typer.echo(f"active slot: {state['active_slot']}")
+    if state.get("ready", True):
+        typer.echo(f"resolved manifest: {state['resolved_manifest']}")
+    else:
+        typer.echo("resolved manifest: (not activated)")
+        pending_slot = state.get("pending_slot")
+        hint_slot = pending_slot or state.get("active_slot")
+        activation_hint = f" --slot {pending_slot}" if pending_slot else ""
+        typer.secho(
+            f"slot {hint_slot} is prepared but inactive. run 'adaos dev skill activate {name}{activation_hint}'",
+            fg=typer.colors.YELLOW,
+        )
+    tests = state.get("tests") or {}
+    if tests:
+        typer.echo("tests: " + ", ".join(f"{k}={v}" for k, v in tests.items()))
+    default_tool = state.get("default_tool")
+    if default_tool:
+        typer.echo(f"default tool: {default_tool}")
+
+
+@_run_safe
+@skill_app.command("rollback")
+def dev_skill_rollback(name: str = typer.Argument(..., help="skill name in DEV space")) -> None:
+    mgr = _mgr()
+    try:
+        slot = mgr.dev_rollback_runtime(name)
+    except Exception as exc:
+        typer.secho(f"rollback failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    typer.secho(f"rolled back {name} to slot {slot}", fg=typer.colors.YELLOW)

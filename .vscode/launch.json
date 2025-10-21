@@ -8,8 +8,8 @@
 			"name": "Список навыков",
 			"type": "debugpy",
 			"request": "launch",
-			"program": "cli.py",
-			"args": ["skill", "list"],
+			"program": "./src/adaos/apps/cli/app.py",
+			"args": ["dev", "skill", "test", "test_skill2025-10-13"],
 			"console": "integratedTerminal",
 			"justMyCode": true
 		},

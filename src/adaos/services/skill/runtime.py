@@ -110,6 +110,11 @@ def _runtime_env(skill_name: str, agent_ctx: AgentContext) -> SkillRuntimeEnviro
     return SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill_name)
 
 
+def _runtime_env_dev(skill_name: str, agent_ctx: AgentContext) -> SkillRuntimeEnvironment:
+    skills_root = Path(agent_ctx.paths.dev_skills_dir())
+    return SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill_name)
+
+
 def resolve_active_version(skill_name: str, *, ctx: Optional[AgentContext] = None) -> str:
     """Return the active version for ``skill_name``.
 
@@ -275,7 +280,11 @@ def run_skill_handler_sync(
     raise RuntimeError("run_skill_handler_sync() cannot be used inside an active event loop")
 
 
-def run_skill_prep(skill_name: str, *, ctx: Optional[AgentContext] = None) -> Mapping[str, Any]:
+def run_skill_prep(
+    skill_name: str,
+    *,
+    ctx: Optional[AgentContext] = None,
+) -> Mapping[str, Any]:
     """Execute the ``prepare.py`` helper for a given skill.
 
     Args:
@@ -291,8 +300,40 @@ def run_skill_prep(skill_name: str, *, ctx: Optional[AgentContext] = None) -> Ma
     """
 
     agent_ctx = ctx or get_ctx()
-    version = resolve_active_version(skill_name, ctx=agent_ctx)
-    slot_path = find_skill_slot(skill_name, ctx=agent_ctx, version=version)
+    env = _runtime_env(skill_name, agent_ctx)
+    return _run_skill_prep_from_env(skill_name, agent_ctx, env)
+
+
+def run_dev_skill_prep(
+    skill_name: str,
+    *,
+    ctx: Optional[AgentContext] = None,
+) -> Mapping[str, Any]:
+    """Execute the ``prepare.py`` helper for a DEV skill."""
+
+    agent_ctx = ctx or get_ctx()
+    env = _runtime_env_dev(skill_name, agent_ctx)
+    return _run_skill_prep_from_env(skill_name, agent_ctx, env)
+
+
+def _run_skill_prep_from_env(
+    skill_name: str,
+    agent_ctx: AgentContext,
+    env: SkillRuntimeEnvironment,
+) -> Mapping[str, Any]:
+    version = env.resolve_active_version()
+    if not version:
+        raise SkillDirectoryNotFoundError(
+            f"Skill '{skill_name}' has no active runtime version under {env.runtime_root}"
+        )
+
+    env.prepare_version(version)
+    slot_path = env.ensure_current_link(version)
+    if not slot_path.exists():
+        raise SkillDirectoryNotFoundError(
+            f"Active slot not found for skill '{skill_name}' (version {version})"
+        )
+
     skill_dir = slot_path / "src" / "skills" / skill_name
     if not skill_dir.is_dir():
         raise SkillDirectoryNotFoundError(
@@ -348,4 +389,5 @@ __all__ = [
     "run_skill_handler",
     "run_skill_handler_sync",
     "run_skill_prep",
+    "run_dev_skill_prep",
 ]

@@ -95,11 +95,12 @@ def run_tests(
     with log_path.open("w", encoding="utf-8") as log:
         if not dev_mode:
             # старые suite-скрипты
+            suite_results: Dict[str, TestResult] = {}
             for suite in ("smoke", "contract", "e2e-dryrun"):
                 suite_dir = runtime_tests_root / suite
                 if not suite_dir.exists():
                     continue
-                results[suite] = _run_suite(
+                suite_results[suite] = _run_suite(
                     suite,
                     suite_dir,
                     timeout=_TEST_TIMEOUTS.get(suite, 30),
@@ -110,6 +111,23 @@ def run_tests(
                     skill_version=skill_version,
                     slot_dir=slot_current_dir,
                 )
+            results.update(suite_results)
+
+            need_fallback = (
+                not results or all(res.status == "skipped" for res in results.values())
+            )
+            if need_fallback and runtime_tests_root.exists():
+                fallback = _run_pytest_suite(
+                    suite_name="pytest",
+                    tests_dir=runtime_tests_root,
+                    marker=None,
+                    timeout=max(_TEST_TIMEOUTS.values()),
+                    log=log,
+                    interpreter=interpreter,
+                    env=env_template,
+                )
+                if fallback is not None:
+                    results[fallback.name] = fallback
         else:
             # pytest в DEV: сначала директории, затем маркеры
             dev_groups: list[tuple[str, Path | None, str | None]] = []

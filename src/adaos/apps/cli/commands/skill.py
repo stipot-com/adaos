@@ -14,12 +14,8 @@ from adaos.sdk.data.i18n import _
 from adaos.services.agent_context import get_ctx
 from adaos.services.skill.manager import RuntimeInstallResult, SkillManager
 from adaos.services.skill.runtime import (
-    SkillPrepError,
-    SkillPrepMissingFunctionError,
-    SkillPrepScriptNotFoundError,
     SkillRuntimeError,
     run_skill_handler_sync,
-    run_skill_prep,
 )
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
@@ -543,63 +539,3 @@ def migrate(
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
     typer.echo(f"{name}: {'updated' if result.updated else 'up-to-date'}" + (f" (version {result.version})" if result.version else ""))
-
-
-@_run_safe
-@app.command("lint")
-def lint(path: str = typer.Argument(".", help="path to skill directory")):
-    try:
-        target = _resolve_skill_path(path)
-    except typer.BadParameter:
-        target = Path(path).expanduser().resolve()
-    if not target.exists():
-        typer.secho(f"path not found: {target}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    ctx = get_ctx()
-    previous = ctx.skill_ctx.get()
-    try:
-        if not ctx.skill_ctx.set(target.name, target):
-            ctx.skill_ctx.set(target.name, target)
-        report = SkillValidationService(ctx).validate(
-            skill_name=target.name,
-            strict=False,
-            install_mode=False,
-            probe_tools=False,
-        )
-    finally:
-        if previous is None:
-            ctx.skill_ctx.clear()
-        else:
-            ctx.skill_ctx.set(previous.name, Path(previous.path))
-
-    if report.ok:
-        typer.secho("lint passed", fg=typer.colors.GREEN)
-        return
-
-    for issue in report.issues:
-        location = f" ({issue.where})" if issue.where else ""
-        typer.echo(f"[{issue.level}] {issue.code}: {issue.message}{location}")
-    raise typer.Exit(1)
-
-
-@app.command("prep")
-def prep_command(skill_name: str):
-    """Запуск стадии подготовки (discover) для навыка"""
-    try:
-        result = run_skill_prep(skill_name)
-    except SkillPrepScriptNotFoundError:
-        print(f"[red]{_('skill.prep.not_found', skill_name=skill_name)}[/red]")
-        raise typer.Exit(code=1)
-    except SkillPrepMissingFunctionError:
-        print(f"[red]{_('skill.prep.missing_func', skill_name=skill_name)}[/red]")
-        raise typer.Exit(code=1)
-    except SkillPrepError as exc:
-        print(f"[red]{_('skill.prep.failed', reason=str(exc))}[/red]")
-        raise typer.Exit(code=1)
-
-    if result.get("status") == "ok":
-        print(f"[green]{_('skill.prep.success', skill_name=skill_name)}[/green]")
-    else:
-        reason = result.get("reason", "unknown")
-        print(f"[red]{_('skill.prep.failed', reason=reason)}[/red]")

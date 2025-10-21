@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -279,12 +279,10 @@ class SkillManager:
             skill_version=version,
             slot_current_dir=current_link,
         )
-        for r in results.values():
-            if r and r.status in ("error", "failed"):
-                if r.detail:
-                    r.detail = f"{r.detail} (log: {log_path})"
-                else:
-                    r.detail = f"log: {log_path}"
+        for test_name, result in list(results.items()):
+            if result and result.status in ("error", "failed"):
+                detail = f"{result.detail} (log: {log_path})" if result.detail else f"log: {log_path}"
+                results[test_name] = replace(result, detail=detail)
         return results
 
     def uninstall(self, name: str) -> None:
@@ -502,6 +500,14 @@ class SkillManager:
         env.prepare_version(version)
         return env.rollback_slot(version)
 
+    def dev_rollback_runtime(self, name: str) -> str:
+        env = self._runtime_env_dev(name)
+        version = env.resolve_active_version()
+        if not version:
+            raise RuntimeError("no active version")
+        env.prepare_version(version)
+        return env.rollback_slot(version)
+
     def runtime_status(self, name: str) -> Dict[str, Any]:
         env = self._runtime_env(name)
         version = env.resolve_active_version()
@@ -651,9 +657,7 @@ class SkillManager:
         status = self.dev_runtime_status(name)
         if not status.get("ready", True):
             pending_version = status.get("pending_version") or status.get("version")
-            raise RuntimeError(
-                f"skill '{name}' version {pending_version or '<unknown>'} is not activated. Run 'adaos dev skill activate' before setup."
-            )
+            raise RuntimeError(f"skill '{name}' version {pending_version or '<unknown>'} is not activated. Run 'adaos dev skill activate' before setup.")
 
         manifest_path = Path(status["resolved_manifest"])
         if not manifest_path.exists():
@@ -1315,7 +1319,7 @@ class SkillManager:
         Mirrors prepare_runtime but uses the DEV skills root as the source and runtime root.
         """
         dev_root = self.ctx.paths.dev_skills_dir()
-        skill_dir = (dev_root / name)
+        skill_dir = dev_root / name
         if not skill_dir.exists():
             raise FileNotFoundError(f"skill '{name}' not found at {skill_dir}")
 
@@ -1414,7 +1418,7 @@ class SkillManager:
         """
         env = self._runtime_env_dev(name)
         dev_root = self.ctx.paths.dev_skills_dir()
-        skill_dir = (dev_root / name)
+        skill_dir = dev_root / name
         if not skill_dir.exists():
             raise FileNotFoundError(f"skill '{name}' not found at {skill_dir}")
 
@@ -1451,6 +1455,7 @@ class SkillManager:
         env.write_version_metadata(target_version, metadata)
         self._smoke_import(env=env, name=name, version=target_version)
         return target_slot
+
     def run_dev_skill_tests(self, name: str) -> Dict[str, TestResult]:
         """Запуск тестов DEV-навыка прямо из исходников (без install/slots/.runtime).
         - Ищем тесты в <dev>/skills/<name>/tests/**/*.py (pytest discovery).
@@ -1471,7 +1476,6 @@ class SkillManager:
             raise PermissionError("skill path escapes dev root")
         if not skill_dir.exists() or not skill_dir.is_dir():
             raise FileNotFoundError(f"skill '{name}' not found in DEV at {skill_dir}")
-
         # Манифест нужен только для подсказок рантайма; отсутствие не фатально
         try:
             manifest = self._load_manifest(skill_dir)
