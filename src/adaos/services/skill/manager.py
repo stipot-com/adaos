@@ -536,6 +536,40 @@ class SkillManager:
             state["default_tool"] = manifest.get("default_tool")
         return state
 
+    def dev_runtime_status(self, name: str) -> Dict[str, Any]:
+        env = self._runtime_env_dev(name)
+        version = env.resolve_active_version()
+        if not version:
+            raise RuntimeError("no versions installed")
+        env.prepare_version(version)
+        active_slot = env.read_active_slot(version)
+        metadata = env.read_version_metadata(version)
+        slot_paths = env.build_slot_paths(version, active_slot)
+        slot_meta = metadata.get("slots", {}).get(active_slot, {})
+        resolved_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+        ready = resolved_path.exists()
+        history = metadata.get("history", {})
+        state: Dict[str, Any] = {
+            "name": name,
+            "version": version,
+            "active_slot": active_slot,
+            "resolved_manifest": str(resolved_path),
+            "ready": ready,
+            "tests": slot_meta.get("tests", {}),
+            "history": history,
+        }
+        if not ready:
+            state["pending_slot"] = history.get("last_install_slot")
+            state["pending_version"] = history.get("last_install_version")
+            state["default_tool"] = history.get("last_default_tool")
+        else:
+            try:
+                manifest = json.loads(resolved_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                manifest = {}
+            state["default_tool"] = manifest.get("default_tool")
+        return state
+
     def cleanup_runtime(self, name: str, *, purge_data: bool = False) -> None:
         env = self._runtime_env(name)
         for version in env.list_versions():
@@ -605,6 +639,32 @@ class SkillManager:
             raise RuntimeError("setup not supported for this skill")
 
         return self.run_tool(
+            name,
+            "setup",
+            {},
+            allow_inactive=False,
+        )
+
+    def dev_setup_skill(self, name: str) -> Any:
+        """Run the optional setup tool for a DEV skill."""
+
+        status = self.dev_runtime_status(name)
+        if not status.get("ready", True):
+            pending_version = status.get("pending_version") or status.get("version")
+            raise RuntimeError(
+                f"skill '{name}' version {pending_version or '<unknown>'} is not activated. Run 'adaos dev skill activate' before setup."
+            )
+
+        manifest_path = Path(status["resolved_manifest"])
+        if not manifest_path.exists():
+            raise RuntimeError("skill runtime is not prepared; install and activate the skill first")
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = manifest.get("tools") or {}
+        if "setup" not in tools:
+            raise RuntimeError("setup not supported for this skill")
+
+        return self.run_dev_tool(
             name,
             "setup",
             {},
@@ -714,6 +774,111 @@ class SkillManager:
                 result = _call_tool()
         finally:
             ctx.secrets = prev_secrets
+            if previous is None:
+                ctx.skill_ctx.clear()
+            else:
+                ctx.skill_ctx.set(previous.name, Path(previous.path))
+            if prev_env is None:
+                os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_ENV_PATH"] = prev_env
+
+        self._persist_skill_env(env, slot)
+        return result
+
+    def run_dev_tool(
+        self,
+        name: str,
+        tool: str | None,
+        payload: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+        allow_inactive: bool = False,
+        slot: str | None = None,
+    ) -> Any:
+        status = self.dev_runtime_status(name)
+        env = self._runtime_env_dev(name)
+        version = status.get("version")
+        active_slot = status.get("active_slot")
+        manifest_path = Path(status["resolved_manifest"])
+        slot_name = active_slot
+
+        if not status.get("ready", True):
+            target_slot = slot or status.get("pending_slot")
+            target_version = status.get("pending_version") or version
+            if not allow_inactive or not target_slot or not target_version:
+                raise RuntimeError(
+                    f"skill '{name}' version {status.get('pending_version') or status.get('version')} is not activated. "
+                    f"Activate slot {target_slot or status.get('active_slot')} and retry."
+                )
+            env.prepare_version(target_version)
+            metadata = env.read_version_metadata(target_version)
+            slot_paths = env.build_slot_paths(target_version, target_slot)
+            slot_meta = metadata.get("slots", {}).get(target_slot, {})
+            manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+            if not manifest_path.exists():
+                raise RuntimeError(f"slot {target_slot} for version {target_version} is not prepared")
+            version = target_version
+            slot_name = target_slot
+        elif slot and slot != active_slot:
+            env.prepare_version(version)
+            metadata = env.read_version_metadata(version)
+            slot_paths = env.build_slot_paths(version, slot)
+            slot_meta = metadata.get("slots", {}).get(slot, {})
+            candidate = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+            if not candidate.exists():
+                raise RuntimeError(f"slot {slot} for version {version} is not prepared")
+            manifest_path = candidate
+            slot_name = slot
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = data.get("tools") or {}
+        if tool:
+            target_tool = tool
+        else:
+            target_tool = data.get("default_tool")
+        if not target_tool:
+            raise KeyError("tool name not provided and no default tool defined")
+        tool_spec = tools.get(target_tool)
+        if not tool_spec:
+            available = ", ".join(sorted(tools)) or "<none>"
+            raise KeyError(f"tool '{target_tool}' not found (available: {available})")
+
+        module = tool_spec.get("module")
+        attr = tool_spec.get("callable") or target_tool
+        skill_dir = Path(data.get("source") or (self.ctx.paths.dev_skills_dir() / name))
+        slot_name = data.get("slot") or slot_name
+        slot = env.build_slot_paths(version or data.get("version"), slot_name)
+        runtime_info = data.get("runtime", {})
+        extra_paths = [Path(p) for p in runtime_info.get("python_paths", []) if p]
+        skill_env_path = Path(runtime_info.get("skill_env") or slot.skill_env_path)
+
+        ctx = self.ctx
+        previous = ctx.skill_ctx.get()
+        prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+        prev_secrets = ctx.secrets
+        ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
+        execution_timeout = timeout or tool_spec.get("timeout_seconds")
+
+        def _call_tool() -> Any:
+            with use_ctx(ctx):
+                return execute_tool(
+                    skill_dir,
+                    module=module,
+                    attr=attr,
+                    payload=payload,
+                    extra_paths=extra_paths,
+                )
+
+        try:
+            if not ctx.skill_ctx.set(name, skill_dir):
+                raise RuntimeError(f"failed to establish context for skill '{name}'")
+        except Exception:
+            pass
+        try:
+            os.environ["ADAOS_SKILL_ENV_PATH"] = str(skill_env_path)
+            result = _call_tool()
+        finally:
             if previous is None:
                 ctx.skill_ctx.clear()
             else:

@@ -452,14 +452,16 @@ def dev_skill_validate(
 def cmd_test(
     name: str = typer.Argument(..., help=_("cli.skill.test.name_help")),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+    runtime: bool = typer.Option(False, "--runtime", help="run tests from the DEV runtime slot instead of source tree"),
 ) -> None:
-    """
-    DEV-only: запускает тесты навыка из DEV-пространства.
-    Тесты ищутся в <dev>/skills/<name>/tests/**/*.py, логи — в <dev>/skills/<name>/logs/.
-    """
+    """Execute DEV skill tests either from source tree or the prepared runtime slot."""
+
     mgr = _mgr()
     try:
-        results = mgr.run_dev_skill_tests(name)
+        if runtime:
+            results = mgr.run_skill_tests(name, source="dev")
+        else:
+            results = mgr.run_dev_skill_tests(name)
     except Exception as exc:
         typer.secho(f"test failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
@@ -482,22 +484,85 @@ def cmd_test(
             failed = True
 
     if failed:
-        # попытаемся угадать путь к логу и показать хвост
-        from pathlib import Path
+        log_path: Path | None = None
+        if runtime:
+            for result in results.values():
+                detail = getattr(result, "detail", None)
+                if detail and "log:" in detail:
+                    hint = detail.split("log:", 1)[1].strip()
+                    if hint.endswith(")"):
+                        hint = hint[:-1].rstrip()
+                    candidate = Path(hint)
+                    if candidate.exists():
+                        log_path = candidate
+                        break
+        else:
+            log_path = Path(mgr.ctx.paths.dev_skills_dir()) / name / "logs" / "tests.dev.log"
 
-        dev_root = _mgr().ctx.paths.dev_skills_dir()
-        log_path = Path(dev_root) / name / "logs" / "tests.dev.log"
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="ignore")
-            tail = "\n".join(text.splitlines()[-80:])  # хвост 80 строк
-            typer.echo("\n--- tests log tail ---")
-            typer.echo(tail)
-            typer.echo(f"--- end (full log: {log_path}) ---")
-        except Exception:
-            pass
-    raise typer.Exit(1)
+        if log_path and log_path.exists():
+            try:
+                text = log_path.read_text(encoding="utf-8", errors="ignore")
+                tail = "\n".join(text.splitlines()[-80:])
+                typer.echo("\n--- tests log tail ---")
+                typer.echo(tail)
+                typer.echo(f"--- end (full log: {log_path}) ---")
+            except Exception:
+                pass
+        raise typer.Exit(1)
 
     typer.secho("tests passed", fg=typer.colors.GREEN)
+
+@_run_safe
+@skill_app.command("setup")
+def dev_skill_setup(
+    name: str = typer.Argument(..., help="skill name in DEV space"),
+    json_output: bool = typer.Option(False, "--json", help="machine readable output"),
+) -> None:
+    mgr = _mgr()
+    try:
+        result = mgr.dev_setup_skill(name)
+    except Exception as exc:
+        typer.secho(f"setup failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    if isinstance(result, dict):
+        payload = json.dumps(result, ensure_ascii=False)
+        typer.echo(payload)
+        if not result.get("ok", True):
+            raise typer.Exit(1)
+        return
+
+    if json_output:
+        typer.echo(json.dumps({"result": result}, ensure_ascii=False))
+    elif result is None:
+        typer.secho("setup completed", fg=typer.colors.GREEN)
+    else:
+        typer.echo(str(result))
+
+
+@_run_safe
+@skill_app.command("run")
+def dev_skill_run(
+    name: str = typer.Argument(..., help="skill name in DEV space"),
+    tool: Optional[str] = typer.Argument(None, help="tool name to run (defaults to default_tool)"),
+    payload: str = typer.Option("{}", "--json", help="JSON payload for the tool call"),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="tool execution timeout"),
+    slot: Optional[str] = typer.Option(None, "--slot", help="run against specific slot (A/B)"),
+) -> None:
+    try:
+        payload_obj = json.loads(payload or "{}")
+    except json.JSONDecodeError as exc:
+        typer.secho(f"invalid payload: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    mgr = _mgr()
+    try:
+        result = mgr.run_dev_tool(name, tool, payload_obj, timeout=timeout, slot=slot)
+    except Exception as exc:
+        typer.secho(f"run failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    typer.echo(json.dumps(result, ensure_ascii=False))
 
 
 @_run_safe
