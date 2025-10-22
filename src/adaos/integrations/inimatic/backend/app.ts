@@ -19,6 +19,9 @@ import { CertificateAuthority } from './pki.js'
 import { ForgeManager, type DraftKind } from './forge.js'
 import { getPolicy } from './policy.js'
 import { resolveLocale, translate, type Locale, type MessageParams } from './i18n.js'
+import { NatsBus } from './io/bus/nats.js'
+import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
+import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 
 type FollowerData = {
@@ -207,7 +210,7 @@ app.use((req, _res, next) => {
 	req.locale = resolveLocale(req)
 	next()
 })
-app.use(express.json({ limit: '64mb' }))
+app.use(express.json({ limit: '2mb' }))
 
 function withLeadingSlash(value: string, fallback: string): string {
 	const trimmed = value.trim()
@@ -576,13 +579,24 @@ app.get('/healthz', (_req, res) => {
 })
 
 app.get('/v1/health', (_req, res) => {
-	res.json({
-		ok: true,
-		version: buildInfo.version,
-		build_date: buildInfo.buildDate,
-		commit: buildInfo.commit,
-		time: new Date().toISOString(),
-	})
+    res.json({
+        ok: true,
+        version: buildInfo.version,
+        build_date: buildInfo.buildDate,
+        commit: buildInfo.commit,
+        time: new Date().toISOString(),
+    })
+})
+
+// Prometheus metrics endpoint
+import client from 'prom-client'
+app.get('/metrics', async (_req, res) => {
+    try {
+        res.set('Content-Type', client.register.contentType)
+        res.send(await client.register.metrics())
+    } catch (e) {
+        res.status(500).send(String(e))
+    }
 })
 
 const rootRouter = express.Router()
@@ -787,6 +801,33 @@ if (process.env['DEBUG_ENDPOINTS'] === 'true') {
 }
 
 app.use('/v1', rootRouter)
+
+// --- IO (Telegram) wiring ---
+let ioBus: NatsBus | null = null
+if ((process.env['IO_BUS_KIND'] || 'local').toLowerCase() === 'nats' && process.env['NATS_URL']) {
+    try {
+        ioBus = new NatsBus(process.env['NATS_URL']!)
+        await ioBus.connect()
+        console.log(`[io] NATS connected at ${process.env['NATS_URL']}`)
+        // subscribe to outbound for a single configured bot
+        const botId = process.env['BOT_ID'] || 'main-bot'
+        const { TelegramSender } = await import('./io/telegram/sender.js')
+        const sender = new TelegramSender(process.env['TG_BOT_TOKEN'] || '')
+        await ioBus.subscribe_output(botId, async (_subject, data) => {
+            try {
+                const payload = JSON.parse(new TextDecoder().decode(data))
+                await sender.send(payload)
+            } catch (e) {
+                try { await ioBus!.publish_dlq('output', { error: String(e) }) } catch {}
+            }
+        })
+    } catch (e) {
+        console.error('[io] NATS init failed', e)
+        ioBus = null
+    }
+}
+installTelegramWebhookRoutes(app, ioBus)
+installPairingApi(app)
 
 app.post('/v1/bootstrap_token', async (req, res) => {
 	const token = req.header('X-Root-Token') ?? ''

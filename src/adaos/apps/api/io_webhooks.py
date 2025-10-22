@@ -42,12 +42,17 @@ async def telegram_webhook(
     body_hash = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
     path = f"/io/tg/{bot_id}/webhook"
     cached = sqlite_db.idem_get(idem_key, "POST", path, bot_id, body_hash)
+    response: dict | None = None
+    status_code: int | None = None
     if cached:
         try:
-            payload = json.loads(cached["body_json"]) if cached.get("body_json") else {"ok": True, "cached": True}
+            response = json.loads(cached["body_json"]) if cached.get("body_json") else {"ok": True, "cached": True}
         except Exception:
-            payload = {"ok": True, "cached": True}
-        return payload
+            response = {"ok": True, "cached": True}
+        try:
+            status_code = int(cached.get("status_code") or 200)
+        except Exception:
+            status_code = 200
 
     # Enrich payload with downloaded media paths
     settings = get_ctx().settings
@@ -55,7 +60,8 @@ async def telegram_webhook(
     files_root = settings.files_tmp_dir or (str(get_ctx().paths.tmp_dir()))
     dest_root = os.path.join(files_root, "telegram", bot_id)
 
-    try:
+    if response is None:  # proceed only if not cached
+      try:
         if evt.type == "audio" and token and evt.payload.get("file_id"):
             fpath = get_file_path(token, evt.payload["file_id"])  # type: ignore
             if fpath:
@@ -76,12 +82,12 @@ async def telegram_webhook(
             if fpath:
                 local = download_file(token, fpath, dest_root)
                 evt.payload["document_path"] = str(local)
-    except Exception:
-        # Non-fatal; continue without media enrichment
-        pass
+      except Exception:
+          # Non-fatal; continue without media enrichment
+          pass
 
     # Handle /start <code> pairing in text updates
-    if evt.type == "text":
+    if response is None and evt.type == "text":
         txt = (evt.payload.get("text") or "").strip()
         if txt.lower().startswith("/start "):
             code = txt.split(" ", 1)[1].strip()
@@ -94,48 +100,50 @@ async def telegram_webhook(
         hub = get_ctx().settings.default_hub
     evt.hub_id = hub
 
-    if not hub:
-        # no route; 202 Accepted but not queued
-        response = {"ok": True, "routed": False}
-        status_code = 202
-    else:
-        envelope = {
-            "event_id": uuid4().hex,
-            "kind": "io.input",
-            "ts": datetime.utcnow().isoformat() + "Z",
-            "dedup_key": f"{bot_id}:{evt.update_id}",
-            "payload": asdict(evt),
-            "meta": {"bot_id": bot_id, "hub_id": hub, "trace_id": uuid4().hex, "retries": 0},
-        }
-        # Publish via IO bus
-        try:
-            bus = getattr(request.app.state, "bus", None)
-            if bus and hasattr(bus, "publish_input"):
-                await bus.publish_input(hub, envelope)
-                tm.record_event("enqueue_total", {"hub_id": hub})
-            response = {"ok": True, "routed": True}
-            status_code = 200
-        except Exception:
-            # DLQ on intake failure (optional)
-            try:
-                if bus and hasattr(bus, "publish_dlq"):
-                    await bus.publish_dlq("input", {"error": "publish_failed", "envelope": envelope})
-            except Exception:
-                pass
+    if response is None:
+        if not hub:
+            # no route; 202 Accepted but not queued
             response = {"ok": True, "routed": False}
             status_code = 202
-    sqlite_db.idem_put(
-        idem_key,
-        "POST",
-        path,
-        bot_id,
-        body_hash,
-        status_code,
-        json.dumps(response, ensure_ascii=False),
-        event_id=evt.update_id,
-        server_time_utc=str(int(time.time())),
-        ttl=86400,
-    )
+        else:
+            envelope = {
+                "event_id": uuid4().hex,
+                "kind": "io.input",
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "dedup_key": f"{bot_id}:{evt.update_id}",
+                "payload": asdict(evt),
+                "meta": {"bot_id": bot_id, "hub_id": hub, "trace_id": uuid4().hex, "retries": 0},
+            }
+            # Publish via IO bus
+            try:
+                bus = getattr(request.app.state, "bus", None)
+                if bus and hasattr(bus, "publish_input"):
+                    await bus.publish_input(hub, envelope)
+                    tm.record_event("enqueue_total", {"hub_id": hub})
+                response = {"ok": True, "routed": True}
+                status_code = 200
+            except Exception:
+                # DLQ on intake failure (optional)
+                try:
+                    if bus and hasattr(bus, "publish_dlq"):
+                        await bus.publish_dlq("input", {"error": "publish_failed", "envelope": envelope})
+                except Exception:
+                    pass
+                response = {"ok": True, "routed": False}
+                status_code = 202
+        # store idempotency only for non-cached path
+        sqlite_db.idem_put(
+            idem_key,
+            "POST",
+            path,
+            bot_id,
+            body_hash,
+            status_code,
+            json.dumps(response, ensure_ascii=False),
+            event_id=evt.update_id,
+            server_time_utc=str(int(time.time())),
+            ttl=86400,
+        )
     from fastapi import Response
     return Response(content=json.dumps(response, ensure_ascii=False), media_type="application/json", status_code=status_code)
 

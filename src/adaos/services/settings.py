@@ -145,7 +145,6 @@ class Settings:
         app_base = pick_env("ADAOS_APP_BASE", app_base) or app_base
         dev_skills_dirname = pick_env("ADAOS_DEV_SKILLS_DIRNAME", dev_skills_dirname) or dev_skills_dirname
         dev_scenarios_dirname = pick_env("ADAOS_DEV_SCENARIOS_DIRNAME", dev_scenarios_dirname) or dev_scenarios_dirname
-
         return Settings(
             base_dir=base,
             profile=profile,
