@@ -51,7 +51,7 @@ export class NatsBus {
 			} catch { /* already exists */ }
 		}
 		await ensure('TG_INPUT', ['tg.input.*'])
-		await ensure('TG_OUTPUT', ['tg.output.*'])
+		await ensure('TG_OUTPUT', ['tg.output.>'])
 		await ensure('TG_DLQ', ['tg.dlq.*'])
 	}
 
