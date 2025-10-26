@@ -1,0 +1,22 @@
+<div class="login_wrapper">
+	<div class="login_form">
+		<div>
+			<p *ngIf="errorMessage" class="error_message">
+				{{ errorMessage }}
+			</p>
+
+			<ion-input
+				class="ion-primary-input"
+				label="Device code"
+				labelPlacement="floating"
+				[(ngModel)]="deviceCode"
+				maxlength="9"
+				[counter]="true"
+			/>
+		</div>
+
+		<ion-button expand="block" (click)="onLogin()" [disabled]="loading">
+			Log in
+		</ion-button>
+	</div>
+</div>

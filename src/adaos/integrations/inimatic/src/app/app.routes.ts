@@ -1,6 +1,6 @@
 import { Routes } from '@angular/router'
-import { HubComponent } from "./features/hub/hub.component"
-import { MemberComponent } from "./features/member/member.component"
+import { HubComponent } from './features/hub/hub.component'
+import { MemberComponent } from './features/member/member.component'
 
 export const routes: Routes = [
 	{
@@ -29,10 +29,16 @@ export const routes: Routes = [
 	},
 	{ path: 'member', component: MemberComponent },
 	{
+		path: 'desktop',
+		loadComponent: () =>
+			import('./desktop/desktop.component').then(
+				(m) => m.DesktopComponent
+			),
+	},
+	{
 		path: '',
 		redirectTo: '/private',
 		pathMatch: 'full',
 	},
-	{ path: '**', redirectTo: 'hub' }                     // wildcard — в самый конец!
+	{ path: '**', redirectTo: 'hub' }, // wildcard — в самый конец!
 ]
-
