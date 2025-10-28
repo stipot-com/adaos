@@ -829,6 +829,29 @@ if ((process.env['IO_BUS_KIND'] || 'local').toLowerCase() === 'nats' && process.
 installTelegramWebhookRoutes(app, ioBus)
 installPairingApi(app)
 
+// Simple dev endpoint to send a message to a Telegram chat via NATS -> TelegramSender
+app.post('/io/tg/send', async (req, res) => {
+    try {
+        if (!ioBus) return res.status(503).json({ ok: false, error: 'io_bus_unavailable' })
+        const bot_id = typeof req.body?.bot_id === 'string' && req.body.bot_id ? req.body.bot_id : (process.env['BOT_ID'] || 'main-bot')
+        const chat_id = String((req.body as any)?.chat_id || '')
+        const text = String((req.body as any)?.text || '')
+        if (!chat_id) return res.status(400).json({ ok: false, error: 'chat_id_required' })
+        if (!text) return res.status(400).json({ ok: false, error: 'text_required' })
+
+        const payload = {
+            target: { bot_id, hub_id: (req.body as any)?.hub_id || (process.env['DEFAULT_HUB'] || 'hub-a'), chat_id },
+            messages: [{ type: 'text', text }],
+        }
+        const subject = `tg.output.${bot_id}.chat.${chat_id}`
+        await ioBus.publishSubject(subject, payload)
+        return res.status(202).json({ ok: true, subject })
+    } catch (e) {
+        console.error('tg/send failed', e)
+        return res.status(500).json({ ok: false })
+    }
+})
+
 app.post('/v1/bootstrap_token', async (req, res) => {
 	const token = req.header('X-Root-Token') ?? ''
 	if (!token || token !== ROOT_TOKEN) {
