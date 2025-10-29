@@ -7,6 +7,8 @@ add_or_update_entity, update_skill_version, list_entities, set_installed_flag.
 и ту же схему таблиц (skills/skill_versions, scenarios/scenario_versions).
 """
 from __future__ import annotations
+
+import json
 import time
 from typing import Optional, Iterable, Literal, List, Dict, Any
 
@@ -47,7 +49,8 @@ def add_or_update_entity(
                 installed      = ?,
                 last_updated   = CURRENT_TIMESTAMP
             """,
-            (name, active_version, repo_url, 1 if installed else 0, active_version, repo_url, 1 if installed else 0),
+            (name, active_version, repo_url, 1 if installed else 0,
+             active_version, repo_url, 1 if installed else 0),
         )
         con.commit()
 
@@ -112,7 +115,7 @@ def update_skill_version(
     with sql.connect() as con:
         con.execute(
             f"""
-            INSERT INTO {table}( { 'skill_name' if entity=='skills' else 'scenario_name' }, version, path, status, created_at)
+            INSERT INTO {table}( {'skill_name' if entity == 'skills' else 'scenario_name'}, version, path, status, created_at)
             VALUES( ?, ?, ?, ?, CURRENT_TIMESTAMP )
             """,
             (name, version, path, status),
@@ -142,7 +145,8 @@ def list_versions(name: str) -> Optional[str]:
     """
     sql = get_ctx().sql
     with sql.connect() as con:
-        cur = con.execute("SELECT active_version FROM skills WHERE name=?", (name,))
+        cur = con.execute(
+            "SELECT active_version FROM skills WHERE name=?", (name,))
         row = cur.fetchone()
     return row[0] if row and row[0] else None
 
@@ -219,7 +223,8 @@ def idem_put(
 def ca_load() -> dict:
     sql = get_ctx().sql
     with sql.connect() as con:
-        cur = con.execute("SELECT ca_key_pem, ca_cert_pem, next_serial FROM ca_state WHERE id=1")
+        cur = con.execute(
+            "SELECT ca_key_pem, ca_cert_pem, next_serial FROM ca_state WHERE id=1")
         row = cur.fetchone()
         if row:
             return {"ca_key_pem": row[0], "ca_cert_pem": row[1], "next_serial": int(row[2])}
@@ -231,7 +236,8 @@ def ca_load() -> dict:
         from cryptography.x509.oid import NameOID
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "AdaOS Root CA")])
+        subject = x509.Name(
+            [x509.NameAttribute(NameOID.COMMON_NAME, "AdaOS Root CA")])
         now = datetime.utcnow()
         builder = (
             x509.CertificateBuilder()
@@ -249,7 +255,8 @@ def ca_load() -> dict:
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
-        cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        cert_pem = cert.public_bytes(
+            serialization.Encoding.PEM).decode("utf-8")
         con.execute(
             "INSERT INTO ca_state(id, ca_key_pem, ca_cert_pem, next_serial) VALUES(1, ?, ?, ?)",
             (key_pem, cert_pem, 1),
@@ -261,7 +268,8 @@ def ca_load() -> dict:
 def ca_update_serial(next_serial: int) -> None:
     sql = get_ctx().sql
     with sql.connect() as con:
-        con.execute("UPDATE ca_state SET next_serial=? WHERE id=1", (int(next_serial),))
+        con.execute("UPDATE ca_state SET next_serial=? WHERE id=1",
+                    (int(next_serial),))
         con.commit()
 
 
@@ -269,7 +277,8 @@ def subnet_get_or_create(owner_id: str) -> dict:
     sql = get_ctx().sql
     now = int(time.time())
     with sql.connect() as con:
-        cur = con.execute("SELECT subnet_id, owner_id, created_at FROM subnets WHERE owner_id=?", (owner_id,))
+        cur = con.execute(
+            "SELECT subnet_id, owner_id, created_at FROM subnets WHERE owner_id=?", (owner_id,))
         row = cur.fetchone()
         if row:
             return {"subnet_id": row[0], "owner_id": row[1], "created_at": row[2]}
@@ -323,7 +332,8 @@ def device_upsert_hub(
                 (cert_pem, issued_at, expires_at, existing["device_id"]),
             )
             con.commit()
-        existing.update({"cert_pem": cert_pem, "issued_at": issued_at, "expires_at": expires_at})
+        existing.update(
+            {"cert_pem": cert_pem, "issued_at": issued_at, "expires_at": expires_at})
         return existing
     device_id = new_id()
     with sql.connect() as con:
@@ -397,14 +407,16 @@ def pair_confirm(code: str) -> dict | None:
     if rec.get("expires_at") and rec["expires_at"] < now:
         # expire
         with sql.connect() as con:
-            con.execute("UPDATE pair_codes SET state='expired' WHERE code=?", (code,))
+            con.execute(
+                "UPDATE pair_codes SET state='expired' WHERE code=?", (code,))
             con.commit()
         rec["state"] = "expired"
         return rec
     if rec.get("state") not in ("issued",):
         return rec
     with sql.connect() as con:
-        con.execute("UPDATE pair_codes SET state='confirmed' WHERE code=?", (code,))
+        con.execute(
+            "UPDATE pair_codes SET state='confirmed' WHERE code=?", (code,))
         con.commit()
     rec["state"] = "confirmed"
     return rec
@@ -413,7 +425,8 @@ def pair_confirm(code: str) -> dict | None:
 def pair_revoke(code: str) -> bool:
     sql = get_ctx().sql
     with sql.connect() as con:
-        cur = con.execute("UPDATE pair_codes SET state='revoked' WHERE code=?", (code,))
+        cur = con.execute(
+            "UPDATE pair_codes SET state='revoked' WHERE code=?", (code,))
         con.commit()
         return cur.rowcount > 0
 
@@ -469,3 +482,258 @@ def get_binding_by_user(platform: str, user_id: str, bot_id: str) -> dict | None
         "created_at": int(row[5]) if row[5] is not None else None,
         "last_seen": int(row[6]) if row[6] is not None else None,
     }
+
+
+# ---- Hub Authentication (hub_registrations, auth_sessions) -----------------
+
+def save_hub_registration(
+    hub_id: str,
+    public_key: str,
+    hub_name: str,
+    capabilities: List[str] = None,
+    status: str = "active"
+) -> None:
+    """
+    Сохранение регистрации хаба в базу данных.
+    Совместимо с существующей структурой кода.
+    """
+    sql = get_ctx().sql
+    now = int(time.time())
+    capabilities_json = json.dumps(
+        capabilities or ["basic", "skills", "scenarios"])
+
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO hub_registrations 
+            (hub_id, public_key, hub_name, capabilities, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (hub_id, public_key, hub_name, capabilities_json, now, status)
+        )
+        con.commit()
+
+
+def get_hub_registration(hub_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Получение регистрации хаба по ID.
+    Возвращает словарь в стиле существующего кода.
+    """
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "SELECT hub_id, public_key, hub_name, capabilities, created_at, status FROM hub_registrations WHERE hub_id = ?",
+            (hub_id,)
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "hub_id": row[0],
+        "public_key": row[1],
+        "hub_name": row[2],
+        "capabilities": json.loads(row[3]) if row[3] else [],
+        "created_at": int(row[4]) if row[4] else None,
+        "status": row[5]
+    }
+
+
+def save_auth_session(
+    session_token: str,
+    hub_id: str,
+    permissions: List[str] = None,
+    ttl_hours: int = 24
+) -> None:
+    """
+    Сохранение сессии аутентификации.
+    """
+    sql = get_ctx().sql
+    now = int(time.time())
+    expires_at = now + (ttl_hours * 3600)
+    permissions_json = json.dumps(
+        permissions or ["api:read", "api:write", "repo:access"])
+
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT INTO auth_sessions 
+            (session_token, hub_id, issued_at, expires_at, permissions)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_token, hub_id, now, expires_at, permissions_json)
+        )
+        con.commit()
+
+
+def get_auth_session(session_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Получение сессии по токену.
+    """
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "SELECT session_token, hub_id, issued_at, expires_at, permissions FROM auth_sessions WHERE session_token = ?",
+            (session_token,)
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "session_token": row[0],
+        "hub_id": row[1],
+        "issued_at": int(row[2]) if row[2] else None,
+        "expires_at": int(row[3]) if row[3] else None,
+        "permissions": json.loads(row[4]) if row[4] else []
+    }
+
+
+def delete_expired_sessions() -> int:
+    """Удаление просроченных сессий."""
+    sql = get_ctx().sql
+    now = int(time.time())
+    with sql.connect() as con:
+        cur = con.execute(
+            "DELETE FROM auth_sessions WHERE expires_at < ?", (now,))
+        con.commit()
+        return cur.rowcount
+
+
+def revoke_hub_registration(hub_id: str) -> bool:
+    """
+    Отзыв регистрации хаба.
+    """
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "UPDATE hub_registrations SET status = 'revoked' WHERE hub_id = ?",
+            (hub_id,)
+        )
+        con.commit()
+        return cur.rowcount > 0
+
+
+def list_active_hubs() -> List[Dict[str, Any]]:
+    """
+    Список активных хабов.
+    """
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "SELECT hub_id, public_key, hub_name, capabilities, created_at FROM hub_registrations WHERE status = 'active' ORDER BY hub_id"
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "hub_id": row[0],
+            "public_key": row[1],
+            "hub_name": row[2],
+            "capabilities": json.loads(row[3]) if row[3] else [],
+            "created_at": int(row[4]) if row[4] else None
+        }
+        for row in rows
+    ]
+
+
+def save_auth_challenge(
+    hub_id: str,
+    challenge: str,
+    ttl_sec: int = 300
+) -> None:
+    """Сохранение challenge в БД"""
+    sql = get_ctx().sql
+    now = int(time.time())
+    expires_at = now + ttl_sec
+
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO auth_challenges 
+            (hub_id, challenge, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (hub_id, challenge, now, expires_at)
+        )
+        con.commit()
+
+
+def get_auth_challenge(hub_id: str) -> Dict[str, Any] | None:
+    """Получение challenge по hub_id"""
+    sql = get_ctx().sql
+    now = int(time.time())
+
+    with sql.connect() as con:
+        cur = con.execute(
+            """
+            SELECT hub_id, challenge, created_at, expires_at 
+            FROM auth_challenges 
+            WHERE hub_id = ? AND expires_at > ?
+            """,
+            (hub_id, now)
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "hub_id": row[0],
+        "challenge": row[1],
+        "created_at": row[2],
+        "expires_at": row[3]
+    }
+
+
+def delete_auth_challenge(hub_id: str) -> bool:
+    """Удаление challenge (после использования)"""
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "DELETE FROM auth_challenges WHERE hub_id = ?",
+            (hub_id,)
+        )
+        con.commit()
+        return cur.rowcount > 0
+
+
+def cleanup_expired_challenges() -> int:
+    """Очистка просроченных challenges, возвращает количество удаленных"""
+    sql = get_ctx().sql
+    now = int(time.time())
+    with sql.connect() as con:
+        cur = con.execute(
+            "DELETE FROM auth_challenges WHERE expires_at < ?",
+            (now,)
+        )
+        con.commit()
+        return cur.rowcount
+
+
+def update_hub_sessions_permissions(hub_id: str, permissions: List[str]) -> int:
+    """Обновление прав доступа во всех активных сессиях хаба"""
+    sql = get_ctx().sql
+    permissions_json = json.dumps(permissions)
+
+    with sql.connect() as con:
+        cur = con.execute(
+            "UPDATE auth_sessions SET permissions = ? WHERE hub_id = ? AND expires_at > ?",
+            (permissions_json, hub_id, int(time.time()))
+        )
+        con.commit()
+        return cur.rowcount
+
+
+def delete_auth_session(session_token: str) -> bool:
+    """Удаление конкретной сессии"""
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "DELETE FROM auth_sessions WHERE session_token = ?",
+            (session_token,)
+        )
+        con.commit()
+        return cur.rowcount > 0

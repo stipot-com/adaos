@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
 import httpx
-import ssl, os
+import ssl
+import os
 
 
 class RootHttpError(RuntimeError):
@@ -46,7 +47,8 @@ class RootHttpClient:
           - settings.pki.ca, settings.pki.cert, settings.pki.key
         """
         # base_url resolution
-        base_url = getattr(settings, "api_base", None) or getattr(getattr(settings, "root", None), "api_base", None) or "https://api.inimatic.com"
+        base_url = getattr(settings, "api_base", None) or getattr(
+            getattr(settings, "root", None), "api_base", None) or "https://api.inimatic.com"
 
         # TLS verification (CA) & client cert
         ca_path = getattr(getattr(settings, "pki", None), "ca", None)
@@ -89,7 +91,8 @@ class RootHttpClient:
         if self.default_headers or headers:
             merged_headers = dict(self.default_headers)
             if headers:
-                merged_headers.update({str(k): str(v) for k, v in headers.items()})
+                merged_headers.update({str(k): str(v)
+                                      for k, v in headers.items()})
 
         return self._request(
             method,
@@ -138,7 +141,8 @@ class RootHttpClient:
                     headers=request_headers,
                 )
         except httpx.RequestError as exc:  # pragma: no cover - network errors are environment specific
-            raise RootHttpError(f"{method} {path} failed: {exc}", status_code=0) from exc
+            raise RootHttpError(
+                f"{method} {path} failed: {exc}", status_code=0) from exc
 
         content: Any | None = None
         if response.content:
@@ -154,13 +158,15 @@ class RootHttpClient:
             error_code: str | None = None
             message = response.text or f"HTTP {response.status_code}"
             if isinstance(content, Mapping):
-                detail = content.get("detail") or content.get("message") or content.get("error")
+                detail = content.get("detail") or content.get(
+                    "message") or content.get("error")
                 if isinstance(detail, str):
                     message = detail
                 code = content.get("code") or content.get("error")
                 if isinstance(code, str):
                     error_code = code
-            raise RootHttpError(message, status_code=response.status_code, error_code=error_code, payload=content)
+            raise RootHttpError(
+                message, status_code=response.status_code, error_code=error_code, payload=content)
 
         return content if content is not None else {}
 
@@ -239,7 +245,8 @@ class RootHttpClient:
     ) -> dict:
         body = dict(payload or {})
         return dict(
-            self._request("POST", "/v1/auth/owner/start", json=body, verify=(verify if verify is not None else self.verify), cert=(cert if cert is not None else self.cert))
+            self._request("POST", "/v1/auth/owner/start", json=body, verify=(
+                verify if verify is not None else self.verify), cert=(cert if cert is not None else self.cert))
         )
 
     def device_poll(
@@ -268,7 +275,8 @@ class RootHttpClient:
         if sha256:
             payload["sha256"] = sha256
         return dict(
-            self._request("POST", "/v1/skills/draft", json=payload, verify=(self.verify if verify is None else verify), cert=(self.cert if cert is None else cert), timeout=120.0)
+            self._request("POST", "/v1/skills/draft", json=payload, verify=(
+                self.verify if verify is None else verify), cert=(self.cert if cert is None else cert), timeout=120.0)
         )
 
     def delete_draft_artifact(
@@ -371,6 +379,95 @@ class RootHttpClient:
         return dict(
             self._request(
                 "POST", "/v1/scenarios/draft", json=payload, verify=(self.verify if verify is None else verify), cert=(self.cert if cert is None else cert), timeout=120.0
+            )
+        )
+
+    # Новые методы для беспарольной регистрации
+    def hub_registration_init(
+        self,
+        hub_id: str,
+        hub_name: str,
+        public_key: str,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        """Инициализация регистрации хаба"""
+        payload = {
+            "hub_id": hub_id,
+            "hub_name": hub_name,
+            "public_key": public_key
+        }
+        return dict(
+            self._request(
+                "POST",
+                "/v1/root/auth/register",
+                json=payload,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+            )
+        )
+
+    def hub_auth_challenge(
+        self,
+        hub_id: str,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        """Запрос challenge для аутентификации"""
+        payload = {"hub_id": hub_id}
+        return dict(
+            self._request(
+                "POST",
+                "/v1/root/auth/challenge",
+                json=payload,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+            )
+        )
+
+    def hub_auth_verify(
+        self,
+        hub_id: str,
+        challenge: str,
+        signature: str,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        """Верификация подписи и получение сессии"""
+        payload = {
+            "hub_id": hub_id,
+            "challenge": challenge,
+            "signature": signature
+        }
+        return dict(
+            self._request(
+                "POST",
+                "/v1/root/auth/verify",
+                json=payload,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+            )
+        )
+
+    def hub_get_session(
+        self,
+        session_token: str,
+        *,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        """Получение информации о сессии"""
+        headers = {"Authorization": f"Bearer {session_token}"}
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/root/auth/session/{session_token}",
+                headers=headers,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
             )
         )
 

@@ -114,6 +114,44 @@ _SCHEMA = (
         PRIMARY KEY(platform, user_id, bot_id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS hub_registrations (
+        hub_id TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        hub_name TEXT NOT NULL,
+        capabilities TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        status TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+        session_token TEXT PRIMARY KEY,
+        hub_id TEXT NOT NULL,
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        permissions TEXT NOT NULL,
+        FOREIGN KEY (hub_id) REFERENCES hub_registrations (hub_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_hub_id ON auth_sessions(hub_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_challenges (
+        hub_id TEXT PRIMARY KEY,
+        challenge TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        FOREIGN KEY (hub_id) REFERENCES hub_registrations (hub_id)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auth_challenges_expires ON auth_challenges(expires_at);
+    """,
 )
 
 
