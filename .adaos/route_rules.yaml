@@ -1,0 +1,7 @@
+default_hub: hub-a
+locales:
+  en: hub-a
+node_id: '0557b387-0e42-4c1a-868b-b7ac0aeb4ac3'
+kind: "io_type"
+io_type: "stdout"
+priority: 50

@@ -8,7 +8,9 @@ from typing import Any, Dict
 from adaos.apps.api.auth import require_token
 from adaos.services.node_config import load_config
 from adaos.services.subnet_kv_file_http import get_subnet_kv
-from adaos.services.subnet_registry_mem import get_subnet_registry, LEASE_SECONDS_DEFAULT, DOWN_GRACE_SECONDS
+from adaos.services.subnet_registry_mem import LEASE_SECONDS_DEFAULT, DOWN_GRACE_SECONDS
+from adaos.services.registry.subnet_directory import get_directory
+from adaos.services.subnet_registry_mem import get_subnet_registry
 
 from adaos.sdk.data import bus
 
@@ -63,23 +65,23 @@ async def register(body: RegisterRequest):
     if body.subnet_id != conf.subnet_id:
         raise HTTPException(status_code=400, detail="subnet mismatch")
 
-    # Добавляем/обновляем запись в реестре
-    reg = get_subnet_registry()
-    was = reg.get_node(body.node_id)
-    reg.register_node(
-        body.node_id,
-        meta={
+    # Добавляем/обновляем запись в persistent directory
+    directory = get_directory()
+    directory.on_register(
+        {
+            "node_id": body.node_id,
+            "subnet_id": body.subnet_id,
             "hostname": body.hostname,
             "roles": body.roles or [],
-            "subnet_id": body.subnet_id,
             "base_url": body.base_url,
             "capacity": body.capacity or {},
-        },
+        }
     )
-
     # Сигнализируем о появлении ноды (node.up)
-    if was is None or getattr(was, "status", None) != "up":
+    try:
         await bus.emit("net.subnet.node.up", {"node_id": body.node_id}, source="subnet_api", actor="system")
+    except Exception:
+        pass
 
     return RegisterResponse(ok=True, lease_seconds=LEASE_SECONDS_DEFAULT)
 
@@ -93,20 +95,11 @@ async def heartbeat(body: HeartbeatRequest):
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node accepts heartbeats")
 
-    reg = get_subnet_registry()
-    info = reg.heartbeat(body.node_id)
-    if not info:
-        # Неизвестная нода — просим повторную регистрацию
+    directory = get_directory()
+    # Если нода неизвестна — 404 (сохраняем поведение)
+    if not directory.repo.get_node(body.node_id):
         raise HTTPException(status_code=404, detail="node not registered")
-    # Опционально обновляем capacity
-    try:
-        if body.capacity is not None:
-            info.capacity = dict(body.capacity)
-    except Exception:
-        pass
-
-    # Можно расширить логикой переходов статуса при необходимости
-
+    directory.on_heartbeat(body.node_id, body.capacity or None)
     return HeartbeatResponse(ok=True, lease_seconds=LEASE_SECONDS_DEFAULT)
 
 
@@ -153,20 +146,7 @@ async def nodes_list():
     conf = load_config()
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node lists nodes")
-    reg = get_subnet_registry()
-    items = [
-        {
-            "node_id": n.node_id,
-            "subnet_id": n.subnet_id,
-            "roles": n.roles,
-            "hostname": n.hostname,
-            "base_url": n.base_url,
-            "last_seen": n.last_seen,
-            "status": n.status,
-            "capacity": n.capacity,
-        }
-        for n in reg.list_nodes()
-    ]
+    items = get_directory().list_known_nodes()
     return {"ok": True, "nodes": items}
 
 
@@ -178,17 +158,10 @@ async def node_get(node_id: str):
     conf = load_config()
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node has node details")
-    info = get_subnet_registry().get_node(node_id)
+    directory = get_directory()
+    info = directory.repo.get_node(node_id)
     if not info:
         raise HTTPException(status_code=404, detail="node not found")
-    node = {
-        "node_id": info.node_id,
-        "subnet_id": info.subnet_id,
-        "roles": info.roles,
-        "hostname": info.hostname,
-        "base_url": info.base_url,
-        "last_seen": info.last_seen,
-        "status": info.status,
-        "capacity": info.capacity,
-    }
+    node = dict(info)
+    node["online"] = directory.is_online(node_id)
     return {"ok": True, "node": node}

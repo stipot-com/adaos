@@ -2,12 +2,15 @@
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel, Field
 from typing import Any, Dict
+import requests
 
 from adaos.apps.api.auth import require_token
 from adaos.services.observe import attach_http_trace_headers
 from adaos.services.agent_context import get_ctx, AgentContext
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.registry.subnet_directory import get_directory
+from adaos.services.node_config import load_config
 
 
 router = APIRouter()
@@ -25,6 +28,7 @@ class ToolCall(BaseModel):
     arguments: Dict[str, Any] | None = None
     context: Dict[str, Any] | None = None
     timeout: float | None = Field(default=None)
+    dev: bool = Field(default=False, description="Run tool from DEV workspace instead of installed runtime")
     model_config = {"extra": "ignore"}
 
 
@@ -51,11 +55,55 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
 
     trace = attach_http_trace_headers(request.headers, response.headers)
     payload: Dict[str, Any] = body.arguments or {}
+    # Пробуем локально; если навык отсутствует на узле-хабе — проксируем на member
     try:
-        result = mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
-    except KeyError as e:
-        # неверное имя инструмента или отсутствует дефолтный инструмент
-        raise HTTPException(status_code=404, detail=str(e))
+        if body.dev:
+            result = mgr.run_dev_tool(skill_name, public_tool, payload, timeout=body.timeout)
+        else:
+            result = mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+    except (FileNotFoundError, RuntimeError, KeyError) as e:
+        # Если локально не найден навык/слот — попробуем проксировать на участника подсети (только если роль hub)
+        try:
+            conf = load_config()
+        except Exception:
+            conf = None
+        if not conf or conf.role != "hub":
+            # На member нет прокси — вернём исходную ошибку
+            raise HTTPException(status_code=404, detail=str(e))
+
+        # Найти online-ноду с этим skill
+        directory = get_directory()
+        candidates = directory.find_nodes_with_skill(skill_name, require_online=True)
+        # Сначала активные, затем по last_seen убыв.
+        candidates.sort(key=lambda n: (not bool(n.get("active"))), reverse=False)
+        if not candidates:
+            raise HTTPException(status_code=503, detail=f"skill '{skill_name}' is not available online in the subnet")
+        target = candidates[0]
+        base_url = target.get("base_url") or directory.get_node_base_url(target.get("node_id", ""))
+        if not base_url:
+            raise HTTPException(status_code=503, detail="no base_url for target node")
+
+        # Проксируем запрос прозрачно
+        url = f"{base_url.rstrip('/')}/api/tools/call"
+        forward = {"tool": body.tool, "arguments": payload}
+        if body.timeout is not None:
+            forward["timeout"] = body.timeout
+        # сохраняем dev-флаг при прокси, если он был указан
+        if body.dev:
+            forward["dev"] = True
+        token = conf.token or request.headers.get("X-AdaOS-Token") or "dev-local-token"
+        try:
+            r = requests.post(url, json=forward, headers={"X-AdaOS-Token": token, "Content-Type": "application/json"}, timeout=(body.timeout or 10) + 2)
+        except Exception as pe:
+            raise HTTPException(status_code=502, detail=f"proxy failed: {pe}")
+        if r.status_code != 200:
+            raise HTTPException(status_code=r.status_code, detail=r.text)
+        try:
+            result_payload = r.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="invalid JSON from proxied node")
+        # Возвращаем payload как есть от член-узла
+        return result_payload
     except TimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
     except ValueError as e:

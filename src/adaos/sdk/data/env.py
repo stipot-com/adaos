@@ -5,7 +5,7 @@ import os
 from functools import lru_cache
 
 # Допустимые значения
-_TTS_ALLOWED = {"native", "ovos"}
+_TTS_ALLOWED = {"native", "ovos", "rhasspy"}
 _STT_ALLOWED = {"native", "ovos", "rhasspy", "vosk"}
 _AUDIO_OUT_ALLOWED = {"pyaudio", "sounddevice", "system"}
 

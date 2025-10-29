@@ -37,11 +37,9 @@ class I18n:
         self.lang = lang or os.getenv("ADAOS_LANG") or DEFAULT_LANG
 
     def translate(self, key: str, **kwargs: Any) -> str:
-        print("Начало перевода")
         try:
             ctx = get_ctx()
         except RuntimeError:
-            print("Не удалось поднять контексте")
             messages = _preboot_messages(self.lang)
             text = messages.get(key, key)
             try:
@@ -51,9 +49,7 @@ class I18n:
 
         svc = I18nService(ctx)
         cur = get_current_skill()
-        print("Текущий навык", cur)
         skill_path: Optional[Path] = getattr(cur, "path", None) if cur else None
-        print("Текущий путь", skill_path)
         skill_id: Optional[str] = getattr(cur, "name", None) if cur else None
         scope = "skill" if key.startswith("prep.") else "global"
         return svc.translate(

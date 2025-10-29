@@ -61,6 +61,24 @@ class PushReq(BaseModel):
     signoff: bool = False
 
 
+# --- Runtime management API ---
+class RuntimePrepareReq(BaseModel):
+    name: str
+    run_tests: bool = False
+    slot: str | None = None
+
+
+class RuntimeActivateReq(BaseModel):
+    name: str
+    slot: str | None = None
+    version: str | None = None
+    auto_prepare: bool = True
+
+
+class RuntimeSetupReq(BaseModel):
+    name: str
+
+
 @router.get("/list")
 async def list_skills(fs: bool = False, mgr: SkillManager = Depends(_get_manager)):
     rows = mgr.list_installed()
@@ -87,13 +105,29 @@ async def sync(mgr: SkillManager = Depends(_get_manager)):
 
 @router.post("/install")
 async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
-    result = mgr.install(
-        body.name,
-        pin=body.pin,
-        validate=body.perform_validation,
-        strict=body.strict,
-        probe_tools=body.probe_tools,
-    )
+    # Best-effort sync to ensure monorepo workspace exists
+    try:
+        mgr.sync()
+    except Exception:
+        pass
+    try:
+        result = mgr.install(
+            body.name,
+            pin=body.pin,
+            validate=body.perform_validation,
+            strict=body.strict,
+            probe_tools=body.probe_tools,
+        )
+    except FileNotFoundError:
+        # Retry once after an explicit sync in case the repo was missing
+        mgr.sync()
+        result = mgr.install(
+            body.name,
+            pin=body.pin,
+            validate=body.perform_validation,
+            strict=body.strict,
+            probe_tools=body.probe_tools,
+        )
     if isinstance(result, tuple):
         meta, report = result
     else:
@@ -114,6 +148,14 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
     return payload
 
 
+@router.post("/uninstall")
+async def uninstall(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
+    mgr.uninstall(
+        body.name,
+    )
+    return {"ok": True}
+
+
 @router.get("/{name}")
 async def get_skill(name: str, mgr: SkillManager = Depends(_get_manager)):
     meta = mgr.get(name)
@@ -132,3 +174,53 @@ async def remove(name: str, mgr: SkillManager = Depends(_get_manager)):
 async def push(body: PushReq, mgr: SkillManager = Depends(_get_manager)):
     revision = mgr.push(body.name, body.message, signoff=body.signoff)
     return {"ok": True, "revision": revision}
+
+
+# --- Runtime management endpoints ---
+
+
+@router.post("/runtime/prepare")
+async def runtime_prepare(body: RuntimePrepareReq, mgr: SkillManager = Depends(_get_manager)):
+    result = mgr.prepare_runtime(body.name, run_tests=body.run_tests, preferred_slot=body.slot)
+    payload = {
+        "ok": True,
+        "name": result.name,
+        "version": result.version,
+        "slot": result.slot,
+        "resolved_manifest": str(result.resolved_manifest),
+        "tests": {k: v.status for k, v in (result.tests or {}).items()},
+    }
+    return payload
+
+
+@router.post("/runtime/activate")
+async def runtime_activate(body: RuntimeActivateReq, mgr: SkillManager = Depends(_get_manager)):
+    try:
+        slot = mgr.activate_runtime(body.name, version=body.version, slot=body.slot)
+        return {"ok": True, "slot": slot}
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if not body.auto_prepare or ("is not prepared" not in msg and "no installed versions" not in msg):
+            # expose as 422 Unprocessable if activation cannot proceed
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=422, detail=str(exc))
+        # auto-prepare then retry
+        pref_slot = body.slot
+        prep = mgr.prepare_runtime(body.name, run_tests=False, preferred_slot=pref_slot)
+        slot = mgr.activate_runtime(body.name, version=prep.version, slot=prep.slot)
+        return {"ok": True, "slot": slot, "prepared": prep.slot}
+
+
+@router.get("/runtime/status/{name}")
+async def runtime_status(name: str, mgr: SkillManager = Depends(_get_manager)):
+    state = mgr.runtime_status(name)
+    return {"ok": True, "state": state}
+
+
+@router.post("/runtime/setup")
+async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_manager)):
+    result = mgr.setup_skill(body.name)
+    if isinstance(result, dict):
+        return {"ok": bool(result.get("ok", True)), **result}
+    return {"ok": True, "result": result}

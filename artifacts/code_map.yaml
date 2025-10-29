@@ -30,7 +30,9 @@
   - uc:device_login
   - uc:qr_pairing
   funcs: add_or_update_entity, set_installed_flag, list_entities, update_skill_version,
-    get_skill_versions, list_versions
+    get_skill_versions, list_versions, idem_get, idem_put, ca_load, ca_update_serial,
+    subnet_get_or_create, device_get_by_fingerprint, device_upsert_hub, pair_issue,
+    pair_get, pair_confirm, pair_revoke, binding_upsert, get_binding_by_user
 - path: src/adaos/adapters/db/sqlite_scenario_registry.py
   classes:
   - Name: SqliteScenarioRegistry
@@ -54,11 +56,11 @@
 - path: src/adaos/adapters/fs/path_provider.py
   classes:
   - Name: PathProvider
-    methds: from_settings, __init__, locales_dir, skill_templates_dir, scenario_templates_dir,
-      base_dir, workspace_dir, skills_workspace_dir, scenarios_workspace_dir, skills_cache_dir,
-      scenarios_cache_dir, skills_dir, scenarios_dir, models_dir, logs_dir, cache_dir,
-      state_dir, locales_base_dir, skills_locales_dir, scenarios_locales_dir, tmp_dir,
-      ensure_tree
+    methds: from_settings, __init__, package_path, locales_dir, skill_templates_dir,
+      scenario_templates_dir, base_dir, workspace_dir, skills_workspace_dir, scenarios_workspace_dir,
+      skills_cache_dir, scenarios_cache_dir, skills_dir, scenarios_dir, models_dir,
+      logs_dir, cache_dir, state_dir, locales_base_dir, skills_locales_dir, scenarios_locales_dir,
+      dev_dir, dev_skills_dir, dev_scenarios_dir, tmp_dir, ensure_tree
 - path: src/adaos/adapters/git/cli_git.py
   classes:
   - Name: GitError
@@ -103,7 +105,9 @@
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: require_token
+  funcs: require_token, require_owner_token
+- path: src/adaos/apps/api/io_webhooks.py
+  funcs: telegram_webhook, tg_pair_create, tg_pair_confirm, tg_pair_status, tg_pair_revoke
 - path: src/adaos/apps/api/node_api.py
   funcs: node_status, node_change_role
   classes:
@@ -120,10 +124,11 @@
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: root_register, llm_chat
+  funcs: root_register, llm_chat, subnet_register, subnet_register_status
   classes:
   - Name: ChatMessage
   - Name: ChatRequest
+  - Name: SubnetRegisterRequest
 - path: src/adaos/apps/api/scenarios.py
   funcs: list_scenarios, sync, install, remove, push
   classes:
@@ -169,8 +174,11 @@
   tags:
   - layer:cli
   - uc:device_login
-  funcs: root_login, root_status, root_whoami, root_logout, root_sync_hubs, root_add_hub,
-    hub_enroll, hub_init, node_register
+  funcs: root_init, root_login, dev_login, skill_create, skill_push, skill_list, skill_delete,
+    skill_publish, scenario_publish, scenario_create, scenario_push, scenario_list,
+    scenario_delete, scenario_run, scenario_validate, dev_skill_validate, dev_skill_lint,
+    dev_skill_prep, dev_skill_test, dev_skill_setup, dev_skill_run, dev_skill_activate,
+    dev_skill_status, dev_skill_rollback
 - path: src/adaos/apps/cli/commands/llm.py
   funcs: build_prep, build_skill
 - path: src/adaos/apps/cli/commands/monitor.py
@@ -188,8 +196,8 @@
 - path: src/adaos/apps/cli/commands/sandbox.py
   funcs: profiles, run
 - path: src/adaos/apps/cli/commands/scenario.py
-  funcs: list_cmd, sync_cmd, install_cmd, create_cmd, uninstall_cmd, push_cmd, run_cmd,
-    validate_cmd, test_cmd
+  funcs: list_cmd, sync_cmd, install_cmd, create_cmd, uninstall_cmd, push_command,
+    run_cmd, validate_cmd, test_cmd
 - path: src/adaos/apps/cli/commands/sdk_export.py
   funcs: export_cmd, export_all_cmd, check_cmd
 - path: src/adaos/apps/cli/commands/secret.py
@@ -197,22 +205,10 @@
 - path: src/adaos/apps/cli/commands/skill.py
   funcs: list_cmd, sync, uninstall, reconcile_fs_to_db, push_command, cmd_create,
     cmd_scaffold, cmd_validate, cmd_install, cmd_test, run_handler, run_tool, cmd_setup,
-    activate, rollback, status, gc, doctor, migrate, lint, prep_command
+    activate, rollback, status, gc, doctor, migrate
 - path: src/adaos/apps/cli/commands/tests.py
   funcs: run_tests
 - path: src/adaos/apps/cli/i18n.py
-- path: src/adaos/apps/cli/root_ops.py
-  tags:
-  - layer:cli
-  - uc:device_login
-  funcs: load_root_cli_config, save_root_cli_config, run_preflight_checks, ensure_registration,
-    assert_safe_name, create_zip_bytes, archive_bytes_to_b64, push_skill_draft, push_scenario_draft,
-    fetch_policy, keys_dir, key_path
-  classes:
-  - Name: RootCliError
-  - Name: KeyPairPaths
-  - Name: RootCliKeys
-  - Name: RootCliConfig
 - path: src/adaos/build_info.py
   classes:
   - Name: BuildInfo
@@ -233,21 +229,47 @@
 - path: src/adaos/facades/i18n_lazy.py
 - path: src/adaos/integrations/inimatic/LoginWV/www/LoginWV.js
 - path: src/adaos/integrations/inimatic/backend/adaos-bridge.ts
-  endpoints: GET /api/subnet/nodes, GET /healthz, POST /api/subnet/ping
+  endpoints: GET /api/subnet/nodes, POST /api/subnet/ping
 - path: src/adaos/integrations/inimatic/backend/app.ts
-  endpoints: GET /debug/hubs, GET /debug/owners, GET /health, GET /healthz, GET /owner/hubs,
-    GET /policy, GET /v1/health, GET /whoami, POST /auth/owner/poll, POST /auth/owner/refresh,
-    POST /auth/owner/start, POST /owner/hubs, POST /pki/enroll, POST /scenarios/draft,
-    POST /scenarios/pr, POST /skills/draft, POST /skills/pr, POST /v1/bootstrap_token,
-    POST /v1/nodes/register, POST /v1/subnets/register
+  endpoints: DELETE /scenarios/draft, DELETE /scenarios/registry, DELETE /skills/draft,
+    DELETE /skills/registry, GET /debug/hubs, GET /debug/owners, GET /health, GET
+    /healthz, GET /metrics, GET /owner/hubs, GET /policy, GET /v1/health, GET /whoami,
+    POST /auth/owner/poll, POST /auth/owner/refresh, POST /auth/owner/start, POST
+    /owner/hubs, POST /pki/enroll, POST /scenarios/draft, POST /scenarios/pr, POST
+    /skills/draft, POST /skills/pr, POST /v1/bootstrap_token, POST /v1/nodes/register,
+    POST /v1/subnets/register
 - path: src/adaos/integrations/inimatic/backend/build-info.ts
   exports: buildInfo
 - path: src/adaos/integrations/inimatic/backend/forge.ts
-  types: DraftKind, DraftWriteResult, ForgeManagerOptions, WriteDraftOptions
+  types: DeleteDraftArgs, DeleteDraftResult, DeleteRegistryArgs, DeleteRegistryResult,
+    DraftKind, DraftWriteResult, ForgeManagerOptions, WriteDraftOptions
 - path: src/adaos/integrations/inimatic/backend/github-app.ts
   types: GhAppConfig
 - path: src/adaos/integrations/inimatic/backend/i18n.ts
   types: Locale, MessageParams
+- path: src/adaos/integrations/inimatic/backend/io/bus/nats.ts
+  types: NatsOpts
+- path: src/adaos/integrations/inimatic/backend/io/idem/kv.ts
+  exports: redis
+- path: src/adaos/integrations/inimatic/backend/io/pairing/api.ts
+  endpoints: GET /io/tg/pair/status, POST /io/tg/pair/confirm, POST /io/tg/pair/create,
+    POST /io/tg/pair/revoke
+- path: src/adaos/integrations/inimatic/backend/io/pairing/store.ts
+  types: Binding, PairRecord
+- path: src/adaos/integrations/inimatic/backend/io/root/settings.ts
+  types: RootSettings
+- path: src/adaos/integrations/inimatic/backend/io/router/resolve.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/media.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/normalize.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/pairing.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/sender.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/webhook.ts
+  endpoints: POST /io/tg/:bot_id/webhook
+- path: src/adaos/integrations/inimatic/backend/io/telemetry.ts
+  exports: dlq_total, enqueue_total, outbound_total, retry_total, tg_updates_total
+- path: src/adaos/integrations/inimatic/backend/io/types.ts
+  types: ChatInputEvent, ChatOutputEvent, ChatOutputMessage
+- path: src/adaos/integrations/inimatic/backend/io/types/fluent-ffmpeg.d.ts
 - path: src/adaos/integrations/inimatic/backend/pki.ts
   types: CertificateAuthorityOptions, CertificateSubject, IssueCertificateOptions,
     IssueResult
@@ -268,15 +290,19 @@
   - uc:device_login
   - uc:qr_pairing
   types: AdaosEvent
-  interfaces: AdaosConfig
+  interfaces: AdaosConfig, SubnetRegisterData, SubnetRegisterRequest, SubnetRegisterResponse
 - path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-types.ts
   types: AdaosEvent
   interfaces: AdaosConfig
+- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.ts
 - path: src/adaos/integrations/inimatic/src/app/features/hub/hub.component.ts
   tags:
   - area:ui
   - layer:frontend
   - uc:qr_pairing
+- path: src/adaos/integrations/inimatic/src/app/features/login/login.component.ts
+- path: src/adaos/integrations/inimatic/src/app/features/login/login.service.ts
 - path: src/adaos/integrations/inimatic/src/app/features/member/member.component.ts
 - path: src/adaos/integrations/inimatic/src/app/loginwv.service.ts
 - path: src/adaos/integrations/inimatic/src/app/phone/phone.component.spec.ts
@@ -302,7 +328,6 @@
   exports: hubPingSkill
 - path: src/adaos/integrations/inimatic/src/app/skills/hub-status.skill.ts
   exports: hubStatusSkill
-- path: src/adaos/integrations/inimatic/src/main.ts
 - path: src/adaos/integrations/ovos/__init__.py
 - path: src/adaos/integrations/ovos/tts.py
   classes:
@@ -314,6 +339,19 @@
   classes:
   - Name: RhasspyTTSAdapter
     methds: __init__, say
+- path: src/adaos/integrations/telegram/__init__.py
+- path: src/adaos/integrations/telegram/files.py
+  funcs: get_file_path, download_file, convert_opus_to_wav16k
+- path: src/adaos/integrations/telegram/normalize.py
+  funcs: to_input_event
+- path: src/adaos/integrations/telegram/pairing.py
+  funcs: extract_start_code
+- path: src/adaos/integrations/telegram/sender.py
+  classes:
+  - Name: TelegramSender
+    methds: __init__, send
+- path: src/adaos/integrations/telegram/webhook.py
+  funcs: validate_secret
 - path: src/adaos/launcher/sentinel.py
   funcs: is_ready, start_core, wait_until_ready, run
   classes:
@@ -356,10 +394,11 @@
 - path: src/adaos/ports/paths.py
   classes:
   - Name: PathProvider
-    methds: base, package_dir, base_dir, locales_dir, locales_base_dir, skills_locales_dir,
-      scenarios_locales_dir, workspace_dir, skills_workspace_dir, scenarios_workspace_dir,
-      skills_cache_dir, scenarios_cache_dir, skill_templates_dir, scenario_templates_dir,
-      skills_dir, scenarios_dir, models_dir, state_dir, cache_dir, logs_dir, tmp_dir
+    methds: base, package_dir, package_path, base_dir, locales_dir, locales_base_dir,
+      skills_locales_dir, scenarios_locales_dir, workspace_dir, skills_workspace_dir,
+      scenarios_workspace_dir, skills_cache_dir, scenarios_cache_dir, skill_templates_dir,
+      scenario_templates_dir, skills_dir, scenarios_dir, dev_dir, dev_skills_dir,
+      dev_scenarios_dir, models_dir, state_dir, cache_dir, logs_dir, tmp_dir
 - path: src/adaos/ports/policy.py
   classes:
   - Name: Capabilities
@@ -522,6 +561,13 @@
     methds: __init__, get, set, delete, list
   - Name: _InMemorySecrets
     methds: __init__, get, put
+- path: src/adaos/sdk/skills/testing.py
+  funcs: skill
+  classes:
+  - Name: SkillUnderTest
+    methds: import_module, import_
+- path: src/adaos/sdk/testing/bootstrap.py
+  funcs: init_dev_runtime, init_from_env
 - path: src/adaos/services/agent_context.py
   funcs: set_ctx, get_ctx, clear_ctx, use_ctx, pytest_sessionstart
   classes:
@@ -532,6 +578,23 @@
   classes:
   - Name: BootstrapService
     methds: __init__, is_ready, run_boot_sequence, shutdown, switch_role
+- path: src/adaos/services/chat_io/interfaces.py
+  classes:
+  - Name: ChatInputEvent
+  - Name: ChatOutputMessage
+  - Name: ChatOutputEvent
+  - Name: ChatAdapter
+    methds: validate_request, parse_webhook
+  - Name: ChatSender
+    methds: send
+  - Name: PairingProvider
+    methds: issue, confirm, status, revoke
+- path: src/adaos/services/chat_io/pairing.py
+  funcs: issue_pair_code, confirm_pair_code, pair_status, revoke_pair_code
+- path: src/adaos/services/chat_io/router.py
+  funcs: resolve_hub_id
+- path: src/adaos/services/chat_io/telemetry.py
+  funcs: record_event, snapshot
 - path: src/adaos/services/crypto/pki.py
   funcs: generate_rsa_key, write_private_key, write_pem, make_csr
 - path: src/adaos/services/crypto/secrets_service.py
@@ -559,6 +622,29 @@
   classes:
   - Name: I18nService
     methds: translate
+- path: src/adaos/services/id_gen.py
+  funcs: new_id
+- path: src/adaos/services/io_bus/http_fallback.py
+  classes:
+  - Name: HttpFallbackBus
+    methds: __init__, post, connect, publish_input, subscribe_output
+- path: src/adaos/services/io_bus/local_bus.py
+  classes:
+  - Name: LocalIoBus
+    methds: __init__, connect, publish_input, subscribe_output
+- path: src/adaos/services/io_bus/nats_bus.py
+  funcs: json_bytes
+  classes:
+  - Name: NatsIoBus
+    methds: __init__, connect, close, publish_input, subscribe_output, publish_dlq
+- path: src/adaos/services/io_bus/rate_limit.py
+  classes:
+  - Name: TokenBucket
+    methds: __init__, allow
+  - Name: PerChatLimiter
+    methds: __init__, allow
+- path: src/adaos/services/io_bus/reliability.py
+  funcs: outbound_msg_hash
 - path: src/adaos/services/io_console.py
   funcs: print
 - path: src/adaos/services/io_voice_mock.py
@@ -569,11 +655,21 @@
   - Name: JsonFormatter
     methds: format
 - path: src/adaos/services/node_config.py
-  funcs: load_node, save_node, ensure_hub, node_base_dir, set_role, load_config, save_config
+  funcs: displayable_path, load_node, save_node, ensure_hub, node_base_dir, set_role,
+    load_config, save_config
   classes:
   - Name: RootOwnerProfile
   - Name: RootState
+  - Name: RootOwnerSettings
+  - Name: RootSettings
+  - Name: HubKeypair
+  - Name: SubnetSettings
+  - Name: NodeSettings
+  - Name: DevSettings
   - Name: NodeConfig
+    methds: root, root, node_id_value, subnet_id_value, owner_id, ensure_defaults,
+      sync_sections, to_dict, hub_key_path, hub_cert_path, ca_cert_path, workspace_path,
+      owner_workspace
 - path: src/adaos/services/observe.py
   funcs: attach_http_trace_headers, start_observer, stop_observer, pass_filters
   classes:
@@ -608,8 +704,11 @@
   - Name: RootHttpError
     methds: __init__
   - Name: RootHttpClient
-    methds: __post_init__, close, owner_start, owner_poll, token_refresh, whoami,
-      owner_hubs_list, owner_hubs_add, pki_enroll, subnets_register, nodes_register
+    methds: from_settings, request, owner_start, owner_poll, token_refresh, whoami,
+      owner_hubs_list, owner_hubs_add, pki_enroll, request_bootstrap_token, register_subnet,
+      device_authorize, device_poll, push_skill_draft, delete_draft_artifact, delete_skill_draft,
+      delete_scenario_draft, delete_registry_artifact, delete_skill_registry, delete_scenario_registry,
+      push_scenario_draft
 - path: src/adaos/services/root/keyring.py
   tags:
   - layer:services
@@ -621,14 +720,32 @@
   tags:
   - layer:services
   - uc:device_login
+  funcs: assert_safe_name, create_zip_bytes, archive_bytes_to_b64, fingerprint_for_key
   classes:
   - Name: RootAuthError
   - Name: RootAuthService
-    methds: login_owner, get_access_token, whoami, logout
+    methds: resolve_owner, login_owner, get_access_token, whoami, logout, register_subnet
   - Name: OwnerHubsService
     methds: sync, add_current_hub
   - Name: PkiService
     methds: enroll
+  - Name: RootServiceError
+  - Name: TemplateResolutionError
+    methds: __init__
+  - Name: ArtifactNotFoundError
+    methds: __init__
+  - Name: DeviceAuthorization
+  - Name: RootInitResult
+  - Name: RootLoginResult
+  - Name: ArtifactCreateResult
+  - Name: ArtifactPushResult
+  - Name: ArtifactDeleteResult
+  - Name: ArtifactListItem
+  - Name: ArtifactPublishResult
+  - Name: RootDeveloperService
+    methds: __init__, init, login, create_skill, create_scenario, push_skill, push_scenario,
+      publish_skill, publish_scenario, delete_skill, delete_scenario, list_skills,
+      list_scenarios
 - path: src/adaos/services/runtime/__init__.py
 - path: src/adaos/services/runtime/manager.py
   classes:
@@ -657,14 +774,16 @@
     methds: set_enabled, set_binding
 - path: src/adaos/services/scenario/manager.py
   classes:
+  - Name: ArtifactPublishResult
   - Name: ScenarioManager
-    methds: __init__, list_installed, list_present, sync, install, remove, push, uninstall
+    methds: __init__, list_installed, list_present, sync, install, remove, push, publish,
+      uninstall
 - path: src/adaos/services/scenario/scaffold.py
   funcs: create
 - path: src/adaos/services/settings.py
   classes:
   - Name: Settings
-    methds: from_sources, with_overrides
+    methds: from_sources, with_overrides, require_subnet_id
 - path: src/adaos/services/skill/context.py
   classes:
   - Name: SkillContextService
@@ -680,10 +799,16 @@
   - Name: SkillManager
     methds: __init__, list_installed, list_present, get, sync, install, validate_skill,
       run_skill_tests, uninstall, push, prepare_runtime, activate_runtime, rollback_runtime,
-      runtime_status, cleanup_runtime, gc_runtime, doctor_runtime, setup_skill, run_tool
+      dev_rollback_runtime, runtime_status, dev_runtime_status, cleanup_runtime, gc_runtime,
+      doctor_runtime, setup_skill, dev_setup_skill, run_tool, run_dev_tool, prepare_dev_runtime,
+      activate_dev_runtime, run_dev_skill_tests
+- path: src/adaos/services/skill/resolver.py
+  classes:
+  - Name: SkillPathResolver
+    methds: resolve
 - path: src/adaos/services/skill/runtime.py
   funcs: resolve_active_version, find_skill_slot, find_skill_dir, run_skill_handler,
-    run_skill_handler_sync, run_skill_prep
+    run_skill_handler_sync, run_skill_prep, run_dev_skill_prep
   classes:
   - Name: SkillRuntimeError
   - Name: SkillDirectoryNotFoundError
@@ -736,7 +861,7 @@
   - Name: Issue
   - Name: ValidationReport
   - Name: SkillValidationService
-    methds: validate
+    methds: validate, validate_path
 - path: src/adaos/services/skills_loader_importlib.py
   classes:
   - Name: ImportlibSkillsLoader
@@ -755,7 +880,8 @@
     methds: __init__, register_node, heartbeat, mark_down_if_expired, list_nodes,
       get_node, unregister_node
 - path: src/adaos/services/testing/bootstrap.py
-  funcs: load_test_secrets, mount_skill_paths_for_testing, unmount_skill_paths, bootstrap_test_ctx
+  funcs: skill_tests_root, load_test_secrets, mount_skill_paths_for_testing, unmount_skill_paths,
+    bootstrap_test_ctx
   classes:
   - Name: MockSecrets
     methds: __init__, get, put, delete, list, import_items, export_items
@@ -767,6 +893,8 @@
     methds: start, status
   - Name: TestContextHandle
     methds: teardown
+- path: src/adaos/services/testing/hub_mock.py
+  funcs: run
 - path: src/adaos/services/tests/runner.py
   funcs: run_pytest
   classes:
@@ -775,8 +903,8 @@
   funcs: execute_tool
 - path: src/adaos/skills_templates/AlarmSkill/handlers/main.py
   funcs: load_config, save_config, set_alarm, cancel_alarm, handle
-- path: src/adaos/skills_templates/demo_skill/handlers/main.py
+- path: src/adaos/skills_templates/skill_default/handlers/main.py
   funcs: lang_res
-- path: src/adaos/skills_templates/demo_skill/prep/prepare.py
+- path: src/adaos/skills_templates/skill_default/prep/prepare.py
   funcs: lang_res, test_internet_access, test_weather_api, run_prep
 

@@ -62,6 +62,9 @@ class PushReq(BaseModel):
     message: str
     signoff: bool = False
 
+class UninstallReq(BaseModel):
+    name: str
+
 
 @router.get("/list")
 async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_manager)):
@@ -104,6 +107,11 @@ async def install(body: InstallReq, mgr: ScenarioManager = Depends(_get_manager)
 @router.delete("/{name}")
 async def remove(name: str, mgr: ScenarioManager = Depends(_get_manager)):
     mgr.uninstall(name)
+    return {"ok": True}
+
+@router.post("/uninstall")
+async def uninstall(body: UninstallReq, mgr: ScenarioManager = Depends(_get_manager)):
+    mgr.uninstall(body.name)
     return {"ok": True}
 
 

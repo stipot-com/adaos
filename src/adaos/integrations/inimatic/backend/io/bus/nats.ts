@@ -53,6 +53,7 @@ export class NatsBus {
 		await ensure('TG_INPUT', ['tg.input.*'])
 		await ensure('TG_OUTPUT', ['tg.output.>'])
 		await ensure('TG_DLQ', ['tg.dlq.*'])
+		await ensure('SUBNET_INPUT', ['subnet.input.*.inbox'])
 	}
 
 	async publish_input(hub_id: string, envelope: any) {
@@ -83,5 +84,14 @@ export class NatsBus {
 	async publish_dlq(stage: string, payload: any) {
 		const js = this.nc.jetstream()
 		await js.publish(`tg.dlq.${stage}`, this.sc.encode(JSON.stringify(payload)))
+	}
+
+	async publish_subject(subject: string, payload: any) {
+		const js = this.nc.jetstream()
+		await js.publish(subject, this.sc.encode(JSON.stringify(payload)))
+	}
+
+	async publishSubject(subject: string, payload: any) {
+		return this.publish_subject(subject, payload)
 	}
 }

@@ -13,6 +13,10 @@ from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.fs.safe_io import remove_tree
 from adaos.services.git.safe_commit import sanitize_message, check_no_denied
 from adaos.adapters.db import SqliteScenarioRegistry
+from adaos.services.capacity import install_scenario_in_capacity, uninstall_scenario_from_capacity
+from adaos.services.registry.subnet_directory import get_directory
+from adaos.services.capacity import get_local_capacity
+from adaos.services.node_config import load_config
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
@@ -84,6 +88,17 @@ class ScenarioManager:
             if not meta:
                 raise FileNotFoundError(f"scenario '{name}' not found in monorepo")
             emit(self.bus, "scenario.installed", {"id": meta.id.value, "pin": pin}, "scenario.mgr")
+            try:
+                install_scenario_in_capacity(meta.id.value, getattr(meta, "version", "unknown"), active=True)
+                try:
+                    conf = load_config()
+                    if conf.role == "hub":
+                        cap = get_local_capacity()
+                        get_directory().repo.replace_scenario_capacity(conf.node_id, (cap.get("scenarios") or []))
+                except Exception:
+                    pass
+            except Exception:
+                pass
             return meta
         except Exception:
             self.reg.unregister(name)
@@ -109,6 +124,17 @@ class ScenarioManager:
             fs=self.paths.ctx.fs if hasattr(self.paths, "ctx") else get_ctx().fs,
         )
         emit(self.bus, "scenario.removed", {"id": name}, "scenario.mgr")
+        try:
+            uninstall_scenario_from_capacity(name)
+            try:
+                conf = load_config()
+                if conf.role == "hub":
+                    cap = get_local_capacity()
+                    get_directory().repo.replace_scenario_capacity(conf.node_id, cap.get("scenarios") or [])
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.caps.require("core", "scenarios.manage", "git.write", "net.git")
