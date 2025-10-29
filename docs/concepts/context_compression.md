@@ -152,3 +152,175 @@ Keep current aliases; if you need full file, call tool get_alias().
 * `adaos skill ctx diff …`
 * `adaos skill gen code --use-pack`
 * tool для LLM: `get_alias(alias)` (встроенный)
+
+# Двухступенчатый каталог ресурсов
+
+Для этапа программирования навыка/сценария LLM используем локатор имеющихся ресурсов **overview → details** с жёстким бюджетом токенов и детерминированной итерацией.
+
+## цели
+
+* дать модели «карту местности» (ширину) без утопления в деталях;
+* по запросу — дозаружать «карточки ресурсов» (глубину) с примерами использования;
+* держать всё в пределах окна за счёт резюме, семплинга и пагинации.
+
+## 1) структура каталога
+
+### 1.1 overview-запись (очень дёшево)
+
+```json
+{
+  "id": "res:db.pg.main.public.orders",
+  "uri": "ada://any/db/pg:main/public.orders",
+  "kind": "tabular|kv|api|bus|file|skill",
+  "title": "orders (pg.main)",
+  "tags": ["orders","sales","pii:none","fresh:realtime"],
+  "shape": {"rows_est": "1e7", "cols": 18},
+  "schema_digest": ["id:int","created_at:ts","user_id:int","amount:num","status:str"],
+  "cap": ["scan","filter","project","aggregate","limit"],
+  "cost_hint": {"latency_ms_p50": 120, "egress_mb": 0.4},
+  "examples": [{"task":"daily revenue","ops":["filter","agg"]}],
+  "owner": "team.analytics",
+  "updated_at": "2025-10-29T08:30:00Z"
+}
+```
+
+### 1.2 details-карточка (дороже, запрашивается точечно)
+
+```json
+{
+  "id": "res:db.pg.main.public.orders",
+  "uri": "ada://any/db/pg:main/public.orders",
+  "columns": [
+    {"name":"id","type":"int","nn":true,"pk":true},
+    {"name":"user_id","type":"int","fk":"public.users.id"},
+    {"name":"created_at","type":"timestamp","index":"btree"},
+    {"name":"amount","type":"numeric(12,2)","unit":"USD"}
+  ],
+  "constraints": {"pii":"none","retention":"365d"},
+  "pushdown": {"filter":true,"project":true,"aggregate":true,"window":false},
+  "usage": {
+    "snippets": [
+      {"engine":"sql","code":"SELECT date(created_at) d, sum(amount) rev ..."},
+      {"engine":"ir","code":"scan→filter(status='paid')→project→agg(day,sum(rev))"}
+    ],
+    "anti_patterns": ["select *", "без лимита > 1e6 строк"]
+  },
+  "access": {"policy":"rbac:analyst-read", "secrets":["ada://secret/pg:main"]},
+  "quality": {"freshness_sla_s": 120, "null_rate": {"user_id":0.01}}
+}
+```
+
+## 2) протокол обзора и детализации
+
+### 2.1 API каталога (на ноде; хранить в pg/kv)
+
+* `catalog.overview(query?, page?, page_size?) → [overview...] + page_info`
+* `catalog.details(ids[]) → [details...]`
+* `catalog.search(vector?, text?, facets?) → ids[]` (векторный поиск по заголовкам/описаниям/примерам)
+
+### 2.2 связка с ARL/Resolver
+
+* каждый `ResourceDescriptor` при регистрации/скане порождает overview (и details кеш).
+* навык может объявлять экспорт как ресурс `kind:"skill"` с mini-schema и snippets.
+
+## 3) как балансировать ширину и глубину (алгоритм «budgeted drill-down»)
+
+пусть у нас окно `B` токенов; выделим:
+
+* `b_head` — системная часть промпта (фикс),
+* `b_overview` — список кандидатов (ширина),
+* `b_details` — карточки выбранных (глубина),
+* `b_task` — формулировка задачи.
+
+стратегия:
+
+1. **recall-ширина**: достаём `k` overview по текстовому + векторному поиску (BM25 ∪ ANN), сортируем по `relevance_score = text*0.5 + vector*0.5 + recency*0.2 + cap_match*0.3 - cost_penalty`.
+2. **контроль бюджета**: вычисляем среднюю стоимость одной overview `c_o` и одной details `c_d`. подбираем `k` и `m` (m ≤ k) такие, чтобы `k*c_o + m*c_d ≤ b_overview + b_details`.
+3. **LLM-выбор**: даём модели только `k` overview и просим вернуть `m` `ids` для детализации (обяз. обоснование короткими маркерами).
+4. **детализация**: подтягиваем `details` для `m` id, отдаём модели финальный контекст для генерации **IR-плана** или кода сценария.
+5. **итерация (опц.)**: если модель пометила «нужно ещё», повторяем шаги 1–4 с обновлёнными отрицательными примерами (do-not-repeat ids) и урезанным бюджетом.
+
+микро-псевдокод:
+
+```py
+ctx = build_system_prompt()
+candidates = catalog.search(text=q, vector=embed(q), facets=opts)
+k, m = fit_budget(B, c_o, c_d)
+ov = catalog.overview(ids=[c.id for c in candidates[:k]])
+ids_detail = llm_pick(ov, m, task=q)         # короткий ответ: ["res:...","res:..."]
+cards = catalog.details(ids_detail)
+plan = llm_compile_plan(task=q, context=ov+cards)  # выдаём IR/SQL/snippets
+```
+
+## 4) сокращение токенов (правила)
+
+* overview хранить и отдавать **в сжатом JSONL** с короткими ключами:
+
+  * `id, u, k, t, g, sh, sd, cap, cost, ex, own, ts`
+* details отдавать **по полям**, фрагментируя: `columns` (batched, по 8–10), `usage.snippets` (до 2), `pushdown`, `quality`.
+* всегда включать **snippets** и **anti_patterns** — высокий КПД для модели.
+* «shape/schema_digest» всегда обрезаны до 5 полей (частоты/TF-IDF от описаний).
+
+## 5) devops навыков и сценариев
+
+## 5.1 жизненный цикл
+
+* **scan/register**: при деплое/миграциях резолвер публикует/обновляет overview; details — в кеш.
+* **CI job** `catalog-verify`: проверяет доступность URIs, актуальность `schema_digest`, линтит snippets.
+* **docs**: из деталей автогенерируем `resources.md` и карточки в UI разработчика.
+
+## 5.2 версия и диффы
+
+* `schema_hash` и `cap_hash` в overview; при изменении — bump `rev` и запись «what changed».
+* три уровня стабильности: `stable | evolving | experimental` в теге `lifecycle:`.
+
+## 6) интерфейсы SDK (узел python)
+
+```python
+from ada.catalog import search, overview, details, budgeted_context
+from ada.llm import compile_plan   # dev-only
+
+# 1) найти ресурсы
+cand = search(text="ежедневная выручка по city", facets={"kind":["tabular","skill"]})
+ctx = budgeted_context(task="GMV by city per day, last 30d", candidates=cand, budget=8000)
+plan = compile_plan(task="...", context=ctx)  # IR/SQL на выходе
+
+# 2) использовать план с ARL
+result = plan.execute()
+```
+
+## 7) примеры промптов
+
+**pick-ids (узкий ответ):**
+
+```
+выбери до {m} ресурсов из списка, которые достаточны для задачи: "{task}".
+верни массив id. если сомневаешься — предпочитай skill-kind с готовой агрегацией.
+```
+
+**compile-plan:**
+
+```
+используй только карточки деталей и overview ниже. сгенерируй IR-план.
+не пересекайся с анти-паттернами из usage. учитывай pushdown.
+если нужен join — укажи ключи из fk/pk. верни IR yaml.
+```
+
+## 8) безопасность
+
+* overview по умолчанию общедоступен внутри подсети (не содержит секретов);
+* details gated по RBAC (скрываем PII/колонки/anti_patterns при недостаточных правах);
+* подсказки `anti_patterns` и `cost_hint` помогают экономить и не утекать в «дорогие» источники.
+
+## 9) интеграция с yjs/веб
+
+* браузер не ходит в каталог; LLM генерит **view-schema**, опираясь на каталог на этапе разработки.
+* узел публикует проекции (yview) уже выбранных ресурсов/планов.
+
+## 10) DoD для MVP
+
+1. хранение `overview.jsonl` + `details/*` (kv/pg), индексы: text + vector (FAISS/pgvector), фасеты.
+2. API: `search/overview/details`, токен-бюджетёр `fit_budget`.
+3. генерация **IR** для 3 кейсов (db, api, skill), unit-тесты эквивалентности.
+4. CI для каталога: верификация URIs, обновление schema_digest, отчёт diffs.
+5. dev-UI: список ресурсов, карточка details, копировать snippets.

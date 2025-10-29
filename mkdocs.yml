@@ -1,6 +1,6 @@
 strict: true
 site_name: AdaOS
-site_description: 'документация проекта AdaOS — агентная OS навыков и сценариев'
+site_description: "документация проекта AdaOS — агентная OS навыков и сценариев"
 site_url: https://github.com/stipot/adaos
 repo_url: https://github.com/stipot/adaos
 repo_name: stipot/adaos
@@ -60,16 +60,16 @@ plugins:
         - locale: en
           name: English
           nav_translations:
-            'Главная': 'Home'
-            'Быстрый старт': 'Quickstart'
-            'Архитектура': 'Architecture'
-            'CLI': 'CLI'
-            'SDK': 'SDK'
-            'Навыки': 'Skills'
-            'Сценарии': 'Scenarios'
-            'DevPortal': 'DevPortal'
-            'Дорожная карта': 'Roadmap'
-            'Концепции': 'Concepts'
+            "Главная": "Home"
+            "Быстрый старт": "Quickstart"
+            "Архитектура": "Architecture"
+            "CLI": "CLI"
+            "SDK": "SDK"
+            "Навыки": "Skills"
+            "Сценарии": "Scenarios"
+            "DevPortal": "DevPortal"
+            "Дорожная карта": "Roadmap"
+            "Концепции": "Concepts"
   - git-revision-date-localized:
       enable_creation_date: true
       enable_git_follow: false
@@ -105,41 +105,42 @@ markdown_extensions:
   - pymdownx.superfences
 
 nav:
-  - 'Главная': index.md
-  - 'Быстрый старт': quickstart.md
-  - 'Архитектура':
-      - 'Обзор': architecture/index.md
-      - 'Слои': architecture/layers.md
-      - 'AgentContext': architecture/context.md
-      - 'Безопасность': architecture/security.md
-  - 'CLI':
-      - 'Обзор': cli/index.md
-  - 'SDK':
-      - 'Обзор': sdk/index.md
-      - 'Bus': sdk/bus.md
-      - 'Decorators': sdk/decorators.md
-      - 'Context': sdk/context.md
-      - 'Adapters': sdk/adapters.md
-      - 'Control Plane': sdk_control_plane.md
-  - 'Навыки': skills.md
-  - 'Сценарии': scenarios.md
-  - 'DevPortal': devportal.md
-  - 'Дорожная карта': roadmap.md
-  - 'Концепции':
-      - 'Кодовая база': concepts/codeflow.md
-      - 'Веб клиент': concepts/web-client.md
-      - 'Интерфейс пользователя': concepts/ui.md
-      - 'Запуск сценария': concepts/start_scenario.md
-      - 'Runtime сценария': concepts/scenario-runtime.md
-      - 'Безопасность': concepts/security.md
-      - 'Инициализация устройства': concepts/init_device.md
-      - 'Управление событиями': concepts/event_mgmnt.md
-      - 'Разработка сценариев': concepts/dev-scenarios.md
-      - 'Этапы LLM DevOps': concepts/dev_stages.md
-      - 'Этапы LLM DevOps - подготовка': concepts/dev_stage_prepare.md
-      - 'Управление данными': concepts/data_mgmnt.md
-      - 'Компрессия контекста': concepts/context_compression.md
-      - 'Интерпретация намерений': concepts/nlu.md
+  - "Главная": index.md
+  - "Быстрый старт": quickstart.md
+  - "Архитектура":
+      - "Обзор": architecture/index.md
+      - "Слои": architecture/layers.md
+      - "AgentContext": architecture/context.md
+      - "Безопасность": architecture/security.md
+  - "CLI":
+      - "Обзор": cli/index.md
+  - "SDK":
+      - "Обзор": sdk/index.md
+      - "Bus": sdk/bus.md
+      - "Decorators": sdk/decorators.md
+      - "Context": sdk/context.md
+      - "Adapters": sdk/adapters.md
+      - "Control Plane": sdk_control_plane.md
+  - "Навыки": skills.md
+  - "Сценарии": scenarios.md
+  - "DevPortal": devportal.md
+  - "Дорожная карта": roadmap.md
+  - "Концепции":
+      - "Кодовая база": concepts/codeflow.md
+      - "Веб клиент": concepts/web-client.md
+      - "Интерфейс пользователя": concepts/ui.md
+      - "Этапы LLM DevOps": concepts/dev_stages.md
+      - "Этапы LLM DevOps - подготовка": concepts/dev_stage_prepare.md
+      - "Разработка сценариев": concepts/dev-scenarios.md
+      - "Запуск сценария": concepts/start_scenario.md
+      - "Runtime сценария": concepts/scenario-runtime.md
+      - "Интерпретация намерений": concepts/nlu.md
+      - "Инициализация устройства": concepts/init_device.md
+      - "Управление событиями": concepts/event_mgmnt.md
+      - "Управление данными": concepts/data_mgmnt.md
+      - "AdaOS Resource Locator": concepts/arl.md
+      - "Компрессия контекста": concepts/context_compression.md
+      - "Безопасность": concepts/security.md
 
 copyright: |
   &copy; 2025 AdaOS
