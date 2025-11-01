@@ -21,6 +21,7 @@ from adaos.services.router import RouterService
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
+from adaos.services.capacity import install_io_in_capacity, get_local_capacity
 
 bootstrap_app()
 
@@ -68,7 +69,6 @@ async def lifespan(app: FastAPI):
     try:
         conf = load_config()
         from adaos.services.registry.subnet_directory import get_directory
-        from adaos.services.capacity import get_local_capacity
         directory = get_directory()
         base_url = os.environ.get("ADAOS_SELF_BASE_URL")
         node_item = {
@@ -80,6 +80,39 @@ async def lifespan(app: FastAPI):
             "capacity": get_local_capacity(),
         }
         directory.on_register(node_item)
+    except Exception:
+        pass
+
+    # 4.5) Hub-only: detect Telegram binding on Root for this subnet and expose IO telegram in capacity.
+    tg_enabled = False
+    try:
+        conf = load_config()
+        if conf.role == "hub" and conf.subnet_id:
+            ctx = _get_ctx()
+            api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
+            import requests as _requests
+            link_url = f"{api_base.rstrip('/')}/io/tg/pair/link"
+            r = _requests.get(link_url, params={"hub_id": conf.subnet_id}, timeout=3.0)
+            if r.status_code == 200 and (r.json() or {}).get("ok"):
+                # install telegram IO into capacity and refresh directory snapshot for this node
+                install_io_in_capacity("telegram", ["text", "lang:ru", "lang:en"], priority=60)
+                try:
+                    from adaos.services.registry.subnet_directory import get_directory as _get_dir
+                    cap = get_local_capacity()
+                    _get_dir().repo.replace_io_capacity(conf.node_id, cap.get("io") or [])
+                except Exception:
+                    pass
+                # Send greeting via Root
+                try:
+                    from adaos.sdk.data.i18n import _ as _t
+                    text = _t("subnet.started")
+                except Exception:
+                    text = "subnet.started"
+                try:
+                    _requests.post(f"{api_base.rstrip('/')}/io/tg/send", json={"hub_id": conf.subnet_id, "text": text}, timeout=3.0)
+                except Exception:
+                    pass
+                tg_enabled = True
     except Exception:
         pass
     # Start directory staler on hub to mark nodes offline after TTL
@@ -129,6 +162,21 @@ async def lifespan(app: FastAPI):
         await stop_observer()
         try:
             await router_service.stop()
+        except Exception:
+            pass
+        # On graceful shutdown, notify Telegram if it was enabled
+        try:
+            if tg_enabled:
+                conf = load_config()
+                ctx = _get_ctx()
+                api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
+                try:
+                    from adaos.sdk.data.i18n import _ as _t
+                    text = _t("subnet.stopped")
+                except Exception:
+                    text = "subnet.stopped"
+                import requests as _requests
+                _requests.post(f"{api_base.rstrip('/')}/io/tg/send", json={"hub_id": conf.subnet_id, "text": text}, timeout=2.5)
         except Exception:
             pass
         try:

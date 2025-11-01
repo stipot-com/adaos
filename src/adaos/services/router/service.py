@@ -45,6 +45,16 @@ class RouterService:
                 continue
         return node
 
+    def _has_rule_for(self, desired_io: str) -> bool:
+        for r in self._rules:
+            try:
+                target = r.get("target") or {}
+                if str(target.get("io_type") or "").lower() == desired_io.lower():
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _on_event(self, ev: Event) -> None:
         payload = ev.payload or {}
         text = (payload or {}).get("text")
@@ -53,8 +63,32 @@ class RouterService:
 
         conf = load_config()
         this_node = conf.node_id
-        target_node = self._pick_target_node("stdout", this_node)
+        # Prefer explicit telegram IO if a rule exists; otherwise default to stdout
+        if self._has_rule_for("telegram"):
+            target_node = self._pick_target_node("telegram", this_node)
+            try:
+                # Resolve hub_id for target node
+                if target_node == this_node:
+                    hub_id = conf.subnet_id
+                else:
+                    directory = get_directory()
+                    node = directory.get_node(target_node)
+                    hub_id = (node or {}).get("subnet_id")
+                if not hub_id:
+                    raise RuntimeError("hub_id unresolved for telegram routing")
+                # Root API base
+                from adaos.services.agent_context import get_ctx as _get_ctx
+                api_base = getattr(_get_ctx().settings, "api_base", "https://api.inimatic.com")
+                url = f"{api_base.rstrip('/')}/io/tg/send"
+                body = {"hub_id": hub_id, "text": text}
+                requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+            except Exception:
+                # fallback to local print on any error
+                print_text(text, node_id=this_node, origin={"source": ev.source})
+            return
 
+        # Default stdout routing
+        target_node = self._pick_target_node("stdout", this_node)
         if target_node == this_node:
             print_text(text, node_id=this_node, origin={"source": ev.source})
             return
