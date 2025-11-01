@@ -26,13 +26,24 @@ export function installPairingApi(app: express.Express) {
 		}
 	})
 
-	// alias under /v1 for clients using the old path
+	// alias under /v1 for clients using the old path (support body and query)
 	app.post('/v1/pair/create', async (req, res) => {
-		const hub = typeof req.query['hub'] === 'string' ? (req.query['hub'] as string) : undefined
-		const ttl = Number.parseInt(String(req.query['ttl'] ?? '600'), 10) || 600
-		const bot = typeof req.query['bot'] === 'string' ? (req.query['bot'] as string) : (process.env['BOT_ID'] || 'main-bot')
-		const rec = await pairCreate(bot, hub, ttl)
-		res.json({ ok: true, pair_code: rec.code, expires_at: rec.expires_at })
+		try {
+			const ttl = Number.parseInt(String((req.query['ttl'] as string) ?? (req.body?.ttl as string) ?? '600'), 10) || 600
+			const hub = typeof req.query['hub'] === 'string'
+				? (req.query['hub'] as string)
+				: (typeof req.body?.hub_id === 'string' ? (req.body.hub_id as string) : (typeof req.body?.hub === 'string' ? (req.body.hub as string) : undefined))
+			const bot = typeof req.query['bot'] === 'string'
+				? (req.query['bot'] as string)
+				: (typeof req.body?.bot_id === 'string' ? (req.body.bot_id as string) : (process.env['BOT_ID'] || 'main-bot'))
+			log.info({ tag: 'PAIR', route: 'create.v1', hub, bot, ttl }, '[PAIR] v1/create: request')
+			const rec = await pairCreate(bot, hub, ttl)
+			log.info({ tag: 'PAIR', route: 'create.v1', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] v1/create: issued')
+			res.json({ ok: true, pair_code: rec.code, expires_at: rec.expires_at })
+		} catch (e) {
+			log.error({ tag: 'PAIR', route: 'create.v1', err: String(e) }, '[PAIR] v1/create: error')
+			res.status(500).json({ ok: false })
+		}
 	})
 
 	app.post('/io/tg/pair/confirm', async (req, res) => {

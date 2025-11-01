@@ -209,7 +209,7 @@ def _echo_login_result(result: RootLoginResult) -> None:
     typer.echo(f"Workspace: {_display_path(result.workspace_path)}")
 
 
-@app.command("login-tg")
+@app.command("telegram")
 def dev_login(
     status: Optional[str] = typer.Option(None, "--status", help="Check pairing status for code."),
     revoke: Optional[str] = typer.Option(None, "--revoke", help="Revoke pairing code."),
