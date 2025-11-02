@@ -4,6 +4,8 @@ import { ensureSchema, logMessage, upsertBinding } from '../../db/tg.repo.js'
 import { publishIn, subscribeOut } from '../../bus/nats.js'
 import { sendToTelegram } from './outbox.js'
 import { log } from '../../logging/routing.js'
+import { pairConfirm } from '../pairing/store.js'
+import { tgLinkSet } from '../pairing/store.js'
 
 type Update = any
 
@@ -53,6 +55,21 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
           await sendToTelegram({ chat_id: ctx.chat_id, text: `Связка создана для ${hub} как ${alias}` })
           return { status: 200, body: { ok: true, routed: false } }
         }
+      } else {
+        // Treat payload as pair code; confirm from Redis and persist hub↔chat in DB
+        const code = payload
+        try {
+          const rec = await pairConfirm(code)
+          const hubId = rec && rec.state === 'confirmed' ? (rec.hub_id || undefined) : undefined
+          if (hubId) {
+            try { await tgLinkSet(hubId, String(ctx.chat_id), bot_id, String(ctx.chat_id)) } catch {}
+            await sendToTelegram({ chat_id: ctx.chat_id, text: 'Пара успешно подтверждена' })
+            return { status: 200, body: { ok: true, routed: false } }
+          }
+        } catch (e) {
+          log.warn({ err: String(e) }, 'pair confirm failed in router')
+        }
+        // Fallthrough if not confirmed
       }
     }
   } catch { /* ignore */ }
@@ -83,11 +100,10 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
   } catch (e) {
     if (String(e).includes('need_choice')) {
       await sendToTelegram({ chat_id: ctx.chat_id, text: 'Выберите подсеть: используйте /list и /use <alias> или отправьте @alias текст' })
-      await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none')
+      try { await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none') } catch {}
       return { status: 200, body: { ok: true, routed: false } }
     }
-    await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none')
+    try { await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none') } catch {}
     return { status: 200, body: { ok: true, routed: false } }
   }
 }
-
