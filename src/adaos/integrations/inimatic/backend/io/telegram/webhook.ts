@@ -8,6 +8,7 @@ import { idemGet, idemPut } from '../idem/kv.js'
 import { extractStartCode } from './pairing.js'
 import { pairConfirm, tgLinkSet } from '../pairing/store.js'
 import { ensureSchema } from '../../db/tg.repo.js'
+import { upsertBinding, listBindings, setSession } from '../../db/tg.repo.js'
 import { NatsBus } from '../bus/nats.js'
 import { randomUUID } from 'crypto'
 import { tg_updates_total, enqueue_total, dlq_total } from '../telemetry.js'
@@ -27,7 +28,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 			}
 
             const bot_id = String(req.params['bot_id'])
-            const update = req.body
+            const update: any = req.body
             // Fast-path: handle /start <code> via legacy pairing even when TG_ROUTER_ENABLED=1
             try {
                 const startText: string | undefined = update?.message?.text || update?.edited_message?.text || update?.callback_query?.data
@@ -40,6 +41,30 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
                         const chat_id = update?.message?.chat?.id || update?.edited_message?.chat?.id || update?.callback_query?.message?.chat?.id
                         if (hubId && chat_id) {
                             try { await tgLinkSet(hubId, String(chat_id), bot_id, String(chat_id)) } catch {}
+                            // Ensure alias binding exists for this chat
+                            try {
+                                const existing = await listBindings(Number(chat_id))
+                                let alias = 'hub'
+                                const names = new Set((existing || []).map(b => String(b.alias)))
+                                if (names.has(alias)) { let i = 2; while (names.has(`hub-${i}`)) i++; alias = `hub-${i}` }
+                                const makeDefault = (existing || []).length === 0
+                                await upsertBinding(Number(chat_id), hubId, alias, makeDefault)
+                                if (makeDefault) { try { await setSession(Number(chat_id), hubId, 'manual') } catch {} }
+                            } catch {}
+                            // Send quick ack to user
+                            try {
+                                if (bus) {
+                                    const subject = `tg.output.${bot_id}.chat.${chat_id}`
+                                    const out = { target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] }
+                                    await bus.publishSubject(subject, out)
+                                } else {
+                                    const token = process.env['TG_BOT_TOKEN'] || ''
+                                    if (token) {
+                                        const { TelegramSender } = await import('../telegram/sender.js')
+                                        await new TelegramSender(token).send({ target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] } as any)
+                                    }
+                                }
+                            } catch {}
                         }
                         return res.status(200).json({ ok: true, routed: false })
                     }
@@ -132,13 +157,13 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 						try {
 							const { bindingUpsert } = await import('../pairing/store.js')
 							await bindingUpsert('telegram', evt.user_id, bot_id, hubId)
-							// store simplified hub→chat link for outbound
+							// store simplified hubв†’chat link for outbound
 							await tgLinkSet(hubId, String(evt.user_id), bot_id, String(evt.chat_id))
 							log.info({ hub_id: hubId, bot_id, chat_id: String(evt.chat_id) }, 'telegram pairing linked')
 							// Send welcome message right after successful pairing
 							if (bus) {
 								const subject = `tg.output.${bot_id}.chat.${evt.chat_id}`
-								const welcome = process.env['TG_WELCOME_TEXT'] || '✅ Successfully paired. You can start messaging.'
+								const welcome = process.env['TG_WELCOME_TEXT'] || 'вњ… Successfully paired. You can start messaging.'
 								const out = {
 									target: { bot_id, hub_id: hubId, chat_id: String(evt.chat_id) },
 									messages: [{ type: 'text', text: welcome }],
