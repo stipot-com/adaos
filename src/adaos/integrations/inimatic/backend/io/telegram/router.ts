@@ -1,6 +1,6 @@
 import { handleCommand } from './commands.js'
 import { resolveTarget, stripExplicitAlias } from './resolver.js'
-import { ensureSchema, logMessage, upsertBinding } from '../../db/tg.repo.js'
+import { ensureSchema, logMessage, upsertBinding, listBindings, setSession } from '../../db/tg.repo.js'
 import { publishIn, subscribeOut } from '../../bus/nats.js'
 import { sendToTelegram } from './outbox.js'
 import { log } from '../../logging/routing.js'
@@ -63,6 +63,23 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
           const hubId = rec && rec.state === 'confirmed' ? (rec.hub_id || undefined) : undefined
           if (hubId) {
             try { await tgLinkSet(hubId, String(ctx.chat_id), bot_id, String(ctx.chat_id)) } catch {}
+            // Ensure binding exists for /list and routing UX
+            try {
+              const existing = await listBindings(ctx.chat_id)
+              // Pick alias 'hub' or 'hub-<n>' to avoid collisions
+              let alias = 'hub'
+              const names = new Set((existing || []).map(b => String(b.alias)))
+              if (names.has(alias)) {
+                let i = 2
+                while (names.has(`hub-${i}`)) i++
+                alias = `hub-${i}`
+              }
+              const makeDefault = (existing || []).length === 0
+              await upsertBinding(ctx.chat_id, hubId, alias, makeDefault)
+              if (makeDefault) {
+                try { await setSession(ctx.chat_id, hubId, 'manual') } catch {}
+              }
+            } catch { /* ignore binding errors */ }
             await sendToTelegram({ chat_id: ctx.chat_id, text: 'Пара успешно подтверждена' })
             return { status: 200, body: { ok: true, routed: false } }
           }
@@ -99,6 +116,31 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
     return { status: 200, body: { ok: true, routed: true } }
   } catch (e) {
     if (String(e).includes('need_choice')) {
+      // Better UX: if exactly one binding exists, route there automatically; if none, explain; if >1, prompt choice
+      try {
+        const binds = await listBindings(ctx.chat_id)
+        const count = (binds || []).length
+        if (count === 1 && ctx.text) {
+          const b = binds![0]
+          // route immediately to the single binding
+          const clean = stripExplicitAlias(ctx.text)
+          const payload = {
+            text: clean,
+            chat_id: ctx.chat_id,
+            tg_msg_id: ctx.msg_id,
+            route: { via: 'default', alias: b.alias, session_id: undefined },
+            meta: { is_command: false },
+          }
+          await publishIn(b.hub_id as any, payload)
+          try { await logMessage(ctx.chat_id, ctx.msg_id, b.hub_id as any, b.alias as any, 'default') } catch {}
+          return { status: 200, body: { ok: true, routed: true } }
+        }
+        if (count <= 1) {
+          await sendToTelegram({ chat_id: ctx.chat_id, text: 'Нет настроенных связок. Используйте /start bind:<hub_id> или /start <code>' })
+          try { await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none') } catch {}
+          return { status: 200, body: { ok: true, routed: false } }
+        }
+      } catch { /* fallthrough to prompt */ }
       await sendToTelegram({ chat_id: ctx.chat_id, text: 'Выберите подсеть: используйте /list и /use <alias> или отправьте @alias текст' })
       try { await logMessage(ctx.chat_id, ctx.msg_id, null, null, 'none') } catch {}
       return { status: 200, body: { ok: true, routed: false } }
