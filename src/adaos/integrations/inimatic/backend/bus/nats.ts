@@ -13,7 +13,7 @@ export async function natsConnect(): Promise<void> {
 
 export async function publishIn(hub_id: string, payload: any): Promise<void> {
   await natsConnect()
-  const subj = `io.tg.in.${hub_id}.text`
+  const subj = `tg.input.${hub_id}`
   await _nc.publish(subj, sc.encode(JSON.stringify(payload)))
 }
 
@@ -30,4 +30,3 @@ export async function subscribeOut(handler: (payload: any) => Promise<void>): Pr
     }
   })().catch(() => {})
 }
-
