@@ -17,67 +17,80 @@ import { tg_updates_total, enqueue_total, dlq_total } from '../telemetry.js'
 const log = pino({ name: 'tg-webhook' })
 
 export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus | null) {
-    app.post('/io/tg/:bot_id/webhook', async (req, res) => {
-        try {
-            try { if (process.env['PG_URL']) await ensureSchema() } catch {}
-            const expected = process.env['TG_SECRET_TOKEN']
+	app.post('/io/tg/:bot_id/webhook', async (req, res) => {
+		try {
+			try { if (process.env['PG_URL']) await ensureSchema() } catch { }
+			const expected = process.env['TG_SECRET_TOKEN']
 			const header = String(req.header('X-Telegram-Bot-Api-Secret-Token') || '')
 			if (expected && header !== expected) {
 				log.warn({ have_header: !!header }, 'tg webhook: invalid secret token')
 				return res.status(401).json({ error: 'invalid_secret' })
 			}
 
-            const bot_id = String(req.params['bot_id'])
-            const update: any = req.body
-            log.info({ bot_id, has_bus: !!bus, router_enabled: String(process.env['TG_ROUTER_ENABLED'] || '0') }, 'tg webhook: start')
-            // Fast-path: handle /start <code> via legacy pairing even when TG_ROUTER_ENABLED=1
-            try {
-                const startText: string | undefined = update?.message?.text || update?.edited_message?.text || update?.callback_query?.data
-                if (typeof startText === 'string' && startText.trim().startsWith('/start ')) {
-                    const payload = startText.trim().slice('/start '.length)
-                    if (!payload.startsWith('bind:')) {
-                        const code = payload
-                        const rec = await pairConfirm(code)
-                        const hubId = rec && rec.state === 'confirmed' ? (rec.hub_id || undefined) : undefined
-                        const chat_id = update?.message?.chat?.id || update?.edited_message?.chat?.id || update?.callback_query?.message?.chat?.id
-                        if (hubId && chat_id) {
-                            try { await tgLinkSet(hubId, String(chat_id), bot_id, String(chat_id)) } catch {}
-                            // Ensure alias binding exists for this chat
-                            try {
-                                const existing = await listBindings(Number(chat_id))
-                                let alias = 'hub'
-                                const names = new Set((existing || []).map(b => String(b.alias)))
-                                if (names.has(alias)) { let i = 2; while (names.has(`hub-${i}`)) i++; alias = `hub-${i}` }
-                                const makeDefault = (existing || []).length === 0
-                                await upsertBinding(Number(chat_id), hubId, alias, makeDefault)
-                                if (makeDefault) { try { await setSession(Number(chat_id), hubId, 'manual') } catch {} }
-                            } catch {}
-                            // Send quick ack to user
-                            try {
-                                if (bus) {
-                                    const subject = `tg.output.${bot_id}.chat.${chat_id}`
-                                    const out = { target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] }
-                                    await bus.publishSubject(subject, out)
-                                } else {
-                                    const token = process.env['TG_BOT_TOKEN'] || ''
-                                    if (token) {
-                                        const { TelegramSender } = await import('../telegram/sender.js')
-                                        await new TelegramSender(token).send({ target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] } as any)
-                                    }
-                                }
-                            } catch {}
-                        }
-                        return res.status(200).json({ ok: true, routed: false, diag: { step: 'fast_start', hub_id: hubId, chat_id: chat_id } })
-                    }
-                }
-            } catch {}
-            // Optional: new multi-hub router (MVP) gate by env flag
-            if ((process.env['TG_ROUTER_ENABLED'] || '0') === '1') {
-                try { await initTgRouting(); log.info({ ok: true }, 'tg webhook: router init ok') } catch (e) { log.warn({ err: String(e) }, 'tg webhook: router init failed') }
-                const out = await onTelegramUpdate(bot_id, update)
-                log.info({ status: out?.status, routed: out?.body?.routed }, 'tg webhook: router handled')
-                return res.status(out.status).json(out.body)
-            }
+			const bot_id = String(req.params['bot_id'])
+			const update: any = req.body
+			log.info({ bot_id, has_bus: !!bus, router_enabled: String(process.env['TG_ROUTER_ENABLED'] || '0') }, 'tg webhook: start')
+			// Fast-path: handle /start <code> via legacy pairing even when TG_ROUTER_ENABLED=1
+			try {
+				const startText: string | undefined = update?.message?.text || update?.edited_message?.text || update?.callback_query?.data
+				if (typeof startText === 'string' && startText.trim().startsWith('/start ')) {
+					const payload = startText.trim().slice('/start '.length)
+					if (!payload.startsWith('bind:')) {
+						const code = payload
+						const rec = await pairConfirm(code)
+						const hubId = rec && rec.state === 'confirmed' ? (rec.hub_id || undefined) : undefined
+						const chat_id = update?.message?.chat?.id || update?.edited_message?.chat?.id || update?.callback_query?.message?.chat?.id
+						if (hubId && chat_id) {
+							try { await tgLinkSet(hubId, String(chat_id), bot_id, String(chat_id)) } catch { }
+							// Ensure alias binding exists for this chat
+							try {
+								const existing = await listBindings(Number(chat_id))
+								let alias = 'hub'
+								const names = new Set((existing || []).map(b => String(b.alias)))
+								if (names.has(alias)) { let i = 2; while (names.has(`hub-${i}`)) i++; alias = `hub-${i}` }
+								const makeDefault = (existing || []).length === 0
+								await upsertBinding(Number(chat_id), hubId, alias, makeDefault)
+								if (makeDefault) { try { await setSession(Number(chat_id), hubId, 'manual') } catch { } }
+							} catch { }
+							// Send quick ack to user
+							try {
+								if (bus) {
+									const subject = `tg.output.${bot_id}.chat.${chat_id}`
+									const out = { target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] }
+									await bus.publishSubject(subject, out)
+								} else {
+									const token = process.env['TG_BOT_TOKEN'] || ''
+									if (token) {
+										const { TelegramSender } = await import('../telegram/sender.js')
+										await new TelegramSender(token).send({ target: { bot_id, hub_id: hubId, chat_id: String(chat_id) }, messages: [{ type: 'text', text: 'Pair confirmed' }] } as any)
+									}
+								}
+							} catch { }
+						}
+						return res.status(200).json({ ok: true, routed: false, diag: { step: 'fast_start', hub_id: hubId, chat_id: chat_id } })
+					}
+				}
+			} catch { }
+			// Optional: new multi-hub router (MVP) gate by env flag
+			if ((process.env['TG_ROUTER_ENABLED'] || '0') === '1') {
+				// Try router path; if it fails or does not route, fall back to classic publish
+				try {
+					await initTgRouting();
+					log.info({ ok: true }, 'tg webhook: router init ok')
+				} catch (e) {
+					log.warn({ err: String(e) }, 'tg webhook: router init failed (will use classic path)')
+				}
+				try {
+					const out = await onTelegramUpdate(bot_id, update)
+					log.info({ status: out?.status, routed: out?.body?.routed }, 'tg webhook: router handled')
+					if (out?.body?.routed === true) {
+						return res.status(out.status).json(out.body)
+					}
+					log.info({ reason: 'not_routed' }, 'tg webhook: router fallback to classic path')
+				} catch (e) {
+					log.warn({ err: String(e) }, 'tg webhook: router handler failed (fallback to classic)')
+				}
+			}
 			// minimal diagnostics for incoming webhook
 			try {
 				const updType = update?.message ? 'message' : (update?.edited_message ? 'edited_message' : (update?.callback_query ? 'callback_query' : 'unknown'))
@@ -159,13 +172,13 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 						try {
 							const { bindingUpsert } = await import('../pairing/store.js')
 							await bindingUpsert('telegram', evt.user_id, bot_id, hubId)
-							// store simplified hubРІвЂ вЂ™chat link for outbound
+							// store simplified hub. chat link for outbound
 							await tgLinkSet(hubId, String(evt.user_id), bot_id, String(evt.chat_id))
 							log.info({ hub_id: hubId, bot_id, chat_id: String(evt.chat_id) }, 'telegram pairing linked')
 							// Send welcome message right after successful pairing
 							if (bus) {
 								const subject = `tg.output.${bot_id}.chat.${evt.chat_id}`
-								const welcome = process.env['TG_WELCOME_TEXT'] || 'РІСљвЂ¦ Successfully paired. You can start messaging.'
+								const welcome = process.env['TG_WELCOME_TEXT'] || 'Successfully paired. You can start messaging.'
 								const out = {
 									target: { bot_id, hub_id: hubId, chat_id: String(evt.chat_id) },
 									messages: [{ type: 'text', text: welcome }],
@@ -178,13 +191,13 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 								}
 								// Also send directly to Telegram to ensure user feedback
 								if (!bus) {
-								try {
-									const token = process.env['TG_BOT_TOKEN'] || ''
-									if (token) {
-										const { TelegramSender } = await import('../telegram/sender.js')
-										await new TelegramSender(token).send(out as any)
-									}
-								} catch { /* ignore */ }
+									try {
+										const token = process.env['TG_BOT_TOKEN'] || ''
+										if (token) {
+											const { TelegramSender } = await import('../telegram/sender.js')
+											await new TelegramSender(token).send(out as any)
+										}
+									} catch { /* ignore */ }
 								}
 							}
 						} catch (e) {
@@ -229,18 +242,18 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 					if (base) {
 						const path = `/io/bus/tg.input.${hub}`
 						const url = (new URL(path, base)).toString()
-							const { request } = await import('undici')
-							const token = process.env['ADAOS_TOKEN'] || ''
-							const resp = await request(url, {
+						const { request } = await import('undici')
+						const token = process.env['ADAOS_TOKEN'] || ''
+						const resp = await request(url, {
 							method: 'POST',
 							headers: { 'content-type': 'application/json', ...(token ? { 'X-AdaOS-Token': token } : {}) },
 							body: JSON.stringify(evt),
 						})
-							if (resp.statusCode >= 200 && resp.statusCode < 300) {
-								log.info({ url, hub, bot_id }, 'http fallback to hub: routed')
-								status = 200
-								body = { ok: true, routed: true }
-							}
+						if (resp.statusCode >= 200 && resp.statusCode < 300) {
+							log.info({ url, hub, bot_id }, 'http fallback to hub: routed')
+							status = 200
+							body = { ok: true, routed: true }
+						}
 					}
 				} catch (e) {
 					log.error({ bot_id, hub_id: hub, update_id: evt.update_id, err: String(e) }, 'http fallback to hub failed')
