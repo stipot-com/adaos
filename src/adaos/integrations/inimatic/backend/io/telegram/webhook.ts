@@ -29,6 +29,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 
             const bot_id = String(req.params['bot_id'])
             const update: any = req.body
+            log.info({ bot_id, has_bus: !!bus, router_enabled: String(process.env['TG_ROUTER_ENABLED'] || '0') }, 'tg webhook: start')
             // Fast-path: handle /start <code> via legacy pairing even when TG_ROUTER_ENABLED=1
             try {
                 const startText: string | undefined = update?.message?.text || update?.edited_message?.text || update?.callback_query?.data
@@ -72,8 +73,9 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
             } catch {}
             // Optional: new multi-hub router (MVP) gate by env flag
             if ((process.env['TG_ROUTER_ENABLED'] || '0') === '1') {
-                try { await initTgRouting() } catch {}
+                try { await initTgRouting(); log.info({ ok: true }, 'tg webhook: router init ok') } catch (e) { log.warn({ err: String(e) }, 'tg webhook: router init failed') }
                 const out = await onTelegramUpdate(bot_id, update)
+                log.info({ status: out?.status, routed: out?.body?.routed }, 'tg webhook: router handled')
                 return res.status(out.status).json(out.body)
             }
 			// minimal diagnostics for incoming webhook
@@ -92,7 +94,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 			// idempotency
 			const idemKey = `idem:tg:${bot_id}:${evt.update_id}`
 			const cached = await idemGet(idemKey)
-			if (cached) return res.status(cached.status).json(cached.body)
+			if (cached) { log.info({ idemKey }, 'tg webhook: idem replay'); return res.status(cached.status).json(cached.body) }
 
 			// media enrich
 			const token = process.env['TG_BOT_TOKEN']
@@ -195,6 +197,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 			// resolve hub
 			const locale = (evt.payload as any)?.meta?.lang
 			const hub = (await resolveHubId('telegram', evt.user_id, bot_id, locale)) || process.env['DEFAULT_HUB']
+			log.info({ hub, user_id: evt.user_id, bot_id }, 'tg webhook: hub resolved')
 			evt.hub_id = hub || null
 
 			let status = 202
@@ -209,6 +212,8 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 					meta: { bot_id, hub_id: hub, trace_id: randomUUID().replace(/-/g, ''), retries: 0 },
 				}
 				try {
+					const subject = `tg.input.${hub}`
+					log.info({ subject, event_id: envelope.event_id }, 'tg webhook: publishing to NATS')
 					await bus.publish_input(hub, envelope)
 					enqueue_total.inc({ hub })
 					status = 200
