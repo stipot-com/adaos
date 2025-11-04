@@ -843,7 +843,7 @@ if ((process.env['IO_BUS_KIND'] || 'local').toLowerCase() === 'nats' && process.
 		if (tap) {
 			for (const subj of tap.split(',').map(s => s.trim()).filter(Boolean)) {
 				console.log(`[io] Tap subscribe ${subj}`)
-				await ioBus.subscribe(subj, async (s, data) => {
+				await ioBus!.subscribe(subj, async (s, data) => {
 					const txt = new TextDecoder().decode(data)
 					console.log(`[io][tap] ${s} ${txt.slice(0, 512)}`)
 				})
@@ -853,7 +853,7 @@ if ((process.env['IO_BUS_KIND'] || 'local').toLowerCase() === 'nats' && process.
 		// Optional legacy bridge: republish tg.input.<hub> text to io.tg.in.<hub>.text
 		if ((process.env['IO_BRIDGE_TG_INPUT_TO_LEGACY'] || '0') === '1') {
 			console.log('[io] Legacy bridge enabled: tg.input.* -> io.tg.in.*.text')
-			await ioBus.subscribe('tg.input.>', async (subject, data) => {
+			await ioBus!.subscribe('tg.input.>', async (subject, data) => {
 				try {
 					const txt = new TextDecoder().decode(data)
 					const env = JSON.parse(txt)
