@@ -206,6 +206,73 @@ class BootstrapService:
         except Exception:
             pass
 
+        # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
+        # Enabled when settings.nats_url is provided; safe no-op otherwise.
+        try:
+            nurl = getattr(self.ctx.settings, "nats_url", None)
+            hub_id = load_config(ctx=self.ctx).subnet_id
+            if nurl and hub_id:
+                async def _nats_bridge() -> None:
+                    import json as _json
+                    import nats as _nats
+                    from adaos.domain import Event
+                    nc = await _nats.connect(servers=nurl)
+                    subj = f"tg.input.{hub_id}"
+                    subj_legacy = f"io.tg.in.{hub_id}.text"
+                    print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
+                    async def cb(msg):
+                        try:
+                            data = _json.loads(msg.data.decode("utf-8"))
+                        except Exception:
+                            data = {}
+                        try:
+                            self.ctx.bus.publish(Event(type=subj, payload=data, source="io.nats", ts=time.time()))
+                        except Exception:
+                            pass
+                    await nc.subscribe(subj, cb=cb)
+                    # legacy text bridge -> wrap into minimal envelope and publish to same tg.input subject
+                    async def cb_legacy(msg):
+                        try:
+                            data = _json.loads(msg.data.decode("utf-8"))
+                        except Exception:
+                            data = {}
+                        # transform into minimal io.input envelope compatible with downstream
+                        try:
+                            text = (data or {}).get("text") or ""
+                            chat_id = str((data or {}).get("chat_id") or "")
+                            tg_msg_id = (data or {}).get("tg_msg_id") or 0
+                            env = {
+                                "event_id": str(uuid.uuid4()).replace("-", ""),
+                                "kind": "io.input",
+                                "ts": datetime.utcnow().isoformat() + "Z",
+                                "dedup_key": f"legacy:{chat_id}:{tg_msg_id}",
+                                "payload": {
+                                    "type": "text",
+                                    "source": "telegram",
+                                    "bot_id": "",
+                                    "hub_id": hub_id,
+                                    "chat_id": chat_id,
+                                    "user_id": chat_id,
+                                    "update_id": str(tg_msg_id),
+                                    "payload": {"text": text, "meta": {"msg_id": tg_msg_id}},
+                                },
+                                "meta": {"hub_id": hub_id},
+                            }
+                        except Exception:
+                            env = data
+                        try:
+                            self.ctx.bus.publish(Event(type=subj, payload=env, source="io.nats", ts=time.time()))
+                        except Exception:
+                            pass
+                    from datetime import datetime
+                    await nc.subscribe(subj_legacy, cb=cb_legacy)
+                    # keep task alive
+                    while True:
+                        await asyncio.sleep(3600)
+                self._boot_tasks.append(asyncio.create_task(_nats_bridge(), name="adaos-nats-io-bridge"))
+        except Exception:
+            pass
+
     async def shutdown(self) -> None:
         await bus.emit("sys.stopping", {}, source="lifecycle", actor="system")
         for t in list(self._boot_tasks):
