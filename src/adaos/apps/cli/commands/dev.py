@@ -249,6 +249,25 @@ def dev_login(
     if data.get("expires_at"):
         typer.echo(f"  expires_at: {data['expires_at']}")
 
+    # Save NATS WS credentials into node.yaml so hub can preconfigure WS
+    hub_id_resp = data.get("hub_id") or hub_id
+    hub_token = data.get("hub_nats_token")
+    nats_user = data.get("nats_user") or (f"hub_{hub_id_resp}" if hub_id_resp else None)
+    nats_ws_url = data.get("nats_ws_url") or f"{base.rstrip('/')}/nats"
+    if hub_id_resp and hub_token and nats_user:
+        try:
+            from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
+            data_yaml = _load_node()
+            nats_cfg = data_yaml.get("nats") or {}
+            nats_cfg["ws_url"] = nats_ws_url
+            nats_cfg["user"] = nats_user
+            nats_cfg["pass"] = hub_token
+            data_yaml["nats"] = nats_cfg
+            _save_node(data_yaml)
+            typer.echo("Saved NATS WS credentials to node.yaml")
+        except Exception as e:
+            _print_error(f"Failed to save NATS creds: {e}")
+
 
 @skill_app.command("create")
 def skill_create(

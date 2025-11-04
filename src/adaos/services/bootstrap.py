@@ -209,7 +209,20 @@ class BootstrapService:
         # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
         # Enabled when settings.nats_url is provided; safe no-op otherwise.
         try:
+            # prefer env, fallback to node.yaml 'nats.ws_url'
             nurl = os.getenv("NATS_WS_URL") or getattr(self.ctx.settings, "nats_url", None)
+            nuser = os.getenv('NATS_USER') or None
+            npass = os.getenv('NATS_PASS') or None
+            if not nurl or not nuser or not npass:
+                try:
+                    from adaos.services.capacity import _load_node_yaml as _load_node
+                    nd = _load_node()
+                    nc = (nd or {}).get('nats') or {}
+                    nurl = nurl or nc.get('ws_url')
+                    nuser = nuser or nc.get('user')
+                    npass = npass or nc.get('pass')
+                except Exception:
+                    pass
             hub_id = load_config(ctx=self.ctx).subnet_id
             if nurl and hub_id:
                 async def _nats_bridge() -> None:
@@ -219,8 +232,8 @@ class BootstrapService:
                     backoff = 1.0
                     while True:
                         try:
-                            user = os.getenv('NATS_USER') or None
-                            pw = os.getenv('NATS_PASS') or None
+                            user = nuser or os.getenv('NATS_USER') or None
+                            pw = npass or os.getenv('NATS_PASS') or None
                             pw_mask = (pw[:3] + '***' + pw[-2:]) if pw and len(pw) > 6 else ('***' if pw else None)
                             print(f"[hub-io] Connecting NATS {nurl} user={user} pass={pw_mask}")
                             nc = await _nats.connect(servers=[nurl], user=user, password=pw, name=f'hub-{hub_id}')

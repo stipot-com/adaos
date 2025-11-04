@@ -262,6 +262,24 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 						}
 					} catch { /* ignore legacy mirror errors */ }
 					enqueue_total.inc({ hub })
+					// Optional HTTP mirror to hub API even when NATS is available
+					try {
+						if ((process.env['HUB_HTTP_MIRROR'] || '0') === '1') {
+							const base = process.env['HUB_BASE_URL'] || process.env['ADAOS_HUB_API_BASE']
+							if (base) {
+								const path = `/io/bus/tg.input.${hub}`
+								const url = (new URL(path, base)).toString()
+								const { request } = await import('undici')
+								const token = process.env['ADAOS_TOKEN'] || ''
+								await request(url, {
+									method: 'POST',
+									headers: { 'content-type': 'application/json', ...(token ? { 'X-AdaOS-Token': token } : {}) },
+									body: JSON.stringify(envelope),
+								})
+								log.info({ url, hub }, 'http mirror to hub: posted')
+							}
+						}
+					} catch { /* ignore mirror errors */ }
 					status = 200
 					body = { ok: true, routed: true }
 				} catch (e) {

@@ -14,7 +14,7 @@ type AuthzRequest = {
 function getPerms(hubId: string) {
   return {
     pub: ['tg.output.*', 'route.to_browser.*'],
-    sub: [`tg.input.${hubId}`, 'route.to_hub.*`'],
+    sub: [`tg.input.${hubId}`, 'route.to_hub.*'],
   }
 }
 

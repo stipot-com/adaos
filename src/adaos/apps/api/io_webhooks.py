@@ -51,3 +51,19 @@ async def tg_pair_revoke(code: str):
         raise HTTPException(status_code=400, detail="code is required")
     res = await pairing_svc.revoke_pair_code(code=code)
     return res
+
+# Inbound bus mirror endpoint: allow backend to POST envelopes to hub local bus
+@router.post("/io/bus/tg.input.{hub_id}")
+async def tg_input_bus(hub_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    # publish to local event bus so hub pipeline can consume
+    try:
+        from adaos.services.eventbus import emit as _emit
+        from adaos.services.agent_context import get_ctx as _get_ctx
+        _emit(_get_ctx().bus, f"tg.input.{hub_id}", body, source="io.http")
+    except Exception:
+        pass
+    return {"ok": True}
