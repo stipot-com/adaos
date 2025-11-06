@@ -247,11 +247,19 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 
 			// resolve hub (session/default)
 			const locale = (evt.payload as any)?.meta?.lang
-            let hub = await resolveHubId('telegram', evt.user_id, bot_id, locale)
-            if (!hub) {
-                try { const sess = await getSession(Number(evt.chat_id)); if (sess?.current_hub_id) hub = String(sess.current_hub_id) } catch {}
+            const defaultHub = process.env['DEFAULT_HUB']
+            let hubResolved = await resolveHubId('telegram', evt.user_id, bot_id, locale)
+            let sessionHub: string | undefined
+            try {
+                const sess = await getSession(Number(evt.chat_id))
+                if (sess?.current_hub_id) sessionHub = String(sess.current_hub_id)
+            } catch {}
+            // Prefer session hub over router fallback that equals DEFAULT_HUB
+            let hub = hubResolved
+            if (!hub || (defaultHub && hub === defaultHub)) {
+                if (sessionHub) hub = sessionHub
             }
-            if (!hub) hub = process.env['DEFAULT_HUB']
+            if (!hub) hub = defaultHub
             // Optional address override: leading @<hub_id|alias> text -> route to that hub and strip the address token
             try {
                 if (evt.type === 'text') {
