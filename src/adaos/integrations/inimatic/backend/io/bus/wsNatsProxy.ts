@@ -93,10 +93,16 @@ export function installWsNatsProxy(server: HttpsServer) {
 
         function tryProcessHandshake(): boolean {
           const s = clientBuf.toString('utf8')
-          const idx = s.indexOf('\r\n')
+          // support both CRLF and LF
+          let idx = s.indexOf('\r\n')
+          let eolLen = 2
+          if (idx === -1) {
+            idx = s.indexOf('\n')
+            eolLen = 1
+          }
           if (idx === -1) return false
           const line = s.slice(0, idx)
-          const rest = Buffer.from(s.slice(idx + 2), 'utf8')
+          const rest = Buffer.from(s.slice(idx + eolLen), 'utf8')
           if (!line.startsWith('CONNECT ')) {
             log.warn({ from: rip, line }, 'unexpected first line (expected CONNECT)')
             closeBoth(1008, 'protocol_error')
