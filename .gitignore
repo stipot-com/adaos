@@ -22,3 +22,4 @@ src/adaos/integrations/inimatic/backend/ssl/ca.key
 .adaos/dev/
 src/adaos/integrations/inimatic/backend/node_modules/
 src/adaos/integrations/inimatic/backend/dist/
+.adaos/cache/
