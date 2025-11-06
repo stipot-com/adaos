@@ -280,15 +280,13 @@ class BootstrapService:
                                     if base:
                                         _dedup_push(base)
                                         path = pr.path or ""
+                                        # If no explicit path, prefer '/nats'
                                         if path == "" or path == "/":
                                             _dedup_push(urlunparse(pr._replace(path="/nats")))
-                                            _dedup_push(urlunparse(pr._replace(path="/ws")))
-                                        elif path.endswith("/nats"):
-                                            _dedup_push(urlunparse(pr._replace(path="/ws")))
+                                        # If path is exactly '/ws', switch to '/nats'
                                         elif path.endswith("/ws"):
                                             _dedup_push(urlunparse(pr._replace(path="/nats")))
-                                        if not path.endswith("/"):
-                                            _dedup_push(urlunparse(pr._replace(path=path + "/")))
+                                        # Avoid generating trailing slash variants which may 400
                                     # Known public endpoint as a fallback
                                     _dedup_push("wss://nats.inimatic.com")
                                     # Allow explicit WS alternates via env (comma-separated)
