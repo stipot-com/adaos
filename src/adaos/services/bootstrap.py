@@ -1,6 +1,6 @@
 # src\adaos\services\bootstrap.py
 from __future__ import annotations
-import asyncio, socket, time, uuid, os
+import asyncio, socket, time, uuid, os, logging
 from typing import Any, List, Optional, Sequence
 from pathlib import Path
 from adaos.services.agent_context import AgentContext, get_ctx
@@ -28,6 +28,7 @@ class BootstrapService:
         self._booted = False
         self._app: Any = None
         self._io_bus: Any = None
+        self._log = logging.getLogger("adaos.hub-io")
 
     def is_ready(self) -> bool:
         return self._ready.is_set()
@@ -258,6 +259,7 @@ class BootstrapService:
 
                             try:
                                 from urllib.parse import urlparse, urlunparse
+
                                 pr = urlparse(base) if base else None
                                 scheme = (pr.scheme if pr else "").lower()
                                 # If base is http(s), normalize to ws(s)
@@ -274,25 +276,24 @@ class BootstrapService:
                                         is_ws_mode = True
 
                                 if is_ws_mode:
-                                    # Prefer WS endpoints only
-                                    _dedup_push("wss://nats.inimatic.com")
-                                    if base and pr.hostname not in ("api.inimatic.com",):
+                                    # Prefer WS endpoints only. Always include provided base (even api.inimatic.com)
+                                    if base:
                                         _dedup_push(base)
                                         path = pr.path or ""
+                                        # If no explicit path, prefer '/nats'
                                         if path == "" or path == "/":
                                             _dedup_push(urlunparse(pr._replace(path="/nats")))
-                                            _dedup_push(urlunparse(pr._replace(path="/ws")))
-                                        elif path.endswith("/nats"):
-                                            _dedup_push(urlunparse(pr._replace(path="/ws")))
+                                        # If path is exactly '/ws', switch to '/nats'
                                         elif path.endswith("/ws"):
                                             _dedup_push(urlunparse(pr._replace(path="/nats")))
-                                        if not path.endswith("/"):
-                                            _dedup_push(urlunparse(pr._replace(path=path + "/")))
+                                        # Avoid generating trailing slash variants which may 400
+                                    # Known public endpoint as a fallback
+                                    _dedup_push("wss://nats.inimatic.com")
                                     # Allow explicit WS alternates via env (comma-separated)
                                     extra = os.getenv("NATS_WS_URL_ALT")
                                     if extra:
                                         for it in [x.strip() for x in extra.split(",") if x.strip()]:
-                                            if it.startswith("ws") and ("api.inimatic.com" not in it):
+                                            if it.startswith("ws"):
                                                 _dedup_push(it)
                                 else:
                                     # TCP mode: only nats:// endpoints

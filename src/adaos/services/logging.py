@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
@@ -43,7 +44,8 @@ def setup_logging(paths: PathProvider, level: str = "INFO") -> logging.Logger:
     logfile = logs_dir / "adaos.log"
 
     logger = logging.getLogger("adaos")
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    resolved_level = (os.getenv("ADAOS_LOG_LEVEL") or level or "INFO").upper()
+    logger.setLevel(getattr(logging, resolved_level, logging.INFO))
     logger.handlers.clear()
 
     stream_h = logging.StreamHandler()
