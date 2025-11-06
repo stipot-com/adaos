@@ -253,8 +253,8 @@ def dev_login(
     hub_id_resp = data.get("hub_id") or hub_id
     hub_token = data.get("hub_nats_token")
     nats_user = data.get("nats_user") or (f"hub_{hub_id_resp}" if hub_id_resp else None)
-    # Prefer dedicated NATS WS domain; fallback to API-provided URL if present
-    nats_ws_url = data.get("nats_ws_url") or "wss://nats.inimatic.com"
+    # Pin to dedicated NATS WS domain regardless of API suggestion
+    nats_ws_url = "wss://nats.inimatic.com"
     if hub_id_resp and hub_token and nats_user:
         try:
             from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node

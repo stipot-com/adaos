@@ -231,7 +231,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 			// Optional address override: leading @<hub_id|alias> text -> route to that hub and strip the address token
 			try {
 				if (evt.type === 'text') {
-					const txt0 = String((evt.payload as any)?.text || '')
+					const txt0: string = (((evt.payload as any)?.text ?? '') as string) + ''
 					const m = txt0.match(/^\s*@([A-Za-z0-9_\-]+)\s+(.*)$/)
 					if (m) {
 						const addr = m[1]
@@ -245,8 +245,8 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 							} catch { routedHub = '' }
 						}
 						if (routedHub) {
-							const stripped = m[2]
-							(evt.payload as any).text = stripped
+							const stripped: string = (m[2] ?? '') as string
+							;(evt.payload as any).text = stripped
 							// Also adjust legacy mirror text via evt later
 							hub = routedHub
 							log.info({ hub, addr }, 'tg webhook: address override')
