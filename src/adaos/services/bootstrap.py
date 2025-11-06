@@ -281,11 +281,11 @@ class BootstrapService:
                                         _dedup_push(base)
                                         path = pr.path or ""
                                         # If no explicit path, prefer '/nats'
-                                        if path == "" or path == "/":
+                                        """ if path == "" or path == "/":
                                             _dedup_push(urlunparse(pr._replace(path="/nats")))
                                         # If path is exactly '/ws', switch to '/nats'
                                         elif path.endswith("/ws"):
-                                            _dedup_push(urlunparse(pr._replace(path="/nats")))
+                                            _dedup_push(urlunparse(pr._replace(path="/nats"))) """
                                         # Avoid generating trailing slash variants which may 400
                                     # Known public endpoint as a fallback
                                     _dedup_push("wss://nats.inimatic.com")

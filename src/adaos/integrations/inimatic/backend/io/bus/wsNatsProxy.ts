@@ -50,7 +50,15 @@ export function installWsNatsProxy(server: HttpsServer) {
     ;(Promise.resolve(mod).then((m: any) => {
       WebSocketServerCtor = m.WebSocketServer || m.Server
       if (!WebSocketServerCtor) throw new Error('ws package missing WebSocketServer export')
-      const wss = new WebSocketServerCtor({ server, path, perMessageDeflate: false })
+      const wss = new WebSocketServerCtor({
+        server,
+        path,
+        perMessageDeflate: false,
+        handleProtocols: (protocols: string[], _req: any) => {
+          // Prefer NATS subprotocol when offered by client
+          return protocols.includes('nats') ? 'nats' : (protocols[0] || undefined)
+        },
+      })
 
       wss.on('connection', (ws: any, req: any) => {
         const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
