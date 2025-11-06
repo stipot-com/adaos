@@ -50,7 +50,7 @@ export function installWsNatsProxy(server: HttpsServer) {
     ;(Promise.resolve(mod).then((m: any) => {
       WebSocketServerCtor = m.WebSocketServer || m.Server
       if (!WebSocketServerCtor) throw new Error('ws package missing WebSocketServer export')
-      const wss = new WebSocketServerCtor({ server, path })
+      const wss = new WebSocketServerCtor({ server, path, perMessageDeflate: false })
 
       wss.on('connection', (ws: any, req: any) => {
         const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
@@ -73,8 +73,8 @@ export function installWsNatsProxy(server: HttpsServer) {
             connected = true
           })
           upstreamSock.on('data', (chunk) => {
-            // Forward as binary Buffer to match clients expecting bytes (e.g., python nats ws)
-            try { ws.send(chunk) } catch {}
+            // NATS over WebSocket is line-based text; send TEXT frames
+            try { ws.send(chunk.toString('utf8')) } catch {}
           })
           upstreamSock.on('error', (err) => {
             log.warn({ err: String(err) }, 'upstream error')
@@ -121,6 +121,7 @@ export function installWsNatsProxy(server: HttpsServer) {
                   if (rest.length) upstreamSock?.write(rest)
                   clientBuf = Buffer.alloc(0)
                   handshaked = true
+                  log.info({ from: rip, hub_id: hubId }, 'auth ok')
                 } catch (e) {
                   log.warn({ err: String(e) }, 'write upstream failed')
                   closeBoth(1011, 'upstream_write_failed')
