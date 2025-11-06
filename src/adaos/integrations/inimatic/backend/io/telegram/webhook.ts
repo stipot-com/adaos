@@ -31,9 +31,10 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
             if (!meta || typeof meta === 'string') return res.status(404).json({ error: 'not_found' })
             const tmp = await downloadFile(botToken, meta.file_path, bot_id || 'default')
             const pathMod = await import('node:path')
-            const mimeMod: any = await import('mime-types')
+            let mimeMod: any
+            try { mimeMod = await (new Function('m', 'return import(m)'))('mime-types') } catch {}
             const name = pathMod.basename(String(meta.file_path || 'file'))
-            const mime = (mimeMod.lookup && mimeMod.lookup(name)) || 'application/octet-stream'
+            const mime = (mimeMod && mimeMod.lookup ? mimeMod.lookup(name) : '') || 'application/octet-stream'
             res.setHeader('Content-Type', String(mime))
             res.setHeader('Content-Disposition', `attachment; filename="${name}"`)
             res.setHeader('X-File-Name', name)
