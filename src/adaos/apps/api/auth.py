@@ -2,12 +2,12 @@ import os
 
 from fastapi import Header, HTTPException, status
 
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 
 
 def _expected_token() -> str:
     try:
-        return load_config().token or "dev-local-token"
+        return (get_ctx().config.token or "dev-local-token")
     except Exception:
         return "dev-local-token"
 

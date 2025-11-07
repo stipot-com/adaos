@@ -63,6 +63,7 @@ def run_tests(
 
     python_entries: list[str] = []
     if root.exists():
+        # root points to slot "src" directory in runtime mode
         python_entries.append(str(root))
 
     # PYTHONPATH по режимам

@@ -107,6 +107,62 @@ def _collect_test_dirs(root: Path) -> List[str]:
     return paths
 
 
+def _prune_duplicate_skill_tests(paths: List[str]) -> List[str]:
+    """Prefer runtime/tests over tests for the same skill tree.
+
+    Skill layout inside slot src is typically:
+      src/skills/<name>/tests
+      src/skills/<name>/runtime/tests
+
+    Collecting both causes pytest import collisions when filenames match.
+    This function keeps runtime/tests if present and removes the sibling tests/.
+    """
+    from pathlib import Path as _P
+
+    # Map skill base -> set of candidate test dirs
+    grouped: dict[str, set[str]] = {}
+    for p in paths:
+        try:
+            pp = _P(p).resolve()
+        except Exception:
+            pp = _P(p)
+        parts = pp.parts
+        try:
+            # find pattern .../src/skills/<name>/(runtime/)?tests
+            if "src" in parts and "skills" in parts:
+                si = parts.index("src")
+                sk = parts.index("skills", si + 1)
+                name = parts[sk + 1] if len(parts) > sk + 1 else None
+                if name:
+                    base = _P(*parts[: sk + 2])  # up to src/skills/<name>
+                    grouped.setdefault(str(base), set()).add(str(pp))
+        except ValueError:
+            # not a skill path; keep as-is
+            grouped.setdefault("__other__", set()).add(str(pp))
+
+    keep: set[str] = set()
+    for base, items in grouped.items():
+        if base == "__other__":
+            keep.update(items)
+            continue
+        # Identify runtime/tests path(s) robustly via pathlib
+        runtime_items = [
+            x
+            for x in items
+            if _P(x).name == "tests" and _P(x).parent.name == "runtime"
+        ]
+        if runtime_items:
+            keep.update(runtime_items)
+        else:
+            keep.update(items)
+    # Preserve original order
+    result: List[str] = []
+    for p in paths:
+        if p in keep and p not in result:
+            result.append(p)
+    return result
+
+
 def _drive_key(path_str: str) -> str:
     # На *nix вернётся пусто, на Windows — 'C:' / 'D:' и т.п.
     import os as _os
@@ -132,6 +188,8 @@ def _run_one_group(
         "--strict-markers",
         "-o",
         "markers=asyncio: mark asyncio tests",
+        "-o",
+        "importmode=importlib",  # avoid import file mismatch when duplicate basenames exist
         *paths,
     ]
 
@@ -148,7 +206,58 @@ def _run_one_group(
     except Exception:
         pass
 
+    # Derive PYTHONPATH for skill runtime tests: include slot src/ and vendor/
+    # and set ADAOS_SKILL_* if tests are for a single skill.
+    try:
+        skill_names: set[str] = set()
+        pp_entries: list[str] = []
+        for p in paths:
+            try:
+                t = Path(p)
+                # find enclosing 'src' directory (slot src)
+                src_dir = None
+                cur = t.resolve()
+                for parent in [cur] + list(cur.parents):
+                    if parent.name == "src" and (parent / "skills").exists():
+                        src_dir = parent
+                        break
+                if src_dir is None:
+                    continue
+                vendor = src_dir.parent / "vendor"
+                # add unique entries, preserve order (src first)
+                if str(src_dir) not in pp_entries:
+                    pp_entries.append(str(src_dir))
+                if vendor.exists() and str(vendor) not in pp_entries:
+                    pp_entries.append(str(vendor))
+                # try to infer skill name from src/skills/<name>
+                skills_dir = src_dir / "skills"
+                for child in skills_dir.iterdir() if skills_dir.exists() else []:
+                    if child.is_dir():
+                        skill_names.add(child.name)
+            except Exception:
+                continue
+        if pp_entries:
+            # isolate from user site and prepend our entries
+            extra_env["PYTHONNOUSERSITE"] = "1"
+            existing = os.environ.get("PYTHONPATH", "")
+            joined = os.pathsep.join(pp_entries + ([existing] if existing else []))
+            extra_env["PYTHONPATH"] = joined
+        if len(skill_names) == 1:
+            skill_name = next(iter(skill_names))
+            extra_env.setdefault("ADAOS_SKILL_NAME", skill_name)
+            extra_env.setdefault("ADAOS_SKILL_PACKAGE", f"skills.{skill_name}")
+            extra_env.setdefault("ADAOS_SKILL_MODE", "runtime")
+            # best-effort root
+            for entry in pp_entries:
+                sdir = Path(entry) / "skills" / skill_name
+                if sdir.exists():
+                    extra_env.setdefault("ADAOS_SKILL_ROOT", str(sdir))
+                    break
+    except Exception:
+        pass
+
     if addopts:
+        # preserve user's opts and ensure our importmode survives
         extra_env["PYTEST_ADDOPTS"] = addopts
     cmd = [(venv_python or py_exec), *([] if venv_python else py_prefix), "-m", "pytest", *pytest_args]
     return _sandbox_run(cmd, cwd=base_dir, extra_env=extra_env, use_sandbox=use_sandbox)
@@ -450,6 +559,9 @@ def run_tests(
         # при разработке — добавим тесты из исходников, если есть
         src_skills = repo_root / "src" / "adaos" / "skills"
         pytest_paths.extend(_collect_test_dirs(src_skills))
+
+    # Prefer runtime/tests if both are present for a skill
+    pytest_paths = _prune_duplicate_skill_tests(pytest_paths)
 
     if not pytest_paths:
         if only_sdk:

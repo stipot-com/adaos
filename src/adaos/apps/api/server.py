@@ -16,7 +16,7 @@ from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 from adaos.apps.bootstrap import init_ctx
 from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
         pass
     # hub: seed self node into directory (base_url + capacity)
     try:
-        conf = load_config()
+        conf = get_ctx().config
         from adaos.services.registry.subnet_directory import get_directory
 
         directory = get_directory()
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     # 4.5) Hub-only: detect Telegram binding on Root for this subnet and expose IO telegram in capacity.
     tg_enabled = False
     try:
-        conf = load_config()
+        conf = get_ctx().config
         if conf.role == "hub" and conf.subnet_id:
             ctx = _get_ctx()
             api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI):
         pass
     # Start directory staler on hub to mark nodes offline after TTL
     try:
-        conf = load_config()
+        conf = get_ctx().config
         if conf.role == "hub":
             import asyncio as _asyncio
 
@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI):
         # On graceful shutdown, notify Telegram if it was enabled
         try:
             if tg_enabled:
-                conf = load_config()
+                conf = get_ctx().config
                 ctx = _get_ctx()
                 api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
                 try:
@@ -259,7 +259,7 @@ class SayRequestLike(BaseModel):
 # TODO deprecated use bus instead. No external interface
 @app.post("/api/io/console/print", dependencies=[Depends(require_token)])
 async def io_console_print(payload: SayRequestLike):
-    conf = load_config()
+    conf = get_ctx().config
     print_text(payload.text, node_id=conf.node_id)
     return {"ok": True}
 

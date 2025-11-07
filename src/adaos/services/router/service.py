@@ -10,7 +10,7 @@ import os
 from adaos.services.eventbus import LocalEventBus
 import logging
 from adaos.domain import Event
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 from .rules_loader import load_rules, watch_rules
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
@@ -61,7 +61,7 @@ class RouterService:
         if not isinstance(text, str) or not text:
             return
 
-        conf = load_config()
+        conf = get_ctx().config
         this_node = conf.node_id
         # Multi-target routing: attempt telegram and stdout independently if rules exist
         did_any = False
@@ -81,10 +81,20 @@ class RouterService:
                     raise RuntimeError("hub_id unresolved for telegram routing")
                 # Root API base
                 from adaos.services.agent_context import get_ctx as _get_ctx
+
                 api_base = getattr(_get_ctx().settings, "api_base", "https://api.inimatic.com")
                 url = f"{api_base.rstrip('/')}/io/tg/send"
                 body = {"hub_id": hub_id, "text": text}
-                requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+                try:
+                    r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+                    logging.getLogger("adaos.router").info(
+                        "router: telegram sent", extra={"hub_id": hub_id, "status": r.status_code}
+                    )
+                except Exception as pe:
+                    logging.getLogger("adaos.router").warning(
+                        "router: telegram request failed", extra={"hub_id": hub_id, "error": str(pe)}
+                    )
+                    raise
                 did_any = True
             except Exception:
                 # swallow to allow stdout route below
@@ -110,7 +120,7 @@ class RouterService:
                             if not n.get("online"):
                                 continue
                             for io in (n.get("capacity") or {}).get("io", []):
-                                if (io.get("io_type") == "stdout"):
+                                if io.get("io_type") == "stdout":
                                     candidates.append((int(io.get("priority") or 50), n))
                                     break
                         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -156,7 +166,7 @@ class RouterService:
             if not hub_url:
                 return None
             url = f"{hub_url.rstrip('/')}/api/subnet/nodes/{node_id}"
-            token = (load_config().token or "dev-local-token")
+            token = load_config().token or "dev-local-token"
             r = requests.get(url, headers={"X-AdaOS-Token": token}, timeout=2.5)
             if r.status_code != 200:
                 return None
@@ -173,6 +183,7 @@ class RouterService:
         # Subscribe to ui.notify on local event bus
         if not self._subscribed:
             self.bus.subscribe("ui.notify", self._on_event)
+
             # ui.say routing (TTS)
             def _on_say(ev: Event) -> None:
                 payload = ev.payload or {}
@@ -218,13 +229,19 @@ class RouterService:
 
             self.bus.subscribe("ui.say", _on_say)
             self._subscribed = True
+
         # Watch rules file
         def _reload(rules: list[dict]):
             self._rules = rules or []
 
         # Preload rules and start watcher
-        self._rules = load_rules(self.base_dir, load_config().node_id)
-        self._stop_watch = watch_rules(self.base_dir, load_config().node_id, _reload)
+        try:
+            node_id = get_ctx().config.node_id
+        except Exception:
+            # fallback: do not crash router if config is not ready yet
+            node_id = ""
+        self._rules = load_rules(self.base_dir, node_id)
+        self._stop_watch = watch_rules(self.base_dir, node_id, _reload)
 
     async def stop(self) -> None:
         if self._stop_watch:

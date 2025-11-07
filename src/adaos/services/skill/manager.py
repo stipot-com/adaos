@@ -263,9 +263,10 @@ class SkillManager:
         if package_root:
             python_paths.append(str(package_root))
 
-        # ВСЕ dev-пути — только из PathProvider:
-        # - dev_dir() — родитель каталога 'skills' (для импорта `skills.*`)
-        # - skill_dir — корень конкретного навыка (удобно для относительных импортов)
+        # Include dev/workspace convenience paths for compatibility with
+        # existing skill tests that import via `skills.*` from the developer
+        # workspace. This does not affect CLI test isolation which manages
+        # its own PYTHONPATH.
         dev_dir = self.ctx.paths.dev_dir()
         python_paths.insert(0, str(skill_dir))
         python_paths.insert(0, str(dev_dir))

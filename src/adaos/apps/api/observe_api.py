@@ -8,7 +8,7 @@ import json, time
 from pathlib import Path
 
 from adaos.apps.api.auth import require_token
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 from adaos.services.observe import _log_path, BROADCAST, pass_filters
 from adaos.sdk.data import bus
 
@@ -23,7 +23,7 @@ class IngestBatch(BaseModel):
 @router.post("/ingest", dependencies=[Depends(require_token)])
 async def observe_ingest(batch: IngestBatch):
     """Приём батчей логов с member-нод (hub-only). Также публикуем в SSE."""
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub accepts logs")
 

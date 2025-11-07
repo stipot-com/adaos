@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import load_config
 from adaos.services.settings import Settings
 from adaos.sdk.data import bus as bus_module  # будем мягко оборачивать emit
@@ -80,7 +81,16 @@ def _ensure_trace(kwargs: Dict[str, Any]) -> str:
 
 
 def _serialize_event(topic: str, payload: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    conf = load_config()
+    try:
+        ctx = get_ctx()
+        conf = getattr(ctx, "config", None) or load_config()
+        try:
+            if getattr(ctx, "config", None) is None:
+                object.__setattr__(ctx, "config", conf)
+        except Exception:
+            pass
+    except Exception:
+        conf = load_config()
     return {
         "ts": _now_ts(),
         "topic": topic,
@@ -123,7 +133,16 @@ def _write_local(e: Dict[str, Any]) -> None:
 async def _push_loop():
     """Фоновая отправка батчей логов на hub (для member)."""
     assert _QUEUE is not None
-    conf = load_config()
+    try:
+        ctx = get_ctx()
+        conf = getattr(ctx, "config", None) or load_config()
+        try:
+            if getattr(ctx, "config", None) is None:
+                object.__setattr__(ctx, "config", conf)
+        except Exception:
+            pass
+    except Exception:
+        conf = load_config()
     url = f"{conf.hub_url.rstrip('/')}/api/observe/ingest"
     headers = {"X-AdaOS-Token": conf.token, "Content-Type": "application/json"}
 
@@ -163,7 +182,16 @@ async def _emit_wrapper(topic: str, payload: Dict[str, Any], **kwargs):
     trace = _ensure_trace(kwargs)
     res = await _ORIG_EMIT(topic, payload, **kwargs)
     event = _serialize_event(topic, payload, kwargs)
-    conf = load_config()
+    try:
+        ctx = get_ctx()
+        conf = getattr(ctx, "config", None) or load_config()
+        try:
+            if getattr(ctx, "config", None) is None:
+                object.__setattr__(ctx, "config", conf)
+        except Exception:
+            pass
+    except Exception:
+        conf = load_config()
     _write_local(event)
     await BROADCAST.publish(event)
     if conf.role == "member" and _QUEUE:
@@ -196,7 +224,16 @@ async def start_observer():
     _ORIG_EMIT = bus_module.emit
     bus_module.emit = _emit_wrapper  # type: ignore
 
-    conf = load_config()
+    try:
+        ctx = get_ctx()
+        conf = getattr(ctx, "config", None) or load_config()
+        try:
+            if getattr(ctx, "config", None) is None:
+                object.__setattr__(ctx, "config", conf)
+        except Exception:
+            pass
+    except Exception:
+        conf = load_config()
     if conf.role == "member":
         _QUEUE = _QUEUE or asyncio.Queue(maxsize=5000)
         if not _LOG_TASK:

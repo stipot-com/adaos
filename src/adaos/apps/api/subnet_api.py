@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Any, Dict
 
 from adaos.apps.api.auth import require_token
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 from adaos.services.subnet_kv_file_http import get_subnet_kv
 from adaos.services.subnet_registry_mem import LEASE_SECONDS_DEFAULT, DOWN_GRACE_SECONDS
 from adaos.services.registry.subnet_directory import get_directory
@@ -58,7 +58,7 @@ async def register(body: RegisterRequest):
     """
     Регистрация ноды на hub.
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node accepts registrations")
 
@@ -91,7 +91,7 @@ async def heartbeat(body: HeartbeatRequest):
     """
     Heartbeat от ноды к hub. Обновляет last_seen и (если надо) возвращает статус в 'up'.
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node accepts heartbeats")
 
@@ -106,7 +106,7 @@ async def heartbeat(body: HeartbeatRequest):
 @router.post("/subnet/deregister", dependencies=[Depends(require_token)])
 async def deregister(body: DeregisterRequest):
     """Корректная дерегистрация ноды на hub (когда нода уходит из подсети)."""
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node accepts deregistration")
     existed = get_subnet_registry().unregister_node(body.node_id)
@@ -120,7 +120,7 @@ async def ctx_get(key: str):
     """
     Получение значения глобального контекста подсети (hub-only).
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node serves context")
     return {"ok": True, "value": CTX.hub_get(key)}
@@ -131,7 +131,7 @@ async def ctx_set(key: str, body: CtxValue):
     """
     Запись значения в глобальный контекст подсети (hub-only).
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node serves context")
     CTX.hub_set(key, body.value)
@@ -143,7 +143,7 @@ async def nodes_list():
     """
     Список нод подсети с их статусами (hub-only).
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node lists nodes")
     items = get_directory().list_known_nodes()

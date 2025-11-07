@@ -7,10 +7,11 @@ import requests
 from adaos.apps.api.auth import require_token
 from adaos.services.observe import attach_http_trace_headers
 from adaos.services.agent_context import get_ctx, AgentContext
+from adaos.services.eventbus import emit
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.registry.subnet_directory import get_directory
-from adaos.services.node_config import load_config
+from adaos.services.agent_context import get_ctx
 
 
 router = APIRouter()
@@ -64,7 +65,7 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
     except (FileNotFoundError, RuntimeError, KeyError) as e:
         # Если локально не найден навык/слот — попробуем проксировать на участника подсети (только если роль hub)
         try:
-            conf = load_config()
+            conf = get_ctx().config
         except Exception:
             conf = None
         if not conf or conf.role != "hub":
@@ -110,5 +111,20 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"run failed: {type(e).__name__}: {e}")
+
+    # Optional routing via local bus: publish ui.notify when result looks like plain text
+    try:
+        text: str | None = None
+        if isinstance(result, str):
+            text = result
+        elif isinstance(result, dict):
+            t = result.get("text") if hasattr(result, "get") else None
+            if isinstance(t, str) and t.strip():
+                text = t
+        if text:
+            emit(ctx.bus, "ui.notify", {"text": text}, actor="api.tools")
+    except Exception:
+        # best-effort: failure to route should not break API response
+        pass
 
     return {"ok": True, "result": result, "trace_id": trace}

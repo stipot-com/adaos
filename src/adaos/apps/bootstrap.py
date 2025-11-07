@@ -23,6 +23,7 @@ from adaos.services.sandbox.runner import ProcSandbox
 from adaos.services.sandbox.service import SandboxService
 
 from adaos.services.agent_context import set_ctx
+from adaos.services.node_config import load_config
 
 
 class _CtxHolder:
@@ -160,6 +161,11 @@ class _CtxHolder:
             except Exception:
                 pass
 
+        # Attach NodeConfig once; consumers should use ctx.config instead of calling load_config repeatedly
+        try:
+            object.__setattr__(ctx, "config", load_config(ctx=ctx))
+        except Exception:
+            pass
         return ctx
 
 

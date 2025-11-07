@@ -10,16 +10,6 @@ import yaml
 from adaos.services.agent_context import get_ctx, AgentContext  # type: ignore
 
 
-def _default_base_dir() -> Path:
-    env = os.environ.get("ADAOS_BASE_DIR")
-    if env:
-        return Path(env).expanduser()
-    if os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        return root / "AdaOS"
-    return Path.home() / ".adaos"
-
-
 def _base_dir(ctx: AgentContext | None = None) -> Path:
     return get_ctx().paths.base_dir()
 

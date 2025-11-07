@@ -125,7 +125,7 @@ class BootstrapService:
         if self._booted:
             return
         self._app = app
-        conf = load_config(ctx=self.ctx)
+        conf = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
         self._prepare_environment()
         # local adapter over LocalEventBus
         core_bus = self.ctx.bus if isinstance(self.ctx.bus, LocalEventBus) else LocalEventBus()
@@ -212,7 +212,7 @@ class BootstrapService:
                 npass = npass or nc.get("pass")
             except Exception:
                 pass
-            hub_id = load_config(ctx=self.ctx).subnet_id
+            hub_id = (getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)).subnet_id
             if nurl and hub_id:
 
                 async def _nats_bridge() -> None:
@@ -456,7 +456,7 @@ class BootstrapService:
         await bus.emit("sys.stopped", {}, source="lifecycle", actor="system")
 
     async def switch_role(self, app: Any, role: str, *, hub_url: str | None = None, subnet_id: str | None = None) -> NodeConfig:
-        prev = load_config(ctx=self.ctx)
+        prev = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
         await self.shutdown()
         if prev.role == "member" and role.lower().strip() == "hub" and prev.hub_url:
             try:
