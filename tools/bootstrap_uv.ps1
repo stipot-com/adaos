@@ -32,11 +32,6 @@ if (Test-Path "uv.lock") {
   uv sync
   if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 }
-$SitePkgs = Join-Path $PWD ".venv/Lib/site-packages"
-Copy-Item "adaos_ovos_shim.py" $SitePkgs -Force
-$pth = Join-Path $SitePkgs "adaos_ovos_shim.pth"
-# строка 'import adaos_ovos_shim' будет выполняться при старте Python
-Set-Content -Path $pth -Value "import adaos_ovos_shim" -Encoding ASCII
 
 # 3) Frontend deps (optional)
 Push-Location $SUBMODULE_PATH
