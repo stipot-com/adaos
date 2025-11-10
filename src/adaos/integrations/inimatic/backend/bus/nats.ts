@@ -5,7 +5,7 @@ const sc = StringCodec()
 
 export async function natsConnect(): Promise<void> {
   if (_nc) return
-  const url = process.env['NATS_URL'] || 'nats://127.0.0.1:4222'
+  const url = (process.env['NATS_URL'] || 'nats://127.0.0.1:4222').trim()
   const user = process.env['NATS_USER'] || undefined
   const pass = process.env['NATS_PASS'] || undefined
   _nc = await connect({ servers: url, user, pass })

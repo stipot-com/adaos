@@ -74,7 +74,10 @@ export async function handleCommand(ctx: CmdCtx): Promise<{ text: string, keyboa
       try {
         const b = await getByAlias(ctx.chat_id, next)
         const hub_id = b?.hub_id
-        if (hub_id) await publishHubAlias(hub_id, next)
+        if (hub_id) {
+          log.info({ chat_id: ctx.chat_id, hub_id, alias: next }, 'tg: /alias publish to hub')
+          await publishHubAlias(hub_id, next)
+        }
       } catch (e) {
         log.warn({ chat_id: ctx.chat_id, err: String(e) }, 'tg: /alias hub notify failed (nats)')
       }
