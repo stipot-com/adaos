@@ -1,3 +1,4 @@
+// src\adaos\integrations\inimatic\src\app\skill-host\skill-outlet.component.ts
 import { Component, ElementRef, Input, OnDestroy, AfterViewInit } from '@angular/core';
 import { SkillHostService } from './skill-host.service';
 

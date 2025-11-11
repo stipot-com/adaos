@@ -1,3 +1,4 @@
+//src\adaos\integrations\inimatic\src\app\core\adaos\adaos-client.service.ts
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 

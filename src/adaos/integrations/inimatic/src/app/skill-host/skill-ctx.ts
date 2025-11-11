@@ -1,3 +1,4 @@
+//src\adaos\integrations\inimatic\src\app\skill-host\skill-ctx.ts
 import { AdaosClient } from '../core/adaos/adaos-client.service';
 
 export type Ability = 'text' | 'voice' | 'api' | 'ws';

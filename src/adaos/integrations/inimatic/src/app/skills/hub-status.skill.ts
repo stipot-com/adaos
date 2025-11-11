@@ -1,3 +1,4 @@
+// src\adaos\integrations\inimatic\src\app\skills\hub-status.skill.ts
 import { SkillModule } from '../skill-host/skill-ctx';
 import { firstValueFrom } from 'rxjs';
 

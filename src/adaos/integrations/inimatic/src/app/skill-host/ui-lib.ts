@@ -1,3 +1,4 @@
+// src\adaos\integrations\inimatic\src\app\skill-host\ui-lib.ts
 export function renderInto(root: HTMLElement, tree: any) {
 	root.innerHTML = '';
 	mountNode(root, tree);

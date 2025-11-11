@@ -1,3 +1,4 @@
+// src\adaos\integrations\inimatic\src\app\skill-host\skill-host.service.ts
 import { Injectable, ElementRef } from '@angular/core';
 import { AdaosClient } from '../core/adaos/adaos-client.service';
 import { SkillCtx, SkillModule, IOSettings } from './skill-ctx';
