@@ -1,0 +1,17 @@
+<ion-content [style.--background]="app?.desktop?.background || '#0b0f14'">
+  <div class="desktop">
+    <div class="icons">
+      <button class="icon" *ngFor="let ic of app?.desktop?.icons" (click)="onIconClick(ic)">
+        <ion-icon [name]="ic.icon"></ion-icon>
+        <span>{{ ic.title }}</span>
+      </button>
+    </div>
+
+    <div class="widgets">
+      <ng-container *ngFor="let w of app?.desktop?.widgets">
+        <ada-weather-widget *ngIf="w.type==='weather'" [title]="w.title || 'Погода'" [data]="getData(w.source)"></ada-weather-widget>
+      </ng-container>
+    </div>
+  </div>
+</ion-content>
+

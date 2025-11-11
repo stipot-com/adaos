@@ -1,0 +1,17 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-title>{{ title }}</ion-title>
+    <ion-buttons slot="end">
+      <ion-button (click)="close()">закрыть</ion-button>
+    </ion-buttons>
+  </ion-toolbar>
+  </ion-header>
+
+  <ion-content class="ion-padding" *ngIf="weather">
+    <h1 style="margin:0 0 8px 0">{{ weather.city }}</h1>
+    <h2 style="margin:0 0 8px 0">{{ weather.temp_c | number:'1.0-1' }}°C</h2>
+    <p>{{ weather.condition }}</p>
+    <p>ветер: {{ weather.wind_ms | number:'1.0-1' }} м/с</p>
+    <p>обновлено: {{ weather.updated_at | date:'medium' }}</p>
+  </ion-content>
+

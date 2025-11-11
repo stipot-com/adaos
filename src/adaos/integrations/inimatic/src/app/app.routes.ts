@@ -27,7 +27,8 @@ export const routes: Routes = [
 		loadComponent: () =>
 			import('./features/hub/hub.component').then((m) => m.HubComponent),
 	},
-	{ path: 'member', component: MemberComponent },
+  // mount Yjs-driven desktop on member tab (renderer)
+  { path: 'member', loadComponent: () => import('./renderer/desktop/desktop.component').then(m => m.DesktopRendererComponent) },
 	{
 		path: 'desktop',
 		loadComponent: () =>
