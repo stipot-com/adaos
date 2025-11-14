@@ -25,7 +25,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
   constructor(private y: YDocService, private modal: ModalController) {}
 
   async ngOnInit() {
-    await this.y.initFromSeedIfEmpty()
+    await this.y.initFromHub()
     const appNode = this.y.getPath('ui/application')
     const dataNode = this.y.getPath('data')
     const recompute = () => {

@@ -47,6 +47,8 @@ export class AdaosClient {
 		};
 	}
 
+	getBaseUrl() { return this.cfg.baseUrl; }
+
 	setBase(url: string) { this.cfg.baseUrl = url.replace(/\/$/, ''); }
 	setToken(token: string | null) { this.cfg.token = token; }
 

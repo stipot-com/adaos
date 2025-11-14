@@ -1,77 +1,124 @@
 import { Injectable } from '@angular/core'
 import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
+import { WebsocketProvider } from 'y-websocket'
+import { AdaosClient } from '../core/adaos/adaos-client.service'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
   private readonly db = new IndexeddbPersistence('adaos-mobile', this.doc)
+  private provider?: WebsocketProvider
   private initialized = false
+  private initPromise?: Promise<void>
+  private readonly deviceId: string
 
-  async initFromSeedIfEmpty(): Promise<void> {
-    if (this.initialized) return
-    await this.db.whenSynced
-    const seed = await fetch('assets/seed.json').then(r => r.json())
-    if (this.doc.share.size === 0) {
-      this.doc.transact(() => {
-        const ui = this.doc.getMap('ui')
-        const data = this.doc.getMap('data')
-        ui.set('application', seed.ui.application)
-        if (seed.data?.weather) data.set('weather', seed.data.weather)
-        if (seed.data?.catalog) data.set('catalog', seed.data.catalog)
-        if (seed.data?.installed) data.set('installed', seed.data.installed)
-      })
-    } else {
-      // Gentle upgrade: if new v0.2 fields are missing, merge from seed
-      this.doc.transact(() => {
-        const ui = this.doc.getMap('ui')
-        const data = this.doc.getMap('data')
-        const appCur = this.toJSON(ui.get('application')) || {}
-        const appSeed = seed.ui?.application || {}
+  constructor(private adaos: AdaosClient) {
+    this.deviceId = this.ensureDeviceId()
+  }
 
-        // Ensure desktop.topbar/iconTemplate/widgetTemplate
-        const desktopCur = { ...(appCur.desktop || {}) }
-        const desktopSeed = appSeed.desktop || {}
-        if (!desktopCur.topbar && desktopSeed.topbar) desktopCur.topbar = desktopSeed.topbar
-        if (!desktopCur.iconTemplate && desktopSeed.iconTemplate) desktopCur.iconTemplate = desktopSeed.iconTemplate
-        if (!desktopCur.widgetTemplate && desktopSeed.widgetTemplate) desktopCur.widgetTemplate = desktopSeed.widgetTemplate
-
-        // Ensure modals apps_catalog/widgets_catalog/weather_modal
-        const modalsCur = { ...(appCur.modals || {}) }
-        const modalsSeed = appSeed.modals || {}
-        for (const k of Object.keys(modalsSeed)) {
-          if (!modalsCur[k]) modalsCur[k] = modalsSeed[k]
-        }
-
-        const nextApp = { ...appCur, desktop: desktopCur, modals: modalsCur, registry: appCur.registry || appSeed.registry }
-        ui.set('application', nextApp)
-
-        // Ensure data.catalog and data.installed trees
-        const curCatalog = this.toJSON(data.get('catalog'))
-        if (!curCatalog && seed.data?.catalog) data.set('catalog', seed.data.catalog)
-
-        // Ensure data.weather
-        const curWeather = this.toJSON(data.get('weather'))
-        if (!curWeather && seed.data?.weather) data.set('weather', seed.data.weather)
-
-        const curInstalled = this.toJSON(data.get('installed')) || {}
-        const seedInstalled = seed.data?.installed || {}
-        const nextInstalled = { apps: curInstalled.apps || seedInstalled.apps || [], widgets: curInstalled.widgets || seedInstalled.widgets || [] }
-        data.set('installed', nextInstalled)
-
-        // Ensure data.desktop.installed exists, initialize from data.installed if missing
-        const curDesktop = this.toJSON(data.get('desktop')) || {}
-        const desktopInstalled = curDesktop.installed || {}
-        const nextDesktop = {
-          ...curDesktop,
-          installed: {
-            apps: desktopInstalled.apps || nextInstalled.apps || [],
-            widgets: desktopInstalled.widgets || nextInstalled.widgets || []
-          }
-        }
-        data.set('desktop', nextDesktop)
-      })
+  private ensureDeviceId(): string {
+    const key = 'adaos_device_id'
+    try {
+      const existing = localStorage.getItem(key)
+      if (existing) return existing
+      const raw = (globalThis.crypto && (crypto as any).randomUUID?.()) || Math.random().toString(36).slice(2)
+      const id = `dev_${raw}`
+      localStorage.setItem(key, id)
+      return id
+    } catch {
+      const raw = Math.random().toString(36).slice(2)
+      return `dev_${raw}`
     }
+  }
+
+  getDeviceId(): string {
+    return this.deviceId
+  }
+
+  async initFromHub(): Promise<void> {
+    if (this.initialized) return
+    if (this.initPromise) return this.initPromise
+    this.initPromise = this.doInitFromHub()
+    return this.initPromise
+  }
+
+  private async doInitFromHub(): Promise<void> {
+    // Keep local IndexedDB sync for offline/dev convenience
+    try { await this.db.whenSynced } catch {}
+
+    const baseHttp = this.adaos.getBaseUrl().replace(/\/$/, '')
+    const baseWs = baseHttp.replace(/^http/, 'ws')
+
+    // 1) device.register over /ws
+    const eventsUrl = `${baseWs}/ws`
+    const ws = new WebSocket(eventsUrl)
+    await new Promise<void>((resolve, reject) => {
+      const onOpen = () => { cleanup(); resolve() }
+      const onError = (ev: Event) => { cleanup(); reject(ev) }
+      const cleanup = () => {
+        ws.removeEventListener('open', onOpen)
+        ws.removeEventListener('error', onError)
+      }
+      ws.addEventListener('open', onOpen)
+      ws.addEventListener('error', onError)
+    })
+
+    const cmdId = `device.register.${Date.now()}`
+    ws.send(JSON.stringify({
+      ch: 'events',
+      t: 'cmd',
+      id: cmdId,
+      kind: 'device.register',
+      payload: { device_id: this.deviceId },
+    }))
+
+    const workspaceId = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close()
+        reject(new Error('device.register timeout'))
+      }, 5000)
+      const onMessage = (ev: MessageEvent) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg?.ch === 'events' && msg?.t === 'ack' && msg?.id === cmdId && msg?.ok && msg?.data?.workspace_id) {
+            clearTimeout(timeout)
+            cleanup()
+            resolve(String(msg.data.workspace_id))
+          }
+        } catch { /* ignore */ }
+      }
+      const onError = () => {
+        clearTimeout(timeout)
+        cleanup()
+        reject(new Error('events websocket error'))
+      }
+      const cleanup = () => {
+        ws.removeEventListener('message', onMessage)
+        ws.removeEventListener('error', onError)
+      }
+      ws.addEventListener('message', onMessage)
+      ws.addEventListener('error', onError)
+    })
+
+    // 2) Connect Yjs via y-websocket to /yws
+    const serverUrl = `${baseWs}/yws`
+    this.provider = new WebsocketProvider(serverUrl, 'desktop', this.doc, {
+      params: { ws: workspaceId, dev: this.deviceId },
+    })
+
+    await new Promise<void>((resolve) => {
+      if (!this.provider) { resolve(); return }
+      if (this.provider.synced) { resolve(); return }
+      const handler = (synced: boolean) => {
+        if (synced) {
+          this.provider?.off('sync', handler as any)
+          resolve()
+        }
+      }
+      this.provider.on('sync', handler as any)
+    })
+
     this.initialized = true
   }
 

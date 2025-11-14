@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
     from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills
     from adaos.apps.api import io_webhooks
+    from adaos.apps.yjs.y_gateway import router as y_router, start_y_server
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")
@@ -43,6 +44,8 @@ async def lifespan(app: FastAPI):
     app.include_router(root_endpoints.router)
     # Chat IO webhooks (mounted without /api prefix to keep exact paths)
     app.include_router(io_webhooks.router)
+    # Yjs / events gateways (Stage A1)
+    app.include_router(y_router)
 
     # 3.5) сохранить ссылки на контекст/шину в state для внешних компонентов
     try:
@@ -59,6 +62,11 @@ async def lifespan(app: FastAPI):
 
     # 4) поднимаем наблюдатель и выполняем boot-последовательность
     await start_observer()
+    # Start Yjs websocket server background task
+    try:
+        await start_y_server()
+    except Exception:
+        pass
     await run_boot_sequence(app)
     try:
         await router_service.start()

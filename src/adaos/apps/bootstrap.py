@@ -73,6 +73,12 @@ class _CtxHolder:
         ):
             fs.allow_root(root)
 
+        # Ensure the Yjs stores root exists (Stage A1).
+        try:
+            (paths.state_dir() / "ystores").mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
         bus = LocalEventBus()
         root_logger = setup_logging(paths)
         attach_event_logger(bus, root_logger.getChild("events"))
