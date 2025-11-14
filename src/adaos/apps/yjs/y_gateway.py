@@ -88,7 +88,11 @@ class FastAPIWebsocketAdapter:
             raise StopAsyncIteration()
 
     async def send(self, message: bytes) -> None:
-        await self._ws.send_bytes(message)
+        try:
+            await self._ws.send_bytes(message)
+        except WebSocketDisconnect:
+            # клиент уже ушёл – тихо выходим
+            pass
 
     async def recv(self) -> bytes:
         msg = await self._ws.receive()
