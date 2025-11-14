@@ -113,7 +113,7 @@ async def _update_device_presence(workspace_id: str, device_id: str) -> None:
 
     with ydoc.begin_transaction() as txn:
         devices = ydoc.get_map("devices")
-        current = devices.get(txn, device_id)
+        current = devices.get(device_id)
         node = dict(current or {}) if isinstance(current, dict) else {}
 
         meta = dict(node.get("meta") or {})
@@ -132,13 +132,9 @@ async def _update_device_presence(workspace_id: str, device_id: str) -> None:
         devices.set(txn, device_id, node)
 
 
-@router.websocket("/yws")
-async def yws(websocket: WebSocket):
+async def _yws_impl(websocket: WebSocket) -> None:
     """
-    Binary Yjs sync endpoint backed by ypy-websocket.
-
-    Frontend connects via y-websocket with:
-      ws://host:port/yws?ws=<workspace_id>&dev=<device_id>
+    Internal Yjs sync handler used by both /yws and /yws/<room> routes.
     """
     params: Dict[str, str] = dict(websocket.query_params)
     workspace_id = params.get("ws") or "default"
@@ -152,6 +148,27 @@ async def yws(websocket: WebSocket):
     except RuntimeError:
         # Normal disconnect / shutdown
         return
+
+
+@router.websocket("/yws")
+async def yws(websocket: WebSocket):
+    """
+    Binary Yjs sync endpoint backed by ypy-websocket.
+
+    Frontend connects via y-websocket with:
+      ws://host:port/yws?ws=<workspace_id>&dev=<device_id>
+    """
+    await _yws_impl(websocket)
+
+
+@router.websocket("/yws/{room:path}")
+async def yws_room(websocket: WebSocket, room: str):
+    """
+    Compatibility route for y-websocket default URL pattern, which appends
+    the room name after the base path, e.g. /yws/desktop?ws=<workspace>&dev=..
+    """
+    _ = room  # room name is not used; workspace is driven by ?ws=..
+    await _yws_impl(websocket)
 
 
 @router.websocket("/ws")
@@ -192,21 +209,35 @@ async def events_ws(websocket: WebSocket):
                 # Dev-only policy: single workspace "default" for now
                 workspace_id = "default"
 
-                ensure_workspace(workspace_id)
-                await start_y_server()
-                await _update_device_presence(workspace_id, device_id)
+                try:
+                    ensure_workspace(workspace_id)
+                    await start_y_server()
+                    await _update_device_presence(workspace_id, device_id)
 
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "ch": "events",
-                            "t": "ack",
-                            "id": cmd_id,
-                            "ok": True,
-                            "data": {"workspace_id": workspace_id},
-                        }
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "ch": "events",
+                                "t": "ack",
+                                "id": cmd_id,
+                                "ok": True,
+                                "data": {"workspace_id": workspace_id},
+                            }
+                        )
                     )
-                )
+                except Exception:
+                    # In dev mode we still ack, but without guaranteeing presence.
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "ch": "events",
+                                "t": "ack",
+                                "id": cmd_id,
+                                "ok": True,
+                                "data": {"workspace_id": workspace_id},
+                            }
+                        )
+                    )
                 continue
 
             # Default ack for other commands (no-op for now)
@@ -223,4 +254,3 @@ async def events_ws(websocket: WebSocket):
     finally:
         # Basic offline marking could be added later if needed
         _ = device_id
-

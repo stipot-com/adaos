@@ -48,9 +48,10 @@ export class YDocService {
     try { await this.db.whenSynced } catch {}
 
     const baseHttp = this.adaos.getBaseUrl().replace(/\/$/, '')
-    const baseWs = baseHttp.replace(/^http/, 'ws')
 
     // 1) device.register over /ws
+    const baseWs = baseHttp.replace(/^http/, 'ws')
+
     const eventsUrl = `${baseWs}/ws`
     const ws = new WebSocket(eventsUrl)
     await new Promise<void>((resolve, reject) => {
@@ -102,10 +103,11 @@ export class YDocService {
     })
 
     // 2) Connect Yjs via y-websocket to /yws
-    const serverUrl = `${baseWs}/yws`
-    this.provider = new WebsocketProvider(serverUrl, 'desktop', this.doc, {
-      params: { ws: workspaceId, dev: this.deviceId },
-    })
+    // WebsocketProvider builds URL as `${serverUrl}/${room}`. To hit `/yws`
+    // with query params, we encode them into the "room" segment.
+    const serverUrl = baseWs
+    const room = `yws?ws=${encodeURIComponent(workspaceId)}&dev=${encodeURIComponent(this.deviceId)}`
+    this.provider = new WebsocketProvider(serverUrl, room, this.doc)
 
     await new Promise<void>((resolve) => {
       if (!this.provider) { resolve(); return }
