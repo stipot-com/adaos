@@ -248,6 +248,32 @@ async def events_ws(websocket: WebSocket):
                     )
                 continue
 
+            if kind == "desktop.toggleInstall":
+                # Command to toggle app/widget installation in the current workspace.
+                try:
+                    from adaos.domain import Event as _Ev
+                    from adaos.services.agent_context import get_ctx as _get_ctx
+
+                    ctx = _get_ctx()
+                    ev = _Ev(
+                        type="desktop.toggleInstall",
+                        payload={
+                            "workspace_id": workspace_id,
+                            "type": payload.get("type"),
+                            "id": payload.get("id"),
+                        },
+                        source="events_ws",
+                        ts=time.time(),
+                    )
+                    ctx.bus.publish(ev)
+                except Exception:
+                    pass
+
+                await websocket.send_text(
+                    json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True})
+                )
+                continue
+
             # Default ack for other commands (no-op for now)
             await websocket.send_text(
                 json.dumps(

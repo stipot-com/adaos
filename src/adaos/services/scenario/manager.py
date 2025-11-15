@@ -12,11 +12,14 @@ from adaos.services.eventbus import emit
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.fs.safe_io import remove_tree
 from adaos.services.git.safe_commit import sanitize_message, check_no_denied
-from adaos.adapters.db import SqliteScenarioRegistry
+from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.services.capacity import install_scenario_in_capacity, uninstall_scenario_from_capacity
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.capacity import get_local_capacity
 from adaos.services.node_config import load_config
+from adaos.services.scenarios.loader import read_manifest, read_content
+from adaos.services.yjs.doc import get_ydoc
+from adaos.services.skill.manager import SkillManager
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
@@ -103,6 +106,114 @@ class ScenarioManager:
         except Exception:
             self.reg.unregister(name)
             raise
+
+    # --- Stage A2 helpers -------------------------------------------------
+
+    def install_with_deps(self, name: str, *, pin: Optional[str] = None, workspace_id: str = "default") -> SkillMeta:
+        """
+        Install a scenario (as with :meth:`install`) and then apply its
+        manifest-defined dependencies inside the local workspace:
+
+          - read scenario.yaml and ensure dependent skills are installed
+            and activated via :class:`SkillManager`;
+          - keep Yjs/bootstrap concerns in y_bootstrap (Stage A2).
+        """
+        meta = self.install(name, pin=pin)
+        try:
+            self._post_install_bootstrap(meta.id.value, workspace_id=workspace_id)
+        except Exception:
+            # Best-effort; do not fail install on bootstrap errors.
+            pass
+        try:
+            self.sync_to_yjs(meta.id.value, workspace_id=workspace_id)
+        except Exception:
+            pass
+        return meta
+
+    def sync_to_yjs(self, scenario_id: str, workspace_id: str = "default") -> None:
+        """
+        Project the declarative scenario payload into the workspace YDoc so
+        downstream services (Yjs/WS, web_desktop_skill, etc.) can pick it up.
+        """
+        self.caps.require("core", "scenarios.manage")
+        content = read_content(scenario_id)
+        if not content:
+            raise FileNotFoundError(f"scenario '{scenario_id}' has no scenario.json content")
+
+        ui_section = ((content.get("ui") or {}).get("application")) or {}
+        if not isinstance(ui_section, dict):
+            ui_section = {}
+        registry_section = content.get("registry") or {}
+        if not isinstance(registry_section, dict):
+            registry_section = {}
+        catalog_section = content.get("catalog") or {}
+        if not isinstance(catalog_section, dict):
+            catalog_section = {}
+
+        with get_ydoc(workspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ui_map = ydoc.get_map("ui")
+                registry_map = ydoc.get_map("registry")
+                data_map = ydoc.get_map("data")
+
+                scenarios_ui = ui_map.get("scenarios")
+                if not isinstance(scenarios_ui, dict):
+                    scenarios_ui = {}
+                updated_ui = dict(scenarios_ui)
+                updated_ui[scenario_id] = {"application": ui_section}
+                ui_map.set(txn, "scenarios", updated_ui)
+                if not ui_map.get("current_scenario"):
+                    ui_map.set(txn, "current_scenario", scenario_id)
+
+                reg_scenarios = registry_map.get("scenarios")
+                if not isinstance(reg_scenarios, dict):
+                    reg_scenarios = {}
+                reg_updated = dict(reg_scenarios)
+                reg_updated[scenario_id] = registry_section
+                registry_map.set(txn, "scenarios", reg_updated)
+
+                data_scenarios = data_map.get("scenarios")
+                if not isinstance(data_scenarios, dict):
+                    data_scenarios = {}
+                data_updated = dict(data_scenarios)
+                entry = dict(data_updated.get(scenario_id) or {})
+                entry["catalog"] = catalog_section
+                data_updated[scenario_id] = entry
+                data_map.set(txn, "scenarios", data_updated)
+
+        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "workspace_id": workspace_id}, "scenario.mgr")
+
+    def _post_install_bootstrap(self, scenario_id: str, workspace_id: str = "default") -> None:
+        """
+        Stage A2: after a scenario is installed into the workspace repo,
+        apply its manifest-defined dependencies by installing/activating
+        skills via the existing SkillManager.
+        """
+        manifest = read_manifest(scenario_id)
+        depends = manifest.get("depends") or []
+        if not isinstance(depends, (list, tuple)):
+            return
+
+        # Use the same construction pattern as CLI SkillManager.
+        skill_reg = SqliteSkillRegistry(self.ctx.sql)
+        skill_mgr = SkillManager(
+            repo=self.ctx.skills_repo,
+            registry=skill_reg,
+            git=self.ctx.git,
+            paths=self.ctx.paths,
+            bus=self.bus,
+            caps=self.ctx.caps,
+        )
+        for dep in depends:
+            if not isinstance(dep, str) or not dep:
+                continue
+            try:
+                # Ensure installed in monorepo and then activate runtime.
+                skill_mgr.install(dep)
+                skill_mgr.activate_for_space(dep, space="default", workspace_id=workspace_id)
+            except Exception:
+                # Do not break scenario install on individual dependency issues.
+                continue
 
     def remove(self, name: str) -> None:
         self.caps.require("core", "scenarios.manage", "net.git")

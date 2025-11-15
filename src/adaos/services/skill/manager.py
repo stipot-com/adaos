@@ -538,6 +538,46 @@ class SkillManager:
         env.prepare_version(version)
         return env.rollback_slot(version)
 
+    def activate_for_space(
+        self,
+        name: str,
+        *,
+        space: str = "default",
+        workspace_id: str | None = None,
+        version: str | None = None,
+        slot: str | None = None,
+    ) -> str:
+        """
+        Convenience helper that routes activation to the appropriate runtime
+        (default vs dev) and emits a unified skills.activated event.
+        """
+        if space == "dev":
+            target = self.activate_dev_runtime(name, version=version, slot=slot)
+        else:
+            target = self.activate_runtime(name, version=version, slot=slot)
+        if self.bus:
+            payload: Dict[str, Any] = {"skill_name": name, "space": space}
+            if workspace_id:
+                payload["workspace_id"] = workspace_id
+            emit(self.bus, "skills.activated", payload, "skill.mgr")
+        return target
+
+    def rollback_for_space(self, name: str, *, space: str = "default", workspace_id: str | None = None) -> str:
+        """
+        Roll back the active runtime slot for the requested space and emit
+        a skills.rolledback event for observers.
+        """
+        if space == "dev":
+            target = self.dev_rollback_runtime(name)
+        else:
+            target = self.rollback_runtime(name)
+        if self.bus:
+            payload: Dict[str, Any] = {"skill_name": name, "space": space}
+            if workspace_id:
+                payload["workspace_id"] = workspace_id
+            emit(self.bus, "skills.rolledback", payload, "skill.mgr")
+        return target
+
     def runtime_status(self, name: str) -> Dict[str, Any]:
         env = self._runtime_env(name)
         version = env.resolve_active_version()

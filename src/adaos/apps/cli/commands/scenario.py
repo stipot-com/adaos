@@ -106,7 +106,8 @@ def install_cmd(
     """Install a scenario into the workspace monorepo."""
 
     mgr = _mgr()
-    meta = mgr.install(name, pin=pin)
+    # Stage A2: use extended install that also applies dependencies.
+    meta = mgr.install_with_deps(name, pin=pin)
     typer.echo(_("cli.scenario.install.done", name=meta.id.value, version=meta.version, path=meta.path))
 
 
