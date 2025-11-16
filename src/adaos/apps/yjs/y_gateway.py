@@ -15,8 +15,8 @@ from ypy_websocket.yroom import YRoom
 from ypy_websocket.ystore import SQLiteYStore
 
 from adaos.apps.workspaces.index import ensure_workspace
-from .y_bootstrap import ensure_workspace_seeded_from_scenario
-from .y_store import ystore_path_for_workspace
+from .y_bootstrap import ensure_webspace_seeded_from_scenario
+from .y_store import ystore_path_for_webspace
 from adaos.services.weather.observer import ensure_weather_observer
 
 router = APIRouter()
@@ -25,17 +25,17 @@ _log = logging.getLogger("adaos.events_ws")
 
 class WorkspaceWebsocketServer(WebsocketServer):
     """
-    WebsocketServer that binds each room to a workspace-backed SQLiteYStore.
+    WebsocketServer that binds each room to a webspace-backed SQLiteYStore.
 
-    We use the websocket path as the workspace id (e.g. "default").
+    We use the websocket path as the webspace id (e.g. "default").
     """
 
     async def get_room(self, name: str) -> YRoom:  # type: ignore[override]
-        workspace_id = name or "default"
+        webspace_id = name or "default"
         if name not in self.rooms:
-            ensure_workspace(workspace_id)
-            ystore = SQLiteYStore(str(ystore_path_for_workspace(workspace_id)))
-            await ensure_workspace_seeded_from_scenario(ystore, workspace_id=workspace_id)
+            ensure_workspace(webspace_id)
+            ystore = SQLiteYStore(str(ystore_path_for_webspace(webspace_id)))
+            await ensure_webspace_seeded_from_scenario(ystore, webspace_id=webspace_id)
             room = YRoom(ready=self.rooms_ready, ystore=ystore, log=self.log)
             try:
                 await ystore.apply_updates(room.ydoc)
@@ -44,7 +44,7 @@ class WorkspaceWebsocketServer(WebsocketServer):
                 pass
             self.rooms[name] = room
         room = self.rooms[name]
-        ensure_weather_observer(workspace_id, room.ydoc)
+        ensure_weather_observer(webspace_id, room.ydoc)
         await self.start_room(room)
         return room
 
@@ -111,11 +111,11 @@ class FastAPIWebsocketAdapter:
         return b""
 
 
-async def _update_device_presence(workspace_id: str, device_id: str) -> None:
+async def _update_device_presence(webspace_id: str, device_id: str) -> None:
     """
     Project basic device presence into the Yjs doc under devices/<device_id>.
     """
-    room = await y_server.get_room(workspace_id)
+    room = await y_server.get_room(webspace_id)
     ydoc = room.ydoc
     now_ms = int(time.time() * 1000)
 
@@ -145,17 +145,17 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     Internal Yjs sync handler used by both /yws and /yws/<room> routes.
 
     Dev policy:
-      - if a room segment is present in the path, it is treated as workspace_id;
-      - otherwise, fallback to ?ws=<workspace_id> query param;
+      - if a room segment is present in the path, it is treated as webspace_id;
+      - otherwise, fallback to ?ws=<webspace_id> query param;
       - default is "default".
     """
     params: Dict[str, str] = dict(websocket.query_params)
-    workspace_id = (room or params.get("ws")) or "default"
+    webspace_id = (room or params.get("ws")) or "default"
 
     await websocket.accept()
     await start_y_server()
 
-    adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=workspace_id)
+    adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=webspace_id)
     try:
         await y_server.serve(adapter)
     except RuntimeError:
@@ -169,7 +169,7 @@ async def yws(websocket: WebSocket):
     Binary Yjs sync endpoint backed by ypy-websocket.
 
     Frontend connects via y-websocket with:
-      ws://host:port/yws/<workspace_id>?dev=<device_id>
+      ws://host:port/yws/<webspace_id>?dev=<device_id>
     """
     await _yws_impl(websocket, room=None)
 
@@ -178,7 +178,7 @@ async def yws(websocket: WebSocket):
 async def yws_room(websocket: WebSocket, room: str):
     """
     Route compatible with y-websocket default URL pattern:
-      ws://host:port/yws/<workspace_id>?dev=<device_id>
+      ws://host:port/yws/<webspace_id>?dev=<device_id>
     """
     await _yws_impl(websocket, room=room)
 
@@ -188,12 +188,12 @@ async def events_ws(websocket: WebSocket):
     """
     JSON events websocket.
 
-    Implements device.register in dev-mode and returns a workspace_id.
+    Implements device.register in dev-mode and returns a webspace_id.
     """
     await websocket.accept()
 
     device_id: str | None = None
-    workspace_id = "default"
+    webspace_id = "default"
 
     try:
         while True:
@@ -218,13 +218,13 @@ async def events_ws(websocket: WebSocket):
 
             if kind == "device.register":
                 device_id = payload.get("device_id") or "dev-unknown"
-                # Dev-only policy: single workspace "default" for now
-                workspace_id = "default"
+                # Dev-only policy: single webspace "default" for now
+                webspace_id = "default"
 
                 try:
-                    ensure_workspace(workspace_id)
+                    ensure_workspace(webspace_id)
                     await start_y_server()
-                    await _update_device_presence(workspace_id, device_id)
+                    await _update_device_presence(webspace_id, device_id)
 
                     await websocket.send_text(
                         json.dumps(
@@ -233,11 +233,11 @@ async def events_ws(websocket: WebSocket):
                                 "t": "ack",
                                 "id": cmd_id,
                                 "ok": True,
-                                "data": {"workspace_id": workspace_id},
+                                "data": {"webspace_id": webspace_id},
                             }
                         )
                     )
-                    _log.debug("device.register acknowledged workspace=%s device=%s", workspace_id, device_id)
+                    _log.debug("device.register acknowledged webspace=%s device=%s", webspace_id, device_id)
                 except Exception:
                     # In dev mode we still ack, but without guaranteeing presence.
                     await websocket.send_text(
@@ -247,14 +247,14 @@ async def events_ws(websocket: WebSocket):
                                 "t": "ack",
                                 "id": cmd_id,
                                 "ok": True,
-                                "data": {"workspace_id": workspace_id},
+                                "data": {"webspace_id": webspace_id},
                             }
                         )
                     )
                 continue
 
             if kind == "desktop.toggleInstall":
-                # Command to toggle app/widget installation in the current workspace.
+                # Command to toggle app/widget installation in the current webspace.
                 try:
                     from adaos.domain import Event as _Ev
                     from adaos.services.agent_context import get_ctx as _get_ctx
@@ -263,7 +263,7 @@ async def events_ws(websocket: WebSocket):
                     ev = _Ev(
                         type="desktop.toggleInstall",
                         payload={
-                            "workspace_id": workspace_id,
+                            "webspace_id": webspace_id,
                             "type": payload.get("type"),
                             "id": payload.get("id"),
                         },
@@ -271,7 +271,7 @@ async def events_ws(websocket: WebSocket):
                         ts=time.time(),
                     )
                     ctx.bus.publish(ev)
-                    _log.debug("desktop.toggleInstall workspace=%s type=%s id=%s", workspace_id, payload.get("type"), payload.get("id"))
+                    _log.debug("desktop.toggleInstall webspace=%s type=%s id=%s", webspace_id, payload.get("type"), payload.get("id"))
                 except Exception:
                     pass
 

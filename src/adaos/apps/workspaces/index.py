@@ -6,7 +6,7 @@ from typing import Optional
 
 from adaos.services.agent_context import get_ctx
 
-from adaos.apps.yjs.y_store import ystore_path_for_workspace
+from adaos.apps.yjs.y_store import ystore_path_for_webspace
 
 
 @dataclass
@@ -58,7 +58,7 @@ def ensure_workspace(workspace_id: str) -> WorkspaceRow:
         if row:
             return WorkspaceRow(workspace_id=row[0], path=row[1], created_at=int(row[2]))
 
-        p: Path = ystore_path_for_workspace(workspace_id)
+        p: Path = ystore_path_for_webspace(workspace_id)
         import time as _time
 
         created_at = int(_time.time() * 1000)

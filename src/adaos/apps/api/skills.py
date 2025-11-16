@@ -73,7 +73,7 @@ class RuntimeActivateReq(BaseModel):
     slot: str | None = None
     version: str | None = None
     auto_prepare: bool = True
-    workspace_id: str | None = "default"
+    webspace_id: str | None = "default"
 
 
 class RuntimeSetupReq(BaseModel):
@@ -196,9 +196,9 @@ async def runtime_prepare(body: RuntimePrepareReq, mgr: SkillManager = Depends(_
 
 @router.post("/runtime/activate")
 async def runtime_activate(body: RuntimeActivateReq, mgr: SkillManager = Depends(_get_manager)):
-    workspace_id = body.workspace_id or "default"
+    webspace_id = body.webspace_id or "default"
     try:
-        slot = mgr.activate_for_space(body.name, version=body.version, slot=body.slot, space="default", workspace_id=workspace_id)
+        slot = mgr.activate_for_space(body.name, version=body.version, slot=body.slot, space="default", webspace_id=webspace_id)
         return {"ok": True, "slot": slot}
     except RuntimeError as exc:
         msg = str(exc).lower()
@@ -210,7 +210,7 @@ async def runtime_activate(body: RuntimeActivateReq, mgr: SkillManager = Depends
         # auto-prepare then retry
         pref_slot = body.slot
         prep = mgr.prepare_runtime(body.name, run_tests=False, preferred_slot=pref_slot)
-        slot = mgr.activate_for_space(body.name, version=prep.version, slot=prep.slot, space="default", workspace_id=workspace_id)
+        slot = mgr.activate_for_space(body.name, version=prep.version, slot=prep.slot, space="default", webspace_id=webspace_id)
         return {"ok": True, "slot": slot, "prepared": prep.slot}
 
 

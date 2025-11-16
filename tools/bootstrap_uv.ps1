@@ -70,6 +70,28 @@ if (Test-Path $venvBin) {
   $env:Path = "$venvBin;$env:Path"
 }
 
+# 6) Install default webspace content (scenarios/skills)
+$defaultScenarios = @("web_desktop")
+$defaultSkills = @("weather_skill")
+$adaosBase = Join-Path $PWD ".adaos"
+New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
+$env:ADAOS_BASE_DIR = $adaosBase
+
+foreach ($scenario in $defaultScenarios) {
+  Write-Host "Installing scenario $scenario..."
+  uv run adaos scenario install $scenario | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Scenario '$scenario' install failed (possibly already installed)."
+  }
+}
+foreach ($skill in $defaultSkills) {
+  Write-Host "Installing skill $skill..."
+  uv run adaos skill install $skill | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Skill '$skill' install failed (possibly already installed)."
+  }
+}
+
 Write-Host ""
 Write-Host "Bootstrap completed."
 Write-Host "Quick checks:"

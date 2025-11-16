@@ -53,12 +53,12 @@ export class YDocService {
     // Ensure shared events websocket is connected and register device
     await this.adaos.connect()
     const ack = await this.adaos.sendEventsCommand('device.register', { device_id: this.deviceId })
-    const workspaceId = String(ack?.data?.workspace_id || 'default')
+    const webspaceId = String(ack?.data?.webspace_id || 'default')
 
-    // 2) Connect Yjs via y-websocket to /yws/<workspace_id>
+    // 2) Connect Yjs via y-websocket to /yws/<webspace_id>
     // WebsocketProvider builds URL as `${serverUrl}/${room}`.
     const serverUrl = `${baseWs}/yws`
-    const room = workspaceId || 'default'
+    const room = webspaceId || 'default'
     this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
       params: { dev: this.deviceId },
     })

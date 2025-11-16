@@ -15,10 +15,10 @@ def ystores_root() -> Path:
     return root
 
 
-def ystore_path_for_workspace(workspace_id: str) -> Path:
+def ystore_path_for_webspace(webspace_id: str) -> Path:
     """
-    Map a workspace id to a filesystem path for its SQLite-backed Yjs store.
+    Map a webspace id to a filesystem path for its SQLite-backed Yjs store.
     """
-    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in workspace_id)
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in webspace_id)
     return ystores_root() / f"{safe}.sqlite3"
 

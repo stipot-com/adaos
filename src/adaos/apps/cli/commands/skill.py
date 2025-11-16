@@ -302,7 +302,7 @@ def cmd_install(
     _echo_runtime_install(runtime)
 
     try:
-        activated_slot = mgr.activate_for_space(skill_name, version=runtime.version, slot=runtime.slot, space="default", workspace_id="default")
+        activated_slot = mgr.activate_for_space(skill_name, version=runtime.version, slot=runtime.slot, space="default", webspace_id="default")
     except Exception as exc:
         typer.secho(f"activation failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
@@ -457,7 +457,7 @@ def cmd_setup(
 def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), version: Optional[str] = typer.Option(None, "--version")):
     mgr = _mgr()
     try:
-        target = mgr.activate_for_space(name, version=version, slot=slot, space="default", workspace_id="default")
+        target = mgr.activate_for_space(name, version=version, slot=slot, space="default", webspace_id="default")
     except Exception as exc:
         typer.secho(f"activate failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
@@ -469,7 +469,7 @@ def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), vers
 def rollback(name: str):
     mgr = _mgr()
     try:
-        slot = mgr.rollback_for_space(name, space="default", workspace_id="default")
+        slot = mgr.rollback_for_space(name, space="default", webspace_id="default")
     except Exception as exc:
         typer.secho(f"rollback failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc

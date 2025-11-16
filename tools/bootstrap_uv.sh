@@ -76,6 +76,26 @@ if [[ -d ".venv/bin" ]]; then
   export PATH="$PWD/.venv/bin:$PATH"
 fi
 
+# 6) Default webspace content
+DEFAULT_SCENARIOS=("web_desktop")
+DEFAULT_SKILLS=("weather_skill")
+ADAOS_BASE_DIR="$PWD/.adaos"
+mkdir -p "$ADAOS_BASE_DIR"
+export ADAOS_BASE_DIR
+
+log "Installing default webspace content..."
+for scn in "${DEFAULT_SCENARIOS[@]}"; do
+  log "  adaos scenario install $scn"
+  if ! uv run adaos scenario install "$scn"; then
+    warn "scenario '$scn' install failed (maybe already installed)"
+  fi
+done
+for skill in "${DEFAULT_SKILLS[@]}"; do
+  log "  adaos skill install $skill"
+  if ! uv run adaos skill install "$skill"; then
+    warn "skill '$skill' install failed (maybe already installed)"
+  fi
+done
 # 6) Сводка
 echo
 log "Bootstrap completed."
@@ -86,3 +106,4 @@ echo "  adaos --help     # короткая команда должна рабо
 echo
 echo "To run the API:"
 echo "  uv run adaos api serve --host 127.0.0.1 --port 8777 --reload"
+

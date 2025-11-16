@@ -543,7 +543,7 @@ class SkillManager:
         name: str,
         *,
         space: str = "default",
-        workspace_id: str | None = None,
+        webspace_id: str | None = None,
         version: str | None = None,
         slot: str | None = None,
     ) -> str:
@@ -557,12 +557,12 @@ class SkillManager:
             target = self.activate_runtime(name, version=version, slot=slot)
         if self.bus:
             payload: Dict[str, Any] = {"skill_name": name, "space": space}
-            if workspace_id:
-                payload["workspace_id"] = workspace_id
+            if webspace_id:
+                payload["webspace_id"] = webspace_id
             emit(self.bus, "skills.activated", payload, "skill.mgr")
         return target
 
-    def rollback_for_space(self, name: str, *, space: str = "default", workspace_id: str | None = None) -> str:
+    def rollback_for_space(self, name: str, *, space: str = "default", webspace_id: str | None = None) -> str:
         """
         Roll back the active runtime slot for the requested space and emit
         a skills.rolledback event for observers.
@@ -573,8 +573,8 @@ class SkillManager:
             target = self.rollback_runtime(name)
         if self.bus:
             payload: Dict[str, Any] = {"skill_name": name, "space": space}
-            if workspace_id:
-                payload["workspace_id"] = workspace_id
+            if webspace_id:
+                payload["webspace_id"] = webspace_id
             emit(self.bus, "skills.rolledback", payload, "skill.mgr")
         return target
 

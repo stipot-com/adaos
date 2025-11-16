@@ -27,20 +27,20 @@ def _current_city(ydoc: Y.YDoc) -> str | None:
     return None
 
 
-def ensure_weather_observer(workspace_id: str, ydoc: Y.YDoc) -> None:
-    if workspace_id in _OBSERVERS:
+def ensure_weather_observer(webspace_id: str, ydoc: Y.YDoc) -> None:
+    if webspace_id in _OBSERVERS:
         return
 
     def _emit_current() -> None:
         city = _current_city(ydoc)
-        if not city or _LAST_CITY.get(workspace_id) == city:
+        if not city or _LAST_CITY.get(webspace_id) == city:
             return
-        _LAST_CITY[workspace_id] = city
+        _LAST_CITY[webspace_id] = city
         try:
             ctx = get_ctx()
             ev = Event(
                 type="weather.city_changed",
-                payload={"workspace_id": workspace_id, "city": city},
+                payload={"webspace_id": webspace_id, "city": city},
                 source="weather.observer",
                 ts=time.time(),
             )
@@ -63,5 +63,5 @@ def ensure_weather_observer(workspace_id: str, ydoc: Y.YDoc) -> None:
             loop.call_soon(_run_safe)
 
     sub_id = ydoc.observe_after_transaction(_maybe_emit)
-    _OBSERVERS[workspace_id] = sub_id
+    _OBSERVERS[webspace_id] = sub_id
     _emit_current()

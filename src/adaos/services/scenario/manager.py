@@ -110,7 +110,7 @@ class ScenarioManager:
 
     # --- Stage A2 helpers -------------------------------------------------
 
-    def install_with_deps(self, name: str, *, pin: Optional[str] = None, workspace_id: str = "default") -> SkillMeta:
+    def install_with_deps(self, name: str, *, pin: Optional[str] = None, webspace_id: str = "default") -> SkillMeta:
         """
         Install a scenario (as with :meth:`install`) and then apply its
         manifest-defined dependencies inside the local workspace:
@@ -121,12 +121,12 @@ class ScenarioManager:
         """
         meta = self.install(name, pin=pin)
         try:
-            self._post_install_bootstrap(meta.id.value, workspace_id=workspace_id)
+            self._post_install_bootstrap(meta.id.value, webspace_id=webspace_id)
         except Exception:
             # Best-effort; do not fail install on bootstrap errors.
             pass
         try:
-            self.sync_to_yjs(meta.id.value, workspace_id=workspace_id)
+            self.sync_to_yjs(meta.id.value, webspace_id=webspace_id)
         except Exception:
             pass
         return meta
@@ -177,32 +177,32 @@ class ScenarioManager:
             data_updated[scenario_id] = entry
             data_map.set(txn, "scenarios", data_updated)
 
-    def sync_to_yjs(self, scenario_id: str, workspace_id: str = "default") -> None:
+    def sync_to_yjs(self, scenario_id: str, webspace_id: str = "default") -> None:
         """
-        Project the declarative scenario payload into the workspace YDoc so
+        Project the declarative scenario payload into the webspace YDoc so
         downstream services (Yjs/WS, web_desktop_skill, etc.) can pick it up.
         """
         self.caps.require("core", "scenarios.manage")
         ui_section, registry_section, catalog_section = self._ensure_yjs_payload(scenario_id)
 
-        with get_ydoc(workspace_id) as ydoc:
+        with get_ydoc(webspace_id) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section)
 
-        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "workspace_id": workspace_id}, "scenario.mgr")
+        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": webspace_id}, "scenario.mgr")
 
-    async def sync_to_yjs_async(self, scenario_id: str, workspace_id: str = "default") -> None:
+    async def sync_to_yjs_async(self, scenario_id: str, webspace_id: str = "default") -> None:
         """
         Async variant of :meth:`sync_to_yjs` for use inside running event loops.
         """
         self.caps.require("core", "scenarios.manage")
         ui_section, registry_section, catalog_section = self._ensure_yjs_payload(scenario_id)
 
-        async with async_get_ydoc(workspace_id) as ydoc:
+        async with async_get_ydoc(webspace_id) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section)
 
-        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "workspace_id": workspace_id}, "scenario.mgr")
+        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": webspace_id}, "scenario.mgr")
 
-    def _post_install_bootstrap(self, scenario_id: str, workspace_id: str = "default") -> None:
+    def _post_install_bootstrap(self, scenario_id: str, webspace_id: str = "default") -> None:
         """
         Stage A2: after a scenario is installed into the workspace repo,
         apply its manifest-defined dependencies by installing/activating
@@ -238,7 +238,7 @@ class ScenarioManager:
                 if runtime:
                     version = getattr(runtime, "version", None)
                     slot = getattr(runtime, "slot", None)
-                skill_mgr.activate_for_space(dep, version=version, slot=slot, space="default", workspace_id=workspace_id)
+                skill_mgr.activate_for_space(dep, version=version, slot=slot, space="default", webspace_id=webspace_id)
             except Exception:
                 # Do not break scenario install on individual dependency issues.
                 continue

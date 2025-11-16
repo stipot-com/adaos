@@ -8,7 +8,7 @@ from typing import Iterator, AsyncIterator, Awaitable, TypeVar
 import y_py as Y
 from ypy_websocket.ystore import SQLiteYStore
 
-from adaos.apps.yjs.y_store import ystore_path_for_workspace
+from adaos.apps.yjs.y_store import ystore_path_for_webspace
 
 T = TypeVar("T")
 
@@ -26,12 +26,12 @@ def _run_blocking(coro: Awaitable[T]) -> T:
 
 
 @contextmanager
-def get_ydoc(workspace_id: str) -> Iterator[Y.YDoc]:
+def get_ydoc(webspace_id: str) -> Iterator[Y.YDoc]:
     """
     Synchronously load a workspace-backed YDoc, applying persisted updates on
     entry and writing the resulting state back on exit.
     """
-    ystore = SQLiteYStore(str(ystore_path_for_workspace(workspace_id)))
+    ystore = SQLiteYStore(str(ystore_path_for_webspace(webspace_id)))
     ydoc = Y.YDoc()
 
     async def _load() -> None:
@@ -60,11 +60,11 @@ def get_ydoc(workspace_id: str) -> Iterator[Y.YDoc]:
 
 
 @asynccontextmanager
-async def async_get_ydoc(workspace_id: str) -> AsyncIterator[Y.YDoc]:
+async def async_get_ydoc(webspace_id: str) -> AsyncIterator[Y.YDoc]:
     """
     Async counterpart of :func:`get_ydoc` for use inside running event loops.
     """
-    ystore = SQLiteYStore(str(ystore_path_for_workspace(workspace_id)))
+    ystore = SQLiteYStore(str(ystore_path_for_webspace(webspace_id)))
     ydoc = Y.YDoc()
     await ystore.start()
     try:

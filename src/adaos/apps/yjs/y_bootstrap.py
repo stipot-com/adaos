@@ -17,8 +17,8 @@ def _scenario_manager() -> ScenarioManager:
     return ScenarioManager(repo=ctx.scenarios_repo, registry=reg, git=ctx.git, paths=ctx.paths, bus=ctx.bus, caps=ctx.caps)
 
 
-async def ensure_workspace_seeded_from_scenario(
-    ystore: SQLiteYStore, workspace_id: str, default_scenario_id: str = "web_desktop"
+async def ensure_webspace_seeded_from_scenario(
+    ystore: SQLiteYStore, webspace_id: str, default_scenario_id: str = "web_desktop"
 ) -> None:
     """
     If the YDoc has no ui.application yet, try to seed it from a scenario
@@ -48,7 +48,7 @@ async def ensure_workspace_seeded_from_scenario(
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
 
-    # If ui.application already exists, assume workspace is seeded.
+    # If ui.application already exists, assume webspace is seeded.
     if ui_map.get("application") is not None or len(ui_map) or len(data_map):
         return
 
@@ -56,7 +56,7 @@ async def ensure_workspace_seeded_from_scenario(
     # emits scenarios.synced for downstream listeners.
     try:
         mgr = _scenario_manager()
-        await mgr.sync_to_yjs_async(default_scenario_id, workspace_id)
+        await mgr.sync_to_yjs_async(default_scenario_id, webspace_id)
         return
     except Exception:
         pass
@@ -79,7 +79,7 @@ async def ensure_workspace_seeded_from_scenario(
 
 async def bootstrap_seed_if_empty(ystore: SQLiteYStore) -> None:
     """
-    Backwards-compatible wrapper: seed workspace using the default scenario
+    Backwards-compatible wrapper: seed the default webspace using the default scenario
     (web_desktop) or SEED if scenario content is not available.
     """
-    await ensure_workspace_seeded_from_scenario(ystore, workspace_id="default")
+    await ensure_webspace_seeded_from_scenario(ystore, webspace_id="default")
