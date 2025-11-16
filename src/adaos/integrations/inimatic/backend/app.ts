@@ -25,6 +25,7 @@ import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
 import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
+import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
 
 type FollowerData = {
 	followerName: string
@@ -195,6 +196,9 @@ const TLS_CERT_PEM = readPemFromEnvOrFile('TLS_CERT_PEM', 'TLS_CERT_PEM_FILE');
 const TLS_KEY_PEM = normalizePem(process.env['TLS_KEY_PEM'] ?? CA_KEY_PEM)
 const TLS_CERT_PEM = normalizePem(process.env['TLS_CERT_PEM'] ?? CA_CERT_PEM)
 const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
+const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'app.inimatic.com'
+const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
+const WEB_SESSION_TTL_SECONDS = Number.parseInt(process.env['WEB_SESSION_TTL_SECONDS'] ?? '3600', 10)
 const FORGE_SSH_KEY = process.env['FORGE_SSH_KEY']
 const FORGE_AUTHOR_NAME = process.env['FORGE_GIT_AUTHOR_NAME'] ?? 'AdaOS Root'
 const FORGE_AUTHOR_EMAIL = process.env['FORGE_GIT_AUTHOR_EMAIL'] ?? 'root@inimatic.local'
@@ -341,6 +345,14 @@ const forgeManager = new ForgeManager({
 	sshKeyPath: FORGE_SSH_KEY,
 })
 await forgeManager.ensureReady()
+
+// Устанавливаем WebAuthn эндпоинты (frontend ↔ root ↔ hub)
+installWebAuthnRoutes(app, {
+	redis: redisClient,
+	defaultSessionTtlSeconds: WEB_SESSION_TTL_SECONDS,
+	rpID: WEB_RP_ID,
+	origin: WEB_ORIGIN,
+}, respondError)
 
 const POLICY_RESPONSE = policy
 
@@ -623,6 +635,19 @@ rootRouter.post('/auth/owner/start', (req, res) => {
 		approved: false,
 	}
 	deviceAuthorizations.set(deviceCode, record)
+	// Дополнительно сохраняем device_code в Redis для веб-сессий (WebAuthn / frontend)
+	storeDeviceCode(redisClient, {
+		device_code: deviceCode,
+		user_code: userCode,
+		owner_id: ownerId,
+		// в dev-режиме owner_id совпадает с subnet_id
+		subnet_id: ownerId,
+		hub_id: undefined,
+		// exp в секундах Unix
+		exp: Math.floor(expiresAt.getTime() / 1000),
+	}).catch((err) => {
+		console.error('failed to store device_code for web session', err)
+	})
 	setTimeout(() => {
 		const current = deviceAuthorizations.get(deviceCode)
 		if (current) {
