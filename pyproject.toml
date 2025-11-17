@@ -66,6 +66,7 @@ adaos = [
   "skills_templates/**/*.yaml",
   "skills_templates/**/*.py",
   "locales/*.json",
+  "interpreter_data/**/*",
 ]
 
 [project.optional-dependencies]

@@ -114,6 +114,7 @@ nav:
       - "Безопасность": architecture/security.md
   - "CLI":
       - "Обзор": cli/index.md
+      - "Интерпретатор": cli/interpreter.md
   - "SDK":
       - "Обзор": sdk/index.md
       - "Bus": sdk/bus.md

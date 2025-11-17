@@ -1,0 +1,32 @@
+dataset:
+  preset: moodbot
+intents:
+  - intent: greet
+    description: "Приветствие пользователя"
+    skill: interpreter_router
+    tool: on_start
+    examples:
+      - привет
+      - здравствуй
+      - добрый день
+  - intent: mood_great
+    description: "Пользователь сообщает, что у него всё хорошо"
+    skill: interpreter_router
+    tool: on_start
+    examples:
+      - у меня всё отлично
+      - настроение супер
+  - intent: mood_unhappy
+    description: "Пользователь расстроен"
+    skill: interpreter_router
+    tool: on_start
+    examples:
+      - мне грустно
+      - всё плохо
+  - intent: goodbye
+    description: "Завершение разговора"
+    skill: interpreter_router
+    tool: on_start
+    examples:
+      - пока
+      - до встречи

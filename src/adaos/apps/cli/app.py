@@ -17,6 +17,7 @@ from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
 from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev
+from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
 from adaos.apps.cli.commands import secret
@@ -181,6 +182,7 @@ app.add_typer(switch_app, name="switch", help="Переключение проф
 app.add_typer(secret.app, name="secret")
 app.add_typer(sandbox_cmd.app, name="sandbox")
 app.add_typer(_sdk_export.app, name="sdk")
+app.add_typer(interpreter.app, name="interpreter", help="Интерпретатор и обучение")
 app.add_typer(dev.app, name="dev", help="Developer operations")
 
 # ---- Фильтрация интеграций по ENV ----

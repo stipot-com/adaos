@@ -1,0 +1,15 @@
+recipe: default.v1
+language: ru
+pipeline:
+  - name: WhitespaceTokenizer
+  - name: CountVectorsFeaturizer
+  - name: CountVectorsFeaturizer
+    analyzer: char_wb
+    min_ngram: 3
+    max_ngram: 5
+  - name: DIETClassifier
+    epochs: 80
+    constrain_similarities: true
+policies:
+  - name: RulePolicy
+    core_fallback_threshold: 0.4
