@@ -1,10 +1,13 @@
+import os
+
 from fastapi import Header, HTTPException, status
-from adaos.services.node_config import load_config
+
+from adaos.services.agent_context import get_ctx
 
 
 def _expected_token() -> str:
     try:
-        return load_config().token or "dev-local-token"
+        return (get_ctx().config.token or "dev-local-token")
     except Exception:
         return "dev-local-token"
 
@@ -27,3 +30,9 @@ async def require_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-AdaOS-Token",
         )
+
+
+def require_owner_token(token: str) -> None:
+    expected = os.getenv("ADAOS_ROOT_OWNER_TOKEN") or ""
+    if not expected or token != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid owner token")

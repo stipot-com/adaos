@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from adaos.adapters.db.sqlite_skill_registry import SqliteSkillRegistry
 from adaos.adapters.skills.git_repo import GitSkillRepository
-from adaos.sdk.decorators import tool
+from adaos.sdk.core.decorators import tool
 from adaos.services.skill.manager import SkillManager
 
 from .common import (
@@ -109,7 +109,7 @@ def _validation_to_dict(report: Any) -> Mapping[str, Any] | None:
 
 
 @tool(
-    "skills.install",
+    "manage.skills.install",
     summary="install a skill from catalog or git",
     stability="stable",
     idempotent=True,
@@ -155,7 +155,7 @@ def install(
 
 
 @tool(
-    "skills.uninstall",
+    "manage.skills.uninstall",
     summary="remove an installed skill",
     stability="stable",
     idempotent=True,
@@ -182,7 +182,7 @@ def uninstall(request_id: str, skill: str, *, dry_run: bool = False) -> Mapping[
 
 
 @tool(
-    "skills.list",
+    "manage.skills.list",
     summary="list installed skills with registry metadata",
     stability="stable",
     examples=["skills.list()"],

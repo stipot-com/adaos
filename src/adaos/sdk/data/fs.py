@@ -23,14 +23,14 @@ def _safe_join(root: Path, name: str) -> Path:
 
 def tmp_path() -> Path:
     ctx = require_ctx("sdk.fs.tmp_path")
-    tmp = Path(ctx.paths.tmp_dir()).resolve()
+    tmp = ctx.paths.tmp_dir()
     tmp.mkdir(parents=True, exist_ok=True)
     return tmp
 
 
 def save_bytes(name: str, data: bytes) -> Path:
     ctx = require_ctx("sdk.fs.save_bytes")
-    base = Path(ctx.paths.tmp_dir()).resolve()
+    base = ctx.paths.tmp_dir()
     base.mkdir(parents=True, exist_ok=True)
     target = _safe_join(base, name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,7 @@ def save_bytes(name: str, data: bytes) -> Path:
 
 def open(name: str, mode: str = "rb", **kwargs: Any) -> IO[Any]:  # noqa: A002 - deliberate shadowing
     ctx = require_ctx("sdk.fs.open")
-    base = Path(ctx.paths.tmp_dir()).resolve()
+    base = ctx.paths.tmp_dir()
     base.mkdir(parents=True, exist_ok=True)
     target = _safe_join(base, name)
     if "w" in mode or "a" in mode or "+" in mode:

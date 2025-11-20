@@ -1,0 +1,97 @@
+.content {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	width: 100%;
+	padding: 10px;
+	gap: 100px;
+}
+
+#initiator_container,
+.connected_stage {
+	text-align: center;
+}
+
+#initiator_container strong {
+	font-size: 20px;
+	line-height: 26px;
+}
+
+#initiator_container p,
+.hint {
+	font-size: 16px;
+	line-height: 22px;
+	color: #8c8c8c;
+	margin: 0;
+}
+
+#initiator_container a {
+	text-decoration: none;
+}
+
+.connected_stage {
+	display: flex;
+	gap: 40px;
+}
+
+.follower_list {
+	background-color: #d3d3d3;
+	padding: 5px;
+	border-radius: 5px;
+	list-style: none;
+}
+
+.functional {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 40px;
+}
+
+.transfer_file_form {
+	display: flex;
+	flex-direction: column;
+	width: 400px;
+	align-items: center;
+	gap: 10px;
+
+	button {
+		padding: 15px 10px;
+		font-size: 15px;
+	}
+}
+
+.message_log {
+	height: 120px;
+	overflow: auto;
+}
+
+.follower_device {
+	position: relative;
+}
+
+.follower_device ion-icon {
+	font-size: 25px;
+	fill: red;
+}
+
+.follower_device > button {
+	background: none;
+	position: absolute;
+	right: 0;
+	top: 0;
+}
+
+.selectable {
+	-webkit-user-select: text;
+	-moz-user-select: text;
+	-ms-user-select: text;
+	user-select: text;
+}
+
+.send_message_wrapper {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}

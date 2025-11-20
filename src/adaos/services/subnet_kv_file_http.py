@@ -4,16 +4,8 @@ from typing import Any, Dict, Optional
 import json, os, requests
 from adaos.ports.subnet_kv import SubnetKVPort
 from adaos.services.node_config import load_config
-
-
-def _default_base_dir() -> Path:
-    env = os.environ.get("ADAOS_BASE_DIR")
-    if env:
-        return Path(env).expanduser()
-    if os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        return root / "AdaOS"
-    return Path.home() / ".adaos"
+from adaos.services.agent_context import get_ctx
+from adaos.services.settings import Settings
 
 
 def _resolve_base_dir() -> Path:
@@ -26,7 +18,8 @@ def _resolve_base_dir() -> Path:
             pass
     except Exception:
         pass
-    return _default_base_dir()
+    # Fallback: derive from Settings to keep a single source of truth
+    return Settings.from_sources().base_dir
 
 
 class HubSubnetKV(SubnetKVPort):
@@ -55,7 +48,10 @@ class HubSubnetKV(SubnetKVPort):
 
 class MemberSubnetKV(SubnetKVPort):
     def __init__(self) -> None:
-        self._conf = load_config()
+        try:
+            self._conf = get_ctx().config
+        except Exception:
+            self._conf = load_config()
 
     def is_hub(self) -> bool:
         return False
@@ -83,6 +79,9 @@ _SVC: SubnetKVPort | None = None
 def get_subnet_kv() -> SubnetKVPort:
     global _SVC
     if _SVC is None:
-        conf = load_config()
+        try:
+            conf = get_ctx().config
+        except Exception:
+            conf = load_config()
         _SVC = HubSubnetKV() if (conf.role or "hub") == "hub" else MemberSubnetKV()
     return _SVC

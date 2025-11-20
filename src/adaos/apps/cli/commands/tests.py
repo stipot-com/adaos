@@ -9,16 +9,9 @@ import inspect
 from adaos.apps.cli.i18n import _
 from adaos.services.sandbox.bootstrap import ensure_dev_venv
 from adaos.services.agent_context import get_ctx
+from adaos.services.skill.manager import SkillManager
+from adaos.adapters.db import SqliteSkillRegistry
 from adaos.ports.sandbox import ExecLimits
-from adaos.sdk.skills import (
-    push as push_skill,
-    pull as pull_skill,
-    install as install_skill,
-    uninstall as uninstall_skill,
-    install_all as install_all_skills,
-    create as create_skill,
-    list_installed as list_installed_skills,
-)
 
 app = typer.Typer(help="Run AdaOS test suites")
 
@@ -48,7 +41,7 @@ def _prepare_skills_repo(no_clone: bool) -> None:
     if no_clone:
         return
     ctx = get_ctx()
-    root = Path(ctx.paths.skills_dir())
+    root = ctx.paths.skills_dir()
     if not (root / ".git").exists():
         # ровно один раз: clone (ветка/URL из settings, allow-list в SecureGit)
         ctx.git.ensure_repo(str(root), ctx.settings.skills_monorepo_url, branch=ctx.settings.skills_monorepo_branch)
@@ -64,6 +57,47 @@ def _prepare_skills_repo(no_clone: bool) -> None:
             pass
 
 
+def _skill_manager() -> SkillManager:
+    ctx = get_ctx()
+    repo = ctx.skills_repo
+    registry = SqliteSkillRegistry(ctx.sql)
+    return SkillManager(repo=repo, registry=registry, git=ctx.git, paths=ctx.paths, bus=getattr(ctx, "bus", None), caps=ctx.caps)
+
+
+def _install_all_skills(limit: int | None = None) -> list[str]:
+    ctx = get_ctx()
+    repo = ctx.skills_repo
+    try:
+        repo.ensure()
+    except Exception:
+        pass
+
+    names: list[str] = []
+    try:
+        for item in repo.list() or []:
+            name = getattr(item, "name", None)
+            if name:
+                names.append(name)
+    except Exception:
+        pass
+
+    if not names:
+        names = ["weather_skill"]
+
+    if limit:
+        names = names[:limit]
+
+    mgr = _skill_manager()
+    installed: list[str] = []
+    for name in names:
+        try:
+            mgr.install(name, validate=False)
+            installed.append(name)
+        except Exception:
+            continue
+    return installed
+
+
 def _collect_test_dirs(root: Path) -> List[str]:
     paths: List[str] = []
     if root.is_dir():
@@ -71,6 +105,62 @@ def _collect_test_dirs(root: Path) -> List[str]:
             if tdir.is_dir() and any(f.name.startswith("test_") and f.suffix == ".py" for f in tdir.rglob("test_*.py")):
                 paths.append(str(tdir))
     return paths
+
+
+def _prune_duplicate_skill_tests(paths: List[str]) -> List[str]:
+    """Prefer runtime/tests over tests for the same skill tree.
+
+    Skill layout inside slot src is typically:
+      src/skills/<name>/tests
+      src/skills/<name>/runtime/tests
+
+    Collecting both causes pytest import collisions when filenames match.
+    This function keeps runtime/tests if present and removes the sibling tests/.
+    """
+    from pathlib import Path as _P
+
+    # Map skill base -> set of candidate test dirs
+    grouped: dict[str, set[str]] = {}
+    for p in paths:
+        try:
+            pp = _P(p).resolve()
+        except Exception:
+            pp = _P(p)
+        parts = pp.parts
+        try:
+            # find pattern .../src/skills/<name>/(runtime/)?tests
+            if "src" in parts and "skills" in parts:
+                si = parts.index("src")
+                sk = parts.index("skills", si + 1)
+                name = parts[sk + 1] if len(parts) > sk + 1 else None
+                if name:
+                    base = _P(*parts[: sk + 2])  # up to src/skills/<name>
+                    grouped.setdefault(str(base), set()).add(str(pp))
+        except ValueError:
+            # not a skill path; keep as-is
+            grouped.setdefault("__other__", set()).add(str(pp))
+
+    keep: set[str] = set()
+    for base, items in grouped.items():
+        if base == "__other__":
+            keep.update(items)
+            continue
+        # Identify runtime/tests path(s) robustly via pathlib
+        runtime_items = [
+            x
+            for x in items
+            if _P(x).name == "tests" and _P(x).parent.name == "runtime"
+        ]
+        if runtime_items:
+            keep.update(runtime_items)
+        else:
+            keep.update(items)
+    # Preserve original order
+    result: List[str] = []
+    for p in paths:
+        if p in keep and p not in result:
+            result.append(p)
+    return result
 
 
 def _drive_key(path_str: str) -> str:
@@ -98,6 +188,8 @@ def _run_one_group(
         "--strict-markers",
         "-o",
         "markers=asyncio: mark asyncio tests",
+        "-o",
+        "importmode=importlib",  # avoid import file mismatch when duplicate basenames exist
         *paths,
     ]
 
@@ -114,7 +206,58 @@ def _run_one_group(
     except Exception:
         pass
 
+    # Derive PYTHONPATH for skill runtime tests: include slot src/ and vendor/
+    # and set ADAOS_SKILL_* if tests are for a single skill.
+    try:
+        skill_names: set[str] = set()
+        pp_entries: list[str] = []
+        for p in paths:
+            try:
+                t = Path(p)
+                # find enclosing 'src' directory (slot src)
+                src_dir = None
+                cur = t.resolve()
+                for parent in [cur] + list(cur.parents):
+                    if parent.name == "src" and (parent / "skills").exists():
+                        src_dir = parent
+                        break
+                if src_dir is None:
+                    continue
+                vendor = src_dir.parent / "vendor"
+                # add unique entries, preserve order (src first)
+                if str(src_dir) not in pp_entries:
+                    pp_entries.append(str(src_dir))
+                if vendor.exists() and str(vendor) not in pp_entries:
+                    pp_entries.append(str(vendor))
+                # try to infer skill name from src/skills/<name>
+                skills_dir = src_dir / "skills"
+                for child in skills_dir.iterdir() if skills_dir.exists() else []:
+                    if child.is_dir():
+                        skill_names.add(child.name)
+            except Exception:
+                continue
+        if pp_entries:
+            # isolate from user site and prepend our entries
+            extra_env["PYTHONNOUSERSITE"] = "1"
+            existing = os.environ.get("PYTHONPATH", "")
+            joined = os.pathsep.join(pp_entries + ([existing] if existing else []))
+            extra_env["PYTHONPATH"] = joined
+        if len(skill_names) == 1:
+            skill_name = next(iter(skill_names))
+            extra_env.setdefault("ADAOS_SKILL_NAME", skill_name)
+            extra_env.setdefault("ADAOS_SKILL_PACKAGE", f"skills.{skill_name}")
+            extra_env.setdefault("ADAOS_SKILL_MODE", "runtime")
+            # best-effort root
+            for entry in pp_entries:
+                sdir = Path(entry) / "skills" / skill_name
+                if sdir.exists():
+                    extra_env.setdefault("ADAOS_SKILL_ROOT", str(sdir))
+                    break
+    except Exception:
+        pass
+
     if addopts:
+        # preserve user's opts and ensure our importmode survives
         extra_env["PYTEST_ADDOPTS"] = addopts
     cmd = [(venv_python or py_exec), *([] if venv_python else py_prefix), "-m", "pytest", *pytest_args]
     return _sandbox_run(cmd, cwd=base_dir, extra_env=extra_env, use_sandbox=use_sandbox)
@@ -192,7 +335,15 @@ def _run_direct(cmd: list[str], *, cwd: Path, extra_env: dict | None = None):
     env = dict(os.environ)
     if extra_env:
         env.update({k: v for k, v in (extra_env or {}).items() if isinstance(k, str) and isinstance(v, str)})
-    p = subprocess.run(cmd, cwd=str(cwd), env=env, text=True, capture_output=True)
+    p = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     return p.returncode, p.stdout, p.stderr
 
 
@@ -312,6 +463,7 @@ def _pick_python(spec: Optional[str]) -> tuple[str, list[str]]:
 def run_tests(
     only_sdk: bool = typer.Option(False, help="Run only SDK/API tests (./tests)."),
     only_skills: bool = typer.Option(False, help="Run only skills tests."),
+    only_scenarios: bool = typer.Option(False, help="Run only scenario tests."),
     marker: Optional[str] = typer.Option(None, "--m", help="Pytest -m expression"),
     use_real_base: bool = typer.Option(False, help="Do NOT isolate ADAOS_BASE_DIR."),
     no_install: bool = typer.Option(False, help="Do not auto-install skills before running tests."),
@@ -322,6 +474,10 @@ def run_tests(
     use_current: bool = typer.Option(True, "--use-current/--no-use-current", help="Use the same interpreter that's running this CLI (ideal for your current venv)."),
     extra: Optional[List[str]] = typer.Argument(None),
 ):
+    if only_scenarios and (only_sdk or only_skills):
+        typer.secho("--only-scenarios cannot be combined with --only-sdk or --only-skills", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+
     # 0) изоляция BASE
     if not use_real_base:
         tmpdir = _ensure_tmp_base_dir()
@@ -370,39 +526,53 @@ def run_tests(
             raise typer.Exit(code=2)
 
     # 2) Подбор путей
-    if not only_skills:
+    scenario_suite = repo_root / "tests" / "test_scenarios.py"
+
+    if only_scenarios:
+        if scenario_suite.exists():
+            pytest_paths.append(str(scenario_suite))
+        else:
+            typer.secho("No scenario tests found in tests/test_scenarios.py", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+
+    if not only_skills and not only_scenarios:
         sdk_tests = repo_root / "tests"
         if sdk_tests.exists():
             pytest_paths.append(str(sdk_tests))
         elif only_sdk:
             typer.secho("No SDK tests found in ./tests", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=0)
 
-    if not only_sdk:
+    if not only_sdk and not only_scenarios:
         _prepare_skills_repo(no_clone=no_clone)
         if not no_install:
             try:
-                installed = install_all_skills()
+                installed = _install_all_skills()
                 if installed:
                     typer.secho(f"[AdaOS] Installed skills: {', '.join(installed)}", fg=typer.colors.BLUE)
             except Exception as e:
                 typer.secho(f"[AdaOS] Auto-install skipped/failed: {e}", fg=typer.colors.YELLOW)
 
-        skills_root = Path(ctx.paths.skills_dir()).resolve()
+        skills_root = ctx.paths.skills_dir()
         pytest_paths.extend(_collect_test_dirs(skills_root))
 
         # при разработке — добавим тесты из исходников, если есть
         src_skills = repo_root / "src" / "adaos" / "skills"
         pytest_paths.extend(_collect_test_dirs(src_skills))
 
+    # Prefer runtime/tests if both are present for a skill
+    pytest_paths = _prune_duplicate_skill_tests(pytest_paths)
+
     if not pytest_paths:
         if only_sdk:
             typer.secho("No SDK tests found. Create ./tests with test_*.py", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=0)
         elif only_skills:
             typer.secho("No skill tests found. Ensure skills are installed and contain tests/ with test_*.py", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=0)
         else:
             typer.secho("No test paths found. Tip: add SDK tests in ./tests, or ensure skills with tests are installed.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=1)
+            raise typer.Exit(code=0)
 
     # 3) Группировка по диску (Windows rootdir guard)
     from collections import defaultdict

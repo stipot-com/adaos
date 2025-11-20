@@ -1,0 +1,14 @@
+name: "new_skill"
+version: "0.1.0"
+entry: "handlers/main.py"
+
+runtime:
+  python: "3.11"
+
+# Необязательные поля — можно оставить пустыми,
+# валидатор подставит значения по умолчанию.
+description: ""
+dependencies: []
+events: {}
+tools: []
+exports: {}

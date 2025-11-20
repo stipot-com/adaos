@@ -1,0 +1,167 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [images-published]
+  workflow_dispatch:
+    inputs:
+      tg_sync_webhooks:
+        description: "Force sync Telegram webhooks during deploy"
+        type: boolean
+        default: false
+      backend_image:
+        description: "Override backend image (e.g. ghcr.io/stipot-com/inimatic-backend:sha-xxxx)"
+        type: string
+        default: ""
+      frontend_image:
+        description: "Override frontend image (e.g. ghcr.io/stipot-com/inimatic-frontend:sha-xxxx)"
+        type: string
+        default: ""
+
+concurrency:
+  group: deploy-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # как у вас: синк инфры на сервер только при push в main
+      - name: Sync infra to server (to home)
+        if: github.event_name == 'push'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          source: "docker/**,scripts/**,vhost/**,vhost.d/**,.env.example,README.md"
+          target: "~/inimatic"
+          overwrite: true
+          timeout: 120s
+          debug: true
+
+      - name: Debug workspace
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 2 -type d -print
+
+      - name: Deploy (blue-green)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          # пробросим флажок для deploy.sh -> sync_telegram_webhooks
+          TG_SYNC_WEBHOOKS: ${{ (github.event_name == 'workflow_dispatch' && inputs.tg_sync_webhooks) && '1' || '0' }}
+          # пробросим опциональные override'ы образов (совместимы с вашим скриптом)
+          BACKEND_FROM_PAYLOAD: ${{ github.event.client_payload.backend || inputs.backend_image }}
+          FRONTEND_FROM_PAYLOAD: ${{ github.event.client_payload.frontend || inputs.frontend_image }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script_stop: true
+          timeout: 600s
+          script: |
+            set -Eeuo pipefail
+            set -x
+            trap 'code=$?; echo "ERROR on line $LINENO (exit $code)"; exit $code' ERR
+
+            ORG="stipot-com"
+            BACKEND_FROM_PAYLOAD="${BACKEND_FROM_PAYLOAD:-}"
+            FRONTEND_FROM_PAYLOAD="${FRONTEND_FROM_PAYLOAD:-}"
+
+            # Ensure privilege helper available (best-effort)
+            if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+
+            # Prepare target tree and permissions (idempotent)
+            mkdir -p /opt/inimatic/runtime/ssh || true
+            ${SUDO:-} mkdir -p /opt/inimatic /opt/inimatic/docker/compose /opt/inimatic/scripts /opt/inimatic/vhost /opt/inimatic/vhost.d || true
+            # Make the deploy user own the parts we manage (keeps /opt/inimatic/secrets untouched)
+            if [ -n "${SUDO:-}" ]; then
+              ${SUDO:-} chown -R "$USER":"$USER" /opt/inimatic/docker || true
+              ${SUDO:-} chown -R "$USER":"$USER" /opt/inimatic/scripts || true
+              ${SUDO:-} chown -R "$USER":"$USER" /opt/inimatic/vhost /opt/inimatic/vhost.d || true
+            fi
+
+            SRC="$HOME/inimatic/"
+            [[ -d "$SRC" ]] || { echo "Source not found: $SRC"; exit 1; }
+
+            # Sync repo to /opt/inimatic (preserving secrets/runtime); use sudo when available
+            ${SUDO:-} rsync -a --delete \
+              --filter='P secrets/' \
+              --filter='P scripts/ghcr_login_via_app.sh' \
+              --filter='P scripts/nats.conf' \
+              --filter='P runtime/' \
+              --exclude='.env' \
+              "$SRC" /opt/inimatic/
+
+            cd /opt/inimatic/docker/compose
+            for b in jq openssl curl docker; do command -v "$b" >/dev/null || { echo "Missing $b"; exit 1; }; done
+
+            set -a; . /opt/inimatic/.env; set +a
+
+            # inline GHCR login (+fallback на файл ключа)
+            ghcr_login_via_app() {
+              set -Eeuo pipefail
+              # сначала пробуем хостовые пути, затем контейнерные, затем дефолт в /opt
+              local META="${GH_APP_META_FILE_HOST:-${GH_APP_META_FILE:-/opt/inimatic/secrets/github-app.json}}"
+              local KEYF="${GH_APP_PRIVATE_KEY_FILE_HOST:-${GH_APP_PRIVATE_KEY_FILE:-/opt/inimatic/secrets/github-app.pem}}"
+
+              # префлайт, чтобы ошибка была читаемой
+              [[ -r "$KEYF" ]] || { echo "GH App private key not found: $KEYF"; ls -l "$(dirname "$KEYF")" || true; exit 1; }
+              [[ -r "$META" ]] || echo "Warn: GH App meta not found (ok if APP_ID/INST_ID set): $META"
+              local APP_ID="${GH_APP_ID:-}"
+              local INST_ID="${GH_INSTALLATION_ID:-${GH_APP_INSTALLATION_ID:-}}"
+              if [[ -z "$APP_ID" || -z "$INST_ID" ]]; then
+                [[ -r "$META" ]] || { echo "No GH_APP_ID/GH_INSTALLATION_ID and $META not found"; exit 1; }
+                APP_ID="${APP_ID:-$(jq -r .app_id "$META")}"
+                INST_ID="${INST_ID:-$(jq -r .installation_id "$META")}"
+              fi
+              b64url(){ openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+              now=$(date +%s); iat=$((now-60)); exp=$((now+540))
+              H=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+              P=$(jq -cn --arg iat "$iat" --arg exp "$exp" --arg iss "$APP_ID" '{iat:($iat|tonumber),exp:($exp|tonumber),iss:($iss|tonumber)}' | b64url)
+              S=$(printf '%s.%s' "$H" "$P" | openssl dgst -sha256 -sign "$KEYF" -binary | b64url)
+              JWT="$H.$P.$S"
+              TOKEN=$(curl -sS -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/app/installations/${INST_ID}/access_tokens" | jq -r .token)
+              [[ -n "$TOKEN" && "$TOKEN" != "null" ]] || { echo "No GHCR token"; exit 1; }
+              echo "$TOKEN" | docker login ghcr.io -u x-access-token --password-stdin
+            }
+            ghcr_login_via_app
+
+            # при необходимости подтянуть конкретные теги и ретегнуть в :latest
+            if [[ -n "${BACKEND_FROM_PAYLOAD}" ]]; then
+              echo "Pulling backend image: ${BACKEND_FROM_PAYLOAD}"
+              docker pull "${BACKEND_FROM_PAYLOAD}"
+              docker tag  "${BACKEND_FROM_PAYLOAD}" "ghcr.io/${ORG}/inimatic-backend:latest"
+            fi
+            if [[ -n "${FRONTEND_FROM_PAYLOAD}" ]]; then
+              docker pull "${FRONTEND_FROM_PAYLOAD}"
+              docker tag  "${FRONTEND_FROM_PAYLOAD}" "ghcr.io/${ORG}/inimatic-frontend:latest"
+            fi
+
+            docker compose --env-file /opt/inimatic/.env -f docker-compose.yml config >/tmp/compose.config.yaml || { echo "compose config failed. Inspect /opt/inimatic/docker/compose/docker-compose.yml and /opt/inimatic/.env"; exit 1; }
+            grep -E 'DEFAULT_EMAIL|DEPLOY_HOST' -A1 /tmp/compose.config.yaml || true
+
+            # Пробрасываем флаг TG_SYNC_WEBHOOKS в окружение деплой-скрипта
+            export TG_SYNC_WEBHOOKS="${TG_SYNC_WEBHOOKS:-0}"
+            export BACKEND_FROM_PAYLOAD FRONTEND_FROM_PAYLOAD
+            ENVF="/opt/inimatic/.env" bash /opt/inimatic/scripts/deploy.sh
+
+            # --- post-deploy smoke ---
+            # 1) валидация конфигурации nginx внутри reverse-proxy
+            docker exec reverse-proxy nginx -t
+
+            # 2) базовые health-чеки приложений (с учётом TLS)
+            set +e
+            curl -kfsS "https://api.inimatic.com/healthz" | sed -e 's/.*/[ok] api healthz/' || echo "[warn] api healthz failed"
+            curl -kfsS "https://app.inimatic.com/" -I | head -n1 || echo "[warn] app head failed"
+            curl -kfsS "https://api.inimatic.com/metrics" | grep -E 'outbound_total|retry_total' -m1 || echo "[warn] metrics glance failed"
+            set -e

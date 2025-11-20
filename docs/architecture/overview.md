@@ -29,7 +29,7 @@
 * Git: `ports/git` → `adapters/git/cli_git.py`, `adapters/git/secure_git.py`
 * Политики: `ports/policy` → `services/policy/{capabilities,net}.py`
 * ФС: `ports/fs` → `services/policy/fs.py`, безопасные операции `services/fs/safe_io.py`
-* Секреты: `ports/secrets` → `adapters/secrets/{keyring_vault,file_vault}.py` + `services/secrets/service.py`
+* Секреты: `ports/secrets` → `adapters/secrets/{keyring_vault,file_vault}.py` + `services/crypto/secrets_service.py`
 * Навыки: `ports/skills` → `adapters/skills/mono_repo.py` + `services/skill/manager.py`
 * Сценарии: `ports/scenarios` → `adapters/scenarios/mono_repo.py` + `services/scenario/manager.py`
 * БД: `adapters/db/sqlite_store.py` (SQLite/SQLiteKV), `adapters/db/sqlite_skill_registry.py` (реестры)

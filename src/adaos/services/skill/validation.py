@@ -123,12 +123,12 @@ spec.loader.exec_module(module)
 
 # попытка получить новые публичные реестры (с fallback на старые)
 try:
-    from adaos.sdk.decorators import tools_registry, subscriptions
+    from adaos.sdk.core.decorators import tools_registry, subscriptions
     mod_tools = (tools_registry.get(mod_name) or {{}})
     subs = [t for (t, _fn) in subscriptions]
 except Exception:
     try:
-        from adaos.sdk.decorators import _TOOLS, _SUBSCRIPTIONS
+        from adaos.sdk.core.decorators import _TOOLS, _SUBSCRIPTIONS
         mod_tools = (_TOOLS.get(mod_name) or {{}})
         subs = [t for (t, _fn) in _SUBSCRIPTIONS]
     except Exception:
@@ -177,8 +177,10 @@ class SkillValidationService:
         skill_name: Optional[str] = None,
         *,
         strict: bool = False,
-        install_mode: Optional[bool] = False,
+        install_mode: bool = False,
         probe_tools: bool = False,
+        # новый параметр: явный путь к каталогу навыка — валидируем без смены skill_ctx
+        skill_path: Optional[Path] = None,
     ) -> ValidationReport:
         """
         Валидация навыка:
@@ -187,24 +189,84 @@ class SkillValidationService:
         """
         ctx = self.ctx or get_ctx()
 
-        # выбрать активный навык
-        if skill_name:
-            if not ctx.skill_ctx.set(skill_name, ctx.paths.skills_dir() / skill_name):
-                return ValidationReport(False, [Issue("error", "skill.context.missing", f"skill '{skill_name}' not found")])
+        # Ветка 1: явный путь — не трогаем skill_ctx
+        if skill_path is not None:
+            path = Path(skill_path)
+            if not path.exists() or not path.is_dir():
+                return ValidationReport(False, [Issue("error", "skill.path.missing", f"skill path not found or not a directory: {path}")])
+            name = skill_name or path.name
+            return self._validate_loaded(name=name, skill_dir=path, strict=strict, install_mode=install_mode, probe_tools=probe_tools)
 
-        current = ctx.skill_ctx.get()
-        if current is None or getattr(current, "path", None) is None:
-            return ValidationReport(False, [Issue("error", "skill.context.missing", "current skill not set")])
+        # Ветка 2: по имени через skill_ctx, с безопасным восстановлением предыдущего контекста
+        previous = ctx.skill_ctx.get()
+        try:
+            if skill_name:
+                if not ctx.skill_ctx.set(skill_name, ctx.paths.skills_dir() / skill_name):
+                    return ValidationReport(False, [Issue("error", "skill.context.missing", f"skill '{skill_name}' not found")])
 
-        skill_dir = Path(current.path)
+            current = ctx.skill_ctx.get()
+            if current is None or getattr(current, "path", None) is None:
+                return ValidationReport(False, [Issue("error", "skill.context.missing", "current skill not set")])
 
+            return self._validate_loaded(
+                name=current.name,
+                skill_dir=Path(current.path),
+                strict=strict,
+                install_mode=install_mode,
+                probe_tools=probe_tools,
+            )
+        finally:
+            # корректно восстановим контекст
+            if previous is None:
+                ctx.skill_ctx.clear()
+            else:
+                ctx.skill_ctx.set(previous.name, Path(previous.path))
+
+    # Новый публичный метод — валидация «по каталогу» (локация-агностичная)
+    def validate_path(
+        self,
+        path: Path,
+        *,
+        name: Optional[str] = None,
+        strict: bool = False,
+        install_mode: bool = False,
+        probe_tools: bool = False,
+    ) -> ValidationReport:
+        path = Path(path)
+        if not path.exists() or not path.is_dir():
+            return ValidationReport(False, [Issue("error", "skill.path.missing", f"skill path not found or not a directory: {path}")])
+        return self._validate_loaded(
+            name=name or path.name,
+            skill_dir=path,
+            strict=strict,
+            install_mode=install_mode,
+            probe_tools=probe_tools,
+        )
+
+    # Внутренняя общая логика
+    def _validate_loaded(
+        self,
+        *,
+        name: str,
+        skill_dir: Path,
+        strict: bool,
+        install_mode: bool,
+        probe_tools: bool,
+    ) -> ValidationReport:
         issues: List[Issue] = []
         issues += _static_checks(skill_dir, bool(install_mode))
+
+        # эскалируем предупреждения в ошибки при strict=True
+        if strict:
+            issues = [Issue("error", i.code, i.message, getattr(i, "where", None)) if i.level == "warning" else i for i in issues]
+
         # если уже есть фатальные ошибки структуры — не продолжаем
         if any(i.level == "error" for i in issues):
             ok = not any(i.level == "error" for i in issues)
             return ValidationReport(ok, issues)
 
-        issues += _dynamic_checks(current.name, skill_dir, bool(install_mode), bool(probe_tools))
+        issues += _dynamic_checks(name, skill_dir, bool(install_mode), bool(probe_tools))
+        if strict:
+            issues = [Issue("error", i.code, i.message, getattr(i, "where", None)) if i.level == "warning" else i for i in issues]
         ok = not any(i.level == "error" for i in issues)
         return ValidationReport(ok, issues)

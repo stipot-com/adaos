@@ -7,18 +7,30 @@ from typing import Optional
 from adaos.sdk.core._cap import require_cap
 
 
-def read(name: str) -> Optional[str]:
-    """Return a secret by name or ``None`` if it is not present."""
+def get(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Return a secret by name or the provided default when missing."""
 
     ctx = require_cap("secrets.read")
-    return ctx.secrets.get(name)
+    return ctx.secrets.get(name, default=default)
 
 
-def write(name: str, value: str) -> None:
-    """Store or update a secret value."""
+def set(name: str, value: str) -> None:
+    """Store or update a secret value for the active skill."""
 
     ctx = require_cap("secrets.write")
     ctx.secrets.put(name, value)
 
 
-__all__ = ["read", "write"]
+def delete(name: str) -> None:
+    """Remove a stored secret value for the active skill."""
+
+    ctx = require_cap("secrets.write")
+    ctx.secrets.delete(name)
+
+
+# Backwards-compatible aliases for older skills.
+read = get
+write = set
+
+
+__all__ = ["get", "set", "delete", "read", "write"]

@@ -19,10 +19,21 @@ except Exception as e:
     _sd_error = e
     sd = None
 
+
 class VoskSTT:
     def __init__(
         self, model_path: Optional[str] = None, samplerate: int = 16000, device: Optional[int | str] = None, lang: str = "en", external_stream: Optional[Iterable[bytes]] = None
     ):
+        sd = None
+        _sd_error = None
+        try:
+            import sounddevice as sd  # требует PortAudio
+        except OSError as e:
+            _sd_error = e
+            sd = None
+        except Exception as e:
+            _sd_error = e
+            sd = None
 
         ADAOS_VOSK_MODEL = str(get_ctx().paths.base_dir() / "models" / "vosk" / "en-us")  # TODO move to constants
         # Инициализация модели
@@ -51,27 +62,68 @@ class VoskSTT:
         self.stream = None
         if external_stream is None:
             import queue  # этот import уместен
+
             self._q = queue.Queue()
+            # авто-подбор устройства/частоты, если дефолта нет
+            try:
+                import sounddevice as sd
+
+                if device is None or int(device) < 0:
+                    default_in, _ = sd.default.device
+                    if default_in is None or int(default_in) < 0:
+                        devices = sd.query_devices()
+                        candidates = [i for i, d in enumerate(devices) if d["max_input_channels"] > 0]
+                        if not candidates:
+                            raise RuntimeError("Не найдено ни одного входного аудио-устройства.")
+                        device = candidates[0]
+                    else:
+                        device = int(default_in)
+                # если частота не поддерживается — возьмём дефолтную для выбранного устройства
+                info = sd.query_devices(int(device), "input")
+                if getattr(self, "samplerate", None) is None or self.samplerate <= 0:
+                    self.samplerate = int(info["default_samplerate"])
+            except Exception as e:
+                raise RuntimeError(f"Проблема с аудио-устройством: {e}")
             self.stream = sd.RawInputStream(
                 samplerate=self.samplerate,
                 blocksize=8000,
                 dtype="int16",
                 channels=1,
                 callback=self._on_audio,
-                device=device,
+                device=int(device) if device is not None else None,
             )
             self.stream.start()
         else:
             self._q: queue.Queue[bytes] = queue.Queue()
-            self.stream = sd.RawInputStream(
-                samplerate=self.samplerate,
-                blocksize=8000,
-                dtype="int16",
-                channels=1,
-                callback=self._on_audio,
-                device=device,
-            )
-            self.stream.start()
+        # авто-подбор устройства/частоты, если дефолта нет
+        try:
+            import sounddevice as sd
+
+            if device is None or int(device) < 0:
+                default_in, _ = sd.default.device
+                if default_in is None or int(default_in) < 0:
+                    devices = sd.query_devices()
+                    candidates = [i for i, d in enumerate(devices) if d["max_input_channels"] > 0]
+                    if not candidates:
+                        raise RuntimeError("Не найдено ни одного входного аудио-устройства.")
+                    device = candidates[0]
+                else:
+                    device = int(default_in)
+            # если частота не поддерживается — возьмём дефолтную для выбранного устройства
+            info = sd.query_devices(int(device), "input")
+            if getattr(self, "samplerate", None) is None or self.samplerate <= 0:
+                self.samplerate = int(info["default_samplerate"])
+        except Exception as e:
+            raise RuntimeError(f"Проблема с аудио-устройством: {e}")
+        self.stream = sd.RawInputStream(
+            samplerate=self.samplerate,
+            blocksize=8000,
+            dtype="int16",
+            channels=1,
+            callback=self._on_audio,
+            device=int(device) if device is not None else None,
+        )
+        self.stream.start()
 
     def _on_audio(self, indata, frames, time_info, status):
         if status:

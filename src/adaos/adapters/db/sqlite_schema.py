@@ -42,6 +42,78 @@ _SCHEMA = (
         created_at TIMESTAMP
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS subnets (
+        subnet_id TEXT PRIMARY KEY,
+        owner_id TEXT,
+        created_at INT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS devices (
+        device_id TEXT PRIMARY KEY,
+        subnet_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        cert_pem TEXT NOT NULL,
+        issued_at INT NOT NULL,
+        expires_at INT NOT NULL,
+        UNIQUE(subnet_id, fingerprint)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS idempotency_cache (
+        key TEXT,
+        method TEXT,
+        path TEXT,
+        principal_id TEXT,
+        body_hash TEXT,
+        status_code INT,
+        body_json TEXT,
+        event_id TEXT,
+        server_time_utc TEXT,
+        created_at INT,
+        expires_at INT,
+        PRIMARY KEY(key, method, path, principal_id, body_hash)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ca_state (
+        id INTEGER PRIMARY KEY CHECK(id=1),
+        ca_key_pem TEXT NOT NULL,
+        ca_cert_pem TEXT NOT NULL,
+        next_serial INTEGER NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_devices_fpr ON devices(fingerprint);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_idem_exp ON idempotency_cache(expires_at);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pair_codes (
+        code TEXT PRIMARY KEY,
+        bot_id TEXT,
+        hub_id TEXT,
+        expires_at INT,
+        state TEXT,
+        created_at INT,
+        note TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS chat_bindings (
+        platform TEXT,
+        user_id TEXT,
+        bot_id TEXT,
+        ada_user_id TEXT,
+        hub_id TEXT,
+        created_at INT,
+        last_seen INT,
+        PRIMARY KEY(platform, user_id, bot_id)
+    );
+    """,
 )
 
 

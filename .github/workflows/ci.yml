@@ -2,7 +2,7 @@ name: AdaOS CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [rev2026]
   pull_request:
   workflow_dispatch:
 
@@ -11,28 +11,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web:
+    name: Build Ionic frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/adaos/integrations/inimatic
+    env:
+      NODE_OPTIONS: --max_old_space_size=4096
+      # глушим постинсталлы и нативщину nx, чтобы не падало на раннере
+      npm_config_ignore_scripts: "true"
+      NX_BINARY_SKIP_DOWNLOAD: "true"
+      NX_NATIVE: "false"
+      CI: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.18.0" # выровнено с Dockerfile
+          cache: "npm"
+          cache-dependency-path: |
+            src/adaos/integrations/inimatic/package-lock.json
+
+      - name: Clean sticky esbuild folders (just in case)
+        run: |
+          rm -rf node_modules/esbuild \
+                 node_modules/vite/node_modules/esbuild || true
+
+      - name: Install deps (no postinstall)
+        run: |
+          npm ci || npm install
+
+      - name: Rebuild esbuild only
+        run: npm rebuild esbuild
+
+      - name: Lint (optional)
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Build (production)
+        run: npx ionic build --configuration production
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ionic-dist
+          path: |
+            src/adaos/integrations/inimatic/dist/**
+            src/adaos/integrations/inimatic/www/**
+          if-no-files-found: warn
+
   tests:
+    name: Python tests
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.12"]
-
+        python: ["3.11"]
     runs-on: ${{ matrix.os }}
-
     env:
-      # публичный URL можно оставить по умолчанию; если монорепо приватный — задайте секрет
       PYTHONIOENCODING: utf-8
       MONOREPO_URL: ${{ secrets.ADAOS_MONOREPO_URL || 'https://github.com/stipot/adaoskills.git' }}
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      # чтобы наши коммиты/тесты не падали из‑за отсутствия git identity
       GIT_AUTHOR_NAME: "AdaOS CI Bot"
       GIT_AUTHOR_EMAIL: "ci-bot@example.com"
       GIT_COMMITTER_NAME: "AdaOS CI Bot"
       GIT_COMMITTER_EMAIL: "ci-bot@example.com"
-      # ускоряем тесты, если в коде учтено (необязательно)
       ADAOS_TESTING: "1"
-
     steps:
       - name: Force UTF-8 on Windows
         if: runner.os == 'Windows'
@@ -42,11 +90,13 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
           $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
           $env:PYTHONUTF8=1
+
       - name: Force UTF-8 on Linux
         if: runner.os == 'Linux'
         run: |
           export PYTHONUTF8=1
           export PYTHONIOENCODING=utf-8
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -64,22 +114,17 @@ jobs:
           pip install -e .
           pip install -e .[dev]
 
-      # --- быстрый прогон SDK-тестов (не трогаем навыки) ---
       - name: Run SDK tests (only)
         run: |
           adaos tests run --only-sdk -- --junitxml=reports/sdk-junit.xml -q
-        continue-on-error: false
 
-      # --- навыковые тесты (авто-клон и авто-установка) ---
       - name: Run skills tests
         run: |
           adaos tests run -- -q --junitxml=reports/skills-junit.xml
-        # Если навыков пока нет/они нестабильны — временно можно поставить continue-on-error: true
 
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-${{ matrix.os }}-py${{ matrix.python }}
-          path: |
-            reports/*.xml
+          path: reports/*.xml

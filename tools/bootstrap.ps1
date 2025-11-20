@@ -2,7 +2,7 @@
 # Unified bootstrap for Windows PowerShell 5.1+
 
 $ErrorActionPreference = "Stop"
-
+$subPath = "src\adaos\integrations\inimatic"
 function Get-PythonCandidates {
     $cands = @()
 
@@ -154,6 +154,28 @@ if (!(Test-Path ".env") -and (Test-Path ".env.example")) {
     Copy-Item .env.example .env
 }
 
+# Default webspace content (scenarios + skills)
+$defaultScenarios = @("web_desktop")
+$defaultSkills = @("weather_skill")
+$adaosBase = Join-Path $PWD ".adaos"
+New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
+$env:ADAOS_BASE_DIR = $adaosBase
+
+foreach ($scenario in $defaultScenarios) {
+    Write-Host "Installing scenario $scenario..."
+    & .\.venv\Scripts\adaos.exe scenario install $scenario
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Scenario '$scenario' install failed (maybe already installed)."
+    }
+}
+foreach ($skill in $defaultSkills) {
+    Write-Host "Installing skill $skill..."
+    & .\.venv\Scripts\adaos.exe skill install $skill
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Skill '$skill' install failed (maybe already installed)."
+    }
+}
+
 $helpText = @'
 READY.
 
@@ -172,7 +194,7 @@ Next steps (in separate terminals):
      npm run start
 
 Tips:
- • List installed Python: py -0p
- • Switch venv version: delete .venv and re-run bootstrap
+ - List installed Python: py -0p
+ - Switch venv version: delete .venv and re-run bootstrap
 '@
 Write-Host $helpText

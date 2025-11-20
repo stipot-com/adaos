@@ -59,16 +59,16 @@ steps:
 CLI:
 
 ```bash
-adaos scenarios run catalog-media
+adaos scenario run catalog-media
 ```
 
 Runtime:
 
 ```python
-from adaos.services.scenario import ScenarioManager
+from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context
 
-mgr = ScenarioManager()
-mgr.run("catalog-media")
+ensure_runtime_context("~/.adaos")
+ScenarioRuntime().run_from_file("~/.adaos/workspace/scenarios/catalog-media/scenario.yaml")
 ```
 
 ---

@@ -1,0 +1,23 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-title>{{ title }}</ion-title>
+    <ion-buttons slot="end">
+      <ion-button (click)="close()">Закрыть</ion-button>
+    </ion-buttons>
+  </ion-toolbar>
+  </ion-header>
+
+  <ion-content class="ion-padding" *ngIf="weather">
+    <ion-item lines="full">
+      <ion-label position="stacked">Город</ion-label>
+      <ion-select [value]="weather.city" (ionChange)="onCityChange($event.detail.value)">
+        <ion-select-option *ngFor="let city of cities" [value]="city">{{ city }}</ion-select-option>
+      </ion-select>
+    </ion-item>
+    <h1 style="margin:16px 0 8px 0">{{ weather.city }}</h1>
+    <h2 style="margin:0 0 8px 0">{{ weather.temp_c | number:'1.0-1' }}°C</h2>
+    <p>{{ weather.condition }}</p>
+    <p>Ветер: {{ weather.wind_ms | number:'1.0-1' }} м/с</p>
+    <p>Обновлено: {{ weather.updated_at | date:'medium' }}</p>
+  </ion-content>
+

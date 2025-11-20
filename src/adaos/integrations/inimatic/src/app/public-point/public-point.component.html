@@ -1,0 +1,51 @@
+<ion-content [fullscreen]="true">
+	<div class="content">
+		<div id="initiator_container" *ngIf="isInitiator">
+			<div class="instruction">
+				<div>
+					<strong>1. Open Inimatic application on your phone</strong>
+					<p>and point it to the screen</p>
+				</div>
+				<p>{{sessionID}}</p>
+				<qrcode [qrdata]="qrData" [width]="220" [errorCorrectionLevel]="'M'" *ngIf="qrData != ''"></qrcode>
+			</div>
+		</div>
+
+		<div class="connected_stage" *ngIf="isConnected">
+			<div>
+				<h2>Connected devices:</h2>
+				<ul class="follower_list">
+					<li *ngFor="let follower of followers">
+						<ion-card class="follower_device">
+							<ion-card-title>{{follower}}</ion-card-title>
+							<button (click)="disconnectDevice(follower)">
+								<ion-icon name="close" ></ion-icon>
+							</button>
+						</ion-card>
+					</li>
+				</ul>
+			</div>
+
+			<div class="functional">
+				<div class="transfer_file_form_wrapper">
+					<form class="transfer_file_form">
+						<input type="file" (change)="uploadFile($event)" />
+						<ion-button type="submit" (click)="transferFile()">
+							Transfer file
+						</ion-button>
+					</form>
+				</div>
+
+				<div class="send_message_wrapper">
+					<ion-input class="ion-primary-input ion-input-bottom-border" type="text" label="Message" labelPlacement="floating" [(ngModel)]="message" placeholder="Enter message to send" />
+					<ion-button (click)="sendMessage()">Send Message</ion-button>
+				</div>
+				<div class="message_log" *ngIf="messagesLog.length > 0">
+					<p>Messages:</p>
+					<p *ngFor="let messageL of messagesLog" class="selectable">{{messageL}}</p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+</ion-content>

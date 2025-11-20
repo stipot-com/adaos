@@ -1,13 +1,17 @@
 # src\adaos\api\tool_bridge.py
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel, Field
-import importlib.util
 from typing import Any, Dict
+import requests
 
 from adaos.apps.api.auth import require_token
-from adaos.sdk.decorators import resolve_tool
 from adaos.services.observe import attach_http_trace_headers
 from adaos.services.agent_context import get_ctx, AgentContext
+from adaos.services.eventbus import emit
+from adaos.services.skill.manager import SkillManager
+from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.registry.subnet_directory import get_directory
+from adaos.services.agent_context import get_ctx
 
 
 router = APIRouter()
@@ -24,12 +28,14 @@ class ToolCall(BaseModel):
     tool: str
     arguments: Dict[str, Any] | None = None
     context: Dict[str, Any] | None = None
+    timeout: float | None = Field(default=None)
+    dev: bool = Field(default=False, description="Run tool from DEV workspace instead of installed runtime")
     model_config = {"extra": "ignore"}
 
 
 @router.post("/tools/call", dependencies=[Depends(require_token)])
 async def call_tool(body: ToolCall, request: Request, response: Response, ctx: AgentContext = Depends(get_ctx)):
-    # 1) Разбираем "<skill_name>:<public_tool_name>"
+    # Разбираем "<skill_name>:<public_tool_name>"
     if ":" not in body.tool:
         raise HTTPException(status_code=400, detail="tool must be in '<skill_name>:<public_tool_name>' format")
 
@@ -37,53 +43,88 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
     if not skill_name or not public_tool:
         raise HTTPException(status_code=400, detail="invalid tool spec")
 
-    # 2) Устанавливаем текущий навык на время выполнения запроса
-    if not ctx.skill_ctx.set(skill_name, ctx.paths.skills_dir() / skill_name):  # set_current_skill(skill_name):
-        raise HTTPException(status_code=503, detail=f"The skill {skill_name} is not found")
+    # Используем общий путь исполнения как в CLI (SkillManager.run_tool)
+    mgr = SkillManager(
+        repo=ctx.skills_repo,
+        registry=SqliteSkillRegistry(ctx.sql),
+        git=ctx.git,
+        paths=ctx.paths,
+        bus=getattr(ctx, "bus", None),
+        caps=ctx.caps,
+        settings=ctx.settings,
+    )
 
-    # 3) Получаем текущий навык (после установки)
-    current = ctx.skill_ctx.get()  # get_current_skill
-    if current is None or current.path is None or current.name is None:
-        raise HTTPException(status_code=503, detail="current skill is not set")
-
-    # 4) Проверяем соответствие имени
-    if current.name != skill_name:
-        # это защита от сторонних перезаписей контекста
-        raise HTTPException(status_code=404, detail=f"skill '{skill_name}' is not the current skill (current: '{current.name}')")
-
-    # 5) Грузим модуль обработчика навыка
-    handler_file = current.path / "handlers" / "main.py"
-    if not handler_file.exists():
-        raise HTTPException(status_code=404, detail=f"skill '{skill_name}' is not installed (handlers/main.py missing)")
-
-    mod_name = f"adaos_skill_{skill_name}_handlers_main"
-    spec = importlib.util.spec_from_file_location(mod_name, handler_file)
-    if spec is None or spec.loader is None:
-        raise HTTPException(status_code=500, detail="failed to load skill module")
-
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"failed to import skill '{skill_name}': {type(e).__name__}: {e}")
-
-    # 6) Ищем инструмент по публичному имени, зарегистрированному @tool("<public_name>")
-    fn = resolve_tool(mod_name, public_tool)
-    if fn is None:
-        raise HTTPException(status_code=404, detail=f"tool '{public_tool}' is not exported by skill '{skill_name}'")
-
-    # 7) Вызываем инструмент (sync/async совместимость)
-    # trace_id в HTTP: читаем входной/ставим в ответ
     trace = attach_http_trace_headers(request.headers, response.headers)
-    args = body.arguments or {}
+    payload: Dict[str, Any] = body.arguments or {}
+    # Пробуем локально; если навык отсутствует на узле-хабе — проксируем на member
     try:
-        result = fn(**args)
-        if hasattr(result, "__await__"):
-            result = await result
-    except TypeError as e:
-        # частый кейс: некорректные аргументы
-        raise HTTPException(status_code=400, detail=f"invalid arguments: {e}")
+        if body.dev:
+            result = mgr.run_dev_tool(skill_name, public_tool, payload, timeout=body.timeout)
+        else:
+            result = mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+    except (FileNotFoundError, RuntimeError, KeyError) as e:
+        # Если локально не найден навык/слот — попробуем проксировать на участника подсети (только если роль hub)
+        try:
+            conf = get_ctx().config
+        except Exception:
+            conf = None
+        if not conf or conf.role != "hub":
+            # На member нет прокси — вернём исходную ошибку
+            raise HTTPException(status_code=404, detail=str(e))
+
+        # Найти online-ноду с этим skill
+        directory = get_directory()
+        candidates = directory.find_nodes_with_skill(skill_name, require_online=True)
+        # Сначала активные, затем по last_seen убыв.
+        candidates.sort(key=lambda n: (not bool(n.get("active"))), reverse=False)
+        if not candidates:
+            raise HTTPException(status_code=503, detail=f"skill '{skill_name}' is not available online in the subnet")
+        target = candidates[0]
+        base_url = target.get("base_url") or directory.get_node_base_url(target.get("node_id", ""))
+        if not base_url:
+            raise HTTPException(status_code=503, detail="no base_url for target node")
+
+        # Проксируем запрос прозрачно
+        url = f"{base_url.rstrip('/')}/api/tools/call"
+        forward = {"tool": body.tool, "arguments": payload}
+        if body.timeout is not None:
+            forward["timeout"] = body.timeout
+        # сохраняем dev-флаг при прокси, если он был указан
+        if body.dev:
+            forward["dev"] = True
+        token = conf.token or request.headers.get("X-AdaOS-Token") or "dev-local-token"
+        try:
+            r = requests.post(url, json=forward, headers={"X-AdaOS-Token": token, "Content-Type": "application/json"}, timeout=(body.timeout or 10) + 2)
+        except Exception as pe:
+            raise HTTPException(status_code=502, detail=f"proxy failed: {pe}")
+        if r.status_code != 200:
+            raise HTTPException(status_code=r.status_code, detail=r.text)
+        try:
+            result_payload = r.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="invalid JSON from proxied node")
+        # Возвращаем payload как есть от член-узла
+        return result_payload
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"tool runtime error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"run failed: {type(e).__name__}: {e}")
+
+    # Optional routing via local bus: publish ui.notify when result looks like plain text
+    try:
+        text: str | None = None
+        if isinstance(result, str):
+            text = result
+        elif isinstance(result, dict):
+            t = result.get("text") if hasattr(result, "get") else None
+            if isinstance(t, str) and t.strip():
+                text = t
+        if text:
+            emit(ctx.bus, "ui.notify", {"text": text}, actor="api.tools")
+    except Exception:
+        # best-effort: failure to route should not break API response
+        pass
 
     return {"ok": True, "result": result, "trace_id": trace}

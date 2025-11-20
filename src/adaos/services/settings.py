@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict
 from adaos.config import const
+import yaml
 
 
 def _parse_env_file(path: str) -> Dict[str, str]:
@@ -35,15 +36,52 @@ class Settings:
     default_wall_time_sec: float = 30.0
     default_cpu_time_sec: float | None = None
     default_max_rss_mb: int | None = None
+    scenario_log_level: str = "INFO"
 
     # жёсткие (или dev-override через .env)
     skills_monorepo_url: Optional[str] = const.SKILLS_MONOREPO_URL
     skills_monorepo_branch: Optional[str] = const.SKILLS_MONOREPO_BRANCH
     scenarios_monorepo_url: Optional[str] = const.SCENARIOS_MONOREPO_URL
     scenarios_monorepo_branch: Optional[str] = const.SCENARIOS_MONOREPO_BRANCH
+    # node / root context
+    owner_id: Optional[str] = None
+    subnet_id: Optional[str] = None
+    api_base: str = "https://api.inimatic.com"
+    app_base: str = "https://app.inimatic.com"
+
+    # имена каталогов для PathProvider (dev/workspace)
+    dev_skills_dirname: str = "skills"
+    dev_scenarios_dirname: str = "scenarios"
+
+    # Chat IO / Telegram / IO bus settings
+    tg_secret_token: Optional[str] = None
+    tg_bot_token: Optional[str] = None
+    nats_url: Optional[str] = None
+    files_tmp_dir: Optional[str] = None
+    route_rules_path: Optional[str] = None
+    default_hub: Optional[str] = None
 
     @staticmethod
     def from_sources(env_file: Optional[str] = ".env") -> "Settings":
+        # Optional runtime guard: disallow ad-hoc calls outside composition roots when ADAOS_STRICT_CTX=1
+        try:
+            if os.getenv("ADAOS_STRICT_CTX", "0") == "1":
+                import inspect
+                stack = inspect.stack()
+                caller_files = [str(f.filename) for f in stack[1:6] if getattr(f, "filename", None)]
+                allow = (
+                    "/apps/bootstrap.py" in "".join(caller_files)
+                    or "/apps/cli/app.py" in "".join(caller_files)
+                    or "/apps/api/server.py" in "".join(caller_files)
+                    or "/services/testing/bootstrap.py" in "".join(caller_files)
+                )
+                if not allow:
+                    raise RuntimeError(
+                        "Settings.from_sources() is restricted; use init_ctx()/get_ctx() or enable at composition root."
+                    )
+        except Exception:
+            # Guard is best-effort; never break prod if inspect stack is unavailable
+            pass
         def is_android() -> bool:
             return "ANDROID_BOOTLOGO" in os.environ or os.getenv("KIVY_BUILD", "") == "android"
 
@@ -80,6 +118,7 @@ class Settings:
 
         base = _get_base_dir()
         profile = pick_env("ADAOS_PROFILE", "default")
+        scenario_log_level = pick_env("ADAOS_SCENARIO_LOG_LEVEL", "INFO") or "INFO"
 
         # монорепо — ТОЛЬКО из констант, а .env/ENV учитываем если явно разрешено dev-флагом
         skills_url = const.SKILLS_MONOREPO_URL
@@ -94,6 +133,35 @@ class Settings:
             scenarios_url = pick_env("ADAOS_SCENARIOS_MONOREPO_URL", scenarios_url) or scenarios_url
             scenarios_branch = pick_env("ADAOS_SCENARIOS_MONOREPO_BRANCH", scenarios_branch) or scenarios_branch
 
+        # --- node.yaml (низший приоритет из внешних источников) ---
+        # пробуем <base_dir>/node.yaml, затем ~/.adaos/node.yaml
+        node_paths = [base / "node.yaml"]
+        node_cfg: dict = {}
+        for np in node_paths:
+            try:
+                if np.exists():
+                    node_cfg = yaml.safe_load(np.read_text(encoding="utf-8")) or {}
+                    break
+            except Exception:
+                # игнорируем ошибки парсинга — не критично
+                pass
+
+        # читаем поля из node.yaml (могут отсутствовать)
+        subnet_id = node_cfg.get("subnet_id")
+        root_cfg = node_cfg.get("root") or {}
+        api_base = root_cfg.get("api_base") or "https://api.inimatic.com"
+        app_base = root_cfg.get("app_base") or "https://app.inimatic.com"
+        owner_cfg = root_cfg.get("owner") or {}
+        owner_id = owner_cfg.get("owner_id") or None
+        dev_cfg = node_cfg.get("dev") or {}
+        dev_skills_dirname = dev_cfg.get("skills_dirname") or "skills"
+        dev_scenarios_dirname = dev_cfg.get("scenarios_dirname") or "scenarios"
+
+        # --- ENV/.env имеют приоритет над node.yaml ---
+        api_base = pick_env("ADAOS_API_BASE", api_base) or api_base
+        app_base = pick_env("ADAOS_APP_BASE", app_base) or app_base
+        dev_skills_dirname = pick_env("ADAOS_DEV_SKILLS_DIRNAME", dev_skills_dirname) or dev_skills_dirname
+        dev_scenarios_dirname = pick_env("ADAOS_DEV_SCENARIOS_DIRNAME", dev_scenarios_dirname) or dev_scenarios_dirname
         return Settings(
             base_dir=base,
             profile=profile,
@@ -101,9 +169,29 @@ class Settings:
             skills_monorepo_branch=skills_branch,
             scenarios_monorepo_url=scenarios_url,
             scenarios_monorepo_branch=scenarios_branch,
+            scenario_log_level=scenario_log_level,
+            owner_id=owner_id,
+            subnet_id=subnet_id,
+            api_base=api_base,
+            app_base=app_base,
+            dev_skills_dirname=dev_skills_dirname,
+            dev_scenarios_dirname=dev_scenarios_dirname,
+            # IO/Telegram specific (from env/.env only)
+            tg_secret_token=pick_env("TG_SECRET_TOKEN", None) or None,
+            tg_bot_token=pick_env("TG_BOT_TOKEN", None) or None,
+            nats_url=pick_env("NATS_URL", None) or None,
+            files_tmp_dir=pick_env("FILES_TMP_DIR", str(base / "tmp")),
+            route_rules_path=pick_env("ROUTE_RULES_PATH", None) or None,
+            default_hub=pick_env("DEFAULT_HUB", None) or None,
         )
 
     def with_overrides(self, **kw) -> "Settings":
         # перегружать можно ТОЛЬКО безопасные поля (base_dir/profile)
         safe = {k: v for k, v in kw.items() if k in {"base_dir", "profile"} and v is not None}
         return replace(self, **safe)
+
+    # Утилита для компонентов путей:
+    def require_subnet_id(self) -> str:
+        if not self.subnet_id:
+            raise RuntimeError("subnet_id is not configured (set ADAOS_SUBNET_ID or provide node.yaml).")
+        return self.subnet_id

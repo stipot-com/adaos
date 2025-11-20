@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, Iterable
 from cryptography.fernet import InvalidToken
-from adaos.services.secrets.crypto import load_or_create_master, fernet_from_key
+from adaos.services.crypto.vault import load_or_create_master, fernet_from_key
 from adaos.ports.secrets import Secrets, SecretScope
 from adaos.services.fs.safe_io import ensure_dir, read_text, write_text_atomic
 from adaos.ports.fs import FSPolicy

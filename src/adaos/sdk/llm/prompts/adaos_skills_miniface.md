@@ -6,6 +6,6 @@
 - i18n:
 
 ```python
-from adaos.sdk.skills.i18n import _
+from adaos.sdk.data.i18n import _
 def lang_res() -> dict: return { "key": "English text", ... }
 ```

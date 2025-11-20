@@ -6,9 +6,13 @@ from typing import Protocol, Dict, Any, List, Optional
 @dataclass
 class NodeInfo:
     node_id: str
+    subnet_id: str
+    roles: List[str]
+    hostname: str | None
+    base_url: str | None
     last_seen: float
     status: str  # "up" | "down"
-    meta: Dict[str, Any]
+    capacity: Dict[str, Any]
 
 
 class SubnetRegistryPort(Protocol):

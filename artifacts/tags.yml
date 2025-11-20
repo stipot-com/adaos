@@ -1,0 +1,24 @@
+rules:
+  - match: "src/adaos/apps/api/root_endpoints.py"
+    add: ["uc:device_login", "uc:qr_pairing", "layer:backend", "area:api"]
+  - match: "src/adaos/apps/api/server.py"
+    add: ["uc:device_login", "layer:backend", "area:api"]
+  - match: "src/adaos/apps/api/auth.py"
+    add: ["uc:device_login", "uc:qr_pairing", "layer:backend", "area:auth"]
+  - match: "src/adaos/adapters/db/sqlite_schema.py"
+    add: ["uc:device_login", "uc:qr_pairing", "layer:db"]
+  - match: "src/adaos/adapters/db/sqlite.py"
+    add: ["uc:device_login", "uc:qr_pairing", "layer:db"]
+  - match: "src/adaos/services/root/**"
+    add: ["uc:device_login", "layer:services"]
+  - match: "src/adaos/integrations/inimatic/src/app/core/adaos/adaos-client.service.ts"
+    add:
+      ["uc:device_login", "uc:qr_pairing", "layer:frontend", "area:api-client"]
+  - match: "src/adaos/integrations/inimatic/src/app/public-point/public-point.component.ts"
+    add: ["uc:device_login", "uc:qr_pairing", "layer:frontend", "area:ui"]
+  - match: "src/adaos/integrations/inimatic/src/app/features/hub/hub.component.ts"
+    add: ["uc:qr_pairing", "layer:frontend", "area:ui"]
+  - match: "src/adaos/apps/cli/commands/dev.py"
+    add: ["uc:device_login", "layer:cli"]
+  - match: "src/adaos/apps/cli/root_ops.py"
+    add: ["uc:device_login", "layer:cli"]

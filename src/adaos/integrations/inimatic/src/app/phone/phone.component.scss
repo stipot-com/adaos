@@ -1,0 +1,70 @@
+@font-face {
+	font-family: 'Aileron';
+	font-style: normal;
+	font-weight: 400;
+	src: local('Aileron'), url('../../assets/fonts/Aileron.woff') format('woff');
+}
+
+// to download the font immediately
+.t {
+	font-family: 'Aileron';
+	position: absolute;
+	z-index: -10;
+	left: -30px;
+}
+
+.name_input {
+	width: 150px;
+	margin: 0 auto;
+	margin-top: 20px;
+}
+
+.connected_stage {
+	text-align: center;
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 45%;
+	transform: translateY(-50%);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 40px;
+}
+
+#follower_container {
+	text-align: center;
+}
+
+.hint {
+	font-size: 16px;
+	line-height: 22px;
+	color: #8c8c8c;
+	margin: 0;
+}
+
+.transfer_file_form {
+	display: flex;
+	flex-direction: column;
+	width: 400px;
+	align-items: center;
+	gap: 10px;
+}
+
+.message_log {
+	height: 120px;
+	overflow: auto;
+}
+
+.selectable {
+	-webkit-user-select: text;
+	-moz-user-select: text;
+	-ms-user-select: text;
+	user-select: text;
+}
+
+.send_message_wrapper {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}

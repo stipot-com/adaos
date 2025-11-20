@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,15 @@ __all__ = ["get", "set"]
 
 
 def _memory_path() -> Path:
-    ctx = require_ctx("sdk.data.skill_memory")
-    current = ctx.skill_ctx.get()
-    if current is None or getattr(current, "path", None) is None:
-        raise SdkRuntimeNotInitialized("sdk.data.skill_memory", "current skill is not set")
-    path = Path(current.path) / ".skill_env.json"
+    override = os.getenv("ADAOS_SKILL_ENV_PATH")
+    if override:
+        path = Path(override)
+    else:
+        ctx = require_ctx("sdk.data.skill_memory")
+        current = ctx.skill_ctx.get()
+        if current is None or getattr(current, "path", None) is None:
+            raise SdkRuntimeNotInitialized("sdk.data.skill_memory", "current skill is not set")
+        path = Path(current.path) / ".skill_env.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

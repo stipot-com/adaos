@@ -38,7 +38,7 @@ adaos secret import file.json
 
 ## Сервис
 
-`services/secrets/service.py` — обёртка с Capabilities:
+`services/crypto/secrets_service.py` — обёртка с Capabilities:
 
 - `put/get/delete/list/import_items/export_items`
 - Требуются права: `"secrets.read"` и/или `"secrets.write"`.

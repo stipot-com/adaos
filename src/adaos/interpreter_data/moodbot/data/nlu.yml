@@ -1,0 +1,27 @@
+version: "3.1"
+nlu:
+  - intent: greet
+    examples: |
+      - привет
+      - здравствуй
+      - добрый день
+      - hello
+      - hi
+  - intent: mood_great
+    examples: |
+      - у меня всё отлично
+      - настроение супер
+      - i'm feeling great
+      - всё прекрасно
+  - intent: mood_unhappy
+    examples: |
+      - мне грустно
+      - всё плохо
+      - i'm feeling sad
+      - настроение ужасное
+  - intent: goodbye
+    examples: |
+      - пока
+      - увидимся
+      - bye
+      - до встречи

@@ -1,0 +1,12 @@
+{
+	"/adaos": {
+		"target": "http://localhost:3030",
+		"secure": false,
+		"changeOrigin": true
+	},
+	"/api/subnet": {
+		"target": "http://localhost:3030",
+		"secure": false,
+		"changeOrigin": true
+	}
+}

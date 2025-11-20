@@ -3,7 +3,7 @@ import sys, shutil, asyncio, pytest
 from adaos.services.agent_context import get_ctx
 from adaos.domain import ProcessSpec
 
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.anyio
 
 
 async def test_cmd_start(tmp_path, monkeypatch):

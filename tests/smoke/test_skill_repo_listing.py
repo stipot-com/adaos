@@ -16,7 +16,9 @@ def test_list_empty(tmp_path, monkeypatch):
 def test_manifest_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path / "base"))
     ctx = get_ctx()
-    sd = Path(ctx.paths.skills_dir()) / "foo"
+    skills_root_attr = getattr(ctx.paths, "skills_cache_dir", None)
+    skills_root = skills_root_attr() if callable(skills_root_attr) else ctx.paths.skills_dir()
+    sd = Path(skills_root) / "skills" / "foo"
     sd.mkdir(parents=True, exist_ok=True)
     (sd / "skill.yaml").write_text("id: demo\nversion: '1.2.3'\nname: Demo Skill\n", encoding="utf-8")
     svc = SkillService(repo=ctx.skills_repo, bus=ctx.bus)

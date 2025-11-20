@@ -50,6 +50,12 @@ class SecureGitClient(GitClient):
     def sparse_add(self, dir: str, path: str) -> None:
         self.base.sparse_add(dir, path)
 
+    def sparse_reapply(self, dir: str) -> None:
+        self.base.sparse_reapply(dir)
+
+    def rm_cached(self, dir: str, path: str) -> None:
+        self.base.rm_cached(dir, path)
+
     def changed_files(self, dir: str, subpath: Optional[str] = None) -> list[str]:
         return self.base.changed_files(dir, subpath)
 

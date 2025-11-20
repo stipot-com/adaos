@@ -1,0 +1,41 @@
+<ion-app>
+	<ion-tabs>
+		<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
+			<ion-toolbar>
+				<ion-title>
+					INIMATIC
+				</ion-title>
+			</ion-toolbar>
+		</ion-header>
+		<ion-tab-bar slot="bottom">
+			<ion-tab-button tab="private">
+				<ion-icon name="lock-closed-outline"></ion-icon>
+				Private point
+			</ion-tab-button>
+			<ion-tab-button tab="public">
+				<ion-icon name="people"></ion-icon>
+				Public point
+			</ion-tab-button>
+			<ion-tab-button tab="follower">
+				<ion-icon name="phone-portrait"></ion-icon>
+				My phone
+			</ion-tab-button>
+			<ion-tab-button tab="hub">
+				<ion-icon name="apps"></ion-icon>
+				hub
+			</ion-tab-button>
+			<ion-tab-button tab="member">
+				<ion-icon name="laptop"></ion-icon>
+				member
+			</ion-tab-button>
+			<ion-tab-button tab="desktop">
+				<ion-icon name="desktop"></ion-icon>
+				Desktop
+			</ion-tab-button>
+			<ion-tab-button tab="settings">
+				<ion-icon name="settings"></ion-icon>
+				Settings
+			</ion-tab-button>
+		</ion-tab-bar>
+	</ion-tabs>
+</ion-app>

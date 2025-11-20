@@ -12,6 +12,7 @@ adaos skill push <name> -m "msg"
 adaos skill reconcile-fs-to-db
 
 # Сценарии
+adaos scenario create <sid> [--template template]
 adaos scenario list [--fs]
 adaos scenario install <sid>
 adaos scenario uninstall <sid>
@@ -29,7 +30,7 @@ adaos secret import <file.json> [--scope ...]
 
 # Песочница
 adaos sandbox profiles
-adaos sandbox run "<cmd>" --profile handler --cwd ~/.adaos/skills/<skill> --inherit-env --env DEBUG=1
+adaos sandbox run "<cmd>" --profile handler --cwd ~/.adaos/workspace/skills/<skill> --inherit-env --env DEBUG=1
 ```
 
 ## Поведение по умолчанию
@@ -44,10 +45,10 @@ adaos sandbox run "<cmd>" --profile handler --cwd ~/.adaos/skills/<skill> --inhe
 adaos sandbox profiles
 adaos sandbox run "<команда>" \
   --profile handler \
-  --cwd ~/.adaos/skills/weather_skill \
+  --cwd ~/.adaos/workspace/skills/weather_skill \
   --inherit-env \
   --env DEBUG=1 --env LOG_LEVEL=info
-adaos sandbox run "<команда>" --profile handler --cwd \~/.adaos/skills/<skill> --inherit-env --env DEBUG=1
+adaos sandbox run "<команда>" --profile handler --cwd \~/.adaos/workspace/skills/<skill> --inherit-env --env DEBUG=1
 # Явные лимиты перекрывают профиль:
 adaos sandbox run "python -c 'while True: pass'" --cpu 1 --wall 10
 

@@ -1,0 +1,20 @@
+version: "3.1"
+intents:
+  - greet
+  - mood_great
+  - mood_unhappy
+  - goodbye
+responses:
+  utter_greet:
+    - text: "Привет! Чем могу помочь?"
+  utter_cheer_up:
+    - text: "Не переживай, всё наладится!"
+  utter_did_that_help:
+    - text: "Стало немного лучше?"
+  utter_happy:
+    - text: "Рад это слышать!"
+  utter_goodbye:
+    - text: "Пока! Хорошего дня."
+session_config:
+  session_expiration_time: 60
+  carry_over_slots_to_new_session: true

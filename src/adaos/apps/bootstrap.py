@@ -17,12 +17,13 @@ from adaos.adapters.git.secure_git import SecureGitClient
 from adaos.services.policy.fs import SimpleFSPolicy
 from adaos.adapters.secrets.keyring_vault import KeyringVault
 from adaos.adapters.secrets.file_vault import FileVault
-from adaos.services.secrets.service import SecretsService
-from adaos.services.secrets.crypto import load_or_create_master  # noqa: F401 (если пока не используешь)
+from adaos.services.crypto.secrets_service import SecretsService
+from adaos.services.crypto.vault import load_or_create_master  # noqa: F401 (если пока не используешь)
 from adaos.services.sandbox.runner import ProcSandbox
 from adaos.services.sandbox.service import SandboxService
 
 from adaos.services.agent_context import set_ctx
+from adaos.services.node_config import load_config
 
 
 class _CtxHolder:
@@ -47,7 +48,7 @@ class _CtxHolder:
 
     @classmethod
     def reload(cls, **overrides) -> AgentContext:
-        """Иммутабельная перегрузка (без дубликатов): создаём новый Settings и пересобираем контекст."""
+        """Immutable reload (singleton): create new Settings and rebuild context."""
         with cls._lock:
             old = cls._ctx or cls._build(Settings.from_sources())
             new_settings = old.settings.with_overrides(**overrides)
@@ -71,6 +72,12 @@ class _CtxHolder:
             paths.tmp_dir(),
         ):
             fs.allow_root(root)
+
+        # Ensure the Yjs stores root exists (Stage A1).
+        try:
+            (paths.state_dir() / "ystores").mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
         bus = LocalEventBus()
         root_logger = setup_logging(paths)
@@ -160,6 +167,11 @@ class _CtxHolder:
             except Exception:
                 pass
 
+        # Attach NodeConfig once; consumers should use ctx.config instead of calling load_config repeatedly
+        try:
+            object.__setattr__(ctx, "config", load_config(ctx=ctx))
+        except Exception:
+            pass
         return ctx
 
 
@@ -181,8 +193,3 @@ def init_ctx(settings: Optional[Settings] = None) -> AgentContext:
 def reload_ctx(**overrides) -> AgentContext:
     """Пересборка с overrides и публикация контекста."""
     return _CtxHolder.reload(**overrides)
-
-
-def bootstrap_app(settings: Optional[Settings] = None) -> AgentContext:
-    """Синоним init_ctx: удобно вызывать из точек входа CLI/API."""
-    return init_ctx(settings)

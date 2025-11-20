@@ -1,0 +1,910 @@
+- path: src/adaos/__main__.py
+- path: src/adaos/adapters/audio/old/asr.py
+  classes:
+  - Name: VoiceRecognizer
+    methds: __init__, listen
+- path: src/adaos/adapters/audio/old/tts.py
+  funcs: tts
+- path: src/adaos/adapters/audio/old/wake_word.py
+  classes:
+  - Name: WakeWordVosk
+    methds: __init__, audio_callback, wait_for_wake_word
+- path: src/adaos/adapters/audio/stt/model_manager.py
+  funcs: ensure_vosk_model
+- path: src/adaos/adapters/audio/stt/vosk_stt.py
+  classes:
+  - Name: VoskSTT
+    methds: __init__, listen_stream, close
+- path: src/adaos/adapters/audio/tts/android_tts.py
+  classes:
+  - Name: AndroidTTS
+    methds: __init__, say, shutdown
+- path: src/adaos/adapters/audio/tts/native_tts.py
+  classes:
+  - Name: NativeTTS
+    methds: __init__, say, stop, __del__
+- path: src/adaos/adapters/db/__init__.py
+- path: src/adaos/adapters/db/sqlite.py
+  tags:
+  - layer:db
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: add_or_update_entity, set_installed_flag, list_entities, update_skill_version,
+    get_skill_versions, list_versions, idem_get, idem_put, ca_load, ca_update_serial,
+    subnet_get_or_create, device_get_by_fingerprint, device_upsert_hub, pair_issue,
+    pair_get, pair_confirm, pair_revoke, binding_upsert, get_binding_by_user
+- path: src/adaos/adapters/db/sqlite_scenario_registry.py
+  classes:
+  - Name: SqliteScenarioRegistry
+    methds: __init__, list, get, register, unregister, set_all
+- path: src/adaos/adapters/db/sqlite_schema.py
+  tags:
+  - layer:db
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: ensure_schema
+- path: src/adaos/adapters/db/sqlite_skill_registry.py
+  classes:
+  - Name: SqliteSkillRegistry
+    methds: __init__, list, get, register, unregister, set_all
+- path: src/adaos/adapters/db/sqlite_store.py
+  classes:
+  - Name: SQLite
+    methds: __init__, connect
+  - Name: SQLiteKV
+    methds: __init__, get, set, delete, list
+- path: src/adaos/adapters/fs/path_provider.py
+  classes:
+  - Name: PathProvider
+    methds: from_settings, __init__, package_path, locales_dir, skill_templates_dir,
+      scenario_templates_dir, base_dir, workspace_dir, skills_workspace_dir, scenarios_workspace_dir,
+      skills_cache_dir, scenarios_cache_dir, skills_dir, scenarios_dir, models_dir,
+      logs_dir, cache_dir, state_dir, locales_base_dir, skills_locales_dir, scenarios_locales_dir,
+      dev_dir, dev_skills_dir, dev_scenarios_dir, tmp_dir, ensure_tree
+- path: src/adaos/adapters/git/cli_git.py
+  classes:
+  - Name: GitError
+  - Name: CliGitClient
+    methds: __init__, ensure_repo, pull, current_commit, sparse_init, sparse_set,
+      sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath, push
+- path: src/adaos/adapters/git/secure_git.py
+  classes:
+  - Name: SecureGitClient
+    methds: __init__, ensure_repo, pull, current_commit, sparse_init, sparse_set,
+      sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath, push
+- path: src/adaos/adapters/git/workspace.py
+  funcs: wait_for_materialized
+  classes:
+  - Name: SparseWorkspace
+    methds: ensure_initialized, patterns_file, read_patterns, write_patterns, update
+- path: src/adaos/adapters/scenarios/git_repo.py
+  classes:
+  - Name: GitScenarioRepository
+    methds: __init__, ensure, list, get, install, uninstall
+- path: src/adaos/adapters/sdk/inproc_skill_context.py
+  classes:
+  - Name: InprocSkillContext
+    methds: set, clear, get
+- path: src/adaos/adapters/secrets/file_vault.py
+  classes:
+  - Name: FileVault
+    methds: __init__, put, get, delete, list, import_items, export_items
+- path: src/adaos/adapters/secrets/keyring_vault.py
+  classes:
+  - Name: KeyringVault
+    methds: __init__, put, get, delete, list, import_items, export_items
+- path: src/adaos/adapters/security/guard.py
+  funcs: require_caps
+- path: src/adaos/adapters/skills/git_repo.py
+  classes:
+  - Name: GitSkillRepository
+    methds: __init__, ensure, list, get, install, uninstall
+- path: src/adaos/apps/api/auth.py
+  tags:
+  - area:auth
+  - layer:backend
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: require_token, require_owner_token
+- path: src/adaos/apps/api/io_webhooks.py
+  funcs: telegram_webhook, tg_pair_create, tg_pair_confirm, tg_pair_status, tg_pair_revoke
+- path: src/adaos/apps/api/node_api.py
+  funcs: node_status, node_change_role
+  classes:
+  - Name: NodeStatus
+  - Name: RoleChangeRequest
+  - Name: RoleChangeResponse
+- path: src/adaos/apps/api/observe_api.py
+  funcs: observe_ingest, observe_tail, observe_stream, observe_test
+  classes:
+  - Name: IngestBatch
+- path: src/adaos/apps/api/root_endpoints.py
+  tags:
+  - area:api
+  - layer:backend
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: root_register, llm_chat, subnet_register, subnet_register_status
+  classes:
+  - Name: ChatMessage
+  - Name: ChatRequest
+  - Name: SubnetRegisterRequest
+- path: src/adaos/apps/api/scenarios.py
+  funcs: list_scenarios, sync, install, remove, push
+  classes:
+  - Name: InstallReq
+  - Name: PushReq
+- path: src/adaos/apps/api/server.py
+  tags:
+  - area:api
+  - layer:backend
+  - uc:device_login
+  funcs: lifespan, ping, status, say, health_live, health_ready
+  classes:
+  - Name: SayRequest
+  - Name: SayResponse
+- path: src/adaos/apps/api/skills.py
+  funcs: list_skills, sync, install, get_skill, remove, push
+  classes:
+  - Name: InstallReq
+  - Name: PushReq
+- path: src/adaos/apps/api/subnet_api.py
+  funcs: register, heartbeat, deregister, ctx_get, ctx_set, nodes_list, node_get
+  classes:
+  - Name: RegisterRequest
+  - Name: RegisterResponse
+  - Name: HeartbeatRequest
+  - Name: HeartbeatResponse
+  - Name: CtxValue
+  - Name: DeregisterRequest
+- path: src/adaos/apps/api/tool_bridge.py
+  funcs: call_tool
+  classes:
+  - Name: ToolCall
+- path: src/adaos/apps/bootstrap.py
+  funcs: get_ctx, init_ctx, reload_ctx, bootstrap_app
+  classes:
+  - Name: _CtxHolder
+    methds: get, init, reload
+- path: src/adaos/apps/cli/app.py
+  funcs: ensure_environment, main, reset, switch_tts, switch_stt, where
+- path: src/adaos/apps/cli/commands/api.py
+  funcs: serve
+- path: src/adaos/apps/cli/commands/dev.py
+  tags:
+  - layer:cli
+  - uc:device_login
+  funcs: root_init, root_login, dev_login, skill_create, skill_push, skill_list, skill_delete,
+    skill_publish, scenario_publish, scenario_create, scenario_push, scenario_list,
+    scenario_delete, scenario_run, scenario_validate, dev_skill_validate, dev_skill_lint,
+    dev_skill_prep, dev_skill_test, dev_skill_setup, dev_skill_run, dev_skill_activate,
+    dev_skill_status, dev_skill_rollback
+- path: src/adaos/apps/cli/commands/llm.py
+  funcs: build_prep, build_skill
+- path: src/adaos/apps/cli/commands/monitor.py
+  funcs: monitor_events, monitor_sse, ping
+- path: src/adaos/apps/cli/commands/native.py
+  funcs: say, start
+- path: src/adaos/apps/cli/commands/ovos.py
+  funcs: say
+- path: src/adaos/apps/cli/commands/repo.py
+  funcs: reset
+- path: src/adaos/apps/cli/commands/rhasspy.py
+  funcs: start, stop, status
+- path: src/adaos/apps/cli/commands/runtime.py
+  funcs: show_logs, restart_runtime, start_cmd, start_demo, stop, status
+- path: src/adaos/apps/cli/commands/sandbox.py
+  funcs: profiles, run
+- path: src/adaos/apps/cli/commands/scenario.py
+  funcs: list_cmd, sync_cmd, install_cmd, create_cmd, uninstall_cmd, push_command,
+    run_cmd, validate_cmd, test_cmd
+- path: src/adaos/apps/cli/commands/sdk_export.py
+  funcs: export_cmd, export_all_cmd, check_cmd
+- path: src/adaos/apps/cli/commands/secret.py
+  funcs: cmd_set, cmd_get, cmd_list, cmd_delete, cmd_export, cmd_import
+- path: src/adaos/apps/cli/commands/skill.py
+  funcs: list_cmd, sync, uninstall, reconcile_fs_to_db, push_command, cmd_create,
+    cmd_scaffold, cmd_validate, cmd_install, cmd_test, run_handler, run_tool, cmd_setup,
+    activate, rollback, status, gc, doctor, migrate
+- path: src/adaos/apps/cli/commands/tests.py
+  funcs: run_tests
+- path: src/adaos/apps/cli/i18n.py
+- path: src/adaos/build_info.py
+  classes:
+  - Name: BuildInfo
+- path: src/adaos/config/const.py
+- path: src/adaos/domain/__init__.py
+- path: src/adaos/domain/skill.py
+  classes:
+  - Name: SkillMeta
+- path: src/adaos/domain/skill_registry.py
+  classes:
+  - Name: SkillRecord
+- path: src/adaos/domain/types.py
+  classes:
+  - Name: SkillId
+  - Name: ScenarioId
+  - Name: Event
+  - Name: ProcessSpec
+- path: src/adaos/facades/i18n_lazy.py
+- path: src/adaos/integrations/inimatic/LoginWV/www/LoginWV.js
+- path: src/adaos/integrations/inimatic/backend/adaos-bridge.ts
+  endpoints: GET /api/subnet/nodes, POST /api/subnet/ping
+- path: src/adaos/integrations/inimatic/backend/app.ts
+  endpoints: DELETE /scenarios/draft, DELETE /scenarios/registry, DELETE /skills/draft,
+    DELETE /skills/registry, GET /debug/hubs, GET /debug/owners, GET /health, GET
+    /healthz, GET /metrics, GET /owner/hubs, GET /policy, GET /v1/health, GET /whoami,
+    POST /auth/owner/poll, POST /auth/owner/refresh, POST /auth/owner/start, POST
+    /owner/hubs, POST /pki/enroll, POST /scenarios/draft, POST /scenarios/pr, POST
+    /skills/draft, POST /skills/pr, POST /v1/bootstrap_token, POST /v1/nodes/register,
+    POST /v1/subnets/register
+- path: src/adaos/integrations/inimatic/backend/build-info.ts
+  exports: buildInfo
+- path: src/adaos/integrations/inimatic/backend/forge.ts
+  types: DeleteDraftArgs, DeleteDraftResult, DeleteRegistryArgs, DeleteRegistryResult,
+    DraftKind, DraftWriteResult, ForgeManagerOptions, WriteDraftOptions
+- path: src/adaos/integrations/inimatic/backend/github-app.ts
+  types: GhAppConfig
+- path: src/adaos/integrations/inimatic/backend/i18n.ts
+  types: Locale, MessageParams
+- path: src/adaos/integrations/inimatic/backend/io/bus/nats.ts
+  types: NatsOpts
+- path: src/adaos/integrations/inimatic/backend/io/idem/kv.ts
+  exports: redis
+- path: src/adaos/integrations/inimatic/backend/io/pairing/api.ts
+  endpoints: GET /io/tg/pair/status, POST /io/tg/pair/confirm, POST /io/tg/pair/create,
+    POST /io/tg/pair/revoke
+- path: src/adaos/integrations/inimatic/backend/io/pairing/store.ts
+  types: Binding, PairRecord
+- path: src/adaos/integrations/inimatic/backend/io/root/settings.ts
+  types: RootSettings
+- path: src/adaos/integrations/inimatic/backend/io/router/resolve.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/media.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/normalize.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/pairing.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/sender.ts
+- path: src/adaos/integrations/inimatic/backend/io/telegram/webhook.ts
+  endpoints: POST /io/tg/:bot_id/webhook
+- path: src/adaos/integrations/inimatic/backend/io/telemetry.ts
+  exports: dlq_total, enqueue_total, outbound_total, retry_total, tg_updates_total
+- path: src/adaos/integrations/inimatic/backend/io/types.ts
+  types: ChatInputEvent, ChatOutputEvent, ChatOutputMessage
+- path: src/adaos/integrations/inimatic/backend/io/types/fluent-ffmpeg.d.ts
+- path: src/adaos/integrations/inimatic/backend/pki.ts
+  types: CertificateAuthorityOptions, CertificateSubject, IssueCertificateOptions,
+    IssueResult
+- path: src/adaos/integrations/inimatic/backend/policy.ts
+  types: Policy
+  exports: POLICY
+- path: src/adaos/integrations/inimatic/browser_extension/content.js
+- path: src/adaos/integrations/inimatic/browser_extension/service_worker.js
+- path: src/adaos/integrations/inimatic/karma.conf.js
+- path: src/adaos/integrations/inimatic/server.js
+- path: src/adaos/integrations/inimatic/src/app/app.component.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/app.component.ts
+- path: src/adaos/integrations/inimatic/src/app/app.routes.ts
+- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-client.service.ts
+  tags:
+  - area:api-client
+  - layer:frontend
+  - uc:device_login
+  - uc:qr_pairing
+  types: AdaosEvent
+  interfaces: AdaosConfig, SubnetRegisterData, SubnetRegisterRequest, SubnetRegisterResponse
+- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-types.ts
+  types: AdaosEvent
+  interfaces: AdaosConfig
+- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.ts
+- path: src/adaos/integrations/inimatic/src/app/features/hub/hub.component.ts
+  tags:
+  - area:ui
+  - layer:frontend
+  - uc:qr_pairing
+- path: src/adaos/integrations/inimatic/src/app/features/login/login.component.ts
+- path: src/adaos/integrations/inimatic/src/app/features/login/login.service.ts
+- path: src/adaos/integrations/inimatic/src/app/features/member/member.component.ts
+- path: src/adaos/integrations/inimatic/src/app/loginwv.service.ts
+- path: src/adaos/integrations/inimatic/src/app/phone/phone.component.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/phone/phone.component.ts
+- path: src/adaos/integrations/inimatic/src/app/phone/providers.ts
+  exports: providers
+- path: src/adaos/integrations/inimatic/src/app/private-point/private-point.page.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/private-point/private-point.page.ts
+- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.spec.ts
+- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.ts
+  tags:
+  - area:ui
+  - layer:frontend
+  - uc:device_login
+  - uc:qr_pairing
+- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-ctx.ts
+  types: Ability, IOSettings
+  interfaces: SkillCtx, SkillManifest, SkillModule, UILayout
+- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-host.service.ts
+- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-outlet.component.ts
+- path: src/adaos/integrations/inimatic/src/app/skill-host/ui-lib.ts
+- path: src/adaos/integrations/inimatic/src/app/skills/hub-ping.skill.ts
+  exports: hubPingSkill
+- path: src/adaos/integrations/inimatic/src/app/skills/hub-status.skill.ts
+  exports: hubStatusSkill
+- path: src/adaos/integrations/ovos/__init__.py
+- path: src/adaos/integrations/ovos/tts.py
+  classes:
+  - Name: OVOSTTSAdapter
+    methds: __init__, say
+- path: src/adaos/integrations/rhasspy/runner.py
+  funcs: start_rhasspy, stop_rhasspy, status_rhasspy, wait_until_ready
+- path: src/adaos/integrations/rhasspy/tts.py
+  classes:
+  - Name: RhasspyTTSAdapter
+    methds: __init__, say
+- path: src/adaos/integrations/telegram/__init__.py
+- path: src/adaos/integrations/telegram/files.py
+  funcs: get_file_path, download_file, convert_opus_to_wav16k
+- path: src/adaos/integrations/telegram/normalize.py
+  funcs: to_input_event
+- path: src/adaos/integrations/telegram/pairing.py
+  funcs: extract_start_code
+- path: src/adaos/integrations/telegram/sender.py
+  classes:
+  - Name: TelegramSender
+    methds: __init__, send
+- path: src/adaos/integrations/telegram/webhook.py
+  funcs: validate_secret
+- path: src/adaos/launcher/sentinel.py
+  funcs: is_ready, start_core, wait_until_ready, run
+  classes:
+  - Name: Gateway
+    methds: do_GET, do_POST
+- path: src/adaos/ports/__init__.py
+- path: src/adaos/ports/contracts.py
+  classes:
+  - Name: EventBus
+    methds: publish, subscribe
+  - Name: Process
+    methds: start, stop, status
+  - Name: Capabilities
+    methds: check, grant, revoke
+  - Name: Devices
+    methds: list, acquire, release
+  - Name: KV
+    methds: get, set, delete, list
+  - Name: SQL
+    methds: connect
+  - Name: Secrets
+    methds: put, get
+  - Name: Net
+    methds: allowed
+  - Name: Updates
+    methds: fetch, verify, install, rollback
+- path: src/adaos/ports/fs.py
+  classes:
+  - Name: FSPolicy
+    methds: allow_root, require_read, require_write, is_allowed
+- path: src/adaos/ports/git.py
+  classes:
+  - Name: GitClient
+    methds: ensure_repo, pull, current_commit, sparse_init, sparse_set, sparse_add,
+      sparse_reapply, rm_cached, changed_files, commit_subpath, push
+- path: src/adaos/ports/heartbeat.py
+  classes:
+  - Name: HeartbeatPort
+    methds: register, heartbeat, deregister
+- path: src/adaos/ports/paths.py
+  classes:
+  - Name: PathProvider
+    methds: base, package_dir, package_path, base_dir, locales_dir, locales_base_dir,
+      skills_locales_dir, scenarios_locales_dir, workspace_dir, skills_workspace_dir,
+      scenarios_workspace_dir, skills_cache_dir, scenarios_cache_dir, skill_templates_dir,
+      scenario_templates_dir, skills_dir, scenarios_dir, dev_dir, dev_skills_dir,
+      dev_scenarios_dir, models_dir, state_dir, cache_dir, logs_dir, tmp_dir
+- path: src/adaos/ports/policy.py
+  classes:
+  - Name: Capabilities
+    methds: grant, revoke, has, require
+  - Name: Net
+    methds: allow, deny, is_allowed_url, require_url
+- path: src/adaos/ports/root/__init__.py
+  classes:
+  - Name: PubKey
+  - Name: KeypairRef
+  - Name: CertBundle
+  - Name: BeginRegistrationReq
+  - Name: BeginRegistrationRes
+  - Name: CompleteRegistrationReq
+  - Name: LlmProxyReq
+  - Name: LlmProxyRes
+  - Name: RootCAClientPort
+    methds: begin_registration, complete_registration
+  - Name: RootLlmPort
+    methds: llm_proxy
+- path: src/adaos/ports/sandbox.py
+  classes:
+  - Name: ExecLimits
+  - Name: ExecResult
+  - Name: Sandbox
+    methds: run
+- path: src/adaos/ports/scenarios.py
+  classes:
+  - Name: ScenarioRepository
+    methds: ensure, list, get, install, remove
+- path: src/adaos/ports/secrets.py
+  classes:
+  - Name: Secrets
+    methds: put, get, delete, list, import_items, export_items
+- path: src/adaos/ports/skill_context.py
+  classes:
+  - Name: CurrentSkill
+  - Name: SkillContextPort
+    methds: set, clear, get
+- path: src/adaos/ports/skill_registry.py
+  classes:
+  - Name: SkillRegistry
+    methds: list, get, register, unregister, set_all
+- path: src/adaos/ports/skills.py
+  classes:
+  - Name: SkillRepository
+    methds: ensure, list, get, install, uninstall
+- path: src/adaos/ports/skills_loader.py
+  classes:
+  - Name: SkillsLoaderPort
+    methds: import_all_handlers
+- path: src/adaos/ports/subnet.py
+  classes:
+  - Name: SubnetRegistryPort
+    methds: mark_down_if_expired
+- path: src/adaos/ports/subnet_kv.py
+  classes:
+  - Name: SubnetKVPort
+    methds: is_hub, get, set
+- path: src/adaos/ports/subnet_registry.py
+  classes:
+  - Name: NodeInfo
+  - Name: SubnetRegistryPort
+    methds: register_node, heartbeat, mark_down_if_expired, list_nodes, get_node,
+      unregister_node
+- path: src/adaos/sdk/__init__.py
+- path: src/adaos/sdk/core/__init__.py
+- path: src/adaos/sdk/core/_cap.py
+  funcs: require_cap
+- path: src/adaos/sdk/core/_ctx.py
+  funcs: require_ctx
+- path: src/adaos/sdk/core/_idem.py
+  funcs: load, save
+- path: src/adaos/sdk/core/decorators.py
+  funcs: subscribe, register_subscriptions, tool, event_payload, emits, resolve_tool
+- path: src/adaos/sdk/core/errors.py
+  classes:
+  - Name: SdkError
+  - Name: SdkRuntimeNotInitialized
+    methds: __init__
+  - Name: CapabilityError
+    methds: __init__
+  - Name: QuotaExceeded
+    methds: __init__
+  - Name: ConflictError
+    methds: __init__
+- path: src/adaos/sdk/core/exporter.py
+  funcs: export
+- path: src/adaos/sdk/core/logging.py
+  funcs: setup_scenario_logger
+  classes:
+  - Name: JsonFormatter
+    methds: format
+- path: src/adaos/sdk/core/types.py
+  funcs: result_envelope
+  classes:
+  - Name: ToolFn
+    methds: __call__
+  - Name: ResultEnvelope
+- path: src/adaos/sdk/core/validation/__init__.py
+- path: src/adaos/sdk/core/validation/skill.py
+  funcs: validate_self
+- path: src/adaos/sdk/data/__init__.py
+- path: src/adaos/sdk/data/bus.py
+  funcs: get_meta, emit, on
+  classes:
+  - Name: BusNotAvailable
+- path: src/adaos/sdk/data/context.py
+  funcs: set_current_skill, clear_current_skill, get_current_skill
+- path: src/adaos/sdk/data/env.py
+  funcs: get_tts_backend, get_stt_backend, get_audio_out_backend
+- path: src/adaos/sdk/data/events.py
+  funcs: publish
+- path: src/adaos/sdk/data/fs.py
+  funcs: tmp_path, save_bytes, open
+- path: src/adaos/sdk/data/i18n.py
+  classes:
+  - Name: I18n
+    methds: __init__, translate
+- path: src/adaos/sdk/data/memory.py
+  funcs: get, put, delete, list
+- path: src/adaos/sdk/data/secrets.py
+  funcs: get, set, delete
+- path: src/adaos/sdk/data/skill_memory.py
+  funcs: get, set
+- path: src/adaos/sdk/llm/llm_client.py
+  funcs: getOpenAIClient, generate_test_yaml, generate_test_yaml, generate_skill
+- path: src/adaos/sdk/llm/llm_skill_pipeline.py
+  funcs: skill_creation_pipeline
+- path: src/adaos/sdk/llm/process_llm_output.py
+  funcs: process_llm_output
+- path: src/adaos/sdk/manage/__init__.py
+- path: src/adaos/sdk/manage/common.py
+- path: src/adaos/sdk/manage/environment.py
+  funcs: prepare_environment
+- path: src/adaos/sdk/manage/resources.py
+  funcs: request, status
+- path: src/adaos/sdk/manage/scenarios.py
+  funcs: create, install, uninstall, pull, push, list_installed, delete, read_proto,
+    write_proto, read_bindings, write_bindings, toggle, set_binding
+- path: src/adaos/sdk/manage/self.py
+  funcs: validate, state_get, state_put, request_update
+- path: src/adaos/sdk/manage/skills.py
+  funcs: install, uninstall, list_installed
+- path: src/adaos/sdk/scenarios/__init__.py
+  funcs: create, install, uninstall, pull, push, list_installed, delete, read_proto,
+    write_proto, read_bindings, write_bindings
+- path: src/adaos/sdk/scenarios/runtime.py
+  funcs: load_scenario, ensure_runtime_context, default_registry
+  classes:
+  - Name: ActionRegistry
+    methds: __init__, register, call, has, routes
+  - Name: ScenarioStep
+    methds: from_mapping
+  - Name: ScenarioModel
+    methds: from_payload
+  - Name: ScenarioRuntime
+    methds: __init__, run, validate, run_from_file
+  - Name: _InMemoryKV
+    methds: __init__, get, set, delete, list
+  - Name: _InMemorySecrets
+    methds: __init__, get, put
+- path: src/adaos/sdk/skills/testing.py
+  funcs: skill
+  classes:
+  - Name: SkillUnderTest
+    methds: import_module, import_
+- path: src/adaos/sdk/testing/bootstrap.py
+  funcs: init_dev_runtime, init_from_env
+- path: src/adaos/services/agent_context.py
+  funcs: set_ctx, get_ctx, clear_ctx, use_ctx, pytest_sessionstart
+  classes:
+  - Name: AgentContext
+    methds: skills_repo, scenarios_repo, skill_ctx, reload_repos, i18n
+- path: src/adaos/services/bootstrap.py
+  funcs: is_ready, run_boot_sequence, shutdown, switch_role
+  classes:
+  - Name: BootstrapService
+    methds: __init__, is_ready, run_boot_sequence, shutdown, switch_role
+- path: src/adaos/services/chat_io/interfaces.py
+  classes:
+  - Name: ChatInputEvent
+  - Name: ChatOutputMessage
+  - Name: ChatOutputEvent
+  - Name: ChatAdapter
+    methds: validate_request, parse_webhook
+  - Name: ChatSender
+    methds: send
+  - Name: PairingProvider
+    methds: issue, confirm, status, revoke
+- path: src/adaos/services/chat_io/pairing.py
+  funcs: issue_pair_code, confirm_pair_code, pair_status, revoke_pair_code
+- path: src/adaos/services/chat_io/router.py
+  funcs: resolve_hub_id
+- path: src/adaos/services/chat_io/telemetry.py
+  funcs: record_event, snapshot
+- path: src/adaos/services/crypto/pki.py
+  funcs: generate_rsa_key, write_private_key, write_pem, make_csr
+- path: src/adaos/services/crypto/secrets_service.py
+  classes:
+  - Name: SecretsService
+    methds: __init__, put, get, delete, list, import_items, export_items
+- path: src/adaos/services/crypto/vault.py
+  funcs: generate_key, load_or_create_master, fernet_from_key
+- path: src/adaos/services/eventbus.py
+  funcs: emit
+  classes:
+  - Name: LocalEventBus
+    methds: __init__, subscribe, publish
+- path: src/adaos/services/fs/safe_io.py
+  funcs: ensure_dir, write_text_atomic, write_json_atomic, read_text, remove_tree
+- path: src/adaos/services/git/safe_commit.py
+  funcs: sanitize_message, check_no_denied
+- path: src/adaos/services/git/workspace_guard.py
+  funcs: ensure_clean
+- path: src/adaos/services/heartbeat_requests.py
+  classes:
+  - Name: RequestsHeartbeat
+    methds: __init__, register, heartbeat, deregister
+- path: src/adaos/services/i18n/service.py
+  classes:
+  - Name: I18nService
+    methds: translate
+- path: src/adaos/services/id_gen.py
+  funcs: new_id
+- path: src/adaos/services/io_bus/http_fallback.py
+  classes:
+  - Name: HttpFallbackBus
+    methds: __init__, post, connect, publish_input, subscribe_output
+- path: src/adaos/services/io_bus/local_bus.py
+  classes:
+  - Name: LocalIoBus
+    methds: __init__, connect, publish_input, subscribe_output
+- path: src/adaos/services/io_bus/nats_bus.py
+  funcs: json_bytes
+  classes:
+  - Name: NatsIoBus
+    methds: __init__, connect, close, publish_input, subscribe_output, publish_dlq
+- path: src/adaos/services/io_bus/rate_limit.py
+  classes:
+  - Name: TokenBucket
+    methds: __init__, allow
+  - Name: PerChatLimiter
+    methds: __init__, allow
+- path: src/adaos/services/io_bus/reliability.py
+  funcs: outbound_msg_hash
+- path: src/adaos/services/io_console.py
+  funcs: print
+- path: src/adaos/services/io_voice_mock.py
+  funcs: tts_speak, stt_listen
+- path: src/adaos/services/logging.py
+  funcs: setup_logging, attach_event_logger
+  classes:
+  - Name: JsonFormatter
+    methds: format
+- path: src/adaos/services/node_config.py
+  funcs: displayable_path, load_node, save_node, ensure_hub, node_base_dir, set_role,
+    load_config, save_config
+  classes:
+  - Name: RootOwnerProfile
+  - Name: RootState
+  - Name: RootOwnerSettings
+  - Name: RootSettings
+  - Name: HubKeypair
+  - Name: SubnetSettings
+  - Name: NodeSettings
+  - Name: DevSettings
+  - Name: NodeConfig
+    methds: root, root, node_id_value, subnet_id_value, owner_id, ensure_defaults,
+      sync_sections, to_dict, hub_key_path, hub_cert_path, ca_cert_path, workspace_path,
+      owner_workspace
+- path: src/adaos/services/observe.py
+  funcs: attach_http_trace_headers, start_observer, stop_observer, pass_filters
+  classes:
+  - Name: EventBroadcaster
+    methds: __init__, publish, subscribe
+- path: src/adaos/services/policy/capabilities.py
+  classes:
+  - Name: InMemoryCapabilities
+    methds: __init__, grant, revoke, has, require
+- path: src/adaos/services/policy/decorators.py
+  funcs: require_caps
+- path: src/adaos/services/policy/fs.py
+  classes:
+  - Name: SimpleFSPolicy
+    methds: __init__, allow_root, require_read, require_write, allow_root, is_allowed,
+      join_checked, remove_tree
+- path: src/adaos/services/policy/net.py
+  classes:
+  - Name: NetPolicy
+    methds: __init__, allow, deny, is_allowed_url, require_url
+- path: src/adaos/services/resources/__init__.py
+- path: src/adaos/services/resources/requests.py
+  classes:
+  - Name: ResourceTicket
+  - Name: ResourceRequestService
+    methds: create_ticket, get_ticket
+- path: src/adaos/services/root/client.py
+  tags:
+  - layer:services
+  - uc:device_login
+  classes:
+  - Name: RootHttpError
+    methds: __init__
+  - Name: RootHttpClient
+    methds: from_settings, request, owner_start, owner_poll, token_refresh, whoami,
+      owner_hubs_list, owner_hubs_add, pki_enroll, request_bootstrap_token, register_subnet,
+      device_authorize, device_poll, push_skill_draft, delete_draft_artifact, delete_skill_draft,
+      delete_scenario_draft, delete_registry_artifact, delete_skill_registry, delete_scenario_registry,
+      push_scenario_draft
+- path: src/adaos/services/root/keyring.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: save_refresh, load_refresh, delete_refresh
+  classes:
+  - Name: KeyringUnavailableError
+- path: src/adaos/services/root/service.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: assert_safe_name, create_zip_bytes, archive_bytes_to_b64, fingerprint_for_key
+  classes:
+  - Name: RootAuthError
+  - Name: RootAuthService
+    methds: resolve_owner, login_owner, get_access_token, whoami, logout, register_subnet
+  - Name: OwnerHubsService
+    methds: sync, add_current_hub
+  - Name: PkiService
+    methds: enroll
+  - Name: RootServiceError
+  - Name: TemplateResolutionError
+    methds: __init__
+  - Name: ArtifactNotFoundError
+    methds: __init__
+  - Name: DeviceAuthorization
+  - Name: RootInitResult
+  - Name: RootLoginResult
+  - Name: ArtifactCreateResult
+  - Name: ArtifactPushResult
+  - Name: ArtifactDeleteResult
+  - Name: ArtifactListItem
+  - Name: ArtifactPublishResult
+  - Name: RootDeveloperService
+    methds: __init__, init, login, create_skill, create_scenario, push_skill, push_scenario,
+      publish_skill, publish_scenario, delete_skill, delete_scenario, list_skills,
+      list_scenarios
+- path: src/adaos/services/runtime/__init__.py
+- path: src/adaos/services/runtime/manager.py
+  classes:
+  - Name: ProcState
+  - Name: _Record
+  - Name: AsyncProcessManager
+    methds: __init__, start, stop, status
+- path: src/adaos/services/sandbox/bootstrap.py
+  funcs: detect_spec, ensure_dev_venv
+  classes:
+  - Name: DevSpec
+    methds: hash
+- path: src/adaos/services/sandbox/profiles.py
+- path: src/adaos/services/sandbox/runner.py
+  classes:
+  - Name: _MonState
+  - Name: ProcSandbox
+    methds: __init__, run
+- path: src/adaos/services/sandbox/service.py
+  classes:
+  - Name: SandboxService
+    methds: __init__, run
+- path: src/adaos/services/scenario/control.py
+  classes:
+  - Name: ScenarioControlService
+    methds: set_enabled, set_binding
+- path: src/adaos/services/scenario/manager.py
+  classes:
+  - Name: ArtifactPublishResult
+  - Name: ScenarioManager
+    methds: __init__, list_installed, list_present, sync, install, remove, push, publish,
+      uninstall
+- path: src/adaos/services/scenario/scaffold.py
+  funcs: create
+- path: src/adaos/services/settings.py
+  classes:
+  - Name: Settings
+    methds: from_sources, with_overrides, require_subnet_id
+- path: src/adaos/services/skill/context.py
+  classes:
+  - Name: SkillContextService
+    methds: set_current_skill, clear_current_skill, get_current_skill
+- path: src/adaos/services/skill/lifecycle.py
+  classes:
+  - Name: SkillLifecycleService
+    methds: list_installed, install, uninstall
+- path: src/adaos/services/skill/manager.py
+  classes:
+  - Name: RuntimeInstallResult
+  - Name: PolicyDefaults
+  - Name: SkillManager
+    methds: __init__, list_installed, list_present, get, sync, install, validate_skill,
+      run_skill_tests, uninstall, push, prepare_runtime, activate_runtime, rollback_runtime,
+      dev_rollback_runtime, runtime_status, dev_runtime_status, cleanup_runtime, gc_runtime,
+      doctor_runtime, setup_skill, dev_setup_skill, run_tool, run_dev_tool, prepare_dev_runtime,
+      activate_dev_runtime, run_dev_skill_tests
+- path: src/adaos/services/skill/resolver.py
+  classes:
+  - Name: SkillPathResolver
+    methds: resolve
+- path: src/adaos/services/skill/runtime.py
+  funcs: resolve_active_version, find_skill_slot, find_skill_dir, run_skill_handler,
+    run_skill_handler_sync, run_skill_prep, run_dev_skill_prep
+  classes:
+  - Name: SkillRuntimeError
+  - Name: SkillDirectoryNotFoundError
+  - Name: SkillDirectoryAmbiguousError
+  - Name: SkillHandlerError
+  - Name: SkillHandlerNotFoundError
+  - Name: SkillHandlerImportError
+  - Name: SkillHandlerMissingFunctionError
+  - Name: SkillPrepError
+  - Name: SkillPrepScriptNotFoundError
+  - Name: SkillPrepImportError
+  - Name: SkillPrepMissingFunctionError
+- path: src/adaos/services/skill/runtime_env.py
+  classes:
+  - Name: SkillSlotPaths
+    methds: skill_env_path
+  - Name: SkillRuntimeEnvironment
+    methds: __init__, skill_name, runtime_root, version_root, slots_root, slot_root,
+      data_root, active_marker, previous_marker, metadata_path, active_version_marker,
+      list_versions, resolve_active_version, ensure_base, prepare_version, ensure_current_link,
+      build_slot_paths, read_active_slot, select_inactive_slot, set_active_slot, rollback_slot,
+      cleanup_slot, write_version_metadata, read_version_metadata, iter_slot_paths
+- path: src/adaos/services/skill/scaffold.py
+  funcs: create, create_skill
+- path: src/adaos/services/skill/secrets_backend.py
+  classes:
+  - Name: SkillSecretsBackend
+    methds: __init__, put, get, delete, list, import_items, export_items
+- path: src/adaos/services/skill/service.py
+  classes:
+  - Name: SkillService
+    methds: __init__, list, install, uninstall
+- path: src/adaos/services/skill/state.py
+  classes:
+  - Name: SkillStateService
+    methds: get, set, request_key
+- path: src/adaos/services/skill/tests_entry.py
+  funcs: main
+- path: src/adaos/services/skill/tests_runner.py
+  funcs: run_tests
+  classes:
+  - Name: TestResult
+- path: src/adaos/services/skill/update.py
+  classes:
+  - Name: SkillUpdateResult
+  - Name: SkillUpdateService
+    methds: request_update
+- path: src/adaos/services/skill/validation.py
+  classes:
+  - Name: Issue
+  - Name: ValidationReport
+  - Name: SkillValidationService
+    methds: validate, validate_path
+- path: src/adaos/services/skills_loader_importlib.py
+  classes:
+  - Name: ImportlibSkillsLoader
+    methds: import_all_handlers
+- path: src/adaos/services/subnet_kv_file_http.py
+  funcs: get_subnet_kv
+  classes:
+  - Name: HubSubnetKV
+    methds: __init__, is_hub, get, set
+  - Name: MemberSubnetKV
+    methds: __init__, is_hub, get, set
+- path: src/adaos/services/subnet_registry_mem.py
+  funcs: get_subnet_registry
+  classes:
+  - Name: InMemorySubnetRegistry
+    methds: __init__, register_node, heartbeat, mark_down_if_expired, list_nodes,
+      get_node, unregister_node
+- path: src/adaos/services/testing/bootstrap.py
+  funcs: skill_tests_root, load_test_secrets, mount_skill_paths_for_testing, unmount_skill_paths,
+    bootstrap_test_ctx
+  classes:
+  - Name: MockSecrets
+    methds: __init__, get, put, delete, list, import_items, export_items
+  - Name: MockCapabilities
+    methds: __init__, grant, allows, require
+  - Name: _Noop
+    methds: __getattr__
+  - Name: _NoopProcess
+    methds: start, status
+  - Name: TestContextHandle
+    methds: teardown
+- path: src/adaos/services/testing/hub_mock.py
+  funcs: run
+- path: src/adaos/services/tests/runner.py
+  funcs: run_pytest
+  classes:
+  - Name: TestRunResult
+- path: src/adaos/skills/runtime_runner.py
+  funcs: execute_tool
+- path: src/adaos/skills_templates/AlarmSkill/handlers/main.py
+  funcs: load_config, save_config, set_alarm, cancel_alarm, handle
+- path: src/adaos/skills_templates/skill_default/handlers/main.py
+  funcs: lang_res
+- path: src/adaos/skills_templates/skill_default/prep/prepare.py
+  funcs: lang_res, test_internet_access, test_weather_api, run_prep
+

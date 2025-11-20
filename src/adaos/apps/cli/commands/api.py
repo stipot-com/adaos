@@ -17,6 +17,11 @@ def serve(
     """Запустить HTTP API (FastAPI)."""
     if token:
         os.environ["ADAOS_TOKEN"] = token
+    # Advertise this node's base URL for subnet register/heartbeat
+    try:
+        os.environ["ADAOS_SELF_BASE_URL"] = f"http://{host}:{port}"
+    except Exception:
+        pass
     # точка входа FastAPI
     uvicorn.run("adaos.apps.api.server:app", host=host, port=port, reload=reload)
 

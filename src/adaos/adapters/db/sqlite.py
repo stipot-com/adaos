@@ -7,8 +7,11 @@ add_or_update_entity, update_skill_version, list_entities, set_installed_flag.
 и ту же схему таблиц (skills/skill_versions, scenarios/scenario_versions).
 """
 from __future__ import annotations
+import time
 from typing import Optional, Iterable, Literal, List, Dict, Any
+
 from adaos.services.agent_context import get_ctx
+from adaos.services.id_gen import new_id
 
 Entity = Literal["skills", "scenarios"]
 
@@ -142,3 +145,327 @@ def list_versions(name: str) -> Optional[str]:
         cur = con.execute("SELECT active_version FROM skills WHERE name=?", (name,))
         row = cur.fetchone()
     return row[0] if row and row[0] else None
+
+
+def idem_get(key: str, method: str, path: str, principal_id: str, body_hash: str) -> dict | None:
+    if not key:
+        return None
+    sql = get_ctx().sql
+    now = int(time.time())
+    with sql.connect() as con:
+        cur = con.execute(
+            """
+            SELECT status_code, body_json, event_id, server_time_utc
+            FROM idempotency_cache
+            WHERE key=? AND method=? AND path=? AND principal_id=? AND body_hash=? AND expires_at>=?
+            """,
+            (key, method, path, principal_id, body_hash, now),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "status_code": row[0],
+        "body_json": row[1],
+        "event_id": row[2],
+        "server_time_utc": row[3],
+    }
+
+
+def idem_put(
+    key: str,
+    method: str,
+    path: str,
+    principal_id: str,
+    body_hash: str,
+    status_code: int,
+    body_json: str,
+    event_id: str,
+    server_time_utc: str,
+    *,
+    ttl: int = 600,
+) -> None:
+    if not key:
+        return
+    sql = get_ctx().sql
+    now = int(time.time())
+    expires_at = now + max(ttl, 1)
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO idempotency_cache(
+                key, method, path, principal_id, body_hash,
+                status_code, body_json, event_id, server_time_utc,
+                created_at, expires_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                key,
+                method,
+                path,
+                principal_id,
+                body_hash,
+                status_code,
+                body_json,
+                event_id,
+                server_time_utc,
+                now,
+                expires_at,
+            ),
+        )
+        con.commit()
+
+
+def ca_load() -> dict:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute("SELECT ca_key_pem, ca_cert_pem, next_serial FROM ca_state WHERE id=1")
+        row = cur.fetchone()
+        if row:
+            return {"ca_key_pem": row[0], "ca_cert_pem": row[1], "next_serial": int(row[2])}
+        from datetime import datetime, timedelta
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "AdaOS Root CA")])
+        now = datetime.utcnow()
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        )
+        cert = builder.sign(private_key=key, algorithm=hashes.SHA256())
+        key_pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        con.execute(
+            "INSERT INTO ca_state(id, ca_key_pem, ca_cert_pem, next_serial) VALUES(1, ?, ?, ?)",
+            (key_pem, cert_pem, 1),
+        )
+        con.commit()
+        return {"ca_key_pem": key_pem, "ca_cert_pem": cert_pem, "next_serial": 1}
+
+
+def ca_update_serial(next_serial: int) -> None:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        con.execute("UPDATE ca_state SET next_serial=? WHERE id=1", (int(next_serial),))
+        con.commit()
+
+
+def subnet_get_or_create(owner_id: str) -> dict:
+    sql = get_ctx().sql
+    now = int(time.time())
+    with sql.connect() as con:
+        cur = con.execute("SELECT subnet_id, owner_id, created_at FROM subnets WHERE owner_id=?", (owner_id,))
+        row = cur.fetchone()
+        if row:
+            return {"subnet_id": row[0], "owner_id": row[1], "created_at": row[2]}
+        subnet_id = new_id()
+        con.execute(
+            "INSERT INTO subnets(subnet_id, owner_id, created_at) VALUES(?, ?, ?)",
+            (subnet_id, owner_id, now),
+        )
+        con.commit()
+        return {"subnet_id": subnet_id, "owner_id": owner_id, "created_at": now}
+
+
+def device_get_by_fingerprint(subnet_id: str, fingerprint: str) -> dict | None:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            """
+            SELECT device_id, subnet_id, role, fingerprint, cert_pem, issued_at, expires_at
+            FROM devices
+            WHERE subnet_id=? AND fingerprint=?
+            """,
+            (subnet_id, fingerprint),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "device_id": row[0],
+        "subnet_id": row[1],
+        "role": row[2],
+        "fingerprint": row[3],
+        "cert_pem": row[4],
+        "issued_at": int(row[5]),
+        "expires_at": int(row[6]),
+    }
+
+
+def device_upsert_hub(
+    subnet_id: str,
+    fingerprint: str,
+    cert_pem: str,
+    issued_at: int,
+    expires_at: int,
+) -> dict:
+    existing = device_get_by_fingerprint(subnet_id, fingerprint)
+    sql = get_ctx().sql
+    if existing:
+        with sql.connect() as con:
+            con.execute(
+                "UPDATE devices SET cert_pem=?, issued_at=?, expires_at=? WHERE device_id=?",
+                (cert_pem, issued_at, expires_at, existing["device_id"]),
+            )
+            con.commit()
+        existing.update({"cert_pem": cert_pem, "issued_at": issued_at, "expires_at": expires_at})
+        return existing
+    device_id = new_id()
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT INTO devices(device_id, subnet_id, role, fingerprint, cert_pem, issued_at, expires_at)
+            VALUES(?, ?, 'hub', ?, ?, ?, ?)
+            """,
+            (device_id, subnet_id, fingerprint, cert_pem, issued_at, expires_at),
+        )
+        con.commit()
+    return {
+        "device_id": device_id,
+        "subnet_id": subnet_id,
+        "role": "hub",
+        "fingerprint": fingerprint,
+        "cert_pem": cert_pem,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+    }
+
+
+# ---- Pairing (pair_codes) and bindings (chat_bindings) ---------------------------------
+
+def pair_issue(bot_id: str, hub_id: str | None, *, ttl_sec: int = 600) -> dict:
+    """Create one-time pair code with TTL. Returns {code, bot_id, hub_id, expires_at}."""
+    sql = get_ctx().sql
+    now = int(time.time())
+    expires_at = now + max(1, int(ttl_sec))
+    # generate simple base32-like uppercase code 8-10 chars using new_id
+    raw = new_id().replace("-", "").upper()
+    code = raw[:10]
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT INTO pair_codes(code, bot_id, hub_id, expires_at, state, created_at, note)
+            VALUES(?, ?, ?, ?, 'issued', ?, NULL)
+            """,
+            (code, bot_id, hub_id, expires_at, now),
+        )
+        con.commit()
+    return {"code": code, "bot_id": bot_id, "hub_id": hub_id, "expires_at": expires_at, "state": "issued"}
+
+
+def pair_get(code: str) -> dict | None:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            "SELECT code, bot_id, hub_id, expires_at, state, created_at FROM pair_codes WHERE code=?",
+            (code,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "code": row[0],
+        "bot_id": row[1],
+        "hub_id": row[2],
+        "expires_at": int(row[3]) if row[3] is not None else None,
+        "state": row[4],
+        "created_at": int(row[5]) if row[5] is not None else None,
+    }
+
+
+def pair_confirm(code: str) -> dict | None:
+    sql = get_ctx().sql
+    now = int(time.time())
+    rec = pair_get(code)
+    if not rec:
+        return None
+    if rec.get("expires_at") and rec["expires_at"] < now:
+        # expire
+        with sql.connect() as con:
+            con.execute("UPDATE pair_codes SET state='expired' WHERE code=?", (code,))
+            con.commit()
+        rec["state"] = "expired"
+        return rec
+    if rec.get("state") not in ("issued",):
+        return rec
+    with sql.connect() as con:
+        con.execute("UPDATE pair_codes SET state='confirmed' WHERE code=?", (code,))
+        con.commit()
+    rec["state"] = "confirmed"
+    return rec
+
+
+def pair_revoke(code: str) -> bool:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute("UPDATE pair_codes SET state='revoked' WHERE code=?", (code,))
+        con.commit()
+        return cur.rowcount > 0
+
+
+def binding_upsert(platform: str, user_id: str, bot_id: str, *, hub_id: str | None, ada_user_id: str | None = None) -> dict:
+    """Upsert chat binding and return the record."""
+    sql = get_ctx().sql
+    now = int(time.time())
+    ada_user_id = ada_user_id or new_id()
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT INTO chat_bindings(platform, user_id, bot_id, ada_user_id, hub_id, created_at, last_seen)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(platform, user_id, bot_id) DO UPDATE SET
+              hub_id=excluded.hub_id,
+              ada_user_id=COALESCE(chat_bindings.ada_user_id, excluded.ada_user_id),
+              last_seen=excluded.last_seen
+            """,
+            (platform, user_id, bot_id, ada_user_id, hub_id, now, now),
+        )
+        con.commit()
+    return get_binding_by_user(platform, user_id, bot_id) or {
+        "platform": platform,
+        "user_id": user_id,
+        "bot_id": bot_id,
+        "ada_user_id": ada_user_id,
+        "hub_id": hub_id,
+        "created_at": now,
+        "last_seen": now,
+    }
+
+
+def get_binding_by_user(platform: str, user_id: str, bot_id: str) -> dict | None:
+    sql = get_ctx().sql
+    with sql.connect() as con:
+        cur = con.execute(
+            """
+            SELECT platform, user_id, bot_id, ada_user_id, hub_id, created_at, last_seen
+            FROM chat_bindings WHERE platform=? AND user_id=? AND bot_id=?
+            """,
+            (platform, user_id, bot_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "platform": row[0],
+        "user_id": row[1],
+        "bot_id": row[2],
+        "ada_user_id": row[3],
+        "hub_id": row[4],
+        "created_at": int(row[5]) if row[5] is not None else None,
+        "last_seen": int(row[6]) if row[6] is not None else None,
+    }

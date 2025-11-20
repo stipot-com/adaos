@@ -1,0 +1,14 @@
+<ion-card style="min-width:240px;">
+  <ion-card-header>
+    <ion-card-title>{{ title }}</ion-card-title>
+    <ion-card-subtitle *ngIf="data">{{ data.city }} · обновлено {{ data.updated_at | date:'short' }}</ion-card-subtitle>
+  </ion-card-header>
+  <ion-card-content *ngIf="data; else nodata">
+    <div style="font-size:36px; line-height:1">{{ data.temp_c | number:'1.0-1' }}°C</div>
+    <div>{{ data.condition }} · ветер {{ data.wind_ms | number:'1.0-1' }} м/с</div>
+  </ion-card-content>
+  <ng-template #nodata>
+    <ion-card-content>нет данных</ion-card-content>
+  </ng-template>
+</ion-card>
+

@@ -134,14 +134,16 @@
 	"[python]": {
 		"editor.formatOnType": true
 	},
-	"prettier.singleQuote": true,
-	"prettier.useTabs": true,
-	"editor.formatOnSave": true,
+  	"prettier.configPath": "src/adaos/integrations/inimatic/.prettierrc",
 	"editor.defaultFormatter": "esbenp.prettier-vscode",
 	"liveServer.settings.donotShowInfoMsg": true,
 	"[markdown]": {
 		"editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
 	},
 	"eslint.codeActionsOnSave.rules": null,
-	"files.insertFinalNewline": false
+	"files.insertFinalNewline": false,
+	"yaml.schemas": {
+		"./src/adaos/abi/scenario.schema.json": ".adaos/scenarios/**/scenario.yaml",
+		"./src/adaos/abi/skill.schema.json": ".adaos/skills/**/skill.yaml"
+	}
 }

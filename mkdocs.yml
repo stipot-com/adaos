@@ -4,7 +4,7 @@ site_description: "документация проекта AdaOS — агент�
 site_url: https://github.com/stipot/adaos
 repo_url: https://github.com/stipot/adaos
 repo_name: stipot/adaos
-edit_uri: edit/main/docs/
+edit_uri: edit/main/
 
 theme:
   name: material
@@ -69,6 +69,7 @@ plugins:
             "Сценарии": "Scenarios"
             "DevPortal": "DevPortal"
             "Дорожная карта": "Roadmap"
+            "Концепции": "Concepts"
   - git-revision-date-localized:
       enable_creation_date: true
       enable_git_follow: false
@@ -82,7 +83,7 @@ extra_css:
   - assets/graphviz-fix.css
 
 extra_javascript:
-  - https://cdn.jsdelivr.net/gh/rod2ik/cdn@main/mkdocs/javascripts/mkdocs-graphviz.js
+  - https://cdn.jsdelivr.net/gh/rod2ik/cdn@main/mkjavascripts/mkdocs-graphviz.js
 
 markdown_extensions:
   - admonition
@@ -113,16 +114,34 @@ nav:
       - "Безопасность": architecture/security.md
   - "CLI":
       - "Обзор": cli/index.md
+      - "Интерпретатор": cli/interpreter.md
   - "SDK":
       - "Обзор": sdk/index.md
       - "Bus": sdk/bus.md
       - "Decorators": sdk/decorators.md
       - "Context": sdk/context.md
       - "Adapters": sdk/adapters.md
+      - "Control Plane": sdk_control_plane.md
   - "Навыки": skills.md
   - "Сценарии": scenarios.md
   - "DevPortal": devportal.md
   - "Дорожная карта": roadmap.md
+  - "Концепции":
+      - "Кодовая база": concepts/codeflow.md
+      - "Веб клиент": concepts/web-client.md
+      - "Интерфейс пользователя": concepts/ui.md
+      - "Этапы LLM DevOps": concepts/dev_stages.md
+      - "Этапы LLM DevOps - подготовка": concepts/dev_stage_prepare.md
+      - "Разработка сценариев": concepts/dev-scenarios.md
+      - "Запуск сценария": concepts/start_scenario.md
+      - "Runtime сценария": concepts/scenario-runtime.md
+      - "Интерпретация намерений": concepts/nlu.md
+      - "Инициализация устройства": concepts/init_device.md
+      - "Управление событиями": concepts/event_mgmnt.md
+      - "Управление данными": concepts/data_mgmnt.md
+      - "AdaOS Resource Locator": concepts/arl.md
+      - "Компрессия контекста": concepts/context_compression.md
+      - "Безопасность": concepts/security.md
 
 copyright: |
   &copy; 2025 AdaOS

@@ -1,0 +1,185 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "AdaOS Scenario",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"id": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
+		"name": { "type": "string" },
+		"version": {
+			"type": "string",
+			"pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:[-+][0-9A-Za-z.-]+)?$"
+		},
+		"description": { "type": "string" },
+
+		"trigger": {
+			"description": "как запускается сценарий",
+			"oneOf": [
+				{ "type": "string", "enum": ["manual", "boot", "timer", "event"] },
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"type": {
+							"type": "string",
+							"enum": ["manual", "boot", "timer", "event"]
+						},
+						"cron": { "type": "string" },
+						"at": { "type": "string", "pattern": "^\\d{2}:\\d{2}(:\\d{2})?$" },
+						"interval": { "$ref": "#/$defs/duration" },
+						"event": { "$ref": "#/$defs/topic" },
+						"filters": { "type": "object" }
+					},
+					"required": ["type"]
+				}
+			]
+		},
+
+		"vars": {
+			"type": "object",
+			"description": "глобальные переменные/шаблоны",
+			"additionalProperties": { "$ref": "#/$defs/valueOrTemplate" }
+		},
+
+		"steps": {
+			"type": "array",
+			"minItems": 1,
+			"items": { "$ref": "#/$defs/step" }
+		}
+	},
+	"required": ["id", "version", "steps"],
+
+	"$defs": {
+		"identifier": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+		"callPath": {
+			"type": "string",
+			"pattern": "^[A-Za-z_][\\w]*(\\.[A-Za-z_][\\w]*)*$"
+		},
+		"topic": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"
+		},
+		"duration": {
+			"type": "string",
+			"pattern": "^(\\d+)(ms|s|m|h|d)$",
+			"examples": ["250ms", "3s", "20s", "5m", "2h", "1d"]
+		},
+
+		"value": {
+			"description": "произвольное YAML-значение",
+			"oneOf": [
+				{ "type": "string" },
+				{ "type": "number" },
+				{ "type": "integer" },
+				{ "type": "boolean" },
+				{ "type": "null" },
+				{ "type": "array", "items": { "$ref": "#/$defs/value" } },
+				{
+					"type": "object",
+					"additionalProperties": { "$ref": "#/$defs/value" }
+				}
+			]
+		},
+
+		"valueOrTemplate": {
+			"description": "обычное значение или строка с плейсхолдерами ${...}",
+			"oneOf": [
+				{ "$ref": "#/$defs/value" },
+				{ "type": "string", "pattern": ".*\\$\\{[^}]+\\}.*" }
+			]
+		},
+
+		"expr": {
+			"description": "булево выражение в DSL сценариев",
+			"type": "string",
+			"minLength": 1
+		},
+
+		"argObject": {
+			"type": "object",
+			"additionalProperties": { "$ref": "#/$defs/valueOrTemplate" }
+		},
+
+		"setObject": {
+			"type": "object",
+			"minProperties": 1,
+			"additionalProperties": { "$ref": "#/$defs/valueOrTemplate" }
+		},
+
+		"step": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"name": { "$ref": "#/$defs/identifier" },
+
+				"when": { "$ref": "#/$defs/expr" },
+
+				"call": { "$ref": "#/$defs/callPath" },
+				"args": { "$ref": "#/$defs/argObject" },
+				"timeout": { "$ref": "#/$defs/duration" },
+				"retries": { "type": "integer", "minimum": 0 },
+				"save_as": { "$ref": "#/$defs/identifier" },
+
+				"set": { "$ref": "#/$defs/setObject" },
+
+				"do": {
+					"description": "вложенные шаги (саб-пайплайн)",
+					"type": "array",
+					"items": { "$ref": "#/$defs/step" }
+				},
+
+				"foreach": {
+					"description": "итерация по коллекции",
+					"oneOf": [
+						{ "$ref": "#/$defs/expr" },
+						{ "$ref": "#/$defs/valueOrTemplate" }
+					]
+				},
+				"as": { "$ref": "#/$defs/identifier" },
+
+				"on_error": {
+					"description": "политика обработки ошибок",
+					"oneOf": [
+						{ "type": "string", "enum": ["fail", "continue", "skip"] },
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"mode": {
+									"type": "string",
+									"enum": ["fail", "continue", "skip"]
+								},
+								"do": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+							},
+							"required": ["mode"]
+						}
+					]
+				}
+			},
+
+			"allOf": [
+				{
+					"if": { "required": ["foreach"] },
+					"then": {
+						"required": ["do"],
+						"properties": { "do": { "minItems": 1 } }
+					}
+				},
+				{
+					"if": { "required": ["set"] },
+					"then": { "not": { "required": ["call"] } }
+				},
+				{
+					"if": { "required": ["call"] },
+					"then": { "not": { "required": ["set"] } }
+				}
+			],
+
+			"anyOf": [
+				{ "required": ["call"] },
+				{ "required": ["set"] },
+				{ "required": ["do"] }
+			]
+		}
+	}
+}

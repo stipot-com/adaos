@@ -1,0 +1,9 @@
+**/node_modules
+deployment/secrets/
+deployment/dev-secrets/
+**/.git
+**/www
+**/.nx
+**/.angular
+**/.vscode
+**/dist

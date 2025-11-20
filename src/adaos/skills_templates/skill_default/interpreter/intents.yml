@@ -1,0 +1,7 @@
+intents:
+  - intent: skill_default.greet
+    description: "Пример интента шаблонного скилла"
+    tool: on_start
+    examples:
+      - "привет, шаблонный скилл"
+      - "skill default привет"

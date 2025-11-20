@@ -1,0 +1,41 @@
+<ion-content [style.--background]="app?.desktop?.background || '#0b0f14'">
+  <div class="desktop">
+    <div class="topbar">
+      <div class="left" *ngIf="app?.desktop?.topbar?.length">
+        <ion-button size="small" *ngFor="let b of app?.desktop?.topbar" (click)="onTopbarAction(b)">{{ b.label }}</ion-button>
+      </div>
+      <div class="webspace-controls">
+        <div class="label">Webspace: <strong>{{ webspaceLabel }}</strong></div>
+        <ion-select interface="popover" size="small" [value]="activeWebspace" (ionChange)="onWebspaceChanged($event)">
+          <ion-select-option *ngFor="let ws of webspaces" [value]="ws.id">{{ ws.title }} ({{ ws.id }})</ion-select-option>
+        </ion-select>
+        <div class="actions">
+          <ion-button size="small" fill="clear" (click)="createWebspace()">Создать</ion-button>
+          <ion-button size="small" fill="clear" (click)="renameWebspace()">Переименовать</ion-button>
+          <ion-button size="small" fill="clear" [disabled]="activeWebspace === 'default'" (click)="deleteWebspace()">Удалить</ion-button>
+          <ion-button size="small" fill="clear" (click)="refreshWebspaces()">Обновить</ion-button>
+        </div>
+      </div>
+      <div class="right">
+        <ion-button size="small" color="medium" (click)="resetDb()">Reset DB</ion-button>
+      </div>
+    </div>
+
+    <div class="icons">
+      <button class="icon" *ngFor="let ic of resolvedIcons" (click)="onIconClick(ic)">
+        <ion-badge *ngIf="ic.dev" color="warning" class="dev-badge">DEV</ion-badge>
+        <ion-icon [name]="ic.icon"></ion-icon>
+        <span>{{ ic.title }}</span>
+      </button>
+    </div>
+
+    <div class="widgets">
+      <ng-container *ngFor="let w of resolvedWidgets">
+        <div class="widget-wrapper">
+          <ion-badge *ngIf="w.dev" color="warning" class="dev-badge">DEV</ion-badge>
+          <ada-widget [type]="w.type" [cfg]="{ title: w.title, data: getData(w.source) }"></ada-widget>
+        </div>
+      </ng-container>
+    </div>
+  </div>
+</ion-content>

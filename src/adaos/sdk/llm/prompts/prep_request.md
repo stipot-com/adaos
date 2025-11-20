@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Dict, Any
 import json, logging, datetime
 
-from adaos.sdk.skills.i18n import _  # i18n keys required
+from adaos.sdk.data.i18n import _  # i18n keys required
 
 def run_prep(skill_path: Path) -> Dict[str, Any]:
     """

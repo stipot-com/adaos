@@ -1,10 +1,13 @@
 # src/adaos/services/skill/scaffold.py
 from __future__ import annotations
 
-import re, os
+import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit
@@ -30,10 +33,16 @@ def _safe_subdir(root: Path, name: str) -> Path:
 def _resolve_template_dir(template: str) -> Path:
     """
     Находит директорию шаблона навыка:
-    1) как пакетный ресурс (adaos.skills_templates/<template>)
-    2) рядом с исходниками (…/src/adaos/skills_templates/<template>)
-    3) на случай запуска из корня репо (cwd/src/adaos/skills_templates/<template>)
+    1) явный путь к каталогу (поддерживает абсолютные и относительные значения)
+    2) как пакетный ресурс (adaos.skills_templates/<template>)
+    3) рядом с исходниками (…/src/adaos/skills_templates/<template>)
+    4) на случай запуска из корня репо (cwd/src/adaos/skills_templates/<template>)
     """
+
+    explicit = Path(template).expanduser()
+    if explicit.exists():
+        return explicit.resolve()
+
     # 1) пакетный ресурс
     try:
         import importlib.resources as ir
@@ -74,6 +83,7 @@ def create(
     version: str = "0.1.0",
 ) -> Path:
     """
+    Deprecated. Moved to adaos dev skill create
     Создаёт новый навык из локального шаблона и (опционально) регистрирует его в БД.
     Если push=True — коммитит поддерево навыка в монорепо и пушит.
     """
@@ -96,8 +106,17 @@ def create(
 
     # гарантируем meta
     meta = target / "skill.yaml"
-    if not meta.exists():
-        meta.write_text(f"name: {name}\nversion: {version}\n", encoding="utf-8")
+    if meta.exists():
+        try:
+            data = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            data["name"] = name
+            data.setdefault("version", version)
+            meta.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    else:
+        meta.write_text(yaml.safe_dump({"name": name, "version": version}, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
     # регистрация в локальном реестре (идемпотентно)
     if register:

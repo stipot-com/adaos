@@ -1,0 +1,2220 @@
+// src\adaos\integrations\inimatic\backend\app.ts
+import 'dotenv/config'
+import express from 'express'
+import cors, { type CorsOptions } from 'cors'
+import https from 'https'
+import path from 'path'
+import type { IncomingMessage } from 'http'
+import { v4 as uuidv4 } from 'uuid'
+import { Server, Socket } from 'socket.io'
+import { createClient } from 'redis'
+import fs from 'node:fs'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { randomBytes, createHash } from 'node:crypto'
+import type { PeerCertificate, TLSSocket } from 'node:tls'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+import { installAdaosBridge } from './adaos-bridge.js'
+import { CertificateAuthority } from './pki.js'
+import { ForgeManager, type DraftKind } from './forge.js'
+import { getPolicy } from './policy.js'
+import {
+	resolveLocale,
+	translate,
+	type Locale,
+	type MessageParams,
+} from './i18n.js'
+import { NatsBus } from './io/bus/nats.js'
+import {
+	installWsNatsProxy,
+	installWsNatsProxyDebugRoute,
+} from './io/bus/wsNatsProxy.js'
+import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
+import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
+import { installPairingApi } from './io/pairing/api.js'
+import { buildInfo } from './build-info.js'
+import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
+
+type FollowerData = {
+	followerName: string
+	sessionId: string
+}
+
+type Follower = {
+	[followerSocketId: string]: string
+}
+
+type SessionData = {
+	initiatorSocketId: string
+	followers: Follower
+	timestamp: Date
+}
+
+type PublicSessionData = SessionData & {
+	type: 'public'
+	fileNames: Array<{ fileName: string; timestamp: string }>
+}
+
+type PrivateSessionData = SessionData & {
+	type: 'private'
+}
+
+type UnionSessionData = PublicSessionData | PrivateSessionData
+
+type CommunicationData = {
+	isInitiator: boolean
+	sessionId: string
+	data: any
+}
+
+type StreamInfo = {
+	stream: fs.WriteStream
+	destroyTimeout: NodeJS.Timeout
+	timestamp: string
+}
+
+type OpenedStreams = {
+	[sessionId: string]: {
+		[fileName: string]: StreamInfo
+	}
+}
+
+type ClientIdentity =
+	| { type: 'hub'; subnetId: string }
+	| { type: 'node'; subnetId: string; nodeId: string }
+
+type OwnerHubRecord = {
+	hubId: string
+	ownerId: string
+	createdAt: Date
+	lastSeen: Date
+	revoked: boolean
+}
+
+type OwnerRecord = {
+	ownerId: string
+	subject: string | null
+	scopes: string[]
+	refreshToken: string
+	accessToken: string
+	accessExpiresAt: Date
+	hubs: Map<string, OwnerHubRecord>
+	createdAt: Date
+	updatedAt: Date
+}
+
+type DeviceAuthorization = {
+	ownerId: string
+	deviceCode: string
+	userCode: string
+	interval: number
+	expiresAt: Date
+	approved: boolean
+}
+
+class HttpError extends Error {
+	status: number
+	code: string
+	params?: MessageParams
+
+	constructor(
+		status: number,
+		code: string,
+		params?: MessageParams,
+		message?: string
+	) {
+		super(message ?? code)
+		this.status = status
+		this.code = code
+		this.params = params
+	}
+}
+
+function respondError(
+	req: express.Request,
+	res: express.Response,
+	status: number,
+	code: string,
+	params?: MessageParams
+): void {
+	const locale = req.locale ?? resolveLocale(req)
+	const message = translate(locale, `errors.${code}`, params)
+	res.status(status).json({ error: code, code, message })
+}
+
+function handleError(
+	req: express.Request,
+	res: express.Response,
+	error: unknown,
+	fallback?: { status?: number; code?: string; params?: MessageParams }
+): void {
+	if (error instanceof HttpError) {
+		respondError(req, res, error.status, error.code, error.params)
+		return
+	}
+	console.error('unexpected backend error', error)
+	if (fallback) {
+		respondError(
+			req,
+			res,
+			fallback.status ?? 500,
+			fallback.code ?? 'internal_error',
+			fallback.params
+		)
+	} else {
+		respondError(req, res, 500, 'internal_error')
+	}
+}
+
+declare global {
+	namespace Express {
+		interface Request {
+			auth?: ClientIdentity
+			ownerAuth?: OwnerRecord
+			ownerAccessToken?: string
+			locale?: Locale
+		}
+	}
+}
+
+function readPemFromEnvOrFile(valName: string, fileName: string): string {
+	const v = process.env[valName]
+	if (v && v.includes('-----BEGIN')) {
+		// поддержка варианта с \n в строке, если вдруг останется
+		return v.replace(/\\n/g, '\n').trim() + '\n'
+	}
+	const f = process.env[fileName]
+	if (f) {
+		const text = readFileSync(resolve(f), 'utf8')
+		return text.trim() + '\n'
+	}
+	throw new Error(
+		`Environment variable ${valName} is required (or set ${fileName})`
+	)
+}
+
+function normalizePem(value: string): string {
+	return value.includes('\n') ? value.replace(/\n/g, '\n') : value
+}
+
+function requireEnv(name: string): string {
+	const value = process.env[name]
+	if (!value || value.trim() === '') {
+		throw new Error(`Environment variable ${name} is required`)
+	}
+	return value
+}
+
+const HOST = process.env['HOST'] ?? '0.0.0.0'
+const PORT = Number.parseInt(process.env['PORT'] ?? '3030', 10)
+const ROOT_TOKEN = process.env['ROOT_TOKEN'] ?? 'dev-root-token'
+const CA_KEY_PEM = readPemFromEnvOrFile('CA_KEY_PEM', 'CA_KEY_PEM_FILE')
+const CA_CERT_PEM = readPemFromEnvOrFile('CA_CERT_PEM', 'CA_CERT_PEM_FILE')
+/* TODO
+const TLS_KEY_PEM  = readPemFromEnvOrFile('TLS_KEY_PEM',  'TLS_KEY_PEM_FILE');
+const TLS_CERT_PEM = readPemFromEnvOrFile('TLS_CERT_PEM', 'TLS_CERT_PEM_FILE');
+*/
+const TLS_KEY_PEM = normalizePem(process.env['TLS_KEY_PEM'] ?? CA_KEY_PEM)
+const TLS_CERT_PEM = normalizePem(process.env['TLS_CERT_PEM'] ?? CA_CERT_PEM)
+const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
+const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'app.inimatic.com'
+const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
+const WEB_SESSION_TTL_SECONDS = Number.parseInt(
+	process.env['WEB_SESSION_TTL_SECONDS'] ?? '3600',
+	10
+)
+const FORGE_SSH_KEY = process.env['FORGE_SSH_KEY']
+const FORGE_AUTHOR_NAME = process.env['FORGE_GIT_AUTHOR_NAME'] ?? 'AdaOS Root'
+const FORGE_AUTHOR_EMAIL =
+	process.env['FORGE_GIT_AUTHOR_EMAIL'] ?? 'root@inimatic.local'
+const FORGE_WORKDIR = process.env['FORGE_WORKDIR']
+const SKILL_FORGE_KEY_PREFIX = 'forge:skills'
+const SCENARIO_FORGE_KEY_PREFIX = 'forge:scenarios'
+const BOOTSTRAP_TOKEN_TTL_SECONDS = 600
+const HUB_FINGERPRINT_HASH = 'root:hub_fingerprints'
+
+const policy = getPolicy()
+const MAX_ARCHIVE_BYTES = policy.max_archive_mb * 1024 * 1024
+
+const app = express()
+
+const allowedCorsOrigins = new Set<string>()
+const allowedCorsHosts = new Set<string>(['localhost', '127.0.0.1', '[::1]'])
+
+function addAllowedCorsOrigin(candidate?: string | null) {
+	if (!candidate) {
+		return
+	}
+	const trimmed = candidate.trim()
+	if (!trimmed) {
+		return
+	}
+	try {
+		const parsed = new URL(trimmed)
+		const normalizedOrigin = parsed.origin
+		if (normalizedOrigin) {
+			allowedCorsOrigins.add(normalizedOrigin)
+		}
+		if (parsed.hostname) {
+			allowedCorsHosts.add(parsed.hostname)
+		}
+	} catch {
+		allowedCorsHosts.add(trimmed)
+	}
+}
+
+addAllowedCorsOrigin(WEB_ORIGIN)
+addAllowedCorsOrigin('https://app.inimatic.com')
+
+const extraCorsOrigins =
+	process.env['CORS_EXTRA_ORIGINS'] ?? process.env['CORS_ALLOWED_ORIGINS']
+if (extraCorsOrigins) {
+	for (const candidate of extraCorsOrigins.split(',')) {
+		addAllowedCorsOrigin(candidate)
+	}
+}
+
+function isCorsOriginAllowed(origin: string): boolean {
+	if (allowedCorsOrigins.has(origin)) {
+		return true
+	}
+	try {
+		const parsed = new URL(origin)
+		return (
+			allowedCorsOrigins.has(parsed.origin) ||
+			(parsed.hostname ? allowedCorsHosts.has(parsed.hostname) : false)
+		)
+	} catch {
+		return allowedCorsHosts.has(origin)
+	}
+}
+
+const corsOptions: CorsOptions = {
+	origin(
+		origin: string | undefined,
+		callback: (err: Error | null, allow?: boolean) => void
+	) {
+		if (!origin || isCorsOriginAllowed(origin)) {
+			callback(null, true)
+			return
+		}
+		callback(new Error(`Origin ${origin} not allowed by CORS`))
+	},
+	methods: '*',
+	allowedHeaders: '*',
+	credentials: true,
+	optionsSuccessStatus: 200,
+}
+
+app.use(cors(corsOptions))
+
+app.use((req, _res, next) => {
+	req.locale = resolveLocale(req)
+	next()
+})
+app.use(express.json({ limit: '2mb' }))
+
+function withLeadingSlash(value: string, fallback: string): string {
+	const trimmed = value.trim()
+	if (!trimmed) {
+		return fallback
+	}
+	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
+const SOCKET_PATH = withLeadingSlash(
+	process.env['SOCKET_PATH'] ?? '/socket.io',
+	'/socket.io'
+)
+const SOCKET_CHANNEL_NS = withLeadingSlash(
+	process.env['SOCKET_CHANNEL_NS'] ?? '/adaos',
+	'/adaos'
+)
+const SOCKET_CHANNEL_VERSION =
+	(process.env['SOCKET_CHANNEL_VERSION'] ?? 'v1').trim() || 'v1'
+const SOCKET_LEGACY_FALLBACK_ENABLED =
+	(process.env['SOCKET_LEGACY_FALLBACK'] ?? '1') !== '0'
+
+const server = https.createServer(
+	{
+		key: TLS_KEY_PEM,
+		cert: TLS_CERT_PEM,
+		ca: [CA_CERT_PEM],
+		requestCert: true,
+		rejectUnauthorized: false,
+	},
+	app
+)
+
+const io = new Server(server, {
+	cors: { origin: '*' },
+	pingTimeout: 10000,
+	pingInterval: 10000,
+	path: SOCKET_PATH,
+})
+
+type EngineAllowRequest = (
+	req: IncomingMessage,
+	callback: (err: string | null, success: boolean) => void
+) => void
+
+const engineWithAllowRequest = io.engine as typeof io.engine & {
+	allowRequest?: EngineAllowRequest
+}
+
+function extractHandshakeToken(
+	req: IncomingMessage,
+	searchParams: URLSearchParams
+): string | undefined {
+	const authHeader = req.headers['authorization']
+	if (Array.isArray(authHeader)) {
+		for (const header of authHeader) {
+			const token = extractBearer(header)
+			if (token) {
+				return token
+			}
+		}
+	} else if (typeof authHeader === 'string') {
+		const token = extractBearer(authHeader)
+		if (token) {
+			return token
+		}
+	}
+
+	for (const candidate of [
+		'token',
+		'auth[token]',
+		'authToken',
+		'auth_token',
+	]) {
+		const value = searchParams.get(candidate)
+		if (value && value.trim()) {
+			return value.trim()
+		}
+	}
+
+	for (const [key, value] of searchParams.entries()) {
+		if (value && value.trim() && /token\]?$/i.test(key)) {
+			return value.trim()
+		}
+	}
+
+	return undefined
+}
+
+function extractBearer(headerValue: string): string | undefined {
+	const trimmed = headerValue.trim()
+	if (!trimmed) {
+		return undefined
+	}
+	const match = trimmed.match(/^Bearer\s+(.+)$/i)
+	return match ? match[1].trim() : undefined
+}
+
+engineWithAllowRequest.allowRequest = (req, callback) => {
+	try {
+		const url = new URL(req.url ?? '', 'http://localhost')
+		const searchParams = url.searchParams
+
+		if (searchParams.has('sid')) {
+			callback(null, true)
+			return
+		}
+
+		const namespace = searchParams.get('nsp') ?? '/'
+		const token = extractHandshakeToken(req, searchParams)
+
+		if (token) {
+			callback(null, true)
+			return
+		}
+
+		if (namespace === '/' && SOCKET_LEGACY_FALLBACK_ENABLED) {
+			callback(null, true)
+			return
+		}
+
+		callback('Unauthorized', false)
+	} catch (error) {
+		console.error('socket allowRequest error', error)
+		callback('Unauthorized', false)
+	}
+}
+
+installAdaosBridge(app, server)
+
+const redisUrl = `redis://${
+	process.env['PRODUCTION'] ? 'redis' : 'localhost'
+}:6379`
+const redisClient = await createClient({ url: redisUrl })
+	.on('error', (err) => console.error('Redis Client Error', err))
+	.connect()
+
+const certificateAuthority = new CertificateAuthority({
+	certPem: CA_CERT_PEM,
+	keyPem: CA_KEY_PEM,
+})
+const forgeManager = new ForgeManager({
+	repoUrl: FORGE_GIT_URL,
+	workdir: FORGE_WORKDIR,
+	authorName: FORGE_AUTHOR_NAME,
+	authorEmail: FORGE_AUTHOR_EMAIL,
+	sshKeyPath: FORGE_SSH_KEY,
+})
+await forgeManager.ensureReady()
+
+// Устанавливаем WebAuthn эндпоинты (frontend ↔ root ↔ hub)
+installWebAuthnRoutes(
+	app,
+	{
+		redis: redisClient,
+		defaultSessionTtlSeconds: WEB_SESSION_TTL_SECONDS,
+		rpID: WEB_RP_ID,
+		origin: WEB_ORIGIN,
+	},
+	respondError
+)
+
+const POLICY_RESPONSE = policy
+
+const owners = new Map<string, OwnerRecord>()
+const accessIndex = new Map<string, string>()
+const refreshIndex = new Map<string, string>()
+const deviceAuthorizations = new Map<string, DeviceAuthorization>()
+
+function generateToken(prefix: string): string {
+	return `${prefix}_${randomBytes(24).toString('hex')}`
+}
+
+function generateUserCode(): string {
+	const raw = randomBytes(4).toString('hex').toUpperCase()
+	return `${raw.slice(0, 4)}-${raw.slice(4)}`
+}
+
+function ensureOwnerRecord(ownerId: string): OwnerRecord {
+	const existing = owners.get(ownerId)
+	if (existing) {
+		return existing
+	}
+	const record: OwnerRecord = {
+		ownerId,
+		subject: `owner:${ownerId}`,
+		scopes: ['owner'],
+		refreshToken: generateToken('rt'),
+		accessToken: '',
+		accessExpiresAt: new Date(0),
+		hubs: new Map(),
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	}
+	owners.set(ownerId, record)
+	refreshIndex.set(record.refreshToken, ownerId)
+	return record
+}
+
+function issueAccessToken(
+	owner: OwnerRecord,
+	scopes?: string[],
+	subject?: string | null
+): { token: string; expiresAt: Date } {
+	if (owner.accessToken) {
+		accessIndex.delete(owner.accessToken)
+	}
+	owner.updatedAt = new Date()
+	if (scopes && scopes.length) {
+		owner.scopes = scopes
+	}
+	if (typeof subject === 'string') {
+		owner.subject = subject
+	}
+	const token = generateToken('at')
+	const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+	owner.accessToken = token
+	owner.accessExpiresAt = expiresAt
+	accessIndex.set(token, owner.ownerId)
+	return { token, expiresAt }
+}
+
+function updateRefreshToken(owner: OwnerRecord, refreshToken?: string): string {
+	if (refreshToken && refreshToken !== owner.refreshToken) {
+		refreshIndex.delete(owner.refreshToken)
+		owner.refreshToken = refreshToken
+	}
+	refreshIndex.set(owner.refreshToken, owner.ownerId)
+	return owner.refreshToken
+}
+
+function authenticateOwnerBearer(
+	req: express.Request,
+	res: express.Response,
+	next: express.NextFunction
+) {
+	const header = req.header('Authorization') ?? ''
+	const token = header.startsWith('Bearer ')
+		? header.slice('Bearer '.length).trim()
+		: ''
+	if (!token || !accessIndex.has(token)) {
+		respondError(req, res, 401, 'invalid_token')
+		return
+	}
+	const ownerId = accessIndex.get(token)!
+	const owner = owners.get(ownerId)
+	if (!owner) {
+		respondError(req, res, 401, 'invalid_token')
+		return
+	}
+	if (
+		owner.accessToken !== token ||
+		owner.accessExpiresAt.getTime() <= Date.now()
+	) {
+		respondError(req, res, 401, 'token_expired')
+		return
+	}
+	req.ownerAuth = owner
+	req.ownerAccessToken = token
+	next()
+}
+
+function requireJsonField(body: unknown, field: string): string {
+	if (!body || typeof body !== 'object') {
+		throw new HttpError(400, 'missing_field', { field })
+	}
+	const value = (body as Record<string, unknown>)[field]
+	if (typeof value !== 'string' || value.trim() === '') {
+		throw new HttpError(400, 'missing_field', { field })
+	}
+	return value.trim()
+}
+
+function parseTtl(ttl: unknown): number | undefined {
+	if (typeof ttl !== 'string' || ttl.trim() === '') {
+		return undefined
+	}
+	const match = ttl.trim().match(/^([0-9]+)([smhd])$/i)
+	if (!match) {
+		return undefined
+	}
+	const value = Number.parseInt(match[1], 10)
+	const unit = match[2].toLowerCase()
+	const seconds =
+		unit === 's'
+			? value
+			: unit === 'm'
+			? value * 60
+			: unit === 'h'
+			? value * 60 * 60
+			: value * 24 * 60 * 60
+	return seconds / (24 * 60 * 60)
+}
+
+function generateSubnetId(): string {
+	return `sn_${uuidv4().replace(/-/g, '').slice(0, 8)}`
+}
+
+function generateNodeId(): string {
+	return `node_${uuidv4().replace(/-/g, '').slice(0, 8)}`
+}
+
+function assertSafeName(name: string): void {
+	if (
+		!name ||
+		name.includes('..') ||
+		name.includes('/') ||
+		name.includes('\\')
+	) {
+		throw new HttpError(400, 'invalid_name')
+	}
+	if (path.basename(name) !== name) throw new HttpError(400, 'invalid_name')
+}
+
+function decodeArchive(archiveB64: string): Buffer {
+	try {
+		return Buffer.from(archiveB64, 'base64')
+	} catch (error) {
+		throw new HttpError(400, 'invalid_archive_encoding')
+	}
+}
+
+function verifySha256(buffer: Buffer, expected?: string): void {
+	if (!expected) {
+		return
+	}
+	const normalized = expected.trim().toLowerCase()
+	const actual = createHash('sha256')
+		.update(buffer)
+		.digest('hex')
+		.toLowerCase()
+	if (normalized !== actual) {
+		throw new HttpError(400, 'sha256_mismatch')
+	}
+}
+
+async function useBootstrapToken(
+	token: string
+): Promise<Record<string, unknown>> {
+	const key = `bootstrap:${token}`
+	const value = await redisClient.get(key)
+	if (!value) {
+		throw new HttpError(401, 'invalid_bootstrap_token')
+	}
+	await redisClient.del(key)
+	try {
+		return JSON.parse(value)
+	} catch {
+		return {}
+	}
+}
+
+function getPeerCertificate(req: express.Request): PeerCertificate | null {
+	const tlsSocket = req.socket as TLSSocket
+	const certificate = tlsSocket.getPeerCertificate()
+	if (!certificate || Object.keys(certificate).length === 0) {
+		return null
+	}
+	return certificate
+}
+
+function parseClientIdentity(cert: PeerCertificate): ClientIdentity | null {
+	const subject = cert.subject
+	const subjectRecord = subject as unknown as
+		| Partial<Record<string, string>>
+		| undefined
+	const cn = subjectRecord?.['CN'] ?? subjectRecord?.['cn']
+	if (!cn) {
+		console.warn('mTLS identity parse failed: missing common name', {
+			subject: subjectRecord,
+		})
+		return null
+	}
+	if (cn.startsWith('subnet:')) {
+		const subnetId = cn.slice('subnet:'.length)
+		if (!subnetId) {
+			console.warn(
+				'mTLS identity parse failed: empty subnet common name',
+				{ subject: subjectRecord }
+			)
+			return null
+		}
+		return { type: 'hub', subnetId }
+	}
+	if (cn.startsWith('node:')) {
+		const nodeId = cn.slice('node:'.length)
+		const org = subjectRecord?.['O'] ?? subjectRecord?.['o']
+		if (!nodeId || !org || !org.startsWith('subnet:')) {
+			console.warn(
+				'mTLS identity parse failed: node subject missing subnet binding',
+				{ subject: subjectRecord }
+			)
+			return null
+		}
+		const subnetId = org.slice('subnet:'.length)
+		if (!subnetId) {
+			console.warn(
+				'mTLS identity parse failed: empty subnet organization',
+				{ subject: subjectRecord }
+			)
+			return null
+		}
+		return { type: 'node', subnetId, nodeId }
+	}
+	console.warn('mTLS identity parse failed: unsupported common name', {
+		subject: subjectRecord,
+	})
+	return null
+}
+
+function getClientIdentity(req: express.Request): ClientIdentity | null {
+	const tlsSocket = req.socket as TLSSocket
+	if (!tlsSocket.authorized) {
+		return null
+	}
+	const cert = getPeerCertificate(req)
+	if (!cert) {
+		return null
+	}
+	return parseClientIdentity(cert)
+}
+
+app.get('/health', (_req, res) => {
+	res.status(200).type('text/plain').send('ok')
+})
+
+app.get('/healthz', (_req, res) => {
+	res.json({
+		ok: true,
+		version: buildInfo.version,
+		build_date: buildInfo.buildDate,
+		commit: buildInfo.commit,
+		time: new Date().toISOString(),
+		mtls: true,
+	})
+})
+
+app.get('/v1/health', (_req, res) => {
+	res.json({
+		ok: true,
+		version: buildInfo.version,
+		build_date: buildInfo.buildDate,
+		commit: buildInfo.commit,
+		time: new Date().toISOString(),
+	})
+})
+
+// Prometheus metrics endpoint
+/* import client from 'prom-client'
+app.get('/metrics', async (_req, res) => {
+	try {
+		res.set('Content-Type', client.register.contentType)
+		res.send(await client.register.metrics())
+	} catch (e) {
+		res.status(500).send(String(e))
+	}
+}) */
+
+const rootRouter = express.Router()
+
+rootRouter.post('/auth/owner/start', (req, res) => {
+	let ownerId: string
+	try {
+		ownerId = requireJsonField(req.body, 'owner_id')
+	} catch (error) {
+		handleError(req, res, error, {
+			status: 400,
+			code: 'missing_field',
+			params: { field: 'owner_id' },
+		})
+		return
+	}
+	const deviceCode = generateToken('dc')
+	const userCode = generateUserCode()
+	const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
+	const record: DeviceAuthorization = {
+		ownerId,
+		deviceCode,
+		userCode,
+		interval: 5,
+		expiresAt,
+		approved: false,
+	}
+	deviceAuthorizations.set(deviceCode, record)
+	// Дополнительно сохраняем device_code в Redis для веб-сессий (WebAuthn / frontend)
+	storeDeviceCode(redisClient, {
+		device_code: deviceCode,
+		user_code: userCode,
+		owner_id: ownerId,
+		// в dev-режиме owner_id совпадает с subnet_id
+		subnet_id: ownerId,
+		hub_id: undefined,
+		// exp в секундах Unix
+		exp: Math.floor(expiresAt.getTime() / 1000),
+	}).catch((err) => {
+		console.error('failed to store device_code for web session', err)
+	})
+	setTimeout(() => {
+		const current = deviceAuthorizations.get(deviceCode)
+		if (current) {
+			current.approved = true
+		}
+	}, 1000).unref()
+	res.json({
+		device_code: deviceCode,
+		user_code: userCode,
+		verify_uri: 'https://api.inimatic.com/device',
+		interval: record.interval,
+		expires_in: Math.floor((expiresAt.getTime() - Date.now()) / 1000),
+	})
+})
+
+rootRouter.post('/auth/owner/poll', (req, res) => {
+	let deviceCode: string
+	try {
+		deviceCode = requireJsonField(req.body, 'device_code')
+	} catch (error) {
+		handleError(req, res, error, {
+			status: 400,
+			code: 'missing_field',
+			params: { field: 'device_code' },
+		})
+		return
+	}
+	const auth = deviceAuthorizations.get(deviceCode)
+	if (!auth) {
+		respondError(req, res, 400, 'invalid_device_code')
+		return
+	}
+	if (auth.expiresAt.getTime() <= Date.now()) {
+		deviceAuthorizations.delete(deviceCode)
+		respondError(req, res, 400, 'expired_token')
+		return
+	}
+	if (!auth.approved) {
+		respondError(req, res, 400, 'authorization_pending')
+		return
+	}
+	const owner = ensureOwnerRecord(auth.ownerId)
+	const refreshToken = updateRefreshToken(owner)
+	const { token: accessToken, expiresAt } = issueAccessToken(owner)
+	deviceAuthorizations.delete(deviceCode)
+	res.json({
+		access_token: accessToken,
+		refresh_token: refreshToken,
+		expires_at: expiresAt.toISOString(),
+		subject: owner.subject,
+		scopes: owner.scopes,
+		owner_id: owner.ownerId,
+		hub_ids: Array.from(owner.hubs.keys()),
+	})
+})
+
+rootRouter.post('/auth/owner/refresh', (req, res) => {
+	let refreshToken: string
+	try {
+		refreshToken = requireJsonField(req.body, 'refresh_token')
+	} catch (error) {
+		handleError(req, res, error, {
+			status: 400,
+			code: 'missing_field',
+			params: { field: 'refresh_token' },
+		})
+		return
+	}
+	const ownerId = refreshIndex.get(refreshToken)
+	if (!ownerId) {
+		respondError(req, res, 401, 'invalid_refresh_token')
+		return
+	}
+	const owner = owners.get(ownerId)
+	if (!owner || owner.refreshToken !== refreshToken) {
+		respondError(req, res, 401, 'invalid_refresh_token')
+		return
+	}
+	const { token, expiresAt } = issueAccessToken(owner)
+	res.json({ access_token: token, expires_at: expiresAt.toISOString() })
+})
+
+rootRouter.get('/whoami', authenticateOwnerBearer, (req, res) => {
+	const owner = req.ownerAuth!
+	res.json({
+		subject: owner.subject,
+		owner_id: owner.ownerId,
+		roles: ['owner'],
+		scopes: owner.scopes,
+		hub_ids: Array.from(owner.hubs.keys()),
+	})
+})
+
+rootRouter.get('/owner/hubs', authenticateOwnerBearer, (req, res) => {
+	const owner = req.ownerAuth!
+	const hubs = Array.from(owner.hubs.values()).map((hub) => ({
+		hub_id: hub.hubId,
+		owner_id: hub.ownerId,
+		created_at: hub.createdAt.toISOString(),
+		last_seen: hub.lastSeen.toISOString(),
+		revoked: hub.revoked,
+	}))
+	res.json(hubs)
+})
+
+rootRouter.post('/owner/hubs', authenticateOwnerBearer, (req, res) => {
+	const owner = req.ownerAuth!
+	let hubId: string
+	try {
+		hubId = requireJsonField(req.body, 'hub_id')
+	} catch (error) {
+		handleError(req, res, error, {
+			status: 400,
+			code: 'missing_field',
+			params: { field: 'hub_id' },
+		})
+		return
+	}
+	let hub = owner.hubs.get(hubId)
+	if (!hub) {
+		hub = {
+			hubId,
+			ownerId: owner.ownerId,
+			createdAt: new Date(),
+			lastSeen: new Date(),
+			revoked: false,
+		}
+		owner.hubs.set(hubId, hub)
+	} else if (hub.revoked) {
+		hub.revoked = false
+	}
+	hub.lastSeen = new Date()
+	owner.updatedAt = new Date()
+	res.status(201).json({ hub_id: hub.hubId, owner_id: hub.ownerId })
+})
+
+rootRouter.post('/pki/enroll', authenticateOwnerBearer, (req, res) => {
+	const owner = req.ownerAuth!
+	let hubId: string
+	let csrPem: string
+	try {
+		hubId = requireJsonField(req.body, 'hub_id')
+		csrPem = requireJsonField(req.body, 'csr_pem')
+	} catch (error) {
+		handleError(req, res, error, { status: 400, code: 'invalid_request' })
+		return
+	}
+	const ttlDays = parseTtl(
+		(req.body as Record<string, unknown> | undefined)?.['ttl']
+	)
+	const hub = owner.hubs.get(hubId)
+	if (!hub || hub.revoked) {
+		respondError(req, res, 404, 'hub_not_registered')
+		return
+	}
+	hub.lastSeen = new Date()
+	try {
+		const csrPemRaw =
+			typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+		const csrPem = csrPemRaw.replace(/\r\n/g, '\n').trim() + '\n'
+		const result = certificateAuthority.issueClientCertificate({
+			csrPem,
+			subject: {
+				commonName: `hub:${hubId}`,
+				organizationName: `owner:${owner.ownerId}`,
+			},
+			validityDays: ttlDays,
+		})
+		res.json({ cert_pem: result.certificatePem, chain_pem: CA_CERT_PEM })
+	} catch (error) {
+		console.error('pki enrollment failed', error)
+		handleError(req, res, error, {
+			status: 400,
+			code: 'certificate_issue_failed',
+		})
+	}
+})
+
+if (process.env['DEBUG_ENDPOINTS'] === 'true') {
+	rootRouter.get('/debug/owners', (_req, res) => {
+		const payload = Array.from(owners.values()).map((owner) => ({
+			owner_id: owner.ownerId,
+			subjects: owner.subject ? [owner.subject] : [],
+			hubs_count: owner.hubs.size,
+			created_at: owner.createdAt.toISOString(),
+			updated_at: owner.updatedAt.toISOString(),
+		}))
+		res.json(payload)
+	})
+	rootRouter.get('/debug/hubs', (_req, res) => {
+		const hubs: Array<{
+			hub_id: string
+			owner_id: string
+			created_at: string
+			last_seen: string
+			key_fp: string
+		}> = []
+		for (const owner of owners.values()) {
+			for (const hub of owner.hubs.values()) {
+				hubs.push({
+					hub_id: hub.hubId,
+					owner_id: hub.ownerId,
+					created_at: hub.createdAt.toISOString(),
+					last_seen: hub.lastSeen.toISOString(),
+					key_fp: '',
+				})
+			}
+		}
+		res.json(hubs)
+	})
+}
+
+app.use('/v1', rootRouter)
+
+// --- IO (Telegram) wiring ---
+try {
+	if (process.env['PG_URL']) await ensureTgSchema()
+} catch {}
+let ioBus: NatsBus | null = null
+if (
+	(process.env['IO_BUS_KIND'] || 'local').toLowerCase() === 'nats' &&
+	process.env['NATS_URL']
+) {
+	try {
+		ioBus = new NatsBus(process.env['NATS_URL']!)
+		await ioBus.connect()
+		console.log(`[io] NATS connected at ${process.env['NATS_URL']}`)
+		// subscribe to outbound for a single configured bot
+		const botId = process.env['BOT_ID'] || 'main-bot'
+		const { TelegramSender } = await import('./io/telegram/sender.js')
+		const sender = new TelegramSender(process.env['TG_BOT_TOKEN'] || '')
+		console.log(`[io] Subscribing to tg.output.${botId}.>`)
+		await ioBus.subscribe_output(botId, async (subject, data) => {
+			try {
+				const text = new TextDecoder().decode(data)
+				const payload = JSON.parse(text)
+				console.log(`[io] Outbound received on ${subject}`)
+				await sender.send(payload)
+			} catch (e) {
+				try {
+					await ioBus!.publish_dlq('output', { error: String(e) })
+				} catch {}
+			}
+		})
+		// Backward compatibility: legacy hubs may publish to io.tg.out
+		console.log(`[io] Subscribing to legacy io.tg.out`)
+		await ioBus.subscribe_compat_out(async (subject, data) => {
+			try {
+				const text = new TextDecoder().decode(data)
+				const payload = JSON.parse(text)
+				console.log(`[io] Legacy outbound received on ${subject}`)
+				await sender.send(payload)
+			} catch (e) {
+				try {
+					await ioBus!.publish_dlq('output', { error: String(e) })
+				} catch {}
+			}
+		})
+		// Optional: debug taps (comma-separated subjects) e.g. IO_TAP_SUBJECTS="tg.input.>,tg.output.>,io.tg.out"
+		const tap = (process.env['IO_TAP_SUBJECTS'] || '').trim()
+		if (tap) {
+			for (const subj of tap
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean)) {
+				console.log(`[io] Tap subscribe ${subj}`)
+				await ioBus!.subscribe(subj, async (s, data) => {
+					const txt = new TextDecoder().decode(data)
+					console.log(`[io][tap] ${s} ${txt.slice(0, 512)}`)
+				})
+			}
+		}
+
+		// Optional legacy bridge: republish tg.input.<hub> text to io.tg.in.<hub>.text
+		if ((process.env['IO_BRIDGE_TG_INPUT_TO_LEGACY'] || '0') === '1') {
+			console.log(
+				'[io] Legacy bridge enabled: tg.input.* -> io.tg.in.*.text'
+			)
+			await ioBus!.subscribe('tg.input.>', async (subject, data) => {
+				try {
+					const txt = new TextDecoder().decode(data)
+					const env = JSON.parse(txt)
+					const hubMatch = subject.match(/^tg\.input\.(.+)$/)
+					const hub = hubMatch ? hubMatch[1] : env?.meta?.hub_id || ''
+					if (hub && env?.payload?.type === 'text') {
+						const e = env.payload
+						const legacy = {
+							text: e?.payload?.text || e?.text || '',
+							chat_id: Number(e?.chat_id || 0),
+							tg_msg_id: Number(
+								e?.payload?.meta?.msg_id || e?.meta?.msg_id || 0
+							),
+							route: { via: 'session' },
+							meta: { is_command: false },
+						}
+						const legacySubj = `io.tg.in.${hub}.text`
+						await ioBus!.publish_subject(legacySubj, legacy)
+						console.log(`[io] bridged ${subject} -> ${legacySubj}`)
+					}
+				} catch {
+					/* ignore */
+				}
+			})
+		}
+	} catch (e) {
+		console.error('[io] NATS init failed', e)
+		ioBus = null
+	}
+}
+installTelegramWebhookRoutes(app, ioBus)
+installPairingApi(app)
+import('./io/bus/natsAuth.js')
+	.then((m) => m.installNatsAuth(app))
+	.catch(() => {})
+try {
+	installWsNatsProxyDebugRoute(app)
+} catch {}
+
+// Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
+try {
+	installWsNatsProxy(server)
+} catch (e) {
+	console.error('ws nats proxy init failed', e)
+}
+
+// Send a message to Telegram resolving hub_id -> chat_id/bot_id via pairing store
+app.post('/io/tg/send', async (req, res) => {
+	try {
+		const text = String((req.body as any)?.text || '')
+		const hub_id = String((req.body as any)?.hub_id || '')
+		const explicitBot =
+			typeof req.body?.bot_id === 'string' ? String(req.body.bot_id) : ''
+		const explicitChat =
+			typeof req.body?.chat_id === 'string'
+				? String(req.body.chat_id)
+				: ''
+		if (!hub_id && !explicitChat)
+			return res
+				.status(400)
+				.json({ ok: false, error: 'hub_id_or_chat_id_required' })
+		if (!text)
+			return res.status(400).json({ ok: false, error: 'text_required' })
+
+		let bot_id = explicitBot || process.env['BOT_ID'] || 'adaos_bot'
+		let chat_id = explicitChat
+		if (!chat_id) {
+			const { tgLinkGet } = await import('./io/pairing/store.js')
+			const link = await tgLinkGet(hub_id)
+			if (!link)
+				return res
+					.status(404)
+					.json({ ok: false, error: 'pairing_not_found', hub_id })
+			chat_id = link.chat_id
+			if (!explicitBot) bot_id = link.bot_id || bot_id
+		}
+
+		// Resolve human-friendly alias for prefixing in Telegram outbox
+		let alias: string | undefined
+		try {
+			const { listBindings } = await import('./db/tg.repo.js')
+			const binds = await listBindings(Number(chat_id))
+			alias = (binds || []).find(
+				(b) => String(b.hub_id) === String(hub_id)
+			)?.alias as any
+		} catch {
+			/* optional */
+		}
+
+		if (!ioBus)
+			return res
+				.status(503)
+				.json({ ok: false, error: 'io_bus_unavailable' })
+		const payload = {
+			alias,
+			target: {
+				bot_id,
+				hub_id: hub_id || process.env['DEFAULT_HUB'] || 'hub-a',
+				chat_id,
+			},
+			messages: [{ type: 'text', text }],
+		}
+		const subject = `tg.output.${bot_id}.chat.${chat_id}`
+		await ioBus.publishSubject(subject, payload)
+		return res.status(202).json({ ok: true, subject })
+	} catch (e) {
+		console.error('tg/send failed', e)
+		return res.status(500).json({ ok: false })
+	}
+})
+
+app.post('/v1/bootstrap_token', async (req, res) => {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		respondError(req, res, 401, 'unauthorized')
+		return
+	}
+	const meta = (
+		typeof req.body === 'object' && req.body !== null ? req.body : {}
+	) as Record<string, unknown>
+	const oneTimeToken = randomBytes(24).toString('hex')
+	const expiresAt = new Date(Date.now() + BOOTSTRAP_TOKEN_TTL_SECONDS * 1000)
+	await redisClient.setEx(
+		`bootstrap:${oneTimeToken}`,
+		BOOTSTRAP_TOKEN_TTL_SECONDS,
+		JSON.stringify({ issued_at: new Date().toISOString(), ...meta })
+	)
+	res.status(201).json({
+		one_time_token: oneTimeToken,
+		expires_at: expiresAt.toISOString(),
+	})
+})
+
+app.post('/v1/subnets/register', async (req, res) => {
+	const t0 = Date.now()
+	console.log('register: start')
+
+	const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
+	if (!bootstrapToken) {
+		/* ... */
+	}
+
+	let bootstrapMeta: Record<string, unknown> = {}
+	try {
+		bootstrapMeta = await useBootstrapToken(bootstrapToken)
+		console.log('register: bootstrap token OK, dt=%dms', Date.now() - t0)
+	} catch (e) {
+		/* ... */
+	}
+
+	const csrPemRaw =
+		typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+	if (!csrPemRaw) {
+		/* ... */
+	}
+	const csrPem = csrPemRaw.replace(/\r\n/g, '\n').trim() + '\n'
+
+	const fingerprintRaw =
+		typeof bootstrapMeta['fingerprint'] === 'string'
+			? (bootstrapMeta['fingerprint'] as string)
+			: undefined
+	let reused = false
+	let subnetId = ''
+	if (fingerprintRaw) {
+		try {
+			const existingSubnet = await redisClient.hGet(
+				HUB_FINGERPRINT_HASH,
+				fingerprintRaw
+			)
+			if (existingSubnet) {
+				subnetId = existingSubnet
+				reused = true
+				console.log(
+					'register: reusing subnet %s for fingerprint %s',
+					existingSubnet,
+					fingerprintRaw
+				)
+			}
+		} catch (error) {
+			console.warn('register: failed to lookup fingerprint reuse', {
+				fingerprint: fingerprintRaw,
+				error,
+			})
+		}
+	}
+	if (!subnetId) {
+		subnetId = generateSubnetId()
+	}
+	let certPem: string
+	try {
+		certPem = certificateAuthority.issueClientCertificate({
+			csrPem,
+			subject: {
+				commonName: `subnet:${subnetId}`,
+				organizationName: `subnet:${subnetId}`,
+			},
+		}).certificatePem
+		console.log('register: cert issued v2, dt=%dms', Date.now() - t0)
+	} catch (e) {
+		console.error('register: issue cert failed:', (e as any)?.message)
+		return handleError(req, res, e, {
+			status: 400,
+			code: 'certificate_issue_failed',
+		})
+	}
+
+	try {
+		console.log('register: on before ensureSubnet')
+		await forgeManager.ensureSubnet(subnetId)
+		console.log('register: forge ensured, dt=%dms', Date.now() - t0)
+	} catch (e) {
+		console.error('register: forge ensureSubnet failed:', e)
+		return handleError(req, res, e, {
+			status: 500,
+			code: 'draft_store_failed',
+		})
+	}
+
+	await redisClient.hSet(
+		'root:subnets',
+		subnetId,
+		JSON.stringify({ subnet_id: subnetId, created_at: Date.now() })
+	)
+	if (fingerprintRaw) {
+		try {
+			await redisClient.hSet(
+				HUB_FINGERPRINT_HASH,
+				fingerprintRaw,
+				subnetId
+			)
+		} catch (error) {
+			console.warn('register: failed to store fingerprint mapping', {
+				fingerprint: fingerprintRaw,
+				error,
+			})
+		}
+	}
+	console.log('register: redis saved, dt=%dms', Date.now() - t0)
+
+	res.status(201).json({
+		subnet_id: subnetId,
+		cert_pem: certPem,
+		ca_pem: CA_CERT_PEM,
+		forge: { repo: FORGE_GIT_URL, path: `subnets/${subnetId}` },
+		reused,
+	})
+	console.log('register: done, total=%dms', Date.now() - t0)
+})
+
+app.post('/v1/nodes/register', async (req, res) => {
+	const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
+	let subnetId: string | undefined
+
+	if (bootstrapToken) {
+		try {
+			await useBootstrapToken(bootstrapToken)
+		} catch (error) {
+			handleError(req, res, error, {
+				status: 401,
+				code: 'invalid_bootstrap_token',
+			})
+			return
+		}
+		const bodySubnet =
+			typeof req.body?.subnet_id === 'string'
+				? req.body.subnet_id
+				: undefined
+		if (!bodySubnet) {
+			respondError(req, res, 400, 'subnet_required_with_bootstrap')
+			return
+		}
+		subnetId = bodySubnet
+	} else {
+		const identity = getClientIdentity(req)
+		if (!identity || identity.type !== 'hub') {
+			respondError(req, res, 401, 'hub_certificate_required')
+			return
+		}
+		subnetId = identity.subnetId
+		const bodySubnet =
+			typeof req.body?.subnet_id === 'string'
+				? req.body.subnet_id
+				: undefined
+		if (bodySubnet && bodySubnet !== subnetId) {
+			respondError(req, res, 400, 'subnet_certificate_mismatch')
+			return
+		}
+	}
+
+	if (!subnetId) {
+		respondError(req, res, 400, 'subnet_required')
+		return
+	}
+
+	const csrPem =
+		typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+	if (!csrPem) {
+		respondError(req, res, 400, 'csr_required')
+		return
+	}
+
+	const nodeId = generateNodeId()
+	let certPem: string
+	try {
+		const csrPemRaw =
+			typeof req.body?.csr_pem === 'string' ? req.body.csr_pem : null
+		const csrPem = csrPemRaw.replace(/\r\n/g, '\n').trim() + '\n'
+		const result = certificateAuthority.issueClientCertificate({
+			csrPem,
+			subject: {
+				commonName: `node:${nodeId}`,
+				organizationName: `subnet:${subnetId}`,
+			},
+		})
+		certPem = result.certificatePem
+	} catch (error) {
+		console.error('node certificate issue failed', error)
+		handleError(req, res, error, {
+			status: 400,
+			code: 'certificate_issue_failed',
+		})
+		return
+	}
+
+	await forgeManager.ensureSubnet(subnetId)
+	await forgeManager.ensureNode(subnetId, nodeId)
+	await redisClient.hSet(
+		'root:nodes',
+		nodeId,
+		JSON.stringify({
+			node_id: nodeId,
+			subnet_id: subnetId,
+			created_at: Date.now(),
+		})
+	)
+
+	res.status(201).json({
+		node_id: nodeId,
+		subnet_id: subnetId,
+		cert_pem: certPem,
+		ca_pem: CA_CERT_PEM,
+	})
+})
+
+const mtlsRouter = express.Router()
+
+function parseDn(dn: string): { cn?: string; o?: string } {
+	// nginx может отдавать DN в двух форматах:
+	//   1) RFC2253-подобный: "CN=subnet:sn_xxx,O=subnet:sn_xxx"
+	//   2) slash-style:      "/CN=subnet:sn_xxx/O=subnet:sn_xxx/..."
+	const cleaned = dn.trim()
+
+	// Попробуем comma-форму
+	let cn = /(?:^|[,])\s*CN=([^,\/]+)/.exec(cleaned)?.[1]
+	let o = /(?:^|[,])\s*O=([^,\/]+)/.exec(cleaned)?.[1]
+
+	// Если не нашли — пробуем slash-форму
+	if (!cn || !o) {
+		cn = /\/CN=([^\/,]+)/.exec(cleaned)?.[1] ?? cn
+		o = /\/O=([^\/,]+)/.exec(cleaned)?.[1] ?? o
+	}
+	return { cn, o }
+}
+
+function identityFromNginxHeaders(req: express.Request): ClientIdentity | null {
+	const verify = req.get('X-SSL-Client-Verify')
+	const subject = req.get('X-Client-Subject') ?? ''
+	const issuer = req.get('X-Client-Issuer') ?? ''
+	const hasCert = Boolean(req.get('X-Client-Cert'))
+
+	// шумный, но полезный лог до парсинга
+	console.warn('nginx mTLS headers', { verify, subject, issuer, hasCert })
+
+	if (verify !== 'SUCCESS') {
+		console.warn('nginx verify not SUCCESS:', verify)
+		return null
+	}
+
+	const { cn, o } = parseDn(subject)
+	console.warn('parsed DN', { cn, o })
+
+	if (!cn) {
+		console.warn('missing CN in subject DN')
+		return null
+	}
+	if (cn.startsWith('subnet:')) {
+		const subnetId = cn.slice('subnet:'.length)
+		if (!subnetId) {
+			console.warn('empty subnetId in CN')
+			return null
+		}
+		return { type: 'hub', subnetId }
+	}
+	if (cn.startsWith('node:')) {
+		const nodeId = cn.slice('node:'.length)
+		const subnetId = o?.startsWith('subnet:')
+			? o.slice('subnet:'.length)
+			: undefined
+		if (!nodeId || !subnetId) {
+			console.warn('node identity missing nodeId or subnetId', {
+				nodeId,
+				subnetId,
+				o,
+			})
+			return null
+		}
+		return { type: 'node', subnetId, nodeId }
+	}
+
+	console.warn('unsupported CN format', { cn })
+	return null
+}
+
+mtlsRouter.use((req, res, next) => {
+	const tlsSocket = req.socket as any // TLSSocket
+	const isEncrypted = tlsSocket?.encrypted === true
+	const authorized = tlsSocket?.authorized === true
+	const authError = tlsSocket?.authorizationError
+	const peer = isEncrypted ? tlsSocket.getPeerCertificate?.() ?? null : null
+
+	console.warn('tls gate', {
+		isEncrypted,
+		authorized,
+		authError,
+		hasPeer: !!peer,
+		peerSubject: peer?.subject,
+		peerIssuer: peer?.issuer,
+	})
+
+	if (isEncrypted && authorized) {
+		const id = getClientIdentity(req)
+		if (id) {
+			req.auth = id
+			return next()
+		}
+	}
+
+	const id2 = identityFromNginxHeaders(req)
+	if (id2) {
+		req.auth = id2
+		return next()
+	}
+
+	return respondError(req, res, 401, 'client_certificate_required')
+})
+
+mtlsRouter.get('/policy', (_req, res) => {
+	res.json(POLICY_RESPONSE)
+})
+
+const createDraftHandler =
+	(kind: DraftKind): express.RequestHandler =>
+	async (req, res) => {
+		const identity = req.auth
+		if (!identity)
+			return respondError(req, res, 401, 'client_certificate_required')
+
+		// Разрешаем и node, и hub
+		const name = typeof req.body?.name === 'string' ? req.body.name : ''
+		const archiveB64 =
+			typeof req.body?.archive_b64 === 'string'
+				? req.body.archive_b64
+				: ''
+		const sha256 =
+			typeof req.body?.sha256 === 'string' ? req.body.sha256 : undefined
+
+		if (!name || !archiveB64)
+			return respondError(req, res, 400, 'archive_fields_required')
+
+		// поддержка node_id в payload, если пуш идет "от хаба от имени ноды" (опционально)
+		const payloadNodeId =
+			typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+
+		// Определяем целевой контекст хранения
+		let subnetId: string
+		let nodeId: string
+
+		if (identity.type === 'node') {
+			subnetId = identity.subnetId
+			nodeId = identity.nodeId
+			if (payloadNodeId && payloadNodeId !== nodeId) {
+				return respondError(req, res, 403, 'node_mismatch')
+			}
+		} else if (identity.type === 'hub') {
+			subnetId = identity.subnetId
+			// режим «хаб пушит черновик на уровень подсети», без привязки к конкретной ноде:
+			nodeId = payloadNodeId || 'hub'
+		} else {
+			return respondError(req, res, 403, 'invalid_client_certificate')
+		}
+
+		// дальше как было: decode, check size, verify SHA, writeDraft
+		let archive: Buffer
+		try {
+			assertSafeName(name)
+			archive = decodeArchive(archiveB64)
+			if (!archive.length) throw new HttpError(400, 'archive_empty')
+			if (archive.length > MAX_ARCHIVE_BYTES)
+				return respondError(req, res, 413, 'archive_too_large')
+			verifySha256(archive, sha256)
+		} catch (error) {
+			return handleError(req, res, error, {
+				status: 400,
+				code: 'invalid_archive',
+			})
+		}
+
+		const started = Date.now()
+		try {
+			const result = await forgeManager.writeDraft({
+				kind,
+				subnetId,
+				nodeId,
+				name,
+				archive,
+			})
+			const keyPrefix =
+				kind === 'skills'
+					? SKILL_FORGE_KEY_PREFIX
+					: SCENARIO_FORGE_KEY_PREFIX
+			await redisClient.set(
+				`${keyPrefix}:${subnetId}:${nodeId}:${name}`,
+				JSON.stringify({
+					stored_path: result.storedPath,
+					commit: result.commitSha,
+					ts: Date.now(),
+				})
+			)
+			res.json({
+				ok: true,
+				stored_path: result.storedPath,
+				commit: result.commitSha,
+			})
+		} catch (error) {
+			console.error('failed to store draft', error)
+			handleError(req, res, error, {
+				status: 500,
+				code: 'draft_store_failed',
+			})
+		}
+	}
+
+const qstr = (q: any, key: string): string =>
+	typeof q?.[key] === 'string' ? q[key] : ''
+const qbool = (q: any, key: string): boolean => {
+	const v = q?.[key]
+	return v === true || v === 'true' || v === '1'
+}
+
+const deleteDraftHandler =
+	(kind: DraftKind): express.RequestHandler =>
+	async (req, res) => {
+		const identity = req.auth
+		if (!identity)
+			return respondError(req, res, 401, 'client_certificate_required')
+
+		const name = qstr(req.query, 'name')
+		const payloadNodeId = qstr(req.query, 'node_id')
+		const allNodes = qbool(req.query, 'all_nodes')
+		if (!name) return respondError(req, res, 400, 'missing_params')
+
+		try {
+			assertSafeName(name)
+		} catch {
+			return respondError(req, res, 400, 'invalid_name')
+		}
+
+		let subnetId: string
+		let nodeId: string | undefined
+
+		if (identity.type === 'node') {
+			subnetId = identity.subnetId
+			nodeId = identity.nodeId
+			if ((payloadNodeId && payloadNodeId !== nodeId) || allNodes) {
+				return respondError(req, res, 403, 'node_mismatch')
+			}
+		} else if (identity.type === 'hub') {
+			subnetId = identity.subnetId
+			nodeId = payloadNodeId || undefined
+		} else {
+			return respondError(req, res, 403, 'invalid_client_certificate')
+		}
+
+		const started = Date.now()
+		try {
+			const result = await forgeManager.deleteDraft({
+				kind,
+				subnetId,
+				name,
+				nodeId,
+				allNodes,
+			})
+
+			const keyPrefix =
+				kind === 'skills'
+					? SKILL_FORGE_KEY_PREFIX
+					: SCENARIO_FORGE_KEY_PREFIX
+			const keysToDelete = result.redisKeys ?? []
+			if (keysToDelete.length) {
+				await redisClient.del(keysToDelete)
+			}
+
+			console.info('draft deleted', {
+				action: 'delete_draft',
+				kind,
+				subnetId,
+				nodeId,
+				name,
+				allNodes,
+				duration_ms: Date.now() - started,
+				auditId: result.auditId,
+				deleted: result.deleted,
+			})
+
+			if (!result.deleted.length) {
+				return res.status(204).end()
+			}
+
+			return res.json({
+				ok: true,
+				deleted: result.deleted,
+				audit_id: result.auditId,
+			})
+		} catch (error: any) {
+			if (error?.code === 'not_found') {
+				return respondError(req, res, 404, 'not_found')
+			}
+			if (error?.code === 'invalid_name') {
+				return respondError(req, res, 400, 'invalid_name')
+			}
+			console.error('failed to delete draft', error)
+			return handleError(req, res, error, {
+				status: 500,
+				code: 'draft_delete_failed',
+			})
+		}
+	}
+
+const deleteRegistryHandler =
+	(kind: DraftKind): express.RequestHandler =>
+	async (req, res) => {
+		const identity = req.auth
+		if (!identity)
+			return respondError(req, res, 401, 'client_certificate_required')
+
+		const name = qstr(req.query, 'name')
+		const version = qstr(req.query, 'version') || undefined
+		const allVersions = qbool(req.query, 'all_versions')
+		const force = qbool(req.query, 'force')
+
+		if (!name) return respondError(req, res, 400, 'missing_params')
+		if (!version && !allVersions)
+			return respondError(req, res, 400, 'missing_params')
+
+		try {
+			assertSafeName(name)
+			if (version) assertSafeName(version)
+		} catch {
+			return respondError(req, res, 400, 'invalid_name')
+		}
+
+		const subnetId = identity.subnetId
+
+		const started = Date.now()
+		try {
+			const result = await forgeManager.deleteRegistry({
+				kind,
+				subnetId,
+				name,
+				version,
+				allVersions,
+				force,
+			})
+
+			console.info('registry artifact deleted', {
+				action: 'delete_registry',
+				kind,
+				subnetId,
+				name,
+				version,
+				allVersions,
+				force,
+				duration_ms: Date.now() - started,
+				auditId: result.auditId,
+				deleted: result.deleted,
+				skipped: result.skipped ?? [],
+				tombstoned: !!result.tombstoned,
+			})
+
+			if (result.deleted?.length) {
+				return res.json({
+					ok: true,
+					deleted: result.deleted,
+					skipped: result.skipped ?? [],
+					audit_id: result.auditId,
+					tombstoned: !!result.tombstoned,
+				})
+			}
+
+			return res.status(204).end()
+		} catch (error: any) {
+			if (error?.code === 'not_found') {
+				return respondError(req, res, 404, 'not_found')
+			}
+			if (error?.code === 'in_use') {
+				return respondError(req, res, 409, 'in_use', {
+					refs: error.refs || [],
+				})
+			}
+			console.error('failed to delete registry artifact', error)
+			return handleError(req, res, error, {
+				status: 500,
+				code: 'registry_delete_failed',
+			})
+		}
+	}
+
+mtlsRouter.post('/skills/draft', createDraftHandler('skills'))
+mtlsRouter.post('/scenarios/draft', createDraftHandler('scenarios'))
+
+mtlsRouter.delete('/skills/draft', deleteDraftHandler('skills'))
+mtlsRouter.delete('/scenarios/draft', deleteDraftHandler('scenarios'))
+
+mtlsRouter.delete('/skills/registry', deleteRegistryHandler('skills'))
+mtlsRouter.delete('/scenarios/registry', deleteRegistryHandler('scenarios'))
+
+mtlsRouter.post('/skills/pr', (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		respondError(req, res, 403, 'hub_certificate_required')
+		return
+	}
+	const name = typeof req.body?.name === 'string' ? req.body.name : ''
+	const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+	if (!name || !nodeId) {
+		respondError(req, res, 400, 'name_and_node_required')
+		return
+	}
+	res.json({
+		ok: true,
+		pr_url: 'https://github.com/stipot-com/adaos-registry/pull/mock-skill',
+	})
+})
+
+mtlsRouter.post('/scenarios/pr', (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		respondError(req, res, 403, 'hub_certificate_required')
+		return
+	}
+	const name = typeof req.body?.name === 'string' ? req.body.name : ''
+	const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : ''
+	if (!name || !nodeId) {
+		respondError(req, res, 400, 'name_and_node_required')
+		return
+	}
+	res.json({
+		ok: true,
+		pr_url: 'https://github.com/stipot-com/adaos-registry/pull/mock-scenario',
+	})
+})
+
+app.use('/v1', mtlsRouter)
+
+function isValidGuid(guid: string) {
+	return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+		guid
+	)
+}
+
+const openedStreams: OpenedStreams = {}
+const FILESPATH = '/tmp/inimatic_public_files/'
+
+if (!fs.existsSync(FILESPATH)) {
+	fs.mkdirSync(FILESPATH)
+}
+
+function cleanupSessionBucket(sessionId: string) {
+	if (
+		openedStreams[sessionId] &&
+		!Object.keys(openedStreams[sessionId]).length
+	) {
+		delete openedStreams[sessionId]
+	}
+}
+
+const safeBasename = (value: string) => path.basename(value)
+
+function saveFileChunk(
+	sessionId: string,
+	fileName: string,
+	content: Array<number>
+) {
+	if (!openedStreams[sessionId]) {
+		openedStreams[sessionId] = {}
+	}
+
+	const safeFile = safeBasename(fileName)
+
+	if (!openedStreams[sessionId][safeFile]) {
+		const timestamp = String(Date.now())
+		const stream = fs.createWriteStream(
+			FILESPATH + timestamp + '_' + safeFile
+		)
+		const destroyTimeout = setTimeout(() => {
+			openedStreams[sessionId][safeFile].stream.destroy()
+			fs.unlink(
+				FILESPATH +
+					openedStreams[sessionId][safeFile].timestamp +
+					'_' +
+					safeFile,
+				() => {}
+			)
+			delete openedStreams[sessionId][safeFile]
+			cleanupSessionBucket(sessionId)
+			console.log('destroy', openedStreams)
+		}, 30000)
+
+		openedStreams[sessionId][safeFile] = {
+			stream,
+			destroyTimeout,
+			timestamp,
+		}
+	}
+
+	clearTimeout(openedStreams[sessionId][safeFile].destroyTimeout)
+	openedStreams[sessionId][safeFile].destroyTimeout = setTimeout(() => {
+		openedStreams[sessionId][safeFile].stream.destroy()
+		fs.unlink(
+			FILESPATH +
+				openedStreams[sessionId][safeFile].timestamp +
+				'_' +
+				safeFile,
+			(error) => {
+				if (error) console.log(error)
+			}
+		)
+		delete openedStreams[sessionId][safeFile]
+		cleanupSessionBucket(sessionId)
+		console.log('destroy', openedStreams)
+	}, 30000)
+
+	return new Promise<void>((resolve, reject) =>
+		openedStreams[sessionId][safeFile].stream.write(
+			new Uint8Array(content),
+			(error) => (error ? reject(error) : resolve())
+		)
+	)
+}
+
+const registerSocketHandlers = (socket: Socket) => {
+	const namespace = socket.nsp
+	console.log(socket.id)
+
+	if (namespace.name === SOCKET_CHANNEL_NS) {
+		socket.emit('channel_version', SOCKET_CHANNEL_VERSION)
+	}
+
+	socket.on('disconnecting', async () => {
+		const rooms = Array.from(socket.rooms).filter(
+			(roomId) => roomId != socket.id
+		)
+		if (!rooms.length) return
+
+		const sessionId = rooms[0]
+		console.log('disconnect', socket.id, socket.rooms, sessionId)
+		const sessionData: UnionSessionData = JSON.parse(
+			(await redisClient.get(sessionId))!
+		)
+
+		if (sessionData == null) {
+			socket.to(sessionId).emit('initiator_disconnect')
+			return
+		}
+
+		const isInitiator = sessionData.initiatorSocketId === socket.id
+		if (isInitiator) {
+			if (sessionData.type === 'public') {
+				await Promise.all(
+					sessionData.fileNames.map((item) => {
+						const filePath =
+							FILESPATH + item.timestamp + '_' + item.fileName
+
+						return new Promise<void>((resolve) =>
+							fs.unlink(filePath, () => resolve())
+						)
+					})
+				)
+			}
+
+			socket.to(sessionId).emit('initiator_disconnect')
+			namespace.socketsLeave(sessionId)
+			await redisClient.del(sessionId)
+		} else {
+			namespace
+				.to(sessionData.initiatorSocketId)
+				.emit('follower_disconnect', sessionData.followers[socket.id])
+
+			delete sessionData.followers[socket.id]
+			await redisClient.set(sessionId, JSON.stringify(sessionData))
+		}
+	})
+
+	socket.on('add_initiator', async (type) => {
+		const guid = uuidv4()
+		let sessionData: UnionSessionData
+		if (type === 'private') {
+			sessionData = {
+				initiatorSocketId: socket.id,
+				followers: {},
+				timestamp: new Date(),
+				type: type,
+			}
+		} else {
+			sessionData = {
+				initiatorSocketId: socket.id,
+				followers: {},
+				timestamp: new Date(),
+				type: type,
+				fileNames: [],
+			}
+		}
+
+		await redisClient.set(guid, JSON.stringify(sessionData))
+		await redisClient.expire(guid, 3600)
+
+		socket.join(guid)
+		socket.emit('session_id', guid)
+	})
+
+	async function sendToPublicFollower(targetSocket: Socket, emitObject: any) {
+		return new Promise<void>((resolve) => {
+			targetSocket.emit('communication', emitObject, () => resolve())
+		})
+	}
+
+	async function distributeSessionFiles(
+		targetSocket: Socket,
+		fileNames: Array<{ fileName: string; timestamp: string }>
+	) {
+		const chunksize = 64 * 1024
+
+		for (const item of fileNames) {
+			const filePath = FILESPATH + item.timestamp + '_' + item.fileName
+			const readStream = fs.createReadStream(filePath, {
+				highWaterMark: chunksize,
+			})
+
+			const size = (await stat(filePath)).size
+
+			await sendToPublicFollower(targetSocket, {
+				type: 'transferFile',
+				fileName: item.fileName,
+				size,
+			})
+
+			for await (const chunk of readStream) {
+				await sendToPublicFollower(targetSocket, {
+					type: 'writeFile',
+					fileName: item.fileName,
+					content: Array.from(new Uint8Array(chunk as Buffer)),
+					size,
+				})
+			}
+
+			await sendToPublicFollower(targetSocket, {
+				type: 'fileTransfered',
+				fileName: item.fileName,
+			})
+		}
+	}
+
+	socket.on(
+		'set_session_data',
+		async (sessionId: string, sessionData: SessionData) => {
+			if (!isValidGuid(sessionId)) {
+				console.error('sessionId must be in guid format')
+				return
+			}
+
+			await redisClient.set(sessionId, JSON.stringify(sessionData))
+			await redisClient.expire(sessionId, 3600)
+		}
+	)
+
+	socket.on(
+		'join_session',
+		async ({ followerName, sessionId }: FollowerData) => {
+			if (!isValidGuid(sessionId)) {
+				console.error('sessionId must be in guid format')
+				return
+			}
+
+			let sessionData: UnionSessionData | null
+			try {
+				const sessionString = await redisClient.get(sessionId)
+				sessionData = sessionString ? JSON.parse(sessionString) : null
+			} catch (error) {
+				console.error(error)
+				return
+			}
+
+			if (sessionData == null) {
+				socket.emit('session_unavailable')
+				return
+			}
+
+			if (sessionData.followers[socket.id]) {
+				return
+			}
+
+			if (sessionData.type === 'public') {
+				socket.emit('session_type', 'public')
+				await socket.join(sessionId)
+				sessionData.followers[socket.id] = followerName
+				await redisClient.set(sessionId, JSON.stringify(sessionData))
+				await distributeSessionFiles(socket, sessionData.fileNames)
+				return
+			}
+
+			socket.join(sessionId)
+			sessionData.followers[socket.id] = followerName
+			await redisClient.set(sessionId, JSON.stringify(sessionData))
+
+			socket.emit('session_type', 'private')
+			namespace
+				.to(sessionData.initiatorSocketId)
+				.emit('follower_connect', followerName)
+		}
+	)
+
+	socket.on('set_session_public_files', async ({ sessionId, fileNames }) => {
+		const sessionString = await redisClient.get(sessionId)
+		const sessionData: PublicSessionData = sessionString
+			? JSON.parse(sessionString)
+			: null
+
+		if (sessionData == null) {
+			socket.emit('session_unavailable')
+			return
+		}
+
+		sessionData.fileNames = fileNames
+		await redisClient.set(sessionId, JSON.stringify(sessionData))
+	})
+
+	socket.on(
+		'communication',
+		async ({ isInitiator, sessionId, data }: CommunicationData) => {
+			if (!isValidGuid(sessionId)) {
+				console.error('sessionId must be in guid format')
+				return
+			}
+
+			if (isInitiator) {
+				const firstValue = data['values'][0]
+
+				if (firstValue['type'] === 'transferFile') {
+					const safeFileName = safeBasename(firstValue['fileName'])
+					const pathToFile =
+						FILESPATH + firstValue['timestamp'] + '_' + safeFileName
+					await new Promise<void>((resolve) =>
+						fs.unlink(pathToFile, () => resolve())
+					)
+					delete openedStreams[sessionId][safeFileName]
+					cleanupSessionBucket(sessionId)
+				}
+
+				namespace.to(sessionId).emit('communication', data)
+				return
+			}
+
+			const sessionData = (await redisClient.get(sessionId))!
+			const initiatorSocketId = (JSON.parse(sessionData) as SessionData)
+				.initiatorSocketId
+
+			const messageType = data['type']
+
+			if (messageType === 'writeFile') {
+				await saveFileChunk(
+					sessionId,
+					data['fileName'],
+					data['content']
+				)
+			}
+
+			namespace.to(initiatorSocketId).emit('communication', data)
+		}
+	)
+}
+
+io.on('connection', registerSocketHandlers)
+
+if (SOCKET_CHANNEL_NS !== '/') {
+	const nsv1 = io.of(SOCKET_CHANNEL_NS)
+	nsv1.use((socket, next) => next())
+	nsv1.on('connection', (socket) => registerSocketHandlers(socket))
+}
+
+function closeStreams() {
+	for (const sessionId of Object.keys(openedStreams)) {
+		for (const info of Object.values(openedStreams[sessionId])) {
+			try {
+				info.stream.close()
+			} catch {
+				info.stream.destroy()
+			}
+		}
+		delete openedStreams[sessionId]
+	}
+}
+
+const shutdown = async () => {
+	closeStreams()
+	try {
+		await redisClient.quit()
+	} catch (error) {
+		console.error('Failed to close redis client', error)
+	}
+	server.close(() => process.exit(0))
+}
+
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
+
+server.listen(PORT, HOST, () => {
+	console.log(`AdaOS backhand listening on https://${HOST}:${PORT}`)
+})

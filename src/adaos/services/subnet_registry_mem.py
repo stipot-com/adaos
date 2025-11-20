@@ -12,7 +12,17 @@ class InMemorySubnetRegistry(SubnetRegistryPort):
         self._reg: Dict[str, NodeInfo] = {}
 
     def register_node(self, node_id: str, meta: Dict[str, Any] | None = None) -> NodeInfo:
-        info = NodeInfo(node_id=node_id, last_seen=time.time(), status="up", meta=meta or {})
+        meta = meta or {}
+        info = NodeInfo(
+            node_id=node_id,
+            subnet_id=str(meta.get("subnet_id") or meta.get("subnet") or ""),
+            roles=list(meta.get("roles") or []),
+            hostname=meta.get("hostname"),
+            base_url=meta.get("base_url"),
+            last_seen=time.time(),
+            status="up",
+            capacity=dict(meta.get("capacity") or {}),
+        )
         self._reg[node_id] = info
         return info
 

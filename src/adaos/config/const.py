@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 # ЖЁСТКИЕ значения по умолчанию (меняются разработчиками в коде/сборке)
-SKILLS_MONOREPO_URL: str | None = "https://github.com/stipot/adaoskills.git"
+REGISTRY_URL: str = "https://github.com/stipot-com/adaos-registry.git"
+
+SKILLS_MONOREPO_URL: str | None = REGISTRY_URL
 SKILLS_MONOREPO_BRANCH: str | None = "main"
 
-SCENARIOS_MONOREPO_URL: str | None = "https://github.com/stipot/adaosscens.git"
+SCENARIOS_MONOREPO_URL: str | None = REGISTRY_URL
 SCENARIOS_MONOREPO_BRANCH: str | None = "main"
 
 # Разрешить ли .env/ENV менять монорепо (ТОЛЬКО для dev-сборок!)

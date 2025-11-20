@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio, json
 from pathlib import Path
-from adaos.sdk import bus
+from adaos.sdk.data import bus
 from adaos.services.agent_context import get_ctx
 
 
@@ -10,20 +10,20 @@ async def _once():
     await asyncio.sleep(0)
 
 
+async def _run_bus_flow(seen: dict) -> None:
+    async def handler(payload: dict):
+        seen.update(payload)
+
+    await bus.on("unit.test", handler)
+    await bus.emit("unit.test", {"hello": "world"}, source="testcase", actor="pytest")
+    await _once()
+
+
 def test_bus_emit_and_on(tmp_path):
     ctx = get_ctx()
     seen = {}
 
-    async def handler(payload: dict):
-        seen.update(payload)
-
-    # подписка
-    asyncio.get_event_loop().run_until_complete(bus.on("unit.test", handler))
-
-    # публикация с метаданными
-    asyncio.get_event_loop().run_until_complete(bus.emit("unit.test", {"hello": "world"}, source="testcase", actor="pytest"))
-    # даём ивентлупу тик
-    asyncio.get_event_loop().run_until_complete(_once())
+    asyncio.run(_run_bus_flow(seen))
 
     # payload дошёл
     assert seen.get("hello") == "world"

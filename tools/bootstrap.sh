@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/bootstrap.sh — унифицированный bootstrap (macOS/Linux)
 set -euo pipefail
-
+SUBMODULE_PATH="src/adaos/integrations/inimatic"
 # --- helpers ---------------------------------------------------------------
 
 log()   { printf "\033[36m▶ %s\033[0m\n" "$*"; }
@@ -107,8 +107,8 @@ open_subshell_help() {
      npm run start
 
 подсказки:
- • сменить версию venv — удалите .venv и перезапустите bootstrap
- • строгая проверка lock: BOOTSTRAP_STRICT_LOCK=1 (тогда падать, если npm ci не прошёл)
+ - сменить версию venv — удалите .venv и перезапустите bootstrap
+ - строгая проверка lock: BOOTSTRAP_STRICT_LOCK=1 (тогда падать, если npm ci не прошёл)
 EOF
   # start an interactive subshell with venv sourced and help printed
   if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
@@ -154,9 +154,31 @@ popd >/dev/null
 log "Готовлю .env…"
 [[ -f .env || ! -f .env.example ]] || cp .env.example .env
 
+# Default webspace content (scenarios + skills)
+DEFAULT_SCENARIOS=("web_desktop")
+DEFAULT_SKILLS=("weather_skill")
+ADAOS_BASE_DIR="$(pwd)/.adaos"
+mkdir -p "$ADAOS_BASE_DIR"
+export ADAOS_BASE_DIR
+
+log "Installing default webspace content:"
+for scn in "${DEFAULT_SCENARIOS[@]}"; do
+  log "  adaos scenario install $scn"
+  if ! adaos scenario install "$scn"; then
+    warn "scenario '$scn' �� ��⠭���� (����� ��� ��⠭��)"
+  fi
+done
+for skill in "${DEFAULT_SKILLS[@]}"; do
+  log "  adaos skill install $skill"
+  if ! adaos skill install "$skill"; then
+    warn "skill '$skill' �� ��⠭���� (����� ��� ��⠭��)"
+  fi
+done
 ok  "Bootstrap завершён."
 printf "\n\033[36m👉 Активируйте окружение:\033[0m \033[33msource .venv/bin/activate\033[0m\n"
 printf "или экспортируйте \033[33mBOOTSTRAP_OPEN_SUBSHELL=1\033[0m и перезапустите скрипт, чтобы открыть интерактивный сабшелл.\n\n"
 
 # опционально открыть новый интерактивный сабшелл с активированным venv и памяткой
 open_subshell_help
+
+

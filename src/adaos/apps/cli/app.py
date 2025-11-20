@@ -6,34 +6,28 @@ import sys
 import shutil
 from pathlib import Path
 from typing import Optional
-
-from dotenv import load_dotenv, find_dotenv
 import typer
+from dotenv import load_dotenv, find_dotenv
 
-# загружаем .env один раз (для переменных вроде ADAOS_TTS/ADAOS_STT)
 load_dotenv(find_dotenv())
 
-from adaos.sdk.utils.setup_env import prepare_environment
-
-# контекст и настройки (PR-2)
+from adaos.sdk.manage.environment import prepare_environment
 from adaos.services.settings import Settings
-from adaos.apps.bootstrap import init_ctx, get_ctx, reload_ctx
+from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
-
-# общие подкоманды
-from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export
-
-# интеграции
+from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev
+from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
-from adaos.apps.cli.commands import ovos as ovos_cmd
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
 from adaos.apps.cli.commands import secret
 from adaos.apps.cli.commands import sandbox as sandbox_cmd
 
 app = typer.Typer(help=_("cli.help"))
 
-# -------- вспомогательные --------
+init_ctx()
+
+# -------- helpers --------
 
 
 def _run_safe(func):
@@ -86,10 +80,10 @@ def ensure_environment():
     if os.getenv("ADAOS_TESTING") == "1":
         return  # В CI/юнит-тестах окружение не готовим и ничего не скачиваем
     ctx = get_ctx()
-    base_dir = Path(ctx.settings.base_dir)
+    base_dir = ctx.paths.base_dir()
 
     # для совместимости со старым кодом, который читает env напрямую
-    os.environ["ADAOS_BASE_DIR"] = str(ctx.settings.base_dir)
+    os.environ["ADAOS_BASE_DIR"] = str(base_dir)
     os.environ["ADAOS_PROFILE"] = ctx.settings.profile
 
     if not base_dir.exists():
@@ -149,20 +143,20 @@ switch_app = typer.Typer(help="Переключение бэкендов / ос�
 
 
 @switch_app.command("tts")
-def switch_tts(mode: str = typer.Argument(..., help="native | ovos | rhasspy")):
+def switch_tts(mode: str = typer.Argument(..., help="native | rhasspy")):
     mode = mode.strip().lower()
-    if mode not in {"native", "ovos", "rhasspy"}:
-        raise typer.BadParameter("Allowed: native, ovos, rhasspy")
+    if mode not in {"native", "rhasspy"}:
+        raise typer.BadParameter("Allowed: native, rhasspy")
     _write_env_var("ADAOS_TTS", mode)
     typer.echo(f"[AdaOS] ADAOS_TTS set to '{mode}'. Reloading ...")
     _restart_self()
 
 
 @switch_app.command("stt")
-def switch_stt(mode: str = typer.Argument(..., help="vosk | rhasspy | ovos | native")):
+def switch_stt(mode: str = typer.Argument(..., help="vosk | rhasspy | native")):
     mode = mode.strip().lower()
-    if mode not in {"vosk", "rhasspy", "ovos", "native"}:
-        raise typer.BadParameter("Allowed: vosk, rhasspy, ovos, native")
+    if mode not in {"vosk", "rhasspy", "native"}:
+        raise typer.BadParameter("Allowed: vosk, rhasspy, native")
     _write_env_var("ADAOS_STT", mode)
     typer.echo(f"[AdaOS] ADAOS_STT set to '{mode}'. Reloading ...")
     _restart_self()
@@ -182,21 +176,21 @@ app.add_typer(runtime.app, name="runtime", help=_("cli.help_runtime"))
 app.add_typer(llm.app, name="llm", help=_("cli.help_llm"))
 app.add_typer(api.app, name="api")
 app.add_typer(monitor.app, name="monitor")
-app.add_typer(scenario.scenario_app, name="scenario")
+app.add_typer(repo.app, name="repo", help=_("cli.repo.help"))
+app.add_typer(scenario.app, name="scenario", help=_("cli.help_scenario"))
 app.add_typer(switch_app, name="switch", help="Переключение профилей интеграций")
 app.add_typer(secret.app, name="secret")
 app.add_typer(sandbox_cmd.app, name="sandbox")
 app.add_typer(_sdk_export.app, name="sdk")
+app.add_typer(interpreter.app, name="interpreter", help="Интерпретатор и обучение")
+app.add_typer(dev.app, name="dev", help="Developer operations")
 
 # ---- Фильтрация интеграций по ENV ----
 _tts = _read("ADAOS_TTS", "native")
-if _tts == "ovos":
-    app.add_typer(ovos_cmd.app, name="ovos", help="OVOS-интеграция")
-elif _tts == "rhasspy":
-    app.add_typer(rhasspy_cmd.app, name="rhasspy", help="Rhasspy-интеграция")
+if _tts == "rhasspy":
+    app.add_typer(rhasspy_cmd.app, name="rhasspy", help="Rhasspy-integration")
 else:
-    # корневые команды «нативного» профиля
-    app.add_typer(native.app, name="", help="Нативные команды (по умолчанию)")
+    app.add_typer(native.app, name="", help="Native commands")
 
 if __name__ == "__main__":
     app()

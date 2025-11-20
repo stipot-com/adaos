@@ -68,6 +68,8 @@ class AgentContext:
     git: GitClient
     fs: FSPolicy
     sandbox: Sandbox
+    # Node configuration (loaded once during bootstrap and reused to avoid expensive reloads)
+    config: Any = field(default=None, init=False, repr=False)
     _i18n: Optional[I18nService] = field(default=None, init=False, repr=False)
 
     # приватные кэши под slots

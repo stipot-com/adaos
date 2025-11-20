@@ -11,6 +11,7 @@ class PathProvider:
 
     base: Path
     package_dir: Path
+    subnet_id: str
 
     # --- конструкторы ---
     @classmethod
@@ -20,14 +21,18 @@ class PathProvider:
     # совместимость со старым стилем: PathProvider(settings)
     def __init__(self, settings: Settings | str | Path):
         base = settings.base_dir
-        package_dir = settings.package_dir
+        package_dir: Path = settings.package_dir
+        self.subnet_id = settings.subnet_id
         object.__setattr__(self, "base", base.expanduser().resolve())
         object.__setattr__(self, "package_dir", package_dir.expanduser().resolve())
 
     # --- базовые каталоги ---
+    def package_path(self) -> Path:
+        """Package-level locales shipped with AdaOS (see ``get_ctx().paths``)."""
+        return (self.package_dir).resolve()
+
     def locales_dir(self) -> Path:
         """Package-level locales shipped with AdaOS (see ``get_ctx().paths``)."""
-
         return (self.package_dir / "locales").resolve()
 
     def skill_templates_dir(self) -> Path:
@@ -39,11 +44,30 @@ class PathProvider:
     def base_dir(self) -> Path:
         return self.base
 
-    def skills_dir(self) -> Path:
+    # --- workspace helpers ---
+
+    def workspace_dir(self) -> Path:
+        return (self.base / "workspace").resolve()
+
+    def skills_workspace_dir(self) -> Path:
+        return (self.workspace_dir() / "skills").resolve()
+
+    def scenarios_workspace_dir(self) -> Path:
+        return (self.workspace_dir() / "scenarios").resolve()
+
+    # --- registry caches ---
+
+    def skills_cache_dir(self) -> Path:
         return (self.base / "skills").resolve()
 
-    def scenarios_dir(self) -> Path:
+    def scenarios_cache_dir(self) -> Path:
         return (self.base / "scenarios").resolve()
+
+    def skills_dir(self) -> Path:
+        return self.skills_workspace_dir()
+
+    def scenarios_dir(self) -> Path:
+        return self.scenarios_workspace_dir()
 
     def models_dir(self) -> Path:
         return (self.base / "models").resolve()
@@ -72,6 +96,17 @@ class PathProvider:
 
         return self.locales_base_dir()
 
+    # dev section
+
+    def dev_dir(self) -> Path:
+        return (self.base / "dev" / self.subnet_id).resolve()
+
+    def dev_skills_dir(self) -> Path:
+        return (self.dev_dir() / "skills").resolve()
+
+    def dev_scenarios_dir(self) -> Path:
+        return (self.dev_dir() / "scenarios").resolve()
+
     def tmp_dir(self) -> Path:
         return (self.base / "tmp").resolve()
 
@@ -80,8 +115,7 @@ class PathProvider:
             self.locales_dir(),
             self.locales_base_dir(),
             self.base_dir(),
-            self.skills_dir(),
-            self.scenarios_dir(),
+            self.workspace_dir(),
             self.skill_templates_dir(),
             self.scenario_templates_dir(),
             self.models_dir(),

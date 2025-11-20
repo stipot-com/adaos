@@ -1,0 +1,100 @@
+- path: src/adaos/adapters/db/sqlite.py
+  tags:
+  - layer:db
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: add_or_update_entity, set_installed_flag, list_entities, update_skill_version,
+    get_skill_versions, list_versions
+- path: src/adaos/adapters/db/sqlite_schema.py
+  tags:
+  - layer:db
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: ensure_schema
+- path: src/adaos/apps/api/auth.py
+  tags:
+  - area:auth
+  - layer:backend
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: require_token
+- path: src/adaos/apps/api/root_endpoints.py
+  tags:
+  - area:api
+  - layer:backend
+  - uc:device_login
+  - uc:qr_pairing
+  funcs: root_register, llm_chat
+  classes:
+  - Name: ChatMessage
+  - Name: ChatRequest
+- path: src/adaos/apps/api/server.py
+  tags:
+  - area:api
+  - layer:backend
+  - uc:device_login
+  funcs: lifespan, ping, status, say, health_live, health_ready
+  classes:
+  - Name: SayRequest
+  - Name: SayResponse
+- path: src/adaos/apps/cli/commands/dev.py
+  tags:
+  - layer:cli
+  - uc:device_login
+  funcs: root_login, root_status, root_whoami, root_logout, root_sync_hubs, root_add_hub,
+    hub_enroll, hub_init, node_register
+- path: src/adaos/apps/cli/root_ops.py
+  tags:
+  - layer:cli
+  - uc:device_login
+  funcs: load_root_cli_config, save_root_cli_config, run_preflight_checks, ensure_registration,
+    assert_safe_name, create_zip_bytes, archive_bytes_to_b64, push_skill_draft, push_scenario_draft,
+    fetch_policy, keys_dir, key_path
+  classes:
+  - Name: RootCliError
+  - Name: KeyPairPaths
+  - Name: RootCliKeys
+  - Name: RootCliConfig
+- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-client.service.ts
+  tags:
+  - area:api-client
+  - layer:frontend
+  - uc:device_login
+  - uc:qr_pairing
+  types: AdaosEvent
+  interfaces: AdaosConfig
+- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.ts
+  tags:
+  - area:ui
+  - layer:frontend
+  - uc:device_login
+  - uc:qr_pairing
+- path: src/adaos/services/root/client.py
+  tags:
+  - layer:services
+  - uc:device_login
+  classes:
+  - Name: RootHttpError
+    methds: __init__
+  - Name: RootHttpClient
+    methds: __post_init__, close, owner_start, owner_poll, token_refresh, whoami,
+      owner_hubs_list, owner_hubs_add, pki_enroll, subnets_register, nodes_register
+- path: src/adaos/services/root/keyring.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: save_refresh, load_refresh, delete_refresh
+  classes:
+  - Name: KeyringUnavailableError
+- path: src/adaos/services/root/service.py
+  tags:
+  - layer:services
+  - uc:device_login
+  classes:
+  - Name: RootAuthError
+  - Name: RootAuthService
+    methds: login_owner, get_access_token, whoami, logout
+  - Name: OwnerHubsService
+    methds: sync, add_current_hub
+  - Name: PkiService
+    methds: enroll

@@ -1,0 +1,32 @@
+# artifacts/ignore-rules.yaml — draft
+ignore:
+  paths:
+    - "frontend/**/index.ts"
+    - "frontend/**/index.tsx"
+    - "frontend/**/__tests__/**"
+    - "**/*.spec.ts"
+    - "**/*.spec.tsx"
+    - "**/*.test.ts"
+    - "**/*.test.py"
+    - "**/__mocks__/**"
+    - "**/__pycache__/**"
+    - "tests/**"
+    - ".adaos/**"
+    - "examples/**"
+    - "src/adaos/integrations/inimatic/src/**/*.spec.ts"
+    - "src/adaos/integrations/inimatic/src/environments/**"
+    - "src/adaos/services/**/__init__.py"
+    - "src/adaos/**/__init__.py"
+  names_regex:
+    - "^get[A-Z].*" # getters
+    - "^set[A-Z].*" # setters
+    - "^use[A-Z].*" # react hooks
+    - "^handle[A-Z].*" # trivial handlers
+    - "^__.*__$" # python dunder
+    - "^(main|init|setup)$" # boilerplate
+  files_regex:
+    - ".*/types\\.(ts|tsx)$"
+    - ".*/constants\\.(ts|tsx|py)$"
+    - ".*/__init__\\.(py|ts)$"
+notes: |
+  This is a first draft. Review code_map.md and refine the ignore list to exclude trivial wrappers/aliases that carry no domain logic.

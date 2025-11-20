@@ -1,0 +1,102 @@
+name: inimatic CD
+
+on:
+  push:
+    branches: [rev2026]
+    paths:
+      - "src/adaos/integrations/inimatic/**"
+      - ".github/workflows/cd.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # для push в GHCR
+    outputs:
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      backend_rev: ${{ steps.tags.outputs.backend_rev }}
+      frontend_rev: ${{ steps.tags.outputs.frontend_rev }}
+      backend_image_rev: ${{ steps.tags.outputs.backend_image_rev }}
+      frontend_image_rev: ${{ steps.tags.outputs.frontend_image_rev }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare image tags
+        id: tags
+        run: |
+          BACKEND_REV="rev2026-${{ steps.meta.outputs.short_sha }}"
+          FRONTEND_REV="rev2026-${{ steps.meta.outputs.short_sha }}"
+          echo "backend_rev=${BACKEND_REV}" >> "$GITHUB_OUTPUT"
+          echo "frontend_rev=${FRONTEND_REV}" >> "$GITHUB_OUTPUT"
+          echo "backend_image_rev=ghcr.io/${{ github.repository_owner }}/inimatic-backend:${BACKEND_REV}" >> "$GITHUB_OUTPUT"
+          echo "frontend_image_rev=ghcr.io/${{ github.repository_owner }}/inimatic-frontend:${FRONTEND_REV}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/adaos/integrations/inimatic
+          file: src/adaos/integrations/inimatic/deployment/backend.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/inimatic-backend:latest
+            ${{ steps.tags.outputs.backend_image_rev }}
+          cache-from: type=gha,scope=inimatic-backend
+          cache-to: type=gha,scope=inimatic-backend,mode=max
+          provenance: false
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/adaos/integrations/inimatic
+          file: src/adaos/integrations/inimatic/deployment/frontend.Dockerfile
+          push: true
+          build-args: |
+            BUILD_SCRIPT=buildprod
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/inimatic-frontend:latest
+            ${{ steps.tags.outputs.frontend_image_rev }}
+          cache-from: type=gha,scope=inimatic-frontend
+          cache-to: type=gha,scope=inimatic-frontend,mode=max
+          provenance: false
+
+  notify-infra:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Notify infra-inimatic via repository_dispatch
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INFRA_DISPATCH_TOKEN }} # <-- PAT c scope repo
+          repository: stipot-com/infra-inimatic
+          event-type: images-published
+          client-payload: >-
+            {
+              "sha":"${{ needs.build-and-push.outputs.short_sha }}",
+              "backend":"${{ needs.build-and-push.outputs.backend_image_rev }}",
+              "frontend":"${{ needs.build-and-push.outputs.frontend_image_rev }}"
+            }

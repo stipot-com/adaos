@@ -19,6 +19,21 @@ def test_path_provider_locales_base_dir(tmp_path):
     assert provider.scenarios_locales_dir() == expected
 
 
+def test_path_provider_workspace_layout(tmp_path):
+    settings = Settings.from_sources().with_overrides(base_dir=tmp_path / "adaos-test", profile="test")
+    provider = PathProvider(settings)
+
+    base = Path(settings.base_dir).expanduser().resolve()
+    assert provider.workspace_dir() == base / "workspace"
+    assert provider.skills_workspace_dir() == base / "workspace" / "skills"
+    assert provider.scenarios_workspace_dir() == base / "workspace" / "scenarios"
+    assert provider.skills_cache_dir() == base / "skills"
+    assert provider.scenarios_cache_dir() == base / "scenarios"
+    # Compatibility aliases
+    assert provider.skills_dir() == provider.skills_workspace_dir()
+    assert provider.scenarios_dir() == provider.scenarios_workspace_dir()
+
+
 def test_agent_context_exposes_locales_from_provider():
     ctx = get_ctx()
 

@@ -17,6 +17,7 @@ def _run_git(args: list[str], cwd: Optional[StrOrPath] = None) -> str:
         cwd = str(Path(cwd))  # единая точка приведения к str
     p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     # TODO Проверить, git нет, но папка не пустая. Вместо операции c git даем дружественную ошибку
+    # destination path 'C:\git\MUIV\adaos_test\adaos\.adaos_1\workspace' already exists and is not an empty directory
     if p.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
     return p.stdout.strip()
@@ -41,17 +42,46 @@ class CliGitClient(GitClient):
         d.mkdir(parents=True, exist_ok=True)
         git_dir = d / ".git"
         if not git_dir.exists():
-            args = ["clone", url, str(d)]
-            if self._depth > 0:
-                args += [f"--depth={self._depth}"]
-            if branch:
-                args += ["--branch", branch]
-            _run_git(args, cwd=None)
-            # сразу включим sparse cone по умолчанию (можно переинициализировать на no-cone)
+            # Prefer clone into empty directory; if directory is non-empty, fall back to init+fetch
             try:
-                _run_git(["sparse-checkout", "init", "--cone"], cwd=str(d))
-            except Exception as e:
-                pass
+                args = ["clone", url, str(d)]
+                if self._depth > 0:
+                    args += [f"--depth={self._depth}"]
+                if branch:
+                    args += ["--branch", branch]
+                _run_git(args, cwd=None)
+                try:
+                    _run_git(["sparse-checkout", "init", "--cone"], cwd=str(d))
+                except Exception:
+                    pass
+            except GitError:
+                # Non-empty destination — initialize in place and attach remote
+                _run_git(["init"], cwd=str(d))
+                try:
+                    _run_git(["remote", "add", "origin", url], cwd=str(d))
+                except GitError:
+                    # remote may already exist — continue
+                    pass
+                # Fetch and checkout the desired branch (or main)
+                target_branch = branch or "main"
+                try:
+                    fetch_args = ["fetch", "--prune", "origin"]
+                    if self._depth > 0:
+                        fetch_args += [f"--depth={self._depth}"]
+                    fetch_args += [target_branch]
+                    _run_git(fetch_args, cwd=str(d))
+                except GitError:
+                    # try fetching all if branch-specific fetch failed
+                    _run_git(["fetch", "--prune", "origin"], cwd=str(d))
+                try:
+                    _run_git(["checkout", "-B", target_branch, f"origin/{target_branch}"], cwd=str(d))
+                except GitError:
+                    # Last resort: checkout whatever HEAD points to
+                    _run_git(["checkout", target_branch], cwd=str(d))
+                try:
+                    _run_git(["sparse-checkout", "init", "--cone"], cwd=str(d))
+                except Exception:
+                    pass
         _append_exclude(
             dir,
             [
@@ -96,6 +126,20 @@ class CliGitClient(GitClient):
                 lines.append(path)
                 sp.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def sparse_reapply(self, dir: StrOrPath) -> None:
+        try:
+            _run_git(["sparse-checkout", "reapply"], cwd=dir)
+        except GitError:
+            # Non sparse worktrees raise an error — ignore silently to keep idempotent.
+            pass
+
+    def rm_cached(self, dir: StrOrPath, path: str) -> None:
+        try:
+            _run_git(["rm", "--cached", "-r", "--ignore-unmatch", path], cwd=dir)
+        except GitError:
+            # Nothing tracked for the path — ignore.
+            pass
+
     def changed_files(self, dir: StrOrPath, subpath: Optional[str] = None) -> list[str]:
         # untracked (-o) + modified (-m), исключая игнор по .gitignore
         args = ["ls-files", "-m", "-o", "--exclude-standard"]
@@ -125,4 +169,21 @@ class CliGitClient(GitClient):
 
     def push(self, dir: StrOrPath, remote: str = "origin", branch: Optional[str] = None) -> None:
         branch = branch or self._current_branch(dir)
+        # 1) сначала пробуем обычный fast-forward pull (быстро и дёшево)
+        try:
+            _run_git(["pull", "--ff-only", remote, branch], cwd=dir)
+        except GitError:
+            # 2) если не вышло (non-ff), делаем rebase с автосбросом стэша
+            #    но shallow-репо могут не иметь базовой истории → разшалловим и повторим
+            try:
+                _run_git(["-c", "rebase.autoStash=true", "pull", "--rebase", remote, branch], cwd=dir)
+            except GitError:
+                # попытка «расшалловить» историю и снова rebase
+                try:
+                    _run_git(["fetch", "--prune", "--unshallow", remote], cwd=dir)
+                except GitError:
+                    # если git старый и не знает --unshallow, просто увеличим глубину
+                    _run_git(["fetch", "--prune", "--depth=50", remote], cwd=dir)
+                _run_git(["-c", "rebase.autoStash=true", "pull", "--rebase", remote, branch], cwd=dir)
+        # 3) когда локальная ветка на вершине origin/<branch> — пушим
         _run_git(["push", remote, branch], cwd=dir)

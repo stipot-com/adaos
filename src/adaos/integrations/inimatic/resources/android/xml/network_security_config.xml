@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- <network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="true">
+     <domain>192.168.1.8</domain>
+   </domain-config>
+</network-security-config> -->
+
+<network-security-config>
+   <base-config cleartextTrafficPermitted="true">
+       <trust-anchors>
+           <certificates src="system" />
+       </trust-anchors>
+   </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain>localhost</domain>
+        <domain includeSubdomains="true">192.168.1.8:8100</domain>
+    </domain-config>
+</network-security-config>

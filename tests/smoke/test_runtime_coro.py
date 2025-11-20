@@ -9,7 +9,7 @@ async def _demo_task():
     await asyncio.sleep(0.1)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_coro_start_stop(tmp_path, monkeypatch):
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path / "base"))
     ctx = get_ctx()

@@ -1,0 +1,13 @@
+[ req ]
+distinguished_name = dn
+x509_extensions    = v3_ca
+prompt             = no
+
+[ dn ]
+CN = AdaOS Dev CA
+
+[ v3_ca ]
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always
+basicConstraints = critical, CA:true, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign

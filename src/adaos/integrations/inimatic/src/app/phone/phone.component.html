@@ -1,0 +1,79 @@
+<ion-content [fullscreen]="true">
+	<div id="follower_container" *ngIf="!isInitiator" style="text-align: center;">
+		<div *ngIf="!isConnected">
+			<ion-input class="name_input ion-primary-input" label="Your name" placeholder="Enter your name" labelPlacement="floating" [(ngModel)]="followerName" maxlength="11" [counter]="true"/>
+			<!-- Fallback for iOS PWA -->
+			<input #fileinput type="file" accept="image/*;capture=camera" hidden (change)="handleFile($event)" />
+
+			<!-- Trigger the file input -->
+			<div *ngIf="model">
+				<ion-button expand="full" (click)="captureImage()">
+					<ion-icon slot="start" name="image"></ion-icon>
+					Scan from file
+				</ion-button>
+
+				<ion-button expand="full" (click)="startScan()">
+					<ion-icon slot="start" name="camera"></ion-icon>
+					Scan from camera
+				</ion-button>
+			</div>
+
+			<ion-button expand="full" (click)="reset()" color="warning" *ngIf="scanResult">
+				<ion-icon slot="start" name="refresh"></ion-icon>
+				Reset
+			</ion-button>
+
+			<ion-list *ngIf="scanActive">
+				<ion-item>
+				  <ion-select aria-label="cameras" placeholder="Select camera" [(ngModel)]="deviceId" (ionChange)="restartScan()">
+					<ion-select-option *ngFor="let device of devices | keyvalue" value="{{device.key}}">{{device.value}}</ion-select-option>
+				  </ion-select>
+				</ion-item>
+			  </ion-list>
+
+			<!-- Shows our camera stream -->
+			<video playsinline autoplay #video width="40%" [style]="scanActive ? 'display: inline;' : 'display: none;'"></video>
+
+			<!-- Used to render the camera stream images -->
+			<canvas #canvas style="display: none;"></canvas>
+
+			<!-- Stop our scanner preview if active -->
+			<ion-button expand="full" (click)="stopScan()" color="danger" *ngIf="scanActive">
+				<ion-icon slot="start" name="close"></ion-icon>
+				Stop scan
+			</ion-button>
+		</div>
+	</div>
+	<div class="connected_stage" *ngIf="isConnected">
+		<div>
+			<h2>Connected</h2>
+			<ion-button color="danger" (click)="disconnect()">Disconnect</ion-button>
+		</div>
+
+		<div *ngIf="isAndroid && !isPublicMode">
+			<ion-button *ngFor="let provider of providers" (click)="sendAuthData(provider.url, provider.checkLoginJs)">{{provider.name}}</ion-button>
+		</div>
+
+		<div class="transfer_file_form_wrapper">
+			<form class="transfer_file_form">
+				<input type="file" (change)="uploadFile($event)" />
+				<ion-button type="submit" (click)="transferFile()">
+					Transfer file
+				</ion-button>
+			</form>
+		</div>
+
+		<div class="send_message_wrapper">
+			<ion-input class="ion-primary-input ion-input-bottom-border" type="text" label="Message" labelPlacement="floating" [(ngModel)]="message" placeholder="Enter message to send"/>
+			<ion-button (click)="sendMessage()">Send Message</ion-button>
+		</div>
+		<div class="message_log" *ngIf="messagesLog.length > 0">
+			<p>Messages:</p>
+			<p *ngFor="let messageL of messagesLog" class="selectable">{{messageL}}</p>
+		</div>
+	</div>
+
+	<!-- to download the font immediately -->
+	<p class="t">.</p>
+</ion-content>
+

@@ -1,0 +1,8 @@
+<ng-container>
+	<app-login *ngIf="!isAuthenticated" (loginSuccess)="onLoginSuccess()"></app-login>
+
+	<!-- TODO: здесь будет основной рабочий стол после успешной аутентификации -->
+	<div *ngIf="isAuthenticated">
+		<p>Authenticated. Desktop will be rendered here.</p>
+	</div>
+</ng-container>

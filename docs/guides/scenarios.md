@@ -2,63 +2,32 @@
 
 Аналогично Skills:
 
-- `{BASE_DIR}/scenarios` — моно-репо.
+- `{BASE_DIR}/workspace/scenarios` — рабочие директории сценариев.
+- `{BASE_DIR}/scenarios` — read-only кэш монорепозитория.
 - Таблицы `scenarios` и `scenario_versions`.
 
 CLI:
 
 ```bash
-adaos scenario list [--fs]
-adaos scenario install <sid>
-adaos scenario uninstall <sid>
-adaos scenario sync
-adaos scenario push <sid> -m "message"
+# создание каркаса сценария по шаблону из монорепозитория
+adaos scenario create demo --template template
+
+# исполнение сценария и печать результатов
+adaos scenario run greet_on_boot
+
+# валидация структуры (проверка зарегистрированных действий)
+adaos scenario validate greet_on_boot
+
+# запуск тестов сценария (pytest из .adaos/workspace/scenarios/<id>/tests)
+adaos scenario test greet_on_boot
+
+# запустить тесты для всех сценариев
+adaos scenario test
 ```
 
-## CLI
-
-Работа со сценариями
-
-```bash
-# список сценариев
-adaos scenario list
-
-# создать из шаблона
-adaos scenario create morning --template template
-
-# установить из монорепо
-adaos scenario install-repo --repo https://github.com/stipot/adaosscens.git --sid morning --ref main
-
-# обновить из источника
-adaos scenario update morning --ref main
-
-# отметить установленным (алиас pull)
-adaos scenario install morning
-adaos scenario pull morning
-
-# пуш изменений
-adaos scenario push morning -m "Tune morning flow"
-
-# показать прототип
-adaos scenario show morning
-
-# эффективная модель (с учётом I)
-adaos scenario effective morning --user alice
-
-# имплементация
-adaos scenario impl get morning --user alice
-adaos scenario impl set morning --user alice --data ./impl.alice.json
-
-# биндинги
-adaos scenario bindings get morning --user alice
-adaos scenario bindings set morning --user alice --data '{"slots":{"weather":{"skill":"open_weather"}}}'
-
-# запуск/инстансы/стоп
-adaos scenario run morning --user alice --io '{"settings":{"output.active":"voice"}}'
-adaos scenario instances
-adaos scenario stop <iid>
-adaos scenario stop-by-activity video:livingroom
-```
+CLI использует URL монорепозитория, заданный в `SCENARIOS_MONOREPO_URL`, чтобы
+поддерживать кэш `{BASE_DIR}/scenarios` и выдавать файлы в рабочие каталоги
+`{BASE_DIR}/workspace/scenarios`.
 
 ## Модель данных (SQLite)
 
@@ -69,19 +38,13 @@ adaos scenario stop-by-activity video:livingroom
 
 ## Хранилище кода
 
-- Путь: `{BASE_DIR}/scenarios` — **одно git-репо** (моно-репо сценариев).
+- Путь: `{BASE_DIR}/scenarios` — **одно git-репо** (моно-репо сценариев, read-only кэш).
 - Выборка подпапок через `git sparse-checkout` по БД.
 
 ## Сервис и CLI
 
 Сервис: `services/scenario/manager.py` (аналогично `SkillManager`).
 
-CLI:
-
-```bash
-adaos scenario list
-adaos scenario list --fs
-adaos scenario install <sid>
-adaos scenario uninstall <sid>
-adaos scenario sync
-```
+CLI подкоманды, связанные с управлением хранилищем и реестром, доступны в SDK
+через `adaos.sdk.manage.scenarios.*`. Для локальных сценариев основной поток
+работы идёт через команды `run`, `validate` и `test` выше.

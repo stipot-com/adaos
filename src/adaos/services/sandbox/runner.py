@@ -106,17 +106,21 @@ class ProcSandbox(Sandbox):
             # отдельная группа процессов
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-        p = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=safe_env if env is not None else None,
-            stdin=subprocess.PIPE if stdin is not None else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=text,
-            preexec_fn=preexec if _IS_POSIX else None,
-            creationflags=creationflags,
-        )
+        popen_kwargs = {
+            "args": cmd,
+            "cwd": cwd,
+            "env": safe_env if env is not None else None,
+            "stdin": subprocess.PIPE if stdin is not None else None,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": text,
+            "preexec_fn": preexec if _IS_POSIX else None,
+            "creationflags": creationflags,
+        }
+        if text:
+            popen_kwargs.update({"encoding": "utf-8", "errors": "replace"})
+
+        p = subprocess.Popen(**popen_kwargs)
         if stdin is not None:
             try:
                 p.stdin.write(stdin.decode("utf-8") if isinstance(stdin, (bytes, bytearray)) else str(stdin))

@@ -1,0 +1,22 @@
+{
+	"name": "Inimatic",
+	"host_permissions": ["*://*/*"],
+	"permissions": ["cookies", "scripting"],
+	"description": "Extension for Inimatic app",
+	"version": "1.0",
+	"manifest_version": 3,
+	"action": {
+		"default_popup": "index.html",
+		"default_icon": "favicon.png"
+	},
+	"background": {
+		"service_worker": "service_worker.js",
+		"type": "module"
+	},
+	"content_scripts": [
+		{
+			"matches": ["<all_urls>"],
+			"js": ["content.js"]
+		}
+	]
+}
