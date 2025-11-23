@@ -1,5 +1,0 @@
-{
-  "api_entry_point": "https://api.openweathermap.org/data/2.5/weather",
-  "default_city": "Moscow",
-  "last_city": "Moscow"
-}
