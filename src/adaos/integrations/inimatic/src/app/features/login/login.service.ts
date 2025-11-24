@@ -54,14 +54,14 @@ export class LoginService {
 	}
 
 	/**
-	 * Выполнить полный цикл логина по device code + WebAuthn.
+	 * Выполнить полный цикл логина по user code + WebAuthn.
 	 *
 	 * 1) /v1/owner/login/verify — связываем sid и owner.
 	 * 2) Пытаемся WebAuthn login.
 	 * 3) Если нужна регистрация — выполняем WebAuthn регистрацию и после неё логин.
 	 */
-	login(deviceCode: string): Observable<LoginResult> {
-		return from(this.loginInternal(deviceCode)).pipe(
+	login(userCode: string): Observable<LoginResult> {
+		return from(this.loginInternal(userCode)).pipe(
 			catchError((error: HttpErrorResponse) => {
 				return throwError(() => error)
 			})
@@ -78,11 +78,11 @@ export class LoginService {
 
 	// ----------------- Внутренняя логика -----------------
 
-	private async loginInternal(deviceCode: string): Promise<LoginResult> {
+	private async loginInternal(userCode: string): Promise<LoginResult> {
 		const sid = this.ensureSid()
 
 		// 1. Связываем sid с owner через введённый код
-		await this.verifyDeviceCode(deviceCode, sid)
+		await this.verifyUserCode(userCode, sid)
 
 		// 2. Пытаемся выполнить WebAuthn login; если потребуется регистрация — сделаем её и повторим
 		try {
@@ -141,8 +141,8 @@ export class LoginService {
 			.slice(2)}_${Date.now().toString(16)}`
 	}
 
-	private async verifyDeviceCode(
-		deviceCode: string,
+	private async verifyUserCode(
+		userCode: string,
 		sid: string
 	): Promise<void> {
 		await firstValueFrom(
@@ -150,7 +150,7 @@ export class LoginService {
 				'/v1/owner1/login/verify',
 				{
 					sid,
-					device_code: deviceCode,
+					user_code: userCode,
 				}
 			)
 		)

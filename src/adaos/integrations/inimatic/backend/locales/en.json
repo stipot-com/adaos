@@ -5,6 +5,8 @@
     "missing_field": "Field \"{{field}}\" is required.",
     "invalid_device_code": "The provided device code is not valid.",
     "expired_token": "The device authorization code has expired.",
+    "registration_required": "WebAuthn registration is required. Please register your security key.",
+    "invalid_user_code": "The provided user code is not valid.",
     "authorization_pending": "Authorization is pending. Confirm the request to continue.",
     "invalid_refresh_token": "Refresh token is invalid or has been revoked.",
     "hub_not_registered": "The specified hub is not registered for this owner.",
