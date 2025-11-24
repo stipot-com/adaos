@@ -582,11 +582,11 @@ export function installWebAuthnRoutes(
 					field: 'sid',
 				})
 			}
-			const result = await service.createLoginChallenge(sid)
+		const result = await service.createLoginChallenge(sid)
 			if (!result.ok) {
 				const code =
 					result.error === 'registration_required'
-						? 'invalid_user_code'
+						? 'registration_required'
 						: 'invalid_request'
 				return respondError(req, res, 400, code)
 			}
