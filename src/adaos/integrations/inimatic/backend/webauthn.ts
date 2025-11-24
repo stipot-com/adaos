@@ -24,7 +24,7 @@ export interface WebSessionState {
 	exp: number // unix timestamp (seconds)
 }
 
-export interface DeviceCodeRecord {
+export interface PairingCodeRecord {
 	device_code: string
 	user_code: string
 	owner_id: string
@@ -51,18 +51,16 @@ export interface WebAuthnDeps {
 
 export interface WebAuthnService {
 	verifyDeviceCodeLogin(
-		deviceCodeOrUserCode: string,
+		userCode: string,
 		sid: string
 	): Promise<{
 		ok: boolean
 		owner_id?: string
 		subnet_id?: string
 		hub_id?: string
-		error?: 'invalid_device_code' | 'expired_token'
+		error?: 'invalid_user_code' | 'expired_token'
 	}>
-	createRegistrationChallenge(
-		sid: string
-	): Promise<{
+	createRegistrationChallenge(sid: string): Promise<{
 		ok: boolean
 		publicKeyCredentialCreationOptions?: any
 		error?: 'session_not_found' | 'invalid_state'
@@ -75,9 +73,7 @@ export interface WebAuthnService {
 		browser_key_id?: string
 		error?: 'session_not_found' | 'invalid_state' | 'verification_failed'
 	}>
-	createLoginChallenge(
-		sid: string
-	): Promise<{
+	createLoginChallenge(sid: string): Promise<{
 		ok: boolean
 		publicKeyCredentialRequestOptions?: any
 		error?: 'session_not_found' | 'registration_required'
@@ -140,13 +136,13 @@ async function saveSession(
 async function findDeviceCodeByUserOrDevice(
 	redis: RedisClientType<any, any, any>,
 	code: string
-): Promise<DeviceCodeRecord | null> {
+): Promise<PairingCodeRecord | null> {
 	// Основной ключ — device_code:{device_code}. Но CLI показывает user_code, поэтому
 	// сначала пробуем device_code, затем делаем скан по user_code.
 	const direct = await redis.get(deviceCodeKey(code))
 	if (direct) {
 		try {
-			return JSON.parse(direct) as DeviceCodeRecord
+			return JSON.parse(direct) as PairingCodeRecord
 		} catch {
 			return null
 		}
@@ -162,7 +158,7 @@ async function findDeviceCodeByUserOrDevice(
 		const raw = await redis.get(key)
 		if (!raw) continue
 		try {
-			const rec = JSON.parse(raw) as DeviceCodeRecord
+			const rec = JSON.parse(raw) as PairingCodeRecord
 			if (rec.user_code === code) {
 				return rec
 			}
@@ -175,7 +171,7 @@ async function findDeviceCodeByUserOrDevice(
 
 export async function storeDeviceCode(
 	redis: RedisClientType<any, any, any>,
-	record: DeviceCodeRecord,
+	record: PairingCodeRecord,
 	ttlSeconds?: number
 ): Promise<void> {
 	const ttl = ttlSeconds ?? Math.max(1, record.exp - nowSeconds())
@@ -190,15 +186,15 @@ export function createWebAuthnService(deps: WebAuthnDeps): WebAuthnService {
 	const { redis, rpID, origin, defaultSessionTtlSeconds } = deps
 
 	return {
-		async verifyDeviceCodeLogin(deviceCodeOrUserCode: string, sid: string) {
+		async verifyDeviceCodeLogin(userCode: string, sid: string) {
 			const rec = await findDeviceCodeByUserOrDevice(
 				redis,
-				deviceCodeOrUserCode
+				userCode
 			)
 			if (!rec) {
 				return {
 					ok: false as const,
-					error: 'invalid_device_code' as const,
+					error: 'invalid_user_code' as const,
 				}
 			}
 			if (rec.exp <= nowSeconds()) {
@@ -216,7 +212,8 @@ export function createWebAuthnService(deps: WebAuthnDeps): WebAuthnService {
 				exp: nowSeconds() + sessionTtl,
 			}
 
-			await saveSession(redis, session)
+		await saveSession(redis, session)
+			console.log('[webauthn] Session saved:', { sid, owner_id: rec.owner_id, key: sessionKey(sid) })
 
 			// помечаем, что код привязан к sid
 			rec.bind_sid = sid
@@ -234,9 +231,11 @@ export function createWebAuthnService(deps: WebAuthnDeps): WebAuthnService {
 			}
 		},
 
-		async createRegistrationChallenge(sid: string) {
+	async createRegistrationChallenge(sid: string) {
+			console.log('[webauthn] Loading session for registration:', { sid, key: sessionKey(sid) })
 			const session = await loadSession(redis, sid)
 			if (!session) {
+				console.warn('[webauthn] Session not found for registration:', { sid, key: sessionKey(sid) })
 				return {
 					ok: false as const,
 					error: 'session_not_found' as const,
@@ -458,12 +457,12 @@ export function extractSid(body: unknown): string | null {
 	return sid.trim()
 }
 
-export function extractDeviceCode(body: unknown): string | null {
+export function extractUserCode(body: unknown): string | null {
 	if (!body || typeof body !== 'object') return null
 	const b = body as any
-	const device_code = (b.device_code ?? b.user_code ?? b.code) as unknown
-	if (typeof device_code !== 'string' || !device_code.trim()) return null
-	return device_code.trim()
+	const user_code = (b.user_code ?? b.device_code ?? b.code) as unknown
+	if (typeof user_code !== 'string' || !user_code.trim()) return null
+	return user_code.trim()
 }
 
 export type ErrorResponder = (
@@ -481,11 +480,11 @@ export function installWebAuthnRoutes(
 ): void {
 	const service = createWebAuthnService(deps)
 
-	// POST /v1/owner/login/verify { device_code, sid }
+	// POST /v1/owner/login/verify { user_code, sid }
 	app.post('/v1/owner1/login/verify', async (req, res) => {
 		try {
 			const sid = extractSid(req.body)
-			const code = extractDeviceCode(req.body)
+			const code = extractUserCode(req.body)
 			if (!sid) {
 				return respondError(req, res, 400, 'missing_field', {
 					field: 'sid',
@@ -493,14 +492,14 @@ export function installWebAuthnRoutes(
 			}
 			if (!code) {
 				return respondError(req, res, 400, 'missing_field', {
-					field: 'device_code',
+					field: 'user_code',
 				})
 			}
 			const result = await service.verifyDeviceCodeLogin(code, sid)
 			if (!result.ok) {
 				const status =
-					result.error === 'invalid_device_code' ? 400 : 400
-				const errCode = result.error ?? 'invalid_device_code'
+					result.error === 'invalid_user_code' ? 400 : 400
+				const errCode = result.error ?? 'invalid_user_code'
 				return respondError(req, res, status, errCode)
 			}
 			res.json({
@@ -528,7 +527,7 @@ export function installWebAuthnRoutes(
 			if (!result.ok) {
 				const code =
 					result.error === 'session_not_found'
-						? 'invalid_device_code'
+						? 'invalid_user_code'
 						: 'invalid_request'
 				return respondError(req, res, 400, code)
 			}
@@ -560,7 +559,7 @@ export function installWebAuthnRoutes(
 			const result = await service.finishRegistration(sid, credential)
 			if (!result.ok) {
 				const codeMap: Record<string, string> = {
-					session_not_found: 'invalid_device_code',
+					session_not_found: 'invalid_user_code',
 					invalid_state: 'invalid_request',
 					verification_failed: 'invalid_request',
 				}
@@ -587,7 +586,7 @@ export function installWebAuthnRoutes(
 			if (!result.ok) {
 				const code =
 					result.error === 'registration_required'
-						? 'invalid_device_code'
+						? 'invalid_user_code'
 						: 'invalid_request'
 				return respondError(req, res, 400, code)
 			}

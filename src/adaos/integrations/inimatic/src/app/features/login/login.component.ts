@@ -14,7 +14,7 @@ import { CommonModule } from '@angular/common'
 export class LoginComponent {
 	@Output() loginSuccess = new EventEmitter<LoginResult>()
 
-	deviceCode = ''
+	userCode = ''
 	loading = false
 	errorMessage = ''
 
@@ -23,14 +23,14 @@ export class LoginComponent {
 	onLogin() {
 		this.errorMessage = ''
 
-		if (!this.deviceCode.trim()) {
+		if (!this.userCode.trim()) {
 			this.errorMessage = 'Enter device code'
 			return
 		}
 
 		this.loading = true
 
-		this.loginService.login(this.deviceCode).subscribe({
+		this.loginService.login(this.userCode).subscribe({
 			next: (result) => {
 				this.loading = false
 				this.loginSuccess.emit(result)
@@ -46,7 +46,8 @@ export class LoginComponent {
 
 				const status = err.status ?? 0
 				if (status === 400) {
-					this.errorMessage = 'Invalid login or WebAuthn registration required'
+					this.errorMessage =
+						'Invalid login or WebAuthn registration required'
 				} else if (status >= 500) {
 					this.errorMessage = 'Server error'
 				} else {
