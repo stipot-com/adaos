@@ -183,7 +183,14 @@ class GitScenarioRepository(ScenarioRepository):
         sparse = SparseWorkspace(self.git, workspace_root)
         target = f"scenarios/{name}"
         sparse.update(add=[target])
-        self.git.pull(str(workspace_root))
+        # При установке сценария стараемся быть максимально устойчивыми к локальным изменениям
+        # в workspace: git pull может упасть, если в других подпапках есть незакоммиченные правки.
+        # В таком случае полагаемся на уже имеющееся состояние репозитория; если сценарий не
+        # материализуется, ниже будет явная FileNotFoundError.
+        try:
+            self.git.pull(str(workspace_root))
+        except Exception:
+            pass
 
         scenario_dir: Path = self.paths.scenarios_dir() / name
         try:

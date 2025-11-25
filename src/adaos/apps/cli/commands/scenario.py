@@ -124,11 +124,14 @@ def create_cmd(
 
 @_run_safe
 @app.command("uninstall")
-def uninstall_cmd(name: str = typer.Argument(..., help=_("cli.scenario.uninstall.name_help"))):
+def uninstall_cmd(
+    name: str = typer.Argument(..., help=_("cli.scenario.uninstall.name_help")),
+    safe: bool = typer.Option(False, "--safe", help=_("cli.scenario.uninstall.option.safe")),
+):
     """Uninstall a scenario by removing it from registry and sparse checkout."""
 
     mgr = _mgr()
-    mgr.uninstall(name)
+    mgr.uninstall(name, safe=safe)
     typer.echo(_("cli.scenario.uninstall.done", name=name))
 
 

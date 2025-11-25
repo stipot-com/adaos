@@ -106,6 +106,7 @@ class SkillManager:
         validate: bool = True,
         strict: bool = True,
         probe_tools: bool = False,
+        safe: bool = False,
     ) -> tuple[SkillMeta, Optional[object]]:
         """
         Возвращает (meta, report|None). При strict и ошибках валидации можно выбрасывать исключение.
@@ -121,7 +122,11 @@ class SkillManager:
         test_mode = os.getenv("ADAOS_TESTING") == "1"
         if test_mode:
             return f"installed: {name} (registry-only{' test-mode' if test_mode else ''})"
-        # 3) mono-only установка через репозиторий (sparse-add + pull)
+        # 3) при безопасной установке проверяем, что рабочее дерево чисто под skills/*
+        root = self.ctx.paths.workspace_dir()
+        if safe and (root / ".git").exists():
+            ensure_clean(self.ctx.git, str(root), ["skills"])
+        # 4) mono-only установка через репозиторий (sparse-add + pull)
         meta = self.ctx.skills_repo.install(name, branch=None)
         """ if not validate:
             return meta, None """
@@ -288,7 +293,7 @@ class SkillManager:
                 results[test_name] = replace(result, detail=detail)
         return results
 
-    def uninstall(self, name: str) -> None:
+    def uninstall(self, name: str, *, safe: bool = False) -> None:
         self.caps.require("core", "skills.manage", "net.git")
         name = name.strip()
         if not _name_re.match(name):
@@ -306,11 +311,15 @@ class SkillManager:
             return f"uninstalled: {name} (registry-only{suffix})"
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]
-        ensure_clean(self.ctx.git, str(root), prefixed)
+        if safe:
+            # Безопасный режим: проверяем отсутствие незакоммиченных изменений под управляемыми путями.
+            ensure_clean(self.ctx.git, str(root), prefixed)
         self.ctx.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.ctx.git.sparse_set(str(root), prefixed, no_cone=True)
-        self.ctx.git.pull(str(root))
+        if safe:
+            # В безопасном режиме обновляем workspace, чтобы поддерево навыков соответствовало удалённому репо.
+            self.ctx.git.pull(str(root))
         remove_error: Exception | None = None
         try:
             remove_tree(

@@ -157,7 +157,13 @@ class GitSkillRepository(SkillRepository):
         sparse = SparseWorkspace(self.git, workspace_root)
         target = f"skills/{name}"
         sparse.update(add=[target])
-        self.git.pull(str(workspace_root))
+        # Аналогично сценариям: при установке навыка не падаем, если git pull
+        # не может выполниться из‑за локальных незакоммиченных изменений в workspace.
+        # Если навык после этого не появится на диске, будет брошена FileNotFoundError ниже.
+        try:
+            self.git.pull(str(workspace_root))
+        except Exception:
+            pass
 
         skill_dir: Path = self.paths.skills_dir() / name
         try:

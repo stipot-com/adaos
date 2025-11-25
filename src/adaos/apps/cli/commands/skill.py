@@ -159,9 +159,12 @@ def sync():
 
 @_run_safe
 @app.command("uninstall")
-def uninstall(name: str):
+def uninstall(
+    name: str,
+    safe: bool = typer.Option(False, "--safe", help=_("cli.skill.uninstall.option.safe")),
+):
     mgr = _mgr()
-    mgr.uninstall(name)
+    mgr.uninstall(name, safe=safe)
     typer.echo(_("cli.skill.uninstall.done", name=name))
 
 
@@ -274,10 +277,11 @@ def cmd_install(
     test: bool = typer.Option(False, "--test", help=_("cli.skill.install.option.test")),
     slot: Optional[str] = typer.Option(None, "--slot", help=_("cli.skill.install.option.slot")),
     silent: bool = typer.Option(False, "--silent", help=_("cli.skill.install.option.silent")),
+    safe: bool = typer.Option(False, "--safe", help=_("cli.skill.install.option.safe")),
 ):
     mgr = _mgr()
     try:
-        result = mgr.install(name, validate=False)
+        result = mgr.install(name, validate=False, safe=safe)
     except Exception as exc:
         message = str(exc)
         typer.secho(f"install failed: {message}", fg=typer.colors.RED)

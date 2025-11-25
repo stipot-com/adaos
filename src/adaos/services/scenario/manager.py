@@ -248,8 +248,11 @@ class ScenarioManager:
                 # Do not break scenario install on individual dependency issues.
                 continue
 
-    def remove(self, name: str) -> None:
+    def remove(self, name: str, *, safe: bool = False) -> None:
         self.caps.require("core", "scenarios.manage", "net.git")
+        name = name.strip()
+        if not _name_re.match(name):
+            raise ValueError("invalid scenario name")
         self.repo.ensure()
         self.reg.unregister(name)
         root = self.ctx.paths.workspace_dir()
@@ -262,7 +265,9 @@ class ScenarioManager:
         self.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.git.sparse_set(str(root), prefixed, no_cone=True)
-        self.git.pull(str(root))
+        if safe:
+            # Безопасный режим: синхронизируем workspace с удалённым репо.
+            self.git.pull(str(root))
         remove_tree(
             str(root / "scenarios" / name),
             fs=self.paths.ctx.fs if hasattr(self.paths, "ctx") else get_ctx().fs,
@@ -332,6 +337,6 @@ class ScenarioManager:
         # ничего не мешает вернуть sha в result через setattr/обновлённый датакласс — но это опционально
         return result
 
-    def uninstall(self, name: str) -> None:
+    def uninstall(self, name: str, *, safe: bool = False) -> None:
         """Alias for :meth:`remove` to keep parity with :class:`SkillManager`."""
-        self.remove(name)
+        self.remove(name, safe=safe)
