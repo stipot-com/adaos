@@ -9,6 +9,7 @@ from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
+from adaos.services.eventbus import emit as bus_emit
 from adaos.apps.yjs.webspace import default_webspace_id
 
 
@@ -75,6 +76,12 @@ class RuntimeActivateReq(BaseModel):
     version: str | None = None
     auto_prepare: bool = True
     webspace_id: str | None = "default"
+
+
+class RuntimeNotifyActivatedReq(BaseModel):
+    name: str
+    space: str | None = "default"
+    webspace_id: str | None = None
 
 
 class RuntimeSetupReq(BaseModel):
@@ -213,6 +220,23 @@ async def runtime_activate(body: RuntimeActivateReq, mgr: SkillManager = Depends
         prep = mgr.prepare_runtime(body.name, run_tests=False, preferred_slot=pref_slot)
         slot = mgr.activate_for_space(body.name, version=prep.version, slot=prep.slot, space="default", webspace_id=webspace_id)
         return {"ok": True, "slot": slot, "prepared": prep.slot}
+
+
+@router.post("/runtime/notify-activated")
+async def runtime_notify_activated(body: RuntimeNotifyActivatedReq):
+    """
+    Lightweight hook to broadcast a skills.activated event on the hub bus
+    without touching runtime slots (used by CLI after local activation).
+    """
+    ctx = get_ctx()
+    bus = getattr(ctx, "bus", None)
+    if bus is None:
+        return {"ok": False, "reason": "bus-unavailable"}
+    space = (body.space or "default").strip() or "default"
+    webspace_id = body.webspace_id or default_webspace_id()
+    payload: Dict[str, Any] = {"skill_name": body.name, "space": space, "webspace_id": webspace_id}
+    bus_emit(bus, "skills.activated", payload, "api.skills")
+    return {"ok": True}
 
 
 @router.get("/runtime/status/{name}")

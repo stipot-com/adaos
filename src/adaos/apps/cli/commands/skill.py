@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import requests
 
 from adaos.sdk.data.i18n import _
 from adaos.services.agent_context import get_ctx
@@ -492,6 +493,37 @@ def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), vers
     except Exception as exc:
         typer.secho(f"activate failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
+
+    # Best-effort: уведомить живой hub через HTTP API, чтобы
+    # skills.activated отработал в его процессе и web_desktop_skill
+    # сразу обновил каталог без перезапуска, не трогая ещё раз runtime.
+    try:
+        ctx = get_ctx()
+        conf = getattr(ctx, "config", None)
+        base = None
+        if conf is not None and getattr(conf, "hub_url", None):
+            base = conf.hub_url
+        if not base:
+            base = os.getenv("ADAOS_SELF_BASE_URL") or os.getenv("ADAOS_BASE") or os.getenv("ADAOS_API_BASE") or "http://127.0.0.1:8777"
+        url = str(base).rstrip("/") + "/api/skills/runtime/notify-activated"
+        payload = {
+            "name": name,
+            "space": "default",
+            "webspace_id": default_webspace_id(),
+        }
+        headers = {}
+        token = os.getenv("ADAOS_TOKEN")
+        if token:
+            headers["X-AdaOS-Token"] = token
+        # Таймаут маленький и любые ошибки игнорируем, чтобы CLI
+        # оставался работоспособен, даже когда API ещё не поднят.
+        try:
+            requests.post(url, json=payload, headers=headers, timeout=2.0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     typer.secho(f"skill {name} now active on slot {target}", fg=typer.colors.GREEN)
 
 
