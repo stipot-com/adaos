@@ -4,25 +4,25 @@ import { IonicModule } from '@ionic/angular'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { YDocService } from '../../y/ydoc.service'
-import { WidgetComponent } from './widget.component'
-import { Subscription } from 'rxjs'
+import { Observable, Subscription } from 'rxjs'
+import { WeatherWidgetComponent } from './weather-widget.component'
 
 @Component({
   selector: 'ada-desktop-widgets',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicModule, WeatherWidgetComponent],
   template: `
     <div class="widgets-section">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
-      <ion-list *ngIf="widgets.length; else emptyState">
-        <ion-item *ngFor="let w of widgets">
-          <ion-label>
-            <h3>{{ w.title || w.id }}</h3>
-            <p>{{ w.type }}</p>
-          </ion-label>
-          <ion-badge *ngIf="w.dev" color="warning" slot="end">DEV</ion-badge>
-        </ion-item>
-      </ion-list>
+      <ng-container *ngIf="weatherMeta; else emptyState">
+        <div class="widget-wrapper">
+          <ion-badge *ngIf="weatherMeta?.dev" color="warning" class="dev-badge">DEV</ion-badge>
+          <ada-weather-widget
+            [title]="weatherMeta!.title || weatherMeta!.id || ''"
+            [data]="weatherData$ | async"
+          ></ada-weather-widget>
+        </div>
+      </ng-container>
       <ng-template #emptyState>
         <div class="empty-hint">No widgets installed</div>
       </ng-template>
@@ -39,6 +39,16 @@ import { Subscription } from 'rxjs'
         margin: 0 0 8px;
         text-transform: uppercase;
       }
+      .widget-wrapper {
+        position: relative;
+        margin-bottom: 8px;
+      }
+      .dev-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        z-index: 1;
+      }
       .empty-hint {
         color: var(--ion-color-medium);
         font-size: 14px;
@@ -50,6 +60,9 @@ export class DesktopWidgetsWidgetComponent implements OnInit, OnDestroy {
   @Input() widget!: WidgetConfig
 
   widgets: Array<{ id: string; type: string; title?: string; source?: string; dev?: boolean }> = []
+  weatherMeta?: { id: string; type: string; title?: string; source?: string; dev?: boolean }
+  weatherData$?: Observable<any | undefined>
+
   private dataSub?: Subscription
 
   constructor(private data: PageDataService, private ydoc: YDocService) {}
@@ -59,6 +72,18 @@ export class DesktopWidgetsWidgetComponent implements OnInit, OnDestroy {
     if (stream) {
       this.dataSub = stream.subscribe((items) => {
         this.widgets = Array.isArray(items) ? items : []
+        this.weatherMeta =
+          this.widgets.find((w) => w.id === 'weather' || w.type === 'weather') ||
+          undefined
+        if (this.weatherMeta) {
+          // Для web_desktop источник погоды фиксирован: data/weather/current.
+          this.weatherData$ = this.data.load<any>({
+            kind: 'y',
+            path: 'data/weather/current',
+          } as any)
+        } else {
+          this.weatherData$ = undefined
+        }
       })
     }
   }
@@ -67,9 +92,7 @@ export class DesktopWidgetsWidgetComponent implements OnInit, OnDestroy {
     this.dataSub?.unsubscribe()
   }
 
-  getData(source?: string): any {
-    if (!source) return undefined
-    const path = source.startsWith('y:') ? source.slice(2) : source
-    return this.ydoc.toJSON(this.ydoc.getPath(path))
+  get weatherData(): any {
+    return this.weatherData$
   }
 }

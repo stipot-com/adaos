@@ -148,4 +148,16 @@ export class YDocService {
       }
     })
   }
+
+  dumpSnapshot(): void {
+    try {
+      const ui = this.toJSON(this.getPath('ui'))
+      const data = this.toJSON(this.getPath('data'))
+      const registry = this.toJSON(this.getPath('registry'))
+      // eslint-disable-next-line no-console
+      console.log('[YDoc Snapshot]', { ui, data, registry })
+    } catch {
+      // ignore dump errors
+    }
+  }
 }
