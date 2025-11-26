@@ -82,14 +82,6 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		const m = await this.modal.create({ component: ModalHostComponent, componentProps: { type, cfg } })
 		await m.present()
 	}
-	onTopbarAction(btn: any) {
-		const act = btn?.action
-		if (act?.openModal) this.openModal(act.openModal)
-	}
-	onIconClick(icon: any) {
-		const act = icon?.action
-		if (act?.openModal) this.openModal(act.openModal)
-	}
 	getData(source?: string) {
 		if (!source) return undefined
 		const path = source.startsWith('y:') ? source.slice(2) : source

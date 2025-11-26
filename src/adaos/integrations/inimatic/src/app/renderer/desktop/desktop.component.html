@@ -6,7 +6,16 @@
 				<ion-button
 					size="small"
 					*ngFor="let b of topbar.inputs?.['buttons']"
-					(click)="onTopbarAction(b)"
+					(click)="onWidgetEvent('topbar', 'click', b)"
+				>
+					{{ b.label }}
+				</ion-button>
+			</div>
+			<div class="workspace-tools" *ngIf="getWidgetById('workspace-tools') as wsWidget">
+				<ion-button
+					size="small"
+					*ngFor="let b of wsWidget.inputs?.['buttons']"
+					(click)="onWidgetEvent('workspace-tools', 'click:' + b.id, b)"
 				>
 					{{ b.label }}
 				</ion-button>
