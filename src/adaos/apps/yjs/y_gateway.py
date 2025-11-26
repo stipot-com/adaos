@@ -57,9 +57,8 @@ class WorkspaceWebsocketServer(WebsocketServer):
             room._loop = asyncio.get_running_loop()
             try:
                 await ystore.apply_updates(room.ydoc)
-            except Exception:
+            except BaseException:
                 _ylog.warning("apply_updates failed for webspace=%s", webspace_id, exc_info=True)
-                pass
             self.rooms[name] = room
         room = self.rooms[name]
         room._thread_id = getattr(room, "_thread_id", threading.get_ident())

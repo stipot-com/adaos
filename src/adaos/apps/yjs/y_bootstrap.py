@@ -39,7 +39,7 @@ async def ensure_webspace_seeded_from_scenario(
     ydoc = Y.YDoc()
     try:
         await ystore.apply_updates(ydoc)
-    except Exception as exc:
+    except BaseException as exc:  # catch PanicException and similar
         _log.warning("apply_updates failed for webspace=%s (treating as empty): %s", webspace_id, exc, exc_info=True)
 
     ui_map = ydoc.get_map("ui")

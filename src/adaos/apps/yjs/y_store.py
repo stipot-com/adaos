@@ -192,6 +192,20 @@ def get_ystore_for_webspace(webspace_id: str) -> AdaosMemoryYStore:
     return store
 
 
+def reset_ystore_for_webspace(webspace_id: str) -> None:
+    """
+    Drop any in-memory Y updates for the given webspace so that future access
+    starts from a clean YDoc. Used when corrupted updates cause Y.apply_update
+    panics for a webspace that is being deleted or re-seeded.
+    """
+    store = _YSTORE_CACHE.pop(webspace_id, None)
+    if store is not None:
+        try:
+            store._updates.clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 @subscribe("sys.ystore.backup")
 async def _on_ystore_backup(payload: dict) -> None:
     """
