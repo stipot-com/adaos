@@ -4,7 +4,8 @@ import { IonicModule } from '@ionic/angular'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { YDocService } from '../../y/ydoc.service'
-import { Observable, Subscription } from 'rxjs'
+import { Observable, Subscription, of } from 'rxjs'
+import { switchMap } from 'rxjs/operators'
 import { WeatherWidgetComponent } from './weather-widget.component'
 
 @Component({
@@ -77,10 +78,23 @@ export class DesktopWidgetsWidgetComponent implements OnInit, OnDestroy {
           undefined
         if (this.weatherMeta) {
           // Для web_desktop источник погоды фиксирован: data/weather/current.
-          this.weatherData$ = this.data.load<any>({
-            kind: 'y',
-            path: 'data/weather/current',
-          } as any)
+          // Если в YDoc временно нет снапшота, подстрахуемся прямым вызовом навыка.
+          this.weatherData$ = this.data
+            .load<any>({
+              kind: 'y',
+              path: 'data/weather/current',
+            } as any)
+            .pipe(
+              switchMap((value) => {
+                if (value && typeof value === 'object') {
+                  return of(value)
+                }
+                return this.data.load<any>({
+                  kind: 'skill',
+                  name: 'weather_skill.get_weather',
+                } as any)
+              })
+            )
         } else {
           this.weatherData$ = undefined
         }
