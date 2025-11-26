@@ -152,6 +152,7 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
       await this.adaos.sendEventsCommand('desktop.webspace.create', { id, title })
       this.newWorkspaceId = ''
       this.newWorkspaceTitle = ''
+      await this.switchWorkspace(id)
     } catch {
       await this.presentToast('Failed to create workspace')
     }
@@ -181,7 +182,12 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     if (!id || id === 'default') return
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.delete', { id })
-      this.applySelection(this.activeWebspace)
+      if (id === this.activeWebspace) {
+        const fallback = this.webspaces.find((ws) => ws.id !== id)?.id || 'default'
+        await this.switchWorkspace(fallback)
+      } else {
+        this.applySelection(this.activeWebspace)
+      }
     } catch {
       await this.presentToast('Failed to delete workspace')
     }

@@ -157,6 +157,8 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
     const title = prompt('Название webspace', rawId) ?? rawId
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.create', { id: rawId, title })
+      await this.y.switchWebspace(rawId)
+      this.activeWebspace = rawId
     } catch (err) {
       console.warn('webspace create failed', err)
     }
@@ -181,6 +183,8 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
     if (!ok) return
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.delete', { id: this.activeWebspace })
+      await this.y.switchWebspace('default')
+      this.activeWebspace = 'default'
     } catch (err) {
       console.warn('webspace delete failed', err)
     }
