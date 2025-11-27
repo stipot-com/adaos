@@ -5,7 +5,6 @@ SEED: dict = {
         "application": {
             "version": "0.2",
             "desktop": {
-                "background": "#101418",
                 "topbar": [
                     {"id": "btn_apps", "label": "Apps", "action": {"openModal": "apps_catalog"}},
                     {"id": "btn_widgets", "label": "Widgets", "action": {"openModal": "widgets_catalog"}},
@@ -67,4 +66,3 @@ SEED: dict = {
         },
     },
 }
-
