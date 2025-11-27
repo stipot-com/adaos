@@ -3,12 +3,9 @@ import { ModalController } from '@ionic/angular'
 import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
+import type { AdaModalConfig } from './dsl-types'
 
-type ModalConfig = {
-  title?: string
-  type: string
-  source?: string
-}
+type ModalConfig = AdaModalConfig
 
 @Injectable()
 export class PageModalService {
@@ -23,6 +20,10 @@ export class PageModalService {
     const modals = this.ydoc.toJSON(this.ydoc.getPath('ui/application/modals')) || {}
     const modalCfg: ModalConfig | undefined = modals[modalId] || this.resolveStaticModal(modalId)
     if (!modalCfg) return
+    if (modalCfg.schema) {
+      await this.openSchemaModal(modalCfg)
+      return
+    }
     if (modalCfg.type === 'catalog-apps' || modalCfg.type === 'catalog-widgets') {
       await this.openCatalogModal(modalCfg, modalId)
       return
@@ -84,7 +85,7 @@ export class PageModalService {
     const modal = await this.modalCtrl.create({
       component: ModalHostComponent,
       componentProps: {
-        type: modalCfg.type,
+        type: modalCfg.type || 'modal',
         cfg: {
           title: modalCfg.title,
           data,
@@ -107,5 +108,22 @@ export class PageModalService {
       return { type: 'workspace-manager', title: 'Workspaces' }
     }
     return undefined
+  }
+
+  private async openSchemaModal(modalCfg: ModalConfig): Promise<void> {
+    if (!modalCfg.schema) return
+    const modal = await this.modalCtrl.create({
+      component: ModalHostComponent,
+      componentProps: {
+        // Тип здесь служит лишь ключом по умолчанию; рендерер
+        // переключится на schema-режим, увидев cfg.schema.
+        type: modalCfg.type || 'schema',
+        cfg: {
+          title: modalCfg.title,
+          schema: modalCfg.schema,
+        },
+      },
+    })
+    await modal.present()
   }
 }

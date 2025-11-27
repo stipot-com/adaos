@@ -70,6 +70,10 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	private applyTheme(isDark: boolean): void {
+		// Use both a generic "dark" flag and Ionic's palette class so that
+		// Ionic web components (ion-card, ion-toolbar, ion-tab-bar, etc.)
+		// actually switch to the dark color variables.
 		document.body.classList.toggle('dark', isDark)
+		document.body.classList.toggle('ion-palette-dark', isDark)
 	}
 }
