@@ -1,23 +1,29 @@
-from .server import load_code_map, entry_matches_query, to_code_entry
+from __future__ import annotations
+
+from .core import (
+    CodeMapError,
+    list_entries,
+    search_entries,
+)
+from .models import CodeEntry
 
 
-def main():
-    entries = load_code_map()
-    print(f"Всего записей в code_map: {len(entries)}")
-
-    if not entries:
-        print("Карта пустая, проверь artifacts/code_map.yaml")
+def main() -> None:
+    try:
+        entries = list_entries(limit=5)
+    except CodeMapError as e:
+        print(f"Ошибка загрузки карты: {e}")
         return
 
-    print("Пример записи:", entries[0])
+    print(f"Всего примеров (до 5): {len(entries)}")
+    if entries:
+        print("Пример записи:", entries[0])
 
-    query = "service"
-    matched = [e for e in entries if entry_matches_query(e, query)]
+    query = "service"  
+    matched: list[CodeEntry] = search_entries(query, limit=5)
     print(f"Совпадений по '{query}': {len(matched)}")
-
-    if matched:
-        ce = to_code_entry(matched[0])
-        print("Пример CodeEntry:", ce)
+    for e in matched:
+        print(" -", e.path)
 
 
 if __name__ == "__main__":
