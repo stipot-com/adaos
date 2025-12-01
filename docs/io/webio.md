@@ -5,8 +5,8 @@ This note explains how the hub drives the browser-based desktop shell through Yj
 ## Architecture Overview
 
 1. **Webspace** — each browser session attaches to a named Yjs document (default: `desktop`). The doc is stored in an SQLite YStore under `.adaos/state/ystores/<webspace>.sqlite3`.
-2. **Scenario** — declarative JSON (`scenario.json`) that defines desktop UI building blocks (apps, widgets, registry). ScenarioManager projects it into every webspace doc (`ui.scenarios.*`, `data.scenarios.*`, `registry.scenarios.*`).
-3. **Skills** — runtime packages that can inject additional UI declaratives via `webui.json`. `web_desktop_skill` merges scenario + skills into a ready-to-render catalog and writes it into `data.catalog` and `data.installed`.
+2. **Scenario** — declarative JSON (`scenario.json`) that defines desktop UI building blocks (apps, widgets, registry). ScenarioManager projects it into every webspace doc (`ui.scenarios.*`, `data.scenarios.*`, `registry.scenarios.*`) and emits `scenarios.synced`.
+3. **Skills** — runtime packages that can inject additional UI declaratives via `webui.json`. A core runtime (`WebspaceScenarioRuntime`) merges scenario + skills into a ready-to-render catalog and writes it into `data.catalog` and `data.installed`. `web_desktop_skill` в этой схеме — обычный навык, который предоставляет модалы и базовые виджеты (например, каталоги приложений/виджетов).
 4. **Event mesh** — UI commands travel over `/ws` (`events_ws`). Each command becomes a domain event (`desktop.*`) with metadata containing the current `webspace_id`. Skills subscribe to these events and mutate the associated YDoc.
 5. **Frontend** — Angular/Ionic runtime consumes Yjs data through `YDocService`. It renders apps/widgets from the already-merged catalog and exposes CRUD for switching or managing webspaces.
 
@@ -14,37 +14,37 @@ This note explains how the hub drives the browser-based desktop shell through Yj
 Browser <--y-websocket--> Hub y_gateway <--YDoc--> SQLiteYStore
             events_ws            ↑              ↑
               │                  │              │
-         (desktop.*)          web_desktop_skill + weather_skill, etc.
+         (desktop.*)      WebspaceScenarioRuntime + skills (web_desktop_skill, weather_skill, …)
 ```
 
 ## Webspaces in Detail
 
 * **Creation & Registry** — each webspace is tracked in `y_workspaces` (SQLite). We store `workspace_id`, on-disk path, timestamps, and a display name. Scripts (`tools/bootstrap*`) install the default `web_desktop` scenario + `weather_skill` into the default `desktop` webspace.
-* **Seeding** — `ensure_webspace_seeded_from_scenario` runs for every Yjs room creation and for CLI/skill-triggered CRUD actions. It loads the scenario JSON, writes `ui.scenarios.<id>`, `data.scenarios.<id>.catalog`, `registry.scenarios.<id>`, and, if needed, `ui.current_scenario`.
-* **Syncing across docs** — `web_desktop_skill` refreshes `data.webspaces` in *every* YDoc whenever a workspace is added/renamed/deleted. Each entry carries `{ id, title, created_at }`, so any client can present the full list.
+* **Seeding** — `ensure_webspace_seeded_from_scenario` runs for every Yjs room creation and for webspace CRUD actions. It loads the scenario JSON, writes `ui.scenarios.<id>`, `data.scenarios.<id>.catalog`, `registry.scenarios.<id>`, and, if needed, `ui.current_scenario`.
+* **Syncing across docs** — core runtime обновляет `data.webspaces` в *каждом* YDoc при добавлении/переименовании/удалении webspace. Каждая запись несёт `{ id, title, created_at }`, чтобы любой клиент мог отрисовать список рабочих столов.
 * **Switching** — the frontend remembers a preferred webspace in `localStorage`. Switching issues `desktop.webspace.use`, which re-seeds the target doc (if missing), updates `/ws` routing metadata, and forces the browser to reconnect to the new `/yws/<id>` room.
 
 ## Desktop Scenario Flow
 
 1. Scenario install calls `ScenarioManager.install_with_deps()` which:
    - Installs dependent skills and activates them in the default webspace via `SkillManager.activate_for_space`.
-   - Projects the scenario declaratives into the YDoc (`scenarios.synced`).
-   - Emits `scenarios.synced {scenario_id, webspace_id}` events that `web_desktop_skill` listens to.
-2. `web_desktop_skill` merges:
+   - Projects the scenario declaratives into the YDoc (`sync_to_yjs`).
+   - Emits `scenarios.synced {scenario_id, webspace_id}`.
+2. `WebspaceScenarioRuntime` merges:
    - Scenario catalog/registry entries, marked as `source: "scenario:<id>"`.
-   - Active skill contributions, marked as `source: "skill:<name>"` and `dev: true` for `space="dev"`.
-3. Resulting catalog is written to `data.catalog.{apps,widgets}` plus filtered `data.installed`. The Angular client simply reads those arrays and renders icons/widgets. DEV contributions are highlighted via badges.
+   - Active skill contributions из `webui.json`, marked as `source: "skill:<name>"` и `dev: true` для `space="dev"`.
+3. Resulting catalog is written to `data.catalog.{apps,widgets}` плюс отфильтрованный `data.installed`. The Angular client simply reads those arrays and renders icons/widgets. DEV‑вклады подсвечиваются через флаг `dev`.
 4. End users toggle items via catalog modals; the UI updates `data.desktop.installed` optimistically and sends `desktop.toggleInstall` so the hub reconciles `data.installed` for everyone.
 
-## Webspace CRUD Skill Hooks
+## Webspace CRUD (core hooks)
 
-`web_desktop_skill` now handles dedicated topics:
+Жизненный цикл webspace обрабатывается ядром (WebspaceScenarioRuntime), а не конкретным навыком:
 
 | Event | Action |
 |-------|--------|
-| `desktop.webspace.create` | Normalize/allocate ID, insert into registry, seed from scenario, rebuild catalog, sync listing. |
+| `desktop.webspace.create` | Normalize/allocate ID, insert into registry, seed from scenario, rebuild UI, sync listing. |
 | `desktop.webspace.rename` | Update display name, sync listing. |
-| `desktop.webspace.delete` | Remove registry entry + YStore file (except the default), drop cached skill UI, sync listing. |
+| `desktop.webspace.delete` | Remove registry entry + YStore file (except the default), sync listing. |
 | `desktop.webspace.refresh` | Force re-sync of the `data.webspaces` listing across all docs. |
 
 These events always carry `_meta.webspace_id`, so downstream helpers know the origin but can still operate on other targets (e.g., create a new webspace while staying in the current one).
