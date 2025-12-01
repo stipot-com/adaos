@@ -4,8 +4,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Tuple
 
-from adaos.services.agent_context import AgentContext
-
 _KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 
 
@@ -23,7 +21,7 @@ def _validate_key(key: str) -> str:
 
 @dataclass(slots=True)
 class SkillStateService:
-    ctx: AgentContext
+    ctx: object
 
     def _state_prefix(self, skill_id: str | None) -> str:
         if skill_id:

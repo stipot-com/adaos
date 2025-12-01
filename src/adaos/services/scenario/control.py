@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from adaos.services.agent_context import AgentContext
-
 from ..skill.state import _validate_key as _validate_binding_key  # reuse validation rules
 
 
@@ -23,7 +21,7 @@ class ScenarioControlService:
       - scenarios/<id>/bindings/<key>
     """
 
-    ctx: AgentContext
+    ctx: object
 
     def set_enabled(self, scenario_id: str, enabled: bool) -> None:
         """

@@ -283,16 +283,20 @@ Webspace Scenario Runtime:
 
 ### 3.7. ProjectionRegistry (conceptual)
 
-`ProjectionRegistry` defines how `ctx` data is projected into storage:
+`ProjectionRegistry` defines how `ctx` data is projected into storage.
 
-- it maps **context slots** to physical targets, for example:
+In the codebase it is represented by :class:`ProjectionRegistry`
+(`src/adaos/services/scenario/projection_registry.py`), which maps
+logical **context slots** to physical targets.
 
-  - `(scope=subnet, slot="weather.snapshot")`
-    → `y:data/skills/weather/global/snapshot` in one or more webspaces,
+It maps `(scope, slot)` pairs to targets, for example:
 
-  - `(scope=current_user, slot="profile.settings")`
-    → `y:data/skills/profile/<user_id>/settings`,
-    → SQL table `user_settings`.
+- `(scope=subnet, slot="weather.snapshot")`
+  → `y:data/skills/weather/global/snapshot` in one or more webspaces,
+
+- `(scope=current_user, slot="profile.settings")`
+  → `y:data/skills/profile/<user_id>/settings`,
+  → SQL table `user_settings`.
 
 When a skill calls:
 
@@ -300,7 +304,7 @@ When a skill calls:
 ctx.subnet.set("weather.snapshot", payload)
 ```
 
-the core uses `ProjectionRegistry` to:
+the core uses `ProjectionRegistry` to resolve and apply projections:
 
 - compute **target set**:
 

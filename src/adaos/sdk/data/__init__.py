@@ -10,6 +10,9 @@ from .fs import open as open  # noqa: A001 - re-export for convenience
 from .fs import save_bytes, tmp_path
 from .i18n import I18n, _
 from .memory import delete, get, list, put
+from .profile import get_settings as profile_get_settings
+from .profile import update_settings as profile_update_settings
+from .ctx import subnet as ctx_subnet, current_user as ctx_current_user, selected_user as ctx_selected_user
 from .secrets import read, write
 from .skill_memory import get as skill_memory_get
 from .skill_memory import set as skill_memory_set
@@ -32,6 +35,11 @@ __all__ = [
     "list",
     "read",
     "write",
+    "profile_get_settings",
+    "profile_update_settings",
+    "ctx_subnet",
+    "ctx_current_user",
+    "ctx_selected_user",
     "I18n",
     "_",
     "skill_memory_get",

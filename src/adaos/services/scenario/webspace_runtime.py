@@ -238,6 +238,12 @@ class WebspaceScenarioRuntime:
         base_catalog = scenario_entry.get("catalog") if isinstance(scenario_entry, dict) else {}
         if not isinstance(base_catalog, dict):
             base_catalog = {}
+        # Load/refresh data_projections for this scenario into the shared
+        # ProjectionRegistry so that ctx.* writes can be routed correctly.
+        try:
+            self.ctx.projections.load_from_scenario(str(scenario_id))
+        except Exception:
+            _log.debug("failed to load data_projections for scenario=%s", scenario_id, exc_info=True)
         scenario_apps = [it for it in (base_catalog.get("apps") or []) if isinstance(it, Mapping)]
         scenario_widgets = [it for it in (base_catalog.get("widgets") or []) if isinstance(it, Mapping)]
 
