@@ -1,8 +1,11 @@
 from __future__ import annotations
-from dataclasses import dataclass
-import re, os, json
+from dataclasses import dataclass, field
+import re, os, json, asyncio
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any, List
+from enum import Enum
+import uuid
+from datetime import datetime
 
 from adaos.domain import SkillMeta, SkillRecord
 from adaos.ports import EventBus, GitClient, Capabilities
@@ -23,8 +26,56 @@ from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
 from adaos.apps.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
 
+
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
+
+# --- Модель исполнения сценариев --------------------------------------------
+
+class ExecutionPriority(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+class RunState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+
+
+@dataclass(slots=True)
+class ExecutionResult:
+    """Результат выполнения сценария"""
+    run_id: str
+    scenario_id: str
+    state: RunState
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+    context: Dict[str, Any] = field(default_factory=dict)
+    result: Optional[Dict[str, Any]] = None
+
+
+@dataclass(slots=True)
+class ExecutionUnit:
+    """Единица выполнения сценария"""
+    run_id: str
+    scenario_id: str
+    priority: ExecutionPriority = ExecutionPriority.NORMAL
+    context: Dict[str, Any] = field(default_factory=dict)
+    state: RunState = RunState.PENDING
+    current_step: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    cancel_token: asyncio.Event = field(default_factory=asyncio.Event)
+    scenario_content: Optional[Dict[str, Any]] = None
+    
 
 @dataclass(slots=True)
 class ArtifactPublishResult:
@@ -42,6 +93,13 @@ class ArtifactPublishResult:
 class ScenarioManager:
     """Coordinate scenario lifecycle operations via repository and registry."""
 
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(
         self,
         *,
@@ -52,8 +110,24 @@ class ScenarioManager:
         bus: EventBus,
         caps: Capabilities,  # SqliteScenarioRegistry протоколом не ограничиваем
     ):
-        self.repo, self.reg, self.git, self.paths, self.bus, self.caps = repo, registry, git, paths, bus, caps
-        self.ctx: AgentContext = get_ctx()
+        if not hasattr(self, '_initialized'):
+            super().__init__()
+            self._initialized = True
+
+            self.repo, self.reg, self.git, self.paths, self.bus, self.caps = repo, registry, git, paths, bus, caps
+            self.ctx: AgentContext = get_ctx()
+            
+            # Инициализация планировщика
+            self._scheduler_lock = asyncio.Lock()
+            self._pending: Dict[ExecutionPriority, List[ExecutionUnit]] = {
+                ExecutionPriority.LOW: [],
+                ExecutionPriority.NORMAL: [],
+                ExecutionPriority.HIGH: []
+            }
+            self._running: Dict[str, ExecutionUnit] = {}
+            self._tasks: Dict[str, asyncio.Task] = {}
+            self._completed: Dict[str, ExecutionUnit] = {}
+            self._max_concurrent = 5  # Максимальное количество параллельных выполнений
 
     def list_installed(self) -> list[SkillRecord]:
         self.caps.require("core", "scenarios.manage")
@@ -108,6 +182,166 @@ class ScenarioManager:
         except Exception:
             self.reg.unregister(name)
             raise
+
+    # --- Запуск сценариев -------------------------------------------------
+
+    async def run_scenario(
+        self, 
+        scenario_id: str, 
+        ctx: Optional[Dict[str, Any]] = None, 
+        priority: ExecutionPriority = ExecutionPriority.NORMAL,
+        force: bool = False
+    ) -> str:
+        """
+        Запуск выполнения сценария
+        
+        Args:
+            scenario_id: ID сценария для запуска
+            ctx: Контекст выполнения (переменные для подстановки)
+            priority: Приоритет выполнения (high/normal/low)
+            force: Принудительный запуск (игнорировать ограничения)
+            
+        Returns:
+            run_id: Идентификатор запуска для отслеживания статуса
+        """
+        self.caps.require("core", "scenarios.execute")
+        
+        # Проверяем, что сценарий существует
+        content = read_content(scenario_id)
+        if not content:
+            raise ValueError(f"Scenario '{scenario_id}' not found or empty")
+        
+        # Проверяем установлен ли сценарий (если не force)
+        if not force:
+            installed = any(r.name == scenario_id for r in self.reg.list())
+            if not installed:
+                raise ValueError(f"Scenario '{scenario_id}' is not installed. Use force=True or install it first.")
+        
+        # Создаем единицу выполнения
+        run_id = str(uuid.uuid4())
+        unit = ExecutionUnit(
+            run_id=run_id,
+            scenario_id=scenario_id,
+            priority=priority,
+            context=ctx or {},
+            scenario_content=content,
+            started_at=datetime.now()
+        )
+        
+        # Добавляем в очередь планировщика
+        async with self._scheduler_lock:
+            self._pending[priority].append(unit)
+        
+        # Запускаем планировщик
+        self._tasks[unit.run_id] = asyncio.create_task(self._schedule_execution(unit))
+        
+        # Отправляем событие
+        emit(self.bus, "scenario.started", {
+            "run_id": run_id,
+            "scenario_id": scenario_id,
+            "priority": priority.value
+        }, "scenario.mgr")
+        
+        return run_id
+    
+    async def _schedule_execution(self, unit: ExecutionUnit):
+        """Планировщик выполнения сценариев"""
+        # Ждем освобождения слота
+        while True:
+            async with self._scheduler_lock:
+                if len(self._running) < self._max_concurrent:
+                    # Удаляем из очереди ожидания
+                    for queue in self._pending.values():
+                        for i, u in enumerate(queue):
+                            if u.run_id == unit.run_id:
+                                queue.pop(i)
+                                break
+                    
+                    # Добавляем в выполняющиеся
+                    unit.state = RunState.RUNNING
+                    self._running[unit.run_id] = unit
+                    break
+            
+            await asyncio.sleep(0.1)  # Ждем освобождения
+        
+        # Запускаем выполнение
+        try:
+            unit.result = await self._execute_scenario(unit)
+            unit.state = RunState.COMPLETED
+        except Exception as e:
+            unit.error = str(e)
+        finally:
+            # Освобождаем слот
+            async with self._scheduler_lock:
+                if unit.run_id in self._running:
+                    self._running.pop(unit.run_id)
+                    self._tasks.pop(unit.run_id)
+                    unit.finished_at = datetime.now()
+                    self._completed[unit.run_id] = unit
+            
+            # Планируем следующую задачу
+            await self._run_next_pending()
+    
+    async def _run_next_pending(self):
+        """Запуск следующей задачи из очереди ожидания"""
+        async with self._scheduler_lock:
+            if len(self._running) >= self._max_concurrent:
+                return
+            
+            # Ищем задачу в порядке приоритета
+            for priority in [ExecutionPriority.HIGH, ExecutionPriority.NORMAL, ExecutionPriority.LOW]:
+                if self._pending[priority]:
+                    unit = self._pending[priority].pop(0)
+                    self._tasks[unit.run_id] = asyncio.create_task(self._schedule_execution(unit))
+                    break
+    
+    async def _execute_scenario(self, unit: ExecutionUnit):
+        """Выполнение сценария"""
+        from adaos.sdk.scenarios.runtime import ScenarioRuntime
+        ctx = get_ctx()
+        scenario_path =  ctx.paths.scenarios_workspace_dir() / unit.scenario_id
+        runtime = ScenarioRuntime()
+        result = runtime.run_from_file(str(scenario_path))
+        return result
+    
+    async def get_scenario_status(self, run_id: str) -> Optional[ExecutionUnit]:
+        """Получение статуса выполнения сценария"""
+        async with self._scheduler_lock:
+            # Проверяем выполняющиеся задачи
+            if run_id in self._running:
+                return self._running[run_id]
+            
+            # Проверяем завершенные задачи
+            if run_id in self._completed:
+                return self._completed[run_id]
+            
+            # Проверяем ожидающие задачи
+            for queue in self._pending.values():
+                for unit in queue:
+                    if unit.run_id == run_id:
+                        return unit
+                    
+        
+        return None
+    
+    async def cancel_scenario(self, run_id: str) -> bool:
+        """Отмена выполнения сценария"""
+
+        if run_id in self._tasks:
+            try:
+                task = self._tasks[run_id]
+                task.cancel()
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        async with self._scheduler_lock:
+            if run_id in self._completed:
+                self._completed[run_id].state = RunState.CANCELLED
+        
+                return True        
+        return False
+    
 
     # --- Stage A2 helpers -------------------------------------------------
 
@@ -315,7 +549,7 @@ class ScenarioManager:
                 conf = load_config()
                 if conf.role == "hub":
                     cap = get_local_capacity()
-                    get_directory().repo.replace_scenario_capacity(conf.node_id, cap.get("scenarios") or [])
+                    get_directory().repo.replace_scenario_capacity(conf.node_id, (cap.get("scenarios") or []))
             except Exception:
                 pass
         except Exception:
