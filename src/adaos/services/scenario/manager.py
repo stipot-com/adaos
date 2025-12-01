@@ -1,3 +1,4 @@
+# src\adaos\services\scenario\manager.py
 from __future__ import annotations
 from dataclasses import dataclass
 import re, os, json
