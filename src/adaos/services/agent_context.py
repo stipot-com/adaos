@@ -50,6 +50,7 @@ def use_ctx(ctx: AgentContext):
 
 if TYPE_CHECKING:
     from adaos.services.i18n.service import I18nService
+    from adaos.services.scenario.projection_registry import ProjectionRegistry
 
 
 @dataclass(slots=True)
@@ -76,6 +77,7 @@ class AgentContext:
     _skills_repo: Optional[GitSkillRepository] = field(default=None, init=False, repr=False)
     _scenarios_repo: Optional[GitScenarioRepository] = field(default=None, init=False, repr=False)
     _skill_ctx_port: Optional[SkillContextPort] = field(default=None, init=False, repr=False)
+    _projection_registry: Optional[object] = field(default=None, init=False, repr=False)
 
     @property
     def skills_repo(self) -> GitSkillRepository:
@@ -111,6 +113,20 @@ class AgentContext:
             port = InprocSkillContext()
             object.__setattr__(self, "_skill_ctx_port", port)
         return port
+
+    @property
+    def projections(self):
+        """
+        Lazy accessor for ProjectionRegistry. Imported here to avoid
+        circular imports during process startup.
+        """
+        registry = self._projection_registry
+        if registry is None:
+            from adaos.services.scenario.projection_registry import ProjectionRegistry  # local import
+
+            registry = ProjectionRegistry()
+            object.__setattr__(self, "_projection_registry", registry)
+        return registry
 
     def reload_repos(self) -> None:
         object.__setattr__(self, "_skills_repo", None)

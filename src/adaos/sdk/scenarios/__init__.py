@@ -6,6 +6,7 @@ from pathlib import Path
 from adaos.services.agent_context import get_ctx
 from adaos.sdk.core.decorators import tool
 from adaos.services.scenario.manager import ScenarioManager  # предпочтительно
+from adaos.services.scenario import WebspaceScenarioRuntime
 from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.adapters.db import SqliteScenarioRegistry
 
@@ -119,3 +120,36 @@ def read_bindings(sid: str, user: str) -> Dict[str, Any]:
 def write_bindings(sid: str, user: str, data: Dict[str, Any]) -> str:
     p: Path = _mgr().write_bindings(sid, user, data)
     return str(p)
+
+
+@tool(
+    "scenarios.describe_webspace_ui",
+    summary="describe scenario-only UI state for a webspace",
+    stability="experimental",
+)
+def describe_webspace_ui(webspace_id: str = "default") -> Dict[str, Any]:
+    """
+    Return a scenario-only snapshot of the effective UI model for a given
+    webspace, as seen by the core WebspaceScenarioRuntime.
+
+    It reads ui.current_scenario, data.scenarios[scenario_id].catalog,
+    registry.scenarios[scenario_id] and data.installed from the YDoc and
+    returns them as a structured mapping. This is primarily intended for
+    debugging and migration work.
+    """
+    ctx = get_ctx()
+    runtime = WebspaceScenarioRuntime(ctx)
+    entry = runtime.compute_registry_for_webspace(webspace_id)
+    return {
+        "webspace_id": webspace_id,
+        "scenario_id": entry.scenario_id,
+        "catalog": {
+            "apps": entry.apps,
+            "widgets": entry.widgets,
+        },
+        "registry": {
+            "modals": entry.registry_modals,
+            "widgets": entry.registry_widgets,
+        },
+        "installed": dict(entry.installed),
+    }

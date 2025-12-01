@@ -128,6 +128,7 @@ nav:
   - "Дорожная карта": roadmap.md
   - "Концепции":
       - "Кодовая база": concepts/codeflow.md
+      - "Кодовая база": concepts/skills-and-scenarios.md
       - "Веб клиент": concepts/web-client.md
       - "Интерфейс пользователя": concepts/ui.md
       - "Профиль пользователя": concepts/personalization.md
@@ -135,7 +136,8 @@ nav:
       - "Этапы LLM DevOps - подготовка": concepts/dev_stage_prepare.md
       - "Разработка сценариев": concepts/dev-scenarios.md
       - "Запуск сценария": concepts/start_scenario.md
-      - "Runtime сценария": concepts/scenario-runtime.md
+      - "Runtime сценария": concepts/scenario-procedural-runtime.md
+      - "Цель доработки сценариев": scenarios-target-state.md
       - "Интерпретация намерений": concepts/nlu.md
       - "Инициализация устройства": concepts/init_device.md
       - "Управление событиями": concepts/event_mgmnt.md

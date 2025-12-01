@@ -20,6 +20,8 @@ from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.sdk.core.decorators import register_subscriptions
 from adaos.services.scheduler import start_scheduler
 from adaos.apps.yjs import y_store as _y_store  # ensure YStore subscriptions are registered
+from adaos.services.scenario import webspace_runtime as _scenario_ws_runtime  # ensure core scenario subscriptions
+from adaos.services import weather as _weather_services  # ensure weather observers
 from adaos.integrations.telegram.sender import TelegramSender
 from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
 from adaos.services.chat_io import telemetry as tm

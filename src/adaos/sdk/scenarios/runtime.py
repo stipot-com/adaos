@@ -1,3 +1,4 @@
+# src\adaos\sdk\scenarios\runtime.py
 """Scenario runtime built on top of the SDK primitives."""
 
 from __future__ import annotations
@@ -335,16 +336,6 @@ def ensure_runtime_context(base_dir: Path):
     )
     set_ctx(ctx)
     return ctx
-
-
-def _locate_base_dir(scenario_path: Path) -> Path:
-    for parent in scenario_path.parents:
-        if parent.name == ".adaos":
-            return parent
-    env_base = os.getenv("ADAOS_BASE_DIR")
-    if env_base:
-        return Path(env_base)
-    return scenario_path.parent
 
 
 def default_registry() -> ActionRegistry:

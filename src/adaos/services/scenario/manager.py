@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+import logging
 import re, os, json, asyncio
 from pathlib import Path
 from typing import Optional, Literal, Dict, Any, List
@@ -28,6 +29,7 @@ from adaos.services.skill.manager import SkillManager
 
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
+_log = logging.getLogger("adaos.scenario.manager")
 
 
 # --- Модель исполнения сценариев --------------------------------------------
@@ -368,6 +370,20 @@ class ScenarioManager:
         return meta
 
     def _ensure_yjs_payload(self, scenario_id: str) -> tuple[dict, dict, dict, dict]:
+        """
+        Load and normalise declarative payload from scenario.json so that it can
+        be projected into a webspace YDoc.
+
+        The returned tuple is:
+          - ui_section:    content["ui"]["application"]  (or {}),
+          - registry:      content["registry"]           (or {}),
+          - catalog:       content["catalog"]            (or {}),
+          - data_section:  content["data"]               (or {}).
+
+        This shape matches the target-state description in
+        docs/concepts/scenarios-target-state.md and is the only input for the
+        ScenarioManager.sync_to_yjs* projection helpers.
+        """
         content = read_content(scenario_id)
         if not content:
             raise FileNotFoundError(f"scenario '{scenario_id}' has no scenario.json content")
@@ -384,7 +400,8 @@ class ScenarioManager:
         if not isinstance(data_section, dict):
             data_section = {}
 
-        # Debug trace to help diagnose scenario→YDoc projection issues
+        # Debug trace to help diagnose scenario→YDoc projection issues without
+        # failing the projection if logging is misconfigured.
         try:
             desktop = (ui_section.get("desktop") or {}) if isinstance(ui_section, dict) else {}
             topbar = desktop.get("topbar")
@@ -451,8 +468,13 @@ class ScenarioManager:
 
     def sync_to_yjs(self, scenario_id: str, webspace_id: str | None = None) -> None:
         """
-        Project the declarative scenario payload into the webspace YDoc so
-        downstream services (Yjs/WS, web_desktop_skill, etc.) can pick it up.
+        Project the declarative scenario payload into the webspace YDoc.
+
+        This is the generic projection entry point described in the
+        scenario target-state docs: it takes scenario.json, writes
+        ui/data/registry sections into the YDoc, and emits a single
+        ``scenarios.synced`` event that Webspace Scenario Runtime and other
+        downstream services can react to.
         """
         target_webspace = webspace_id or default_webspace_id()
         self.caps.require("core", "scenarios.manage")
