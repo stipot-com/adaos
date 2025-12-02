@@ -69,6 +69,8 @@ class NodeSettings:
 class DevSettings:
     # Store relative path under base_dir; resolve via _expand_path
     workspace: str = "dev"
+    forge_repo: str | None = None
+    forge_path: str | None = None
 
 
 @dataclass
@@ -271,6 +273,10 @@ def _settings_to_dict(settings: Any) -> dict[str, Any]:
             data["hub"] = hub
     if isinstance(settings, DevSettings):
         data["workspace"] = _stringify_path(data.get("workspace"))
+        forge_repo = data.get("forge_repo")
+        data["forge_repo"] = forge_repo if forge_repo else None
+        forge_path = data.get("forge_path")
+        data["forge_path"] = str(forge_path) if forge_path else None
     return data
 
 
@@ -298,7 +304,9 @@ def _settings_from_dict(settings_cls: type, payload: Any):
         return NodeSettings(id=payload.get("id") if isinstance(payload, dict) else None)
     if settings_cls is DevSettings:
         workspace = payload.get("workspace") if isinstance(payload, dict) else None
-        return DevSettings(workspace=workspace or "dev")
+        forge_repo = payload.get("forge_repo") if isinstance(payload, dict) else None
+        forge_path = payload.get("forge_path") if isinstance(payload, dict) else None
+        return DevSettings(workspace=workspace or "dev", forge_repo=forge_repo, forge_path=forge_path)
     raise TypeError(f"Unsupported settings class: {settings_cls!r}")
 
 

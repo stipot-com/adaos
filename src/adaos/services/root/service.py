@@ -471,6 +471,16 @@ class ArtifactDeleteResult:
 
 
 @dataclass(slots=True)
+class ArtifactUpdateResult:
+    kind: str
+    name: str
+    source_path: Path
+    target_path: Path
+    version: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(slots=True)
 class ArtifactListItem:
     name: str
     path: Path
@@ -704,6 +714,13 @@ class RootDeveloperService:
                 metadata=metadata,
             )
             reused_flag = bool(registration.get("reused"))
+            forge_info = registration.get("forge") if isinstance(registration, Mapping) else None
+            forge_repo = forge_info.get("repo") if isinstance(forge_info, Mapping) else None
+            forge_path = forge_info.get("path") if isinstance(forge_info, Mapping) else None
+            if isinstance(forge_repo, str) and forge_repo:
+                cfg.dev_settings.forge_repo = forge_repo
+            if isinstance(forge_path, str) and forge_path:
+                cfg.dev_settings.forge_path = forge_path
 
             subnet_id = registration.get("subnet_id")
             cert_pem = registration.get("cert_pem")
@@ -1027,6 +1044,56 @@ class RootDeveloperService:
                 "version": result.version,
                 "updated_at": result.updated_at,
                 "bytes": result.bytes_uploaded,
+            },
+            "root.dev",
+        )
+        return result
+
+    def update_skill(self, name: str) -> ArtifactUpdateResult:
+        cfg = self._load_config()
+        node_id = cfg.node_settings.id or cfg.node_id
+        emit(self.ctx.bus, "root.dev.skill.update.start", {"name": name, "node_id": node_id}, "root.dev")
+        try:
+            result = self._update_artifact(cfg, "skills", name)
+        except ArtifactNotFoundError:
+            emit(self.ctx.bus, "root.dev.skill.update.missing", {"name": name, "node_id": node_id}, "root.dev")
+            raise
+        except Exception:
+            emit(self.ctx.bus, "root.dev.skill.update.error", {"name": name, "node_id": node_id}, "root.dev")
+            raise
+        emit(
+            self.ctx.bus,
+            "root.dev.skill.update.done",
+            {
+                "name": result.name,
+                "node_id": node_id,
+                "version": result.version,
+                "updated_at": result.updated_at,
+            },
+            "root.dev",
+        )
+        return result
+
+    def update_scenario(self, name: str) -> ArtifactUpdateResult:
+        cfg = self._load_config()
+        node_id = cfg.node_settings.id or cfg.node_id
+        emit(self.ctx.bus, "root.dev.scenario.update.start", {"name": name, "node_id": node_id}, "root.dev")
+        try:
+            result = self._update_artifact(cfg, "scenarios", name)
+        except ArtifactNotFoundError:
+            emit(self.ctx.bus, "root.dev.scenario.update.missing", {"name": name, "node_id": node_id}, "root.dev")
+            raise
+        except Exception:
+            emit(self.ctx.bus, "root.dev.scenario.update.error", {"name": name, "node_id": node_id}, "root.dev")
+            raise
+        emit(
+            self.ctx.bus,
+            "root.dev.scenario.update.done",
+            {
+                "name": result.name,
+                "node_id": node_id,
+                "version": result.version,
+                "updated_at": result.updated_at,
             },
             "root.dev",
         )
@@ -2005,6 +2072,46 @@ class RootDeveloperService:
             updated_at=(manifest_meta or {}).get("updated_at"),
         )
 
+    def _update_artifact(self, cfg: NodeConfig, kind: Literal["skills", "scenarios"], name: str) -> ArtifactUpdateResult:
+        assert_safe_name(name)
+        forge_repo = getattr(cfg.dev_settings, "forge_repo", None)
+        forge_path = getattr(cfg.dev_settings, "forge_path", None)
+        if not forge_repo or not forge_path:
+            raise RootServiceError("Forge repository is not configured; re-run 'adaos dev root init' with a Root that provides forge repo info")
+
+        repo_dir = Path(self.ctx.paths.dev_dir()) / ".forge"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.ctx.git.ensure_repo(str(repo_dir), forge_repo)
+            self.ctx.git.pull(str(repo_dir))
+        except Exception as exc:  # pragma: no cover - git failures depend on environment
+            raise RootServiceError(f"Failed to update forge repository at {repo_dir}: {exc}") from exc
+
+        node_id = cfg.node_settings.id or cfg.node_id
+        relative = Path(forge_path) / "nodes" / node_id / kind / name
+        source = repo_dir / relative
+        if not source.exists():
+            raise ArtifactNotFoundError(f"{kind[:-1].capitalize()} '{name}' not found in forge repository (expected at {relative})")
+
+        owner = cfg.owner_id or "pending_owner"
+        workspace = self._prepare_workspace(cfg, owner=owner)
+        target = workspace / kind / name
+
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+
+        manifest_name, version, updated_at = self._artifact_manifest_info(target, kind)
+        return ArtifactUpdateResult(
+            kind=kind.rstrip("s"),
+            name=manifest_name,
+            source_path=source,
+            target_path=target,
+            version=version,
+            updated_at=updated_at,
+        )
+
     def _publish_artifact(
         self,
         cfg: NodeConfig,
@@ -2135,6 +2242,7 @@ __all__ = [
     "ArtifactDeleteResult",
     "ArtifactListItem",
     "ArtifactPublishResult",
+    "ArtifactUpdateResult",
     "assert_safe_name",
     "create_zip_bytes",
     "archive_bytes_to_b64",

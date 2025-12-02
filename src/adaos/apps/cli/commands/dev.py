@@ -18,6 +18,7 @@ from adaos.services.root.service import (
     ArtifactListItem,
     ArtifactNotFoundError,
     ArtifactPublishResult,
+    ArtifactUpdateResult,
     RootDeveloperService,
     RootInitResult,
     RootLoginResult,
@@ -146,6 +147,26 @@ def _echo_publish_result(kind_label: str, result: ArtifactPublishResult) -> None
         typer.secho("Warnings:", fg=typer.colors.YELLOW)
         for warning in result.warnings:
             typer.echo(f"  - {warning}")
+
+
+def _echo_update_result(kind_label: str, result: ArtifactUpdateResult, json_output: bool) -> None:
+    if json_output:
+        payload = {
+            "name": result.name,
+            "source": _display_path(result.source_path),
+            "target": _display_path(result.target_path),
+            "version": result.version,
+            "updated_at": result.updated_at,
+        }
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.secho(f"{kind_label} '{result.name}' updated from Root Forge.", fg=typer.colors.GREEN)
+    typer.echo(f"Source: {_display_path(result.source_path)}")
+    typer.echo(f"Target: {_display_path(result.target_path)}")
+    if result.version:
+        typer.echo(f"Version: {result.version}")
+    if result.updated_at:
+        typer.echo(f"Updated at: {result.updated_at}")
 
 
 @root_app.command("init")
@@ -327,6 +348,23 @@ def skill_list(json_output: bool = typer.Option(False, "--json", help="Render ou
     _echo_artifact_list(items, json_output)
 
 
+@skill_app.command("update")
+def skill_update(
+    name: str = typer.Argument(..., help="skill name in DEV space"),
+    json_output: bool = typer.Option(False, "--json", help="Render output as JSON."),
+) -> None:
+    service = _service()
+    try:
+        result = service.update_skill(name)
+    except ArtifactNotFoundError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(exc.exit_code)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    _echo_update_result("Skill", result, json_output)
+
+
 @skill_app.command("delete")
 def skill_delete(
     name: str,
@@ -453,6 +491,23 @@ def scenario_list(json_output: bool = typer.Option(False, "--json", help="Render
         _print_error(str(exc))
         raise typer.Exit(1)
     _echo_artifact_list(items, json_output)
+
+
+@scenario_app.command("update")
+def scenario_update(
+    name: str = typer.Argument(..., help="scenario name in DEV space"),
+    json_output: bool = typer.Option(False, "--json", help="Render output as JSON."),
+) -> None:
+    service = _service()
+    try:
+        result = service.update_scenario(name)
+    except ArtifactNotFoundError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(exc.exit_code)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    _echo_update_result("Scenario", result, json_output)
 
 
 @scenario_app.command("delete")
