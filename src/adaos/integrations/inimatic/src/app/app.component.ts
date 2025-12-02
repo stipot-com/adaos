@@ -10,6 +10,8 @@ import {
 	IonTitle,
 	IonToolbar,
 	IonIcon,
+	IonButtons,
+	IonButton,
 } from '@ionic/angular/standalone'
 import { addIcons } from 'ionicons'
 import {
@@ -20,19 +22,24 @@ import {
 	phonePortrait,
 	settings,
 	desktop,
+	homeOutline,
+	refreshOutline,
 } from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
+import { AdaosClient } from './core/adaos/adaos-client.service'
 
 @Component({
 	selector: 'app-root',
 	templateUrl: 'app.component.html',
 	styleUrls: ['app.component.scss'],
 	standalone: true,
-	imports: [
+		imports: [
 		IonIcon,
 		IonToolbar,
 		IonTitle,
+		IonButtons,
+		IonButton,
 		IonHeader,
 		IonTabBar,
 		IonTabs,
@@ -45,7 +52,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	private colorSchemeMedia?: MediaQueryList
 	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
 
-	constructor(private plt: Platform, private ydoc: YDocService) {
+	constructor(private plt: Platform, private ydoc: YDocService, private adaos: AdaosClient) {
 		addIcons({
 			lockClosedOutline,
 			people,
@@ -54,6 +61,8 @@ export class AppComponent implements OnInit, OnDestroy {
 			apps,
 			laptop,
 			desktop,
+			homeOutline,
+			refreshOutline,
 		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
@@ -87,5 +96,30 @@ export class AppComponent implements OnInit, OnDestroy {
 		// actually switch to the dark color variables.
 		document.body.classList.toggle('dark', isDark)
 		document.body.classList.toggle('ion-palette-dark', isDark)
+	}
+
+	async onClickHome(): Promise<void> {
+		try {
+			// Switch current scenario back to web_desktop for the active webspace.
+			await this.adaos.sendEventsCommand('desktop.scenario.set', {
+				scenario_id: 'web_desktop',
+			})
+		} catch (err) {
+			// best-effort only; errors can be inspected in console
+			// eslint-disable-next-line no-console
+			console.warn('desktop.scenario.set failed', err)
+		}
+	}
+
+	async onClickYjsReload(): Promise<void> {
+		try {
+			const ws = this.ydoc.getWebspaceId()
+			await this.adaos.post('/api/yjs/reload', {
+				webspace_id: ws || 'default',
+			}).toPromise()
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.warn('YJS reload failed', err)
+		}
 	}
 }

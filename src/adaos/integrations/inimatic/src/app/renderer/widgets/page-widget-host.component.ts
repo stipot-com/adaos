@@ -17,16 +17,23 @@ import { CollectionGridWidgetComponent } from './collection-grid.widget.componen
 import { CommandBarWidgetComponent } from './command-bar.widget.component'
 import { MetricTileWidgetComponent } from './metric-tile.widget.component'
 import { SelectorWidgetComponent } from './selector.widget.component'
+import { TextEditorWidgetComponent } from './text-editor.widget.component'
+import { DetailsWidgetComponent } from './details.widget.component'
+import { StatusBarWidgetComponent } from './status-bar.widget.component'
 import { PageStateService, PageState } from '../../runtime/page-state.service'
 import { Subscription } from 'rxjs'
 import { DesktopWidgetsWidgetComponent } from './desktop-widgets.widget.component'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'collection.grid': CollectionGridWidgetComponent,
+  'collection.tree': CollectionGridWidgetComponent,
   'input.commandBar': CommandBarWidgetComponent,
   'input.selector': SelectorWidgetComponent,
   'visual.metricTile': MetricTileWidgetComponent,
   'feedback.log': MetricTileWidgetComponent,
+  'feedback.statusBar': StatusBarWidgetComponent,
+  'item.textEditor': TextEditorWidgetComponent,
+  'item.details': DetailsWidgetComponent,
   'desktop.widgets': DesktopWidgetsWidgetComponent,
   'host.webspaceControls': CommandBarWidgetComponent,
 }

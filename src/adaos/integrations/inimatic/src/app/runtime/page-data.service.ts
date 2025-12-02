@@ -202,6 +202,7 @@ export class PageDataService {
         title: it.title || it.id,
         icon: it.icon || iconTemplate,
         action: it.launchModal ? { openModal: it.launchModal } : undefined,
+        scenario_id: it.scenario_id,
         dev: !!it.dev,
       }))
     try {

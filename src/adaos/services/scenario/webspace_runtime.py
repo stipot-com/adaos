@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 import asyncio
 import json
 import logging
@@ -14,6 +14,7 @@ import y_py as Y
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.capacity import get_local_capacity
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
+from adaos.services.scenarios import loader as scenarios_loader
 from adaos.apps.yjs.webspace import default_webspace_id
 from adaos.apps.workspaces import index as workspace_index
 from adaos.apps.yjs.y_store import get_ystore_for_webspace
@@ -114,6 +115,46 @@ class WebspaceScenarioRuntime:
 
     def __init__(self, ctx: Optional[AgentContext] = None) -> None:
         self.ctx: AgentContext = ctx or get_ctx()
+        # Cached snapshot of desktop scenarios discovered on disk.
+        self._desktop_scenarios: Optional[List[Tuple[str, str]]] = None
+
+    # --- scenario helpers -------------------------------------------------
+
+    def _list_desktop_scenarios(self) -> List[Tuple[str, str]]:
+        """
+        Discover scenarios with ``type: desktop`` under the workspace
+        scenarios directory. Returns a list of ``(scenario_id, title)``
+        tuples. The ``web_desktop`` scenario itself is excluded so that it
+        does not create a recursive launcher icon.
+
+        For now this performs a lightweight filesystem scan and caches the
+        results in-process; it is refreshed only when this runtime instance
+        is recreated.
+        """
+        if self._desktop_scenarios is not None:
+            return self._desktop_scenarios
+
+        root = self.ctx.paths.scenarios_dir()
+        entries: List[Tuple[str, str]] = []
+        try:
+            for child in root.iterdir():
+                if not child.is_dir():
+                    continue
+                scenario_id = child.name
+                if scenario_id == "web_desktop":
+                    continue
+                manifest = scenarios_loader.read_manifest(scenario_id)
+                if not isinstance(manifest, dict):
+                    continue
+                if manifest.get("type") != "desktop":
+                    continue
+                title = str(manifest.get("title") or manifest.get("name") or scenario_id)
+                entries.append((scenario_id, title))
+        except Exception:
+            _log.debug("failed to list desktop scenarios from %s", root, exc_info=True)
+
+        self._desktop_scenarios = entries
+        return entries
 
     # --- helpers ---------------------------------------------------------
 
@@ -300,16 +341,39 @@ class WebspaceScenarioRuntime:
                 if ep == "desktop.apps" and ctype == "app":
                     auto_app_ids.add(cid)
 
-        merged_apps = _merge_by_id(
-            [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_apps]
-            + skill_apps
-        )
-        merged_widgets = _merge_by_id(
-            [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_widgets]
-            + skill_widgets
-        )
+        # Scenario-defined apps and widgets (base desktop scenario content).
+        merged_apps = [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_apps]
+        merged_widgets = [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_widgets]
+
+        # Inject desktop scenario launchers as pseudo-apps into the global
+        # catalog so that the Apps catalog can expose them as icons. These
+        # are not auto-installed; users can pin them to the desktop using
+        # the standard desktop.toggleInstall flow.
+        extra_apps: List[Dict[str, Any]] = []
+        for sid, title in self._list_desktop_scenarios():
+            # Avoid creating a launcher for the currently active scenario and
+            # only add one entry per logical id.
+            if sid == scenario_id:
+                continue
+            app_id = f"scenario:{sid}"
+            extra_apps.append(
+                {
+                    "id": app_id,
+                    "title": title,
+                    "icon": "desktop-outline",
+                    "launchModal": "scenario_switcher",
+                    "scenario_id": sid,
+                }
+            )
+
+        merged_apps = _merge_by_id(merged_apps + extra_apps + skill_apps)
+
+        merged_widgets = _merge_by_id(merged_widgets + skill_widgets)
         merged_registry = {
-            "modals": _merge_registry_lists(base_registry_modals, skill_registry_modals),
+            "modals": _merge_registry_lists(
+                base_registry_modals,
+                skill_registry_modals + [["apps_catalog", "widgets_catalog", "scenario_switcher"]],
+            ),
             "widgets": _merge_registry_lists(base_registry_widgets, skill_registry_widgets),
         }
 
@@ -323,7 +387,8 @@ class WebspaceScenarioRuntime:
         installed_with_auto = {"apps": list(apps_set), "widgets": list(widgets_set)}
         filtered_installed = _filter_installed(installed_with_auto, merged_apps, merged_widgets)
 
-        # Merge scenario-defined modals with skill-provided modal schemas.
+        # Merge scenario-defined modals with skill-provided modal schemas and
+        # ensure the generic desktop catalogs (apps/widgets) remain available.
         merged_modals_map: Dict[str, Any] = {}
         base_modals_map: Dict[str, Any] = {}
         try:
@@ -343,6 +408,78 @@ class WebspaceScenarioRuntime:
                 token = str(key)
                 if token and token not in merged_modals_map:
                     merged_modals_map[token] = value
+
+        # Ensure generic desktop catalog modals exist so that apps/widgets
+        # (including scenario launchers) can be managed even if the base
+        # scenario UI is minimal.
+        if "apps_catalog" not in merged_modals_map:
+            merged_modals_map["apps_catalog"] = {
+                "title": "Available Apps",
+                "schema": {
+                    "id": "apps_catalog",
+                    "layout": {
+                        "type": "single",
+                        "areas": [{"id": "main", "role": "main"}],
+                    },
+                    "widgets": [
+                        {
+                            "id": "apps-list",
+                            "type": "collection.grid",
+                            "area": "main",
+                            "title": "Apps",
+                            "dataSource": {
+                                "kind": "y",
+                                "path": "data/catalog/apps",
+                            },
+                            "actions": [
+                                {
+                                    "on": "select",
+                                    "type": "callHost",
+                                    "target": "desktop.toggleInstall",
+                                    "params": {
+                                        "type": "app",
+                                        "id": "$event.id",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        if "widgets_catalog" not in merged_modals_map:
+            merged_modals_map["widgets_catalog"] = {
+                "title": "Available Widgets",
+                "schema": {
+                    "id": "widgets_catalog",
+                    "layout": {
+                        "type": "single",
+                        "areas": [{"id": "main", "role": "main"}],
+                    },
+                    "widgets": [
+                        {
+                            "id": "widgets-list",
+                            "type": "collection.grid",
+                            "area": "main",
+                            "title": "Widgets",
+                            "dataSource": {
+                                "kind": "y",
+                                "path": "data/catalog/widgets",
+                            },
+                            "actions": [
+                                {
+                                    "on": "select",
+                                    "type": "callHost",
+                                    "target": "desktop.toggleInstall",
+                                    "params": {
+                                        "type": "widget",
+                                        "id": "$event.id",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
 
         app_with_modals: Dict[str, Any] = dict(scenario_app_ui)
         if merged_modals_map:
@@ -640,5 +777,96 @@ async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
     """
     await _on_webspace_reload(evt)
 
+
+@subscribe("desktop.scenario.set")
+async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
+    """
+    Switch the current desktop scenario for a webspace and re-sync the
+    target YDoc from the selected scenario package.
+
+    Payload:
+      - scenario_id: id of the desktop scenario (required)
+      - webspace_id / workspace_id: optional, defaults to current/default.
+    """
+    payload = _payload(evt)
+    scenario_id = str(payload.get("scenario_id") or "").strip()
+    if not scenario_id:
+        return
+    webspace_id = _webspace_id(payload)
+    _log.info("desktop.scenario.set webspace=%s scenario=%s", webspace_id, scenario_id)
+
+    # Lightweight projection of scenario.json into the target webspace YDoc:
+    # load declarative sections and update ui.scenarios/data.scenarios/registry.
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            content = scenarios_loader.read_content(scenario_id)
+            if not isinstance(content, dict) or not content:
+                _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
+                return
+            ui_section = ((content.get("ui") or {}).get("application")) or {}
+            if not isinstance(ui_section, dict):
+                ui_section = {}
+            registry_section = content.get("registry") or {}
+            if not isinstance(registry_section, dict):
+                registry_section = {}
+            catalog_section = content.get("catalog") or {}
+            if not isinstance(catalog_section, dict):
+                catalog_section = {}
+            data_section = content.get("data") or {}
+            if not isinstance(data_section, dict):
+                data_section = {}
+
+            ui_map = ydoc.get_map("ui")
+            registry_map = ydoc.get_map("registry")
+            data_map = ydoc.get_map("data")
+
+            with ydoc.begin_transaction() as txn:
+                # ui.scenarios[scenario_id].application
+                scenarios_ui = ui_map.get("scenarios")
+                if not isinstance(scenarios_ui, dict):
+                    scenarios_ui = {}
+                updated_ui = dict(scenarios_ui)
+                updated_ui[scenario_id] = {"application": ui_section}
+                ui_map.set(txn, "scenarios", updated_ui)
+                # always switch current_scenario explicitly
+                ui_map.set(txn, "current_scenario", scenario_id)
+
+                # registry.scenarios[scenario_id]
+                reg_scenarios = registry_map.get("scenarios")
+                if not isinstance(reg_scenarios, dict):
+                    reg_scenarios = {}
+                reg_updated = dict(reg_scenarios)
+                reg_updated[scenario_id] = registry_section
+                registry_map.set(txn, "scenarios", reg_updated)
+
+                # data.scenarios[scenario_id].catalog
+                data_scenarios = data_map.get("scenarios")
+                if not isinstance(data_scenarios, dict):
+                    data_scenarios = {}
+                data_updated = dict(data_scenarios)
+                entry = dict(data_updated.get(scenario_id) or {})
+                entry["catalog"] = catalog_section
+                data_updated[scenario_id] = entry
+                data_map.set(txn, "scenarios", data_updated)
+
+                # Optional root data overrides from scenario.json["data"].
+                if isinstance(data_section, dict):
+                    for key, value in data_section.items():
+                        if not isinstance(key, str):
+                            continue
+                        try:
+                            payload_value = json.loads(json.dumps(value))
+                        except Exception:
+                            payload_value = value
+                        data_map.set(txn, key, payload_value)
+    except Exception:
+        _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
+        return
+
+    # Recompute effective UI for the webspace so that desktop/catalog
+    # reflect the selected scenario immediately.
+    ctx = get_ctx()
+    runtime = WebspaceScenarioRuntime(ctx)
+    await runtime.rebuild_webspace_async(webspace_id)
 
 __all__ = ["WebUIRegistryEntry", "WebspaceScenarioRuntime"]

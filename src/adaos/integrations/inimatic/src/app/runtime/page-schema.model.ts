@@ -1,8 +1,12 @@
 // src\adaos\integrations\inimatic\src\app\runtime\page-schema.model.ts
 export type WidgetType =
   | 'collection.grid'
+  | 'collection.tree'
   | 'visual.metricTile'
   | 'feedback.log'
+  | 'feedback.statusBar'
+  | 'item.textEditor'
+  | 'item.details'
   | 'input.commandBar'
   | 'input.selector'
   | 'desktop.widgets'

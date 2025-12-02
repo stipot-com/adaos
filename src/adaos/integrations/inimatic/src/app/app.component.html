@@ -2,9 +2,19 @@
 	<ion-tabs>
 		<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
 			<ion-toolbar>
+				<ion-buttons slot="start">
+					<ion-button (click)="onClickHome()">
+						<ion-icon name="home-outline"></ion-icon>
+					</ion-button>
+				</ion-buttons>
 				<ion-title>
 					INIMATIC
 				</ion-title>
+				<ion-buttons slot="end">
+					<ion-button (click)="onClickYjsReload()">
+						<ion-icon name="refresh-outline"></ion-icon>
+					</ion-button>
+				</ion-buttons>
 			</ion-toolbar>
 		</ion-header>
 		<ion-tab-bar slot="bottom">

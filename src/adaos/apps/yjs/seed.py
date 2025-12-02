@@ -6,6 +6,16 @@ SEED: dict = {
             "version": "0.2",
             "desktop": {
                 "topbar": [
+                    {
+                        "id": "btn_home",
+                        "label": "Home",
+                        "icon": "home-outline",
+                        "action": {
+                            "type": "callHost",
+                            "target": "desktop.scenario.set",
+                            "params": {"scenario_id": "web_desktop"},
+                        },
+                    },
                     {"id": "btn_apps", "label": "Apps", "action": {"openModal": "apps_catalog"}},
                     {"id": "btn_widgets", "label": "Widgets", "action": {"openModal": "widgets_catalog"}},
                 ],
@@ -86,6 +96,14 @@ SEED: dict = {
                                 "transform": "desktop.icons",
                             },
                             "actions": [
+                                {
+                                    "on": "select",
+                                    "type": "callHost",
+                                    "target": "desktop.scenario.set",
+                                    "params": {
+                                        "scenario_id": "$event.scenario_id",
+                                    },
+                                },
                                 {
                                     "on": "select",
                                     "type": "openModal",

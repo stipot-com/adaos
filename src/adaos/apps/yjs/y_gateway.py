@@ -395,6 +395,34 @@ async def events_ws(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue
 
+            if kind == "desktop.scenario.set":
+                target = (payload or {}).get("scenario_id")
+                if not target:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "ch": "events",
+                                "t": "ack",
+                                "id": cmd_id,
+                                "ok": False,
+                                "error": "scenario_id required",
+                            }
+                        )
+                    )
+                else:
+                    _publish_bus("desktop.scenario.set", payload)
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "ch": "events",
+                                "t": "ack",
+                                "id": cmd_id,
+                                "ok": True,
+                            }
+                        )
+                    )
+                continue
+
             # Default ack for other commands (no-op for now)
             await websocket.send_text(
                 json.dumps(

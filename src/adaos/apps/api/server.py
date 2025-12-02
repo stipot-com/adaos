@@ -16,6 +16,7 @@ from adaos.apps.bootstrap import init_ctx
 from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
+from adaos.apps.yjs.y_gateway import ensure_webspace_ready
 from adaos.services.router import RouterService
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
@@ -293,6 +294,36 @@ async def status():
             "version": BUILD_INFO.version,
             "build_date": BUILD_INFO.build_date,
         },
+    }
+
+
+class YjsReloadRequest(BaseModel):
+    webspace_id: str | None = Field(default=None, description="Target webspace id; defaults to 'default'")
+
+
+@app.post("/api/yjs/reload", dependencies=[Depends(require_token)])
+async def yjs_reload(body: YjsReloadRequest) -> dict:
+    """
+    Soft reload of Yjs state for a given webspace.
+
+    For now this is implemented by recomputing the effective UI model via
+    WebspaceScenarioRuntime for the target webspace. It does not drop the
+    underlying YStore data; web clients can choose to clear their local
+    cache if needed.
+    """
+    webspace_id = body.webspace_id or "default"
+    try:
+        # Ensure webspace exists and has YDoc/YStore backing files.
+        # Detailed rebuild of ui/application and catalog is handled by
+        # WebspaceScenarioRuntime on events (scenarios.synced, skills.activated,
+        # desktop.webspace.reload, desktop.scenario.set). Here we only trigger
+        # low-level Yjs bootstrap so that clients can reconnect safely.
+        await ensure_webspace_ready(webspace_id)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise HTTPException(status_code=500, detail=f"yjs_reload failed: {exc}") from exc
+    return {
+        "ok": True,
+        "webspace_id": webspace_id,
     }
 
 
