@@ -20,6 +20,8 @@ import { SelectorWidgetComponent } from './selector.widget.component'
 import { TextEditorWidgetComponent } from './text-editor.widget.component'
 import { DetailsWidgetComponent } from './details.widget.component'
 import { StatusBarWidgetComponent } from './status-bar.widget.component'
+import { CodeViewerWidgetComponent } from './code-viewer.widget.component'
+import { TextInputWidgetComponent } from './text-input.widget.component'
 import { PageStateService, PageState } from '../../runtime/page-state.service'
 import { Subscription } from 'rxjs'
 import { DesktopWidgetsWidgetComponent } from './desktop-widgets.widget.component'
@@ -33,9 +35,11 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'feedback.log': MetricTileWidgetComponent,
   'feedback.statusBar': StatusBarWidgetComponent,
   'item.textEditor': TextEditorWidgetComponent,
+  'item.codeViewer': CodeViewerWidgetComponent,
   'item.details': DetailsWidgetComponent,
   'desktop.widgets': DesktopWidgetsWidgetComponent,
   'host.webspaceControls': CommandBarWidgetComponent,
+  'input.text': TextInputWidgetComponent,
 }
 
 @Component({

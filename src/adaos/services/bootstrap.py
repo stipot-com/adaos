@@ -101,32 +101,6 @@ class BootstrapService:
         except Exception:
             pass
 
-        # In DEBUG mode keep runtime slots in sync with workspace sources for
-        # local-only skills so that tools can be edited without manual
-        # reinstall. This is best-effort and guarded by ADAOS_LOG_LEVEL=DEBUG.
-        try:
-            if (os.getenv("ADAOS_LOG_LEVEL") or "").upper() == "DEBUG":
-                from adaos.services.skill.runtime_env import SkillRuntimeEnvironment  # pylint: disable=import-outside-toplevel
-
-                skills_dir = self.ctx.paths.skills_workspace_dir()
-                for entry in skills_dir.iterdir():
-                    if not entry.is_dir() or entry.name.startswith((".", "_")):
-                        continue
-                    name = entry.name
-                    try:
-                        env = SkillRuntimeEnvironment(skills_root=skills_dir, skill_name=name)
-                        # Lightweight: if runtime exists, ensure current slot
-                        # has workspace sources as its src/skills/<name>.
-                        version = env.resolve_active_version()
-                        if not version:
-                            continue
-                        env.prepare_version(version)
-                    except Exception:
-                        # Debug helper should never break boot.
-                        continue
-        except Exception:
-            pass
-
     async def _member_register_and_heartbeat(self, conf: NodeConfig) -> Optional[asyncio.Task]:
         ok = await self.heartbeat.register(conf.hub_url or "", conf.token or "", node_id=conf.node_id, subnet_id=conf.subnet_id, hostname=socket.gethostname(), roles=["member"])
         if not ok:

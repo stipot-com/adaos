@@ -218,6 +218,222 @@ class SkillManager:
         interpreter: Path | None = None
         python_paths: list[str] = []
         skill_source = skill_dir
+
+    # ------------------------------------------------------------------
+    # Runtime update helpers (workspace/dev, used by DEBUG flows and LLM-assisted workflows)
+    # ------------------------------------------------------------------
+
+    def runtime_update(
+        self,
+        name: str,
+        *,
+        space: str = "workspace",
+    ) -> Dict[str, Any]:
+        """
+        Synchronise an existing runtime slot with latest sources and tool
+        declarations from the corresponding workspace or DEV skill folder.
+
+        This is intentionally lightweight: it does not change versions,
+        slots or install dependencies – it only propagates changed source
+        files and extends ``resolved.manifest.json`` with tools defined in
+        ``skill.yaml`` that are missing from the active slot manifest.
+        """
+        ctx = self.ctx
+        space_normalized = (space or "workspace").strip().lower()
+        if space_normalized not in ("workspace", "dev"):
+            raise ValueError("space must be 'workspace' or 'dev'")
+
+        # Resolve skill directory and runtime environment depending on space.
+        if space_normalized == "dev":
+            root = ctx.paths.dev_skills_dir()
+            root = root() if callable(root) else root
+            skill_dir = Path(root) / name
+            status = self.dev_runtime_status(name)
+            env = self._runtime_env_dev(name)
+        else:
+            root = ctx.paths.skills_workspace_dir()
+            root = root() if callable(root) else root
+            skill_dir = Path(root) / name
+            status = self.runtime_status(name)
+            env = self._runtime_env(name)
+
+        if not skill_dir.exists():
+            return {"ok": False, "reason": "skill_dir_missing", "skill": name, "space": space_normalized}
+
+        version = status.get("version")
+        active_slot = status.get("active_slot")
+        resolved_manifest = status.get("resolved_manifest")
+        if not version or not resolved_manifest:
+            return {"ok": False, "reason": "no_active_runtime", "skill": name, "space": space_normalized}
+
+        try:
+            current_link = env.ensure_current_link(version)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": "ensure_current_failed",
+                "skill": name,
+                "space": space_normalized,
+                "error": str(exc),
+            }
+
+        runtime_skill_root = current_link / "src" / "skills" / name
+        if not runtime_skill_root.exists():
+            return {
+                "ok": False,
+                "reason": "runtime_src_missing",
+                "skill": name,
+                "space": space_normalized,
+                "path": str(runtime_skill_root),
+            }
+
+        # 1) Sync source files (py/json/yaml/md) from workspace/DEV into runtime slot.
+        changed_files = self._runtime_sync_sources(skill_dir, runtime_skill_root)
+
+        # 2) Sync tool declarations into resolved.manifest.json from skill.yaml.
+        manifest_path = Path(resolved_manifest)
+        tools_added: list[str] = []
+        if manifest_path.exists():
+            try:
+                tools_added = self._runtime_sync_manifest_tools(name, manifest_path, skill_dir)
+            except Exception as exc:
+                # Do not treat manifest sync as fatal for runtime_update; report in payload.
+                return {
+                    "ok": False,
+                    "reason": "manifest_sync_failed",
+                    "skill": name,
+                    "space": space_normalized,
+                    "error": str(exc),
+                }
+
+        payload = {
+            "ok": True,
+            "skill": name,
+            "space": space_normalized,
+            "version": version,
+            "slot": active_slot,
+            "files": changed_files,
+            "tools_added": tools_added,
+        }
+
+        try:
+            emit(
+                self.bus,
+                "dev.skill.runtime.updated",
+                payload,
+                actor="skill.manager",
+            )
+        except Exception:
+            # Best-effort: event emission must not break update.
+            pass
+
+        return payload
+
+    def _runtime_sync_sources(self, source_root: Path, runtime_root: Path) -> list[str]:
+        """
+        Copy changed source files from ``source_root`` into ``runtime_root``.
+
+        Only *.py, *.json, *.yml, *.yaml, *.md are considered; auxiliary
+        folders such as .git, __pycache__, .runtime are skipped.
+        """
+        exts = {".py", ".json", ".yml", ".yaml", ".md"}
+        changed: list[str] = []
+        if not source_root.exists() or not runtime_root.exists():
+            return changed
+
+        skip_dirs = {".git", "__pycache__", ".runtime"}
+
+        for src in source_root.rglob("*"):
+            if not src.is_file():
+                continue
+            if src.suffix.lower() not in exts:
+                continue
+            if any(part in skip_dirs for part in src.parts):
+                continue
+            rel = src.relative_to(source_root)
+            dst = runtime_root / rel
+            try:
+                if dst.exists():
+                    src_mtime = src.stat().st_mtime
+                    dst_mtime = dst.stat().st_mtime
+                    if src_mtime <= dst_mtime:
+                        continue
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                changed.append(rel.as_posix())
+            except OSError:
+                continue
+        return changed
+
+    def _runtime_sync_manifest_tools(
+        self,
+        name: str,
+        manifest_path: Path,
+        skill_dir: Path,
+    ) -> list[str]:
+        """
+        Extend the active slot manifest's ``tools`` section with any tools
+        defined in ``skill.yaml`` that are not yet present.
+        """
+        if not manifest_path.exists():
+            return []
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = data.get("tools") or {}
+        if not isinstance(tools, dict):
+            tools = {}
+        policy = data.get("policy") or {}
+        default_timeout = float(policy.get("timeout_seconds") or 30.0)
+        default_retries = int(policy.get("retry_count") or 1)
+
+        # Use the first existing tool (if any) as template for permissions/secrets.
+        template = next(iter(tools.values()), None)
+        base_permissions = template.get("permissions") if isinstance(template, dict) else None
+        base_secrets = template.get("secrets") if isinstance(template, dict) else []
+
+        skill_yaml = skill_dir / "skill.yaml"
+        if not skill_yaml.exists():
+            return []
+        manifest = yaml.safe_load(skill_yaml.read_text(encoding="utf-8")) or {}
+        skill_tools = manifest.get("tools") or []
+        if not isinstance(skill_tools, list):
+            return []
+
+        added: list[str] = []
+        for entry in skill_tools:
+            if not isinstance(entry, dict):
+                continue
+            tool_name = entry.get("name")
+            if not tool_name or tool_name in tools:
+                continue
+            raw_entry = entry.get("entry") or ""
+            if ":" not in raw_entry:
+                continue
+            module, attr = raw_entry.split(":", 1)
+            input_schema = entry.get("input_schema") or {}
+            output_schema = entry.get("output_schema") or {}
+            tools[tool_name] = {
+                "name": tool_name,
+                "module": module,
+                "callable": attr,
+                "timeout_seconds": default_timeout,
+                "retries": default_retries,
+                "schema": {
+                    "input": input_schema,
+                    "output": output_schema,
+                },
+                "permissions": base_permissions,
+                "secrets": base_secrets,
+            }
+            added.append(tool_name)
+
+        if added:
+            data["tools"] = tools
+            tmp = manifest_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, manifest_path)
+
+        return added
         skill_env_path: Path | None = None
         log_path: Path
 

@@ -23,6 +23,7 @@ import { PageModalService } from '../../runtime/page-modal.service'
             [size]="columnSize"
             (click)="onItemClick(item)"
             class="collection-grid-item"
+            [class.selected]="isSelected(item)"
           >
             <ion-badge *ngIf="item.dev" color="warning" class="dev-badge">DEV</ion-badge>
             <button class="icon-button">
@@ -50,6 +51,9 @@ import { PageModalService } from '../../runtime/page-modal.service'
       .collection-grid-item {
         text-align: center;
         padding: 8px 0;
+      }
+      .collection-grid-item.selected .icon-button {
+        background: rgba(255, 255, 255, 0.12);
       }
       .icon-button {
         width: 100%;
@@ -96,6 +100,8 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
 
   items$?: Observable<any[] | undefined>
   private stateSub?: Subscription
+  private lastState: Record<string, any> = {}
+  private stateDeps: string[] = []
 
   constructor(
     private data: PageDataService,
@@ -105,14 +111,16 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   ) {}
 
   ngOnInit(): void {
+    this.recomputeStateDeps()
     this.updateItemsStream()
     this.stateSub = this.state.selectAll().subscribe(() => {
-      this.updateItemsStream()
+      this.onStateChanged()
     })
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['widget']) {
+      this.recomputeStateDeps()
       this.updateItemsStream()
     }
   }
@@ -148,6 +156,42 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
       // eslint-disable-next-line no-console
       console.log('[CollectionGridWidget] updateItemsStream', this.widget?.id, 'dataSource=', this.widget?.dataSource)
     } catch {}
+  }
+
+  isSelected(item: any): boolean {
+    const key = this.widget?.inputs?.['selectedStateKey']
+    if (!key) return false
+    const selected = this.state.get<string>(key)
+    if (!selected) return false
+    return item?.id === selected || item?.path === selected
+  }
+
+  private recomputeStateDeps(): void {
+    this.stateDeps = []
+    const params = this.widget?.dataSource && (this.widget.dataSource as any).params
+    if (!params || typeof params !== 'object') return
+    for (const value of Object.values(params)) {
+      if (typeof value === 'string' && value.startsWith('$state.')) {
+        const key = value.slice('$state.'.length)
+        if (key && !this.stateDeps.includes(key)) {
+          this.stateDeps.push(key)
+        }
+      }
+    }
+    this.lastState = this.state.getSnapshot()
+  }
+
+  private onStateChanged(): void {
+    if (!this.stateDeps.length) return
+    const next = this.state.getSnapshot()
+    const prev = this.lastState
+    this.lastState = next
+    for (const key of this.stateDeps) {
+      if (prev[key] !== next[key]) {
+        this.updateItemsStream()
+        break
+      }
+    }
   }
 
   private async dispatchAction(act: ActionConfig, item: any, widget: WidgetConfig): Promise<void> {

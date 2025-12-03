@@ -19,9 +19,9 @@ import { PageActionService } from '../../runtime/page-action.service'
       >
         <ion-select-option
           *ngFor="let option of options"
-          [value]="option"
+          [value]="optionValue(option)"
         >
-          {{ option }}
+          {{ optionLabel(option) }}
         </ion-select-option>
       </ion-select>
     </ion-item>
@@ -31,7 +31,7 @@ export class SelectorWidgetComponent implements OnInit, OnChanges {
   @Input() widget!: WidgetConfig
 
   currentValue?: string
-  options: string[] = []
+  options: any[] = []
 
   private data$?: Observable<any>
 
@@ -41,17 +41,13 @@ export class SelectorWidgetComponent implements OnInit, OnChanges {
   ) {}
 
   ngOnInit(): void {
-    this.options = Array.isArray(this.widget?.inputs?.['options'])
-      ? this.widget.inputs!['options']
-      : []
+    this.options = this.normalizeOptions(this.widget?.inputs?.['options'])
     this.setupStream()
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['widget']) {
-      this.options = Array.isArray(this.widget?.inputs?.['options'])
-        ? this.widget.inputs!['options']
-        : []
+      this.options = this.normalizeOptions(this.widget?.inputs?.['options'])
       this.setupStream()
     }
   }
@@ -61,6 +57,10 @@ export class SelectorWidgetComponent implements OnInit, OnChanges {
     const stream = this.data.load<any>(this.widget.dataSource)
     this.data$ = stream
     stream.subscribe((value) => {
+      if (Array.isArray(value)) {
+        this.options = this.normalizeOptions(value)
+        return
+      }
       const city = (value && (value.city || value.label)) as string | undefined
       this.currentValue = city
     })
@@ -75,5 +75,26 @@ export class SelectorWidgetComponent implements OnInit, OnChanges {
       }
     }
   }
-}
 
+  private normalizeOptions(raw: any): any[] {
+    if (!raw) return []
+    if (Array.isArray(raw)) {
+      return raw
+    }
+    return []
+  }
+
+  optionLabel(option: any): string {
+    if (option && typeof option === 'object') {
+      return option.label || option.id || String(option)
+    }
+    return String(option)
+  }
+
+  optionValue(option: any): any {
+    if (option && typeof option === 'object') {
+      return option.id ?? option.value ?? option.label ?? option
+    }
+    return option
+  }
+}

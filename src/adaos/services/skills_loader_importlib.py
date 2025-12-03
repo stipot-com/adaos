@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
 from adaos.ports.skills_loader import SkillsLoaderPort
+from adaos.services.agent_context import get_ctx
+from adaos.services.skill.manager import SkillManager
 
 _LOG = logging.getLogger("adaos.services.skills_loader")
 
@@ -13,6 +16,7 @@ _LOG = logging.getLogger("adaos.services.skills_loader")
 class ImportlibSkillsLoader(SkillsLoaderPort):
     async def import_all_handlers(self, skills_root: Any) -> None:
         root = Path(skills_root() if callable(skills_root) else skills_root)
+        self._sync_runtime_from_workspace_if_debug(root)
         for handler, skill_name in self._discover_runtime_handlers(root):
             self._load_handler(handler)
             if skill_name:
@@ -82,3 +86,58 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
             return path.read_text(encoding="utf-8").strip()
         except OSError:
             return None
+
+    # ------------------------------------------------------------------
+    # Workspace/runtime sync helpers (DEBUG only)
+    # ------------------------------------------------------------------
+    def _sync_runtime_from_workspace_if_debug(self, runtime_root: Path) -> None:
+        """
+        In DEBUG mode keep runtime slots in sync with workspace sources
+        for owner skills by calling SkillManager.runtime_update(...).
+        This is called on every skills loader refresh (e.g. api --reload)
+        so edits in workspace are reflected in the active runtime slot
+        without manual reinstall.
+        """
+        if (os.getenv("ADAOS_LOG_LEVEL") or "").upper() != "DEBUG":
+            return
+        try:
+            ctx = get_ctx()
+            ws_root = ctx.paths.skills_workspace_dir()
+            ws_root = Path(ws_root() if callable(ws_root) else ws_root)
+        except Exception:
+            return
+        if not ws_root.exists():
+            return
+
+        from adaos.adapters.db import SqliteSkillRegistry  # pylint: disable=import-outside-toplevel
+
+        mgr = SkillManager(
+            repo=ctx.skills_repo,
+            registry=SqliteSkillRegistry(ctx.sql),
+            git=ctx.git,
+            paths=ctx.paths,
+            bus=getattr(ctx, "bus", None),
+            caps=ctx.caps,
+            settings=ctx.settings,
+        )
+
+        for entry in ws_root.iterdir():
+            if not entry.is_dir() or entry.name.startswith((".", "_")):
+                continue
+            name = entry.name
+            try:
+                result = mgr.runtime_update(name, space="workspace")
+            except Exception as exc:
+                _LOG.debug("runtime_update failed for %s: %s", name, exc)
+                continue
+            if not result.get("ok"):
+                continue
+            files = result.get("files") or []
+            tools = result.get("tools_added") or []
+            if files or tools:
+                _LOG.info(
+                    "runtime_update applied for workspace skill '%s' (files=%d, tools_added=%d)",
+                    name,
+                    len(files),
+                    len(tools),
+                )
