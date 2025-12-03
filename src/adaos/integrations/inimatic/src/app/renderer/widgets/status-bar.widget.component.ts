@@ -11,7 +11,7 @@ import { PageDataService } from '../../runtime/page-data.service'
   imports: [CommonModule, IonicModule],
   template: `
     <div class="status-bar" *ngIf="message$ | async as message">
-      <span class="label">{{ widget?.title || 'Status' }}</span>
+      <span class="label">{{ widget.title || 'Status' }}</span>
       <span class="message">{{ message }}</span>
     </div>
   `,
@@ -83,4 +83,3 @@ export class StatusBarWidgetComponent implements OnInit, OnChanges {
     )
   }
 }
-

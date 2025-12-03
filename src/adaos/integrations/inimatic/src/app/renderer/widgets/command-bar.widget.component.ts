@@ -13,7 +13,7 @@ import { PageModalService } from '../../runtime/page-modal.service'
   imports: [CommonModule, IonicModule],
   providers: [PageModalService],
   template: `
-    <ion-segment mode="md">
+    <ion-segment mode="md" [ngClass]="segmentClass">
       <ion-segment-button
         *ngFor="let btn of buttons"
         [value]="btn.id"
@@ -23,20 +23,30 @@ import { PageModalService } from '../../runtime/page-modal.service'
       </ion-segment-button>
     </ion-segment>
   `,
+  styles: [
+    `
+      ion-segment.segment-small {
+        transform: scale(0.9);
+        transform-origin: left center;
+      }
+    `,
+  ],
 })
 export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   @Input() widget!: WidgetConfig
 
   buttons: Array<{ id: string; label: string; [k: string]: any }> = []
   private dataSub?: Subscription
+  segmentClass = ''
 
   constructor(
     private data: PageDataService,
     private actions: PageActionService,
-    private modals: PageModalService
+    private modals: PageModalService,
   ) {}
 
   ngOnInit(): void {
+    this.segmentClass = this.resolveSegmentClass()
     this.loadButtons()
   }
 
@@ -45,6 +55,7 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   ngOnChanges(_changes: SimpleChanges): void {
+    this.segmentClass = this.resolveSegmentClass()
     this.loadButtons()
   }
 
@@ -96,5 +107,11 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
       return path.split('.').reduce((acc, key) => (acc != null ? acc[key] : undefined), event)
     }
     return value
+  }
+
+  private resolveSegmentClass(): string {
+    const size = this.widget?.inputs?.['size']
+    if (size === 'small') return 'segment-small'
+    return ''
   }
 }

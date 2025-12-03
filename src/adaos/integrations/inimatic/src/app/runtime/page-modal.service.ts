@@ -3,12 +3,11 @@ import { ModalController } from '@ionic/angular'
 import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
-import { SchemaModalComponent } from '../renderer/modals/schema-modal.component'
 import type { AdaModalConfig } from './dsl-types'
 
 type ModalConfig = AdaModalConfig
 
-@Injectable()
+@Injectable({ providedIn: 'root' })
 export class PageModalService {
   constructor(
     private modalCtrl: ModalController,
@@ -82,6 +81,9 @@ export class PageModalService {
 
   private async openSchemaModal(modalCfg: ModalConfig): Promise<void> {
     if (!modalCfg.schema) return
+    const { SchemaModalComponent } = await import(
+      '../renderer/modals/schema-modal.component'
+    )
     const modal = await this.modalCtrl.create({
       component: SchemaModalComponent,
       componentProps: {

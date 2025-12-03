@@ -10,6 +10,8 @@ import { YDocService } from '../../y/ydoc.service'
 import { observeDeep } from '../../y/y-helpers'
 import { MetricTileWidgetComponent } from '../widgets/metric-tile.widget.component'
 import { SelectorWidgetComponent } from '../widgets/selector.widget.component'
+import { TextInputWidgetComponent } from '../widgets/text-input.widget.component'
+import { CommandBarWidgetComponent } from '../widgets/command-bar.widget.component'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -168,6 +170,8 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     SchemaCollectionGridComponent,
     MetricTileWidgetComponent,
     SelectorWidgetComponent,
+    TextInputWidgetComponent,
+    CommandBarWidgetComponent,
   ],
   template: `
     <ion-header *ngIf="title">
@@ -180,7 +184,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     </ion-header>
     <ion-content>
       <div class="schema-modal">
-        <ng-container *ngIf="schema">
+          <ng-container *ngIf="schema">
           <ng-container *ngFor="let widget of schema.widgets">
             <!-- collection.grid-based catalog modals -->
             <ada-schema-collection-grid
@@ -197,6 +201,16 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
               *ngIf="widget.type === 'input.selector'"
               [widget]="widget"
             ></ada-selector-widget>
+            <!-- text input widgets (e.g. project name) -->
+            <ada-text-input-widget
+              *ngIf="widget.type === 'input.text'"
+              [widget]="widget"
+            ></ada-text-input-widget>
+            <!-- command bar actions (e.g. Create button) -->
+            <ada-command-bar-widget
+              *ngIf="widget.type === 'input.commandBar'"
+              [widget]="widget"
+            ></ada-command-bar-widget>
           </ng-container>
         </ng-container>
       </div>

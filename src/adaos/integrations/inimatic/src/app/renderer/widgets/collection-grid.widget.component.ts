@@ -106,8 +106,8 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   constructor(
     private data: PageDataService,
     private actions: PageActionService,
-    private modals: PageModalService,
-    private state: PageStateService
+    private state: PageStateService,
+    private modals: PageModalService
   ) {}
 
   ngOnInit(): void {

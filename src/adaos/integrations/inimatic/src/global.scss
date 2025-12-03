@@ -73,3 +73,9 @@ body.dark ion-tab-bar {
 .ion-input-bottom-border {
 	border-bottom: 1px solid #e4e4e4;
 }
+
+/* Improve readability of ion-select alerts in dark mode */
+body.dark ion-alert {
+	--ion-text-color: #e5e7eb;
+	--color: #e5e7eb;
+}

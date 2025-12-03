@@ -450,3 +450,177 @@ is moved into the core runtime (`Webspace Scenario Runtime + WebUIRegistry + Pro
    - standardize how `ctx` scopes map to Yjs and storage.
 
 This target state keeps the current behaviour as a baseline but moves responsibilities to clear, core-level components, making skills and scenarios easier to reason about, test and generate/maintain via LLM.
+
+---
+
+## 7. Workflow model (multi-IO)
+
+### 7.1. Goals
+
+- Make **workflow** a first-class part of a scenario, but keep it:
+  - UI-agnostic (no direct coupling to web or Telegram),
+  - IO-agnostic (voice, chat, timers, skills all drive the same flow).
+- Allow different frontends (web desktop, Telegram, voice) to:
+  - **project** the same workflow state into their own UI,
+  - **emit** typed triggers back into the core workflow engine.
+
+### 7.2. Scenario-level workflow section
+
+In the target ABI the scenario content (`scenario.json`) may define an
+optional `workflow` section alongside `ui`/`data`:
+
+```jsonc
+{
+  "workflow": {
+    "initial_state": "tz",
+    "states": {
+      "tz": {
+        "label": "Stage: TZ",
+        "context": {
+          "edit": ["base_tz", "prompt_get_detailed_tz"],
+          "readonly": []
+        },
+        "actions": [
+          {
+            "id": "tz.execute",
+            "label": "Execute",
+            "trigger": "button",              // button | voice | nlu | timer | skill
+            "tool": "prompt_engineer_skill.tz_execute",
+            "params": {},
+            "next_state": "tz_add",
+            "emit_event": "workflow.tz.executed"
+          }
+        ]
+      },
+      "tz_add": {
+        "label": "Stage: TZ addenda",
+        "context": {
+          "edit": ["tz_addenda", "prompt_get_fixed_detailed_tz"],
+          "readonly": ["base_tz"]
+        },
+        "actions": [
+          {
+            "id": "tz_add.execute",
+            "label": "Execute",
+            "trigger": "button",
+            "tool": "prompt_engineer_skill.tz_add_execute",
+            "next_state": "tz_add"
+          },
+          {
+            "id": "tz_add.reset",
+            "label": "Reset",
+            "trigger": "button",
+            "tool": "prompt_engineer_skill.tz_add_reset",
+            "next_state": "tz"
+          },
+          {
+            "id": "tz_add.prepare",
+            "label": "Prepare",
+            "trigger": "button",
+            "tool": "prompt_engineer_skill.prepare_entry",
+            "next_state": "prepare"
+          },
+          {
+            "id": "tz_add.generate",
+            "label": "Generate",
+            "trigger": "button",
+            "tool": "prompt_engineer_skill.generate_entry",
+            "next_state": "generate"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Key points:
+
+- `states` — named workflow states (e.g. `tz`, `tz_add`, `prepare`, `generate`).
+- Each state defines:
+  - `context.edit` / `context.readonly` — which logical fields are editable vs read-only.
+  - `actions` — available next steps from that state.
+- Each action has a stable `id` that is used across all IO channels.
+- `trigger` is **declarative** metadata about where the action is intended
+  to appear (buttons, voice, NLU intent, timers, other skills).
+
+This section is **pure configuration**; execution is handled by a
+dedicated workflow service in the scenario subsystem.
+
+### 7.3. Workflow service in core
+
+A new core service (conceptually `ScenarioWorkflowService`) lives under
+`src/adaos/services/scenario` and is responsible for:
+
+- Subscribing to workflow-related events on the bus, e.g.:
+
+  - `workflow.action.requested`,
+  - `voice.intent.*`,
+  - `telegram.command.*`,
+  - timers or other skill-emitted events.
+
+- Resolving `action_id` into a concrete action in the scenario:
+
+  - locate `scenario.workflow.states[*].actions[*]` by `id`,
+  - validate that the action is allowed from the current state.
+
+- Executing the action:
+
+  - calling the configured skill tool (`tool` + `params`),
+  - waiting for its result / handling errors,
+  - writing side-effects (e.g. files, JSON artifacts) via skills and `ctx`.
+
+- Updating workflow state and projection:
+
+  - `data/prompt/workflow/state` — holds `current_state`,
+  - `data/prompt/workflow/next_actions` — precomputed list of visible actions.
+
+Web, Telegram, voice and other IO layers **only**:
+
+- read `state` / `next_actions` from Yjs (or other projection),
+- render them in their own UI format,
+- emit back `workflow.action.requested { action_id, meta... }`.
+
+The workflow service becomes the single source of truth for procedural
+logic, while IO layers remain thin projections.
+
+### 7.4. IO projections (web, Telegram, voice)
+
+Because `workflow` is expressed purely in terms of `states` and
+`actions` with stable `id`s, different frontends can project it
+independently:
+
+- **Web desktop**:
+  - renders `next_actions` as buttons in a toolbar or side panel,
+  - on click emits `workflow.action.requested` with `action_id`.
+
+- **Telegram**:
+  - renders `next_actions` as inline buttons,
+  - on button press maps callback data to `action_id`,
+  - additionally can map NLU intents to the same `action_id` values.
+
+- **Voice**:
+  - uses prompts to inform the user about current state and options,
+  - maps utterances (via NLU) to `action_id`s,
+  - can also trigger actions via timers/alarms.
+
+In all cases the **same scenario** (same `workflow` section) is used;
+only the projection layer differs.
+
+### 7.5. Prompt IDE example
+
+The Prompt IDE scenario (`prompt_engineer_scenario`) is a concrete
+instance of this model:
+
+- `workflow.states.tz` — user edits base TZ, can run `Execute` to
+  generate a detailed TZ via LLM.
+- `workflow.states.tz_add` — user edits addenda, can:
+  - `Execute` (refine detailed TZ),
+  - `Reset` (discard current addenda and return to `tz`),
+  - `Prepare` (transition to research/prepare stage),
+  - `Generate` (transition directly to code generation).
+
+The IDE web UI renders these actions as buttons in a **Workflow** panel
+on the right, while LLM artifacts and files are projected into nearby
+sections. The same workflow can be later reused in Telegram / voice
+scenarios without changing the scenario content itself.

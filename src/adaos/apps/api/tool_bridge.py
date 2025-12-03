@@ -73,41 +73,16 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
             # На member нет прокси — вернём исходную ошибку
             raise HTTPException(status_code=404, detail=str(e))
 
-        # Найти online-ноду с этим skill
+        # Найти online-ноду с этим skill (используем только runtime; workspace-fallback отключён)
         directory = get_directory()
         candidates = directory.find_nodes_with_skill(skill_name, require_online=True)
         # Сначала активные, затем по last_seen убыв.
         candidates.sort(key=lambda n: (not bool(n.get("active"))), reverse=False)
         if not candidates:
-            # DEBUG fallback: выполнять workspace-only skill напрямую на hub,
-            # когда в подсети нет online-узла. Это удобно для локальной Prompt IDE.
-            try:
-                if (os.getenv("ADAOS_LOG_LEVEL") or "").upper() == "DEBUG":
-                    skills_root = getattr(ctx.paths, "skills_dir", None) or getattr(ctx.paths, "skills_workspace_dir", None)
-                    if callable(skills_root):
-                        skills_root = skills_root()
-                    if skills_root:
-                        from pathlib import Path
-
-                        skill_dir = Path(skills_root) / skill_name
-                        if skill_dir.exists():
-                            try:
-                                result = execute_tool(
-                                    skill_dir,
-                                    module=None,
-                                    attr=public_tool,
-                                    payload=payload,
-                                    extra_paths=[],
-                                )
-                            except Exception as exc2:
-                                raise HTTPException(status_code=500, detail=f"workspace tool failed: {exc2}") from exc2
-                            return {"ok": True, "result": result}
-            except HTTPException:
-                raise
-            except Exception:
-                # если fallback не сработал — возвращаем обычный 503
-                pass
-            raise HTTPException(status_code=503, detail=f"skill '{skill_name}' is not available online in the subnet")
+            raise HTTPException(
+                status_code=503,
+                detail=f"skill '{skill_name}', tool '{public_tool}' is not available online in the subnet. In dev: {body.dev}. Candidates: {candidates}. Err: {str(e)}",
+            )
         target = candidates[0]
         base_url = target.get("base_url") or directory.get_node_base_url(target.get("node_id", ""))
         if not base_url:
