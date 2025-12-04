@@ -34,6 +34,7 @@ from adaos.services.skill.secrets_backend import SkillSecretsBackend
 from adaos.services.skill.resolver import SkillPathResolver
 from adaos.services.capacity import install_skill_in_capacity, uninstall_skill_from_capacity
 from adaos.apps.yjs.webspace import default_webspace_id
+import ast
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 
@@ -434,6 +435,140 @@ class SkillManager:
             os.replace(tmp, manifest_path)
 
         return added
+
+    # ------------------------------------------------------------------
+    # Workspace helpers for dev/runtime sync
+    # ------------------------------------------------------------------
+    def sync_skill_yaml_tools_from_handlers(self, name: str, *, space: str = "workspace") -> dict[str, Any]:
+        """
+        Ensure that ``skill.yaml.tools`` contains entries for all ``@tool``
+        decorators defined in the skill handlers.
+
+        This is a best-effort helper used during DEBUG runtime sync to keep
+        manifests and runtime slots aligned while iterating on workspace
+        skills. It only appends missing tools with generic schemas and never
+        removes or rewrites existing entries.
+        """
+        space_normalized = (space or "workspace").strip().lower()
+        if space_normalized not in ("workspace", "dev"):
+            raise ValueError("space must be 'workspace' or 'dev'")
+
+        ctx = self.ctx
+        if space_normalized == "dev":
+            root = ctx.paths.dev_skills_dir()
+        else:
+            root = ctx.paths.skills_workspace_dir()
+        root = root() if callable(root) else root
+        skill_dir = Path(root) / name
+        skill_yaml = skill_dir / "skill.yaml"
+        handlers_main = skill_dir / "handlers" / "main.py"
+        if not handlers_main.exists():
+            return {"ok": False, "reason": "handlers_missing", "skill": name, "space": space_normalized}
+        try:
+            source = handlers_main.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "ok": False,
+                "reason": "read_handlers_failed",
+                "skill": name,
+                "space": space_normalized,
+                "error": str(exc),
+            }
+
+        try:
+            tree = ast.parse(source, filename=str(handlers_main))
+        except SyntaxError as exc:
+            return {
+                "ok": False,
+                "reason": "parse_failed",
+                "skill": name,
+                "space": space_normalized,
+                "error": str(exc),
+            }
+
+        discovered: list[tuple[str, str]] = []
+
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            func_name = node.name
+            for dec in node.decorator_list:
+                # Match @tool("name") or @tool(name="...").
+                tool_name: str | None = None
+                if isinstance(dec, ast.Call):
+                    target = dec.func
+                    is_tool = False
+                    if isinstance(target, ast.Name) and target.id == "tool":
+                        is_tool = True
+                    elif isinstance(target, ast.Attribute) and target.attr == "tool":
+                        is_tool = True
+                    if not is_tool:
+                        continue
+                    if dec.args:
+                        arg = dec.args[0]
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            tool_name = arg.value
+                    if not tool_name:
+                        for kw in dec.keywords or []:
+                            if kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                                tool_name = kw.value.value
+                                break
+                elif isinstance(dec, ast.Name) and dec.id == "tool":
+                    tool_name = func_name
+                if tool_name:
+                    discovered.append((tool_name, func_name))
+
+        if not discovered:
+            return {"ok": True, "skill": name, "space": space_normalized, "tools_added": []}
+
+        manifest: dict[str, Any] = {}
+        if skill_yaml.exists():
+            try:
+                raw = yaml.safe_load(skill_yaml.read_text(encoding="utf-8")) or {}
+                if isinstance(raw, dict):
+                    manifest = raw
+            except Exception:
+                manifest = {}
+
+        tools = manifest.get("tools") or []
+        if not isinstance(tools, list):
+            tools = []
+        existing = {entry.get("name") for entry in tools if isinstance(entry, dict)}
+
+        added_entries: list[dict[str, Any]] = []
+        for tool_name, func_name in discovered:
+            if tool_name in existing:
+                continue
+            entry = {
+                "name": tool_name,
+                "description": f"Auto-generated from handlers.main:{func_name}",
+                "entry": f"handlers.main:{func_name}",
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+            }
+            tools.append(entry)
+            existing.add(tool_name)
+            added_entries.append(entry)
+
+        if added_entries:
+            manifest["tools"] = tools
+            try:
+                skill_yaml.write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            except Exception:
+                return {
+                    "ok": False,
+                    "reason": "write_skill_yaml_failed",
+                    "skill": name,
+                    "space": space_normalized,
+                    "tools_added": [e["name"] for e in added_entries],
+                }
+
+        return {
+            "ok": True,
+            "skill": name,
+            "space": space_normalized,
+            "tools_added": [e["name"] for e in added_entries],
+        }
         skill_env_path: Path | None = None
         log_path: Path
 

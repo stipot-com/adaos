@@ -124,8 +124,14 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         for entry in ws_root.iterdir():
             if not entry.is_dir() or entry.name.startswith((".", "_")):
                 continue
-            name = entry.name
             try:
+                name = entry.name
+                # First, ensure skill.yaml.tools reflects handlers so that
+                # runtime manifests can be extended consistently.
+                try:
+                    mgr.sync_skill_yaml_tools_from_handlers(name, space="workspace")
+                except Exception as exc:  # pragma: no cover - best-effort
+                    _LOG.debug("sync_skill_yaml_tools_from_handlers failed for %s: %s", name, exc)
                 result = mgr.runtime_update(name, space="workspace")
             except Exception as exc:
                 _LOG.debug("runtime_update failed for %s: %s", name, exc)
