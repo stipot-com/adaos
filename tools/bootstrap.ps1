@@ -155,8 +155,8 @@ if (!(Test-Path ".env") -and (Test-Path ".env.example")) {
 }
 
 # Default webspace content (scenarios + skills)
-$defaultScenarios = @("web_desktop")
-$defaultSkills = @("weather_skill")
+$defaultScenarios = @("web_desktop", "prompt_engineer_scenario")
+$defaultSkills = @("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
 $adaosBase = Join-Path $PWD ".adaos"
 New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase

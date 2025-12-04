@@ -155,8 +155,8 @@ log "Готовлю .env…"
 [[ -f .env || ! -f .env.example ]] || cp .env.example .env
 
 # Default webspace content (scenarios + skills)
-DEFAULT_SCENARIOS=("web_desktop")
-DEFAULT_SKILLS=("weather_skill")
+DEFAULT_SCENARIOS=("web_desktop", "prompt_engineer_scenario")
+DEFAULT_SKILLS=("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
 ADAOS_BASE_DIR="$(pwd)/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
@@ -165,13 +165,13 @@ log "Installing default webspace content:"
 for scn in "${DEFAULT_SCENARIOS[@]}"; do
   log "  adaos scenario install $scn"
   if ! adaos scenario install "$scn"; then
-    warn "scenario '$scn' �� ��⠭���� (����� ��� ��⠭��)"
+    warn "scenario '$scn' is not installed"
   fi
 done
 for skill in "${DEFAULT_SKILLS[@]}"; do
   log "  adaos skill install $skill"
   if ! adaos skill install "$skill"; then
-    warn "skill '$skill' �� ��⠭���� (����� ��� ��⠭��)"
+    warn "skill '$skill' is not installed"
   fi
 done
 ok  "Bootstrap завершён."
