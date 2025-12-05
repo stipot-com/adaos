@@ -13,6 +13,7 @@ import { SelectorWidgetComponent } from '../widgets/selector.widget.component'
 import { TextInputWidgetComponent } from '../widgets/text-input.widget.component'
 import { CommandBarWidgetComponent } from '../widgets/command-bar.widget.component'
 import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.component'
+import { DetailsWidgetComponent } from '../widgets/details.widget.component'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -21,57 +22,63 @@ import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.compone
   template: `
     <div class="grid-section" *ngIf="widget">
       <h2 *ngIf="widget.title">{{ widget.title }}</h2>
-      <ion-grid *ngIf="items$ | async as items">
-        <ion-row>
-          <ion-col
-            *ngFor="let item of items"
-            size="12"
-            class="collection-grid-item"
-          >
-            <!-- Project cards only for dev project selector -->
-            <button
-              *ngIf="isProjectSelector; else standardItem"
-              class="project-card"
+
+      <ng-container *ngIf="items$ | async as items">
+        <!-- Dev projects: simple vertical list with one item per project -->
+        <ng-container *ngIf="isProjectSelector; else standardGrid">
+          <ion-list>
+            <ion-item
+              *ngFor="let item of items"
+              lines="full"
+              button
               (click)="onItemClick(item)"
             >
-              <div class="project-header">
+              <ion-label>
                 <div class="project-name">
-                  {{ item.name || item.object_id || item.id }}
+                  {{ item.title || item.name || item.object_id || item.id }}
                 </div>
                 <div class="project-type">
                   {{ item.object_type || item.type }}
-                  <span *ngIf="item.version">· v{{ item.version }}</span>
+                  <span *ngIf="item.version">&nbsp;· v{{ item.version }}</span>
                 </div>
-              </div>
-              <div class="project-title" *ngIf="item.title">
-                {{ item.title }}
-              </div>
-              <div class="project-description" *ngIf="item.description">
-                {{ item.description }}
-              </div>
-              <div class="project-updated" *ngIf="item.updated_at">
-                Updated: {{ item.updated_at }}
-              </div>
-            </button>
-            <!-- Default layout for apps/widgets catalogs -->
-            <ng-template #standardItem>
-              <ion-item lines="none">
-                <ion-toggle
-                  slot="start"
-                  [checked]="isInstalled(item)"
-                  (ionChange)="onToggleChange($event, item)"
-                ></ion-toggle>
-                <div class="icon-wrapper" *ngIf="item.icon">
-                  <ion-icon [name]="item.icon"></ion-icon>
+                <div class="project-description" *ngIf="item.description">
+                  {{ item.description }}
                 </div>
-                <ion-label>
-                  <div class="label">{{ item.title || item.id }}</div>
-                </ion-label>
-              </ion-item>
-            </ng-template>
-          </ion-col>
-        </ion-row>
-      </ion-grid>
+                <div class="project-updated" *ngIf="item.updated_at">
+                  Updated: {{ item.updated_at }}
+                </div>
+              </ion-label>
+            </ion-item>
+          </ion-list>
+        </ng-container>
+
+        <!-- Default layout for apps/widgets catalogs and other grids -->
+        <ng-template #standardGrid>
+          <ion-grid>
+            <ion-row>
+              <ion-col
+                *ngFor="let item of items"
+                size="12"
+                class="collection-grid-item"
+              >
+                <ion-item lines="none">
+                  <ion-toggle
+                    slot="start"
+                    [checked]="isInstalled(item)"
+                    (ionChange)="onToggleChange($event, item)"
+                  ></ion-toggle>
+                  <div class="icon-wrapper" *ngIf="item.icon">
+                    <ion-icon [name]="item.icon"></ion-icon>
+                  </div>
+                  <ion-label>
+                    <div class="label">{{ item.title || item.id }}</div>
+                  </ion-label>
+                </ion-item>
+              </ion-col>
+            </ion-row>
+          </ion-grid>
+        </ng-template>
+      </ng-container>
     </div>
   `,
   styles: [
@@ -99,27 +106,6 @@ import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.compone
       .label {
         font-size: 14px;
       }
-      .project-card {
-        width: 100%;
-        text-align: left;
-        border: none;
-        border-radius: 12px;
-        padding: 10px 12px;
-        background: rgba(255, 255, 255, 0.02);
-        color: inherit;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .project-card:hover {
-        background: rgba(255, 255, 255, 0.06);
-      }
-      .project-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 8px;
-      }
       .project-name {
         font-weight: 600;
         font-size: 14px;
@@ -127,10 +113,6 @@ import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.compone
       .project-type {
         font-size: 12px;
         opacity: 0.8;
-      }
-      .project-title {
-        font-size: 13px;
-        opacity: 0.9;
       }
       .project-description {
         font-size: 12px;
@@ -248,6 +230,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     TextInputWidgetComponent,
     CommandBarWidgetComponent,
     TextEditorWidgetComponent,
+    DetailsWidgetComponent,
   ],
   template: `
     <ion-header *ngIf="title">
@@ -292,6 +275,11 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
               *ngIf="widget.type === 'item.textEditor'"
               [widget]="widget"
             ></ada-text-editor-widget>
+            <!-- simple JSON/details viewer widgets -->
+            <ada-details-widget
+              *ngIf="widget.type === 'item.details'"
+              [widget]="widget"
+            ></ada-details-widget>
           </ng-container>
         </ng-container>
       </div>

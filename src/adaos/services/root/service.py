@@ -2076,6 +2076,7 @@ class RootDeveloperService:
         assert_safe_name(name)
         forge_repo = getattr(cfg.dev_settings, "forge_repo", None)
         forge_path = getattr(cfg.dev_settings, "forge_path", None)
+        print("forge_repo, forge_path_log", forge_repo, forge_path)
         if not forge_repo or not forge_path:
             raise RootServiceError("Forge repository is not configured; re-run 'adaos dev root init' with a Root that provides forge repo info")
 

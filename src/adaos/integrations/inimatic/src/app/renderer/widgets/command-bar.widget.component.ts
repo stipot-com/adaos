@@ -18,6 +18,7 @@ import { PageStateService } from '../../runtime/page-state.service'
       <ion-segment-button
         *ngFor="let btn of buttons"
         [value]="btn.id"
+        [ngClass]="btn['kind'] === 'danger' ? 'segment-btn-danger' : ''"
         (click)="onClick(btn)"
       >
         <ion-label>{{ btn.label }}</ion-label>
@@ -29,6 +30,10 @@ import { PageStateService } from '../../runtime/page-state.service'
       ion-segment.segment-small {
         transform: scale(0.9);
         transform-origin: left center;
+      }
+      ion-segment-button.segment-btn-danger {
+        --color: var(--ion-color-danger);
+        --indicator-color: var(--ion-color-danger);
       }
     `,
   ],
@@ -111,10 +116,11 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   async onClick(btn: { id: string }): Promise<void> {
     const cfg = this.widget
     if (!cfg?.actions) return
+    const event: any = { ...btn, ts: Date.now() }
     const eventId = `click:${btn.id}`
     for (const act of cfg.actions) {
       if (act.on === eventId || act.on === 'click') {
-        await this.dispatchAction(act, btn, cfg)
+        await this.dispatchAction(act, event, cfg)
       }
     }
   }

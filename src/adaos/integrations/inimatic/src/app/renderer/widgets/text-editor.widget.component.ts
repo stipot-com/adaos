@@ -22,7 +22,10 @@ import { PageStateService } from '../../runtime/page-state.service'
           [autoGrow]="true"
           [(ngModel)]="current"
         ></ion-textarea>
-        <div style="margin-top: 8px; display: flex; justify-content: flex-end;">
+        <div
+          *ngIf="hasSaveAction"
+          style="margin-top: 8px; display: flex; justify-content: flex-end;"
+        >
           <ion-button size="small" (click)="onSave()" [disabled]="!isDirty()">
             Save
           </ion-button>
@@ -45,6 +48,11 @@ export class TextEditorWidgetComponent implements OnInit, OnChanges, OnDestroy {
     private actions: PageActionService,
     private state: PageStateService
   ) {}
+
+  get hasSaveAction(): boolean {
+    const acts = this.widget?.actions || []
+    return acts.some((a) => a.on === 'save')
+  }
 
   ngOnInit(): void {
     this.recomputeStateDeps()
