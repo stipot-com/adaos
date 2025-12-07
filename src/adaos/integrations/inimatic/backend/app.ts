@@ -5,6 +5,7 @@ import cors, { type CorsOptions } from 'cors'
 import https from 'https'
 import path from 'path'
 import type { IncomingMessage } from 'http'
+import { fetch } from 'undici'
 import { v4 as uuidv4 } from 'uuid'
 import { Server, Socket } from 'socket.io'
 import { createClient } from 'redis'
@@ -759,6 +760,74 @@ app.get('/v1/health', (_req, res) => {
 		commit: buildInfo.commit,
 		time: new Date().toISOString(),
 	})
+})
+
+app.post('/v1/llm/response', async (req, res) => {
+	const apiKey = (process.env['OPENAI_API_KEY'] ?? '').trim()
+	if (!apiKey) {
+		return res.status(503).json({ ok: false, error: 'openai_api_key_missing' })
+	}
+
+	try {
+		const body = req.body ?? {}
+		const model =
+			(typeof body.model === 'string' && body.model.trim()) ||
+			(process.env['OPENAI_RESPONSES_MODEL'] ?? 'gpt-4o-mini')
+		const messages = Array.isArray(body.messages) ? body.messages : []
+
+		const input = messages.map((m: any) => ({
+			role: typeof m?.role === 'string' ? m.role : 'user',
+			content: [
+				{
+					type: 'text',
+					text: typeof m?.content === 'string' ? m.content : '',
+				},
+			],
+		}))
+
+		const openaiPayload: any = { model, input }
+		if (typeof body.temperature === 'number') {
+			openaiPayload.temperature = body.temperature
+		}
+		if (typeof body.max_tokens === 'number') {
+			openaiPayload.max_output_tokens = body.max_tokens
+		}
+		if (typeof body.top_p === 'number') {
+			openaiPayload.top_p = body.top_p
+		}
+
+		const r = await fetch('https://api.openai.com/v1/responses', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				authorization: `Bearer ${apiKey}`,
+			},
+			body: JSON.stringify(openaiPayload),
+		})
+
+		const text = await r.text()
+		let data: any = null
+		if (text) {
+			try {
+				data = JSON.parse(text)
+			} catch (e: any) {
+				console.warn('llm upstream returned non-JSON payload', e)
+			}
+		}
+
+		if (!r.ok) {
+			return res
+				.status(r.status)
+				.json(data ?? { ok: false, error: 'llm_upstream_failed', status: r.status })
+		}
+
+		return res.json(data ?? { ok: true })
+	} catch (error: any) {
+		console.error('llm proxy failed', error)
+		return res
+			.status(502)
+			.json({ ok: false, error: 'llm_proxy_failed', detail: String(error?.message ?? error) })
+	}
 })
 
 // Prometheus metrics endpoint
