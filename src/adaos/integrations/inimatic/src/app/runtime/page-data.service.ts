@@ -143,9 +143,9 @@ export class PageDataService {
       return [unsubscribe]
     }
 
-    // Prompt IDE workflow: observe whole data tree, because the server
-    // stores workflow state as plain JSON under data.prompt.workflow.
-    if (cfg.path && cfg.path.startsWith('data/prompt/workflow')) {
+    // Prompt IDE workflow and LLM artifacts: observe whole data tree,
+    // because the server stores prompt state as plain JSON under data.prompt.*.
+    if (cfg.path && cfg.path.startsWith('data/prompt/')) {
       const node = this.ydoc.getPath('data')
       if (!node) return [() => {}]
       const unsubscribe = observeDeep(node, emit)

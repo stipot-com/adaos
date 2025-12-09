@@ -762,6 +762,45 @@ app.get('/v1/health', (_req, res) => {
 	})
 })
 
+app.get('/v1/llm/models', async (_req, res) => {
+	const apiKey = (process.env['OPENAI_API_KEY'] ?? '').trim()
+	if (!apiKey) {
+		return res.status(503).json({ ok: false, error: 'openai_api_key_missing' })
+	}
+
+	try {
+		const r = await fetch('https://api.openai.com/v1/models', {
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+			},
+		})
+
+		const text = await r.text()
+		let data: any = null
+		if (text) {
+			try {
+				data = JSON.parse(text)
+			} catch (e: any) {
+				console.warn('llm models upstream returned non-JSON payload', e)
+			}
+		}
+
+		if (!r.ok) {
+			return res
+				.status(r.status)
+				.json(data ?? { ok: false, error: 'llm_models_upstream_failed', status: r.status })
+		}
+
+		return res.json(data ?? { ok: true })
+	} catch (error: any) {
+		console.error('llm models proxy failed', error)
+		return res
+			.status(502)
+			.json({ ok: false, error: 'llm_models_proxy_failed', detail: String(error?.message ?? error) })
+	}
+})
+
 app.post('/v1/llm/response', async (req, res) => {
 	const apiKey = (process.env['OPENAI_API_KEY'] ?? '').trim()
 	if (!apiKey) {
