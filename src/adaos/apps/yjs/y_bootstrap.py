@@ -57,7 +57,11 @@ async def ensure_webspace_seeded_from_scenario(
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
 
-    if ui_map.get("application") is not None or len(ui_map) or len(data_map):
+    # Treat the webspace as "already seeded" only when ui.application is
+    # present. This avoids a broken state where helper services (like
+    # webspace listing) write to data.* before the first scenario
+    # projection and accidentally block scenario-based seeding.
+    if ui_map.get("application") is not None:
         _log.debug(
             "webspace %s already seeded (ui keys=%s, data keys=%s)",
             webspace_id,
