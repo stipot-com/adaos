@@ -12,21 +12,48 @@ from adaos.services.agent_context import get_ctx
 _log = logging.getLogger("adaos.scenarios.loader")
 
 
-def scenario_root(scenario_id: str) -> Path:
+def _scenario_root_for_space(scenario_id: str, space: str) -> Path:
     """
-    Resolve the filesystem root for a scenario, e.g.:
-      <base_dir>/.adaos/workspace/scenarios/<scenario_id>/
+    Internal helper that resolves scenario root for the given space
+    ("workspace" or "dev").
     """
     ctx = get_ctx()
-    root = ctx.paths.scenarios_dir() / scenario_id
-    return root
+    if space == "dev":
+        base = ctx.paths.dev_scenarios_dir()
+    else:
+        base = ctx.paths.scenarios_dir()
+    return base / scenario_id
 
 
-def read_manifest(scenario_id: str) -> Dict[str, Any]:
+def scenario_root(scenario_id: str) -> Path:
+    """
+    Resolve the filesystem root for a scenario in the main workspace,
+    e.g. ``<base_dir>/.adaos/workspace/scenarios/<scenario_id>/``.
+
+    For dev scenarios use :func:`scenario_root_for_space` instead.
+    """
+    return _scenario_root_for_space(scenario_id, "workspace")
+
+
+def scenario_root_for_space(scenario_id: str, space: str) -> Path:
+    """
+    Resolve the filesystem root for a scenario in the requested space:
+
+      - "workspace" (default) — regular installed scenarios,
+      - "dev"                — dev workspace scenarios.
+    """
+    if space not in ("workspace", "dev"):
+        space = "workspace"
+    return _scenario_root_for_space(scenario_id, space)
+
+
+def read_manifest(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any]:
     """
     Read scenario.yaml for a given scenario id. Returns {} if missing.
+
+    When ``space="dev"`` the loader looks under ``dev_scenarios_dir``.
     """
-    root = scenario_root(scenario_id)
+    root = scenario_root_for_space(scenario_id, space)
     path = root / "scenario.yaml"
     if not path.exists():
         return {}
@@ -37,11 +64,13 @@ def read_manifest(scenario_id: str) -> Dict[str, Any]:
     return data
 
 
-def read_content(scenario_id: str) -> Dict[str, Any]:
+def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any]:
     """
     Read scenario.json for a given scenario id. Returns {} if missing/invalid.
+
+    When ``space="dev"`` the loader looks under ``dev_scenarios_dir``.
     """
-    root = scenario_root(scenario_id)
+    root = scenario_root_for_space(scenario_id, space)
     path = root / "scenario.json"
     if not path.exists():
         _log.debug("scenario '%s' has no scenario.json at %s", scenario_id, path)

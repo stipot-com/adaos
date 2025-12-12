@@ -136,7 +136,7 @@ class ScenarioManager:
             pass
         return meta
 
-    def _ensure_yjs_payload(self, scenario_id: str) -> tuple[dict, dict, dict, dict]:
+    def _ensure_yjs_payload(self, scenario_id: str, *, space: str = "workspace") -> tuple[dict, dict, dict, dict]:
         """
         Load and normalise declarative payload from scenario.json so that it can
         be projected into a webspace YDoc.
@@ -151,7 +151,7 @@ class ScenarioManager:
         docs/concepts/scenarios-target-state.md and is the only input for the
         ScenarioManager.sync_to_yjs* projection helpers.
         """
-        content = read_content(scenario_id)
+        content = read_content(scenario_id, space=space)
         if not content:
             raise FileNotFoundError(f"scenario '{scenario_id}' has no scenario.json content")
         ui_section = ((content.get("ui") or {}).get("application")) or {}
@@ -233,7 +233,7 @@ class ScenarioManager:
                         payload = value
                     data_map.set(txn, key, payload)
 
-    def sync_to_yjs(self, scenario_id: str, webspace_id: str | None = None) -> None:
+    def sync_to_yjs(self, scenario_id: str, webspace_id: str | None = None, *, space: str = "workspace") -> None:
         """
         Project the declarative scenario payload into the webspace YDoc.
 
@@ -245,20 +245,20 @@ class ScenarioManager:
         """
         target_webspace = webspace_id or default_webspace_id()
         self.caps.require("core", "scenarios.manage")
-        ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id)
+        ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id, space=space)
 
         with get_ydoc(target_webspace) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
 
         emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
 
-    async def sync_to_yjs_async(self, scenario_id: str, webspace_id: str | None = None) -> None:
+    async def sync_to_yjs_async(self, scenario_id: str, webspace_id: str | None = None, *, space: str = "workspace") -> None:
         """
         Async variant of :meth:`sync_to_yjs` for use inside running event loops.
         """
         target_webspace = webspace_id or default_webspace_id()
         self.caps.require("core", "scenarios.manage")
-        ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id)
+        ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id, space=space)
 
         async with async_get_ydoc(target_webspace) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)

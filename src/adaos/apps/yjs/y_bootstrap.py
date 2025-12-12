@@ -22,7 +22,11 @@ def _scenario_manager() -> ScenarioManager:
 
 
 async def ensure_webspace_seeded_from_scenario(
-    ystore: AdaosMemoryYStore, webspace_id: str, default_scenario_id: str = "web_desktop"
+    ystore: AdaosMemoryYStore,
+    webspace_id: str,
+    default_scenario_id: str = "web_desktop",
+    *,
+    space: str = "workspace",
 ) -> None:
     """
     If the YDoc has no ui.application yet, try to seed it from a scenario
@@ -72,8 +76,8 @@ async def ensure_webspace_seeded_from_scenario(
 
     try:
         mgr = _scenario_manager()
-        _log.info("seeding webspace %s from scenario %s", webspace_id, default_scenario_id)
-        await mgr.sync_to_yjs_async(default_scenario_id, webspace_id)
+        _log.info("seeding webspace %s from scenario %s (space=%s)", webspace_id, default_scenario_id, space)
+        await mgr.sync_to_yjs_async(default_scenario_id, webspace_id, space=space)
         return
     except Exception as exc:
         _log.warning(

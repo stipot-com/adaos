@@ -23,7 +23,7 @@ from adaos.sdk.core.decorators import subscribe
 from .workflow_runtime import ScenarioWorkflowRuntime
 
 _log = logging.getLogger("adaos.scenario.webspace_runtime")
-_WS_ID_RE = re.compile(r"[^a-z0-9-_]+")
+_WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 
 
 @dataclass(slots=True)
@@ -42,6 +42,20 @@ class WebUIRegistryEntry:
     registry_modals: List[str] = field(default_factory=list)
     registry_widgets: List[str] = field(default_factory=list)
     installed: Dict[str, List[str]] = field(default_factory=lambda: {"apps": [], "widgets": []})
+
+
+@dataclass(slots=True)
+class WebspaceInfo:
+    """
+    Lightweight snapshot of a webspace entry used by higher-level services
+    and SDK helpers. ``is_dev`` is derived from the display name and can be
+    used to filter workspace vs dev spaces.
+    """
+
+    id: str
+    title: str
+    created_at: int
+    is_dev: bool = False
 
 
 def _mark_entry(entry: Dict[str, Any], *, source: str, dev: bool) -> Dict[str, Any]:
@@ -135,24 +149,29 @@ class WebspaceScenarioRuntime:
         if self._desktop_scenarios is not None:
             return self._desktop_scenarios
 
-        root = self.ctx.paths.scenarios_dir()
         entries: List[Tuple[str, str]] = []
         try:
+            root = self.ctx.paths.scenarios_dir()
             for child in root.iterdir():
                 if not child.is_dir():
                     continue
                 scenario_id = child.name
                 if scenario_id == "web_desktop":
                     continue
-                manifest = scenarios_loader.read_manifest(scenario_id)
-                if not isinstance(manifest, dict):
+                # Prefer dev manifest metadata when present so that
+                # dev edits (e.g. title) are reflected in launcher
+                # icons, falling back to workspace manifest.
+                manifest = scenarios_loader.read_manifest(scenario_id, space="dev")
+                if not isinstance(manifest, dict) or not manifest:
+                    manifest = scenarios_loader.read_manifest(scenario_id, space="workspace")
+                if not isinstance(manifest, dict) or not manifest:
                     continue
                 if manifest.get("type") != "desktop":
                     continue
                 title = str(manifest.get("title") or manifest.get("name") or scenario_id)
                 entries.append((scenario_id, title))
         except Exception:
-            _log.debug("failed to list desktop scenarios from %s", root, exc_info=True)
+            _log.debug("failed to list desktop scenarios", exc_info=True)
 
         self._desktop_scenarios = entries
         return entries
@@ -203,7 +222,7 @@ class WebspaceScenarioRuntime:
             "contributions": contributions,
         }
 
-    def _collect_skill_decls(self) -> List[Dict[str, Any]]:
+    def _collect_skill_decls(self, mode: str = "mixed") -> List[Dict[str, Any]]:
         try:
             cap = get_local_capacity()
             skills = cap.get("skills") or []
@@ -216,10 +235,15 @@ class WebspaceScenarioRuntime:
         for rec in skills:
             if not isinstance(rec, dict) or not rec.get("active", True):
                 continue
+            is_dev = bool(rec.get("dev"))
+            if mode == "workspace" and is_dev:
+                continue
+            if mode == "dev" and not is_dev:
+                continue
             name = rec.get("name") or rec.get("id")
             if not name:
                 continue
-            space = "dev" if rec.get("dev") else "default"
+            space = "dev" if is_dev else "default"
             decl = self._load_webui(str(name), space)
             if decl:
                 decls.append(decl)
@@ -298,7 +322,20 @@ class WebspaceScenarioRuntime:
         base_registry_modals = [str(x) for x in (registry_entry.get("modals") or [])]
         base_registry_widgets = [str(x) for x in (registry_entry.get("widgets") or [])]
 
-        skill_decls = self._collect_skill_decls()
+        # Decide which skills to project based on webspace type:
+        # - dev webspaces: only dev skills (mode="dev"),
+        # - regular webspaces: only non-dev skills (mode="workspace"),
+        # - fallback: mixed.
+        mode = "mixed"
+        try:
+            row = workspace_index.get_workspace(webspace_id)
+            if row:
+                title = row.display_name or row.workspace_id
+                mode = "dev" if _is_dev_title(title) else "workspace"
+        except Exception:
+            mode = "mixed"
+
+        skill_decls = self._collect_skill_decls(mode=mode)
         skill_apps: List[Dict[str, Any]] = []
         skill_widgets: List[Dict[str, Any]] = []
         skill_registry_modals: List[List[str]] = []
@@ -579,7 +616,9 @@ def _webspace_id(payload: Dict[str, Any]) -> str:
 def _slugify_webspace_id(raw: str | None) -> str:
     if not raw:
         return ""
-    token = _WS_ID_RE.sub("-", str(raw).strip().lower())
+    # Preserve original casing while normalising invalid characters so that
+    # webspace ids used in events and YDoc room names stay identical.
+    token = _WS_ID_RE.sub("-", str(raw).strip())
     return token.strip("-")
 
 
@@ -595,6 +634,12 @@ def _allocate_webspace_id(raw: str | None) -> str:
     return candidate
 
 
+def _is_dev_title(title: Optional[str]) -> bool:
+    if not title:
+        return False
+    return str(title).lstrip().upper().startswith("DEV:")
+
+
 def _webspace_listing() -> List[Dict[str, Any]]:
     rows = workspace_index.list_workspaces()
     return [
@@ -602,6 +647,7 @@ def _webspace_listing() -> List[Dict[str, Any]]:
             "id": row.workspace_id,
             "title": (row.display_name or row.workspace_id),
             "created_at": row.created_at,
+            "kind": "dev" if _is_dev_title(row.display_name or row.workspace_id) else "workspace",
         }
         for row in rows
     ]
@@ -617,18 +663,158 @@ async def _sync_webspace_listing() -> None:
                 data_map.set(txn, "webspaces", {"items": listing})
 
 
-async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str) -> None:
+class WebspaceService:
+    """
+    Helper for managing webspaces (workspaces) from core services and SDK.
+
+    This service centralises CRUD logic that was previously spread across
+    event handlers so that higher-level callers do not need to touch YDoc
+    or SQLite details directly.
+    """
+
+    def __init__(self, ctx: Optional[AgentContext] = None) -> None:
+        self.ctx: AgentContext = ctx or get_ctx()
+
+    def list(self, *, mode: str = "mixed") -> List[WebspaceInfo]:
+        """
+        List known webspaces.
+
+        mode:
+          - \"workspace\" — only non-dev webspaces,
+          - \"dev\"       — only dev webspaces,
+          - \"mixed\"     — all (default).
+        """
+        rows = workspace_index.list_workspaces()
+        infos: List[WebspaceInfo] = []
+        for row in rows:
+            title = row.display_name or row.workspace_id
+            is_dev = _is_dev_title(title)
+            if mode == "workspace" and is_dev:
+                continue
+            if mode == "dev" and not is_dev:
+                continue
+            infos.append(
+                WebspaceInfo(
+                    id=row.workspace_id,
+                    title=title,
+                    created_at=row.created_at,
+                    is_dev=is_dev,
+                )
+            )
+        return infos
+
+    async def _sync_listing(self) -> None:
+        await _sync_webspace_listing()
+
+    async def create(
+        self,
+        requested_id: Optional[str],
+        title: Optional[str],
+        *,
+        scenario_id: str = "web_desktop",
+        dev: bool = False,
+    ) -> WebspaceInfo:
+        webspace_id = _allocate_webspace_id(requested_id)
+        _log.info("creating webspace %s (requested=%s dev=%s)", webspace_id, requested_id, dev)
+        workspace_index.ensure_workspace(webspace_id)
+        raw_title = (title or webspace_id).strip()
+        if dev and not _is_dev_title(raw_title):
+            display_name = f"DEV: {raw_title}"
+        elif not dev and _is_dev_title(raw_title):
+            # Normalise accidental prefix when dev=False.
+            display_name = raw_title.lstrip()[4:].lstrip() or webspace_id
+        else:
+            display_name = raw_title or webspace_id
+        workspace_index.set_display_name(webspace_id, display_name)
+        await _seed_webspace_from_scenario(webspace_id, scenario_id, dev=dev)
+        await self._sync_listing()
+        return WebspaceInfo(
+            id=webspace_id,
+            title=display_name,
+            created_at=workspace_index.get_workspace(webspace_id).created_at,  # type: ignore[union-attr]
+            is_dev=_is_dev_title(display_name),
+        )
+
+    async def rename(self, webspace_id: str, title: str) -> Optional[WebspaceInfo]:
+        webspace_id = (webspace_id or "").strip()
+        title = (title or "").strip()
+        if not webspace_id or not title:
+            return None
+        row = workspace_index.get_workspace(webspace_id)
+        if not row:
+            _log.warning("cannot rename missing webspace %s", webspace_id)
+            return None
+        keep_dev = _is_dev_title(row.display_name or row.workspace_id)
+        raw_title = title
+        if keep_dev and not _is_dev_title(raw_title):
+            display_name = f"DEV: {raw_title}"
+        elif not keep_dev and _is_dev_title(raw_title):
+            display_name = raw_title.lstrip()[4:].lstrip() or webspace_id
+        else:
+            display_name = raw_title
+        workspace_index.set_display_name(webspace_id, display_name)
+        await self._sync_listing()
+        return WebspaceInfo(
+            id=webspace_id,
+            title=display_name,
+            created_at=row.created_at,
+            is_dev=_is_dev_title(display_name),
+        )
+
+    async def delete(self, webspace_id: str) -> bool:
+        webspace_id = (webspace_id or "").strip()
+        if not webspace_id or webspace_id == default_webspace_id():
+            return False
+        _log.info("deleting webspace %s via WebspaceService", webspace_id)
+        try:
+            workspace_index.delete_workspace(webspace_id)
+        except Exception as exc:
+            _log.warning("failed to delete webspace %s: %s", webspace_id, exc)
+            return False
+        try:
+            from adaos.apps.yjs.y_gateway import y_server  # pylint: disable=import-outside-toplevel
+            from adaos.apps.yjs.y_store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
+
+            try:
+                y_server.rooms.pop(webspace_id, None)
+            except Exception:
+                pass
+            try:
+                reset_ystore_for_webspace(webspace_id)
+            except Exception:
+                pass
+        except Exception:
+            _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
+        await self._sync_listing()
+        return True
+
+    async def refresh(self) -> None:
+        await self._sync_listing()
+
+
+async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str, *, dev: Optional[bool] = None) -> None:
     """
     Seed a webspace YDoc from the given scenario package using the standard
     ScenarioManager.sync_to_yjs* projection path, falling back to static
     seeds inside ensure_webspace_seeded_from_scenario when needed.
     """
     ystore = get_ystore_for_webspace(webspace_id)
+    if dev is None:
+        try:
+            row = workspace_index.get_workspace(webspace_id)
+            if row:
+                dev = _is_dev_title(row.display_name or row.workspace_id)
+            else:
+                dev = False
+        except Exception:
+            dev = False
+    _log.debug("seeding webspace=%s scenario=%s dev=%s", webspace_id, scenario_id, dev)
     try:
         await ensure_webspace_seeded_from_scenario(
             ystore,
             webspace_id=webspace_id,
             default_scenario_id=scenario_id or "web_desktop",
+            space="dev" if dev else "workspace",
         )
     except Exception:
         _log.warning("failed to seed webspace=%s from scenario=%s", webspace_id, scenario_id, exc_info=True)
@@ -678,15 +864,13 @@ async def _on_skill_rolled_back(evt: Dict[str, Any]) -> None:
 @subscribe("desktop.webspace.create")
 async def _on_webspace_create(evt: Dict[str, Any]) -> None:
     payload = _payload(evt)
+    _log.debug("desktop.webspace.create payload=%s", payload)
     requested = payload.get("id") or payload.get("webspace_id")
-    display_name = payload.get("title")
+    title = payload.get("title")
     scenario_id = str(payload.get("scenario_id") or "web_desktop")
-    webspace_id = _allocate_webspace_id(requested)
-    _log.info("creating webspace %s (requested=%s)", webspace_id, requested)
-    workspace_index.ensure_workspace(webspace_id)
-    workspace_index.set_display_name(webspace_id, display_name or webspace_id)
-    await _seed_webspace_from_scenario(webspace_id, scenario_id)
-    await _sync_webspace_listing()
+    dev = bool(payload.get("dev"))
+    svc = WebspaceService(get_ctx())
+    await svc.create(str(requested) if requested is not None else None, str(title) if title is not None else None, scenario_id=scenario_id, dev=dev)
 
 
 @subscribe("desktop.webspace.rename")
@@ -696,45 +880,22 @@ async def _on_webspace_rename(evt: Dict[str, Any]) -> None:
     title = str(payload.get("title") or "").strip()
     if not webspace_id or not title:
         return
-    if not workspace_index.get_workspace(webspace_id):
-        _log.warning("cannot rename missing webspace %s", webspace_id)
-        return
-    workspace_index.set_display_name(webspace_id, title)
-    await _sync_webspace_listing()
+    svc = WebspaceService(get_ctx())
+    await svc.rename(webspace_id, title)
 
 
 @subscribe("desktop.webspace.delete")
 async def _on_webspace_delete(evt: Dict[str, Any]) -> None:
     payload = _payload(evt)
     webspace_id = str(payload.get("id") or "")
-    if not webspace_id or webspace_id == default_webspace_id():
-        return
-    _log.info("deleting webspace %s", webspace_id)
-    try:
-        workspace_index.delete_workspace(webspace_id)
-    except Exception as exc:
-        _log.warning("failed to delete webspace %s: %s", webspace_id, exc)
-        return
-    try:
-        from adaos.apps.yjs.y_gateway import y_server  # pylint: disable=import-outside-toplevel
-        from adaos.apps.yjs.y_store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
-
-        try:
-            y_server.rooms.pop(webspace_id, None)
-        except Exception:
-            pass
-        try:
-            reset_ystore_for_webspace(webspace_id)
-        except Exception:
-            pass
-    except Exception:
-        _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
-    await _sync_webspace_listing()
+    svc = WebspaceService(get_ctx())
+    await svc.delete(webspace_id)
 
 
 @subscribe("desktop.webspace.refresh")
 async def _on_webspace_refresh(evt: Dict[str, Any]) -> None:  # noqa: ARG001
-    await _sync_webspace_listing()
+    svc = WebspaceService(get_ctx())
+    await svc.refresh()
 
 
 @subscribe("desktop.webspace.reload")
@@ -815,7 +976,16 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     # load declarative sections and update ui.scenarios/data.scenarios/registry.
     try:
         async with async_get_ydoc(webspace_id) as ydoc:
-            content = scenarios_loader.read_content(scenario_id)
+            # Use dev or workspace scenario content depending on the target webspace.
+            space = "workspace"
+            try:
+                row = workspace_index.get_workspace(webspace_id)
+                if row and _is_dev_title(row.display_name or row.workspace_id):
+                    space = "dev"
+            except Exception:
+                space = "workspace"
+
+            content = scenarios_loader.read_content(scenario_id, space=space)
             if not isinstance(content, dict) or not content:
                 _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
                 return

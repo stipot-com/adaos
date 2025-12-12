@@ -334,9 +334,16 @@ async def events_ws(websocket: WebSocket):
                 continue
 
             if kind == "desktop.webspace.create":
+                # Forward dev flag (if present) so that core runtime can
+                # distinguish workspace vs dev webspaces on creation.
                 _publish_bus(
                     "desktop.webspace.create",
-                    {"id": payload.get("id"), "title": payload.get("title"), "scenario_id": payload.get("scenario_id")},
+                    {
+                        "id": payload.get("id"),
+                        "title": payload.get("title"),
+                        "scenario_id": payload.get("scenario_id"),
+                        "dev": payload.get("dev"),
+                    },
                 )
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue

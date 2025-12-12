@@ -73,6 +73,14 @@ import { observeDeep } from '../../y/y-helpers'
             <ion-item>
               <ion-input label="Title" labelPlacement="floating" [(ngModel)]="newWorkspaceTitle"></ion-input>
             </ion-item>
+            <ion-item lines="none">
+              <ion-checkbox
+                labelPlacement="start"
+                [(ngModel)]="newWorkspaceDev"
+              >
+                Dev workspace
+              </ion-checkbox>
+            </ion-item>
             <ion-button expand="block" (click)="createWorkspace()">Create</ion-button>
           </ion-card-content>
         </ion-card>
@@ -99,6 +107,7 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   activeWebspace = ''
   newWorkspaceId = ''
   newWorkspaceTitle = ''
+  newWorkspaceDev = false
   selectedWorkspaceId = ''
   selectedWorkspaceTitle = ''
 
@@ -150,9 +159,14 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
     const title = this.newWorkspaceTitle.trim() || id
     try {
-      await this.adaos.sendEventsCommand('desktop.webspace.create', { id, title })
+      await this.adaos.sendEventsCommand('desktop.webspace.create', {
+        id,
+        title,
+        dev: this.newWorkspaceDev,
+      })
       this.newWorkspaceId = ''
       this.newWorkspaceTitle = ''
+      this.newWorkspaceDev = false
       await this.switchWorkspace(id)
     } catch {
       await this.presentToast('Failed to create workspace')
