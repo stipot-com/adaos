@@ -1,192 +1,149 @@
-# skill lifecycle in adaos
+# Skills
 
-per-skill runtime environment, enriched (resolved) manifests, self-tests, and A/B activation. this is a **breaking** update (no backward compatibility required). avoid hard-coding repo specifics; design for the current structure but keep the spec unambiguous. use **.adaos/skills/weather_skill/** as the reference skill for debugging and examples.
-
----
-
-## objectives
-
-* introduce a **skill runtime environment** with versioned A/B slots.
-* generate and persist a **resolved.manifest.json** at install time.
-* support **install → enrich → test → activate** lifecycle with rollback.
-* expose minimal **cli/api** for operators and scenarios.
-* codify **secrets, policies, and data layout**.
-* provide **developer ergonomics** (scaffolds, lints, docs).
+A **skill** is a reusable, versioned unit of functionality that exposes tools and/or event handlers to the AdaOS runtime.
+At the filesystem level, each skill lives in its own directory with a manifest (`skill.yaml`) and a handler module
+(`handlers/main.py`).
 
 ---
 
-## scope checklist (deliverables & acceptance)
+## Directory layout
 
-### 1) runtime environment layout
+Minimal layout for a skill in the workspace:
 
-* [ ] design and implement per-skill runtime directory structure:
+```text
+skills/
+  <skill-name>/
+    handlers/
+      main.py          # skill handlers (event subscribers, tools)
+    i18n/
+      ru.json          # localised strings (optional)
+      en.json
+    prep/
+      prep_prompt.md   # preparation request to LLM (optional)
+      prepare.py       # preparation code (optional)
+    tests/
+      conftest.py      # tests (optional)
+    .skill_env.json    # skill-specific env defaults (optional)
+    config.json        # skill configuration (optional)
+    prep_result.json   # preparation result (optional)
+    skill_prompt.md    # code-generation request to LLM (optional)
+    skill.yaml         # skill manifest (required)
+```
 
-  * `skills/<name>/` (source, read-only at runtime)
-  * `skills/.runtime/<name>/<version>/slots/{A,B}/` (active artifacts)
-  * `skills/.runtime/<name>/<version>/active -> {A|B}` (symlink/marker)
-  * `skills/.runtime/<name>/data/{db,files}/` (durable data across versions)
-  * `slots/*/{env,venv|node_modules,bin,cache,logs,tmp,resolved.manifest.json}`
-* acceptance:
+Runtime slots (`.adaos/workspace/skills/.runtime/...`) are maintained by the platform and usually do not need to be edited
+manually; they are derived from the workspace skills via `adaos dev skill activate` or the runtime updater.
 
-  * creating a new version yields both slots present (empty or lazily created) and `active` points to the chosen slot.
-  * paths work on linux/windows; no hard-coded absolute paths.
+---
 
-### 2) manifest enrichment (compiler)
+## Manifest (`skill.yaml`)
 
-* [ ] implement an **enricher** that reads `manifest.json` and writes `resolved.manifest.json` into the target slot:
+The `skill.yaml` manifest is the single source of truth for skill metadata. It is validated by:
 
-  * merge platform defaults (timeouts, retries, telemetry, sandbox limits).
-  * resolve `runtime` + `entry` into executable shims under `slots/*/bin/`.
-  * expand permissions intents into concrete sandbox policy placeholders (no secrets written).
-  * keep event schemas if provided; skip otherwise.
-* acceptance:
+- `src/adaos/abi/skill.schema.json` – public ABI schema for IDEs and LLM tools.
+- `src/adaos/services/skill/skill_schema.json` – internal validator used by the skill validator and runtime.
 
-  * `resolved.manifest.json` is self-contained for execution (tool entrypoints and interpreter paths are concrete).
-  * secrets remain placeholders (`${secret:NAME}`), never materialized at rest.
+### Minimal example
 
-### 3) install pipeline (install → build → enrich)
+```yaml
+name: weather_skill
+version: 2.0.0
+description: Simple weather demo skill that shows current conditions on the desktop and reacts to city changes.
+runtime:
+  python: "3.11"
+dependencies:
+  - requests>=2.31
+events:
+  subscribe:
+    - "nlp.intent.weather.get"
+    - "weather.city_changed"
+  publish:
+    - "ui.notify"
+default_tool: get_weather
+tools:
+  - name: get_weather
+    description: Resolve current weather for the requested city and return a basic summary for the UI.
+    entry: handlers.main:get_weather
+    input_schema:
+      type: object
+      required: [city]
+      properties:
+        city: { type: string, minLength: 1 }
+    output_schema:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        city: { type: string }
+        temp: { type: number }
+        description: { type: string }
+        error: { type: string }
+```
 
-* [ ] implement `skill install` flow:
+### Key fields
 
-  * fetch code (supports monorepo sparse/forge without assuming exact layout).
-  * build isolated environment (python/node/etc., adapter-driven).
-  * enrich manifest into `resolved.manifest.json`.
-  * target a non-active slot (default: **B** if A active, else A).
-* acceptance:
+- `name` – stable skill identifier, used in capacity (`node.yaml`), SDK, and CLI (`adaos dev skill ...`).
+- `version` – semantic version of the skill package (see `src/adaos/abi/skill.schema.json` for exact pattern).
+- `description` – human‑readable summary, used in UIs and for LLM programmers.
+- `runtime` – runtime requirements (currently primarily `python` version).
+- `dependencies` – runtime package dependencies (usually pip requirement strings).
+- `events` – static hints about subscribed and published topics; real subscriptions are declared via
+  `@subscribe` in `handlers/main.py`.
+- `tools` – public tools exposed by the skill; each entry should correspond to an `@tool` in `handlers/main.py` and
+  declare `input_schema`/`output_schema` that match the implementation.
+- `default_tool` – optional default tool name used by the control plane and some SDK helpers.
+- `exports.tools` – optional explicit list of tools that should be visible to external callers and LLM agents.
 
-  * idempotent re-install of same version does not break existing active slot.
-  * partial failures clean up the target slot (no dirty state).
+---
 
-### 4) self-tests & hooks
+## Running a skill
 
-* [ ] support optional `runtime/` in the skill repo:
+CLI:
 
-  * `runtime/tests/` (smoke + contract; adapter-agnostic command discovery)
-  * `runtime/migrate/` (data migrations)
-  * `runtime/seed/` (demo/test data only)
-  * `runtime/hooks/` with `pre_install`, `post_install`, `pre_activate`, `post_activate`, `pre_uninstall`
-* [ ] implement test runner:
+```bash
+adaos skill run weather_skill
+adaos skill run weather_skill --topic nlp.intent.weather.get --payload '{"city": "Berlin"}'
+```
 
-  * `smoke`: import/start within ≤10s
-  * `contract`: call declared `tools[*]` with minimal fixtures and validate schemas
-  * `e2e-dryrun` optional
-* acceptance:
+From Python:
 
-  * on test failure, installation aborts; active slot remains unchanged.
-  * hooks execute with a bounded timeout and logged stdout/stderr.
+```python
+from adaos.services.skill.runtime import run_skill_handler_sync
 
-### 5) activation & rollback (A/B)
+result = run_skill_handler_sync(
+    "weather_skill",
+    "nlp.intent.weather.get",
+    {"city": "Berlin"},
+)
+print(result)
+```
 
-* [ ] implement atomic switch of `active` to the prepared slot.
-* [ ] persist previous slot for quick rollback.
-* acceptance:
+For dev/testing scenarios, prefer the higher-level SDK helpers under `adaos.sdk.manage.skills.*` and `adaos.sdk.skills.testing`.
 
-  * `activate` updates the marker atomically.
-  * `rollback` switches back to the previous healthy slot in O(1).
+---
 
-### 6) cli/api surface
+## Repository layouts
 
-* [ ] provide/extend commands:
+### Monorepo
 
-  * `adaos skill install <name>[@version] [--test] [--slot=A|B]`
-  * `adaos skill activate <name> [--slot=A|B]`
-  * `adaos skill rollback <name>` (to previous healthy slot)
-  * `adaos skill run <name> <tool> --json '<payload>' [--timeout=..]`
-  * `adaos skill status <name>` (version, active slot, health, last tests)
-  * `adaos skill uninstall <name> [--purge-data]`
-  * `adaos skill gc` (remove inactive slots/caches by policy)
-  * `adaos skill doctor <name>` (env sanity: paths, perms, interpreter)
-* acceptance:
+- All skills live in a single Git repo under `skills/`.
+- Good for tight coupling, shared tooling and CI.
 
-  * all commands return non-zero on failure; machine-readable `--json` output available for status.
+### One-repo-per-skill
 
-### 7) health & telemetry (platform-managed)
+- Each skill has its own repository; a skill registry is used to pull them into the node.
+- Better for independent versioning and ownership.
 
-* [ ] default health/telemetry wired by the platform; skill may provide overrides:
+AdaOS supports both models via the `SkillRepository` abstraction and the skill registry (`SqliteSkillRegistry` /
+Git-backed repositories).
 
-  * detect `runtime/health.*` and prefer it if present.
-  * logs default to stdout; metrics/trace controlled by node policy.
-* acceptance:
+---
 
-  * `status` reports liveness/readiness using platform probe or skill override.
-  * no telemetry endpoints are required from the skill by default.
+## Best practices
 
-### 8) secrets & policy resolution
+- Keep `skill.yaml` small, well‑commented and in English – this is the primary contract for LLM programmers.
+- Use `adaos.sdk.core.decorators.subscribe` for event handlers and `@tool` for tools; avoid ad‑hoc entrypoints.
+- Store secrets via `adaos.sdk.data.secrets` or the configured secrets backend, never in manifests.
+- Put tests under `skills/<name>/tests` and run them regularly via `adaos tests run`.
+- For dev skills, use the `adaos dev skill ...` commands and the Prompt IDE (`prompt_engineer_scenario`) to manage
+  versions and Git workflows.
 
-* [ ] implement secret injection at **process start** only (env/fd), never persist to disk.
-* [ ] apply node/tenant policy to expand intents (e.g., `network` → allowed hosts) without modifying source manifest.
-* acceptance:
-
-  * attempting to read secrets from disk yields nothing.
-  * policy overrides are visible in `resolved.manifest.json` (but not secret values).
-
-### 9) scenario integration
-
-* [ ] scenario engine invokes tools via `call: <skill>.<tool>`:
-
-  * lookup active slot, read `resolved.manifest.json`, execute shim.
-  * scenario-level overrides for timeout/retries respected.
-* acceptance:
-
-  * calling a tool without the skill installed fails with a clear error.
-  * per-call timeout is enforced even if tool blocks.
-
-### 10) weather_skill update for debugging
-
-* [ ] refit `.adaos/skills/weather_skill/` to the new runtime model:
-
-  * add minimal `runtime/tests/smoke` and a tiny `contract` test.
-  * optional `runtime/health.*` (fast path).
-  * demonstrate `resolved.manifest.json` with a single tool (e.g., `get_weather`).
-* acceptance:
-
-  * `adaos skill install weather_skill --test` passes end-to-end on a clean workspace.
-  * `adaos skill run weather_skill get_weather --json '{...}'` returns valid output.
-
-### 11) compatibility & migration policy
-
-* [ ] define migration path from legacy installs:
-
-  * legacy commands print a deprecation error with a pointer to new flow.
-  * provide a one-shot `migrate` command that re-installs skills into slots.
-* acceptance:
-
-  * running legacy paths does not mutate new runtime directories.
-
-### 12) observability & logs
-
-* [ ] standardize log locations: `slots/*/logs/` (install/test/activate/run).
-* [ ] error messages are concise, actionable, and include a stable error code.
-* acceptance:
-
-  * `status --json` includes last test summary and current health.
-  * failures surface the path to detailed logs.
-
-## 13) configuration & defaults
-
-* [ ] centralize node/tenant defaults (timeouts, retries, tracing, sandbox paths) in a single config file.
-* [ ] document override order: scenario call > node policy > platform default.
-* acceptance:
-
-  * changing policy config affects **new installs/runs** but does not rewrite existing `resolved.manifest.json` retroactively (explicit design decision).
-
-### 14) developer ergonomics
-
-* [ ] `adaos skill scaffold <name>` generates minimal skill with:
-
-  * `manifest.json` (name/version/tools stub)
-  * optional `runtime/tests/smoke`
-* [ ] `adaos skill lint <path>` validates schema and common pitfalls (no secrets, valid names).
-* acceptance:
-
-  * scaffold passes lint and install--test out of the box.
-
-### 15) documentation
-
-* [ ] write concise docs:
-
-  * runtime layout and lifecycle diagram
-  * resolved.manifest fields (what is compiled vs declared)
-  * cli reference with examples
-  * secrets & policy model
-  * weather_skill walkthrough

@@ -1,50 +1,56 @@
 # Навыки (Skills)
 
-Навык (skill) — это минимальная единица функциональности в AdaOS.  
-Каждый навык оформлен как git-репозиторий с манифестом и кодом.
+**Навык** (skill) — это переиспользуемая, версионируемая единица функциональности,
+которая предоставляет tools и/или обработчики событий для рантайма AdaOS.
+На файловой системе каждый навык живёт в своей директории с манифестом
+`skill.yaml` и модулем обработчиков `handlers/main.py`.
 
 ---
 
-## Что такое skill
+## Структура директории
 
-- Изолированный модуль с собственным `skill.yaml`.  
-- Реализует одну задачу: получения данных о погоде, каталогизацию медиа, интеграцию с API.  
-- Использует SDK для доступа к ядру AdaOS
-
-Структура папок:  
+Минимальная структура навыка в workspace:
 
 ```text
 skills/
-  └── skill-name/
-      ├── handlers
-        └── main.py         # start script
-      ├── i18n
-        └── ru.json         # locales data
-        └── en.json
-      ├── prep
-        └── prep_prompt.md  # preparation request to LLM
-        └── prepare.py      # preparation code
-      ├── tests
-        └── conftest.py     # tests
-      ├── .skill_env.json   # skill env data
-      ├── config.json       # skill conf data
-      ├── prep_result.json  # preparation result
-      ├── skill_prompt.md   # skill generation request to LLM
-      └── skill.yaml        # Skill metadata
-````
+  <skill-name>/
+    handlers/
+      main.py          # обработчики навыка (подписчики на события, tools)
+    i18n/
+      ru.json          # локализованные строки (опционально)
+      en.json
+    prep/
+      prep_prompt.md   # подготовительный запрос к LLM (опционально)
+      prepare.py       # подготовительный код (опционально)
+    tests/
+      conftest.py      # тесты (опционально)
+    .skill_env.json    # значения окружения по умолчанию для навыка (опционально)
+    config.json        # конфигурация навыка (опционально)
+    prep_result.json   # результат подготовки (опционально)
+    skill_prompt.md    # запрос на генерацию кода для LLM (опционально)
+    skill.yaml         # манифест навыка (обязательно)
+```
+
+Слоты рантайма (`.adaos/workspace/skills/.runtime/...`) управляются платформой
+и обычно не требуют ручного редактирования: они получаются из skills‑директорий
+через `adaos dev skill activate` или обновление рантайма.
 
 ---
 
-## Manifest
+## Манифест (`skill.yaml`)
 
-Файл `manifest.yaml` описывает идентичность и структуру навыка.
+Файл `skill.yaml` — единственный источник правды о манифесте навыка.
+Он валидируется схемами:
 
-### Пример
+- `src/adaos/abi/skill.schema.json` — публичная ABI‑схема для IDE и LLM‑инструментов.
+- `src/adaos/services/skill/skill_schema.json` — внутренняя схема для валидатора и рантайма навыков.
+
+### Минимальный пример
 
 ```yaml
 name: weather_skill
-version: 1.0.4
-description: Навык для получения текущей погоды на сегодня
+version: 2.0.0
+description: Simple weather demo skill that shows current conditions on the desktop and reacts to city changes.
 runtime:
   python: "3.11"
 dependencies:
@@ -52,10 +58,14 @@ dependencies:
 events:
   subscribe:
     - "nlp.intent.weather.get"
+    - "weather.city_changed"
   publish:
     - "ui.notify"
+default_tool: get_weather
 tools:
-  - name: "get_weather"
+  - name: get_weather
+    description: Resolve current weather for the requested city and return a basic summary for the UI.
+    entry: handlers.main:get_weather
     input_schema:
       type: object
       required: [city]
@@ -69,42 +79,38 @@ tools:
         city: { type: string }
         temp: { type: number }
         description: { type: string }
+        error: { type: string }
 ```
 
-### Основные поля
+### Ключевые поля
 
-- **id** — уникальный идентификатор навыка.
-- **name** — человекочитаемое название.
-- **version** — семантическая версия.
-- **description** — описание назначения.
-- **dependencies** — список Python-зависимостей.
-- **events** — подписки
-- **tools** — методы: название, входные и выходные схемы
+- `name` — стабильный идентификатор навыка, используется в capacity (`node.yaml`), SDK и CLI (`adaos dev skill ...`).
+- `version` — семантическая версия пакета навыка (см. `src/adaos/abi/skill.schema.json` для точного паттерна).
+- `description` — человекочитаемое описание, используется в UI и как подсказка для LLM‑программиста.
+- `runtime` — требования к окружению исполнения (сейчас в первую очередь версия `python`).
+- `dependencies` — зависимости рантайма (обычно pip‑строки).
+- `events` — статические подсказки о подписках и публикуемых событиях;
+  реальные подписки описываются через `@subscribe` в `handlers/main.py`.
+- `tools` — публичные инструменты навыка; каждый элемент должен соответствовать `@tool`
+  в `handlers/main.py` и описывать согласованные `input_schema`/`output_schema`.
+- `default_tool` — опциональное имя дефолтного инструмента для control plane и SDK‑хелперов.
+- `exports.tools` — опциональный явный список tools, которые видны внешним вызовам и LLM‑агентам.
 
 ---
 
-## Pipeline
+## Запуск навыка
 
-```bash
-adaos skill create skill-name -t demo_skill # Template is optional
-# подготовить запрос на исследовательский код
-adaos llm build-prep skill-name "Научись отправлять уведомления в Telegram через Bot API при получении события"
-# подготовить запрос на создание навыка
-adaos llm build-skill skill-name "Научись отправлять уведомления в Telegram через Bot API при получении события"
-
-```
-
-## Использование навыка
+Через CLI:
 
 ```bash
 adaos skill run weather_skill
 adaos skill run weather_skill --topic nlp.intent.weather.get --payload '{"city": "Berlin"}'
 ```
 
-### Программно из Python
+Из Python:
 
 ```python
-from adaos.services.skill.runtime import run_skill_handler_sync, run_skill_prep
+from adaos.services.skill.runtime import run_skill_handler_sync
 
 result = run_skill_handler_sync(
     "weather_skill",
@@ -112,32 +118,8 @@ result = run_skill_handler_sync(
     {"city": "Berlin"},
 )
 print(result)
-
-prep_report = run_skill_prep("weather_skill")
-print(prep_report)
 ```
 
-## Репозитории
+Для разработки и тестирования удобнее использовать более высокоуровневые SDK‑хелперы
+из `adaos.sdk.manage.skills.*` и `adaos.sdk.skills.testing`.
 
-### Моно-репозиторий
-
-- Все навыки хранятся в одном git working tree.
-- Используется sparse-checkout (загружается только нужный навык).
-
-### One-repo-per-skill
-
-- Каждый навык — отдельный git-репозиторий.
-- Удобно для независимой публикации.
-
-AdaOS поддерживает оба варианта через `SkillRepository` (унифицированный контракт).
-
----
-
-## Best practices
-
-- Минимизируйте зависимости.
-- Описывайте всё в `manifest.yaml`.
-- Используйте `adaos.sdk.decorators.subscribe` вместо прямого доступа к шине.
-- Секреты храните через `SecretsService`, а не в коде.
-- Добавляйте автотесты (см. `adaos tests run`).
-- Следуйте DevOps-циклу: scaffold → код → commit → тесты → sync.

@@ -1,90 +1,94 @@
 # Сценарии (Scenarios)
 
-Сценарий (scenario) — это композиция навыков, объединённых в последовательность действий.  
-Он определяет, **какие навыки** и **в каком порядке** должны срабатывать при определённых событиях.
+**Сценарий** (scenario) — декларативное описание того, как AdaOS должна вести себя
+в заданном контексте: какие навыки участвуют, как между ними течёт данные и
+какой UI (если нужен) должен быть отрисован.
+
+Сценарии описываются манифестами `scenarios/<id>/scenario.yaml` и, для desktop‑UI,
+соответствующими файлами `scenario.json`, которые содержат модель UI на базе Yjs.
 
 ---
 
-## Что такое сценарий
+## Расположение в workspace
 
-- Представляет собой workflow поверх навыков.  
-- Описан декларативно (YAML/JSON).  
-- Выполняется движком сценариев (`scenario_engine`) внутри AgentRuntime.  
-
-Пример использования:  
-
-- сценарий «Каталогизация медиа» вызывает навыки: сканирование → индексирование → веб-доступ.  
-- сценарий «Голосовой ассистент» объединяет навыки STT → Intent Recognition → TTS.  
-
----
-
-## Структура
-
-Файлы сценариев располагаются в `scenarios/`.
-
-Пример:
+В workspace сценарии лежат под `.adaos/workspace/scenarios/` (см. также `docs/dev-notes/workspace.md`):
 
 ```text
-scenarios/
-  └── catalog-media/
-      ├── scenario.yaml
-      └── tests/
-````
+.adaos/workspace/scenarios/
+  web_desktop/
+    scenario.yaml
+    scenario.json      # исходный UI для web_desktop
+  prompt_engineer_scenario/
+    scenario.yaml
+    scenario.json      # UI и workflow для Prompt IDE
+  ...
+```
 
-### Пример `scenario.yaml`
+`scenario.yaml` — редактируемый человеком источник правды для идентичности,
+зависимостей и high‑level‑метаданных сценария.
+`scenario.json` — более богатый UI‑seed, который может генерироваться или
+редактироваться инструментами.
+
+---
+
+## Манифест (`scenario.yaml`)
+
+Структура `scenario.yaml` описана схемой:
+
+- `src/adaos/abi/scenario.schema.json` — публичная ABI‑схема для IDE и LLM‑инструментов.
+
+### Минимальные примеры
+
+#### Web Desktop
 
 ```yaml
-id: catalog-media
-name: Catalog Media
-version: 0.1.0
-description: >
-  Сканирует медиафайлы и делает их доступными через браузер.
-steps:
-  - skill: fs-scan
-    action: scan
-    args:
-      path: ~/media
-  - skill: indexer
-    action: update_index
-  - skill: web-server
-    action: serve
-    args:
-      port: 8080
+id: web_desktop
+version: 0.0.1
+title: Web Desktop
+description: Desktop shell scenario that defines the main UI layout, registry and base catalog.
+type: desktop
+depends:
+  - web_desktop_skill
+updated_at: "2025-11-14T18:14:36+00:00"
+data_projections:
+  - scope: current_user
+    slot: profile.settings
+    targets:
+      - backend: kv
+      - backend: yjs
+        path: data/skills/profile/{user_id}/settings
+  - scope: subnet
+    slot: weather.snapshot
+    targets:
+      - backend: yjs
+        path: data/weather
 ```
+
+#### Prompt IDE
+
+```yaml
+id: prompt_engineer_scenario
+version: "0.1.0"
+title: Prompt IDE
+description: Prompt engineering IDE workspace for dev skills and scenarios.
+type: desktop
+depends:
+  - prompt_engineer_skill
+updated_at: "2025-11-14T18:14:36+00:00"
+```
+
+Детальный workflow Prompt IDE (TZ / TZ addenda) и desktop‑UI описаны
+в соответствующем `scenario.json` и используются
+`ScenarioWorkflowRuntime` и веб‑клиентом.
 
 ---
 
-## Запуск сценария
+## `data_projections`
 
-CLI:
+Секция `data_projections` в `scenario.yaml` описывает, как логические пары
+`(scope, slot)` сопоставляются с конкретными backend’ами хранения
+(Yjs, KV, SQL). На рантайме это загружается `ProjectionRegistry`
+и используется высокоуровневыми SDK‑хелперами (`ctx.*`) для маршрутизации чтения/записи.
 
-```bash
-adaos scenario run catalog-media
-```
+Подробнее — в `docs/concepts/scenario-first-launch.md`.
 
-Runtime:
-
-```python
-from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context
-
-ensure_runtime_context("~/.adaos")
-ScenarioRuntime().run_from_file("~/.adaos/workspace/scenarios/catalog-media/scenario.yaml")
-```
-
----
-
-## Репозитории
-
-- Как и навыки, сценарии могут храниться в монорепозитории (sparse-checkout)
-  или в отдельных git-репозиториях.
-- Источник истины: SQLite-реестр сценариев.
-
----
-
-## Best practices
-
-- Делайте шаги сценария атомарными (один action = одна операция).
-- Используйте `id` навыков и сценариев, а не пути к файлам.
-- Добавляйте автотесты для сценариев.
-- Поддерживайте семантическую версию (`0.1.0`, `0.2.0` …).
-- Документируйте сценарий (`description`) — это помогает при публикации.
