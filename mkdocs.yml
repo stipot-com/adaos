@@ -123,7 +123,11 @@ nav:
       - "Adapters": sdk/adapters.md
       - "Control Plane": sdk_control_plane.md
   - "Навыки": skills.md
-  - "Сценарии": scenarios.md
+  - "Сценарии":
+      - "Сценарии": scenarios.md
+      - "Первоначальный запуск": concepts/scenario-first-launch.md
+      - "Доброе утро": concepts/scenario-goodmorning.md
+      - "Планирование дня": concepts/scenario-planning-the-day.md
   - "DevPortal": devportal.md
   - "Дорожная карта": roadmap.md
   - "Концепции":
