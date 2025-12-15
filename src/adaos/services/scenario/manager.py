@@ -1,10 +1,12 @@
 # src\adaos\services\scenario\manager.py
 from __future__ import annotations
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
+import datetime
 import logging
 import re, os, json
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Any, Dict, Optional, Literal
 
 from adaos.domain import SkillMeta, SkillRecord
 from adaos.ports import EventBus, GitClient, Capabilities
@@ -24,10 +26,38 @@ import y_py as Y
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
 from adaos.apps.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
+from enum import Enum
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.scenario.manager")
 
+class ExecutionPriority(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+class RunState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+
+
+@dataclass(slots=True)
+class ExecutionUnit:
+    """Единица выполнения сценария"""
+    run_id: str
+    scenario_id: str
+    priority: ExecutionPriority = ExecutionPriority.NORMAL
+    context: Dict[str, Any] = field(default_factory=dict)
+    state: RunState = RunState.PENDING
+    current_step: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    cancel_token: bool = False
+    
 
 @dataclass(slots=True)
 class ArtifactPublishResult:
@@ -57,6 +87,7 @@ class ScenarioManager:
     ):
         self.repo, self.reg, self.git, self.paths, self.bus, self.caps = repo, registry, git, paths, bus, caps
         self.ctx: AgentContext = get_ctx()
+        self.max_concurrent = 5  # Максимальное количество параллельных выполнений
 
     def list_installed(self) -> list[SkillRecord]:
         self.caps.require("core", "scenarios.manage")
@@ -399,3 +430,74 @@ class ScenarioManager:
     def uninstall(self, name: str, *, safe: bool = False) -> None:
         """Alias for :meth:`remove` to keep parity with :class:`SkillManager`."""
         self.remove(name, safe=safe)
+
+    async def run(
+        self, 
+        scenario_id: str, 
+        ctx: Optional[Dict[str, Any]] = None, 
+        priority: ExecutionPriority = ExecutionPriority.NORMAL,
+        force: bool = False
+    ) -> str:
+        """
+        Запуск выполнения сценария
+        
+        Args:
+            scenario_id: ID сценария для запуска
+            ctx: Контекст выполнения (переменные для подстановки)
+            priority: Приоритет выполнения (high/normal/low)
+            force: Принудительный запуск (игнорировать ограничения)
+            
+        Returns:
+            run_id: Идентификатор запуска для отслеживания статуса
+        """
+        self.caps.require("core", "scenarios.execute")
+
+        content = read_content(scenario_id)
+        if not content:
+            raise ValueError(f"Scenario '{scenario_id}' not found or empty")
+        
+        run_id = self.reg.create_task(scenario_id, priority, RunState.PENDING, ctx)
+        asyncio.create_task(self._run_next_task())
+        return  run_id
+        
+    async def _run_next_task(self):
+        if self.reg.get_running_count() <= self.max_concurrent:
+            task = self.reg.get_next_task()
+            if task:
+                emit(self.bus, "scenario.started", {
+                    "run_id": task['run_id'],
+                    "scenario_id": task['scenario_id'],
+                    "priority": task['priority']
+                    }, "scenario.mgr")
+                self._execute(task['run_id'], task['scenario_id'])
+            
+    def _execute(self, run_id, scenario_id):
+        """Выполнение сценария"""
+        self.reg.update_state(run_id, state=RunState.RUNNING, current_step=1, started_at=datetime.datetime.now())
+        from adaos.sdk.scenarios.runtime import ScenarioRuntime
+        ctx = get_ctx()
+        scenario_path =  ctx.paths.scenarios_workspace_dir() / scenario_id
+        runtime = ScenarioRuntime()
+        result = runtime.run_from_file(str(scenario_path))
+        self.reg.update_state(run_id, state=RunState.DONE, finished_at=datetime.datetime.now())
+        asyncio.create_task(self._run_next_task())
+
+
+    async def status(self, run_id: str) -> Optional[ExecutionUnit]:
+        """Получение статуса выполнения сценария"""
+        item = self.reg.get_task(run_id)
+        return ExecutionUnit(
+            run_id=item[0],
+            scenario_id=item[1],
+            context=item[2],
+            priority=item[3],
+            state=item[4],
+            current_step=item[5],
+            started_at=item[6],
+            finished_at=item[7],
+            cancel_token=item[8]
+        )
+
+    async def cancel(self, run_id: str) -> bool:
+        """Отмена выполнения сценария"""
+        return self.reg.cancel(run_id)
