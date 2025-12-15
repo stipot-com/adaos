@@ -313,7 +313,7 @@ app.use((req, _res, next) => {
 	req.locale = resolveLocale(req)
 	next()
 })
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json({ limit: '8mb' }))
 
 function withLeadingSlash(value: string, fallback: string): string {
 	const trimmed = value.trim()
