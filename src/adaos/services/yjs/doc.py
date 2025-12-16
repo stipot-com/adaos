@@ -8,7 +8,7 @@ from typing import Iterator, AsyncIterator, Awaitable, Optional, TypeVar, Callab
 
 import y_py as Y
 
-from adaos.apps.yjs.y_store import get_ystore_for_webspace
+from adaos.services.yjs.store import get_ystore_for_webspace
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
@@ -32,7 +32,7 @@ def _resolve_live_room(webspace_id: str):
     server is running in-process. Import is lazy to avoid circular deps.
     """
     try:
-        from adaos.apps.yjs.y_gateway import y_server  # pylint: disable=import-outside-toplevel
+        from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
     except Exception:
         return None
     return y_server.rooms.get(webspace_id)

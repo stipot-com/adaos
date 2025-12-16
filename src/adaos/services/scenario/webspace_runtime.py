@@ -15,10 +15,10 @@ from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.capacity import get_local_capacity
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
 from adaos.services.scenarios import loader as scenarios_loader
-from adaos.apps.yjs.webspace import default_webspace_id
-from adaos.apps.workspaces import index as workspace_index
-from adaos.apps.yjs.y_store import get_ystore_for_webspace
-from adaos.apps.yjs.y_bootstrap import ensure_webspace_seeded_from_scenario
+from adaos.services.yjs.webspace import default_webspace_id
+from adaos.services.workspaces import index as workspace_index
+from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.sdk.core.decorators import subscribe
 from .workflow_runtime import ScenarioWorkflowRuntime
 
@@ -787,8 +787,8 @@ class WebspaceService:
             _log.warning("failed to delete webspace %s: %s", webspace_id, exc)
             return False
         try:
-            from adaos.apps.yjs.y_gateway import y_server  # pylint: disable=import-outside-toplevel
-            from adaos.apps.yjs.y_store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
+            from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
+            from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
 
             try:
                 y_server.rooms.pop(webspace_id, None)
@@ -926,8 +926,8 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
         return
     _log.info("reloading webspace %s from scenario %s", webspace_id, scenario_id)
     try:
-        from adaos.apps.yjs.y_gateway import y_server  # pylint: disable=import-outside-toplevel
-        from adaos.apps.yjs.y_store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
+        from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
+        from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
 
         try:
             y_server.rooms.pop(webspace_id, None)

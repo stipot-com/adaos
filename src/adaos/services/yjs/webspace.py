@@ -15,3 +15,4 @@ def default_webspace_id() -> str:
 def dev_webspace_id() -> str:
     """Return the reserved development webspace identifier."""
     return _DEV_WEBSPACE_ID
+

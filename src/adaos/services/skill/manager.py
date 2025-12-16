@@ -33,7 +33,7 @@ from adaos.services.crypto.secrets_service import SecretsService
 from adaos.services.skill.secrets_backend import SkillSecretsBackend
 from adaos.services.skill.resolver import SkillPathResolver
 from adaos.services.capacity import install_skill_in_capacity, uninstall_skill_from_capacity
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 import ast
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
@@ -2018,4 +2018,3 @@ class SkillManager:
             dev_mode=True,
             extra_env=extra_env,
         )
-

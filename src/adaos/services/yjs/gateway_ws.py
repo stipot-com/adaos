@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+"""
+Yjs websocket gateway implementation (service layer).
+"""
+
 import asyncio
 import json
 import time
@@ -20,9 +24,9 @@ except ImportError as exc:  # pragma: no cover - import guard for dev envs
         "Install dependencies via `pip install -e .[dev]` or `pip install ypy-websocket`."
     ) from exc
 
-from adaos.apps.workspaces.index import ensure_workspace, get_workspace
-from .y_bootstrap import ensure_webspace_seeded_from_scenario
-from .y_store import get_ystore_for_webspace
+from adaos.services.workspaces import ensure_workspace, get_workspace
+from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
+from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.scheduler import get_scheduler
 from adaos.services.yjs.observers import attach_room_observers
 from adaos.domain import Event as DomainEvent

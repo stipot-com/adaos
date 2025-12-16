@@ -22,7 +22,7 @@ from adaos.services.node_config import load_config
 from adaos.services.scenarios.loader import read_manifest, read_content
 import y_py as Y
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")

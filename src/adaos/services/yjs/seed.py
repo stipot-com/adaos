@@ -1,4 +1,4 @@
-# src/adaos/apps/yjs/seed.py
+from __future__ import annotations
 
 SEED: dict = {
     "ui": {
@@ -82,7 +82,8 @@ SEED: dict = {
                                 {
                                     "on": "click:yjs-reset",
                                     "type": "callHost",
-                                    "target": "desktop.webspace.reset"},
+                                    "target": "desktop.webspace.reset",
+                                },
                             ],
                         },
                         {
@@ -108,7 +109,7 @@ SEED: dict = {
                                     "on": "select",
                                     "type": "openModal",
                                     "params": {"modalId": "$event.action.openModal"},
-                                }
+                                },
                             ],
                         },
                         {
@@ -118,7 +119,8 @@ SEED: dict = {
                             "title": "Widgets",
                             "dataSource": {
                                 "kind": "y",
-                                "transform": "desktop.widgets"},
+                                "transform": "desktop.widgets",
+                            },
                         },
                     ],
                 },
@@ -205,3 +207,4 @@ SEED: dict = {
         "installed": {"apps": [], "widgets": []},
     },
 }
+

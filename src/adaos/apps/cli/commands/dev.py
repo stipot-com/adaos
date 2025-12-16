@@ -9,7 +9,7 @@ import typer
 
 from adaos.apps.cli.i18n import _
 from adaos.apps.cli.commands.skill import _mgr
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import displayable_path
 from adaos.services.root.service import (

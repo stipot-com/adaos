@@ -13,7 +13,7 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.scenarios import loader as scenarios_loader
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 from adaos.skills.runtime_runner import execute_tool as execute_skill_tool
 
 _log = logging.getLogger("adaos.scenario.workflow")

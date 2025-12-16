@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import async_get_ydoc, get_ydoc, mutate_live_room
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.io_web.desktop")
 

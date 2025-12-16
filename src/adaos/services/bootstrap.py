@@ -19,7 +19,7 @@ from adaos.adapters.skills.git_repo import GitSkillRepository
 from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.sdk.core.decorators import register_subscriptions
 from adaos.services.scheduler import start_scheduler
-from adaos.apps.yjs import y_store as _y_store  # ensure YStore subscriptions are registered
+from adaos.services import yjs as _y_store  # ensure YStore subscriptions are registered
 from adaos.services.scenario import webspace_runtime as _scenario_ws_runtime  # ensure core scenario subscriptions
 from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
 from adaos.services import weather as _weather_services  # ensure weather observers

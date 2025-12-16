@@ -5,12 +5,12 @@ import logging
 
 import y_py as Y
 
-from .seed import SEED
+from adaos.services.yjs.seed import SEED
 from adaos.adapters.db import SqliteScenarioRegistry
 from adaos.services.agent_context import get_ctx
 from adaos.services.scenario.manager import ScenarioManager
-from adaos.apps.yjs.webspace import default_webspace_id
-from .y_store import AdaosMemoryYStore, get_ystore_for_webspace
+from adaos.services.yjs.webspace import default_webspace_id
+from adaos.services.yjs.store import AdaosMemoryYStore, get_ystore_for_webspace
 
 _log = logging.getLogger("adaos.yjs.bootstrap")
 
@@ -45,11 +45,6 @@ async def ensure_webspace_seeded_from_scenario(
     try:
         await ystore.apply_updates(ydoc)
     except BaseException as exc:  # catch PanicException and similar
-        # When y_store contains updates produced by an older or buggy
-        # version of the runtime, yrs/y_py may raise a PanicException
-        # (or other low‑level errors). For now we treat this as "no
-        # state" and re‑seed from the scenario, but log enough detail
-        # to debug root causes.
         _log.warning(
             "apply_updates failed for webspace=%s (treating as empty, exc=%r, type=%s)",
             webspace_id,
@@ -61,10 +56,6 @@ async def ensure_webspace_seeded_from_scenario(
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
 
-    # Treat the webspace as "already seeded" only when ui.application is
-    # present. This avoids a broken state where helper services (like
-    # webspace listing) write to data.* before the first scenario
-    # projection and accidentally block scenario-based seeding.
     if ui_map.get("application") is not None:
         _log.debug(
             "webspace %s already seeded (ui keys=%s, data keys=%s)",
@@ -88,9 +79,6 @@ async def ensure_webspace_seeded_from_scenario(
             exc_info=True,
         )
 
-    # Fallback to static SEED only for the default webspace; all other
-    # webspaces must be projected from the declarative scenario so that
-    # UI stays in sync with scenario.json changes.
     if webspace_id != default_webspace_id():
         return
 

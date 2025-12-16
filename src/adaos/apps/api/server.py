@@ -16,7 +16,6 @@ from adaos.apps.bootstrap import init_ctx
 from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
-from adaos.apps.yjs.y_gateway import ensure_webspace_ready
 from adaos.services.router import RouterService
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
@@ -34,7 +33,7 @@ async def lifespan(app: FastAPI):
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
     from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills
     from adaos.apps.api import io_webhooks
-    from adaos.apps.yjs.y_gateway import router as y_router, start_y_server
+    from adaos.services.yjs.gateway import router as y_router, start_y_server
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")

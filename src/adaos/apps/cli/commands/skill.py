@@ -22,7 +22,7 @@ from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 
 app = typer.Typer(help=_("cli.help_skill"))
 

@@ -10,7 +10,7 @@ from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
 from adaos.services.eventbus import emit as bus_emit
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.webspace import default_webspace_id
 
 
 router = APIRouter(tags=["skills"], dependencies=[Depends(require_token)])

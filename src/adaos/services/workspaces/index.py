@@ -6,9 +6,8 @@ from typing import Optional, Iterable, List
 import sqlite3
 
 from adaos.services.agent_context import get_ctx
-
-from adaos.apps.yjs.y_store import ystore_path_for_webspace
-from adaos.apps.yjs.webspace import default_webspace_id
+from adaos.services.yjs.store import ystore_path_for_webspace
+from adaos.services.yjs.webspace import default_webspace_id
 
 
 @dataclass

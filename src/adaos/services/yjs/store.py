@@ -166,8 +166,6 @@ class AdaosMemoryYStore(BaseYStore):
         """
         Persist the current YDoc state as a single update snapshot.
         """
-        # Быстро копируем актуальные обновления под локом и освобождаем его,
-        # чтобы не блокировать live-запись из YRoom.
         async with self._lock:
             updates = list(self._updates)
 
@@ -180,10 +178,10 @@ _YSTORE_CACHE: Dict[str, AdaosMemoryYStore] = {}
 
 def get_ystore_for_webspace(webspace_id: str) -> AdaosMemoryYStore:
     """
-    Return a cached in-memory YStore for the given webspace.
+        Return a cached in-memory YStore for the given webspace.
 
-    All callers (web_desktop_skill, async_get_ydoc, y_gateway) share the same
-    instance to avoid \"YStore already running\" races.
+        All callers (web_desktop_skill, async_get_ydoc, y_gateway) share the same
+        instance to avoid \"YStore already running\" races.
     """
     store = _YSTORE_CACHE.get(webspace_id)
     if store is None:
@@ -204,9 +202,6 @@ def reset_ystore_for_webspace(webspace_id: str) -> None:
             store._updates.clear()  # type: ignore[attr-defined]
         except Exception:
             pass
-    # Also remove any persisted snapshot on disk so that the next YStore
-    # access starts from an empty document and can be re-seeded from the
-    # current scenario/SEED instead of an outdated snapshot.
     try:
         path = ystore_path_for_webspace(webspace_id)
         if path.exists():
