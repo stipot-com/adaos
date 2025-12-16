@@ -155,8 +155,8 @@ log "Готовлю .env…"
 [[ -f .env || ! -f .env.example ]] || cp .env.example .env
 
 # Default webspace content (scenarios + skills)
-DEFAULT_SCENARIOS=("web_desktop", "prompt_engineer_scenario")
-DEFAULT_SKILLS=("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
+DEFAULT_SCENARIOS=("web_desktop" "prompt_engineer_scenario")
+DEFAULT_SKILLS=("weather_skill" "web_desktop_skill" "prompt_engineer_skill" "profile_skill")
 ADAOS_BASE_DIR="$(pwd)/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR

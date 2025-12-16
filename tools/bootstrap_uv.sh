@@ -77,8 +77,8 @@ if [[ -d ".venv/bin" ]]; then
 fi
 
 # 6) Default webspace content
-DEFAULT_SCENARIOS=("web_desktop", "prompt_engineer_scenario")
-DEFAULT_SKILLS=("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
+DEFAULT_SCENARIOS=("web_desktop" "prompt_engineer_scenario")
+DEFAULT_SKILLS=("weather_skill" "web_desktop_skill" "prompt_engineer_skill" "profile_skill")
 ADAOS_BASE_DIR="$PWD/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
