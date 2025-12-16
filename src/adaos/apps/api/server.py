@@ -22,6 +22,7 @@ from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.domain import Event as DomainEvent
 
 init_ctx()
 
@@ -186,7 +187,7 @@ async def lifespan(app: FastAPI):
             await router_service.stop()
         except Exception:
             pass
-        # On graceful shutdown, notify Telegram if it was enabled
+        # On graceful shutdown, notify Telegram and UI if enabled
         try:
             if tg_enabled:
                 conf = get_ctx().config
@@ -211,6 +212,18 @@ async def lifespan(app: FastAPI):
                     json={"hub_id": conf.subnet_id, "text": prefixed_text},
                     timeout=2.5,
                 )
+                # Also emit a subnet.stopped event on the local bus so that
+                # skills (e.g. greet_on_boot_skill) can update infra status.
+                try:
+                    ev = DomainEvent(
+                        type="subnet.stopped",
+                        payload={"subnet_id": conf.subnet_id},
+                        source="api",
+                        ts=time.time(),
+                    )
+                    ctx.bus.publish(ev)
+                except Exception:
+                    pass
         except Exception:
             pass
         try:

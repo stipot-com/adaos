@@ -186,13 +186,14 @@ class ScenarioWorkflowRuntime:
           # and initial_state; avoid leaking prompt workflow state (e.g. "tz").
           current_state = wf_obj.get("state") or initial
 
-        _log.info(
-          "workflow.action.state scenario=%s webspace=%s current_state=%s action=%s",
-          scenario_id,
-          webspace_id,
-          current_state,
-          action_id,
-        )
+        if scenario_id != "greet_on_boot":
+          _log.debug(
+            "workflow.action.state scenario=%s webspace=%s current_state=%s action=%s",
+            scenario_id,
+            webspace_id,
+            current_state,
+            action_id,
+          )
 
         # If object binding is not passed explicitly, try to reuse the
         # last known binding stored in the workflow projection.
@@ -208,13 +209,14 @@ class ScenarioWorkflowRuntime:
         # Resolve action metadata (including optional tool and next_state).
         action_meta = self._resolve_action(states, current_state, action_id)
         if not action_meta:
-          _log.info(
-            "workflow.action.missing_entry scenario=%s webspace=%s state=%s action=%s",
-            scenario_id,
-            webspace_id,
-            current_state,
-            action_id,
-          )
+          if scenario_id != "greet_on_boot":
+            _log.debug(
+              "workflow.action.missing_entry scenario=%s webspace=%s state=%s action=%s",
+              scenario_id,
+              webspace_id,
+              current_state,
+              action_id,
+            )
           return
 
         next_state = action_meta.get("next_state") or current_state
@@ -431,13 +433,14 @@ class ScenarioWorkflowRuntime:
     if object_id:
       payload["object_id"] = object_id
 
-    _log.info(
-      "workflow.action.tool scenario=%s webspace=%s skill=%s tool=%s",
-      scenario_id,
-      webspace_id,
-      skill_name,
-      tool_name,
-    )
+    if scenario_id != "greet_on_boot":
+      _log.debug(
+        "workflow.action.tool scenario=%s webspace=%s skill=%s tool=%s",
+        scenario_id,
+        webspace_id,
+        skill_name,
+        tool_name,
+      )
 
     def _call_tool() -> Any:
       return execute_skill_tool(
@@ -741,7 +744,7 @@ async def _on_workflow_action(evt: Dict[str, Any]) -> None:
   object_id = payload.get("object_id")
   ctx = get_ctx()
   runtime = ScenarioWorkflowRuntime(ctx)
-  _log.info(
+  _log.debug(
     "workflow.action scenario=%s webspace=%s action=%s object_type=%s object_id=%s",
     scenario_id,
     webspace_id,

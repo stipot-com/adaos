@@ -38,6 +38,21 @@ class WebDesktopService:
         return token or default_webspace_id()
 
     @staticmethod
+    def _read_installed(data_map: Any) -> WebDesktopInstalled:
+        """
+        Helper to normalise the installed structure from YDoc into a
+        WebDesktopInstalled instance.
+        """
+        raw = data_map.get("installed") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        apps_raw = raw.get("apps") or []
+        widgets_raw = raw.get("widgets") or []
+        apps = [str(x) for x in apps_raw if isinstance(x, (str, int))]
+        widgets = [str(x) for x in widgets_raw if isinstance(x, (str, int))]
+        return WebDesktopInstalled(apps=apps, widgets=widgets)
+
+    @staticmethod
     def _apply_install_toggle(
         webspace_id: str,
         ydoc: Any,
@@ -79,6 +94,78 @@ class WebDesktopService:
             target_id,
             sorted(apps),
             sorted(widgets),
+        )
+
+    def get_installed(self, webspace_id: Optional[str] = None) -> WebDesktopInstalled:
+        """
+        Read the current set of installed apps/widgets for a webspace.
+
+        This is a read-only helper; callers that need to change the
+        installed set should use ``toggle_*`` or ``set_installed*``.
+        """
+        webspace = self._resolve_webspace(webspace_id)
+        with get_ydoc(webspace) as ydoc:
+            data_map = ydoc.get_map("data")
+            return self._read_installed(data_map)
+
+    def set_installed(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
+        """
+        Replace the installed apps/widgets set for a webspace.
+
+        This is primarily intended for restoring state after a YJS
+        reload; typical UI interactions should continue to use
+        ``toggle_install``.
+        """
+        webspace = self._resolve_webspace(webspace_id)
+        apps = list(dict.fromkeys(installed.apps))
+        widgets = list(dict.fromkeys(installed.widgets))
+        with get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                data_map = ydoc.get_map("data")
+                next_installed = {"apps": apps, "widgets": widgets}
+                data_map.set(txn, "installed", next_installed)
+                desktop_value = data_map.get("desktop") or {}
+                if not isinstance(desktop_value, dict):
+                    desktop_value = {}
+                desktop_next = dict(desktop_value)
+                desktop_installed = dict(desktop_next.get("installed") or {})
+                desktop_installed["apps"] = apps
+                desktop_installed["widgets"] = widgets
+                desktop_next["installed"] = desktop_installed
+                data_map.set(txn, "desktop", desktop_next)
+        _log.debug(
+            "set installed webspace=%s apps=%s widgets=%s",
+            webspace,
+            apps,
+            widgets,
+        )
+
+    async def set_installed_async(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
+        """
+        Async variant of ``set_installed`` for use from async runtimes.
+        """
+        webspace = self._resolve_webspace(webspace_id)
+        apps = list(dict.fromkeys(installed.apps))
+        widgets = list(dict.fromkeys(installed.widgets))
+        async with async_get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                data_map = ydoc.get_map("data")
+                next_installed = {"apps": apps, "widgets": widgets}
+                data_map.set(txn, "installed", next_installed)
+                desktop_value = data_map.get("desktop") or {}
+                if not isinstance(desktop_value, dict):
+                    desktop_value = {}
+                desktop_next = dict(desktop_value)
+                desktop_installed = dict(desktop_next.get("installed") or {})
+                desktop_installed["apps"] = apps
+                desktop_installed["widgets"] = widgets
+                desktop_next["installed"] = desktop_installed
+                data_map.set(txn, "desktop", desktop_next)
+        _log.debug(
+            "set installed (async) webspace=%s apps=%s widgets=%s",
+            webspace,
+            apps,
+            widgets,
         )
 
     def toggle_install(self, item_type: str, target_id: str, webspace_id: Optional[str] = None) -> None:
@@ -140,3 +227,46 @@ class WebDesktopService:
                 name=f"web-desktop-toggle-{webspace}",
             )
 
+    def set_installed_with_live_room(
+        self,
+        installed: WebDesktopInstalled,
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Set the installed set while also attempting to update an in-memory
+        YDoc room so that connected browsers see the change immediately.
+
+        Intended for restoration flows (e.g. after YJS reload) rather
+        than direct user actions.
+        """
+        webspace = self._resolve_webspace(webspace_id)
+        apps = list(dict.fromkeys(installed.apps))
+        widgets = list(dict.fromkeys(installed.widgets))
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            data_map = doc.get_map("data")
+            next_installed = {"apps": apps, "widgets": widgets}
+            data_map.set(txn, "installed", next_installed)
+            desktop_value = data_map.get("desktop") or {}
+            if not isinstance(desktop_value, dict):
+                desktop_value = {}
+            desktop_next = dict(desktop_value)
+            desktop_installed = dict(desktop_next.get("installed") or {})
+            desktop_installed["apps"] = apps
+            desktop_installed["widgets"] = widgets
+            desktop_next["installed"] = desktop_installed
+            data_map.set(txn, "desktop", desktop_next)
+
+        live_applied = mutate_live_room(webspace, _mutator)
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_installed webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_installed_async(installed, webspace))
+        else:
+            loop.create_task(
+                self.set_installed_async(installed, webspace),
+                name=f"web-desktop-set-installed-{webspace}",
+            )

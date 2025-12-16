@@ -410,7 +410,7 @@ class WebspaceScenarioRuntime:
                 {
                     "id": app_id,
                     "title": title,
-                    "icon": "desktop-outline",
+                    "icon": "apps-outline",
                     "launchModal": "scenario_switcher",
                     "scenario_id": sid,
                 }
