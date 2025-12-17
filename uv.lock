@@ -29,6 +29,7 @@ dependencies = [
     { name = "uvicorn" },
     { name = "vosk" },
     { name = "watchdog" },
+    { name = "y-py" },
     { name = "ypy-websocket" },
 ]
 
@@ -70,6 +71,7 @@ requires-dist = [
     { name = "uvicorn" },
     { name = "vosk", specifier = ">=0.3.45" },
     { name = "watchdog", specifier = ">=4.0.1" },
+    { name = "y-py", specifier = ">=0.6.0" },
     { name = "ypy-websocket", specifier = ">=0.12.4" },
 ]
 provides-extras = ["dev"]
