@@ -39,32 +39,6 @@ else
 fi
 ok "Python environment ready"
 
-# 3) Frontend deps
-if [[ -d "$SUBMODULE_PATH" ]]; then
-  log "Installing frontend dependencies in $SUBMODULE_PATH ..."
-  pushd "$SUBMODULE_PATH" >/dev/null || die "cannot enter $SUBMODULE_PATH"
-  if have pnpm; then
-    pnpm install || die "pnpm install failed"
-    USED_PKG_CMD="pnpm install"
-  else
-    set +e
-    npm ci --no-audit --fund=false
-    rc=$?
-    set -e
-    if [[ $rc -eq 0 ]]; then
-      USED_PKG_CMD="npm ci"
-    else
-      warn "npm ci failed; falling back to npm install..."
-      npm install --no-audit --fund=false || die "npm install failed"
-      USED_PKG_CMD="npm install"
-    fi
-  fi
-  ok "Frontend dependencies installed ($USED_PKG_CMD)"
-  popd >/dev/null
-else
-  warn "Frontend path not found: $SUBMODULE_PATH (skipped)"
-fi
-
 # 4) .env
 if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env

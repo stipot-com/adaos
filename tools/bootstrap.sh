@@ -98,6 +98,7 @@ Next steps:
      npm run start:api-dev
   3) Frontend (Inimatic):
      cd src/adaos/integrations/inimatic
+     npm i
      npm run start
 EOF
 
@@ -123,16 +124,10 @@ if [[ -d .venv ]]; then
 fi
 [[ -d .venv ]] || "$PY_BIN" -m venv .venv
 
-log "Installing Python deps (editable)..."
+log "Installing Python deps (editable)..."ffront
 . .venv/bin/activate
 python -m pip install -U pip >/dev/null
 python -m pip install -e .[dev] || fail "pip install -e .[dev] failed"
-
-log "Installing frontend deps in $SUBMODULE_PATH ..."
-pushd "$SUBMODULE_PATH" >/dev/null || fail "cannot enter $SUBMODULE_PATH"
-smart_npm_install || fail "frontend deps install failed"
-ok "Frontend deps installed ($USED_PKG_CMD)"
-popd >/dev/null
 
 log "Bootstrapping .env..."
 [[ -f .env || ! -f .env.example ]] || cp .env.example .env

@@ -33,31 +33,6 @@ if (Test-Path "uv.lock") {
   if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 }
 
-# 3) Frontend deps (optional)
-Push-Location $SUBMODULE_PATH
-try {
-  if (Have "pnpm") {
-    pnpm install
-    if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
-    $USED_PKG_CMD = "pnpm install"
-  } else {
-    # сначала пытаемся reproducible ci, если lock синхронен
-    npm ci --no-audit --no-fund
-    if ($LASTEXITCODE -eq 0) {
-      $USED_PKG_CMD = "npm ci"
-    } else {
-      Write-Warning "npm ci failed; updating lock with npm install..."
-      npm install --no-audit --no-fund
-      if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-      $USED_PKG_CMD = "npm install"
-    }
-  }
-  Write-Host "Frontend dependencies installed ($USED_PKG_CMD)."
-}
-finally {
-  Pop-Location
-}
-
 # 4) .env bootstrap
 if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
   Copy-Item ".env.example" ".env"
