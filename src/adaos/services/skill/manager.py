@@ -317,6 +317,25 @@ class SkillManager:
             "tools_added": tools_added,
         }
 
+        # Keep local node capacity in sync so UI layers (e.g. web desktop)
+        # can discover skills/apps from node.yaml even when only runtime_update
+        # is used (e.g. `adaos setup update`).
+        try:
+            install_skill_in_capacity(name, str(version), active=True, dev=(space_normalized == "dev"))
+            try:
+                from adaos.services.node_config import load_config
+                from adaos.services.capacity import get_local_capacity
+                from adaos.services.registry.subnet_directory import get_directory
+
+                conf = load_config()
+                if conf.role == "hub":
+                    cap = get_local_capacity()
+                    get_directory().repo.replace_skill_capacity(conf.node_id, cap.get("skills") or [])
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         try:
             emit(
                 self.bus,

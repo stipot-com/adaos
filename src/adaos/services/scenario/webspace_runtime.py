@@ -254,16 +254,6 @@ class WebspaceScenarioRuntime:
             if decl:
                 decls.append(decl)
 
-        # Ensure base weather skill webui remains available even if capacity
-        # metadata is out of sync or the skill is not explicitly listed.
-        try:
-            weather_decl = self._load_webui("weather_skill", "default")
-        except Exception:
-            weather_decl = {}
-        if isinstance(weather_decl, dict) and weather_decl:
-            if not any(d.get("skill") == "weather_skill" for d in decls):
-                decls.append(weather_decl)
-
         # Always ensure desktop skill's own webui.json is loaded so that
         # base desktop modals remain available even if not listed in capacity.
         try:

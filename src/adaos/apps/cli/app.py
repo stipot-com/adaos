@@ -22,6 +22,7 @@ from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
 from adaos.apps.cli.commands import secret
 from adaos.apps.cli.commands import sandbox as sandbox_cmd
+from adaos.apps.cli.commands import setup as setup_cmd
 
 app = typer.Typer(help=_("cli.help"))
 
@@ -178,12 +179,17 @@ app.add_typer(api.app, name="api")
 app.add_typer(monitor.app, name="monitor")
 app.add_typer(repo.app, name="repo", help=_("cli.repo.help"))
 app.add_typer(scenario.app, name="scenario", help=_("cli.help_scenario"))
+app.add_typer(setup_cmd.autostart_app, name="autostart", help="OS autostart management")
 app.add_typer(switch_app, name="switch", help="Переключение профилей интеграций")
 app.add_typer(secret.app, name="secret")
 app.add_typer(sandbox_cmd.app, name="sandbox")
 app.add_typer(_sdk_export.app, name="sdk")
 app.add_typer(interpreter.app, name="interpreter", help="Интерпретатор и обучение")
 app.add_typer(dev.app, name="dev", help="Developer operations")
+
+# Root-level setup helpers
+app.command("install")(setup_cmd.install)
+app.command("update")(setup_cmd.update)
 
 # ---- Фильтрация интеграций по ENV ----
 _tts = _read("ADAOS_TTS", "native")

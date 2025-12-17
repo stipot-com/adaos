@@ -155,25 +155,15 @@ if (!(Test-Path ".env") -and (Test-Path ".env.example")) {
 }
 
 # Default webspace content (scenarios + skills)
-$defaultScenarios = @("web_desktop", "prompt_engineer_scenario")
-$defaultSkills = @("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
+# Keep logic inside `adaos install` so presets stay consistent across platforms.
 $adaosBase = Join-Path $PWD ".adaos"
 New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase
 
-foreach ($scenario in $defaultScenarios) {
-    Write-Host "Installing scenario $scenario..."
-    & .\.venv\Scripts\adaos.exe scenario install $scenario
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Scenario '$scenario' install failed (maybe already installed)."
-    }
-}
-foreach ($skill in $defaultSkills) {
-    Write-Host "Installing skill $skill..."
-    & .\.venv\Scripts\adaos.exe skill install $skill
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Skill '$skill' install failed (maybe already installed)."
-    }
+Write-Host "Installing default webspace content (adaos install)..."
+& .\.venv\Scripts\adaos.exe install
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "adaos install failed (check output above)."
 }
 
 $helpText = @'

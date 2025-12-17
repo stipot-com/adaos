@@ -56,7 +56,8 @@ async def ensure_webspace_seeded_from_scenario(
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
 
-    if ui_map.get("application") is not None:
+    application = ui_map.get("application")
+    if isinstance(application, dict) and application:
         _log.debug(
             "webspace %s already seeded (ui keys=%s, data keys=%s)",
             webspace_id,
@@ -89,7 +90,12 @@ async def ensure_webspace_seeded_from_scenario(
         ui.set(txn, "application", SEED["ui"]["application"])
         data.set(txn, "catalog", SEED["data"]["catalog"])
         data.set(txn, "installed", SEED["data"]["installed"])
-        data.set(txn, "weather", SEED["data"]["weather"])
+        try:
+            weather = (SEED.get("data") or {}).get("weather")
+            if weather is not None:
+                data.set(txn, "weather", weather)
+        except Exception:
+            pass
 
     try:
         await ystore.encode_state_as_update(ydoc)

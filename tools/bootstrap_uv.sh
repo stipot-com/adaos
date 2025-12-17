@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# tools/bootstrap_uv.sh — bootstrap на uv (Linux/macOS)
+# tools/bootstrap_uv.sh — bootstrap via uv (Linux/macOS)
 set -euo pipefail
 
 SUBMODULE_PATH="src/adaos/integrations/inimatic"
 
-log()  { printf '\033[36m▶ %s\033[0m\n' "$*"; }
-ok()   { printf '\033[32m✓ %s\033[0m\n' "$*"; }
-warn() { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
-die()  { printf '\033[31m✗ %s\033[0m\n' "$*"; exit 1; }
+log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
+ok()   { printf '\033[32m[+] %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m[!] %s\033[0m\n' "$*"; }
+die()  { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# 0) рабочая директория = корень репозитория (скрипт можно вызывать откуда угодно)
+# Repo root
 cd "$(dirname "$0")/.." || die "cannot cd to repo root"
 
 # 1) uv
@@ -20,7 +20,7 @@ if ! have uv; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 2) Python deps через uv (автообновление lock при рассинхроне)
+# 2) Python deps
 if [[ -f uv.lock ]]; then
   log "Syncing environment from uv.lock..."
   set +e
@@ -39,7 +39,7 @@ else
 fi
 ok "Python environment ready"
 
-# 3) Frontend deps (pnpm если есть, иначе npm ci -> npm install)
+# 3) Frontend deps
 if [[ -d "$SUBMODULE_PATH" ]]; then
   log "Installing frontend dependencies in $SUBMODULE_PATH ..."
   pushd "$SUBMODULE_PATH" >/dev/null || die "cannot enter $SUBMODULE_PATH"
@@ -54,7 +54,7 @@ if [[ -d "$SUBMODULE_PATH" ]]; then
     if [[ $rc -eq 0 ]]; then
       USED_PKG_CMD="npm ci"
     else
-      warn "npm ci failed; updating lock with npm install..."
+      warn "npm ci failed; falling back to npm install..."
       npm install --no-audit --fund=false || die "npm install failed"
       USED_PKG_CMD="npm install"
     fi
@@ -71,39 +71,27 @@ if [[ ! -f .env && -f .env.example ]]; then
   ok ".env created from .env.example"
 fi
 
-# 5) Короткая команда: добавим .venv/bin в PATH для текущей сессии
+# 5) Convenience PATH for current shell session
 if [[ -d ".venv/bin" ]]; then
   export PATH="$PWD/.venv/bin:$PATH"
 fi
 
-# 6) Default webspace content
-DEFAULT_SCENARIOS=("web_desktop" "prompt_engineer_scenario")
-DEFAULT_SKILLS=("weather_skill" "web_desktop_skill" "prompt_engineer_skill" "profile_skill")
+# 6) Default webspace content (scenarios + skills) via built-in `adaos install`
 ADAOS_BASE_DIR="$PWD/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
 
-log "Installing default webspace content..."
-for scn in "${DEFAULT_SCENARIOS[@]}"; do
-  log "  adaos scenario install $scn"
-  if ! uv run adaos scenario install "$scn"; then
-    warn "scenario '$scn' install failed (maybe already installed)"
-  fi
-done
-for skill in "${DEFAULT_SKILLS[@]}"; do
-  log "  adaos skill install $skill"
-  if ! uv run adaos skill install "$skill"; then
-    warn "skill '$skill' install failed (maybe already installed)"
-  fi
-done
-# 6) Сводка
+log "Installing default webspace content (adaos install)..."
+if ! uv run adaos install; then
+  warn "adaos install failed (check output above)"
+fi
+
 echo
-log "Bootstrap completed."
+ok "Bootstrap completed."
 echo "Quick checks:"
 echo "  uv --version"
 echo "  uv run python -V"
-echo "  adaos --help     # короткая команда должна работать в этой сессии"
+echo "  uv run adaos --help"
 echo
 echo "To run the API:"
 echo "  uv run adaos api serve --host 127.0.0.1 --port 8777 --reload"
-

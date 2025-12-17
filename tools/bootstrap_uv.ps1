@@ -70,26 +70,14 @@ if (Test-Path $venvBin) {
   $env:Path = "$venvBin;$env:Path"
 }
 
-# 6) Install default webspace content (scenarios/skills)
-$defaultScenarios = @("web_desktop", "prompt_engineer_scenario")
-$defaultSkills = @("weather_skill", "web_desktop_skill", "prompt_engineer_skill", "profile_skill")
+# 6) Default webspace content (scenarios + skills) via built-in `adaos install`
 $adaosBase = Join-Path $PWD ".adaos"
 New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase
-
-foreach ($scenario in $defaultScenarios) {
-  Write-Host "Installing scenario $scenario..."
-  uv run adaos scenario install $scenario | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Scenario '$scenario' install failed (possibly already installed)."
-  }
-}
-foreach ($skill in $defaultSkills) {
-  Write-Host "Installing skill $skill..."
-  uv run adaos skill install $skill | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Skill '$skill' install failed (possibly already installed)."
-  }
+Write-Host "Installing default webspace content (adaos install)..."
+uv run adaos install
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "adaos install failed (check output above)."
 }
 
 Write-Host ""
@@ -101,5 +89,8 @@ Write-Host "  adaos --help     (short command should work in this session)"
 Write-Host ""
 Write-Host "Activate virtual environment"
 Write-Host " ./.venv/Scripts/Activate.ps1"
+Write-Host ""
+Write-Host "Re-install base scenarios/skills (idempotent):"
+Write-Host "  adaos install"
 Write-Host "To run the API:"
-Write-Host "  adaos api serve --reload"
+Write-Host "  adaos api serve"
