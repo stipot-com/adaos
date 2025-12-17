@@ -42,3 +42,35 @@ adaos dev scenario publish weather-dashboard --bump minor
 # активация слота B
 adaos runtime activate weather-skill --slot B
 ```
+
+---
+
+## Install / Update
+
+```bash
+# Install default preset (scenarios + skills) into the default webspace (idempotent).
+adaos install --preset default
+
+# Update: pull sources, refresh skill runtimes, sync scenarios into Yjs webspace.
+adaos update --pull --sync-yjs --migrate-runtime
+```
+
+## Autostart
+
+```bash
+adaos autostart status
+adaos autostart enable --host 127.0.0.1 --port 8777
+adaos autostart disable
+```
+
+## Status (progress vs remote)
+
+```bash
+# All installed skills / scenarios (runtime + git status).
+adaos skill status
+adaos scenario status
+
+# One item + diff vs remote tracking branch.
+adaos skill status weather_skill --fetch --diff
+adaos scenario status web_desktop --fetch --diff
+```

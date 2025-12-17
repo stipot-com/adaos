@@ -37,3 +37,13 @@ adaos api serve --host 127.0.0.1 --port 8777
 # запустить тесты в песочнице
 adaos tests run
 ```
+
+## Install default content
+
+```bash
+# Install default scenarios/skills into the local webspace (idempotent).
+adaos install
+
+# Pull workspace + refresh runtimes + sync scenarios into Yjs.
+adaos update
+```

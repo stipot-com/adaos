@@ -67,7 +67,7 @@ adaos secrets import dump.json --skill weather_skill
 
 ## Observability
 
-Every install/test/activate/run operation logs under `slots/<slot>/logs/`. `adaos skill status --json` surfaces the active version, slot, readiness, previous slot, and the last test summary together with the location of the resolved manifest for inspection.
+Every install/test/activate/run operation logs under `slots/<slot>/logs/`. `adaos skill status --json` surfaces runtime state (active version/slot/readiness/tests) and `adaos skill status <NAME> --fetch --diff` shows git-level progress vs the configured remote.
 
 ## Weather skill reference
 
