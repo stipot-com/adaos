@@ -296,6 +296,42 @@ def dev_login(
             data_yaml["nats"] = nats_cfg
             _save_node(data_yaml)
             typer.echo("Saved NATS WS credentials to node.yaml")
+
+            # Ensure route rules exist so RouterService can route ui.notify to telegram.
+            try:
+                import yaml as _yaml
+                from pathlib import Path as _Path
+
+                base_dir = ctx.paths.base_dir()
+                rules_path = _Path(getattr(ctx.settings, "route_rules_path", "") or (base_dir / "route_rules.yaml"))
+                if not rules_path.is_absolute():
+                    rules_path = (base_dir / rules_path).resolve()
+                rules: dict = {}
+                if rules_path.exists():
+                    try:
+                        rules = _yaml.safe_load(rules_path.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        rules = {}
+                if not isinstance(rules, dict):
+                    rules = {}
+                if "rules" not in rules or not isinstance(rules.get("rules"), list):
+                    rules = {"version": 1, "rules": []}
+                items: list = list(rules.get("rules") or [])
+                have_tg = any(isinstance(r, dict) and ((r.get("target") or {}).get("io_type") == "telegram") for r in items)
+                have_stdout = any(isinstance(r, dict) and ((r.get("target") or {}).get("io_type") == "stdout") for r in items)
+                changed = False
+                if not have_tg:
+                    items.append({"match": {}, "target": {"node_id": "this", "kind": "io_type", "io_type": "telegram"}, "priority": 60})
+                    changed = True
+                if not have_stdout:
+                    items.append({"match": {}, "target": {"node_id": "this", "kind": "io_type", "io_type": "stdout"}, "priority": 50})
+                    changed = True
+                if changed:
+                    rules["rules"] = items
+                    rules_path.write_text(_yaml.safe_dump(rules, allow_unicode=True, sort_keys=False), encoding="utf-8")
+                    typer.echo(f"Updated route rules at {rules_path}")
+            except Exception as e:
+                _print_error(f"Failed to create route_rules.yaml: {e}")
         except Exception as e:
             _print_error(f"Failed to save NATS creds: {e}")
 

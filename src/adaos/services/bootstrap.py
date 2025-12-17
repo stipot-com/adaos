@@ -204,43 +204,27 @@ class BootstrapService:
 
         # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
         try:
-            # Guard: only enable NATS bridge if node.yaml contains an explicit 'nats' section on hub
-            enable_nats = False
-            node_nats: dict | None = None
-            try:
-                from adaos.services.capacity import _load_node_yaml as _load_node
-
-                nd = _load_node()
-                node_nats = (nd or {}).get("nats") if isinstance(nd, dict) else None
-                if isinstance(node_nats, dict) and node_nats:
-                    enable_nats = True
-            except Exception:
-                enable_nats = False
-
-            if not enable_nats:
-                # Do not attempt to connect using env defaults when node.yaml lacks 'nats'
-                print("[hub-io] NATS disabled: no 'nats' config in node.yaml")
-                return
-
-            # prefer env, fallback to node.yaml 'nats.ws_url' (but only when 'nats' exists)
-            nurl = os.getenv("NATS_WS_URL") or getattr(self.ctx.settings, "nats_url", None)
-            nuser = os.getenv("NATS_USER") or None
-            npass = os.getenv("NATS_PASS") or None
-            # Prefer node.yaml values over env to avoid mixing
-            try:
-                nc = node_nats or {}
-                node_ws = nc.get("ws_url")
-                if node_ws:
-                    nurl = node_ws
-                nuser = nc.get("user") or nuser
-                npass = nc.get("pass") or npass
-            except Exception:
-                pass
+            # Hot-reload friendly: read NATS config from node.yaml on every connect attempt.
             hub_id = (getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)).subnet_id
-            if nurl and hub_id:
+            if hub_id:
 
                 # Track connectivity state to log/emit only on transitions
                 reported_down = False
+
+                def _read_node_nats() -> tuple[str | None, str | None, str | None]:
+                    try:
+                        from adaos.services.capacity import _load_node_yaml as _load_node
+
+                        nd = _load_node()
+                        node_nats = (nd or {}).get("nats") if isinstance(nd, dict) else None
+                        if not isinstance(node_nats, dict) or not node_nats:
+                            return None, None, None
+                        nurl = str(node_nats.get("ws_url") or "") or None
+                        nuser = str(node_nats.get("user") or "") or None
+                        npass = str(node_nats.get("pass") or "") or None
+                        return nurl, nuser, npass
+                    except Exception:
+                        return None, None, None
 
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
@@ -262,8 +246,16 @@ class BootstrapService:
 
                     while True:
                         try:
-                            user = nuser or os.getenv("NATS_USER") or None
-                            pw = npass or os.getenv("NATS_PASS") or None
+                            nurl, nuser, npass = _read_node_nats()
+                            if not nurl or not nuser or not npass:
+                                # Wait for `adaos dev telegram` to provision credentials.
+                                if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                    print("[hub-io] NATS disabled: missing nats.ws_url/user/pass in node.yaml")
+                                await asyncio.sleep(2.0)
+                                continue
+
+                            user = nuser
+                            pw = npass
                             pw_mask = (pw[:3] + "***" + pw[-2:]) if pw and len(pw) > 6 else ("***" if pw else None)
                             # Build candidates without mixing WS and TCP schemes to avoid client errors.
                             candidates: List[str] = []
@@ -474,7 +466,10 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                 else:
-                                    if not (os.getenv("SILENCE_NATS_EOF", "0") == "1" and (type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower())):
+                                    if not (
+                                        os.getenv("SILENCE_NATS_EOF", "0") == "1"
+                                        and (type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower())
+                                    ):
                                         # Minimal single-line failure for non-EOF issues
                                         print(f"[hub-io] NATS connect failed: {_explain_connect_error(e)}")
                             except Exception:

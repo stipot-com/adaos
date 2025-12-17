@@ -181,7 +181,7 @@ class Settings:
             tg_bot_token=pick_env("TG_BOT_TOKEN", None) or None,
             nats_url=pick_env("NATS_URL", None) or None,
             files_tmp_dir=pick_env("FILES_TMP_DIR", str(base / "tmp")),
-            route_rules_path=pick_env("ROUTE_RULES_PATH", None) or None,
+            route_rules_path=pick_env("ROUTE_RULES_PATH", str(base / "route_rules.yaml")) or None,
             default_hub=pick_env("DEFAULT_HUB", None) or None,
         )
 

@@ -56,8 +56,26 @@ async def ensure_webspace_seeded_from_scenario(
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
 
+    def _is_seeded_state(app: object, catalog: object) -> bool:
+        if not isinstance(app, dict) or not app:
+            return False
+        modals = app.get("modals")
+        if not isinstance(modals, dict) or not modals:
+            return False
+        # Desktop relies on these catalogs; if they are missing the UI becomes
+        # "empty" after reload even though ui.application is a non-empty dict.
+        if "apps_catalog" not in modals or "widgets_catalog" not in modals:
+            return False
+        if not isinstance(catalog, dict):
+            return False
+        apps = catalog.get("apps")
+        widgets = catalog.get("widgets")
+        if not isinstance(apps, list) or not isinstance(widgets, list):
+            return False
+        return True
+
     application = ui_map.get("application")
-    if isinstance(application, dict) and application:
+    if _is_seeded_state(application, data_map.get("catalog")):
         _log.debug(
             "webspace %s already seeded (ui keys=%s, data keys=%s)",
             webspace_id,
