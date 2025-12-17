@@ -1723,6 +1723,7 @@ const createDraftHandler =
 				JSON.stringify({
 					stored_path: result.storedPath,
 					commit: result.commitSha,
+					sha256: sha256 ?? null,
 					ts: Date.now(),
 				})
 			)
@@ -1730,6 +1731,7 @@ const createDraftHandler =
 				ok: true,
 				stored_path: result.storedPath,
 				commit: result.commitSha,
+				sha256: sha256 ?? null,
 			})
 		} catch (error) {
 			console.error('failed to store draft', error)
@@ -1739,6 +1741,140 @@ const createDraftHandler =
 			})
 		}
 	}
+
+const getDraftMetaHandler =
+	(kind: DraftKind): express.RequestHandler =>
+	async (req, res) => {
+		const identity = req.auth
+		if (!identity)
+			return respondError(req, res, 401, 'client_certificate_required')
+
+		const name = qstr(req.query, 'name')
+		const payloadNodeId = qstr(req.query, 'node_id')
+		if (!name) return respondError(req, res, 400, 'missing_params')
+		try {
+			assertSafeName(name)
+		} catch {
+			return respondError(req, res, 400, 'invalid_name')
+		}
+
+		let subnetId: string
+		let nodeId: string
+
+		if (identity.type === 'node') {
+			subnetId = identity.subnetId
+			nodeId = identity.nodeId
+			if (payloadNodeId && payloadNodeId !== nodeId) {
+				return respondError(req, res, 403, 'node_mismatch')
+			}
+		} else if (identity.type === 'hub') {
+			subnetId = identity.subnetId
+			nodeId = payloadNodeId || 'hub'
+		} else {
+			return respondError(req, res, 403, 'invalid_client_certificate')
+		}
+
+		const keyPrefix =
+			kind === 'skills' ? SKILL_FORGE_KEY_PREFIX : SCENARIO_FORGE_KEY_PREFIX
+		const key = `${keyPrefix}:${subnetId}:${nodeId}:${name}`
+		try {
+			const raw = await redisClient.get(key)
+			if (!raw) return respondError(req, res, 404, 'not_found')
+			let parsed: any = {}
+			try {
+				parsed = JSON.parse(raw)
+			} catch {
+				parsed = {}
+			}
+			return res.json({
+				ok: true,
+				name,
+				subnet_id: subnetId,
+				node_id: nodeId,
+				stored_path: parsed?.stored_path ?? null,
+				commit: parsed?.commit ?? null,
+				sha256: parsed?.sha256 ?? null,
+				ts: parsed?.ts ?? null,
+			})
+		} catch (error) {
+			return handleError(req, res, error, {
+				status: 500,
+				code: 'draft_meta_failed',
+			})
+		}
+	}
+
+const getDraftArchiveHandler =
+	(kind: DraftKind): express.RequestHandler =>
+	async (req, res) => {
+		const identity = req.auth
+		if (!identity)
+			return respondError(req, res, 401, 'client_certificate_required')
+
+		const name = qstr(req.query, 'name')
+		const payloadNodeId = qstr(req.query, 'node_id')
+		if (!name) return respondError(req, res, 400, 'missing_params')
+		try {
+			assertSafeName(name)
+		} catch {
+			return respondError(req, res, 400, 'invalid_name')
+		}
+
+		let subnetId: string
+		let nodeId: string
+
+		if (identity.type === 'node') {
+			subnetId = identity.subnetId
+			nodeId = identity.nodeId
+			if (payloadNodeId && payloadNodeId !== nodeId) {
+				return respondError(req, res, 403, 'node_mismatch')
+			}
+		} else if (identity.type === 'hub') {
+			subnetId = identity.subnetId
+			nodeId = payloadNodeId || 'hub'
+		} else {
+			return respondError(req, res, 403, 'invalid_client_certificate')
+		}
+
+		const keyPrefix =
+			kind === 'skills' ? SKILL_FORGE_KEY_PREFIX : SCENARIO_FORGE_KEY_PREFIX
+		const key = `${keyPrefix}:${subnetId}:${nodeId}:${name}`
+		try {
+			const raw = await redisClient.get(key)
+			if (!raw) return respondError(req, res, 404, 'not_found')
+			let parsed: any = {}
+			try {
+				parsed = JSON.parse(raw)
+			} catch {
+				parsed = {}
+			}
+			const storedPath =
+				typeof parsed?.stored_path === 'string' ? parsed.stored_path : ''
+			if (!storedPath) return respondError(req, res, 404, 'not_found')
+			const abs = path.resolve(forgeManagerWorkdir(), storedPath)
+			if (!fs.existsSync(abs)) return respondError(req, res, 404, 'not_found')
+			const zip = new AdmZip()
+			zip.addLocalFolder(abs)
+			const buffer = zip.toBuffer()
+			const b64 = buffer.toString('base64')
+			return res.json({
+				ok: true,
+				name,
+				archive_b64: b64,
+				sha256: parsed?.sha256 ?? null,
+			})
+		} catch (error) {
+			return handleError(req, res, error, {
+				status: 500,
+				code: 'draft_archive_failed',
+			})
+		}
+	}
+
+function forgeManagerWorkdir(): string {
+	// Keep in sync with ForgeManager initialization above.
+	return FORGE_WORKDIR || '/var/lib/adaos/forge'
+}
 
 const qstr = (q: any, key: string): string =>
 	typeof q?.[key] === 'string' ? q[key] : ''
@@ -1917,6 +2053,12 @@ const deleteRegistryHandler =
 
 mtlsRouter.post('/skills/draft', createDraftHandler('skills'))
 mtlsRouter.post('/scenarios/draft', createDraftHandler('scenarios'))
+
+mtlsRouter.get('/skills/draft', getDraftMetaHandler('skills'))
+mtlsRouter.get('/scenarios/draft', getDraftMetaHandler('scenarios'))
+
+mtlsRouter.get('/skills/draft/archive', getDraftArchiveHandler('skills'))
+mtlsRouter.get('/scenarios/draft/archive', getDraftArchiveHandler('scenarios'))
 
 mtlsRouter.delete('/skills/draft', deleteDraftHandler('skills'))
 mtlsRouter.delete('/scenarios/draft', deleteDraftHandler('scenarios'))

@@ -14,11 +14,17 @@ import requests
 from adaos.sdk.data.i18n import _
 from adaos.apps.cli.git_status import (
     compute_path_status,
+    ensure_remote,
     fetch_remote,
     render_diff,
     resolve_base_ref,
+    render_noindex_diff,
+    unzip_b64_to_dir,
 )
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_config import load_config
+from adaos.services.root.client import RootHttpClient
+from adaos.services.root.service import create_zip_bytes
 from adaos.services.skill.manager import RuntimeInstallResult, SkillManager
 from adaos.services.skill.runtime import (
     SkillRuntimeError,
@@ -549,6 +555,7 @@ def rollback(name: str):
 @app.command("status")
 def status(
     name: Optional[str] = typer.Argument(None, help="skill name (omit to report for all installed skills)"),
+    space: str = typer.Option("workspace", "--space", help="workspace | dev"),
     remote: str = typer.Option("origin", "--remote", help="git remote name for comparison"),
     ref: Optional[str] = typer.Option(None, "--ref", help="base git ref (default: <remote>/HEAD or @{u})"),
     fetch: bool = typer.Option(False, "--fetch/--no-fetch", help="git fetch before comparing"),
@@ -557,83 +564,183 @@ def status(
 ):
     mgr = _mgr()
     ctx = get_ctx()
+    space = (space or "workspace").strip().lower()
+    if space not in {"workspace", "dev"}:
+        typer.secho("--space must be 'workspace' or 'dev'", fg=typer.colors.RED)
+        raise typer.Exit(2)
+
     workspace_root = ctx.paths.workspace_dir()
     skills_root = ctx.paths.skills_workspace_dir()
+    dev_skills_root = ctx.paths.dev_skills_dir()
+    dev_skills_root = dev_skills_root() if callable(dev_skills_root) else dev_skills_root
 
     if diff and not name:
         typer.secho("--diff requires a specific skill name", fg=typer.colors.RED)
         raise typer.Exit(2)
 
-    if fetch:
-        err = fetch_remote(workspace_root, remote=remote)
-        if err:
-            typer.secho(f"git fetch failed: {err}", fg=typer.colors.YELLOW)
+    # Workspace: compare against main registry repo.
+    REGISTRY_URL = os.getenv("ADAOS_WORKSPACE_REGISTRY_REPO", "https://github.com/stipot-com/adaos-registry.git")
+    REGISTRY_REMOTE = os.getenv("ADAOS_WORKSPACE_REGISTRY_REMOTE", "registry")
+    REGISTRY_BRANCH = os.getenv("ADAOS_WORKSPACE_REGISTRY_BRANCH", "main")
 
-    base_ref = (ref or "").strip() or resolve_base_ref(workspace_root, remote=remote)
+    if space == "workspace":
+        # Ensure expected remote exists; allow user override via --remote/--ref.
+        if remote == "origin" and not ref:
+            ensure_remote(workspace_root, name=REGISTRY_REMOTE, url=REGISTRY_URL)
+            remote = REGISTRY_REMOTE
+            ref = f"{REGISTRY_REMOTE}/{REGISTRY_BRANCH}"
+        if fetch:
+            err = fetch_remote(workspace_root, remote=remote)
+            if err:
+                typer.secho(f"git fetch failed: {err}", fg=typer.colors.YELLOW)
+
+        base_ref = (ref or "").strip() or resolve_base_ref(workspace_root, remote=remote)
+    else:
+        # Dev: compare local dev folder with the Root backend draft state (API).
+        base_ref = None
 
     if name:
         names = [name]
     else:
-        try:
-            rows = SqliteSkillRegistry(ctx.sql).list()
-        except Exception:
-            rows = []
-        names = []
-        for row in rows:
-            n = getattr(row, "name", None) or getattr(row, "id", None)
-            if not n or not bool(getattr(row, "installed", True)):
-                continue
-            names.append(str(n))
-        names = sorted(set(names))
+        if space == "dev":
+            # In dev space, registry may not reflect local dev folders; prefer filesystem.
+            root = Path(dev_skills_root)
+            names = []
+            if root.exists():
+                for child in root.iterdir():
+                    if child.is_dir():
+                        names.append(child.name)
+            names = sorted(set(names))
+        else:
+            try:
+                rows = SqliteSkillRegistry(ctx.sql).list()
+            except Exception:
+                rows = []
+            names = []
+            for row in rows:
+                n = getattr(row, "name", None) or getattr(row, "id", None)
+                if not n or not bool(getattr(row, "installed", True)):
+                    continue
+                names.append(str(n))
+            names = sorted(set(names))
 
     results: list[dict] = []
     for skill_name in names:
         runtime_state = None
         runtime_error = None
-        try:
-            runtime_state = mgr.runtime_status(skill_name)
-        except Exception as exc:
-            runtime_error = str(exc)
+        if space == "workspace":
+            try:
+                runtime_state = mgr.runtime_status(skill_name)
+            except Exception as exc:
+                runtime_error = str(exc)
 
-        path_status = compute_path_status(
-            workdir=workspace_root,
-            path=(Path(skills_root) / skill_name),
-            base_ref=base_ref,
-        )
+        if space == "workspace":
+            path_status = compute_path_status(
+                workdir=workspace_root,
+                path=(Path(skills_root) / skill_name),
+                base_ref=base_ref,
+            )
+            entry = {
+                "name": skill_name,
+                "space": space,
+                "runtime": runtime_state,
+                "runtime_error": runtime_error,
+                "git": {
+                    "path": path_status.path,
+                    "exists": path_status.exists,
+                    "dirty": path_status.dirty,
+                    "base_ref": path_status.base_ref,
+                    "changed_vs_base": path_status.changed_vs_base,
+                    "local_last_commit": (
+                        {
+                            "sha": path_status.local_last_commit.sha,
+                            "timestamp": path_status.local_last_commit.timestamp,
+                            "iso": path_status.local_last_commit.iso,
+                            "subject": path_status.local_last_commit.subject,
+                        }
+                        if path_status.local_last_commit
+                        else None
+                    ),
+                    "base_last_commit": (
+                        {
+                            "sha": path_status.base_last_commit.sha,
+                            "timestamp": path_status.base_last_commit.timestamp,
+                            "iso": path_status.base_last_commit.iso,
+                            "subject": path_status.base_last_commit.subject,
+                        }
+                        if path_status.base_last_commit
+                        else None
+                    ),
+                    "error": path_status.error,
+                },
+            }
+        else:
+            cfg = load_config()
+            base_url = getattr(getattr(cfg, "root_settings", None), "base_url", None) or "https://api.inimatic.com"
+            node_id = getattr(getattr(cfg, "node_settings", None), "id", None) or getattr(cfg, "node_id", None) or "hub"
+            ca_path = cfg.ca_cert_path()
+            cert_path = cfg.hub_cert_path()
+            key_path = cfg.hub_key_path()
+            verify: str | bool = str(ca_path) if ca_path.exists() else True
+            cert = (str(cert_path), str(key_path)) if cert_path.exists() and key_path.exists() else None
 
-        entry = {
-            "name": skill_name,
-            "runtime": runtime_state,
-            "runtime_error": runtime_error,
-            "git": {
-                "path": path_status.path,
-                "exists": path_status.exists,
-                "dirty": path_status.dirty,
-                "base_ref": path_status.base_ref,
-                "changed_vs_base": path_status.changed_vs_base,
-                "local_last_commit": (
-                    {
-                        "sha": path_status.local_last_commit.sha,
-                        "timestamp": path_status.local_last_commit.timestamp,
-                        "iso": path_status.local_last_commit.iso,
-                        "subject": path_status.local_last_commit.subject,
-                    }
-                    if path_status.local_last_commit
-                    else None
-                ),
-                "base_last_commit": (
-                    {
-                        "sha": path_status.base_last_commit.sha,
-                        "timestamp": path_status.base_last_commit.timestamp,
-                        "iso": path_status.base_last_commit.iso,
-                        "subject": path_status.base_last_commit.subject,
-                    }
-                    if path_status.base_last_commit
-                    else None
-                ),
-                "error": path_status.error,
-            },
-        }
+            client = RootHttpClient(base_url=base_url)
+            local_dir = Path(dev_skills_root) / skill_name
+            local_sha256 = None
+            try:
+                import hashlib
+
+                local_bytes = create_zip_bytes(local_dir)
+                local_sha256 = hashlib.sha256(local_bytes).hexdigest()
+            except Exception:
+                local_sha256 = None
+
+            remote_meta = None
+            remote_error = None
+            try:
+                remote_meta = client.get_skill_draft_info(name=skill_name, node_id=str(node_id), verify=verify, cert=cert)
+            except Exception as exc:
+                remote_error = str(exc)
+
+            remote_sha256 = None
+            if isinstance(remote_meta, dict):
+                remote_sha256 = remote_meta.get("sha256")
+
+            changed_vs_base = None
+            if local_sha256 and remote_sha256:
+                changed_vs_base = str(local_sha256) != str(remote_sha256)
+
+            diff_text = None
+            if diff and name == skill_name:
+                try:
+                    arch = client.get_skill_draft_archive(name=skill_name, node_id=str(node_id), verify=verify, cert=cert)
+                    b64 = str(arch.get("archive_b64") or "")
+                    if b64:
+                        import tempfile
+
+                        with tempfile.TemporaryDirectory() as tmp:
+                            remote_dir = Path(tmp) / "remote"
+                            remote_dir.mkdir(parents=True, exist_ok=True)
+                            unzip_b64_to_dir(archive_b64=b64, dest=remote_dir)
+                            _changed, diff_out = render_noindex_diff(left=remote_dir, right=local_dir)
+                            diff_text = diff_out
+                except Exception:
+                    diff_text = None
+
+            entry = {
+                "name": skill_name,
+                "space": space,
+                "dev_compare": {
+                    "node_id": str(node_id),
+                    "base_url": base_url,
+                    "local_path": local_dir.as_posix(),
+                    "local_sha256": local_sha256,
+                    "remote": remote_meta,
+                    "remote_error": remote_error,
+                    "changed_vs_base": changed_vs_base,
+                    "diff": diff_text,
+                },
+            }
         results.append(entry)
 
     if json_output:
@@ -646,9 +753,10 @@ def status(
         st = entry.get("runtime") or {}
         g = entry.get("git") or {}
         typer.echo(f"skill: {entry.get('name')}")
+        typer.echo(f"space: {entry.get('space')}")
         if entry.get("runtime_error"):
             typer.secho(f"runtime: error: {entry.get('runtime_error')}", fg=typer.colors.YELLOW)
-        else:
+        elif space == "workspace":
             typer.echo(f"version: {st.get('version')}")
             typer.echo(f"active slot: {st.get('active_slot')}")
             if st.get("ready", True):
@@ -669,33 +777,47 @@ def status(
             if default_tool:
                 typer.echo(f"default tool: {default_tool}")
 
-        typer.echo(f"git path: {g.get('path')}")
-        typer.echo(f"git base: {g.get('base_ref') or '(none)'}")
-        if g.get("error"):
-            typer.secho(f"git: {g.get('error')}", fg=typer.colors.YELLOW)
-        else:
-            flags: list[str] = []
-            if g.get("dirty"):
-                flags.append("dirty")
-            if g.get("changed_vs_base"):
-                flags.append("diff")
-            typer.echo("git status: " + (", ".join(flags) if flags else "clean"))
-            if g.get("local_last_commit"):
-                lc = g["local_last_commit"]
-                typer.echo(f"last local: {lc.get('sha')} {lc.get('iso') or lc.get('timestamp')} {lc.get('subject')}")
-            if g.get("base_last_commit"):
-                bc = g["base_last_commit"]
-                typer.echo(f"last base:  {bc.get('sha')} {bc.get('iso') or bc.get('timestamp')} {bc.get('subject')}")
-
-        if diff:
-            if not base_ref:
-                typer.secho("cannot diff: base ref is not available", fg=typer.colors.YELLOW)
+        if space == "workspace":
+            typer.echo(f"git path: {g.get('path')}")
+            typer.echo(f"git base: {g.get('base_ref') or '(none)'}")
+            if g.get("error"):
+                typer.secho(f"git: {g.get('error')}", fg=typer.colors.YELLOW)
             else:
-                try:
-                    typer.echo(render_diff(workspace_root, base_ref=base_ref, path=str(g.get("path") or "")))
-                except Exception as exc:
-                    typer.secho(f"diff failed: {exc}", fg=typer.colors.RED)
-                    raise typer.Exit(1) from exc
+                flags: list[str] = []
+                if g.get("dirty"):
+                    flags.append("dirty")
+                if g.get("changed_vs_base"):
+                    flags.append("diff")
+                typer.echo("git status: " + (", ".join(flags) if flags else "clean"))
+                if g.get("local_last_commit"):
+                    lc = g["local_last_commit"]
+                    typer.echo(f"last local: {lc.get('sha')} {lc.get('iso') or lc.get('timestamp')} {lc.get('subject')}")
+                if g.get("base_last_commit"):
+                    bc = g["base_last_commit"]
+                    typer.echo(f"last base:  {bc.get('sha')} {bc.get('iso') or bc.get('timestamp')} {bc.get('subject')}")
+
+            if diff:
+                if not base_ref:
+                    typer.secho("cannot diff: base ref is not available", fg=typer.colors.YELLOW)
+                else:
+                    try:
+                        typer.echo(render_diff(workspace_root, base_ref=base_ref, path=str(g.get("path") or "")))
+                    except Exception as exc:
+                        typer.secho(f"diff failed: {exc}", fg=typer.colors.RED)
+                        raise typer.Exit(1) from exc
+        else:
+            dc = entry.get("dev_compare") or {}
+            typer.echo(f"root base: {dc.get('base_url')}")
+            typer.echo(f"node_id: {dc.get('node_id')}")
+            typer.echo(f"local path: {dc.get('local_path')}")
+            if dc.get("changed_vs_base") is True:
+                typer.secho("status: diff", fg=typer.colors.YELLOW)
+            elif dc.get("changed_vs_base") is False:
+                typer.echo("status: clean")
+            else:
+                typer.secho("status: unknown", fg=typer.colors.YELLOW)
+            if diff and dc.get("diff"):
+                typer.echo(dc.get("diff") or "")
         return
 
     # Summary for all skills
@@ -705,12 +827,17 @@ def status(
         flags: list[str] = []
         if entry.get("runtime_error"):
             flags.append("runtime-error")
-        if g.get("dirty"):
-            flags.append("dirty")
-        if g.get("changed_vs_base"):
-            flags.append("diff")
-        version = st.get("version") or "unknown"
-        slot = st.get("active_slot") or "n/a"
+        if space == "workspace":
+            if g.get("dirty"):
+                flags.append("dirty")
+            if g.get("changed_vs_base"):
+                flags.append("diff")
+        else:
+            dc = entry.get("dev_compare") or {}
+            if dc.get("changed_vs_base"):
+                flags.append("diff")
+        version = st.get("version") or ("n/a" if space == "dev" else "unknown")
+        slot = st.get("active_slot") or ("n/a" if space == "dev" else "n/a")
         suffix = f" [{', '.join(flags)}]" if flags else ""
         typer.echo(f"{entry.get('name')}: v{version} slot={slot}{suffix}")
 

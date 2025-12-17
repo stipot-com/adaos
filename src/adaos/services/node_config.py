@@ -424,9 +424,31 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
 
 def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
     conf.sync_sections()
+    path = _config_path(ctx)
     data = conf.to_dict()
-    _config_path(ctx).write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+
+    def _deep_merge(existing: Any, overlay: Any) -> Any:
+        if not isinstance(existing, dict) or not isinstance(overlay, dict):
+            return overlay
+        merged: dict[str, Any] = dict(existing)
+        for key, value in overlay.items():
+            if key in merged and isinstance(merged.get(key), dict) and isinstance(value, dict):
+                merged[key] = _deep_merge(merged.get(key), value)
+            else:
+                merged[key] = value
+        return merged
+
+    try:
+        existing_raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        existing_raw = {}
+    if not isinstance(existing_raw, dict):
+        existing_raw = {}
+
+    # Preserve unknown top-level sections (e.g. capacity) when rewriting node.yaml.
+    merged = _deep_merge(existing_raw, data)
+    path.write_text(
+        yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
 

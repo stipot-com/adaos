@@ -15,10 +15,15 @@ from adaos.apps.cli.i18n import _
 from adaos.apps.cli.git_status import (
     compute_path_status,
     fetch_remote,
+    unzip_b64_to_dir,
+    render_noindex_diff,
     render_diff,
     resolve_base_ref,
 )
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_config import load_config
+from adaos.services.root.client import RootHttpClient
+from adaos.services.root.service import create_zip_bytes
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.scaffold import create as scaffold_create
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
@@ -96,6 +101,7 @@ def list_cmd(
 @app.command("status")
 def status(
     name: Optional[str] = typer.Argument(None, help="scenario name (omit to report for all installed scenarios)"),
+    space: str = typer.Option("workspace", "--space", help="workspace | dev"),
     remote: str = typer.Option("origin", "--remote", help="git remote name for comparison"),
     ref: Optional[str] = typer.Option(None, "--ref", help="base git ref (default: <remote>/HEAD or @{u})"),
     fetch: bool = typer.Option(False, "--fetch/--no-fetch", help="git fetch before comparing"),
@@ -103,34 +109,63 @@ def status(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     ctx = get_ctx()
+    space = (space or "workspace").strip().lower()
+    if space not in {"workspace", "dev"}:
+        typer.secho("--space must be 'workspace' or 'dev'", fg=typer.colors.RED)
+        raise typer.Exit(2)
+
     workspace_root = ctx.paths.workspace_dir()
     scenarios_root = ctx.paths.scenarios_workspace_dir()
+    dev_scenarios_root = ctx.paths.dev_scenarios_dir()
+    dev_scenarios_root = dev_scenarios_root() if callable(dev_scenarios_root) else dev_scenarios_root
 
     if diff and not name:
         typer.secho("--diff requires a specific scenario name", fg=typer.colors.RED)
         raise typer.Exit(2)
 
-    if fetch:
-        err = fetch_remote(workspace_root, remote=remote)
-        if err:
-            typer.secho(f"git fetch failed: {err}", fg=typer.colors.YELLOW)
+    REGISTRY_URL = os.getenv("ADAOS_WORKSPACE_REGISTRY_REPO", "https://github.com/stipot-com/adaos-registry.git")
+    REGISTRY_REMOTE = os.getenv("ADAOS_WORKSPACE_REGISTRY_REMOTE", "registry")
+    REGISTRY_BRANCH = os.getenv("ADAOS_WORKSPACE_REGISTRY_BRANCH", "main")
 
-    base_ref = (ref or "").strip() or resolve_base_ref(workspace_root, remote=remote)
+    if space == "workspace":
+        if remote == "origin" and not ref:
+            # Best-effort: align default remote to registry/main.
+            from adaos.apps.cli.git_status import ensure_remote
+
+            ensure_remote(workspace_root, name=REGISTRY_REMOTE, url=REGISTRY_URL)
+            remote = REGISTRY_REMOTE
+            ref = f"{REGISTRY_REMOTE}/{REGISTRY_BRANCH}"
+        if fetch:
+            err = fetch_remote(workspace_root, remote=remote)
+            if err:
+                typer.secho(f"git fetch failed: {err}", fg=typer.colors.YELLOW)
+        base_ref = (ref or "").strip() or resolve_base_ref(workspace_root, remote=remote)
+    else:
+        base_ref = None
 
     if name:
         names = [name]
     else:
-        try:
-            rows = SqliteScenarioRegistry(ctx.sql).list()
-        except Exception:
-            rows = []
-        names = []
-        for row in rows:
-            n = getattr(row, "name", None) or getattr(row, "id", None)
-            if not n or not bool(getattr(row, "installed", True)):
-                continue
-            names.append(str(n))
-        names = sorted(set(names))
+        if space == "dev":
+            root = Path(dev_scenarios_root)
+            names = []
+            if root.exists():
+                for child in root.iterdir():
+                    if child.is_dir():
+                        names.append(child.name)
+            names = sorted(set(names))
+        else:
+            try:
+                rows = SqliteScenarioRegistry(ctx.sql).list()
+            except Exception:
+                rows = []
+            names = []
+            for row in rows:
+                n = getattr(row, "name", None) or getattr(row, "id", None)
+                if not n or not bool(getattr(row, "installed", True)):
+                    continue
+                names.append(str(n))
+            names = sorted(set(names))
 
     rows_by_name = {}
     try:
@@ -143,45 +178,117 @@ def status(
     for scenario_name in names:
         row = rows_by_name.get(scenario_name)
         version = getattr(row, "active_version", None) if row is not None else None
-        path_status = compute_path_status(
-            workdir=workspace_root,
-            path=(Path(scenarios_root) / scenario_name),
-            base_ref=base_ref,
-        )
-        results.append(
-            {
-                "name": scenario_name,
-                "version": version or "unknown",
-                "git": {
-                    "path": path_status.path,
-                    "exists": path_status.exists,
-                    "dirty": path_status.dirty,
-                    "base_ref": path_status.base_ref,
-                    "changed_vs_base": path_status.changed_vs_base,
-                    "local_last_commit": (
-                        {
-                            "sha": path_status.local_last_commit.sha,
-                            "timestamp": path_status.local_last_commit.timestamp,
-                            "iso": path_status.local_last_commit.iso,
-                            "subject": path_status.local_last_commit.subject,
-                        }
-                        if path_status.local_last_commit
-                        else None
-                    ),
-                    "base_last_commit": (
-                        {
-                            "sha": path_status.base_last_commit.sha,
-                            "timestamp": path_status.base_last_commit.timestamp,
-                            "iso": path_status.base_last_commit.iso,
-                            "subject": path_status.base_last_commit.subject,
-                        }
-                        if path_status.base_last_commit
-                        else None
-                    ),
-                    "error": path_status.error,
-                },
-            }
-        )
+        if space == "workspace":
+            path_status = compute_path_status(
+                workdir=workspace_root,
+                path=(Path(scenarios_root) / scenario_name),
+                base_ref=base_ref,
+            )
+            results.append(
+                {
+                    "name": scenario_name,
+                    "space": space,
+                    "version": version or "unknown",
+                    "git": {
+                        "path": path_status.path,
+                        "exists": path_status.exists,
+                        "dirty": path_status.dirty,
+                        "base_ref": path_status.base_ref,
+                        "changed_vs_base": path_status.changed_vs_base,
+                        "local_last_commit": (
+                            {
+                                "sha": path_status.local_last_commit.sha,
+                                "timestamp": path_status.local_last_commit.timestamp,
+                                "iso": path_status.local_last_commit.iso,
+                                "subject": path_status.local_last_commit.subject,
+                            }
+                            if path_status.local_last_commit
+                            else None
+                        ),
+                        "base_last_commit": (
+                            {
+                                "sha": path_status.base_last_commit.sha,
+                                "timestamp": path_status.base_last_commit.timestamp,
+                                "iso": path_status.base_last_commit.iso,
+                                "subject": path_status.base_last_commit.subject,
+                            }
+                            if path_status.base_last_commit
+                            else None
+                        ),
+                        "error": path_status.error,
+                    },
+                }
+            )
+        else:
+            cfg = load_config()
+            base_url = getattr(getattr(cfg, "root_settings", None), "base_url", None) or "https://api.inimatic.com"
+            node_id = getattr(getattr(cfg, "node_settings", None), "id", None) or getattr(cfg, "node_id", None) or "hub"
+            ca_path = cfg.ca_cert_path()
+            cert_path = cfg.hub_cert_path()
+            key_path = cfg.hub_key_path()
+            verify: str | bool = str(ca_path) if ca_path.exists() else True
+            cert = (str(cert_path), str(key_path)) if cert_path.exists() and key_path.exists() else None
+
+            client = RootHttpClient(base_url=base_url)
+            local_dir = Path(dev_scenarios_root) / scenario_name
+            local_sha256 = None
+            try:
+                import hashlib
+
+                local_bytes = create_zip_bytes(local_dir)
+                local_sha256 = hashlib.sha256(local_bytes).hexdigest()
+            except Exception:
+                local_sha256 = None
+
+            remote_meta = None
+            remote_error = None
+            try:
+                remote_meta = client.get_scenario_draft_info(name=scenario_name, node_id=str(node_id), verify=verify, cert=cert)
+            except Exception as exc:
+                remote_error = str(exc)
+
+            remote_sha256 = None
+            if isinstance(remote_meta, dict):
+                remote_sha256 = remote_meta.get("sha256")
+
+            changed_vs_base = None
+            if local_sha256 and remote_sha256:
+                changed_vs_base = str(local_sha256) != str(remote_sha256)
+
+            diff_text = None
+            if diff and name == scenario_name:
+                try:
+                    arch = client.get_scenario_draft_archive(name=scenario_name, node_id=str(node_id), verify=verify, cert=cert)
+                    b64 = str(arch.get("archive_b64") or "")
+                    if b64:
+                        import tempfile
+
+                        with tempfile.TemporaryDirectory() as tmp:
+                            remote_dir = Path(tmp) / "remote"
+                            remote_dir.mkdir(parents=True, exist_ok=True)
+                            unzip_b64_to_dir(archive_b64=b64, dest=remote_dir)
+                            _changed, diff_out = render_noindex_diff(left=remote_dir, right=local_dir)
+                            diff_text = diff_out
+                except Exception:
+                    diff_text = None
+
+            results.append(
+                {
+                    "name": scenario_name,
+                    "space": space,
+                    "version": version or "unknown",
+                    "dev_compare": {
+                        "node_id": str(node_id),
+                        "base_url": base_url,
+                        "local_path": local_dir.as_posix(),
+                        "local_sha256": local_sha256,
+                        "remote": remote_meta,
+                        "remote_error": remote_error,
+                        "changed_vs_base": changed_vs_base,
+                        "diff": diff_text,
+                    },
+                }
+            )
 
     if json_output:
         typer.echo(json.dumps({"scenarios": results}, ensure_ascii=False, indent=2))
@@ -191,43 +298,63 @@ def status(
         entry = results[0] if results else {}
         g = entry.get("git") or {}
         typer.echo(f"scenario: {entry.get('name')}")
+        typer.echo(f"space: {entry.get('space')}")
         typer.echo(f"version: {entry.get('version')}")
-        typer.echo(f"git path: {g.get('path')}")
-        typer.echo(f"git base: {g.get('base_ref') or '(none)'}")
-        if g.get("error"):
-            typer.secho(f"git: {g.get('error')}", fg=typer.colors.YELLOW)
-        else:
-            flags: list[str] = []
-            if g.get("dirty"):
-                flags.append("dirty")
-            if g.get("changed_vs_base"):
-                flags.append("diff")
-            typer.echo("git status: " + (", ".join(flags) if flags else "clean"))
-            if g.get("local_last_commit"):
-                lc = g["local_last_commit"]
-                typer.echo(f"last local: {lc.get('sha')} {lc.get('iso') or lc.get('timestamp')} {lc.get('subject')}")
-            if g.get("base_last_commit"):
-                bc = g["base_last_commit"]
-                typer.echo(f"last base:  {bc.get('sha')} {bc.get('iso') or bc.get('timestamp')} {bc.get('subject')}")
-
-        if diff:
-            if not base_ref:
-                typer.secho("cannot diff: base ref is not available", fg=typer.colors.YELLOW)
+        if space == "workspace":
+            typer.echo(f"git path: {g.get('path')}")
+            typer.echo(f"git base: {g.get('base_ref') or '(none)'}")
+            if g.get("error"):
+                typer.secho(f"git: {g.get('error')}", fg=typer.colors.YELLOW)
             else:
-                try:
-                    typer.echo(render_diff(workspace_root, base_ref=base_ref, path=str(g.get("path") or "")))
-                except Exception as exc:
-                    typer.secho(f"diff failed: {exc}", fg=typer.colors.RED)
-                    raise typer.Exit(1) from exc
+                flags: list[str] = []
+                if g.get("dirty"):
+                    flags.append("dirty")
+                if g.get("changed_vs_base"):
+                    flags.append("diff")
+                typer.echo("git status: " + (", ".join(flags) if flags else "clean"))
+                if g.get("local_last_commit"):
+                    lc = g["local_last_commit"]
+                    typer.echo(f"last local: {lc.get('sha')} {lc.get('iso') or lc.get('timestamp')} {lc.get('subject')}")
+                if g.get("base_last_commit"):
+                    bc = g["base_last_commit"]
+                    typer.echo(f"last base:  {bc.get('sha')} {bc.get('iso') or bc.get('timestamp')} {bc.get('subject')}")
+
+            if diff:
+                if not base_ref:
+                    typer.secho("cannot diff: base ref is not available", fg=typer.colors.YELLOW)
+                else:
+                    try:
+                        typer.echo(render_diff(workspace_root, base_ref=base_ref, path=str(g.get("path") or "")))
+                    except Exception as exc:
+                        typer.secho(f"diff failed: {exc}", fg=typer.colors.RED)
+                        raise typer.Exit(1) from exc
+        else:
+            dc = entry.get("dev_compare") or {}
+            typer.echo(f"root base: {dc.get('base_url')}")
+            typer.echo(f"node_id: {dc.get('node_id')}")
+            typer.echo(f"local path: {dc.get('local_path')}")
+            if dc.get("changed_vs_base") is True:
+                typer.secho("status: diff", fg=typer.colors.YELLOW)
+            elif dc.get("changed_vs_base") is False:
+                typer.echo("status: clean")
+            else:
+                typer.secho("status: unknown", fg=typer.colors.YELLOW)
+            if diff and dc.get("diff"):
+                typer.echo(dc.get("diff") or "")
         return
 
     for entry in results:
         g = entry.get("git") or {}
         flags: list[str] = []
-        if g.get("dirty"):
-            flags.append("dirty")
-        if g.get("changed_vs_base"):
-            flags.append("diff")
+        if space == "workspace":
+            if g.get("dirty"):
+                flags.append("dirty")
+            if g.get("changed_vs_base"):
+                flags.append("diff")
+        else:
+            dc = entry.get("dev_compare") or {}
+            if dc.get("changed_vs_base"):
+                flags.append("diff")
         suffix = f" [{', '.join(flags)}]" if flags else ""
         typer.echo(f"{entry.get('name')}: v{entry.get('version')}{suffix}")
 

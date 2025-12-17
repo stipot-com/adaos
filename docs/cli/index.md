@@ -73,4 +73,8 @@ adaos scenario status
 # One item + diff vs remote tracking branch.
 adaos skill status weather_skill --fetch --diff
 adaos scenario status web_desktop --fetch --diff
+
+# Compare dev workspace vs hub draft state (Root API, requires hub mTLS keys in `node.yaml`).
+adaos skill status --space dev
+adaos skill status --space dev weather_skill --fetch --diff
 ```

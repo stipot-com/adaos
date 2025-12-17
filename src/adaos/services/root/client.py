@@ -353,6 +353,70 @@ class RootHttpClient:
         kw["kind"] = "scenarios"
         return self.delete_registry_artifact(**kw)
 
+    def get_draft_info(
+        self,
+        *,
+        kind: str,  # 'skills' | 'scenarios'
+        name: str,
+        node_id: str | None,
+        verify: str | bool | ssl.SSLContext = None,
+        cert: tuple[str, str] | None = None,
+        timeout: float = 15.0,
+    ) -> dict:
+        params: dict[str, Any] = {"name": name}
+        if node_id:
+            params["node_id"] = node_id
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/{kind}/draft",
+                params=params,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=timeout,
+            )
+        )
+
+    def get_skill_draft_info(self, **kw) -> dict:
+        kw["kind"] = "skills"
+        return self.get_draft_info(**kw)
+
+    def get_scenario_draft_info(self, **kw) -> dict:
+        kw["kind"] = "scenarios"
+        return self.get_draft_info(**kw)
+
+    def get_draft_archive(
+        self,
+        *,
+        kind: str,  # 'skills' | 'scenarios'
+        name: str,
+        node_id: str | None,
+        verify: str | bool | ssl.SSLContext = None,
+        cert: tuple[str, str] | None = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        params: dict[str, Any] = {"name": name}
+        if node_id:
+            params["node_id"] = node_id
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/{kind}/draft/archive",
+                params=params,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=timeout,
+            )
+        )
+
+    def get_skill_draft_archive(self, **kw) -> dict:
+        kw["kind"] = "skills"
+        return self.get_draft_archive(**kw)
+
+    def get_scenario_draft_archive(self, **kw) -> dict:
+        kw["kind"] = "scenarios"
+        return self.get_draft_archive(**kw)
+
     def push_scenario_draft(
         self,
         *,

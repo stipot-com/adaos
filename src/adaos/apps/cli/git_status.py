@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import subprocess
+import os
+import base64
+import zipfile
+import io
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +77,52 @@ def resolve_base_ref(workdir: Path, *, remote: str = "origin") -> Optional[str]:
     return None
 
 
+def ensure_remote(workdir: Path, *, name: str, url: str) -> Optional[str]:
+    """
+    Ensure a remote exists and points to the requested URL. Returns error string on failure.
+    """
+    url = (url or "").strip()
+    if not url:
+        return "remote url is empty"
+    proc = _run_git(workdir, ["remote", "get-url", name])
+    if _git_ok(proc):
+        cur = (proc.stdout or "").strip()
+        if cur != url:
+            proc2 = _run_git(workdir, ["remote", "set-url", name, url])
+            if not _git_ok(proc2):
+                return (proc2.stderr or proc2.stdout or "").strip() or f"failed to set remote {name}"
+        return None
+    proc3 = _run_git(workdir, ["remote", "add", name, url])
+    if _git_ok(proc3):
+        return None
+    return (proc3.stderr or proc3.stdout or "").strip() or f"failed to add remote {name}"
+
+
+def ensure_repo_at(path: Path, *, url: str, remote: str = "origin") -> Optional[str]:
+    """
+    Ensure `path` is a git repo cloned from `url` and up to date.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        parent = path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        proc = _run_git(parent, ["clone", url, str(path.name)], timeout_s=120.0)
+        if not _git_ok(proc):
+            return (proc.stderr or proc.stdout or "").strip() or "git clone failed"
+    err = ensure_remote(path, name=remote, url=url)
+    if err:
+        return err
+    proc2 = _run_git(path, ["fetch", "--prune", remote], timeout_s=120.0)
+    if not _git_ok(proc2):
+        return (proc2.stderr or proc2.stdout or "").strip() or "git fetch failed"
+    proc3 = _run_git(path, ["pull", "--ff-only", remote], timeout_s=120.0)
+    if not _git_ok(proc3):
+        # Non-ff is fine: keep repo as-is, status can still compare refs.
+        return None
+    return None
+
+
 def fetch_remote(workdir: Path, *, remote: str = "origin") -> Optional[str]:
     proc = _run_git(workdir, ["fetch", "--prune", remote], timeout_s=60.0)
     if _git_ok(proc):
@@ -137,3 +187,65 @@ def render_diff(workdir: Path, *, base_ref: str, path: str) -> str:
         return proc.stdout or ""
     err = (proc.stderr or proc.stdout or "").strip()
     raise RuntimeError(err or "git diff failed")
+
+
+@dataclass(frozen=True, slots=True)
+class FsMeta:
+    latest_mtime: float = 0.0
+    latest_path: str = ""
+    files: int = 0
+
+
+def compute_fs_meta(path: Path) -> FsMeta:
+    """
+    Best-effort filesystem metadata for non-git directories (e.g. dev workspace).
+    """
+    latest_mtime = 0.0
+    latest_path = ""
+    files = 0
+    try:
+        if not path.exists():
+            return FsMeta()
+        for root, _dirs, filenames in os.walk(path):
+            for fn in filenames:
+                fp = Path(root) / fn
+                try:
+                    st = fp.stat()
+                except Exception:
+                    continue
+                files += 1
+                if st.st_mtime > latest_mtime:
+                    latest_mtime = st.st_mtime
+                    try:
+                        latest_path = fp.relative_to(path).as_posix()
+                    except Exception:
+                        latest_path = fp.as_posix()
+    except Exception:
+        return FsMeta()
+    return FsMeta(latest_mtime=latest_mtime, latest_path=latest_path, files=files)
+
+
+def render_noindex_diff(*, left: Path, right: Path) -> tuple[bool, str]:
+    """
+    Returns (changed, diff_text) comparing two paths using `git diff --no-index`.
+    """
+    proc = subprocess.run(
+        ["git", "diff", "--no-color", "--no-index", "--", str(left), str(right)],
+        text=True,
+        capture_output=True,
+        timeout=60.0,
+    )
+    # exit code: 0 = no diff, 1 = diff, else error
+    if proc.returncode == 0:
+        return False, ""
+    if proc.returncode == 1:
+        return True, proc.stdout or ""
+    err = (proc.stderr or proc.stdout or "").strip()
+    raise RuntimeError(err or "git diff --no-index failed")
+
+
+def unzip_b64_to_dir(*, archive_b64: str, dest: Path) -> None:
+    raw = base64.b64decode(archive_b64.encode("ascii"))
+    buf = io.BytesIO(raw)
+    with zipfile.ZipFile(buf) as zf:
+        zf.extractall(dest)
