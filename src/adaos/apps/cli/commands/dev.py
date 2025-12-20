@@ -265,7 +265,7 @@ def dev_login(
     if not code:
         _print_error("No pair_code in response.")
         raise typer.Exit(1)
-    deep_link = data.get("deep_link") or f"https://t.me/adaos_bot?start={code}"
+    deep_link = data.get("deep_link") or f"https://t.me/adaos_home_bot?start={code}"
     typer.secho("Telegram pairing:", fg=typer.colors.GREEN)
     typer.echo(f"  pair_code: {code}")
     typer.echo(f"  deep_link: {deep_link}")

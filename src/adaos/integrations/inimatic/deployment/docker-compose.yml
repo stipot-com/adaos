@@ -216,7 +216,7 @@ services:
             NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
             NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
             TG_BOTS: ${TG_BOTS}
-            BOT_ID: adaos_bot
+            BOT_ID: adaos_home_bot
             TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
             TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
             TG_WEBHOOK_BASE: ${TG_WEBHOOK_BASE}
@@ -293,7 +293,7 @@ services:
             NATS_PASS: ${NATS_PASS}
             NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
             NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
-            BOT_ID: adaos_bot
+            BOT_ID: adaos_home_bot
             TG_BOTS: ${TG_BOTS}
             TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
             TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
