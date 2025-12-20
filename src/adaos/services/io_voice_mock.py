@@ -5,13 +5,29 @@ from __future__ import annotations
 import sys
 
 from .io_console import print as console_print
+from adaos.sdk.data.env import get_tts_backend
+from adaos.adapters.audio.tts.native_tts import NativeTTS
+from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 
 
 def tts_speak(text: str | None) -> dict[str, bool]:
-    """Echo ``text`` to the console prefixed with ``[TTS]``."""
+    """Speak text via the configured TTS backend, fallback to console."""
 
-    console_print(f"[TTS] {text or ''}")
-    return {"ok": True}
+    if not text:
+        return {"ok": True}
+
+    try:
+        mode = get_tts_backend()
+    except Exception:
+        mode = "native"
+
+    try:
+        adapter = RhasspyTTSAdapter() if mode == "rhasspy" else NativeTTS()
+        adapter.say(text)
+        return {"ok": True}
+    except Exception:
+        console_print(f"[TTS] {text}")
+        return {"ok": True}
 
 
 def stt_listen(timeout: str = "20s") -> dict[str, str]:

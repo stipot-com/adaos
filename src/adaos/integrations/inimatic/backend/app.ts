@@ -32,7 +32,7 @@ import {
 	installWsNatsProxyDebugRoute,
 } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
-import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
+import { ensureSchema as ensureTgSchema, ensureHubToken } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
@@ -322,6 +322,14 @@ function withLeadingSlash(value: string, fallback: string): string {
 		return fallback
 	}
 	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
+function buildNatsWsUrl(): string {
+	const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
+	const baseUrl = new URL(baseHttp)
+	const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
+	baseUrl.protocol = wsProto
+	return process.env['NATS_WS_PUBLIC'] || `${baseUrl.toString().replace(/\/+$/, '')}/nats`
 }
 
 const SOCKET_PATH = withLeadingSlash(
@@ -1233,9 +1241,11 @@ installPairingApi(app)
 import('./io/bus/natsAuth.js')
 	.then((m) => m.installNatsAuth(app))
 	.catch(() => {})
-try {
-	installWsNatsProxyDebugRoute(app)
-} catch {}
+if (process.env['DEBUG_ENDPOINTS'] === 'true') {
+	try {
+		installWsNatsProxyDebugRoute(app)
+	} catch {}
+}
 
 // Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
 try {
@@ -1646,6 +1656,34 @@ mtlsRouter.use((req, res, next) => {
 
 mtlsRouter.get('/policy', (_req, res) => {
 	res.json(POLICY_RESPONSE)
+})
+
+mtlsRouter.post('/hub/nats/token', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		if (process.env['PG_URL']) {
+			await ensureTgSchema()
+		}
+		const hubId = identity.subnetId
+		const token = await ensureHubToken(hubId)
+		const ws_url = buildNatsWsUrl()
+		const nats_user = `hub_${hubId}`
+		return res.json({
+			ok: true,
+			hub_id: hubId,
+			hub_nats_token: token,
+			nats_ws_url: ws_url,
+			nats_user,
+		})
+	} catch (error) {
+		return handleError(req, res, error, {
+			status: 500,
+			code: 'internal_error',
+		})
+	}
 })
 
 const createDraftHandler =

@@ -150,7 +150,7 @@ export function installWsNatsProxy(server: HttpsServer) {
           let obj: any
           try { obj = JSON.parse(jsonRaw) } catch (e) {
             log.warn({ from: rip, err: String(e) }, 'bad CONNECT json')
-            pushDbg({ from: rip, event: 'bad_connect_json', details: { err: String(e), json_sample: jsonRaw.slice(0, 200) } })
+            pushDbg({ from: rip, event: 'bad_connect_json', details: { err: String(e) } })
             closeBoth(1008, 'bad_connect')
             return true
           }
@@ -212,7 +212,7 @@ export function installWsNatsProxy(server: HttpsServer) {
           }
           const buf = typeof data === 'string' ? Buffer.from(data) : (data as Buffer)
           const isStr = typeof data === 'string'
-          pushDbg({ from: rip, event: 'client_frame', details: { type: isStr ? 'text' : 'binary', len: (isStr ? (data as string).length : (data as Buffer).length), sample: (isStr ? (data as string).slice(0, 120) : (data as Buffer).toString('utf8', 0, 120)) } })
+          pushDbg({ from: rip, event: 'client_frame', details: { type: isStr ? 'text' : 'binary', len: (isStr ? (data as string).length : (data as Buffer).length) } })
           clientBuf = Buffer.concat([clientBuf, buf])
           tryProcessHandshake()
         })
@@ -245,6 +245,11 @@ export function installWsNatsProxy(server: HttpsServer) {
 export function installWsNatsProxyDebugRoute(app: any) {
   try {
     app.get('/internal/debug/ws-nats-proxy', (_req: any, res: any) => {
+      const expect = process.env['ADAOS_TOKEN'] || ''
+      const header = String(_req?.header?.('X-AdaOS-Token') || '')
+      if (!expect || header !== expect) {
+        return res.status(401).json({ error: 'unauthorized' })
+      }
       res.json({ recent: _recent.slice(-100) })
     })
   } catch (e) {

@@ -226,6 +226,55 @@ class BootstrapService:
                     except Exception:
                         return None, None, None
 
+                last_token_fetch = 0.0
+
+                async def _fetch_nats_credentials() -> bool:
+                    nonlocal last_token_fetch
+                    # rate-limit attempts to avoid spamming root
+                    now = time.monotonic()
+                    if now - last_token_fetch < 30.0:
+                        return False
+                    last_token_fetch = now
+                    try:
+                        from adaos.services.root.client import RootHttpClient
+                        from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
+                    except Exception:
+                        return False
+
+                    client = RootHttpClient.from_settings(self.ctx.settings)
+                    if not client.cert:
+                        return False
+
+                    def _do_request() -> dict[str, Any] | None:
+                        try:
+                            data = client.request("POST", "/v1/hub/nats/token")
+                            return dict(data) if isinstance(data, dict) else None
+                        except Exception:
+                            return None
+
+                    data = await asyncio.to_thread(_do_request)
+                    if not isinstance(data, dict):
+                        return False
+                    token = data.get("hub_nats_token")
+                    nats_user = data.get("nats_user")
+                    nats_ws_url = data.get("nats_ws_url")
+                    if not token or not nats_user or not nats_ws_url:
+                        return False
+
+                    try:
+                        y = _load_node()
+                        n = y.get("nats") or {}
+                        if not isinstance(n, dict):
+                            n = {}
+                        n["ws_url"] = str(nats_ws_url)
+                        n["user"] = str(nats_user)
+                        n["pass"] = str(token)
+                        y["nats"] = n
+                        _save_node(y)
+                        return True
+                    except Exception:
+                        return False
+
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
                     backoff = 1.0
@@ -248,6 +297,11 @@ class BootstrapService:
                         try:
                             nurl, nuser, npass = _read_node_nats()
                             if not nurl or not nuser or not npass:
+                                fetched = await _fetch_nats_credentials()
+                                if fetched:
+                                    # re-read node.yaml on next loop
+                                    await asyncio.sleep(0.1)
+                                    continue
                                 # Wait for `adaos dev telegram` to provision credentials.
                                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                     print("[hub-io] NATS disabled: missing nats.ws_url/user/pass in node.yaml")

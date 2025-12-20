@@ -278,6 +278,16 @@ def dev_login(
     # Always use local canonical hub id for WS user to avoid alias-based mismatches
     local_hub_id = ctx.settings.subnet_id or hub_id_resp
     nats_user = (f"hub_{local_hub_id}" if local_hub_id else None) or data.get("nats_user") or (f"hub_{hub_id_resp}" if hub_id_resp else None)
+    if not hub_token:
+        try:
+            token_data = client.request("POST", f"{base}/v1/hub/nats/token")
+            if isinstance(token_data, dict):
+                hub_token = token_data.get("hub_nats_token") or hub_token
+                hub_id_resp = token_data.get("hub_id") or hub_id_resp
+                if not nats_user:
+                    nats_user = token_data.get("nats_user") or nats_user
+        except Exception:
+            pass
     # Pin to dedicated NATS WS domain regardless of API suggestion
     nats_ws_url = "wss://nats.inimatic.com"
     if hub_id_resp and hub_token and nats_user:

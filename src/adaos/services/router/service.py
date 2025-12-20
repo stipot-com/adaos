@@ -6,11 +6,15 @@ import asyncio
 import json
 import requests
 import os
+import shutil
+import subprocess
+import sys
 
 from adaos.services.eventbus import LocalEventBus
 import logging
 from adaos.domain import Event
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_config import load_config
 from .rules_loader import load_rules, watch_rules
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
@@ -62,6 +66,11 @@ class RouterService:
 
         conf = get_ctx().config
         this_node = conf.node_id
+        if not self._rules:
+            try:
+                self._rules = load_rules(self.base_dir, this_node)
+            except Exception:
+                pass
         # Multi-target routing: attempt telegram and stdout independently if rules exist
         did_any = False
 
@@ -192,47 +201,80 @@ class RouterService:
             self.bus.subscribe("ui.notify", self._on_event)
 
             # ui.say routing (TTS)
-            def _on_say(ev: Event) -> None:
-                payload = ev.payload or {}
-                text = (payload or {}).get("text")
-                if not isinstance(text, str) or not text:
-                    return
-                voice = (payload or {}).get("voice")
-                conf = load_config()
-                this_node = conf.node_id
-                target_node = self._pick_target_node("say", this_node)
-                base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
-                token = conf.token or "dev-local-token"
-                if base_url and target_node != this_node:
-                    try:
-                        requests.post(
-                            f"{base_url.rstrip('/')}/api/say",
-                            json={"text": text, "voice": voice},
-                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                            timeout=3.0,
-                        )
-                        return
-                    except Exception:
-                        pass
-                # local fallback via API if self base_url known, else direct adapter
-                self_url = os.environ.get("ADAOS_SELF_BASE_URL")
-                if self_url:
-                    try:
-                        requests.post(
-                            f"{self_url.rstrip('/')}/api/say",
-                            json={"text": text, "voice": voice},
-                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                            timeout=3.0,
-                        )
-                        return
-                    except Exception:
-                        pass
+            def _say_via_system(text: str) -> bool:
                 try:
-                    mode = get_tts_backend()
-                    adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
-                    adapter.say(text)
+                    if sys.platform.startswith("win"):
+                        safe = text.replace("'", "''")
+                        cmd = [
+                            "powershell",
+                            "-NoProfile",
+                            "-Command",
+                            "Add-Type -AssemblyName System.Speech; "
+                            "$speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                            f"$speak.Speak('{safe}');",
+                        ]
+                        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return True
+                    if sys.platform == "darwin" and shutil.which("say"):
+                        subprocess.run(["say", text], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return True
+                    if shutil.which("espeak"):
+                        subprocess.run(["espeak", text], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return True
                 except Exception:
-                    print_text(text, node_id=this_node, origin={"source": ev.source})
+                    return False
+                return False
+
+            def _on_say(ev: Event) -> None:
+                text = ""
+                try:
+                    payload = ev.payload or {}
+                    text = (payload or {}).get("text")
+                    if not isinstance(text, str) or not text:
+                        return
+                    voice = (payload or {}).get("voice")
+                    conf = load_config()
+                    this_node = conf.node_id
+                    target_node = self._pick_target_node("say", this_node)
+                    base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
+                    token = conf.token or "dev-local-token"
+                    if base_url and target_node != this_node:
+                        try:
+                            requests.post(
+                                f"{base_url.rstrip('/')}/api/say",
+                                json={"text": text, "voice": voice},
+                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                                timeout=3.0,
+                            )
+                            return
+                        except Exception:
+                            pass
+                    # local fallback via API if self base_url known, else direct adapter
+                    self_url = os.environ.get("ADAOS_SELF_BASE_URL")
+                    if self_url:
+                        try:
+                            requests.post(
+                                f"{self_url.rstrip('/')}/api/say",
+                                json={"text": text, "voice": voice},
+                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                                timeout=3.0,
+                            )
+                            return
+                        except Exception:
+                            pass
+                    try:
+                        mode = get_tts_backend()
+                        adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
+                        adapter.say(text)
+                    except Exception:
+                        if not _say_via_system(text):
+                            print_text(text, node_id=this_node, origin={"source": ev.source})
+                except Exception:
+                    try:
+                        conf = get_ctx().config
+                        print_text(text if isinstance(text, str) else "", node_id=conf.node_id, origin={"source": ev.source})
+                    except Exception:
+                        pass
 
             self.bus.subscribe("ui.say", _on_say)
             self._subscribed = True

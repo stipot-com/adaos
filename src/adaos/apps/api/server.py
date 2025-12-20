@@ -68,11 +68,12 @@ async def lifespan(app: FastAPI):
         await start_y_server()
     except Exception:
         pass
-    await run_boot_sequence(app)
+    # Start router early so ui.notify/ui.say from boot sequence are routed.
     try:
         await router_service.start()
     except Exception:
         pass
+    await run_boot_sequence(app)
     # hub: seed self node into directory (base_url + capacity)
     try:
         conf = get_ctx().config
@@ -182,10 +183,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await stop_observer()
-        try:
-            await router_service.stop()
-        except Exception:
-            pass
         # On graceful shutdown, notify Telegram and UI if enabled
         try:
             if tg_enabled:
@@ -206,11 +203,27 @@ async def lifespan(app: FastAPI):
                     node_yaml = {}
                 alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
                 prefixed_text = f"[{alias}]: {text}" if alias else text
-                _requests.post(
-                    f"{api_base.rstrip('/')}/io/tg/send",
-                    json={"hub_id": conf.subnet_id, "text": prefixed_text},
-                    timeout=2.5,
-                )
+                # Try routed notify first if router is running.
+                routed = False
+                try:
+                    if getattr(router_service, "_started", False):
+                        ctx.bus.publish(
+                            DomainEvent(
+                                type="ui.notify",
+                                payload={"text": prefixed_text},
+                                source="api",
+                                ts=time.time(),
+                            )
+                        )
+                        routed = True
+                except Exception:
+                    routed = False
+                if not routed:
+                    _requests.post(
+                        f"{api_base.rstrip('/')}/io/tg/send",
+                        json={"hub_id": conf.subnet_id, "text": prefixed_text},
+                        timeout=2.5,
+                    )
                 # Also emit a subnet.stopped event on the local bus so that
                 # skills (e.g. greet_on_boot_skill) can update infra status.
                 try:
@@ -223,6 +236,10 @@ async def lifespan(app: FastAPI):
                     ctx.bus.publish(ev)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        try:
+            await router_service.stop()
         except Exception:
             pass
         try:
