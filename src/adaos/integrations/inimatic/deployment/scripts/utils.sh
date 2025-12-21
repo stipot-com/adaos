@@ -94,8 +94,8 @@ sync_telegram_webhooks() {
   for b in "${__bots[@]}"; do
     local upname tok_var sec_var tok_path sec_path token secret url
     upname=$(echo "$b" | tr '[:lower:]' '[:upper:]')
-    tok_var="TG_${upname}_BOT_TOKEN_FILE"
-    sec_var="TG_${upname}_BOT_SECRET_FILE"
+    tok_var="TG_${upname}_BOT_TOKEN_FILE_D"
+    sec_var="TG_${upname}_BOT_SECRET_FILE_D"
     tok_path="${!tok_var:-}"
     sec_path="${!sec_var:-}"
     # Resolve to host paths if variables point to container runtime paths
