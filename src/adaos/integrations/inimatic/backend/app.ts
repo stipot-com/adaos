@@ -14,6 +14,7 @@ import { randomBytes, createHash } from 'node:crypto'
 import type { PeerCertificate, TLSSocket } from 'node:tls'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { installMetaRoutes } from './io/root/meta.js'
 
 import { installAdaosBridge } from './adaos-bridge.js'
 import { CertificateAuthority } from './pki.js'
@@ -576,6 +577,19 @@ function authenticateOwnerBearer(
 	next()
 }
 
+function requireRootToken(
+	req: express.Request,
+	res: express.Response,
+	next: express.NextFunction
+  ) {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+	  respondError(req, res, 401, 'unauthorized')
+	  return
+	}
+	next()
+  }
+  
 function requireJsonField(body: unknown, field: string): string {
 	if (!body || typeof body !== 'object') {
 		throw new HttpError(400, 'missing_field', { field })
@@ -773,6 +787,11 @@ app.get('/metrics', async (_req, res) => {
 }) */
 
 const rootRouter = express.Router()
+
+const metaRouter = express.Router()
+metaRouter.use(requireRootToken)
+installMetaRoutes(metaRouter, { respondError })
+rootRouter.use(metaRouter)
 
 rootRouter.post('/auth/owner/start', (req, res) => {
 	let ownerId: string

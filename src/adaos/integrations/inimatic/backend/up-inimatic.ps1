@@ -1,4 +1,15 @@
-$EnvFile = Join-Path $Backend "deployment\.env"
+param(
+  [switch]$WithMcp
+)
+
+$ErrorActionPreference = "Stop"
+
+# абсолютные пути (у вас уже известны)
+$Backend = "C:\Users\Danil\Documents\GitHub\MCP\src\adaos\integrations\inimatic\backend"
+$Mcp     = "C:\Users\Danil\Documents\GitHub\MCP\src\adaos\integrations\inimatic\mcp"
+
+# env file в корне backend
+$EnvFile = Join-Path $Backend ".env"
 if (Test-Path $EnvFile) {
   Get-Content $EnvFile | ForEach-Object {
     if ($_ -match '^\s*#') { return }
@@ -14,17 +25,6 @@ if (Test-Path $EnvFile) {
 } else {
   Write-Host "[warn] Env file not found: $EnvFile"
 }
-
-param(
-  [switch]$WithMcp
-)
-
-$ErrorActionPreference = "Stop"
-
-# paths
-$Repo = (Resolve-Path "$PSScriptRoot\..").Path
-$Backend = Join-Path $Repo "C:\Users\Danil\Documents\GitHub\MCP\src\adaos\integrations\inimatic\backend"
-$Mcp = Join-Path $Repo "C:\Users\Danil\Documents\GitHub\MCP\src\adaos\integrations\inimatic\mcp"
 
 Write-Host "[1/5] Backend deps..."
 Push-Location $Backend

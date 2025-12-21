@@ -23,6 +23,10 @@
 	"scripts": {
 		"dev": "tsx ./app.ts",
 		"health": "curl.exe -sk https://localhost:3030/v1/health",
-		"bootstrap": "curl.exe -sk -X POST https://localhost:3030/v1/bootstrap_token -H \"X-Root-Token: dev-root-token\" -H \"Content-Type: application/json\" -d \"{}\""
+		"bootstrap": "curl.exe -sk -X POST https://localhost:3030/v1/bootstrap_token -H \"X-Root-Token: dev-root-token\" -H \"Content-Type: application/json\" -d \"{}\"",
+		"meta": "curl.exe -sk https://localhost:3030/v1/meta -H \"X-Root-Token: dev-root-token\"",
+		"code_map": "curl.exe -sk https://localhost:3030/v1/meta/code-map?format=json -H \"X-Root-Token: dev-root-token\"",
+		"source": "curl.exe -sk \"https://localhost:3030/v1/meta/source?path=src/adaos/integrations/inimatic/backend/app.ts\" -H \"X-Root-Token: dev-root-token\""
+
 	  }
 }
