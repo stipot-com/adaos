@@ -98,5 +98,4 @@ echo "$new" | tee "$ACTIVE_FILE" >/dev/null
 
 # 7) cleanup dangling images (quiet)
 docker image prune -f >/dev/null || true
-
 echo "[deploy] Blue-Green switch complete. Active: $new"
