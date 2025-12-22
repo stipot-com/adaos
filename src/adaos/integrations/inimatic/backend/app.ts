@@ -330,7 +330,12 @@ function buildNatsWsUrl(): string {
 	const baseUrl = new URL(baseHttp)
 	const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
 	baseUrl.protocol = wsProto
-	return process.env['NATS_WS_PUBLIC'] || `${baseUrl.toString().replace(/\/+$/, '')}/nats`
+	const base = baseUrl.toString().replace(/\/+$/, '')
+	const publicOverride = (process.env['NATS_WS_PUBLIC'] || '').trim()
+	if (publicOverride) return publicOverride
+	// Keep this in sync with the WS->NATS proxy mount (`WS_NATS_PATH`).
+	const wsPath = withLeadingSlash(process.env['WS_NATS_PATH'] || '/', '/')
+	return wsPath === '/' ? base : `${base}${wsPath}`
 }
 
 const SOCKET_PATH = withLeadingSlash(

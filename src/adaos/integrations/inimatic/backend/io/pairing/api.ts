@@ -6,6 +6,21 @@ import { pairConfirm, pairCreate, pairGet, pairRevoke, bindingUpsert, tgLinkGet,
 const log = pino({ name: 'pair-api' })
 
 export function installPairingApi(app: express.Express) {
+	function buildPublicNatsWsUrl(): string {
+		const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
+		const baseUrl = new URL(baseHttp)
+		const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
+		baseUrl.protocol = wsProto
+		const base = baseUrl.toString().replace(/\/+$/, '')
+
+		const explicit = (process.env['NATS_WS_PUBLIC'] || '').trim()
+		if (explicit) return explicit
+
+		const rawPath = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
+		const wsPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
+		return wsPath === '/' ? base : `${base}${wsPath}`
+	}
+
 	app.post('/io/tg/pair/create', async (req, res) => {
 		try {
 			const ttl = Number.parseInt(String((req.query['ttl'] as string) ?? (req.body?.ttl as string) ?? '600'), 10) || 600
@@ -19,12 +34,7 @@ export function installPairingApi(app: express.Express) {
 			const rec = await pairCreate(bot, hub, ttl)
 			const deep_link = process.env['BOT_USERNAME'] ? `https://t.me/${process.env['BOT_USERNAME']}?start=${rec.code}` : undefined
 			log.info({ tag: 'PAIR', route: 'create', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] create: issued')
-			// Build public WSS URL; prefer explicit NATS_WS_PUBLIC, else derive from TG_WEBHOOK_BASE (https->wss) and append /nats
-			const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-			const baseUrl = new URL(baseHttp)
-			const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-			baseUrl.protocol = wsProto
-			const ws_url = process.env['NATS_WS_PUBLIC'] || `${baseUrl.toString().replace(/\/+$/, '')}/nats`
+			const ws_url = buildPublicNatsWsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, deep_link, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {
@@ -46,11 +56,7 @@ export function installPairingApi(app: express.Express) {
 			log.info({ tag: 'PAIR', route: 'create.v1', hub, bot, ttl }, '[PAIR] v1/create: request')
 			const rec = await pairCreate(bot, hub, ttl)
 			log.info({ tag: 'PAIR', route: 'create.v1', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] v1/create: issued')
-			const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-			const baseUrl = new URL(baseHttp)
-			const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-			baseUrl.protocol = wsProto
-			const ws_url = process.env['NATS_WS_PUBLIC'] || `${baseUrl.toString().replace(/\/+$/, '')}/nats`
+			const ws_url = buildPublicNatsWsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {

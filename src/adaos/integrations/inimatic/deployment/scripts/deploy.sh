@@ -37,8 +37,8 @@ if [[ -n "${TG_BOTS:-}" ]]; then
   IFS=',' read -r -a __bots <<<"$TG_BOTS"
   for b in "${__bots[@]}"; do
     upname=$(echo "$b" | tr '[:lower:]' '[:upper:]')
-    tok_var="TG_${upname}_BOT_TOKEN_FILE_D"
-    sec_var="TG_${upname}_BOT_SECRET_FILE_D"
+    tok_var="TG_${upname}_BOT_TOKEN_FILE"
+    sec_var="TG_${upname}_BOT_SECRET_FILE"
     tok_path="${!tok_var:-}"
     sec_path="${!sec_var:-}"
     # Accept container-style /run paths by resolving to host when validating

@@ -65,13 +65,13 @@ Environment variables (root backend):
   - `NATS_ISSUER_SEED/ NATS_ISSUER_PUB/ NATS_AUTH_PASSWORD` (WS+Auth Callout)
 
 Environment variables (hub, WS client):
-- `NATS_WS_URL=wss://api.inimatic.com/nats`
+- `NATS_WS_URL=wss://nats.inimatic.com` (path is controlled by `WS_NATS_PATH`, default is `/` in our docker-compose)
 - `NATS_USER=hub_<hub_id>`
 - `NATS_PASS=<hub_nats_token>`
 - `HUB_ID=<hub_id>`
 
 Docker Compose:
-- NATS server enables WebSocket (`/nats` via Nginx) and Auth Callout to backend `/internal/nats/authz`.
+- NATS server enables WebSocket (mounted at `WS_NATS_PATH`, default `/`) and Auth Callout to backend `/internal/nats/authz`.
 - Postgres service provides storage for Telegram tables.
 
 Schema is applied automatically by the backend at startup/webhook.
