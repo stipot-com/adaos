@@ -472,6 +472,24 @@ class BootstrapService:
                             )
                             subj = f"tg.input.{hub_id}"
                             subj_legacy = f"io.tg.in.{hub_id}.text"
+                            try:
+                                import logging as _logging
+
+                                _logging.getLogger("adaos.hub_io").info(
+                                    "nats.connected",
+                                    extra={
+                                        "extra": {
+                                            "hub_id": hub_id_str,
+                                            "servers": [str(s) for s in candidates],
+                                            "user": user_str,
+                                            "connected_url": str(getattr(nc, "connected_url", None) or ""),
+                                            "subj": subj,
+                                            "subj_legacy": subj_legacy,
+                                        }
+                                    },
+                                )
+                            except Exception:
+                                pass
                             print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
                             # First successful connect after failures
                             _emit_up()
@@ -542,6 +560,24 @@ class BootstrapService:
                             data = _json.loads(msg.data.decode("utf-8"))
                         except Exception:
                             data = {}
+                        if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1":
+                            try:
+                                import logging as _logging
+
+                                _logging.getLogger("adaos.hub_io").info(
+                                    "nats.rx",
+                                    extra={
+                                        "extra": {
+                                            "subject": getattr(msg, "subject", None),
+                                            "bytes": len(getattr(msg, "data", b"") or b""),
+                                            "keys": sorted(list(data.keys())) if isinstance(data, dict) else None,
+                                            "kind": (data.get("kind") if isinstance(data, dict) else None),
+                                            "has_payload": isinstance(data, dict) and isinstance(data.get("payload"), dict),
+                                        }
+                                    },
+                                )
+                            except Exception:
+                                pass
                         try:
                             # Media fetch: if event includes telegram media, download to local cache and annotate path
                             p = (data or {}).get("payload") or {}
@@ -624,6 +660,22 @@ class BootstrapService:
                             data = _json.loads(msg.data.decode("utf-8"))
                         except Exception:
                             data = {}
+                        if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1":
+                            try:
+                                import logging as _logging
+
+                                _logging.getLogger("adaos.hub_io").info(
+                                    "nats.rx_legacy",
+                                    extra={
+                                        "extra": {
+                                            "subject": getattr(msg, "subject", None),
+                                            "bytes": len(getattr(msg, "data", b"") or b""),
+                                            "keys": sorted(list(data.keys())) if isinstance(data, dict) else None,
+                                        }
+                                    },
+                                )
+                            except Exception:
+                                pass
                         # transform into minimal io.input envelope compatible with downstream
                         try:
                             text = (data or {}).get("text") or ""

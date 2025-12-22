@@ -100,7 +100,7 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
 	try {
 		const target = await resolveTarget({ chat_id: ctx.chat_id, text: ctx.text, reply_to_msg_id: ctx.reply_to_msg_id, topic_id: ctx.topic_id })
 		const clean = stripExplicitAlias(ctx.text)
-		const payload = { text: clean, chat_id: ctx.chat_id, tg_msg_id: ctx.msg_id, route: { via: target.via, alias: target.alias, session_id: undefined }, meta: { is_command: false } }
+		const payload = { text: clean, chat_id: ctx.chat_id, tg_msg_id: ctx.msg_id, bot_id, route: { via: target.via, alias: target.alias, session_id: undefined }, meta: { is_command: false } }
 		await publishIn(target.hub_id, payload)
 		await logMessage(ctx.chat_id, ctx.msg_id, target.hub_id, target.alias, target.via)
 		return { status: 200, body: { ok: true, routed: true } }
@@ -112,7 +112,7 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
 				if (count === 1 && ctx.text) {
 					const b = binds![0]
 					const clean = stripExplicitAlias(ctx.text)
-					const payload = { text: clean, chat_id: ctx.chat_id, tg_msg_id: ctx.msg_id, route: { via: 'default', alias: b.alias, session_id: undefined }, meta: { is_command: false } }
+					const payload = { text: clean, chat_id: ctx.chat_id, tg_msg_id: ctx.msg_id, bot_id, route: { via: 'default', alias: b.alias, session_id: undefined }, meta: { is_command: false } }
 					await publishIn(b.hub_id as any, payload)
 					try { await logMessage(ctx.chat_id, ctx.msg_id, b.hub_id as any, b.alias as any, 'default') } catch { }
 					return { status: 200, body: { ok: true, routed: true } }
@@ -131,4 +131,3 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
 		return { status: 200, body: { ok: true, routed: false } }
 	}
 }
-
