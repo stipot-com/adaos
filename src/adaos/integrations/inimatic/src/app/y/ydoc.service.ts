@@ -112,11 +112,23 @@ export class YDocService {
     const baseWs = baseHttp.replace(/^http/, 'ws')
 
     // Ensure shared events websocket is connected and register device
-    await this.adaos.connect()
     const fromUrl = this.getWebspaceFromUrl()
     const preferred = fromUrl || this.getPreferredWebspaceId()
-    const ack = await this.adaos.sendEventsCommand('device.register', { device_id: this.deviceId, webspace_id: preferred })
-    const webspaceId = String(ack?.data?.webspace_id || preferred || 'default')
+    let webspaceId = String(preferred || 'default')
+    try {
+      await this.adaos.connect()
+      const ack = await this.adaos.sendEventsCommand(
+        'device.register',
+        { device_id: this.deviceId, webspace_id: preferred },
+        2500
+      )
+      webspaceId = String(ack?.data?.webspace_id || webspaceId)
+    } catch (err) {
+      // Best-effort: Yjs room can still be joined without device.register;
+      // the hub will lazily create/seed the webspace on first yws join.
+      // eslint-disable-next-line no-console
+      console.warn('[YDocService] device.register failed; continuing', err)
+    }
     this.currentWebspaceId = webspaceId
     this.setPreferredWebspaceId(webspaceId)
 
