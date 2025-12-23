@@ -10,6 +10,13 @@ type RedisLike = {
 
 const log = pino({ name: 'hub-route-proxy' })
 
+function maskToken(tok?: string | null): string | null {
+	if (!tok) return null
+	const s = String(tok)
+	if (s.length <= 10) return '***'
+	return `${s.slice(0, 5)}***${s.slice(-3)}`
+}
+
 type ProxyOpts = {
 	redis: RedisLike
 	natsUrl: string
@@ -344,12 +351,42 @@ export function installHubRouteProxy(
 			})
 			if (!sessionJwt) {
 				if (verbose) log.warn({ path: u.pathname }, 'ws upgrade: missing token')
+				try {
+					socket.write(
+						'HTTP/1.1 401 Unauthorized\r\n' +
+							'Connection: close\r\n' +
+							'Content-Type: text/plain\r\n' +
+							'\r\n' +
+							'missing token'
+					)
+				} catch {}
 				socket.destroy()
 				return
 			}
 			const session = await verifySessionJwt(opts.redis, sessionJwt)
 			if (!session) {
-				if (verbose) log.warn({ hubId, kind, path: u.pathname }, 'ws upgrade: invalid session')
+				if (verbose) {
+					let rawLen: number | null = null
+					try {
+						const raw = await opts.redis.get(`session:jwt:${sessionJwt}`)
+						rawLen = raw ? raw.length : 0
+					} catch {
+						rawLen = null
+					}
+					log.warn(
+						{ hubId, kind, path: u.pathname, token: maskToken(sessionJwt), redisLen: rawLen },
+						'ws upgrade: invalid session'
+					)
+				}
+				try {
+					socket.write(
+						'HTTP/1.1 401 Unauthorized\r\n' +
+							'Connection: close\r\n' +
+							'Content-Type: text/plain\r\n' +
+							'\r\n' +
+							'invalid session'
+					)
+				} catch {}
 				socket.destroy()
 				return
 			}

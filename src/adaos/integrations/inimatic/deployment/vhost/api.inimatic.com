@@ -51,9 +51,6 @@ location = /healthz { ssl_verify_client off; }
 #   /hubs/<hub_id>/yws  (yjs websocket)
 #   /hubs/<hub_id>/api  (HTTP passthrough)
 location ^~ /hubs/ {
-  # Browsers do not have client certificates.
-  ssl_verify_client off;
-
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
