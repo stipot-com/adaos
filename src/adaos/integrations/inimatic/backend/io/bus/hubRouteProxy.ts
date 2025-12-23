@@ -76,13 +76,15 @@ function normalizeHeaders(headers: any): Record<string, string> {
 
 async function natsRequest(
 	bus: NatsBus,
-	*,
-	subjectToHub: string,
-	subjectToBrowser: string,
-	payload: any,
-	timeoutMs: number
+	opts: {
+		subjectToHub: string
+		subjectToBrowser: string
+		payload: any
+		timeoutMs: number
+	}
 ): Promise<any> {
 	return new Promise((resolve, reject) => {
+		const { subjectToHub, subjectToBrowser, payload, timeoutMs } = opts
 		let done = false
 		let sub: any = null
 		const timer = setTimeout(() => {
@@ -360,4 +362,3 @@ export function installHubRouteProxy(
 		}
 	})
 }
-
