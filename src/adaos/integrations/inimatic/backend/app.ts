@@ -220,7 +220,9 @@ const TLS_CERT_PEM = readPemFromEnvOrFile('TLS_CERT_PEM', 'TLS_CERT_PEM_FILE');
 const TLS_KEY_PEM = normalizePem(process.env['TLS_KEY_PEM'] ?? CA_KEY_PEM)
 const TLS_CERT_PEM = normalizePem(process.env['TLS_CERT_PEM'] ?? CA_CERT_PEM)
 const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
-const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'app.inimatic.com'
+// WebAuthn RP ID must be a registrable domain suffix of the current origin.
+// Using the apex domain keeps it valid across app subdomains (app., v1.app., etc).
+const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
 const WEB_SESSION_TTL_SECONDS = Number.parseInt(
 	process.env['WEB_SESSION_TTL_SECONDS'] ?? '3600',
@@ -268,6 +270,7 @@ function addAllowedCorsOrigin(candidate?: string | null) {
 
 addAllowedCorsOrigin(WEB_ORIGIN)
 addAllowedCorsOrigin('https://app.inimatic.com')
+addAllowedCorsOrigin('https://v1.app.inimatic.com')
 
 const extraCorsOrigins =
 	process.env['CORS_EXTRA_ORIGINS'] ?? process.env['CORS_ALLOWED_ORIGINS']
