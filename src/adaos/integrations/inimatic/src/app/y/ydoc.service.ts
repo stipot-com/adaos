@@ -44,10 +44,23 @@ export class YDocService {
     if (this.initialized) return
     if (this.initPromise) return this.initPromise
     this.initPromise = this.doInitFromHub()
+      .then(() => {
+        this.initialized = true
+      })
+      .finally(() => {
+        // Allow retries after failures (e.g. hub offline until user logs in to use root-proxy).
+        this.initPromise = undefined
+      })
     return this.initPromise
   }
 
   private async doInitFromHub(): Promise<void> {
+    // If we're re-initializing after a failure, make sure old provider is torn down.
+    try {
+      this.provider?.destroy()
+    } catch {}
+    this.provider = undefined
+
     const readSession = (): { hubId: string | null; sessionJwt: string | null } => {
       try {
         return {
@@ -137,7 +150,6 @@ export class YDocService {
       this.provider.on('sync', handler as any)
     })
 
-    this.initialized = true
   }
 
   getWebspaceId(): string {
