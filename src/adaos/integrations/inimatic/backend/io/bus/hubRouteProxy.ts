@@ -337,6 +337,7 @@ export function installHubRouteProxy(
 		WebSocketServerCtor = m.WebSocketServer || m.Server
 		if (!WebSocketServerCtor) throw new Error('ws package missing WebSocketServer export')
 		wss = new WebSocketServerCtor({ noServer: true, perMessageDeflate: false })
+		if (verbose) log.info('ws proxy server initialized')
 
 		wss.on('connection', async (ws: any, req: any, meta: any) => {
 			const hubId = String(meta?.hubId || '')
@@ -610,10 +611,26 @@ export function installHubRouteProxy(
 			const dstPath = kind === 'ws' ? '/ws' : `/yws${room}`
 			const query = u.search || ''
 			if (verbose) log.info({ hubId, kind, dstPath }, 'ws upgrade: accepted')
-			wss.handleUpgrade(req, socket, head, (ws: any) => {
-				wss.emit('connection', ws, req, { hubId, dstPath, sessionJwt, query })
-			})
-		} catch {
+			try {
+				wss.handleUpgrade(req, socket, head, (ws: any) => {
+					if (verbose) {
+						log.info({ hubId, kind, dstPath }, 'ws upgrade: handleUpgrade ok')
+					}
+					wss.emit('connection', ws, req, { hubId, dstPath, sessionJwt, query })
+				})
+			} catch (e) {
+				if (verbose) log.warn({ hubId, kind, dstPath, err: String(e) }, 'ws upgrade: handleUpgrade failed')
+				try {
+					socket.destroy()
+				} catch {}
+			}
+		} catch (e) {
+			if (verbose) {
+				try {
+					const rawUrl = String(req?.url || '')
+					log.warn({ err: String(e), url: rawUrl }, 'ws upgrade: failed')
+				} catch {}
+			}
 			try {
 				socket.destroy()
 			} catch {}
