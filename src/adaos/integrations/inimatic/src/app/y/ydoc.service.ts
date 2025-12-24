@@ -155,6 +155,28 @@ export class YDocService {
       }
     }
 
+    // Prefer a local hub on the same device if it is reachable (owner-device scenario),
+    // even when the app is loaded from a public origin and a root-proxy session exists.
+    const tryLocalHub = async (): Promise<boolean> => {
+      const candidates = ['http://127.0.0.1:8777', 'http://localhost:8777']
+      for (const base of candidates) {
+        const st = await probeHttpStatus(base, 650)
+        if (st >= 200 && st < 300) {
+          this.adaos.setBase(base)
+          // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
+          const token = (globalThis as any)?.__ADAOS_TOKEN__ ?? null
+          this.adaos.setAuthAdaosToken(token)
+          try {
+            localStorage.setItem('adaos_hub_base', base)
+          } catch {}
+          return true
+        }
+      }
+      return false
+    }
+
+    await tryLocalHub()
+
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
     // automatically fall back to the root proxy route over NATS.
     const directBase = this.adaos.getBaseUrl().replace(/\/$/, '')

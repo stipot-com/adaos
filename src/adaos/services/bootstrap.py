@@ -757,7 +757,15 @@ class BootstrapService:
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
                     # Hub responds on `route.to_browser.<same-key>`.
                     try:
-                        import websockets  # type: ignore
+                        # Optional dependency: if `websockets` is missing, keep HTTP proxy working
+                        # and gracefully deny WS tunnel opens.
+                        websockets_mod = None
+                        try:
+                            import websockets as _websockets  # type: ignore
+
+                            websockets_mod = _websockets
+                        except Exception:
+                            websockets_mod = None
 
                         tunnels: dict[str, dict[str, Any]] = {}
                         tunnel_tasks: dict[str, asyncio.Task] = {}
@@ -872,10 +880,41 @@ class BootstrapService:
 
                                 if t == "open":
                                     # Open a local WS to the hub server and start pumping frames.
+                                    if websockets_mod is None:
+                                        await _route_reply(key, {"t": "close", "err": "websockets_unavailable"})
+                                        return
                                     path = str((data or {}).get("path") or "/ws")
                                     query = str((data or {}).get("query") or "")
                                     # Local hub server is always reachable inside the hub machine/container.
-                                    url = f"ws://127.0.0.1:8777{path}{query}"
+                                    try:
+                                        from adaos.services.node_config import load_config
+
+                                        cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+                                        base_http = str(getattr(cfg, "hub_url", None) or "http://127.0.0.1:8777").rstrip("/")
+                                        base_ws = base_http.replace("http://", "ws://").replace("https://", "wss://")
+                                        token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
+                                    except Exception:
+                                        base_ws = "ws://127.0.0.1:8777"
+                                        token_local = os.getenv("ADAOS_TOKEN", "") or None
+                                    # Translate root-proxy JWT token into local hub token for upstream hub WS auth.
+                                    # Local hub expects `token=<X-AdaOS-Token>`; forwarding the session JWT makes the
+                                    # hub close immediately and the browser retries endlessly.
+                                    try:
+                                        from urllib.parse import parse_qs, urlencode
+
+                                        if query.startswith("?"):
+                                            q = parse_qs(query[1:], keep_blank_values=True)
+                                        else:
+                                            q = parse_qs(query, keep_blank_values=True)
+                                        if token_local:
+                                            q["token"] = [str(token_local)]
+                                        else:
+                                            # If we don't have a local token, do not forward the root session JWT.
+                                            q.pop("token", None)
+                                        query = "?" + urlencode(q, doseq=True) if q else ""
+                                    except Exception:
+                                        pass
+                                    url = f"{base_ws}{path}{query}"
                                     # Ensure we don't leak multiple opens for same key.
                                     try:
                                         old = tunnels.get(key)
@@ -888,7 +927,7 @@ class BootstrapService:
                                         pass
                                     try:
                                         # Yjs sync frames can exceed 1 MiB; do not enforce a small client-side cap.
-                                        ws = await websockets.connect(url, max_size=None)
+                                        ws = await websockets_mod.connect(url, max_size=None)
                                     except Exception as e:
                                         await _route_reply(key, {"t": "close", "err": str(e)})
                                         return
@@ -1000,7 +1039,17 @@ class BootstrapService:
                                         try:
                                             import requests  # type: ignore
 
-                                            url = f"http://127.0.0.1:8777{path}{search}"
+                                            try:
+                                                from adaos.services.node_config import load_config
+
+                                                cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+                                                base_http = str(getattr(cfg, "hub_url", None) or "http://127.0.0.1:8777").rstrip("/")
+                                                token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
+                                            except Exception:
+                                                base_http = "http://127.0.0.1:8777"
+                                                token_local = os.getenv("ADAOS_TOKEN", "") or None
+
+                                            url = f"{base_http}{path}{search}"
                                             body = None
                                             if isinstance(body_b64, str) and body_b64:
                                                 try:
@@ -1009,6 +1058,8 @@ class BootstrapService:
                                                     body = None
                                             # Minimal header allowlist.
                                             h2: dict[str, str] = {}
+                                            if token_local:
+                                                h2["X-AdaOS-Token"] = str(token_local)
                                             if isinstance(headers, dict):
                                                 ct = headers.get("content-type") or headers.get("Content-Type")
                                                 if isinstance(ct, str) and ct:

@@ -239,6 +239,22 @@ export function installHubRouteProxy(
 			const headers = reply?.headers && typeof reply.headers === 'object' ? reply.headers : {}
 			const body = typeof reply?.body_b64 === 'string' ? reply.body_b64 : ''
 			const isTrunc = reply?.truncated === true
+			const errMsg = typeof reply?.err === 'string' ? reply.err : ''
+			if (errMsg && (process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
+				log.warn(
+					{
+						hubId,
+						method: String(req.method || 'GET').toUpperCase(),
+						path,
+						status,
+						err: errMsg.slice(0, 500),
+					},
+					'http proxy: hub error'
+				)
+				try {
+					res.setHeader('x-adaos-proxy-error', errMsg.slice(0, 200))
+				} catch {}
+			}
 
 			for (const [k, v] of Object.entries(headers)) {
 				const key = String(k).toLowerCase()
