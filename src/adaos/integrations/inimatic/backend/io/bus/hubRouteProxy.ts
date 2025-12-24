@@ -120,17 +120,40 @@ async function natsRequest(
 
 		bus
 			.subscribe(subjectToBrowser, async (_subject: string, data: Uint8Array) => {
-				if (done) return
-				done = true
-				clearTimeout(timer)
-				try {
-					sub?.unsubscribe?.()
-				} catch {}
 				try {
 					const txt = new TextDecoder().decode(data)
-					resolve(JSON.parse(txt))
+					const msg = JSON.parse(txt)
+
+					// HTTP proxy expects only `http_resp`. If we get anything else on this subject,
+					// ignore and keep waiting until timeout.
+					if (msg?.t !== 'http_resp') {
+						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
+							log.warn(
+								{ subject: subjectToBrowser, t: String(msg?.t || '') },
+								'http proxy: ignoring unexpected reply'
+							)
+						}
+						return
+					}
+					if (msg?.status == null) {
+						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
+							log.warn({ subject: subjectToBrowser }, 'http proxy: ignoring reply without status')
+						}
+						return
+					}
+
+					if (done) return
+					done = true
+					clearTimeout(timer)
+					try {
+						sub?.unsubscribe?.()
+					} catch {}
+					resolve(msg)
 				} catch (e) {
-					reject(e)
+					// Ignore invalid JSON frames on this subject and keep waiting.
+					if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
+						log.warn({ subject: subjectToBrowser, err: String(e) }, 'http proxy: ignoring invalid reply')
+					}
 				}
 			})
 			.then((s) => {
