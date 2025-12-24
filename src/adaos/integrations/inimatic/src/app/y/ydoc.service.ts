@@ -40,6 +40,15 @@ export class YDocService {
     return this.deviceId
   }
 
+  private invalidateWebSession(): void {
+    try {
+      localStorage.removeItem(this.sessionJwtKey)
+    } catch {}
+    try {
+      this.adaos.setAuthAdaosToken(null)
+    } catch {}
+  }
+
   async initFromHub(): Promise<void> {
     if (this.initialized) return
     if (this.initPromise) return this.initPromise
@@ -75,36 +84,57 @@ export class YDocService {
     const useRootProxyIfAvailable = (): boolean => {
       const { hubId, sessionJwt } = readSession()
       if (!hubId || !sessionJwt) return false
+      // We now use signed JWTs for root-proxy auth; legacy opaque `sess_*` cannot be validated statelessly.
+      if (!sessionJwt.includes('.')) {
+        this.invalidateWebSession()
+        return false
+      }
       this.adaos.setBase(`https://api.inimatic.com/hubs/${hubId}`)
       this.adaos.setAuthBearer(sessionJwt)
       return true
     }
 
-    const probeHttp = async (baseUrl: string, timeoutMs = 800): Promise<boolean> => {
+    const probeHttpStatus = async (
+      baseUrl: string,
+      timeoutMs = 800,
+      headers?: Record<string, string>
+    ): Promise<number> => {
       try {
         const abs = baseUrl.replace(/\/$/, '')
         const url = `${abs}/api/ping`
         const ctrl = new AbortController()
         const timer = setTimeout(() => ctrl.abort(), timeoutMs)
         try {
-          const resp = await fetch(url, { method: 'GET', signal: ctrl.signal })
-          return resp.ok
+          const resp = await fetch(url, { method: 'GET', signal: ctrl.signal, headers })
+          return resp.status || 0
         } finally {
           clearTimeout(timer)
         }
       } catch {
-        return false
+        return 0
       }
     }
 
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
     // automatically fall back to the root proxy route over NATS.
     const directBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-    const directOk = await probeHttp(directBase, 650)
-    if (!directOk) {
+    const directStatus = await probeHttpStatus(directBase, 650)
+    if (!(directStatus >= 200 && directStatus < 300)) {
       const switched = useRootProxyIfAvailable()
       if (!switched) {
         throw new Error('hub_unreachable_no_session')
+      }
+
+      // Validate session against root-proxy before attempting WS.
+      const token = this.adaos.getToken()
+      const rootStatus = await probeHttpStatus(
+        this.adaos.getBaseUrl().replace(/\/$/, ''),
+        1200,
+        token ? { Authorization: `Bearer ${token}` } : undefined
+      )
+      if (rootStatus === 401 || rootStatus === 403) {
+        this.invalidateWebSession()
+        throw new Error('session_invalid')
       }
     }
 

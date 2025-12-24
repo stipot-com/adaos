@@ -40,7 +40,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
 			this.initError = msg
-			if (msg.includes('hub_unreachable_no_session')) {
+			if (
+				msg.includes('hub_unreachable_no_session') ||
+				msg.includes('session_invalid')
+			) {
 				this.needsLogin = true
 				return
 			}

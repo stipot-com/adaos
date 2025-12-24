@@ -145,7 +145,15 @@ export class LoginService {
 	private restoreSessionJwt(): string | null {
 		try {
 			const stored = localStorage.getItem(this.sessionKey)
-			return stored && stored.trim() ? stored.trim() : null
+			const tok = stored && stored.trim() ? stored.trim() : null
+			// Root-proxy now expects signed JWTs; legacy opaque `sess_*` can't be validated statelessly.
+			if (tok && !tok.includes('.')) {
+				try {
+					localStorage.removeItem(this.sessionKey)
+				} catch {}
+				return null
+			}
+			return tok
 		} catch {
 			return null
 		}
