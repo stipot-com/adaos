@@ -204,6 +204,19 @@ export function installHubRouteProxy(
 			const key = `${hubId}--http--${randomUUID()}`
 			const toHub = `route.to_hub.${key}`
 			const toBrowser = `route.to_browser.${key}`
+			if (verbose) {
+				log.info(
+					{
+						hubId,
+						key,
+						method: String(req.method || 'GET').toUpperCase(),
+						path,
+						toHub,
+						toBrowser,
+					},
+					'http proxy: send'
+				)
+			}
 
 			// We only support JSON-ish bodies for MVP; if express.json parsed it, use it.
 			let bodyB64: string | null = null
@@ -240,6 +253,19 @@ export function installHubRouteProxy(
 			const body = typeof reply?.body_b64 === 'string' ? reply.body_b64 : ''
 			const isTrunc = reply?.truncated === true
 			const errMsg = typeof reply?.err === 'string' ? reply.err : ''
+			if (verbose) {
+				log.info(
+					{
+						hubId,
+						key,
+						method: String(req.method || 'GET').toUpperCase(),
+						path,
+						status,
+						err: errMsg ? errMsg.slice(0, 200) : '',
+					},
+					'http proxy: reply'
+				)
+			}
 			if (errMsg && (process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
 				log.warn(
 					{
