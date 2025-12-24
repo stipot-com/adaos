@@ -918,7 +918,15 @@ class BootstrapService:
                                         from adaos.services.node_config import load_config
 
                                         cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                        base_http = str(getattr(cfg, "hub_url", None) or "http://127.0.0.1:8777").rstrip("/")
+                                        # Prefer the actual base URL the hub is serving on (set by `adaos api` / dev),
+                                        # because the hub may not be reachable on the default 8777 (e.g. sentinel off).
+                                        base_http = (
+                                            os.getenv("ADAOS_SELF_BASE_URL")
+                                            or str(getattr(cfg, "hub_url", None) or "")
+                                            or "http://127.0.0.1:8777"
+                                        ).rstrip("/")
+                                        # Do not use 0.0.0.0/:: as client destinations.
+                                        base_http = base_http.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
                                         base_ws = base_http.replace("http://", "ws://").replace("https://", "wss://")
                                         token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                     except Exception:
@@ -1076,13 +1084,36 @@ class BootstrapService:
                                                 from adaos.services.node_config import load_config
 
                                                 cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                                base_http = str(getattr(cfg, "hub_url", None) or "http://127.0.0.1:8777").rstrip("/")
+                                                base_http = (
+                                                    os.getenv("ADAOS_SELF_BASE_URL")
+                                                    or str(getattr(cfg, "hub_url", None) or "")
+                                                    or "http://127.0.0.1:8777"
+                                                ).rstrip("/")
+                                                base_http = base_http.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
                                                 token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                             except Exception:
                                                 base_http = "http://127.0.0.1:8777"
                                                 token_local = os.getenv("ADAOS_TOKEN", "") or None
 
-                                            url = f"{base_http}{path}{search}"
+                                            # Build candidate bases. Some setups expose a gateway on 8777 (sentinel)
+                                            # while the actual core runs on another port (often 8788). If the default
+                                            # base isn't reachable, retry with the target port.
+                                            bases = [base_http]
+                                            try:
+                                                from urllib.parse import urlparse
+
+                                                u0 = urlparse(base_http)
+                                                h0 = u0.hostname or "127.0.0.1"
+                                                p0 = u0.port
+                                                scheme0 = u0.scheme or "http"
+                                                alt_port_raw = os.getenv("ADAOS_TARGET_PORT") or os.getenv("ADAOS_CORE_PORT") or ""
+                                                alt_port = int(alt_port_raw) if alt_port_raw.strip() else 8788
+                                                if (p0 in (None, 8777)) and alt_port and alt_port != p0:
+                                                    bases.append(f"{scheme0}://{h0}:{alt_port}")
+                                            except Exception:
+                                                pass
+
+                                            url = f"{bases[0]}{path}{search}"
                                             if _route_verbose:
                                                 try:
                                                     print(f"[hub-route] http upstream url={url}")
@@ -1102,7 +1133,30 @@ class BootstrapService:
                                                 ct = headers.get("content-type") or headers.get("Content-Type")
                                                 if isinstance(ct, str) and ct:
                                                     h2["Content-Type"] = ct
-                                            resp = requests.request(method, url, data=body, headers=h2, timeout=12)
+                                            # Do not inherit HTTP(S)_PROXY environment from the host/container:
+                                            # local hub calls must stay local, otherwise they can hang on a proxy.
+                                            sess = requests.Session()
+                                            try:
+                                                sess.trust_env = False
+                                            except Exception:
+                                                pass
+                                            last_exc: Exception | None = None
+                                            resp = None
+                                            for base in bases:
+                                                url_try = f"{base}{path}{search}"
+                                                try:
+                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=12)
+                                                    last_exc = None
+                                                    break
+                                                except Exception as e:
+                                                    last_exc = e
+                                                    if _route_verbose:
+                                                        try:
+                                                            print(f"[hub-route] http upstream failed url={url_try}: {type(e).__name__}: {e}")
+                                                        except Exception:
+                                                            pass
+                                            if resp is None:
+                                                raise last_exc or RuntimeError("http upstream failed")
                                             raw = resp.content or b""
                                             limit = 2 * 1024 * 1024
                                             truncated = len(raw) > limit

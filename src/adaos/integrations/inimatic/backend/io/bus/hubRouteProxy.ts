@@ -417,6 +417,19 @@ export function installHubRouteProxy(
 
 				// open
 				try {
+					if (verbose) {
+						log.info(
+							{
+								hubId,
+								dstPath,
+								key,
+								toHub,
+								toBrowser,
+								query: String(meta?.query || ''),
+							},
+							'ws tunnel: open'
+						)
+					}
 					await bus.publish_subject(toHub, {
 						t: 'open',
 						proto: 'ws',
