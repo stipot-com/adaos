@@ -18,6 +18,22 @@ function maskToken(tok?: string | null): string | null {
 	return `${s.slice(0, 5)}***${s.slice(-3)}`
 }
 
+function tryDecodeJwtTimes(token: string): { exp?: number; iat?: number } | null {
+	try {
+		const parts = token.split('.')
+		if (parts.length < 2) return null
+		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+		const pad = '='.repeat((4 - (b64.length % 4)) % 4)
+		const json = Buffer.from(b64 + pad, 'base64').toString('utf8')
+		const payload = JSON.parse(json)
+		const exp = typeof payload?.exp === 'number' ? payload.exp : undefined
+		const iat = typeof payload?.iat === 'number' ? payload.iat : undefined
+		return { exp, iat }
+	} catch {
+		return null
+	}
+}
+
 const MAX_CHUNK_RAW = 300_000
 
 function* chunkBuffer(buf: Buffer): Generator<Buffer> {
@@ -620,11 +636,24 @@ export function installHubRouteProxy(
 			if (!session) {
 				if (verbose) {
 					let rawLen: number | null = null
+					let jwtTimes: { exp?: number; iat?: number } | null = null
+					let expiredHint: boolean | null = null
 					try {
 						const raw = await opts.redis.get(`session:jwt:${sessionJwt}`)
 						rawLen = raw ? raw.length : 0
 					} catch {
 						rawLen = null
+					}
+					try {
+						if (sessionJwt.includes('.')) jwtTimes = tryDecodeJwtTimes(sessionJwt)
+					} catch {
+						jwtTimes = null
+					}
+					try {
+						const now = Math.floor(Date.now() / 1000)
+						expiredHint = typeof jwtTimes?.exp === 'number' ? jwtTimes.exp <= now : null
+					} catch {
+						expiredHint = null
 					}
 					log.warn(
 						{
@@ -635,6 +664,16 @@ export function installHubRouteProxy(
 							tokenKind: sessionJwt.includes('.') ? 'jwt' : 'opaque',
 							hasSecret: Boolean(opts.sessionJwtSecret),
 							redisLen: rawLen,
+							jwtExp: jwtTimes?.exp ?? null,
+							jwtIat: jwtTimes?.iat ?? null,
+							now: Math.floor(Date.now() / 1000),
+							expiredHint,
+							hint:
+								expiredHint === true
+									? 'expired'
+									: rawLen === 0
+										? 'not_in_redis_and_jwt_verify_failed'
+										: 'invalid',
 						},
 						'ws upgrade: invalid session'
 					)
@@ -645,7 +684,7 @@ export function installHubRouteProxy(
 							'Connection: close\r\n' +
 							'Content-Type: text/plain\r\n' +
 							'\r\n' +
-							'invalid session'
+							'invalid or expired session'
 					)
 				} catch {}
 				socket.destroy()
