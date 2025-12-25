@@ -67,7 +67,7 @@ location ^~ /hubs/ {
 }
 
 # --- NATS WebSocket passthrough ---
-location /nats {
+location ^~ /nats {
   # No client cert required for WS bridge
   ssl_verify_client off;
 

@@ -341,7 +341,7 @@ function buildNatsWsUrl(): string {
 	const publicOverride = (process.env['NATS_WS_PUBLIC'] || '').trim()
 	if (publicOverride) return publicOverride
 	// Keep this in sync with the WS->NATS proxy mount (`WS_NATS_PATH`).
-	const wsPath = withLeadingSlash(process.env['WS_NATS_PATH'] || '/', '/')
+	const wsPath = withLeadingSlash(process.env['WS_NATS_PATH'] || '/nats', '/nats')
 	return wsPath === '/' ? base : `${base}${wsPath}`
 }
 

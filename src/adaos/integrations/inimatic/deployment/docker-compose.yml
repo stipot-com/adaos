@@ -203,7 +203,9 @@ services:
             VIRTUAL_PROTO: 'https'
             LETSENCRYPT_HOST: api.inimatic.com,nats.inimatic.com
             LETSENCRYPT_EMAIL: connect@stipot.com
-            WS_NATS_PATH: '/'
+            # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
+            # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
+            WS_NATS_PATH: '/nats'
             GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
             CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
             CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
@@ -286,7 +288,9 @@ services:
             VIRTUAL_PROTO: 'https'
             LETSENCRYPT_HOST: api.inimatic.com,nats.inimatic.com
             LETSENCRYPT_EMAIL: connect@stipot.com
-            WS_NATS_PATH: '/'
+            # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
+            # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
+            WS_NATS_PATH: '/nats'
             GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
             CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
             CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
