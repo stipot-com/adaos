@@ -103,7 +103,7 @@ class _CtxHolder:
         _allow_host(settings.scenarios_monorepo_url)
 
         # базовые capabilities
-        caps.grant("core", "proc.run", "net.git", "git.write", "skills.manage", "scenarios.manage", "secrets.read", "secrets.write")
+        caps.grant("core", "proc.run", "net.git", "git.write", "skills.manage", "scenarios.manage", "scenarios.execute", "secrets.read", "secrets.write")
 
         # Git с защитой
         git_base = CliGitClient(depth=1)

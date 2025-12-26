@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+import datetime
+from typing import Annotated, Any, Dict, Optional
+from fastapi import APIRouter, Depends, Body, HTTPException
+from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import get_ctx, AgentContext
-from adaos.services.scenario.manager import ScenarioManager
+from adaos.services.scenario.manager import ExecutionPriority, RunState, ScenarioManager
 from adaos.adapters.db import SqliteScenarioRegistry
 
 
@@ -50,6 +51,30 @@ def _meta_id(meta: Any) -> str:
         return str(meta)
     return getattr(mid, "value", str(mid))
 
+
+class RunRequest(BaseModel):
+    id: str = Field(..., description="ID сценария для запуска")
+    ctx: Optional[Dict[str, Any]] = Field(None, description="Контекст выполнения")
+    priority: ExecutionPriority = Field(
+        ExecutionPriority.NORMAL, 
+        description="Приоритет выполнения: low, normal, high"
+    )
+    force: bool = False
+
+class RunResponse(BaseModel):
+    run_id: str = Field(..., description="Идентификатор запуска для отслеживания")
+    scenario_id: str = Field(..., description="ID запущенного сценария")
+    status: str = Field("pending", description="Текущий статус выполнения")
+    created_at: datetime.datetime = Field(..., description="Время создания запуска")
+    priority: ExecutionPriority = Field(..., description="Приоритет выполнения")
+
+class StatusResponse(BaseModel):
+    run_id: str = Field(..., description="Идентификатор запуска")
+    scenario_id: str = Field(..., description="ID сценария")
+    state: RunState = Field(..., description="Текущее состояние выполнения")
+    step: Optional[str] = Field(None, description="Текущий выполняемый шаг")
+    started_at: Optional[datetime.datetime] = Field(None, description="Время начала выполнения")
+    finished_at: Optional[datetime.datetime] = Field(None, description="Время завершения")
 
 # --- API (тонкий фасад CLI) --------------------------------------------------
 class InstallReq(BaseModel):
@@ -119,3 +144,111 @@ async def uninstall(body: UninstallReq, mgr: ScenarioManager = Depends(_get_mana
 async def push(body: PushReq, mgr: ScenarioManager = Depends(_get_manager)):
     revision = mgr.push(body.name, body.message, signoff=body.signoff)
     return {"ok": True, "revision": revision}
+
+
+@router.post("/run", response_model=RunResponse)
+async def run(
+    request: RunRequest,
+    mgr: ScenarioManager = Depends(_get_manager)
+):
+    """
+    Запуск выполнения сценария
+    
+    Параметры:
+    - `id`: ID сценария (например, "s1")
+    - `ctx`: Контекст выполнения (переменные для подстановки в сценарий)
+    - `priority`: Приоритет выполнения (low, normal, high)
+    - `force`: Принудительный запуск (игнорировать проверку установленности)
+    
+    Возвращает `run_id` для отслеживания статуса выполнения.
+    """
+    try:
+        run_id = await mgr.run(
+            scenario_id=request.id,
+            ctx=request.ctx or {},
+            priority=request.priority,
+            force=request.force
+        )
+        
+        status_unit = await mgr.status(run_id)
+        if not status_unit:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to get scenario status after launch"
+            )
+        
+        return RunResponse(
+            run_id=run_id,
+            scenario_id=request.id,
+            status=RunState.PENDING,
+            created_at=datetime.datetime.utcnow(),
+            priority=request.priority
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run scenario: {str(e)}")
+
+
+@router.get("/status", response_model=StatusResponse)
+async def status(
+    run_id: str,
+    mgr: ScenarioManager = Depends(_get_manager)
+):
+    """
+    Получение статуса выполнения сценария
+    
+    Параметры:
+    - `run_id`: Идентификатор запуска, полученный при вызове `/run`
+    
+    Возвращает текущее состояние выполнения, текущий шаг, ошибки и результат.
+    """
+    try:
+        unit = await mgr.status(run_id)
+        if not unit:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scenario run with ID '{run_id}' not found"
+            )
+
+        return StatusResponse(
+            run_id=run_id,
+            scenario_id=unit.scenario_id,
+            state=unit.state,
+            step=unit.current_step,
+            started_at=unit.started_at,
+            finished_at=unit.finished_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get scenario status: {str(e)}")
+
+
+@router.post("/cancel")
+async def cancel(
+    run_id: Annotated[str, Body(embed=True)],
+    mgr: ScenarioManager = Depends(_get_manager)
+):
+    """
+    Отмена выполнения сценария
+    
+    Параметры:
+    - `run_id`: Идентификатор запуска для отмены
+    
+    Возвращает результат попытки отмены.
+    """
+    try:
+        success = await mgr.cancel(run_id)
+        
+        if success:
+            message = f"Scenario run '{run_id}' cancelled successfully"
+            success = True
+        else:
+            message = f"Scenario run '{run_id}' not found or already completed"
+            success = False
+
+        return {'ok': success, "message": message}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cancel scenario: {str(e)}")
