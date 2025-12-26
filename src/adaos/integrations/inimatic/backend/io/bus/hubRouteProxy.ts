@@ -570,6 +570,12 @@ export function installHubRouteProxy(
 			const u = new URL(req.url, 'https://x')
 			const m = u.pathname.match(/^\/hubs\/([^/]+)\/(ws|yws)(?:\/(.*))?$/)
 			if (!m) return
+			// Mark this socket/request as handled by the hub route proxy so other upgrade handlers
+			// (socket.io, other ws servers, etc.) don't accidentally destroy the same socket.
+			try {
+				req.__adaosHubUpgradeHandled = true
+				socket.__adaosHubUpgradeHandled = true
+			} catch {}
 
 			const hubId = decodeURIComponent(m[1] || '')
 			const kind = m[2]
@@ -724,6 +730,11 @@ export function installHubRouteProxy(
 				if (verbose) {
 					log.info({ hubId, kind, dstPath }, 'ws upgrade: handleUpgrade invoked')
 				}
+				// Prevent any subsequent 'upgrade' listeners from matching this request by path.
+				try {
+					req.url = '/__adaos_hub_upgrade_handled__'
+				} catch {}
+				return
 			} catch (e) {
 				if (verbose) log.warn({ hubId, kind, dstPath, err: String(e) }, 'ws upgrade: handleUpgrade failed')
 				try {
