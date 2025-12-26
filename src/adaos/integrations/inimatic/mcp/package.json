@@ -1,0 +1,20 @@
+{
+    "name": "@adaos/inimatic-mcp",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx src/mcp-server.ts",
+        "build": "tsc",
+        "start": "node dist/mcp-server.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "undici": "^6.6.0",
+        "zod": "^3.23.8"
+    },
+    "devDependencies": {
+        "tsx": "^4.21.0",
+        "typescript": "^5.4.0"
+    }
+}
