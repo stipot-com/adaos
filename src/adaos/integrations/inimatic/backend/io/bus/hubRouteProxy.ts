@@ -704,6 +704,16 @@ export function installHubRouteProxy(
 			const dstPath = kind === 'ws' ? '/ws' : `/yws${room}`
 			const query = u.search || ''
 			if (verbose) log.info({ hubId, kind, dstPath }, 'ws upgrade: accepted')
+			if (verbose) {
+				try {
+					socket.once('error', (err: any) => {
+						log.warn({ hubId, kind, dstPath, err: String(err) }, 'ws upgrade: socket error')
+					})
+					socket.once('close', () => {
+						log.info({ hubId, kind, dstPath }, 'ws upgrade: socket closed')
+					})
+				} catch {}
+			}
 			try {
 				wss.handleUpgrade(req, socket, head, (ws: any) => {
 					if (verbose) {
@@ -711,6 +721,9 @@ export function installHubRouteProxy(
 					}
 					wss.emit('connection', ws, req, { hubId, dstPath, sessionJwt, query })
 				})
+				if (verbose) {
+					log.info({ hubId, kind, dstPath }, 'ws upgrade: handleUpgrade invoked')
+				}
 			} catch (e) {
 				if (verbose) log.warn({ hubId, kind, dstPath, err: String(e) }, 'ws upgrade: handleUpgrade failed')
 				try {
