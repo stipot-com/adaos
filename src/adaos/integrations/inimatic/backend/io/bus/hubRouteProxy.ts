@@ -356,6 +356,27 @@ export function installHubRouteProxy(
 		if (verbose) log.info('ws proxy server initialized')
 		if (verbose) {
 			try {
+				wss.on('headers', (headers: string[], req: any) => {
+					try {
+						log.info(
+							{
+								url: String(req?.url || ''),
+								count: Array.isArray(headers) ? headers.length : null,
+								headers: Array.isArray(headers) ? headers.slice(0, 12) : null,
+							},
+							'ws upgrade: response headers'
+						)
+					} catch {}
+				})
+			} catch {}
+			try {
+				wss.on('error', (err: any) => {
+					try {
+						log.error({ err: String(err) }, 'ws server error')
+					} catch {}
+				})
+			} catch {}
+			try {
 				wss.on('wsClientError', (err: any, _socket: any, req: any) => {
 					try {
 						log.warn(
@@ -586,12 +607,16 @@ export function installHubRouteProxy(
 					log.info(
 						{
 							path: u.pathname,
+							method: String(req?.method || ''),
+							httpVersion: String(req?.httpVersion || ''),
 							upgrade: String(req?.headers?.upgrade || ''),
 							connection: String(req?.headers?.connection || ''),
 							hasSecKey: Boolean(req?.headers?.['sec-websocket-key']),
 							secVer: String(req?.headers?.['sec-websocket-version'] || ''),
 							secProto: String(req?.headers?.['sec-websocket-protocol'] || ''),
 							headLen: head?.length ?? null,
+							socketDestroyed: Boolean(socket?.destroyed),
+							socketWritableEnded: Boolean(socket?.writableEnded),
 						},
 						'ws upgrade: headers'
 					)
