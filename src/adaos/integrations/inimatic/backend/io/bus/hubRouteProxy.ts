@@ -112,6 +112,13 @@ function normalizeHeaders(headers: any): Record<string, string> {
 	return out
 }
 
+function isValidWsKey(candidate: unknown): boolean {
+	if (typeof candidate !== 'string') return false
+	const key = candidate.trim()
+	// Base64-encoded 16-byte value => 24 chars ending with "=="
+	return /^[0-9A-Za-z+/]{22}==$/.test(key)
+}
+
 async function natsRequest(
 	bus: NatsBus,
 	opts: {
@@ -604,6 +611,7 @@ export function installHubRouteProxy(
 
 			if (verbose) {
 				try {
+					const secKey = String(req?.headers?.['sec-websocket-key'] || '')
 					log.info(
 						{
 							path: u.pathname,
@@ -612,6 +620,8 @@ export function installHubRouteProxy(
 							upgrade: String(req?.headers?.upgrade || ''),
 							connection: String(req?.headers?.connection || ''),
 							hasSecKey: Boolean(req?.headers?.['sec-websocket-key']),
+							secKeyLen: secKey ? secKey.length : 0,
+							secKeyOk: isValidWsKey(secKey),
 							secVer: String(req?.headers?.['sec-websocket-version'] || ''),
 							secProto: String(req?.headers?.['sec-websocket-protocol'] || ''),
 							headLen: head?.length ?? null,
