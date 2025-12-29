@@ -2,6 +2,7 @@ import type { Server as HttpsServer } from 'https'
 import type express from 'express'
 import pino from 'pino'
 import { randomUUID } from 'crypto'
+import { WebSocketServer } from 'ws'
 import { NatsBus } from './nats.js'
 import { verifyWebSessionJwt } from '../../sessionJwt.js'
 
@@ -359,17 +360,11 @@ export function installHubRouteProxy(
 	})
 
 	// ---- WebSocket proxy: /hubs/:hubId/ws and /hubs/:hubId/yws/<room?>
-	let WebSocketServerCtor: any
-	let wss: any
+	let wss: WebSocketServer | null = null
 
-	async function ensureWs(): Promise<void> {
-		if (wss) return
-		// eslint-disable-next-line no-new-func
-		const mod: any = (new Function('m', 'return import(m)'))('ws')
-		const m = await Promise.resolve(mod)
-		WebSocketServerCtor = m.WebSocketServer || m.Server
-		if (!WebSocketServerCtor) throw new Error('ws package missing WebSocketServer export')
-		wss = new WebSocketServerCtor({ noServer: true, perMessageDeflate: false })
+	function ensureWs(): WebSocketServer {
+		if (wss) return wss
+		wss = new WebSocketServer({ noServer: true, perMessageDeflate: false })
 		if (verbose) log.info('ws proxy server initialized')
 		if (verbose) {
 			try {
@@ -416,6 +411,7 @@ export function installHubRouteProxy(
 			const hubId = String(meta?.hubId || '')
 			const dstPath = String(meta?.dstPath || '/ws')
 			const sessionJwt = String(meta?.sessionJwt || '')
+			const kind = String(meta?.kind || '')
 			const key = `${hubId}--${randomUUID().replace(/-/g, '')}`
 			const toHub = `route.to_hub.${key}`
 			const toBrowser = `route.to_browser.${key}`
@@ -431,6 +427,28 @@ export function installHubRouteProxy(
 						log.warn({ hubId, dstPath, key, err: String(err) }, 'ws client error')
 					})
 				}
+
+				const session = await verifySessionJwt(opts.redis, sessionJwt, opts.sessionJwtSecret)
+				if (!session) {
+					if (verbose) {
+						log.warn({ hubId, kind, dstPath, token: maskToken(sessionJwt) }, 'ws session invalid; closing')
+					}
+					try {
+						ws.close(1008, 'unauthorized')
+					} catch {}
+					return
+				}
+				const ownerId = String(session.owner_id || '')
+				if (!allowCrossHubOwner && ownerId && ownerId !== hubId) {
+					if (verbose) log.warn({ hubId, ownerId, kind }, 'ws owner/hub mismatch; closing')
+					try {
+						ws.close(1008, 'forbidden')
+					} catch {}
+					return
+				} else if (ownerId && ownerId !== hubId && verbose) {
+					log.warn({ hubId, ownerId, kind }, 'ws owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
+				}
+
 				await ensureBus()
 				sub = await bus.subscribe(toBrowser, async (_subject: string, data: Uint8Array) => {
 					try {
@@ -600,10 +618,11 @@ export function installHubRouteProxy(
 				log.warn({ err: String(e), hubId, dstPath, key }, 'ws proxy setup failed')
 			}
 		})
+		return wss
 	}
 
 	// Ensure we get first shot at matching /hubs/:hubId/(ws|yws) before other upgrade handlers (e.g. socket.io).
-	server.prependListener('upgrade', async (req: any, socket: any, head: any) => {
+	server.prependListener('upgrade', (req: any, socket: any, head: any) => {
 		try {
 			const u = new URL(req.url, 'https://x')
 			const m = u.pathname.match(/^\/hubs\/([^/]+)\/(ws|yws)(?:\/(.*))?$/)
@@ -679,78 +698,8 @@ export function installHubRouteProxy(
 				socket.destroy()
 				return
 			}
-			const session = await verifySessionJwt(
-				opts.redis,
-				sessionJwt,
-				opts.sessionJwtSecret
-			)
-			if (!session) {
-				if (verbose) {
-					let rawLen: number | null = null
-					let jwtTimes: { exp?: number; iat?: number } | null = null
-					let expiredHint: boolean | null = null
-					try {
-						const raw = await opts.redis.get(`session:jwt:${sessionJwt}`)
-						rawLen = raw ? raw.length : 0
-					} catch {
-						rawLen = null
-					}
-					try {
-						if (sessionJwt.includes('.')) jwtTimes = tryDecodeJwtTimes(sessionJwt)
-					} catch {
-						jwtTimes = null
-					}
-					try {
-						const now = Math.floor(Date.now() / 1000)
-						expiredHint = typeof jwtTimes?.exp === 'number' ? jwtTimes.exp <= now : null
-					} catch {
-						expiredHint = null
-					}
-					log.warn(
-						{
-							hubId,
-							kind,
-							path: u.pathname,
-							token: maskToken(sessionJwt),
-							tokenKind: sessionJwt.includes('.') ? 'jwt' : 'opaque',
-							hasSecret: Boolean(opts.sessionJwtSecret),
-							redisLen: rawLen,
-							jwtExp: jwtTimes?.exp ?? null,
-							jwtIat: jwtTimes?.iat ?? null,
-							now: Math.floor(Date.now() / 1000),
-							expiredHint,
-							hint:
-								expiredHint === true
-									? 'expired'
-									: rawLen === 0
-										? 'not_in_redis_and_jwt_verify_failed'
-										: 'invalid',
-						},
-						'ws upgrade: invalid session'
-					)
-				}
-				try {
-					socket.write(
-						'HTTP/1.1 401 Unauthorized\r\n' +
-							'Connection: close\r\n' +
-							'Content-Type: text/plain\r\n' +
-							'\r\n' +
-							'invalid or expired session'
-					)
-				} catch {}
-				socket.destroy()
-				return
-			}
-			const ownerId = String(session.owner_id || '')
-			if (!allowCrossHubOwner && ownerId && ownerId !== hubId) {
-				if (verbose) log.warn({ hubId, ownerId, kind }, 'ws upgrade: owner/hub mismatch; denying')
-				socket.destroy()
-				return
-			} else if (ownerId && ownerId !== hubId && verbose) {
-				log.warn({ hubId, ownerId, kind }, 'ws upgrade: owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
-			}
 
-			await ensureWs()
+			ensureWs()
 
 			const dstPath = kind === 'ws' ? '/ws' : `/yws${room}`
 			const query = u.search || ''
@@ -805,11 +754,11 @@ export function installHubRouteProxy(
 				} catch {}
 			}
 			try {
-				wss.handleUpgrade(req, socket, head, (ws: any) => {
+				wss!.handleUpgrade(req, socket, head, (ws: any) => {
 					if (verbose) {
 						log.info({ hubId, kind, dstPath }, 'ws upgrade: handleUpgrade ok')
 					}
-					wss.emit('connection', ws, req, { hubId, dstPath, sessionJwt, query })
+					wss!.emit('connection', ws, req, { hubId, kind, dstPath, sessionJwt, query })
 				})
 				if (verbose) {
 					log.info({ hubId, kind, dstPath }, 'ws upgrade: handleUpgrade invoked')
