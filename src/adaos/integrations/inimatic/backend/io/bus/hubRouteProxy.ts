@@ -130,6 +130,33 @@ function firstLineFromWriteChunk(chunk: unknown): string {
 	}
 }
 
+function previewWriteChunk(chunk: unknown): { len: number | null; kind: string; preview: string } {
+	try {
+		if (chunk == null) return { len: null, kind: 'null', preview: '' }
+		if (Buffer.isBuffer(chunk)) {
+			const b: Buffer = chunk
+			return {
+				len: b.length,
+				kind: 'buffer',
+				preview: b.subarray(0, 24).toString('hex'),
+			}
+		}
+		if (typeof chunk === 'string') {
+			return { len: Buffer.byteLength(chunk, 'utf8'), kind: 'string', preview: firstLineFromWriteChunk(chunk) }
+		}
+		// _writev may pass an array of chunks
+		if (Array.isArray(chunk) && chunk.length > 0) {
+			const first: any = (chunk as any[])[0]
+			const p = previewWriteChunk(first)
+			return { len: p.len, kind: `array(${chunk.length})`, preview: p.preview }
+		}
+		const s = String(chunk)
+		return { len: Buffer.byteLength(s, 'utf8'), kind: typeof chunk, preview: s.slice(0, 120) }
+	} catch {
+		return { len: null, kind: 'unknown', preview: '' }
+	}
+}
+
 function maskUrlTokens(rawUrl: string): string {
 	try {
 		const u = new URL(rawUrl, 'https://x')
@@ -531,6 +558,8 @@ export function installHubRouteProxy(
 				{ kind: 'bin' | 'text'; total: number; parts: Array<Buffer | string> }
 			>()
 			try {
+				if (verbose) log.info({ hubId, kind, dstPath, key }, 'ws conn: start')
+
 				// Attach handlers immediately; don't let client frames race async auth/NATS setup.
 				ws.on('message', (data: any, isBinary: boolean) => {
 					if (clientClosed) return
@@ -577,6 +606,7 @@ export function installHubRouteProxy(
 					return
 				}
 				const ownerId = String(session.owner_id || '')
+				if (verbose) log.info({ hubId, kind, dstPath, key, ownerId }, 'ws session ok')
 				if (!allowCrossHubOwner && ownerId && ownerId !== hubId) {
 					if (verbose) log.warn({ hubId, ownerId, kind }, 'ws owner/hub mismatch; closing')
 					try {
@@ -808,12 +838,40 @@ export function installHubRouteProxy(
 				try {
 					// Capture what we actually write back to the client during the upgrade handshake.
 					// This helps debug cases where the socket is closed before `handleUpgrade` callback fires.
+					let writeCount = 0
 					let sawWrite = false
 					const wrap = (method: string) => {
 						const orig = (socket as any)?.[method]
 						if (typeof orig !== 'function') return
 						;(socket as any)[method] = (...args: any[]) => {
 							try {
+								writeCount++
+								if (writeCount <= 6 && args?.[0] != null) {
+									const p = previewWriteChunk(args[0])
+									const maybeHttp =
+										typeof args?.[0] === 'string'
+											? String(args[0]).startsWith('HTTP/')
+											: Buffer.isBuffer(args?.[0])
+												? args[0].subarray(0, 5).toString('utf8') === 'HTTP/'
+												: false
+									log.info(
+										{
+											hubId,
+											kind,
+											dstPath,
+											method,
+											writeCount,
+											chunkKind: p.kind,
+											len: p.len,
+											preview: p.preview,
+											stack:
+												writeCount > 1 && maybeHttp
+													? String(new Error('write').stack || '').split('\n').slice(0, 6).join('\n')
+													: undefined,
+										},
+										'ws socket write'
+									)
+								}
 								if (!sawWrite && args?.[0] != null) {
 									sawWrite = true
 									log.info(
