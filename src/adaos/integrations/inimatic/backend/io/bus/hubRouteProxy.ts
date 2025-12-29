@@ -119,6 +119,16 @@ function isValidWsKey(candidate: unknown): boolean {
 	return /^[0-9A-Za-z+/]{22}==$/.test(key)
 }
 
+function firstLineFromWriteChunk(chunk: unknown): string {
+	try {
+		if (chunk == null) return ''
+		const raw = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
+		return raw.split(/\r?\n/)[0]?.slice(0, 200) || ''
+	} catch {
+		return ''
+	}
+}
+
 async function natsRequest(
 	bus: NatsBus,
 	opts: {
@@ -750,29 +760,33 @@ export function installHubRouteProxy(
 					// Capture what we actually write back to the client during the upgrade handshake.
 					// This helps debug cases where the socket is closed before `handleUpgrade` callback fires.
 					let sawWrite = false
-					const origWrite = socket.write?.bind(socket)
-					if (typeof origWrite === 'function') {
-						socket.write = (...args: any[]) => {
+					const wrap = (method: string) => {
+						const orig = (socket as any)?.[method]
+						if (typeof orig !== 'function') return
+						;(socket as any)[method] = (...args: any[]) => {
 							try {
 								if (!sawWrite && args?.[0] != null) {
 									sawWrite = true
-									const raw = Buffer.isBuffer(args[0])
-										? (args[0] as Buffer).toString('utf8')
-										: String(args[0])
 									log.info(
 										{
 											hubId,
 											kind,
 											dstPath,
-											firstLine: raw.split(/\r?\n/)[0]?.slice(0, 200) || '',
+											method,
+											firstLine: firstLineFromWriteChunk(args[0]),
 										},
-										'ws upgrade: first socket.write'
+										'ws upgrade: first socket write'
 									)
 								}
 							} catch {}
-							return origWrite(...args)
+							return orig.apply(socket, args)
 						}
 					}
+					// ws may use `write`, `end`, or internal `_write` paths depending on abort/handshake.
+					wrap('write')
+					wrap('end')
+					wrap('_write')
+					wrap('_writev')
 					socket.once('error', (err: any) => {
 						log.warn({ hubId, kind, dstPath, err: String(err) }, 'ws upgrade: socket error')
 					})
