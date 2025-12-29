@@ -417,14 +417,110 @@ export function installHubRouteProxy(
 			const toBrowser = `route.to_browser.${key}`
 
 			let sub: any = null
+			let hubOpenSent = false
+			let clientClosed = false
+			let publishChain = Promise.resolve()
+
+			const EARLY_FRAME_MAX_BYTES = 512 * 1024
+			const EARLY_FRAME_MAX_COUNT = 64
+			const earlyFrames: Array<{ isBinary: boolean; data: Buffer | string }> = []
+			let earlyFrameBytes = 0
+
+			const enqueuePublish = (payload: any) => {
+				publishChain = publishChain
+					.then(async () => {
+						await bus.publish_subject(toHub, payload)
+					})
+					.catch(() => {})
+			}
+
+			const forwardClientFrame = (data: any, isBinary: boolean) => {
+				try {
+					if (isBinary) {
+						const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
+						if (buf.length > MAX_CHUNK_RAW) {
+							const id = `c_${randomUUID().replace(/-/g, '')}`
+							const chunks = Array.from(chunkBuffer(buf))
+							for (let i = 0; i < chunks.length; i++) {
+								enqueuePublish({
+									t: 'chunk',
+									id,
+									kind: 'bin',
+									idx: i,
+									total: chunks.length,
+									data_b64: chunks[i].toString('base64'),
+								})
+							}
+						} else {
+							enqueuePublish({
+								t: 'frame',
+								kind: 'bin',
+								data_b64: buf.toString('base64'),
+							})
+						}
+					} else {
+						const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8')
+						if (text.length > MAX_CHUNK_RAW) {
+							const id = `c_${randomUUID().replace(/-/g, '')}`
+							const parts: string[] = []
+							for (let off = 0; off < text.length; off += MAX_CHUNK_RAW) {
+								parts.push(text.slice(off, off + MAX_CHUNK_RAW))
+							}
+							for (let i = 0; i < parts.length; i++) {
+								enqueuePublish({
+									t: 'chunk',
+									id,
+									kind: 'text',
+									idx: i,
+									total: parts.length,
+									data: parts[i],
+								})
+							}
+						} else {
+							enqueuePublish({
+								t: 'frame',
+								kind: 'text',
+								data: text,
+							})
+						}
+					}
+				} catch {}
+			}
+
+			const bufferEarlyFrame = (data: any, isBinary: boolean) => {
+				if (earlyFrames.length >= EARLY_FRAME_MAX_COUNT) return
+				try {
+					if (isBinary) {
+						const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
+						if (earlyFrameBytes + buf.length > EARLY_FRAME_MAX_BYTES) return
+						earlyFrames.push({ isBinary: true, data: buf })
+						earlyFrameBytes += buf.length
+					} else {
+						const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8')
+						const bytes = Buffer.byteLength(text, 'utf8')
+						if (earlyFrameBytes + bytes > EARLY_FRAME_MAX_BYTES) return
+						earlyFrames.push({ isBinary: false, data: text })
+						earlyFrameBytes += bytes
+					}
+				} catch {}
+			}
 			const pendingChunks = new Map<
 				string,
 				{ kind: 'bin' | 'text'; total: number; parts: Array<Buffer | string> }
 			>()
 			try {
-				// Always attach early so we can capture close codes even if the connection dies
-				// before we finish setting up NATS subscriptions.
-				ws.on('close', (code: number, reason: Buffer) => {
+				// Attach handlers immediately; don't let client frames race async auth/NATS setup.
+				ws.on('message', (data: any, isBinary: boolean) => {
+					if (clientClosed) return
+					if (!hubOpenSent) {
+						bufferEarlyFrame(data, isBinary)
+						return
+					}
+					forwardClientFrame(data, isBinary)
+				})
+
+				ws.once('close', (code: number, reason: Buffer) => {
+					clientClosed = true
 					let r: string | null = null
 					try {
 						r = reason ? reason.toString('utf8') : ''
@@ -432,9 +528,18 @@ export function installHubRouteProxy(
 						r = null
 					}
 					log.info({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close')
+					try {
+						pendingChunks.clear()
+						earlyFrames.length = 0
+						sub?.unsubscribe?.()
+					} catch {}
+					try {
+						if (hubOpenSent) enqueuePublish({ t: 'close' })
+					} catch {}
 				})
+
 				if (verbose) {
-					ws.on('error', (err: any) => {
+					ws.once('error', (err: any) => {
 						log.warn({ hubId, dstPath, key, err: String(err) }, 'ws client error')
 					})
 				}
@@ -521,6 +626,15 @@ export function installHubRouteProxy(
 				})
 
 				// open
+				// ws.WebSocket.OPEN === 1
+				if (clientClosed || ws.readyState !== 1) {
+					try {
+						pendingChunks.clear()
+						earlyFrames.length = 0
+						sub?.unsubscribe?.()
+					} catch {}
+					return
+				}
 				try {
 					if (verbose) {
 						log.info(
@@ -542,6 +656,7 @@ export function installHubRouteProxy(
 						query: meta?.query || '',
 						headers: {},
 					})
+					hubOpenSent = true
 				} catch (e) {
 					if (verbose) log.warn({ hubId, dstPath, key, err: String(e) }, 'ws open publish failed')
 					try {
@@ -550,77 +665,14 @@ export function installHubRouteProxy(
 					return
 				}
 
-				ws.on('message', async (data: any, isBinary: boolean) => {
-					try {
-						if (isBinary) {
-							const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
-							if (buf.length > MAX_CHUNK_RAW) {
-								const id = `c_${randomUUID().replace(/-/g, '')}`
-								const chunks = Array.from(chunkBuffer(buf))
-								for (let i = 0; i < chunks.length; i++) {
-									await bus.publish_subject(toHub, {
-										t: 'chunk',
-										id,
-										kind: 'bin',
-										idx: i,
-										total: chunks.length,
-										data_b64: chunks[i].toString('base64'),
-									})
-								}
-							} else {
-								await bus.publish_subject(toHub, {
-									t: 'frame',
-									kind: 'bin',
-									data_b64: buf.toString('base64'),
-								})
-							}
-						} else {
-							const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8')
-							if (text.length > MAX_CHUNK_RAW) {
-								const id = `c_${randomUUID().replace(/-/g, '')}`
-								const parts: string[] = []
-								for (let off = 0; off < text.length; off += MAX_CHUNK_RAW) {
-									parts.push(text.slice(off, off + MAX_CHUNK_RAW))
-								}
-								for (let i = 0; i < parts.length; i++) {
-									await bus.publish_subject(toHub, {
-										t: 'chunk',
-										id,
-										kind: 'text',
-										idx: i,
-										total: parts.length,
-										data: parts[i],
-									})
-								}
-							} else {
-								await bus.publish_subject(toHub, {
-									t: 'frame',
-									kind: 'text',
-									data: text,
-								})
-							}
-						}
-					} catch {}
-				})
-
-				ws.on('close', async (code: number, reason: Buffer) => {
-					if (verbose) {
-						let r: string | null = null
-						try {
-							r = reason ? reason.toString('utf8') : ''
-						} catch {
-							r = null
-						}
-						log.info({ hubId, dstPath, key, code, reason: r }, 'ws client close')
+				// Flush frames that arrived during session verification / NATS setup.
+				if (!clientClosed && earlyFrames.length) {
+					const frames = earlyFrames.splice(0, earlyFrames.length)
+					earlyFrameBytes = 0
+					for (const f of frames) {
+						forwardClientFrame(f.data, f.isBinary)
 					}
-					try {
-						pendingChunks.clear()
-						sub?.unsubscribe?.()
-					} catch {}
-					try {
-						await bus.publish_subject(toHub, { t: 'close' })
-					} catch {}
-				})
+				}
 			} catch (e) {
 				try {
 					sub?.unsubscribe?.()
