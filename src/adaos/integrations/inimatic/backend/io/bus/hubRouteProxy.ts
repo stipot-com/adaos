@@ -737,11 +737,46 @@ export function installHubRouteProxy(
 			if (verbose) log.info({ hubId, kind, dstPath }, 'ws upgrade: accepted')
 			if (verbose) {
 				try {
+					// Capture what we actually write back to the client during the upgrade handshake.
+					// This helps debug cases where the socket is closed before `handleUpgrade` callback fires.
+					let sawWrite = false
+					const origWrite = socket.write?.bind(socket)
+					if (typeof origWrite === 'function') {
+						socket.write = (...args: any[]) => {
+							try {
+								if (!sawWrite && args?.[0] != null) {
+									sawWrite = true
+									const raw = Buffer.isBuffer(args[0])
+										? (args[0] as Buffer).toString('utf8')
+										: String(args[0])
+									log.info(
+										{
+											hubId,
+											kind,
+											dstPath,
+											firstLine: raw.split(/\r?\n/)[0]?.slice(0, 200) || '',
+										},
+										'ws upgrade: first socket.write'
+									)
+								}
+							} catch {}
+							return origWrite(...args)
+						}
+					}
 					socket.once('error', (err: any) => {
 						log.warn({ hubId, kind, dstPath, err: String(err) }, 'ws upgrade: socket error')
 					})
 					socket.once('close', () => {
-						log.info({ hubId, kind, dstPath }, 'ws upgrade: socket closed')
+						log.info(
+							{
+								hubId,
+								kind,
+								dstPath,
+								bytesRead: socket?.bytesRead ?? null,
+								bytesWritten: socket?.bytesWritten ?? null,
+							},
+							'ws upgrade: socket closed'
+						)
 					})
 				} catch {}
 			}
