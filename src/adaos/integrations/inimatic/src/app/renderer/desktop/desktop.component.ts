@@ -25,6 +25,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	webspaces: Array<{ id: string; title: string; created_at: number }> = []
 	activeWebspace = 'default'
 	pageSchema?: PageSchema
+	private areaWidgetCounts = new Map<string, number>()
 	needsLogin = false
 	initError = ''
 	constructor(
@@ -55,6 +56,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.app = this.y.toJSON(this.y.getPath('ui/application'))
 			this.readWebspaces()
 			this.pageSchema = this.desktopSchema.loadSchema()
+			this.rebuildAreaWidgetCounts()
 		}
 		recompute()
 		const un1 = observeDeep(uiNode, recompute)
@@ -196,5 +198,32 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	getWidgetsInArea(areaId: string): WidgetConfig[] {
 		return (this.pageSchema?.widgets || []).filter(w => w.area === areaId)
+	}
+
+	areaHasWidgets(areaId: string): boolean {
+		return (this.areaWidgetCounts.get(areaId) || 0) > 0
+	}
+
+	desktopLayoutClass(page: PageSchema): Record<string, boolean> {
+		const roles = new Map<string, boolean>()
+		for (const area of page.layout.areas || []) {
+			if (!area?.role) continue
+			if (this.areaHasWidgets(area.id)) roles.set(area.role, true)
+		}
+		const hasSidebar = roles.get('sidebar') === true
+		const hasAux = roles.get('aux') === true
+		return {
+			'no-sidebar': !hasSidebar,
+			'no-aux': !hasAux,
+		}
+	}
+
+	private rebuildAreaWidgetCounts() {
+		const map = new Map<string, number>()
+		for (const w of this.pageSchema?.widgets || []) {
+			if (!w.area) continue
+			map.set(w.area, (map.get(w.area) || 0) + 1)
+		}
+		this.areaWidgetCounts = map
 	}
 }
