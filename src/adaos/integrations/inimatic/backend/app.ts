@@ -349,6 +349,10 @@ const SOCKET_PATH = withLeadingSlash(
 	process.env['SOCKET_PATH'] ?? '/socket.io',
 	'/socket.io'
 )
+if (SOCKET_PATH === '/') {
+	console.warn('[socket.io] SOCKET_PATH="/" would hijack all WS upgrades; forcing "/socket.io"')
+}
+const EFFECTIVE_SOCKET_PATH = SOCKET_PATH === '/' ? '/socket.io' : SOCKET_PATH
 const SOCKET_CHANNEL_NS = withLeadingSlash(
 	process.env['SOCKET_CHANNEL_NS'] ?? '/adaos',
 	'/adaos'
@@ -373,7 +377,7 @@ const io = new Server(server, {
 	cors: { origin: '*' },
 	pingTimeout: 10000,
 	pingInterval: 10000,
-	path: SOCKET_PATH,
+	path: EFFECTIVE_SOCKET_PATH,
 })
 
 type EngineAllowRequest = (
