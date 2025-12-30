@@ -79,3 +79,59 @@ body.dark ion-alert {
 	--ion-text-color: #e5e7eb;
 	--color: #e5e7eb;
 }
+
+/* -----------------------------------------------------
+ * ADAOS layout primitives (responsive utilities)
+ * ----------------------------------------------------- */
+
+:root {
+	--ada-page-padding: clamp(12px, 2.2vw, 24px);
+	--ada-page-gap: clamp(12px, 2.2vw, 20px);
+	--ada-container-max: 1100px;
+	--ada-form-max: 420px;
+}
+
+.ada-page {
+	min-height: 100%;
+	width: 100%;
+	padding: var(--ada-page-padding);
+	display: flex;
+	flex-direction: column;
+	gap: var(--ada-page-gap);
+}
+
+.ada-page--center {
+	justify-content: center;
+	align-items: center;
+	text-align: center;
+}
+
+.ada-container {
+	width: min(100%, var(--ada-container-max));
+	margin-inline: auto;
+}
+
+.ada-stack {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ada-page-gap);
+}
+
+.ada-form {
+	width: min(100%, var(--ada-form-max));
+}
+
+.ada-scroll {
+	max-height: min(320px, 40vh);
+	overflow: auto;
+}
+
+/* Make long titles behave on narrow screens */
+ion-card-title,
+ion-card-subtitle,
+h1,
+h2,
+h3 {
+	white-space: normal;
+	overflow-wrap: anywhere;
+}

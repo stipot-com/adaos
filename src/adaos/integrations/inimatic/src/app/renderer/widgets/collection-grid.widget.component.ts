@@ -20,7 +20,10 @@ import { PageModalService } from '../../runtime/page-modal.service'
         <ion-row>
           <ion-col
             *ngFor="let item of items"
-            [size]="columnSize"
+            [size]="sizeXs"
+            [sizeSm]="sizeSm"
+            [sizeMd]="sizeMd"
+            [sizeLg]="sizeLg"
             (click)="onItemClick(item)"
             class="collection-grid-item"
             [class.selected]="isSelected(item)"
@@ -129,10 +132,32 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     this.stateSub?.unsubscribe()
   }
 
-  get columnSize(): string {
+  private resolveColumns(): number {
     const columns = Number(this.widget?.inputs?.['columns'] ?? 4)
-    const value = !columns || columns <= 0 ? 4 : Math.max(1, Math.min(12, Math.floor(12 / columns)))
-    return String(value)
+    if (!columns || columns <= 0) return 4
+    return Math.max(1, Math.min(12, Math.floor(columns)))
+  }
+
+  private sizeForColumns(cols: number): string {
+    const clamped = Math.max(1, Math.min(12, Math.floor(cols)))
+    return String(Math.max(1, Math.min(12, Math.floor(12 / clamped))))
+  }
+
+  // Keep tiles readable on phones: fewer columns at smaller breakpoints.
+  get sizeXs(): string {
+    return this.sizeForColumns(Math.min(this.resolveColumns(), 2))
+  }
+
+  get sizeSm(): string {
+    return this.sizeForColumns(Math.min(this.resolveColumns(), 3))
+  }
+
+  get sizeMd(): string {
+    return this.sizeForColumns(Math.min(this.resolveColumns(), 4))
+  }
+
+  get sizeLg(): string {
+    return this.sizeForColumns(this.resolveColumns())
   }
 
   async onItemClick(item: any): Promise<void> {

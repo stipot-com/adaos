@@ -27,6 +27,18 @@ import { PageStateService } from '../../runtime/page-state.service'
   `,
   styles: [
     `
+      ion-segment {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      ion-segment::-webkit-scrollbar {
+        display: none;
+      }
+      ion-segment-button {
+        flex: 0 0 auto;
+      }
       ion-segment.segment-small {
         transform: scale(0.9);
         transform-origin: left center;
