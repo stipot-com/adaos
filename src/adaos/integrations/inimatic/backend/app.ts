@@ -28,10 +28,7 @@ import {
 	type MessageParams,
 } from './i18n.js'
 import { NatsBus } from './io/bus/nats.js'
-import {
-	installWsNatsProxy,
-	installWsNatsProxyDebugRoute,
-} from './io/bus/wsNatsProxy.js'
+import { installWsNatsProxy } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
 import { ensureSchema as ensureTgSchema, ensureHubToken } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
@@ -1269,11 +1266,6 @@ installPairingApi(app)
 import('./io/bus/natsAuth.js')
 	.then((m) => m.installNatsAuth(app))
 	.catch(() => { })
-if (process.env['DEBUG_ENDPOINTS'] === 'true') {
-	try {
-		installWsNatsProxyDebugRoute(app)
-	} catch { }
-}
 
 // Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
 try {

@@ -19,22 +19,6 @@ function maskToken(tok?: string | null): string | null {
 	return `${s.slice(0, 5)}***${s.slice(-3)}`
 }
 
-function tryDecodeJwtTimes(token: string): { exp?: number; iat?: number } | null {
-	try {
-		const parts = token.split('.')
-		if (parts.length < 2) return null
-		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-		const pad = '='.repeat((4 - (b64.length % 4)) % 4)
-		const json = Buffer.from(b64 + pad, 'base64').toString('utf8')
-		const payload = JSON.parse(json)
-		const exp = typeof payload?.exp === 'number' ? payload.exp : undefined
-		const iat = typeof payload?.iat === 'number' ? payload.iat : undefined
-		return { exp, iat }
-	} catch {
-		return null
-	}
-}
-
 const MAX_CHUNK_RAW = 300_000
 
 function* chunkBuffer(buf: Buffer): Generator<Buffer> {
@@ -118,43 +102,6 @@ function isValidWsKey(candidate: unknown): boolean {
 	const key = candidate.trim()
 	// Base64-encoded 16-byte value => 24 chars ending with "=="
 	return /^[0-9A-Za-z+/]{22}==$/.test(key)
-}
-
-function firstLineFromWriteChunk(chunk: unknown): string {
-	try {
-		if (chunk == null) return ''
-		const raw = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
-		return raw.split(/\r?\n/)[0]?.slice(0, 200) || ''
-	} catch {
-		return ''
-	}
-}
-
-function previewWriteChunk(chunk: unknown): { len: number | null; kind: string; preview: string } {
-	try {
-		if (chunk == null) return { len: null, kind: 'null', preview: '' }
-		if (Buffer.isBuffer(chunk)) {
-			const b: Buffer = chunk
-			return {
-				len: b.length,
-				kind: 'buffer',
-				preview: b.subarray(0, 24).toString('hex'),
-			}
-		}
-		if (typeof chunk === 'string') {
-			return { len: Buffer.byteLength(chunk, 'utf8'), kind: 'string', preview: firstLineFromWriteChunk(chunk) }
-		}
-		// _writev may pass an array of chunks
-		if (Array.isArray(chunk) && chunk.length > 0) {
-			const first: any = (chunk as any[])[0]
-			const p = previewWriteChunk(first)
-			return { len: p.len, kind: `array(${chunk.length})`, preview: p.preview }
-		}
-		const s = String(chunk)
-		return { len: Buffer.byteLength(s, 'utf8'), kind: typeof chunk, preview: s.slice(0, 120) }
-	} catch {
-		return { len: null, kind: 'unknown', preview: '' }
-	}
 }
 
 function maskUrlTokens(rawUrl: string): string {
@@ -479,14 +426,6 @@ export function installHubRouteProxy(
 
 			const forwardClientFrame = (data: any, isBinary: boolean) => {
 				try {
-					if (verbose) {
-						try {
-							const len = isBinary
-								? (Buffer.isBuffer(data) ? data.length : Buffer.from(data).length)
-								: Buffer.byteLength(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'), 'utf8')
-							log.info({ hubId, kind, dstPath, key, isBinary, len }, 'ws client frame')
-						} catch {}
-					}
 					if (isBinary) {
 						const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
 						if (buf.length > MAX_CHUNK_RAW) {
@@ -658,17 +597,6 @@ export function installHubRouteProxy(
 							return
 						}
 						if (msg?.t === 'frame') {
-							if (verbose) {
-								try {
-									const len =
-										msg.kind === 'bin' && typeof msg.data_b64 === 'string'
-											? Buffer.from(msg.data_b64, 'base64').length
-											: typeof msg.data === 'string'
-												? Buffer.byteLength(msg.data, 'utf8')
-												: 0
-									log.info({ hubId, kind, dstPath, key, fromHubKind: msg.kind, len }, 'ws hub frame')
-								} catch {}
-							}
 							if (msg.kind === 'bin' && typeof msg.data_b64 === 'string') {
 								ws.send(Buffer.from(msg.data_b64, 'base64'), { binary: true })
 							} else if (msg.kind === 'text' && typeof msg.data === 'string') {
@@ -847,64 +775,6 @@ export function installHubRouteProxy(
 			if (verbose) log.info({ hubId, kind, dstPath, key }, 'ws upgrade: accepted')
 			if (verbose) {
 				try {
-					// Capture what we actually write back to the client during the upgrade handshake.
-					// This helps debug cases where the socket is closed before `handleUpgrade` callback fires.
-					let writeCount = 0
-					let sawWrite = false
-					const wrap = (method: string) => {
-						const orig = (socket as any)?.[method]
-						if (typeof orig !== 'function') return
-						;(socket as any)[method] = (...args: any[]) => {
-							try {
-								writeCount++
-								if (writeCount <= 6 && args?.[0] != null) {
-									const p = previewWriteChunk(args[0])
-									const maybeHttp =
-										typeof args?.[0] === 'string'
-											? String(args[0]).startsWith('HTTP/')
-											: Buffer.isBuffer(args?.[0])
-												? args[0].subarray(0, 5).toString('utf8') === 'HTTP/'
-												: false
-									log.info(
-										{
-											hubId,
-											kind,
-											dstPath,
-											method,
-											writeCount,
-											chunkKind: p.kind,
-											len: p.len,
-											preview: p.preview,
-											stack:
-												writeCount > 1 && maybeHttp
-													? String(new Error('write').stack || '').split('\n').slice(0, 6).join('\n')
-													: undefined,
-										},
-										'ws socket write'
-									)
-								}
-								if (!sawWrite && args?.[0] != null) {
-									sawWrite = true
-									log.info(
-										{
-											hubId,
-											kind,
-											dstPath,
-											method,
-											firstLine: firstLineFromWriteChunk(args[0]),
-										},
-										'ws upgrade: first socket write'
-									)
-								}
-							} catch {}
-							return orig.apply(socket, args)
-						}
-					}
-					// ws may use `write`, `end`, or internal `_write` paths depending on abort/handshake.
-					wrap('write')
-					wrap('end')
-					wrap('_write')
-					wrap('_writev')
 					socket.once('error', (err: any) => {
 						log.warn({ hubId, kind, dstPath, err: String(err) }, 'ws upgrade: socket error')
 					})
