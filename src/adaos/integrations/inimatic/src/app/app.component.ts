@@ -24,6 +24,7 @@ import {
 	desktop,
 	homeOutline,
 	refreshOutline,
+	logOutOutline,
 } from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
@@ -68,6 +69,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			desktop,
 			homeOutline,
 			refreshOutline,
+			logOutOutline,
 		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
@@ -140,5 +142,23 @@ export class AppComponent implements OnInit, OnDestroy {
 			// eslint-disable-next-line no-console
 			console.warn('YJS reload failed', err)
 		}
+	}
+
+	onClickLogout(): void {
+		// Debug-only: clear persisted auth/session so we can re-run onboarding easily.
+		const keys = [
+			'adaos_web_session_jwt',
+			'adaos_hub_id',
+			'adaos_web_sid',
+			'adaos_hub_base',
+		]
+		for (const key of keys) {
+			try {
+				localStorage.removeItem(key)
+			} catch {}
+		}
+		try {
+			location.reload()
+		} catch {}
 	}
 }

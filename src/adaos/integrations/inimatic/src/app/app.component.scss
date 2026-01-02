@@ -33,3 +33,11 @@
 .hub-status .dot[data-status='offline'] {
 	background: var(--ion-color-danger);
 }
+
+.logout-btn {
+	margin-inline-start: 2px;
+	--padding-start: 6px;
+	--padding-end: 6px;
+	--color: currentColor;
+	opacity: 0.9;
+}

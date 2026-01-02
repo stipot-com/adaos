@@ -14,6 +14,15 @@
 							<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
 							<span class="label">{{ hub }}</span>
 						</span>
+						<ion-button
+							class="logout-btn"
+							fill="clear"
+							size="small"
+							(click)="onClickLogout()"
+							aria-label="Logout (debug)"
+						>
+							<ion-icon name="log-out-outline"></ion-icon>
+						</ion-button>
 					</div>
 				</ion-title>
 				<ion-buttons slot="end">
