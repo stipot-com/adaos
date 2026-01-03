@@ -26,7 +26,7 @@ export function installPairingApi(app: express.Express) {
 		return match ? match[1].trim() : undefined
 	}
 
-	async function readWebSessionClaims(req: express.Request): Promise<{ hub_id?: string; owner_id?: string } | null> {
+	async function readWebSessionClaims(req: express.Request): Promise<any | null> {
 		const token = extractBearer(req.header('Authorization') ?? '') || String(req.query['session_jwt'] || '').trim()
 		if (!token) return null
 		const secret = String(process.env['WEB_SESSION_JWT_SECRET'] || '').trim()
@@ -139,10 +139,16 @@ export function installPairingApi(app: express.Express) {
 			return res.status(500).json({ ok: false, error: 'server_misconfig' })
 		}
 		const claims = await readWebSessionClaims(req)
-		const hub_id = String(claims?.hub_id || '').trim()
-		const owner_id = String(claims?.owner_id || '').trim()
+		// Web session JWT currently only guarantees owner_id; hub_id/subnet_id may be absent.
+		// For MVP, treat owner_id/subnet_id as hub_id when needed.
+		const hub_id = String(claims?.hub_id || claims?.subnet_id || claims?.owner_id || '').trim()
+		const owner_id = String(claims?.owner_id || claims?.subnet_id || claims?.hub_id || '').trim()
 		if (!hub_id || !owner_id) {
-			log.warn({ tag: 'BPAIR', route: 'approve', code, hasClaims: Boolean(claims) }, '[BPAIR] approve: unauthorized')
+			const keys = claims && typeof claims === 'object' ? Object.keys(claims as any) : []
+			log.warn(
+				{ tag: 'BPAIR', route: 'approve', code, hasClaims: Boolean(claims), claimKeys: keys, hub_id, owner_id },
+				'[BPAIR] approve: unauthorized'
+			)
 			return res.status(401).json({ ok: false, error: 'unauthorized' })
 		}
 
