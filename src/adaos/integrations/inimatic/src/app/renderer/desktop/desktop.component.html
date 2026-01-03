@@ -12,6 +12,9 @@
 		<p *ngIf="pairStatusText" style="opacity: 0.8; margin: 10px 0 0 0; font-size: 13px;">
 			{{ pairStatusText }}
 		</p>
+		<p style="opacity: 0.55; margin: 6px 0 0 0; font-size: 11px; overflow-wrap: anywhere;">
+			pair api: {{ pairApiBase }}
+		</p>
 		<div style="margin-top: 18px; text-align: left;">
 			<h3 style="margin: 0 0 8px 0;">Owner login (debug)</h3>
 			<app-login (loginSuccess)="onLoginSuccess()"></app-login>

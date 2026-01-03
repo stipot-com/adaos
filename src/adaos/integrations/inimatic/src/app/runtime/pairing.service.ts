@@ -39,6 +39,10 @@ export class PairingService {
 		this.base = this.resolveBase()
 	}
 
+	getBaseUrl(): string {
+		return this.base
+	}
+
 	createBrowserPair(ttlSec = 600): Observable<PairCreateResponse> {
 		return this.http.post<PairCreateResponse>(`${this.base}/v1/browser/pair/create`, {
 			ttl: ttlSec,

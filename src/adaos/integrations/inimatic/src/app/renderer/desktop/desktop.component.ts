@@ -42,6 +42,8 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	pendingApproveCode = ''
 	selectedApproveWebspace = ''
 	private pairPollTimer?: any
+	private pairRecreateInFlight = false
+	pairApiBase = ''
 	constructor(
 		private y: YDocService,
 		private modal: ModalController,
@@ -52,6 +54,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.pairApiBase = this.pairing.getBaseUrl()
 		this.pendingApproveCode = this.readPairCodeFromUrl()
 		this.isAuthenticated = this.hasOwnerSession()
 		if (!this.isAuthenticated) {
@@ -143,6 +146,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 					this.pairStatusText = 'failed to create pairing'
 					return
 				}
+				this.pairRecreateInFlight = false
 				this.pairCode = res.pair_code
 				try {
 					localStorage.setItem('adaos_pair_code', this.pairCode)
@@ -186,8 +190,23 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 						try { clearInterval(this.pairPollTimer) } catch {}
 						try { location.reload() } catch {}
 					}
-					if (res.state === 'expired' || res.state === 'revoked') {
-						this.pairStatusText = `pairing ${String(res.state)}`
+					if (
+						res.state === 'not_found' ||
+						res.state === 'expired' ||
+						res.state === 'revoked'
+					) {
+						if (this.pairRecreateInFlight) {
+							this.pairStatusText = `pairing ${String(res.state)}`
+							return
+						}
+						this.pairRecreateInFlight = true
+						this.pairStatusText = `pairing ${String(res.state)}, regenerating…`
+						try { clearInterval(this.pairPollTimer) } catch {}
+						try { localStorage.removeItem('adaos_pair_code') } catch {}
+						this.pairCode = ''
+						this.pairingUrl = ''
+						// Re-create on next tick to avoid reentrancy.
+						setTimeout(() => this.ensurePairing(), 50)
 					}
 				},
 				error: () => {},
