@@ -1,4 +1,4 @@
-ssl_protocols TLSv1.2 TLSv1.3;
+# ssl_protocols TLSv1.2 TLSv1.3;
 
 proxy_read_timeout 3600s;
 proxy_send_timeout 3600s;
