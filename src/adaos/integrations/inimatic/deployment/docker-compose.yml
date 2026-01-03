@@ -24,7 +24,8 @@ services:
         ports: ['80:80', '443:443']
         networks: [proxy]
         environment:
-            SSL_POLICY: Mozilla-Modern
+            # Mozilla-Modern disables TLSv1.2 (TLSv1.3-only). Some SmartTV browsers (e.g. LG) still require TLSv1.2.
+            SSL_POLICY: Mozilla-Intermediate
             TRUST_DOWNSTREAM_PROXY: 'false'
             # включаем логи ошибок в stdout для быстрой диагностики TLS/mTLS
             ENABLE_IPV6: 'false'

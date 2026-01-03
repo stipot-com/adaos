@@ -73,5 +73,6 @@ For additional protection of administrative API endpoints you can enable Traefik
 | ------- | -------------- | ---------------- |
 | Let's Encrypt fails to issue certificates | Ports 80/443 blocked, DNS not pointing at host, or previous certificates exhausted the rate limit | Ensure DNS is correct, open ports on firewalls, and wait before retrying when LE rate limits hit. |
 | Frontend/API unreachable | Containers unhealthy or Traefik not running | Check `docker compose ps`, inspect logs with `docker compose logs <service>`; validate secrets and `.env` values. |
+| `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` on SmartTV browsers | TLS 1.2 disabled (TLS 1.3-only policy) | Set `reverse-proxy` `SSL_POLICY` to `Mozilla-Intermediate` (enables TLSv1.2 + TLSv1.3). |
 | ACME storage errors | `traefik_letsencrypt` volume missing or not writable | Remove the container and recreate, ensuring the volume is intact. |
 | Port conflicts on startup | Other services listening on 80/443 | Stop conflicting services or adjust host port mappings in the compose file (not recommended for production). |

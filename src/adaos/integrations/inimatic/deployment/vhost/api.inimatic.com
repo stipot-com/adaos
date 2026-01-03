@@ -1,5 +1,8 @@
 # vhost/api.inimatic.com
 
+# Allow TLS 1.2 for SmartTV/legacy clients (TLS 1.3 remains enabled).
+ssl_protocols TLSv1.2 TLSv1.3;
+
 ssl_client_certificate /etc/nginx/certs/adaos_ca.pem;
 ssl_verify_client optional;
 ssl_verify_depth 2;
