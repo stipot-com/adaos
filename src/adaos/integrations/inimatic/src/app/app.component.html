@@ -1,63 +1,36 @@
 <ion-app>
-	<ion-tabs>
-		<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
-			<ion-toolbar>
-				<ion-buttons slot="start">
-					<ion-button (click)="onClickHome()">
-						<ion-icon name="home-outline"></ion-icon>
+	<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
+		<ion-toolbar>
+			<ion-buttons slot="start">
+				<ion-button (click)="onClickHome()">
+					<ion-icon name="home-outline"></ion-icon>
+				</ion-button>
+			</ion-buttons>
+			<ion-title>
+				<div class="app-title">
+					<span class="wordmark">INIMATIC</span>
+					<span class="build-id" *ngIf="buildId && buildId !== 'dev'">{{ buildId }}</span>
+					<span class="hub-status" *ngIf="hubStatus$ | async as hub">
+						<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
+						<span class="label">{{ hub }}</span>
+					</span>
+					<ion-button
+						class="logout-btn"
+						fill="clear"
+						size="small"
+						(click)="onClickLogout()"
+						aria-label="Logout (debug)"
+					>
+						<ion-icon name="log-out-outline"></ion-icon>
 					</ion-button>
-				</ion-buttons>
-				<ion-title>
-					<div class="app-title">
-						<span class="wordmark">INIMATIC</span>
-						<span class="build-id" *ngIf="buildId && buildId !== 'dev'">{{ buildId }}</span>
-						<span class="hub-status" *ngIf="hubStatus$ | async as hub">
-							<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
-							<span class="label">{{ hub }}</span>
-						</span>
-						<ion-button
-							class="logout-btn"
-							fill="clear"
-							size="small"
-							(click)="onClickLogout()"
-							aria-label="Logout (debug)"
-						>
-							<ion-icon name="log-out-outline"></ion-icon>
-						</ion-button>
-					</div>
-				</ion-title>
-				<ion-buttons slot="end">
-					<ion-button (click)="onClickYjsReload()">
-						<ion-icon name="refresh-outline"></ion-icon>
-					</ion-button>
-				</ion-buttons>
-			</ion-toolbar>
-		</ion-header>
-		<ion-tab-bar slot="bottom">
-			<ion-tab-button tab="private">
-				<ion-icon name="lock-closed-outline"></ion-icon>
-				Private point
-			</ion-tab-button>
-			<ion-tab-button tab="public">
-				<ion-icon name="people"></ion-icon>
-				Public point
-			</ion-tab-button>
-			<ion-tab-button tab="follower">
-				<ion-icon name="phone-portrait"></ion-icon>
-				My phone
-			</ion-tab-button>
-			<ion-tab-button tab="hub">
-				<ion-icon name="apps"></ion-icon>
-				hub
-			</ion-tab-button>
-			<ion-tab-button tab="desktop2">
-				<ion-icon name="laptop"></ion-icon>
-				member
-			</ion-tab-button>
-			<ion-tab-button tab="settings">
-				<ion-icon name="settings"></ion-icon>
-				Settings
-			</ion-tab-button>
-		</ion-tab-bar>
-	</ion-tabs>
+				</div>
+			</ion-title>
+			<ion-buttons slot="end">
+				<ion-button (click)="onClickYjsReload()">
+					<ion-icon name="refresh-outline"></ion-icon>
+				</ion-button>
+			</ion-buttons>
+		</ion-toolbar>
+	</ion-header>
+	<ion-router-outlet></ion-router-outlet>
 </ion-app>

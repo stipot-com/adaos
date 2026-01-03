@@ -1,11 +1,6 @@
 import { Component, HostListener, OnDestroy, OnInit } from '@angular/core'
-import { HubComponent } from './features/hub/hub.component'
 import {
 	IonApp,
-	IonRouterOutlet,
-	IonTabButton,
-	IonTabs,
-	IonTabBar,
 	IonHeader,
 	IonTitle,
 	IonToolbar,
@@ -15,13 +10,6 @@ import {
 } from '@ionic/angular/standalone'
 import { addIcons } from 'ionicons'
 import {
-	apps,
-	laptop,
-	lockClosedOutline,
-	people,
-	phonePortrait,
-	settings,
-	desktop,
 	homeOutline,
 	refreshOutline,
 	logOutOutline,
@@ -35,6 +23,7 @@ import { catchError, distinctUntilChanged, map, startWith, switchMap, timeout } 
 import { buildId } from '../environments/build'
 import { HttpClient } from '@angular/common/http'
 import { PairingService } from './runtime/pairing.service'
+import { IonRouterOutlet } from '@ionic/angular/standalone'
 
 @Component({
 	selector: 'app-root',
@@ -49,10 +38,8 @@ import { PairingService } from './runtime/pairing.service'
 		IonButtons,
 		IonButton,
 		IonHeader,
-		IonTabBar,
-		IonTabs,
-		IonTabButton,
 		IonApp,
+		IonRouterOutlet,
 	],
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -70,13 +57,6 @@ export class AppComponent implements OnInit, OnDestroy {
 		private pairing: PairingService,
 	) {
 		addIcons({
-			lockClosedOutline,
-			people,
-			phonePortrait,
-			settings,
-			apps,
-			laptop,
-			desktop,
 			homeOutline,
 			refreshOutline,
 			logOutOutline,
@@ -93,9 +73,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
 		this.hubStatus$ = timer(0, 5000).pipe(
 			switchMap(() => {
-				const base = this.pairing.getBaseUrl()
-				// Use root API base for status checks to avoid noisy loopback requests on mobile/SmartTV.
-				return this.http.get(`${base}/api/node/status`).pipe(
+				const url = this.getHubStatusUrl()
+				return this.http.get(url, { responseType: 'text' }).pipe(
 					timeout(2000),
 					map(() => 'online' as const),
 					catchError(() => of('offline' as const)),
@@ -104,6 +83,22 @@ export class AppComponent implements OnInit, OnDestroy {
 			startWith('checking' as const),
 			distinctUntilChanged(),
 		)
+	}
+
+	private getHubStatusUrl(): string {
+		const base = this.pairing.getBaseUrl().replace(/\/+$/, '')
+		const hubId = (() => {
+			try {
+				return (localStorage.getItem('adaos_hub_id') || '').trim()
+			} catch {
+				return ''
+			}
+		})()
+		if (hubId) {
+			return `${base}/hubs/${encodeURIComponent(hubId)}/api/node/status`
+		}
+		// Before pairing/login we don't know a hub id; root health is still useful.
+		return `${base}/healthz`
 	}
 
 	ngOnDestroy(): void {

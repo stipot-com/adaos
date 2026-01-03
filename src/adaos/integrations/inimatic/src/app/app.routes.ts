@@ -3,39 +3,12 @@ import { DesktopRendererComponent } from './renderer/desktop/desktop.component'
 
 export const routes: Routes = [
 	{
-		path: 'desktop2',
+		path: '',
 		component: DesktopRendererComponent,
 	},
-	{
-		path: 'private',
-		loadComponent: () =>
-			import('./private-point/private-point.page').then(
-				(m) => m.PrivatePointPage
-			),
-	},
-	{
-		path: 'public',
-		loadComponent: () =>
-			import('./public-point/public-point.component').then(
-				(m) => m.PublicPointComponent
-			),
-	},
-	{
-		path: 'follower',
-		loadComponent: () =>
-			import('./phone/phone.component').then((m) => m.PhoneComponent),
-	},
-	{
-		path: 'hub',
-		loadComponent: () =>
-			import('./features/hub/hub.component').then((m) => m.HubComponent),
-	},
-	// legacy /member route: keep as redirect to declarative desktop2
-	{ path: 'member', redirectTo: '/desktop2', pathMatch: 'full' },
-	{
-		path: '',
-		redirectTo: '/desktop2',
-		pathMatch: 'full',
-	},
-	{ path: '**', redirectTo: 'hub' }, // wildcard — в самый конец!
+	// legacy routes (keep old bookmarks/QR links working)
+	{ path: 'desktop2', redirectTo: '', pathMatch: 'full' },
+	{ path: 'member', redirectTo: '', pathMatch: 'full' },
+	{ path: '**', redirectTo: '' },
 ]
+

@@ -178,7 +178,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			}
 		})()
 		const baseParam = base ? `&pair_base=${encodeURIComponent(base)}` : ''
-		this.pairingUrl = `${origin}/desktop2?pair_code=${encodeURIComponent(this.pairCode)}${baseParam}`
+		this.pairingUrl = `${origin}/?pair_code=${encodeURIComponent(this.pairCode)}${baseParam}`
 	}
 
 	private startPairingPoll(): void {
