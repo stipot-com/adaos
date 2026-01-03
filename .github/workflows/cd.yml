@@ -75,6 +75,7 @@ jobs:
           push: true
           build-args: |
             BUILD_SCRIPT=buildprod
+            BUILD_VERSION=${{ steps.tags.outputs.frontend_rev }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/inimatic-frontend:latest
             ${{ steps.tags.outputs.frontend_image_rev }}

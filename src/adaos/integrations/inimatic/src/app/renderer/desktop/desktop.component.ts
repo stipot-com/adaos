@@ -54,6 +54,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.applyPairBaseFromUrl()
 		this.pairApiBase = this.pairing.getBaseUrl()
 		this.pendingApproveCode = this.readPairCodeFromUrl()
 		this.isAuthenticated = this.hasOwnerSession()
@@ -126,7 +127,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	}
 
 	private ensurePairing(): void {
-		this.pairStatusText = 'creating pairing…'
+		this.pairStatusText = 'creating pairing...'
 		const cached = (() => {
 			try {
 				return (localStorage.getItem('adaos_pair_code') || '').trim()
@@ -169,18 +170,26 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			}
 		})()
 		this.pairingId = this.pairCode
-		this.pairingUrl = `${origin}/desktop2?pair_code=${encodeURIComponent(this.pairCode)}`
+		const base = (() => {
+			try {
+				return this.pairing.getBaseUrl()
+			} catch {
+				return ''
+			}
+		})()
+		const baseParam = base ? `&pair_base=${encodeURIComponent(base)}` : ''
+		this.pairingUrl = `${origin}/desktop2?pair_code=${encodeURIComponent(this.pairCode)}${baseParam}`
 	}
 
 	private startPairingPoll(): void {
 		try { clearInterval(this.pairPollTimer) } catch {}
-		this.pairStatusText = 'waiting for approval…'
+		this.pairStatusText = 'waiting for approval...'
 		this.pairPollTimer = setInterval(() => {
 			this.pairing.getBrowserPairStatus(this.pairCode).subscribe({
 				next: (res) => {
 					if (!res?.ok) return
 					if (res.state === 'approved' && res.session_jwt && res.hub_id) {
-						this.pairStatusText = 'approved, connecting…'
+						this.pairStatusText = 'approved, connecting...'
 						try { localStorage.setItem('adaos_web_session_jwt', res.session_jwt) } catch {}
 						try { localStorage.setItem('adaos_hub_id', res.hub_id) } catch {}
 						if (res.webspace_id) {
@@ -200,7 +209,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 							return
 						}
 						this.pairRecreateInFlight = true
-						this.pairStatusText = `pairing ${String(res.state)}, regenerating…`
+						this.pairStatusText = `pairing ${String(res.state)}, regenerating...`
 						try { clearInterval(this.pairPollTimer) } catch {}
 						try { localStorage.removeItem('adaos_pair_code') } catch {}
 						this.pairCode = ''
@@ -225,11 +234,21 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		}
 	}
 
+	private applyPairBaseFromUrl(): void {
+		try {
+			const url = new URL(window.location.href)
+			const base = (url.searchParams.get('pair_base') || '').trim()
+			if (base) this.pairing.setBaseUrl(base)
+		} catch {
+			// ignore
+		}
+	}
+
 	approvePairing(): void {
 		const code = (this.pendingApproveCode || '').trim()
 		if (!code) return
 		const ws = (this.selectedApproveWebspace || this.activeWebspace || 'default').trim() || 'default'
-		this.pairStatusText = 'approving…'
+		this.pairStatusText = 'approving...'
 		this.pairing.approveBrowserPair(code, ws).subscribe({
 			next: (res) => {
 				this.pairStatusText = res?.ok ? 'approved' : `approve failed: ${res?.error || 'unknown_error'}`

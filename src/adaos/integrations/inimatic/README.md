@@ -2,6 +2,14 @@
 
 Inimatic - authorization system
 
+## Build version (debug)
+The current build id is shown in the top header next to `INIMATIC`.
+
+- CI build id: `ci-<run_number>-<sha>`
+- CD (Docker) build id: `rev2026-<shortsha>`
+
+You can override it for local builds by setting `BUILD_VERSION` before running `npm run buildprod`.
+
 # Development Workflow
 ## Requirements
 Nodejs 18

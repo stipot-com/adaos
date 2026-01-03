@@ -3,6 +3,8 @@ WORKDIR /inimatic
 
 # имя npm-скрипта, которое будем выполнять
 ARG BUILD_SCRIPT=buildprod
+ARG BUILD_VERSION=prod
+ENV BUILD_VERSION=$BUILD_VERSION
 
 COPY package*.json ./
 

@@ -46,6 +46,9 @@
 		<p *ngIf="pairStatusText" style="opacity: 0.8; margin: 10px 0 0 0; font-size: 13px;">
 			{{ pairStatusText }}
 		</p>
+		<p style="opacity: 0.55; margin: 6px 0 0 0; font-size: 11px; overflow-wrap: anywhere;">
+			pair api: {{ pairApiBase }}
+		</p>
 	</div>
 	<div *ngIf="needsLogin" style="padding: 16px; max-width: 520px; margin: 0 auto;">
 		<h2 style="margin: 8px 0;">Hub offline</h2>

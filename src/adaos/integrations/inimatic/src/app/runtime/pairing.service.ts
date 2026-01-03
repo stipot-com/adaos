@@ -15,9 +15,14 @@ type PairStatusResponse = {
 
 @Injectable({ providedIn: 'root' })
 export class PairingService {
-	private readonly base: string
+	private base: string
 
 	private resolveBase(): string {
+		// Explicit override (persisted), useful for QR flows where both devices must hit the same root.
+		try {
+			const persisted = (localStorage.getItem('adaos_pair_api_base') || '').trim()
+			if (persisted) return persisted.replace(/\/+$/, '')
+		} catch {}
 		try {
 			const hinted = ((window as any).__ADAOS_ROOT_BASE__ || '').trim()
 			if (hinted) return hinted.replace(/\/+$/, '')
@@ -41,6 +46,21 @@ export class PairingService {
 
 	getBaseUrl(): string {
 		return this.base
+	}
+
+	setBaseUrl(url: string): void {
+		const trimmed = String(url || '').trim().replace(/\/+$/, '')
+		if (!trimmed) return
+		try {
+			const u = new URL(trimmed)
+			if (u.protocol !== 'http:' && u.protocol !== 'https:') return
+		} catch {
+			return
+		}
+		this.base = trimmed
+		try {
+			localStorage.setItem('adaos_pair_api_base', trimmed)
+		} catch {}
 	}
 
 	createBrowserPair(ttlSec = 600): Observable<PairCreateResponse> {

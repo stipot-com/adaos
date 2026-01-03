@@ -32,6 +32,7 @@ import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
 import { Observable, of, timer } from 'rxjs'
 import { catchError, distinctUntilChanged, map, startWith, switchMap, timeout } from 'rxjs/operators'
+import { buildId } from '../environments/build'
 
 @Component({
 	selector: 'app-root',
@@ -55,6 +56,7 @@ import { catchError, distinctUntilChanged, map, startWith, switchMap, timeout } 
 export class AppComponent implements OnInit, OnDestroy {
 	isAndroid: boolean
 	hubStatus$!: Observable<'checking' | 'online' | 'offline'>
+	readonly buildId = buildId
 	private colorSchemeMedia?: MediaQueryList
 	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
 

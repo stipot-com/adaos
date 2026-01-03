@@ -10,6 +10,7 @@
 				<ion-title>
 					<div class="app-title">
 						<span class="wordmark">INIMATIC</span>
+						<span class="build-id" *ngIf="buildId && buildId !== 'dev'">{{ buildId }}</span>
 						<span class="hub-status" *ngIf="hubStatus$ | async as hub">
 							<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
 							<span class="label">{{ hub }}</span>

@@ -28,7 +28,7 @@
 		"start": "ng serve --host 0.0.0.0",
 		"build": "ionic build",
 		"builddev": "ionic build",
-		"buildprod": "ionic build --configuration production",
+		"buildprod": "node ./scripts/gen-build-info.mjs && ionic build --configuration production",
 		"buildlocal": "npx ng run app:build.local",
 		"start:api-dev": "cross-env DOTENV_CONFIG_PATH=./backend/.env nodemon --exec node --no-warnings=ExperimentalWarning -r dotenv/config --loader ts-node/esm ./backend/app.ts",
 		"build:api": "tsc -p ./backend/tsconfig.backend.json",

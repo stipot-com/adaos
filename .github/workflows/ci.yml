@@ -53,7 +53,9 @@ jobs:
         continue-on-error: true
 
       - name: Build (production)
-        run: npx ionic build --configuration production
+        env:
+          BUILD_VERSION: ci-${{ github.run_number }}-${{ github.sha }}
+        run: npm run buildprod
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
