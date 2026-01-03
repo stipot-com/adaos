@@ -42,7 +42,7 @@ export const routes: Routes = [
 	},
 	{
 		path: '',
-		redirectTo: '/private',
+		redirectTo: '/desktop2',
 		pathMatch: 'full',
 	},
 	{ path: '**', redirectTo: 'hub' }, // wildcard — в самый конец!

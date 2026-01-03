@@ -13,11 +13,12 @@ import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { LoginComponent } from '../../features/login/login.component'
 import { PageStateService, PageState } from '../../runtime/page-state.service'
 import { Subscription } from 'rxjs'
+import { QRCodeModule } from 'angularx-qrcode'
 
 @Component({
 	selector: 'ada-desktop',
 	standalone: true,
-	imports: [CommonModule, IonicModule, PageWidgetHostComponent, LoginComponent],
+	imports: [CommonModule, IonicModule, PageWidgetHostComponent, LoginComponent, QRCodeModule],
 	templateUrl: './desktop.component.html',
 	styleUrls: ['./desktop.component.scss']
 })
@@ -31,6 +32,9 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	private stateSub?: Subscription
 	needsLogin = false
 	initError = ''
+	needsPairing = false
+	pairingId = ''
+	pairingUrl = ''
 	constructor(
 		private y: YDocService,
 		private modal: ModalController,
@@ -40,6 +44,11 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		if (!this.hasOwnerSession()) {
+			this.needsPairing = true
+			this.ensurePairing()
+			return
+		}
 		try {
 			await this.y.initFromHub()
 		} catch (e) {
@@ -83,6 +92,39 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		this.needsLogin = false
 		this.initError = ''
 		await this.ngOnInit()
+	}
+
+	private hasOwnerSession(): boolean {
+		try {
+			const jwt = localStorage.getItem('adaos_web_session_jwt')
+			return !!(jwt && jwt.trim())
+		} catch {
+			return false
+		}
+	}
+
+	private ensurePairing(): void {
+		try {
+			const existing = localStorage.getItem('adaos_pairing_id')
+			if (existing && existing.trim()) {
+				this.pairingId = existing.trim()
+			} else {
+				const raw = (globalThis.crypto && (crypto as any).randomUUID?.()) || Math.random().toString(36).slice(2)
+				this.pairingId = `pair_${raw}`
+				localStorage.setItem('adaos_pairing_id', this.pairingId)
+			}
+		} catch {
+			const raw = Math.random().toString(36).slice(2)
+			this.pairingId = `pair_${raw}`
+		}
+		const origin = (() => {
+			try {
+				return window.location.origin
+			} catch {
+				return ''
+			}
+		})()
+		this.pairingUrl = `${origin}/desktop2?pair=${encodeURIComponent(this.pairingId)}`
 	}
 
 	async openModal(id: string) {

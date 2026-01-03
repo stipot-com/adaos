@@ -1,5 +1,15 @@
 <!--src\adaos\integrations\inimatic\src\app\renderer\desktop\desktop.component.html-->
 <ion-content [style.--background]="app?.desktop?.background || '#0b0f14'">
+	<div *ngIf="needsPairing" style="padding: 16px; max-width: 560px; margin: 0 auto; text-align: center;">
+		<h2 style="margin: 8px 0;">Pair this device</h2>
+		<p style="opacity: 0.85; margin: 0 0 12px 0;">
+			Open Inimatic on your phone and scan the QR code to connect this browser to your hub.
+		</p>
+		<qrcode [qrdata]="pairingUrl" [width]="240" [errorCorrectionLevel]="'M'" *ngIf="pairingUrl"></qrcode>
+		<p style="opacity: 0.7; margin: 12px 0 0 0; font-size: 12px; overflow-wrap: anywhere;">
+			{{ pairingId }}
+		</p>
+	</div>
 	<div *ngIf="needsLogin" style="padding: 16px; max-width: 520px; margin: 0 auto;">
 		<h2 style="margin: 8px 0;">Hub offline</h2>
 		<p style="opacity: 0.85; margin: 0 0 12px 0;">
