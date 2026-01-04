@@ -2,9 +2,12 @@
 	<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
 		<ion-toolbar>
 			<ion-buttons slot="start">
-				<ion-button (click)="onClickHome()">
+				<ion-button *ngIf="isAuthenticated; else unauthLogo" (click)="onClickHome()">
 					<ion-icon name="home-outline"></ion-icon>
 				</ion-button>
+				<ng-template #unauthLogo>
+					<img class="unauth-logo" [src]="logoSrc" alt="Inimatic" />
+				</ng-template>
 			</ion-buttons>
 			<ion-title>
 				<div class="app-title">
@@ -15,6 +18,7 @@
 						<span class="label">{{ ('status.' + hub) | t }}</span>
 					</span>
 					<ion-button
+						*ngIf="isAuthenticated"
 						class="logout-btn"
 						fill="clear"
 						size="small"
@@ -26,7 +30,7 @@
 				</div>
 			</ion-title>
 				<ion-buttons slot="end">
-				<ion-button (click)="onClickYjsReload()" [attr.aria-label]="'aria.reload' | t">
+				<ion-button *ngIf="isAuthenticated" (click)="onClickYjsReload()" [attr.aria-label]="'aria.reload' | t">
 					<ion-icon name="refresh-outline"></ion-icon>
 				</ion-button>
 			</ion-buttons>

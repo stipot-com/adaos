@@ -1,0 +1,57 @@
+{
+  "lang.en": "EN",
+  "lang.ru": "RU",
+  "lang.fr": "FR",
+  "lang.ch": "中文",
+
+  "status.checking": "проверка",
+  "status.online": "онлайн",
+  "status.offline": "офлайн",
+
+  "aria.logout_debug": "Выйти (debug)",
+  "aria.reload": "Обновить",
+
+  "pair.title": "Подключить устройство",
+  "pair.instructions": "Откройте Inimatic на телефоне и отсканируйте QR‑код, чтобы подключить этот браузер к вашему хабу.",
+  "pair.owner_login_debug": "Вход владельца (debug)",
+  "pair.api_label": "pair api:",
+  "pair.status.creating": "создание кода...",
+  "pair.status.waiting": "ожидание подтверждения...",
+  "pair.status.connecting": "подтверждено, подключение...",
+  "pair.status.regenerating": "состояние {state}, пересоздаём...",
+  "pair.status.create_failed": "не удалось создать код",
+
+  "pair.approve.title": "Подтвердить устройство",
+  "pair.approve.code": "Код:",
+  "pair.approve.login_prompt": "Войдите, чтобы подтвердить это устройство.",
+  "pair.approve.webspace": "Веб‑пространство",
+  "pair.approve.button": "Подтвердить",
+  "pair.approve.status.approving": "подтверждение...",
+  "pair.approve.status.approved": "подтверждено",
+  "pair.approve.status.failed": "ошибка подтверждения: {error}",
+
+  "pair.hub_offline.title": "Хаб недоступен",
+  "pair.hub_offline.desc": "Локальный хаб недоступен. Войдите, чтобы работать через root.",
+
+  "login.choose_title": "Выберите действие:",
+  "login.registration": "Регистрация",
+  "login.login": "Войти",
+  "login.register_title": "Регистрация по коду",
+  "login.registration_code_label": "Код регистрации",
+  "login.registration_code_placeholder": "XXXX-XXXX",
+  "login.register": "Зарегистрировать",
+  "login.processing": "Обработка...",
+  "login.back": "Назад",
+  "login.login_title": "Вход через WebAuthn",
+  "login.login_info": "Нажмите кнопку ниже, чтобы выполнить вход с помощью WebAuthn.",
+  "login.authenticating": "Проверка...",
+
+  "login.error.enter_code": "Введите код регистрации",
+  "login.error.webauthn": "Ошибка WebAuthn: {msg}",
+  "login.error.invalid_code": "Неверный код или ошибка регистрации WebAuthn",
+  "login.error.server": "Ошибка сервера",
+  "login.error.unexpected": "Неожиданная ошибка",
+  "login.error.no_credentials": "Учетные данные WebAuthn не найдены. Сначала зарегистрируйтесь.",
+  "login.error.auth_failed": "Ошибка аутентификации WebAuthn"
+}
+

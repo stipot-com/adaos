@@ -1,0 +1,57 @@
+{
+  "lang.en": "EN",
+  "lang.ru": "RU",
+  "lang.fr": "FR",
+  "lang.ch": "中文",
+
+  "status.checking": "vérification",
+  "status.online": "en ligne",
+  "status.offline": "hors ligne",
+
+  "aria.logout_debug": "Déconnexion (debug)",
+  "aria.reload": "Recharger",
+
+  "pair.title": "Appairer cet appareil",
+  "pair.instructions": "Ouvrez Inimatic sur votre téléphone et scannez le QR code pour connecter ce navigateur à votre hub.",
+  "pair.owner_login_debug": "Connexion propriétaire (debug)",
+  "pair.api_label": "pair api:",
+  "pair.status.creating": "création de l'appairage...",
+  "pair.status.waiting": "en attente de validation...",
+  "pair.status.connecting": "validé, connexion...",
+  "pair.status.regenerating": "état {state}, régénération...",
+  "pair.status.create_failed": "impossible de créer l'appairage",
+
+  "pair.approve.title": "Approuver l'appareil",
+  "pair.approve.code": "Code :",
+  "pair.approve.login_prompt": "Connectez-vous pour approuver cet appareil.",
+  "pair.approve.webspace": "Espace web",
+  "pair.approve.button": "Approuver",
+  "pair.approve.status.approving": "approbation...",
+  "pair.approve.status.approved": "approuvé",
+  "pair.approve.status.failed": "échec de l'approbation : {error}",
+
+  "pair.hub_offline.title": "Hub hors ligne",
+  "pair.hub_offline.desc": "Le hub local est inaccessible. Connectez-vous pour passer par le root.",
+
+  "login.choose_title": "Choisissez une option :",
+  "login.registration": "Inscription",
+  "login.login": "Se connecter",
+  "login.register_title": "S'inscrire avec un code",
+  "login.registration_code_label": "Code d'inscription",
+  "login.registration_code_placeholder": "XXXX-XXXX",
+  "login.register": "S'inscrire",
+  "login.processing": "Traitement...",
+  "login.back": "Retour",
+  "login.login_title": "Connexion WebAuthn",
+  "login.login_info": "Cliquez sur le bouton ci-dessous pour vous authentifier avec votre identifiant WebAuthn.",
+  "login.authenticating": "Authentification...",
+
+  "login.error.enter_code": "Entrez le code d'inscription",
+  "login.error.webauthn": "Erreur WebAuthn : {msg}",
+  "login.error.invalid_code": "Code invalide ou échec de l’inscription WebAuthn",
+  "login.error.server": "Erreur serveur",
+  "login.error.unexpected": "Erreur inattendue",
+  "login.error.no_credentials": "Aucun identifiant WebAuthn trouvé. Veuillez d'abord vous inscrire.",
+  "login.error.auth_failed": "Échec de l’authentification WebAuthn"
+}
+

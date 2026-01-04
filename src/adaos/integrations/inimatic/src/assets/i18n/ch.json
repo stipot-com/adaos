@@ -1,0 +1,57 @@
+{
+  "lang.en": "EN",
+  "lang.ru": "RU",
+  "lang.fr": "FR",
+  "lang.ch": "中文",
+
+  "status.checking": "检查中",
+  "status.online": "在线",
+  "status.offline": "离线",
+
+  "aria.logout_debug": "退出 (debug)",
+  "aria.reload": "刷新",
+
+  "pair.title": "配对此设备",
+  "pair.instructions": "在手机上打开 Inimatic 并扫描二维码，将此浏览器连接到你的 Hub。",
+  "pair.owner_login_debug": "所有者登录 (debug)",
+  "pair.api_label": "pair api:",
+  "pair.status.creating": "正在创建配对码...",
+  "pair.status.waiting": "等待确认...",
+  "pair.status.connecting": "已确认，正在连接...",
+  "pair.status.regenerating": "状态 {state}，正在重新生成...",
+  "pair.status.create_failed": "创建配对失败",
+
+  "pair.approve.title": "批准设备",
+  "pair.approve.code": "代码：",
+  "pair.approve.login_prompt": "登录以批准此设备。",
+  "pair.approve.webspace": "Webspace",
+  "pair.approve.button": "批准",
+  "pair.approve.status.approving": "正在批准...",
+  "pair.approve.status.approved": "已批准",
+  "pair.approve.status.failed": "批准失败：{error}",
+
+  "pair.hub_offline.title": "Hub 离线",
+  "pair.hub_offline.desc": "本地 Hub 不可达。请登录以通过 root 连接。",
+
+  "login.choose_title": "请选择：",
+  "login.registration": "注册",
+  "login.login": "登录",
+  "login.register_title": "使用注册码注册",
+  "login.registration_code_label": "注册码",
+  "login.registration_code_placeholder": "XXXX-XXXX",
+  "login.register": "注册",
+  "login.processing": "处理中...",
+  "login.back": "返回",
+  "login.login_title": "使用 WebAuthn 登录",
+  "login.login_info": "点击下面按钮，使用你的 WebAuthn 凭据进行登录。",
+  "login.authenticating": "验证中...",
+
+  "login.error.enter_code": "请输入注册码",
+  "login.error.webauthn": "WebAuthn 错误：{msg}",
+  "login.error.invalid_code": "注册码无效或 WebAuthn 注册失败",
+  "login.error.server": "服务器错误",
+  "login.error.unexpected": "未知错误",
+  "login.error.no_credentials": "未找到 WebAuthn 凭据。请先注册。",
+  "login.error.auth_failed": "WebAuthn 认证失败"
+}
+

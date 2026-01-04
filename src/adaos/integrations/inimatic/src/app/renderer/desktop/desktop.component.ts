@@ -45,7 +45,6 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	selectedApproveWebspace = ''
 	private pairPollTimer?: any
 	private pairRecreateInFlight = false
-	pairApiBase = ''
 	constructor(
 		private y: YDocService,
 		private modal: ModalController,
@@ -56,7 +55,6 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
-		this.pairApiBase = this.pairing.getBaseUrl()
 		this.pendingApproveCode = this.readPairCodeFromUrl()
 		this.isAuthenticated = this.hasOwnerSession()
 		if (!this.isAuthenticated) {

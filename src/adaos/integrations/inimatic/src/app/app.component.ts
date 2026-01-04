@@ -48,6 +48,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	isAndroid: boolean
 	hubStatus$!: Observable<'checking' | 'online' | 'offline'>
 	readonly buildId = buildId
+	logoSrc = 'assets/icon/favicon.png'
 	private colorSchemeMedia?: MediaQueryList
 	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
 
@@ -136,6 +137,11 @@ export class AppComponent implements OnInit, OnDestroy {
 		// actually switch to the dark color variables.
 		document.body.classList.toggle('dark', isDark)
 		document.body.classList.toggle('ion-palette-dark', isDark)
+		this.logoSrc = isDark ? 'assets/icon/favicon_dark.png' : 'assets/icon/favicon.png'
+	}
+
+	get isAuthenticated(): boolean {
+		return Boolean(this.readSessionJwt())
 	}
 
 	async onClickHome(): Promise<void> {

@@ -1,0 +1,57 @@
+{
+  "lang.en": "EN",
+  "lang.ru": "RU",
+  "lang.fr": "FR",
+  "lang.ch": "中文",
+
+  "status.checking": "checking",
+  "status.online": "online",
+  "status.offline": "offline",
+
+  "aria.logout_debug": "Logout (debug)",
+  "aria.reload": "Reload",
+
+  "pair.title": "Pair this device",
+  "pair.instructions": "Open Inimatic on your phone and scan the QR code to connect this browser to your hub.",
+  "pair.owner_login_debug": "Owner login (debug)",
+  "pair.api_label": "pair api:",
+  "pair.status.creating": "creating pairing...",
+  "pair.status.waiting": "waiting for approval...",
+  "pair.status.connecting": "approved, connecting...",
+  "pair.status.regenerating": "pairing {state}, regenerating...",
+  "pair.status.create_failed": "failed to create pairing",
+
+  "pair.approve.title": "Approve device",
+  "pair.approve.code": "Code:",
+  "pair.approve.login_prompt": "Login to approve this device.",
+  "pair.approve.webspace": "Webspace",
+  "pair.approve.button": "Approve",
+  "pair.approve.status.approving": "approving...",
+  "pair.approve.status.approved": "approved",
+  "pair.approve.status.failed": "approve failed: {error}",
+
+  "pair.hub_offline.title": "Hub offline",
+  "pair.hub_offline.desc": "Local hub is not reachable. Login to route through root.",
+
+  "login.choose_title": "Choose an option:",
+  "login.registration": "Registration",
+  "login.login": "Log in",
+  "login.register_title": "Register with Code",
+  "login.registration_code_label": "Registration Code",
+  "login.registration_code_placeholder": "XXXX-XXXX",
+  "login.register": "Register",
+  "login.processing": "Processing...",
+  "login.back": "Back",
+  "login.login_title": "Log in with WebAuthn",
+  "login.login_info": "Click the button below to authenticate with your WebAuthn credential.",
+  "login.authenticating": "Authenticating...",
+
+  "login.error.enter_code": "Enter registration code",
+  "login.error.webauthn": "WebAuthn error: {msg}",
+  "login.error.invalid_code": "Invalid code or WebAuthn registration failed",
+  "login.error.server": "Server error",
+  "login.error.unexpected": "Unexpected error",
+  "login.error.no_credentials": "No WebAuthn credentials found. Please register first.",
+  "login.error.auth_failed": "WebAuthn authentication failed"
+}
+

@@ -24,3 +24,16 @@ export type AdaApp = {
 	modals: Record<string, AdaModalConfig>
 	registry?: { widgets?: string[]; modals?: string[] }
 }
+
+// ---------------------------------------------------------------------------
+// UI language sources (for scenarios/skills)
+// ---------------------------------------------------------------------------
+
+export type AdaUiLang = 'en' | 'ru' | 'fr' | 'ch'
+export type AdaUiDictionary = Record<string, string>
+
+// A pluggable translation source. Scenarios/skills can expose one via
+// `globalThis.__ADAOS_LANGUAGE_SOURCE__` or by calling `I18nService.registerSource(...)`.
+export interface AdaUiLanguageSource {
+	getDictionary(lang: AdaUiLang): AdaUiDictionary | Promise<AdaUiDictionary> | null | undefined
+}
