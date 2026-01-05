@@ -49,14 +49,53 @@
 		</p>
 		<app-login (loginSuccess)="onLoginSuccess()"></app-login>
 	</div>
-	<div class="desktop" *ngIf="pageSchema as page" [ngClass]="desktopLayoutClass(page)">
-		<ng-container *ngFor="let area of page.layout.areas">
-			<div class="area" [ngClass]="['area-' + area.id, area.role ? 'area-role-' + area.role : '']"
-				[class.is-empty]="!areaHasWidgets(area.id)">
-				<ng-container *ngFor="let w of getWidgetsInArea(area.id)">
-					<ada-page-widget-host [widget]="w"></ada-page-widget-host>
+	<div class="desktop" *ngIf="pageSchema as page">
+		<div class="mobile-panelbar" *ngIf="isMobile && (roleHasWidgets('sidebar') || roleHasWidgets('aux'))">
+			<ion-button *ngIf="roleHasWidgets('sidebar')" fill="clear" size="small" (click)="toggleSidebar()"
+				[attr.aria-label]="sidebarOpen ? 'Close menu' : 'Open menu'">
+				<ion-icon slot="icon-only" [name]="sidebarOpen ? 'close-outline' : 'menu-outline'"></ion-icon>
+			</ion-button>
+			<div class="spacer"></div>
+		</div>
+		<div class="drawer-backdrop" *ngIf="isMobile && sidebarOpen" (click)="closeSidebar()"></div>
+		<div class="sidebar-drawer" *ngIf="isMobile && roleHasWidgets('sidebar')" [class.open]="sidebarOpen">
+			<div class="sidebar-drawer__content">
+				<ng-container *ngFor="let area of page.layout.areas">
+					<div *ngIf="area.role === 'sidebar'" class="area area-role-sidebar"
+						[class.is-empty]="!areaHasWidgets(area.id)">
+						<ng-container *ngFor="let w of getWidgetsInArea(area.id)">
+							<ada-page-widget-host [widget]="w"></ada-page-widget-host>
+						</ng-container>
+					</div>
 				</ng-container>
 			</div>
+		</div>
+
+		<div class="desktop-grid" [ngClass]="desktopLayoutClass(page)" [class.is-mobile]="isMobile" [class.is-compact]="isCompact"
+			[class.sidebar-open]="sidebarOpen">
+		<ng-container *ngFor="let area of page.layout.areas">
+			<ng-container *ngIf="!(isMobile && area.role === 'sidebar')">
+				<div class="area" [ngClass]="['area-' + area.id, area.role ? 'area-role-' + area.role : '']"
+					[class.is-empty]="!areaHasWidgets(area.id)">
+					<ng-container *ngFor="let w of getWidgetsInArea(area.id)">
+						<ng-container *ngIf="isCompact && area.role === 'aux' && widgetIsCollapsible(w); else plainWidget">
+							<div class="widget-collapsible">
+								<div class="widget-collapsible__header" (click)="toggleWidgetCollapsed(w)">
+									<div class="widget-collapsible__title">{{ w.title || ('desktop.panel' | t) }}</div>
+									<ion-icon [name]="widgetIsCollapsed(w) ? 'chevron-down-outline' : 'chevron-up-outline'"></ion-icon>
+								</div>
+								<div class="widget-collapsible__body" [class.is-collapsed]="widgetIsCollapsed(w)">
+									<ada-page-widget-host [widget]="w"></ada-page-widget-host>
+								</div>
+							</div>
+						</ng-container>
+						<ng-template #plainWidget>
+							<ada-page-widget-host [widget]="w"></ada-page-widget-host>
+						</ng-template>
+					</ng-container>
+				</div>
+			</ng-container>
 		</ng-container>
+		</div>
 	</div>
 </ion-content>

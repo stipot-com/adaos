@@ -27,6 +27,14 @@ import { TPipe } from '../../runtime/t.pipe'
 export class DesktopRendererComponent implements OnInit, OnDestroy {
 	app?: AdaApp
 	dispose?: () => void
+	private compactMedia?: MediaQueryList
+	private mobileMedia?: MediaQueryList
+	private mediaHandlersBound = false
+	private mediaApplyHandler?: () => void
+	isCompact = false
+	isMobile = false
+	sidebarOpen = false
+	private collapsedWidgetIds = new Set<string>()
 	webspaces: Array<{ id: string; title: string; created_at: number }> = []
 	activeWebspace = 'default'
 	pageSchema?: PageSchema
@@ -55,6 +63,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.ensureMediaQueries()
 		this.pendingApproveCode = this.readPairCodeFromUrl()
 		this.isAuthenticated = this.hasOwnerSession()
 		if (!this.isAuthenticated) {
@@ -83,6 +92,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.readWebspaces()
 			this.pageSchema = this.desktopSchema.loadSchema()
 			this.rebuildAreaWidgetCounts()
+			if (this.isCompact) this.initCollapsedWidgets()
 			this.selectedApproveWebspace =
 				this.selectedApproveWebspace || this.activeWebspace || 'default'
 		}
@@ -98,9 +108,99 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			un2?.()
 			this.stateSub?.unsubscribe()
 			try { clearInterval(this.pairPollTimer) } catch {}
+			this.teardownMediaQueries()
 		}
 	}
-	ngOnDestroy() { this.dispose?.() }
+	ngOnDestroy() {
+		try { this.teardownMediaQueries() } catch {}
+		this.dispose?.()
+	}
+
+	private ensureMediaQueries(): void {
+		if (this.mediaHandlersBound) return
+		try {
+			this.compactMedia = window.matchMedia('(max-width: 1100px)')
+			this.mobileMedia = window.matchMedia('(max-width: 900px)')
+			const apply = () => {
+				const prevCompact = this.isCompact
+				this.isCompact = !!this.compactMedia?.matches
+				this.isMobile = !!this.mobileMedia?.matches
+				if (!this.isMobile) {
+					this.sidebarOpen = false
+				}
+				if (!prevCompact && this.isCompact) {
+					this.initCollapsedWidgets()
+				}
+			}
+			this.mediaApplyHandler = apply
+			apply()
+			this.compactMedia.addEventListener('change', apply)
+			this.mobileMedia.addEventListener('change', apply)
+			this.mediaHandlersBound = true
+		} catch {}
+	}
+
+	private teardownMediaQueries(): void {
+		if (!this.mediaHandlersBound) return
+		try {
+			if (this.mediaApplyHandler) {
+				this.compactMedia?.removeEventListener('change', this.mediaApplyHandler)
+				this.mobileMedia?.removeEventListener('change', this.mediaApplyHandler)
+			}
+		} catch {}
+		this.mediaApplyHandler = undefined
+		this.mediaHandlersBound = false
+	}
+
+	toggleSidebar(): void {
+		this.sidebarOpen = !this.sidebarOpen
+	}
+
+	closeSidebar(): void {
+		this.sidebarOpen = false
+	}
+
+	roleHasWidgets(role: string): boolean {
+		const page = this.pageSchema
+		if (!page?.layout?.areas?.length) return false
+		for (const area of page.layout.areas) {
+			if (area.role === role && this.areaHasWidgets(area.id)) return true
+		}
+		return false
+	}
+
+	widgetIsCollapsible(widget: WidgetConfig): boolean {
+		const flag = (widget.inputs as any)?.collapsible
+		return !!flag
+	}
+
+	widgetIsCollapsed(widget: WidgetConfig): boolean {
+		return this.collapsedWidgetIds.has(widget.id)
+	}
+
+	toggleWidgetCollapsed(widget: WidgetConfig): void {
+		if (this.collapsedWidgetIds.has(widget.id)) {
+			this.collapsedWidgetIds.delete(widget.id)
+			return
+		}
+		this.collapsedWidgetIds.add(widget.id)
+	}
+
+	private initCollapsedWidgets(): void {
+		const page = this.pageSchema
+		if (!page?.layout?.areas?.length || !Array.isArray(page.widgets)) return
+		const auxAreaIds = page.layout.areas
+			.filter((a) => a.role === 'aux')
+			.map((a) => a.id)
+		for (const w of page.widgets) {
+			if (!auxAreaIds.includes(w.area)) continue
+			if (!this.widgetIsCollapsible(w)) continue
+			if (this.collapsedWidgetIds.has(w.id)) continue
+			const defaultCollapsed = (w.inputs as any)?.collapsedByDefault
+			const shouldCollapse = defaultCollapsed === undefined ? true : !!defaultCollapsed
+			if (shouldCollapse) this.collapsedWidgetIds.add(w.id)
+		}
+	}
 
 	async onLoginSuccess() {
 		// After login, sessionJwt + hubId are persisted to localStorage by LoginService.
