@@ -30,11 +30,9 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	app?: AdaApp
 	dispose?: () => void
 	private compactMedia?: MediaQueryList
-	private mobileMedia?: MediaQueryList
 	private mediaHandlersBound = false
 	private mediaApplyHandler?: () => void
 	isCompact = false
-	isMobile = false
 	sidebarOpen = false
 	private collapsedWidgetIds = new Set<string>()
 	webspaces: Array<{ id: string; title: string; created_at: number }> = []
@@ -124,14 +122,14 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		if (this.mediaHandlersBound) return
 		try {
 			this.compactMedia = window.matchMedia('(max-width: 1100px)')
-			this.mobileMedia = window.matchMedia('(max-width: 900px)')
 			const apply = () => {
 				const prevCompact = this.isCompact
 				this.isCompact = !!this.compactMedia?.matches
-				this.isMobile = !!this.mobileMedia?.matches
-				if (!this.isMobile) {
-					this.sidebarOpen = false
-				}
+				// Sidebar drawer is controlled purely by CSS breakpoints; still close it when switching layouts.
+				try {
+					const narrow = window.matchMedia('(max-width: 900px)').matches
+					if (!narrow) this.sidebarOpen = false
+				} catch {}
 				if (!prevCompact && this.isCompact) {
 					this.initCollapsedWidgets()
 				}
@@ -140,13 +138,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			apply()
 			// Safari fallback: MediaQueryList may only support addListener/removeListener.
 			const anyCompact: any = this.compactMedia as any
-			const anyMobile: any = this.mobileMedia as any
 			if (typeof anyCompact?.addEventListener === 'function') {
 				this.compactMedia.addEventListener('change', apply)
-				this.mobileMedia?.addEventListener('change', apply)
 			} else if (typeof anyCompact?.addListener === 'function') {
 				anyCompact.addListener(apply)
-				anyMobile?.addListener?.(apply)
 			}
 			this.mediaHandlersBound = true
 		} catch {}
@@ -157,13 +152,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		try {
 			if (this.mediaApplyHandler) {
 				const anyCompact: any = this.compactMedia as any
-				const anyMobile: any = this.mobileMedia as any
 				if (typeof anyCompact?.removeEventListener === 'function') {
 					this.compactMedia?.removeEventListener('change', this.mediaApplyHandler)
-					this.mobileMedia?.removeEventListener('change', this.mediaApplyHandler)
 				} else if (typeof anyCompact?.removeListener === 'function') {
 					anyCompact.removeListener(this.mediaApplyHandler)
-					anyMobile?.removeListener?.(this.mediaApplyHandler)
 				}
 			}
 		} catch {}
@@ -186,6 +178,12 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			if (area.role === role && this.areaHasWidgets(area.id)) return true
 		}
 		return false
+	}
+
+	hasRole(role: string): boolean {
+		const page = this.pageSchema
+		if (!page?.layout?.areas?.length) return false
+		return page.layout.areas.some((a) => a.role === role)
 	}
 
 	widgetIsCollapsible(widget: WidgetConfig): boolean {

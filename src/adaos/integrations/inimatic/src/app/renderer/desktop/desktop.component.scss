@@ -27,7 +27,7 @@
   position: sticky;
   top: 0;
   z-index: 5;
-  display: flex;
+  display: none;
   align-items: center;
   gap: 8px;
   padding: 6px 6px;
@@ -59,30 +59,7 @@
   z-index: 9;
   background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(2px);
-}
-
-.sidebar-drawer {
-  position: fixed;
-  z-index: 10;
-  left: 0;
-  top: calc(var(--ada-app-header-height, 56px) + env(safe-area-inset-top, 0px));
-  height: calc(100% - var(--ada-app-header-height, 56px) - env(safe-area-inset-top, 0px));
-  width: min(86vw, 360px);
-  transform: translateX(-102%);
-  transition: transform 0.18s ease;
-}
-
-.sidebar-drawer.open {
-  transform: translateX(0);
-}
-
-.sidebar-drawer__content {
-  height: 100%;
-  overflow: auto;
-  padding: 10px;
-  background: var(--desktop-panel-bg);
-  border-right: 1px solid var(--desktop-border-color);
-  box-shadow: 12px 0 24px rgba(0, 0, 0, 0.18);
+  display: none;
 }
 
 .desktop-grid {
@@ -146,21 +123,6 @@
       grid-template-areas:
         "main"
         "bottom";
-    }
-
-    &.is-mobile {
-      grid-template-rows: auto auto auto;
-      grid-template-areas:
-        "main"
-        "right"
-        "bottom";
-
-      &.no-aux {
-        grid-template-rows: auto auto;
-        grid-template-areas:
-          "main"
-          "bottom";
-      }
     }
   }
 
@@ -373,5 +335,56 @@
   .area-role-main,
   .area-role-aux {
     overflow: visible;
+  }
+}
+
+@media (max-width: 900px) {
+  .mobile-panelbar {
+    display: flex;
+  }
+
+  .desktop-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "main"
+      "right"
+      "bottom";
+
+    &.no-aux {
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "main"
+        "bottom";
+    }
+  }
+
+  .desktop-grid.sidebar-open + .drawer-backdrop,
+  .drawer-backdrop {
+    display: block;
+  }
+
+  .desktop-grid .area-role-sidebar {
+    position: fixed;
+    z-index: 10;
+    left: 0;
+    top: calc(var(--ada-app-header-height, 56px) + env(safe-area-inset-top, 0px));
+    height: calc(100% - var(--ada-app-header-height, 56px) - env(safe-area-inset-top, 0px));
+    width: min(86vw, 360px);
+    transform: translateX(-102%);
+    transition: transform 0.18s ease;
+    overflow: auto;
+    padding: 10px;
+    background: var(--desktop-panel-bg);
+    border-right: 1px solid var(--desktop-border-color);
+    box-shadow: 12px 0 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .desktop-grid.sidebar-open .area-role-sidebar {
+    transform: translateX(0);
+  }
+
+  .drawer-backdrop {
+    display: block;
   }
 }

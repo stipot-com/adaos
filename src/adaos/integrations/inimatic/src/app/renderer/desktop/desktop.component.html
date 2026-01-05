@@ -62,7 +62,7 @@
 		</div>
 	</div>
 	<div class="desktop" *ngIf="pageSchema as page">
-		<div class="mobile-panelbar" *ngIf="isMobile && roleHasWidgets('sidebar')">
+		<div class="mobile-panelbar" *ngIf="hasRole('sidebar')">
 			<ion-button class="mobile-menu-btn" fill="clear" size="small" (click)="toggleSidebar()"
 				[attr.aria-label]="sidebarOpen ? ('desktop.menu.close' | t) : ('desktop.menu.open' | t)">
 				<ion-icon slot="start" [name]="sidebarOpen ? 'close-outline' : 'menu-outline'"></ion-icon>
@@ -70,21 +70,9 @@
 			</ion-button>
 			<div class="spacer"></div>
 		</div>
-		<div class="drawer-backdrop" *ngIf="isMobile && sidebarOpen" (click)="closeSidebar()"></div>
-		<div class="sidebar-drawer" *ngIf="isMobile && roleHasWidgets('sidebar')" [class.open]="sidebarOpen">
-			<div class="sidebar-drawer__content">
-				<ng-container *ngFor="let area of page.layout.areas">
-					<div *ngIf="area.role === 'sidebar'" class="area area-role-sidebar"
-						[class.is-empty]="!areaHasWidgets(area.id)">
-						<ng-container *ngFor="let w of getWidgetsInArea(area.id)">
-							<ada-page-widget-host [widget]="w"></ada-page-widget-host>
-						</ng-container>
-					</div>
-				</ng-container>
-			</div>
-		</div>
+		<div class="drawer-backdrop" *ngIf="sidebarOpen" (click)="closeSidebar()"></div>
 
-		<div class="desktop-grid" [ngClass]="desktopLayoutClass(page)" [class.is-mobile]="isMobile"
+		<div class="desktop-grid" [ngClass]="desktopLayoutClass(page)"
 			[class.is-compact]="isCompact" [class.sidebar-open]="sidebarOpen">
 			<ng-container *ngFor="let area of page.layout.areas">
 				<ng-container>
