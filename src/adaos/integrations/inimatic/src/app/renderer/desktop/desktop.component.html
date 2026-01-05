@@ -1,5 +1,5 @@
 <!--src\adaos\integrations\inimatic\src\app\renderer\desktop\desktop.component.html-->
-<ion-content [style.--background]="app?.desktop?.background || '#0b0f14'">
+<ion-content [style.--background]="app?.desktop?.background || 'var(--ion-background-color)'">
 	<div *ngIf="needsPairing" style="padding: 16px; max-width: 560px; margin: 0 auto; text-align: center;">
 		<h2 style="margin: 8px 0;">{{ 'pair.title' | t }}</h2>
 		<p style="opacity: 0.85; margin: 0 0 12px 0;">

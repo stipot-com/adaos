@@ -49,7 +49,7 @@ import '../../runtime/registry.workspaces'
 })
 export class DynamicDesktopPageComponent implements OnInit {
   schema?: PageSchema
-  background = '#0b0f14'
+  background = 'var(--ion-background-color)'
 
   constructor(
     private ydoc: YDocService,
@@ -93,9 +93,9 @@ export class DynamicDesktopPageComponent implements OnInit {
       const app = this.ydoc.toJSON(
         this.ydoc.getPath('ui/application')
       ) as AdaApp | undefined
-      this.background = app?.desktop?.background || '#0b0f14'
+      this.background = app?.desktop?.background || 'var(--ion-background-color)'
     } catch {
-      this.background = '#0b0f14'
+      this.background = 'var(--ion-background-color)'
     }
   }
 

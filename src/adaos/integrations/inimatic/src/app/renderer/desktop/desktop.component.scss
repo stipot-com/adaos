@@ -2,7 +2,7 @@
   --desktop-panel-bg: rgba(255, 255, 255, 0.85);
   --desktop-icon-bg: rgba(255, 255, 255, 0.9);
   --desktop-border-color: rgba(0, 0, 0, 0.08);
-  --desktop-text-color: #1c1f2b;
+  --desktop-text-color: var(--ion-text-color);
   --desktop-gap: clamp(10px, 1.4vw, 16px);
   --desktop-padding: clamp(10px, 1.8vw, 22px);
   --desktop-max-width: 1400px;
@@ -12,13 +12,10 @@
   color-scheme: light dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :host {
-    --desktop-panel-bg: rgba(8, 13, 20, 0.72);
-    --desktop-icon-bg: rgba(255, 255, 255, 0.06);
-    --desktop-border-color: rgba(255, 255, 255, 0.14);
-    --desktop-text-color: #e6eefb;
-  }
+:host-context(body.dark) {
+  --desktop-panel-bg: rgba(8, 13, 20, 0.72);
+  --desktop-icon-bg: rgba(255, 255, 255, 0.06);
+  --desktop-border-color: rgba(255, 255, 255, 0.14);
 }
 
 .desktop {
