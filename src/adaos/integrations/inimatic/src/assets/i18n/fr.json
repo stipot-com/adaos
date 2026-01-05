@@ -7,6 +7,8 @@
 	"desktop.load_error.title": "Erreur de chargement",
 	"desktop.load_error.retry": "R\u00e9essayer",
 	"desktop.load_error.logout": "D\u00e9connexion",
+	"desktop.menu.open": "Menu",
+	"desktop.menu.close": "Fermer",
 
 	"status.checking": "vérification",
 	"status.online": "en ligne",

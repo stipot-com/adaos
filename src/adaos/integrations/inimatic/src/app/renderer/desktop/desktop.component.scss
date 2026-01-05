@@ -38,6 +38,17 @@
   backdrop-filter: blur(9px);
 }
 
+.mobile-menu-btn {
+  --color: var(--desktop-text-color);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.mobile-menu-btn ion-label {
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
 .mobile-panelbar .spacer {
   flex: 1;
 }

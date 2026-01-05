@@ -16,6 +16,8 @@ import { Subscription } from 'rxjs'
 import { QRCodeModule } from 'angularx-qrcode'
 import { PairingService } from '../../runtime/pairing.service'
 import { TPipe } from '../../runtime/t.pipe'
+import { addIcons } from 'ionicons'
+import { menuOutline, closeOutline } from 'ionicons/icons'
 
 @Component({
 	selector: 'ada-desktop',
@@ -63,6 +65,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		addIcons({ menuOutline, closeOutline })
 		this.ensureMediaQueries()
 		this.pendingApproveCode = this.readPairCodeFromUrl()
 		this.isAuthenticated = this.hasOwnerSession()

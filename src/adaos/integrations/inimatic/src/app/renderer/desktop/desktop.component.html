@@ -61,10 +61,11 @@
 		</div>
 	</div>
 	<div class="desktop" *ngIf="pageSchema as page">
-		<div class="mobile-panelbar" *ngIf="isMobile && (roleHasWidgets('sidebar') || roleHasWidgets('aux'))">
-			<ion-button *ngIf="roleHasWidgets('sidebar')" fill="clear" size="small" (click)="toggleSidebar()"
-				[attr.aria-label]="sidebarOpen ? 'Close menu' : 'Open menu'">
-				<ion-icon slot="icon-only" [name]="sidebarOpen ? 'close-outline' : 'menu-outline'"></ion-icon>
+		<div class="mobile-panelbar" *ngIf="isMobile && roleHasWidgets('sidebar')">
+			<ion-button class="mobile-menu-btn" fill="clear" size="small" (click)="toggleSidebar()"
+				[attr.aria-label]="sidebarOpen ? ('desktop.menu.close' | t) : ('desktop.menu.open' | t)">
+				<ion-icon slot="start" [name]="sidebarOpen ? 'close-outline' : 'menu-outline'"></ion-icon>
+				<ion-label>{{ sidebarOpen ? ('desktop.menu.close' | t) : ('desktop.menu.open' | t) }}</ion-label>
 			</ion-button>
 			<div class="spacer"></div>
 		</div>

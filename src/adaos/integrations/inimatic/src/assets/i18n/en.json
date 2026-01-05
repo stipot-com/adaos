@@ -7,6 +7,8 @@
 	"desktop.load_error.title": "Load error",
 	"desktop.load_error.retry": "Retry",
 	"desktop.load_error.logout": "Logout",
+	"desktop.menu.open": "Menu",
+	"desktop.menu.close": "Close",
 
 	"status.checking": "checking",
 	"status.online": "online",
