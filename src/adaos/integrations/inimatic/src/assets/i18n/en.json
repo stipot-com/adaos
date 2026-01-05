@@ -4,6 +4,9 @@
 	"lang.fr": "FR",
 	"lang.ch": "中文",
 	"desktop.panel": "Panel",
+	"desktop.load_error.title": "Load error",
+	"desktop.load_error.retry": "Retry",
+	"desktop.load_error.logout": "Logout",
 
 	"status.checking": "checking",
 	"status.online": "online",

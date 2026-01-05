@@ -4,6 +4,9 @@
 	"lang.fr": "FR",
 	"lang.ch": "中文",
 	"desktop.panel": "Panneau",
+	"desktop.load_error.title": "Erreur de chargement",
+	"desktop.load_error.retry": "R\u00e9essayer",
+	"desktop.load_error.logout": "D\u00e9connexion",
 
 	"status.checking": "vérification",
 	"status.online": "en ligne",

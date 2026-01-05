@@ -49,6 +49,17 @@
 		</p>
 		<app-login (loginSuccess)="onLoginSuccess()"></app-login>
 	</div>
+	<div *ngIf="isAuthenticated && !needsLogin && !needsPairing && !pendingApproveCode && initError"
+		style="padding: 16px; max-width: 560px; margin: 0 auto; text-align: center;">
+		<h2 style="margin: 8px 0;">{{ 'desktop.load_error.title' | t }}</h2>
+		<p style="opacity: 0.85; margin: 0 0 12px 0; overflow-wrap: anywhere;">
+			{{ initError }}
+		</p>
+		<div style="display:flex; justify-content:center; gap: 10px; flex-wrap: wrap;">
+			<ion-button (click)="retryInit()">{{ 'desktop.load_error.retry' | t }}</ion-button>
+			<ion-button fill="outline" (click)="logout()">{{ 'desktop.load_error.logout' | t }}</ion-button>
+		</div>
+	</div>
 	<div class="desktop" *ngIf="pageSchema as page">
 		<div class="mobile-panelbar" *ngIf="isMobile && (roleHasWidgets('sidebar') || roleHasWidgets('aux'))">
 			<ion-button *ngIf="roleHasWidgets('sidebar')" fill="clear" size="small" (click)="toggleSidebar()"

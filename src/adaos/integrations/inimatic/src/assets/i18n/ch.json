@@ -4,6 +4,9 @@
 	"lang.fr": "FR",
 	"lang.ch": "中文",
 	"desktop.panel": "\u9762\u677f",
+	"desktop.load_error.title": "\u52a0\u8f7d\u9519\u8bef",
+	"desktop.load_error.retry": "\u91cd\u8bd5",
+	"desktop.load_error.logout": "\u9000\u51fa",
 
 	"status.checking": "检查中",
 	"status.online": "在线",

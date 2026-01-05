@@ -267,7 +267,12 @@ export class YDocService {
     // across different webspaces.
     try {
       this.db = new IndexeddbPersistence(`adaos-mobile-${webspaceId}`, this.doc)
-      await this.db.whenSynced
+      // On some mobile browsers / private modes IndexedDB can hang indefinitely.
+      // Do not block app startup on persistence.
+      await Promise.race([
+        this.db.whenSynced,
+        new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+      ])
     } catch {
       // offline persistence is best-effort
     }
@@ -280,7 +285,8 @@ export class YDocService {
       params: { dev: this.deviceId, ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}) },
     })
 
-    await new Promise<void>((resolve) => {
+    await Promise.race([
+      new Promise<void>((resolve) => {
       if (!this.provider) { resolve(); return }
       if (this.provider.synced) { resolve(); return }
       const handler = (synced: boolean) => {
@@ -290,7 +296,11 @@ export class YDocService {
         }
       }
       this.provider.on('sync', handler as any)
-    })
+      }),
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('yjs_sync_timeout')), 9000),
+      ),
+    ])
 
   }
 

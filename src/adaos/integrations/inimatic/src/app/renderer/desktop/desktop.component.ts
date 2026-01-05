@@ -83,7 +83,8 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				this.needsLogin = true
 				return
 			}
-			throw e
+			// Do not crash the renderer; show a retry UI instead.
+			return
 		}
 		const uiNode = this.y.getPath('ui')
 		const dataNode = this.y.getPath('data')
@@ -134,8 +135,16 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			}
 			this.mediaApplyHandler = apply
 			apply()
-			this.compactMedia.addEventListener('change', apply)
-			this.mobileMedia.addEventListener('change', apply)
+			// Safari fallback: MediaQueryList may only support addListener/removeListener.
+			const anyCompact: any = this.compactMedia as any
+			const anyMobile: any = this.mobileMedia as any
+			if (typeof anyCompact?.addEventListener === 'function') {
+				this.compactMedia.addEventListener('change', apply)
+				this.mobileMedia?.addEventListener('change', apply)
+			} else if (typeof anyCompact?.addListener === 'function') {
+				anyCompact.addListener(apply)
+				anyMobile?.addListener?.(apply)
+			}
 			this.mediaHandlersBound = true
 		} catch {}
 	}
@@ -144,8 +153,15 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		if (!this.mediaHandlersBound) return
 		try {
 			if (this.mediaApplyHandler) {
-				this.compactMedia?.removeEventListener('change', this.mediaApplyHandler)
-				this.mobileMedia?.removeEventListener('change', this.mediaApplyHandler)
+				const anyCompact: any = this.compactMedia as any
+				const anyMobile: any = this.mobileMedia as any
+				if (typeof anyCompact?.removeEventListener === 'function') {
+					this.compactMedia?.removeEventListener('change', this.mediaApplyHandler)
+					this.mobileMedia?.removeEventListener('change', this.mediaApplyHandler)
+				} else if (typeof anyCompact?.removeListener === 'function') {
+					anyCompact.removeListener(this.mediaApplyHandler)
+					anyMobile?.removeListener?.(this.mediaApplyHandler)
+				}
 			}
 		} catch {}
 		this.mediaApplyHandler = undefined
@@ -214,6 +230,31 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		} catch {}
 		try { clearInterval(this.pairPollTimer) } catch {}
 		await this.ngOnInit()
+	}
+
+	async retryInit(): Promise<void> {
+		this.initError = ''
+		try {
+			await this.ngOnInit()
+		} catch {}
+	}
+
+	logout(): void {
+		const keys = [
+			'adaos_web_session_jwt',
+			'adaos_hub_id',
+			'adaos_web_sid',
+			'adaos_hub_base',
+			'adaos_webspace_id',
+		]
+		for (const key of keys) {
+			try {
+				localStorage.removeItem(key)
+			} catch {}
+		}
+		try {
+			location.reload()
+		} catch {}
 	}
 
 	private hasOwnerSession(): boolean {
