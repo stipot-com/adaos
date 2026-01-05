@@ -13,6 +13,11 @@ import {
 	homeOutline,
 	refreshOutline,
 	logOutOutline,
+	menuOutline,
+	closeOutline,
+	chevronDownOutline,
+	chevronUpOutline,
+	folderOpenOutline,
 } from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
@@ -63,6 +68,11 @@ export class AppComponent implements OnInit, OnDestroy {
 			homeOutline,
 			refreshOutline,
 			logOutOutline,
+			menuOutline,
+			closeOutline,
+			chevronDownOutline,
+			chevronUpOutline,
+			folderOpenOutline,
 		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
@@ -70,6 +80,8 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	ngOnInit(): void {
+		this.applyLayoutVars()
+		this.maybeHardReloadOnBuildChange()
 		this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
 		this.applyTheme(this.colorSchemeMedia.matches)
 		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
@@ -118,6 +130,67 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	ngOnDestroy(): void {
 		this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener)
+	}
+
+	private applyLayoutVars(): void {
+		try {
+			const h = this.isAndroid ? '80px' : '56px'
+			document.documentElement.style.setProperty('--ada-app-header-height', h)
+		} catch {}
+	}
+
+	private maybeHardReloadOnBuildChange(): void {
+		if (!this.buildId || this.buildId === 'dev') return
+		const key = 'adaos_frontend_build'
+		const guardKey = `adaos_frontend_reloaded_${this.buildId}`
+		try {
+			if (sessionStorage.getItem(guardKey) === '1') return
+		} catch {}
+		const prev = (() => {
+			try {
+				return (localStorage.getItem(key) || '').trim()
+			} catch {
+				return ''
+			}
+		})()
+		if (!prev) {
+			try {
+				localStorage.setItem(key, this.buildId)
+			} catch {}
+			return
+		}
+		if (prev === this.buildId) return
+		try {
+			localStorage.setItem(key, this.buildId)
+		} catch {}
+		try {
+			sessionStorage.setItem(guardKey, '1')
+		} catch {}
+		;(async () => {
+			try {
+				const regs = await navigator.serviceWorker?.getRegistrations?.()
+				if (Array.isArray(regs)) {
+					await Promise.all(regs.map((r) => r.unregister().catch(() => false)))
+				}
+			} catch {}
+			try {
+				const cacheKeys = await (globalThis as any).caches?.keys?.()
+				if (Array.isArray(cacheKeys)) {
+					await Promise.all(
+						cacheKeys.map((k: string) => (globalThis as any).caches.delete(k).catch(() => false)),
+					)
+				}
+			} catch {}
+			try {
+				const url = new URL(location.href)
+				url.searchParams.set('__v', this.buildId)
+				location.replace(url.toString())
+				return
+			} catch {}
+			try {
+				location.reload()
+			} catch {}
+		})()
 	}
 
 	@HostListener('window:keydown', ['$event'])

@@ -1,5 +1,5 @@
 <ion-app>
-	<ion-header [translucent]="true" [class]="isAndroid? 'android_header' : ''">
+	<ion-header [translucent]="false" [class]="isAndroid? 'android_header' : ''">
 		<ion-toolbar>
 			<ion-buttons slot="start">
 				<ion-button *ngIf="isAuthenticated; else unauthLogo" (click)="onClickHome()">

@@ -324,6 +324,15 @@
 
 .area-role-footer {
   grid-area: bottom;
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--ion-background-color) 94%, transparent),
+    transparent
+  );
 }
 
 .widget-collapsible__header {

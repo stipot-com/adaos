@@ -7,6 +7,8 @@ import { PageDataService } from '../../runtime/page-data.service'
 import { Subscription } from 'rxjs'
 import { PageModalService } from '../../runtime/page-modal.service'
 import { PageStateService } from '../../runtime/page-state.service'
+import { addIcons } from 'ionicons'
+import { folderOpenOutline } from 'ionicons/icons'
 
 @Component({
   selector: 'ada-command-bar-widget',
@@ -14,16 +16,41 @@ import { PageStateService } from '../../runtime/page-state.service'
   imports: [CommonModule, IonicModule],
   providers: [PageModalService],
   template: `
-    <ion-segment mode="md" [ngClass]="segmentClass">
-      <ion-segment-button
-        *ngFor="let btn of buttons"
-        [value]="btn.id"
-        [ngClass]="btn['kind'] === 'danger' ? 'segment-btn-danger' : ''"
-        (click)="onClick(btn)"
-      >
-        <ion-label>{{ btn.label }}</ion-label>
-      </ion-segment-button>
-    </ion-segment>
+    <ng-container [ngSwitch]="variant">
+      <div *ngSwitchCase="'header'" class="headerbar">
+        <div class="headerbar__row">
+          <div class="headerbar__title">{{ widget.title || '' }}</div>
+          <ion-button
+            *ngIf="primaryButton && hasSelection"
+            fill="clear"
+            size="small"
+            (click)="onClick(primaryButton)"
+            [attr.aria-label]="primaryButton.label || primaryButton.id"
+          >
+            <ion-icon [name]="primaryButton.icon || 'folder-open-outline'"></ion-icon>
+          </ion-button>
+        </div>
+        <div *ngIf="hasSelection" class="headerbar__value">{{ selectionValue }}</div>
+        <ion-button
+          *ngIf="primaryButton && !hasSelection"
+          expand="block"
+          (click)="onClick(primaryButton)"
+        >
+          <ion-icon slot="start" [name]="primaryButton.icon || 'folder-open-outline'"></ion-icon>
+          {{ primaryButton.label }}
+        </ion-button>
+      </div>
+      <ion-segment *ngSwitchDefault mode="md" [ngClass]="segmentClass">
+        <ion-segment-button
+          *ngFor="let btn of buttons"
+          [value]="btn.id"
+          [ngClass]="btn['kind'] === 'danger' ? 'segment-btn-danger' : ''"
+          (click)="onClick(btn)"
+        >
+          <ion-label>{{ btn.label }}</ion-label>
+        </ion-segment-button>
+      </ion-segment>
+    </ng-container>
   `,
   styles: [
     `
@@ -47,6 +74,28 @@ import { PageStateService } from '../../runtime/page-state.service'
         --color: var(--ion-color-danger);
         --indicator-color: var(--ion-color-danger);
       }
+      .headerbar {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .headerbar__row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .headerbar__title {
+        font-size: 13px;
+        letter-spacing: 0.06em;
+        opacity: 0.9;
+        text-transform: uppercase;
+      }
+      .headerbar__value {
+        font-size: 12px;
+        opacity: 0.75;
+        overflow-wrap: anywhere;
+      }
     `,
   ],
 })
@@ -58,6 +107,10 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   private stateSub?: Subscription
   private rawButtons: Array<{ id: string; label: string; [k: string]: any }> = []
   segmentClass = ''
+  variant: string = ''
+  selectionValue = ''
+  hasSelection = false
+  primaryButton?: { id: string; label: string; icon?: string; [k: string]: any }
 
   constructor(
     private data: PageDataService,
@@ -67,7 +120,9 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   ) {}
 
   ngOnInit(): void {
+    addIcons({ folderOpenOutline })
     this.segmentClass = this.resolveSegmentClass()
+    this.variant = this.resolveVariant()
     this.loadButtons()
     this.stateSub = this.state.selectAll().subscribe(() => {
       this.recomputeLabelsFromState()
@@ -81,6 +136,7 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
 
   ngOnChanges(_changes: SimpleChanges): void {
     this.segmentClass = this.resolveSegmentClass()
+    this.variant = this.resolveVariant()
     this.loadButtons()
   }
 
@@ -123,6 +179,19 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
       }
       return { ...btn, label }
     })
+    this.recomputeHeaderSelection(snapshot)
+  }
+
+  private recomputeHeaderSelection(snapshot: any): void {
+    const key = (this.widget?.inputs as any)?.['selectedStateKey']
+    const value = key ? snapshot?.[key] : undefined
+    this.hasSelection = value != null && String(value).trim() !== ''
+    this.selectionValue = this.hasSelection ? String(value) : ''
+    const primaryId = (this.widget?.inputs as any)?.['primaryButtonId']
+    const btn =
+      (primaryId ? this.buttons.find((b) => b.id === primaryId) : undefined) ||
+      this.buttons[0]
+    this.primaryButton = btn
   }
 
   async onClick(btn: { id: string }): Promise<void> {
@@ -159,5 +228,10 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
     const size = this.widget?.inputs?.['size']
     if (size === 'small') return 'segment-small'
     return ''
+  }
+
+  private resolveVariant(): string {
+    const v = (this.widget?.inputs as any)?.['variant']
+    return typeof v === 'string' ? v : ''
   }
 }
