@@ -18,7 +18,20 @@
 			</ion-buttons>
 			<ion-title>
 				<div class="app-title">
-					<span class="wordmark">INIMATIC</span>
+					<ng-container *ngIf="isAuthenticated; else wordmarkPlain">
+						<ion-button
+							class="wordmark-btn"
+							fill="clear"
+							size="small"
+							(click)="onClickHome()"
+							aria-label="Home"
+						>
+							<span class="wordmark">INIMATIC</span>
+						</ion-button>
+					</ng-container>
+					<ng-template #wordmarkPlain>
+						<span class="wordmark">INIMATIC</span>
+					</ng-template>
 					<span class="build-id" *ngIf="buildId && buildId !== 'dev'">{{ buildId }}</span>
 					<span class="hub-status" *ngIf="hubStatus$ | async as hub">
 						<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>

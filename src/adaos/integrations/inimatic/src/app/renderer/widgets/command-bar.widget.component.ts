@@ -20,8 +20,12 @@ import { folderOpenOutline } from 'ionicons/icons'
       <div *ngSwitchCase="'header'" class="headerbar">
         <div class="headerbar__row">
           <div class="headerbar__title">{{ widget.title || '' }}</div>
+        </div>
+        <div *ngIf="hasSelection" class="headerbar__selection">
+          <div class="headerbar__value">{{ selectionValue }}</div>
           <ion-button
-            *ngIf="primaryButton && hasSelection"
+            *ngIf="primaryButton"
+            class="headerbar__change"
             fill="clear"
             size="small"
             (click)="onClick(primaryButton)"
@@ -30,7 +34,6 @@ import { folderOpenOutline } from 'ionicons/icons'
             <ion-icon [name]="primaryButton.icon || 'folder-open-outline'"></ion-icon>
           </ion-button>
         </div>
-        <div *ngIf="hasSelection" class="headerbar__value">{{ selectionValue }}</div>
         <ion-button
           *ngIf="primaryButton && !hasSelection"
           expand="block"
@@ -85,6 +88,12 @@ import { folderOpenOutline } from 'ionicons/icons'
         justify-content: space-between;
         gap: 8px;
       }
+      .headerbar__selection {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
       .headerbar__title {
         font-size: 13px;
         letter-spacing: 0.06em;
@@ -92,6 +101,7 @@ import { folderOpenOutline } from 'ionicons/icons'
         text-transform: uppercase;
       }
       .headerbar__value {
+        flex: 1;
         font-size: 12px;
         opacity: 0.75;
         overflow-wrap: anywhere;

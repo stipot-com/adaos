@@ -24,7 +24,9 @@ import { PageDataService } from '../../runtime/page-data.service'
         padding: 6px 10px;
         font-size: 13px;
         border-radius: 8px;
-        background: rgba(0, 0, 0, 0.06);
+        background: var(--ion-background-color);
+        color: var(--ion-text-color);
+        border: 1px solid rgba(var(--ion-text-color-rgb), 0.08);
       }
       .label {
         font-weight: 500;
