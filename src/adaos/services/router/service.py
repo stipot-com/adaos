@@ -21,6 +21,8 @@ from adaos.services.io_console import print_text
 from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
+from adaos.services.yjs.doc import async_get_ydoc
+from adaos.skills.runtime_runner import execute_tool
 
 
 class RouterService:
@@ -278,6 +280,169 @@ class RouterService:
 
             self.bus.subscribe("ui.say", _on_say)
             self._subscribed = True
+
+        # ------------------------------------------------------------
+        # Web voice chat routing (per-webspace)
+        # ------------------------------------------------------------
+
+        def _resolve_webspace_id(payload: dict | None) -> str:
+            if not isinstance(payload, dict):
+                return "default"
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            raw = (
+                (meta or {}).get("webspace_id")
+                or (meta or {}).get("workspace_id")
+                or payload.get("webspace_id")
+                or payload.get("workspace_id")
+                or "default"
+            )
+            ws = str(raw or "").strip()
+            return ws or "default"
+
+        async def _ensure_voice_chat_state(webspace_id: str) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = data_map.get("voice_chat")
+                if isinstance(current, dict) and isinstance(current.get("messages"), list):
+                    return
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "voice_chat", {"messages": []})
+
+        async def _append_voice_chat_message(webspace_id: str, msg: dict) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = data_map.get("voice_chat")
+                messages = []
+                if isinstance(current, dict) and isinstance(current.get("messages"), list):
+                    messages = list(current.get("messages") or [])
+                messages.append(msg)
+                # keep last N messages only (MVP)
+                if len(messages) > 60:
+                    messages = messages[-60:]
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "voice_chat", {"messages": messages})
+
+        async def _ensure_tts_state(webspace_id: str) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = data_map.get("tts")
+                if isinstance(current, dict) and isinstance(current.get("queue"), list):
+                    return
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "tts", {"queue": []})
+
+        async def _append_tts_queue_item(webspace_id: str, item: dict) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = data_map.get("tts")
+                queue = []
+                if isinstance(current, dict) and isinstance(current.get("queue"), list):
+                    queue = list(current.get("queue") or [])
+                queue.append(item)
+                if len(queue) > 50:
+                    queue = queue[-50:]
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "tts", {"queue": queue})
+
+        def _now_ms() -> int:
+            return int(time.time() * 1000)
+
+        def _make_id(prefix: str) -> str:
+            return f"{prefix}.{_now_ms()}"
+
+        async def _on_voice_open(ev: Event) -> None:
+            payload = ev.payload or {}
+            ws = _resolve_webspace_id(payload)
+            await _ensure_voice_chat_state(ws)
+            await _ensure_tts_state(ws)
+
+        async def _on_io_out_chat_append(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            ws = _resolve_webspace_id(payload)
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            msg = {
+                "id": str(payload.get("id") or _make_id("m")),
+                "from": str(payload.get("from") or "hub"),
+                "text": text.strip(),
+                "ts": float(payload.get("ts") or time.time()),
+            }
+            await _ensure_voice_chat_state(ws)
+            await _append_voice_chat_message(ws, msg)
+
+        async def _on_io_out_say(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            ws = _resolve_webspace_id(payload)
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            item = {
+                "id": str(payload.get("id") or _make_id("t")),
+                "text": text.strip(),
+                "ts": float(payload.get("ts") or time.time()),
+            }
+            if isinstance(payload.get("lang"), str) and payload.get("lang").strip():
+                item["lang"] = payload.get("lang").strip()
+            if isinstance(payload.get("voice"), str) and payload.get("voice").strip():
+                item["voice"] = payload.get("voice").strip()
+            if isinstance(payload.get("rate"), (int, float)):
+                item["rate"] = float(payload.get("rate"))
+            await _ensure_tts_state(ws)
+            await _append_tts_queue_item(ws, item)
+
+        def _call_voice_chat_tool(text: str, meta: dict) -> Any:
+            ctx = get_ctx()
+            skills_root = ctx.paths.skills_workspace_dir()
+            skills_root = skills_root() if callable(skills_root) else skills_root
+            skill_dir = Path(skills_root) / "voice_chat_skill"
+            prev = ctx.skill_ctx.get()
+            try:
+                ctx.skill_ctx.set("voice_chat_skill", skill_dir)
+                return execute_tool(
+                    skill_dir,
+                    module="handlers.main",
+                    attr="handle_text",
+                    payload={"text": text, "_meta": meta},
+                )
+            finally:
+                if prev is None:
+                    try:
+                        ctx.skill_ctx.clear()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        ctx.skill_ctx.set(prev.name, prev.path)
+                    except Exception:
+                        pass
+
+        async def _on_voice_user(ev: Event) -> None:
+            payload = ev.payload or {}
+            ws = _resolve_webspace_id(payload)
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            text = text.strip()
+
+            await _ensure_voice_chat_state(ws)
+
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            meta = {**meta, "webspace_id": ws}
+            try:
+                await _ensure_tts_state(ws)
+            except Exception:
+                pass
+            await asyncio.to_thread(_call_voice_chat_tool, text, meta)
+
+        self.bus.subscribe("voice.chat.open", _on_voice_open)
+        self.bus.subscribe("voice.chat.user", _on_voice_user)
+        self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
+        self.bus.subscribe("io.out.say", _on_io_out_say)
 
         # Watch rules file
         def _reload(rules: list[dict]):

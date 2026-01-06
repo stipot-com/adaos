@@ -94,6 +94,10 @@ import { folderOpenOutline } from 'ionicons/icons'
         justify-content: space-between;
         gap: 8px;
       }
+      .headerbar__change {
+        flex: 0 0 auto;
+        --color: currentColor;
+      }
       .headerbar__title {
         font-size: 13px;
         letter-spacing: 0.06em;
@@ -104,7 +108,10 @@ import { folderOpenOutline } from 'ionicons/icons'
         flex: 1;
         font-size: 12px;
         opacity: 0.75;
-        overflow-wrap: anywhere;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
     `,
   ],

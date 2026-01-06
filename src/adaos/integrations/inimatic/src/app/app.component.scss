@@ -86,5 +86,7 @@
 
 /* Global header sits above routed pages; offset page content accordingly. */
 ion-router-outlet ion-content {
-	--offset-top: var(--ada-app-header-height, 56px);
+	/* Ionic sets `--offset-top` inline (often to 0px) when there is no per-page ion-header.
+	   Use `!important` to ensure routed content does not render under the global header. */
+	--offset-top: var(--ada-app-header-height, 56px) !important;
 }

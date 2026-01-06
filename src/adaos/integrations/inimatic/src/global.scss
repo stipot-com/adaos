@@ -65,6 +65,15 @@ body.dark ion-tab-bar {
 	color: #e5e7eb;
 }
 
+/* Ensure the safe-area/padding area of the global header is not transparent. */
+body ion-header {
+	background: var(--ion-background-color);
+}
+
+body.dark ion-header {
+	background: #020617;
+}
+
 .ion-primary-input {
 	--highlight-color: var(--ion-color-primary) !important;
 }
