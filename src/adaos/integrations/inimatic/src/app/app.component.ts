@@ -36,7 +36,7 @@ import { TPipe } from './runtime/t.pipe'
 	templateUrl: 'app.component.html',
 	styleUrls: ['app.component.scss'],
 	standalone: true,
-		imports: [
+	imports: [
 		CommonModule,
 		IonIcon,
 		IonToolbar,
@@ -53,7 +53,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	isAndroid: boolean
 	hubStatus$!: Observable<'checking' | 'online' | 'offline'>
 	readonly buildId = buildId
-	logoSrc = 'assets/icon/favicon.png'
+	logoSrc = 'assets/icon/favicon.svg'
 	private colorSchemeMedia?: MediaQueryList
 	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
 	private narrowMedia?: MediaQueryList
@@ -143,14 +143,14 @@ export class AppComponent implements OnInit, OnDestroy {
 			} else if (typeof any?.removeListener === 'function') {
 				any.removeListener(this.narrowListener)
 			}
-		} catch {}
+		} catch { }
 	}
 
 	private applyLayoutVars(): void {
 		try {
 			const h = this.isAndroid ? '80px' : '56px'
 			document.documentElement.style.setProperty('--ada-app-header-height', h)
-		} catch {}
+		} catch { }
 	}
 
 	private ensureNarrowMedia(): void {
@@ -163,7 +163,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			} else if (typeof any?.addListener === 'function') {
 				any.addListener(this.narrowListener)
 			}
-		} catch {}
+		} catch { }
 	}
 
 	private applyNarrow(): void {
@@ -177,7 +177,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	toggleSidebar(): void {
 		try {
 			window.dispatchEvent(new CustomEvent('adaos:toggleSidebar'))
-		} catch {}
+		} catch { }
 	}
 
 	private maybeHardReloadOnBuildChange(): void {
@@ -186,7 +186,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		const guardKey = `adaos_frontend_reloaded_${this.buildId}`
 		try {
 			if (sessionStorage.getItem(guardKey) === '1') return
-		} catch {}
+		} catch { }
 		const prev = (() => {
 			try {
 				return (localStorage.getItem(key) || '').trim()
@@ -197,23 +197,23 @@ export class AppComponent implements OnInit, OnDestroy {
 		if (!prev) {
 			try {
 				localStorage.setItem(key, this.buildId)
-			} catch {}
+			} catch { }
 			return
 		}
 		if (prev === this.buildId) return
 		try {
 			localStorage.setItem(key, this.buildId)
-		} catch {}
+		} catch { }
 		try {
 			sessionStorage.setItem(guardKey, '1')
-		} catch {}
-		;(async () => {
+		} catch { }
+		; (async () => {
 			try {
 				const regs = await navigator.serviceWorker?.getRegistrations?.()
 				if (Array.isArray(regs)) {
 					await Promise.all(regs.map((r) => r.unregister().catch(() => false)))
 				}
-			} catch {}
+			} catch { }
 			try {
 				const cacheKeys = await (globalThis as any).caches?.keys?.()
 				if (Array.isArray(cacheKeys)) {
@@ -221,16 +221,16 @@ export class AppComponent implements OnInit, OnDestroy {
 						cacheKeys.map((k: string) => (globalThis as any).caches.delete(k).catch(() => false)),
 					)
 				}
-			} catch {}
+			} catch { }
 			try {
 				const url = new URL(location.href)
 				url.searchParams.set('__v', this.buildId)
 				location.replace(url.toString())
 				return
-			} catch {}
+			} catch { }
 			try {
 				location.reload()
-			} catch {}
+			} catch { }
 		})()
 	}
 
@@ -240,7 +240,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			if (!url.searchParams.has('__v')) return
 			url.searchParams.delete('__v')
 			window.history.replaceState({}, '', url.toString())
-		} catch {}
+		} catch { }
 	}
 
 	@HostListener('window:keydown', ['$event'])
@@ -305,10 +305,10 @@ export class AppComponent implements OnInit, OnDestroy {
 		for (const key of keys) {
 			try {
 				localStorage.removeItem(key)
-			} catch {}
+			} catch { }
 		}
 		try {
 			location.reload()
-		} catch {}
+		} catch { }
 	}
 }
