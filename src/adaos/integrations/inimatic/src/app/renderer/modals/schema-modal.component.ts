@@ -14,6 +14,8 @@ import { TextInputWidgetComponent } from '../widgets/text-input.widget.component
 import { CommandBarWidgetComponent } from '../widgets/command-bar.widget.component'
 import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.component'
 import { DetailsWidgetComponent } from '../widgets/details.widget.component'
+import { ChatWidgetComponent } from '../widgets/chat.widget.component'
+import { VoiceInputWidgetComponent } from '../widgets/voice-input.widget.component'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -231,6 +233,8 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     CommandBarWidgetComponent,
     TextEditorWidgetComponent,
     DetailsWidgetComponent,
+    ChatWidgetComponent,
+    VoiceInputWidgetComponent,
   ],
   template: `
     <ion-header *ngIf="title">
@@ -280,6 +284,14 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
               *ngIf="widget.type === 'item.details'"
               [widget]="widget"
             ></ada-details-widget>
+            <ada-chat-widget
+              *ngIf="widget.type === 'ui.chat'"
+              [widget]="widget"
+            ></ada-chat-widget>
+            <ada-voice-input-widget
+              *ngIf="widget.type === 'ui.voiceInput'"
+              [widget]="widget"
+            ></ada-voice-input-widget>
           </ng-container>
         </ng-container>
       </div>

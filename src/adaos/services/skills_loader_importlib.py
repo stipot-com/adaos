@@ -17,12 +17,24 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
     async def import_all_handlers(self, skills_root: Any) -> None:
         root = Path(skills_root() if callable(skills_root) else skills_root)
         self._sync_runtime_from_workspace_if_debug(root)
+        loaded: set[str] = set()
         for handler, skill_name in self._discover_runtime_handlers(root):
             self._load_handler(handler)
             if skill_name:
+                loaded.add(skill_name)
                 _LOG.info("imported skill handler skill=%s path=%s", skill_name, handler)
             else:
                 _LOG.info("imported skill handler path=%s", handler)
+
+        # Dev/fast-path: load handlers straight from the workspace tree when a
+        # skill does not have an installed runtime bundle under .runtime.
+        for handler, skill_name in self._discover_workspace_handlers(root, loaded):
+            self._load_handler(handler)
+            if skill_name:
+                loaded.add(skill_name)
+                _LOG.info("imported workspace skill handler skill=%s path=%s", skill_name, handler)
+            else:
+                _LOG.info("imported workspace skill handler path=%s", handler)
 
     def _load_handler(self, handler: Path) -> None:
         mod_name = "adaos_skill_" + handler.parent.as_posix().replace("/", "_")
@@ -59,7 +71,19 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         return handlers
 
     def _discover_workspace_handlers(self, root: Path, loaded: set[str]) -> Iterable[Tuple[Path, Optional[str]]]:
-        return []
+        handlers: list[Tuple[Path, Optional[str]]] = []
+        for skill_dir in root.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            if skill_dir.name.startswith((".", "_")):
+                continue
+            # Skip runtime-bundled skills.
+            if skill_dir.name in loaded:
+                continue
+            handler = skill_dir / "handlers" / "main.py"
+            if handler.exists():
+                handlers.append((handler, skill_dir.name))
+        return handlers
 
     @staticmethod
     def _resolve_slot(version_dir: Path) -> Optional[Path]:

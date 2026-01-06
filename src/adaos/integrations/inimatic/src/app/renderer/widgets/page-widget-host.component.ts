@@ -25,6 +25,8 @@ import { TextInputWidgetComponent } from './text-input.widget.component'
 import { PageStateService, PageState } from '../../runtime/page-state.service'
 import { Subscription } from 'rxjs'
 import { DesktopWidgetsWidgetComponent } from './desktop-widgets.widget.component'
+import { ChatWidgetComponent } from './chat.widget.component'
+import { VoiceInputWidgetComponent } from './voice-input.widget.component'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'collection.grid': CollectionGridWidgetComponent,
@@ -34,6 +36,8 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'visual.metricTile': MetricTileWidgetComponent,
   'feedback.log': MetricTileWidgetComponent,
   'feedback.statusBar': StatusBarWidgetComponent,
+  'ui.chat': ChatWidgetComponent,
+  'ui.voiceInput': VoiceInputWidgetComponent,
   'item.textEditor': TextEditorWidgetComponent,
   'item.codeViewer': CodeViewerWidgetComponent,
   'item.details': DetailsWidgetComponent,

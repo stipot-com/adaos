@@ -444,6 +444,27 @@ async def events_ws(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue
 
+            if kind == "voice.chat.open":
+                _publish_bus(
+                    "voice.chat.open",
+                    {
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
+            if kind == "voice.chat.user":
+                _publish_bus(
+                    "voice.chat.user",
+                    {
+                        "text": payload.get("text"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
             if kind == "desktop.webspace.reload":
                 _publish_bus("desktop.webspace.reload", payload)
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))

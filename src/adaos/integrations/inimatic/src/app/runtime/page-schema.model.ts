@@ -5,6 +5,8 @@ export type WidgetType =
   | 'visual.metricTile'
   | 'feedback.log'
   | 'feedback.statusBar'
+  | 'ui.chat'
+  | 'ui.voiceInput'
   | 'item.textEditor'
   | 'item.codeViewer'
   | 'item.details'
