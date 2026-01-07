@@ -40,6 +40,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	activeWebspace = 'default'
 	pageSchema?: PageSchema
 	private areaWidgetCounts = new Map<string, number>()
+	private lastSidebarAvailable?: boolean
 	private stateSub?: Subscription
 	isAuthenticated = false
 	needsLogin = false
@@ -99,6 +100,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.readWebspaces()
 			this.pageSchema = this.desktopSchema.loadSchema()
 			this.rebuildAreaWidgetCounts()
+			this.emitSidebarAvailability()
 			if (this.isCompact) this.initCollapsedWidgets()
 			this.selectedApproveWebspace =
 				this.selectedApproveWebspace || this.activeWebspace || 'default'
@@ -118,6 +120,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.teardownMediaQueries()
 			try {
 				window.removeEventListener('adaos:toggleSidebar', this.onToggleSidebar as any)
+			} catch {}
+			try {
+				this.lastSidebarAvailable = undefined
+				window.dispatchEvent(new CustomEvent('adaos:sidebarAvailability', { detail: { available: false } }))
 			} catch {}
 		}
 	}
@@ -177,6 +183,15 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	toggleSidebar(): void {
 		this.sidebarOpen = !this.sidebarOpen
+	}
+
+	private emitSidebarAvailability(): void {
+		const available = this.roleHasWidgets('aux')
+		if (this.lastSidebarAvailable === available) return
+		this.lastSidebarAvailable = available
+		try {
+			window.dispatchEvent(new CustomEvent('adaos:sidebarAvailability', { detail: { available } }))
+		} catch {}
 	}
 
 	closeSidebar(): void {

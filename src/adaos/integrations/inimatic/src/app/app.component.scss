@@ -1,5 +1,10 @@
 .android_header {
 	padding-top: 24px;
+	background: var(--ion-background-color);
+}
+
+ion-header ion-toolbar {
+	--background: var(--ion-background-color);
 }
 
 .app-title {
@@ -62,9 +67,6 @@
 	}
 	.app-title {
 		gap: 8px;
-	}
-	.build-id {
-		display: none;
 	}
 }
 

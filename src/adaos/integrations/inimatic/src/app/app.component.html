@@ -1,11 +1,13 @@
 <ion-app>
 	<ion-header [translucent]="false" [class]="isAndroid? 'android_header' : ''">
-		<ion-toolbar>
+			<ion-toolbar>
 			<ion-buttons slot="start">
 				<ng-container *ngIf="isAuthenticated; else unauthLogo">
-					<ion-button *ngIf="isNarrow; else wideHome" (click)="toggleSidebar()">
-						<ion-icon name="menu-outline"></ion-icon>
-					</ion-button>
+					<ng-container *ngIf="isNarrow && sidebarAvailable; else wideHome">
+						<ion-button (click)="toggleSidebar()">
+							<ion-icon name="menu-outline"></ion-icon>
+						</ion-button>
+					</ng-container>
 					<ng-template #wideHome>
 						<ion-button (click)="onClickHome()">
 							<ion-icon name="home-outline"></ion-icon>
@@ -32,7 +34,7 @@
 					<ng-template #wordmarkPlain>
 						<span class="wordmark">INIMATIC</span>
 					</ng-template>
-					<span class="build-id" *ngIf="buildId && buildId !== 'dev'">{{ buildId }}</span>
+					<span class="build-id" *ngIf="buildId">{{ buildId }}</span>
 					<span class="hub-status" *ngIf="hubStatus$ | async as hub">
 						<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
 						<span class="label">{{ ('status.' + hub) | t }}</span>

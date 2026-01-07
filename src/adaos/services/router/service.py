@@ -4,6 +4,7 @@ from typing import Any, Callable
 from pathlib import Path
 import asyncio
 import json
+import time
 import requests
 import os
 import shutil
@@ -434,6 +435,23 @@ class RouterService:
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
             meta = {**meta, "webspace_id": ws}
             try:
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": _make_id("m"),
+                            "from": "user",
+                            "text": text,
+                            "ts": time.time(),
+                            "_meta": meta,
+                        },
+                    )
+                )
+            except Exception:
+                pass
+            try:
                 await _ensure_tts_state(ws)
             except Exception:
                 pass
@@ -448,6 +466,7 @@ class RouterService:
                         "text": f"Ошибка обработки: {exc}",
                         "ts": time.time(),
                     }
+                    msg["text"] = f"Ошибка обработки: {exc}"
                     await _append_voice_chat_message(ws, msg)
                 except Exception:
                     pass

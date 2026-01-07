@@ -137,22 +137,30 @@ export class YDocService {
     const probeHttpStatus = async (
       baseUrl: string,
       timeoutMs = 800,
-      headers?: Record<string, string>
+      headers?: Record<string, string>,
+      paths: string[] = ['/healthz', '/api/ping']
     ): Promise<number> => {
-      try {
-        const abs = baseUrl.replace(/\/$/, '')
-        const url = `${abs}/api/ping`
-        const ctrl = new AbortController()
-        const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+      const abs = baseUrl.replace(/\/$/, '')
+      for (const p of paths) {
         try {
-          const resp = await fetch(url, { method: 'GET', signal: ctrl.signal, headers })
-          return resp.status || 0
-        } finally {
-          clearTimeout(timer)
+          const path = p.startsWith('/') ? p : `/${p}`
+          const url = `${abs}${path}`
+          const ctrl = new AbortController()
+          const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+          try {
+            const resp = await fetch(url, { method: 'GET', signal: ctrl.signal, headers })
+            const st = resp.status || 0
+            // 404 means "reachable but endpoint missing" – keep trying other probes.
+            if (st === 404) continue
+            return st
+          } finally {
+            clearTimeout(timer)
+          }
+        } catch {
+          // keep trying other paths
         }
-      } catch {
-        return 0
       }
+      return 0
     }
 
     // Prefer a local hub on the same device if it is reachable (owner-device scenario),
@@ -223,14 +231,26 @@ export class YDocService {
 
       // Validate session against root-proxy before attempting WS.
       const token = this.adaos.getToken()
+      const rootBase = this.adaos.getBaseUrl().replace(/\/$/, '')
+      const reachability = await probeHttpStatus(rootBase, 1200)
+      if (reachability === 0) {
+        throw new Error('hub_unreachable')
+      }
       const rootStatus = await probeHttpStatus(
-        this.adaos.getBaseUrl().replace(/\/$/, ''),
-        1200,
-        token ? { Authorization: `Bearer ${token}` } : undefined
+        rootBase,
+        1600,
+        token ? { Authorization: `Bearer ${token}` } : undefined,
+        ['/api/node/status']
       )
       if (rootStatus === 401 || rootStatus === 403) {
         this.invalidateWebSession()
         throw new Error('session_invalid')
+      }
+      if (rootStatus === 0) {
+        throw new Error('hub_unreachable')
+      }
+      if (rootStatus >= 500) {
+        throw new Error('hub_offline')
       }
     }
 
@@ -395,12 +415,7 @@ export class YDocService {
       const data = this.toJSON(this.getPath('data'))
       const registry = this.toJSON(this.getPath('registry'))
       // eslint-disable-next-line no-console
-      try {
-        if ((globalThis as any).__ADAOS_DEBUG__ === true) {
-          // eslint-disable-next-line no-console
-          console.log('[YDoc Snapshot]', { ui, data, registry })
-        }
-      } catch {}
+      console.log('[YDoc Snapshot]', { ui, data, registry })
     } catch {
       // ignore dump errors
     }

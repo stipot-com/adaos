@@ -154,6 +154,15 @@ export class PageDataService {
       return [unsubscribe]
     }
 
+    // Voice chat + TTS queues: server mutates nested plain JSON under data.voice_chat / data.tts.
+    // Observe the whole data tree so updates are delivered reliably.
+    if (cfg.path && (cfg.path === 'data/voice_chat' || cfg.path.startsWith('data/voice_chat/') || cfg.path === 'data/tts' || cfg.path.startsWith('data/tts/'))) {
+      const node = this.ydoc.getPath('data')
+      if (!node) return [() => {}]
+      const unsubscribe = observeDeep(node, emit)
+      return [unsubscribe]
+    }
+
     const paths = this.pathsForYDoc(cfg)
     if (!paths.length) return [() => {}]
     return paths.map((path) => {
@@ -188,6 +197,17 @@ export class PageDataService {
           // project weather.current from it.
           const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
           return root?.weather?.current
+        }
+        if (cfg.path && (cfg.path === 'data/voice_chat' || cfg.path.startsWith('data/voice_chat/') || cfg.path === 'data/tts' || cfg.path.startsWith('data/tts/'))) {
+          const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
+          const segs = cfg.path.split('/').filter(Boolean)
+          // segs[0] is "data"
+          let cur: any = root
+          for (const s of segs.slice(1)) {
+            if (cur == null) return undefined
+            cur = cur?.[s]
+          }
+          return cur
         }
         if (cfg.path) {
           return this.ydoc.toJSON(this.ydoc.getPath(cfg.path))

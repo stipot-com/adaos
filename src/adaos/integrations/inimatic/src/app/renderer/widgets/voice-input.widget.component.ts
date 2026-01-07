@@ -47,6 +47,7 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
   sendCommand?: string
 
   private recognition?: any
+  private lastFinalText = ''
 
   constructor(private adaos: AdaosClient, private ydoc: YDocService) {}
 
@@ -98,20 +99,26 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
             if (r?.isFinal) finalText += t
             else interim += t
           }
-          this.status = interim.trim()
+          const interimTrimmed = interim.trim()
+          this.status = interimTrimmed || this.status
           const text = finalText.trim()
-          if (text) this.sendRecognized(text)
+          if (text) {
+            this.lastFinalText = text
+            this.status = text
+            this.sendRecognized(text)
+          }
         } catch {}
       }
       rec.onerror = () => {
-        this.status = ''
+        this.status = this.lastFinalText ? `Ошибка распознавания: ${this.lastFinalText}` : 'Ошибка распознавания'
         this.listening = false
       }
       rec.onend = () => {
-        this.status = ''
+        // Keep last recognized text visible until it appears in chat.
         this.listening = false
       }
       this.recognition = rec
+      this.lastFinalText = ''
       this.status = ''
       this.listening = true
       rec.start()
@@ -135,9 +142,12 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
     try {
       const ws = this.ydoc.getWebspaceId()
       await this.adaos.sendEventsCommand(this.sendCommand, { text, webspace_id: ws }, 15000)
+      // Give router time to append the message into Yjs.
+      setTimeout(() => {
+        if (this.status === text) this.status = ''
+      }, 1200)
     } catch {
-      // ignore transient errors
+      this.status = `Ошибка отправки: ${text}`
     }
   }
 }
-

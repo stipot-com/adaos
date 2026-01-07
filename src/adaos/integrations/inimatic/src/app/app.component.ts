@@ -1,4 +1,4 @@
-import { Component, HostListener, OnDestroy, OnInit } from '@angular/core'
+import { Component, HostListener, NgZone, OnDestroy, OnInit } from '@angular/core'
 import {
 	IonApp,
 	IonHeader,
@@ -61,6 +61,15 @@ export class AppComponent implements OnInit, OnDestroy {
 	private narrowListener = () => this.applyNarrow()
 	isNarrow = false
 	private sessionInvalidated = false
+	sidebarAvailable = false
+	private sidebarAvailabilityHandler = (ev: any) => {
+		try {
+			const available = !!ev?.detail?.available
+			this.zone.run(() => {
+				this.sidebarAvailable = available
+			})
+		} catch { }
+	}
 
 	constructor(
 		private plt: Platform,
@@ -68,6 +77,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		private adaos: AdaosClient,
 		private http: HttpClient,
 		private pairing: PairingService,
+		private zone: NgZone,
 	) {
 		addIcons({
 			homeOutline,
@@ -91,6 +101,9 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
 		this.applyTheme(this.colorSchemeMedia.matches)
 		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
+		try {
+			window.addEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
+		} catch { }
 		// If we loaded via cache-bust URL, clean it up for nicer sharing/bookmarks.
 		setTimeout(() => this.stripVersionParam(), 0)
 
@@ -164,6 +177,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	ngOnDestroy(): void {
 		this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener)
+		try {
+			window.removeEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
+		} catch { }
 		try {
 			const any: any = this.narrowMedia as any
 			if (typeof any?.removeEventListener === 'function') {
