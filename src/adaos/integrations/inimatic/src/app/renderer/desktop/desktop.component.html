@@ -1,5 +1,12 @@
 <!--src\adaos\integrations\inimatic\src\app\renderer\desktop\desktop.component.html-->
 <ion-content [style.--background]="app?.desktop?.background || 'var(--ion-background-color)'">
+	<div class="desktop-loading" *ngIf="isAuthenticated && !needsLogin && !needsPairing && !pendingApproveCode && !initError && !pageSchema">
+		<img
+			class="desktop-loading__logo"
+			src="assets/icons/adaos_logo_animated.svg"
+			alt="Loading"
+		/>
+	</div>
 	<div *ngIf="needsPairing" style="padding: 16px; max-width: 560px; margin: 0 auto; text-align: center;">
 		<h2 style="margin: 8px 0;">{{ 'pair.title' | t }}</h2>
 		<p style="opacity: 0.85; margin: 0 0 12px 0;">

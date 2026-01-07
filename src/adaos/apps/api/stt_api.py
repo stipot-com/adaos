@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import os
+import base64
+import json
 import wave
 from pathlib import Path
 from typing import Optional
@@ -79,6 +81,57 @@ def _read_wav_mono16k(data: bytes) -> bytes:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid wav: {exc}")
 
+def _try_parse_json(body: bytes) -> dict | None:
+    if not body:
+        return None
+    if body[:1] not in (b"{", b"["):
+        return None
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _decode_audio_from_request(body: bytes, content_type: str | None) -> bytes:
+    """
+    Support both:
+      - raw WAV body (Content-Type: audio/wav)
+      - JSON wrapper (Content-Type: application/json) with fields:
+          { "audio_b64": "...", "lang": "ru-RU" }
+    This avoids binary-body issues through some proxies.
+    """
+    ct = (content_type or "").lower().strip()
+    obj: dict | None = None
+    if "application/json" in ct or ct.endswith("+json"):
+        obj = _try_parse_json(body)
+        if obj is None:
+            raise HTTPException(status_code=400, detail="invalid json")
+    else:
+        # Some proxies drop/override the Content-Type header. If the body looks
+        # like JSON, still try to decode it as a wrapper.
+        obj = _try_parse_json(body)
+
+    if obj is not None:
+        b64 = obj.get("audio_b64") or obj.get("wav_b64") or obj.get("data")
+        if not isinstance(b64, str) or not b64.strip():
+            raise HTTPException(status_code=400, detail="invalid json: missing audio_b64")
+        token = b64.strip()
+        if token.startswith("data:"):
+            # data:audio/wav;base64,...
+            try:
+                token = token.split(",", 1)[1]
+            except Exception:
+                raise HTTPException(status_code=400, detail="invalid data url")
+        try:
+            return base64.b64decode(token, validate=False)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid base64: {exc}")
+    # default: treat as raw wav bytes
+    return body
+
 
 @router.post("/transcribe", dependencies=[Depends(require_token)])
 async def stt_transcribe(
@@ -101,6 +154,14 @@ async def stt_transcribe(
         body = await request.body()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"failed to read body: {exc}")
+    ct = request.headers.get("content-type")
+    # If JSON wrapper includes its own lang override, apply it (also when
+    # Content-Type is missing but body looks like JSON).
+    obj = _try_parse_json(body)
+    if isinstance(obj, dict) and isinstance(obj.get("lang"), str) and obj.get("lang").strip():
+        target = _resolve_lang(obj.get("lang"))
+        model_path = _ensure_model(target)
+    body = _decode_audio_from_request(body, ct)
     pcm = _read_wav_mono16k(body)
 
     try:

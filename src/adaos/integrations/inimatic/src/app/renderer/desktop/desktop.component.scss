@@ -23,6 +23,24 @@
   color: var(--desktop-text-color);
 }
 
+.desktop-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.desktop-loading__logo {
+  width: min(50vw, 50vh);
+  height: min(50vw, 50vh);
+  max-width: 420px;
+  max-height: 420px;
+  opacity: 0.9;
+}
+
 .mobile-panelbar {
   position: sticky;
   top: 0;

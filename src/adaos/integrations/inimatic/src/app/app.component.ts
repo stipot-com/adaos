@@ -150,7 +150,8 @@ export class AppComponent implements OnInit, OnDestroy {
 			}
 		}
 		// Before pairing/login we don't know a hub id; root health is still useful.
-		return { url: `${base}/healthz` }
+		// Root-proxy may not expose `/healthz` but does expose `/api/ping`.
+		return { url: `${base}/api/ping` }
 	}
 
 	private readSessionJwt(): string {

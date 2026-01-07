@@ -133,14 +133,17 @@ export class HubWavSttProvider implements SttProvider {
 
     try {
       const base = this.adaos.getBaseUrl().replace(/\/$/, '')
-      const url = `${base}/api/stt/transcribe?lang=${encodeURIComponent(this.lang)}`
+      const url = `${base}/api/stt/transcribe`
+
+      const wavB64 = await blobToBase64(wav)
+      const body = JSON.stringify({ audio_b64: wavB64, lang: this.lang })
       const resp = await fetch(url, {
         method: 'POST',
         headers: {
-          'Content-Type': 'audio/wav',
+          'Content-Type': 'application/json',
           ...this.adaos.getAuthHeaders(),
         },
-        body: wav,
+        body,
       })
       if (!resp.ok) {
         const detail = await resp.text().catch(() => '')
@@ -207,4 +210,17 @@ function mergeFloat32(chunks: Float32Array[]): Float32Array {
     offset += c.length
   }
   return out
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  // chunk to avoid call stack limits
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode(...sub)
+  }
+  return btoa(binary)
 }
