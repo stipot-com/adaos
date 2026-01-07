@@ -286,10 +286,23 @@ class RouterService:
         # Web voice chat routing (per-webspace)
         # ------------------------------------------------------------
 
-        def _resolve_webspace_id(payload: dict | None) -> str:
+        def _resolve_webspace_ids(payload: dict | None) -> list[str]:
             if not isinstance(payload, dict):
-                return "default"
+                return ["default"]
+
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            raw_ids = (meta or {}).get("webspace_ids")
+            if isinstance(raw_ids, list):
+                out: list[str] = []
+                for v in raw_ids:
+                    s = str(v or "").strip()
+                    if not s:
+                        continue
+                    if s not in out:
+                        out.append(s)
+                if out:
+                    return out
+
             raw = (
                 (meta or {}).get("webspace_id")
                 or (meta or {}).get("workspace_id")
@@ -298,7 +311,7 @@ class RouterService:
                 or "default"
             )
             ws = str(raw or "").strip()
-            return ws or "default"
+            return [ws or "default"]
 
         async def _ensure_voice_chat_state(webspace_id: str) -> None:
             async with async_get_ydoc(webspace_id) as ydoc:
@@ -353,15 +366,14 @@ class RouterService:
 
         async def _on_voice_open(ev: Event) -> None:
             payload = ev.payload or {}
-            ws = _resolve_webspace_id(payload)
-            await _ensure_voice_chat_state(ws)
-            await _ensure_tts_state(ws)
+            for ws in _resolve_webspace_ids(payload):
+                await _ensure_voice_chat_state(ws)
+                await _ensure_tts_state(ws)
 
         async def _on_io_out_chat_append(ev: Event) -> None:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
                 return
-            ws = _resolve_webspace_id(payload)
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
@@ -371,14 +383,14 @@ class RouterService:
                 "text": text.strip(),
                 "ts": float(payload.get("ts") or time.time()),
             }
-            await _ensure_voice_chat_state(ws)
-            await _append_voice_chat_message(ws, msg)
+            for ws in _resolve_webspace_ids(payload):
+                await _ensure_voice_chat_state(ws)
+                await _append_voice_chat_message(ws, msg)
 
         async def _on_io_out_say(ev: Event) -> None:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
                 return
-            ws = _resolve_webspace_id(payload)
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
@@ -393,8 +405,9 @@ class RouterService:
                 item["voice"] = payload.get("voice").strip()
             if isinstance(payload.get("rate"), (int, float)):
                 item["rate"] = float(payload.get("rate"))
-            await _ensure_tts_state(ws)
-            await _append_tts_queue_item(ws, item)
+            for ws in _resolve_webspace_ids(payload):
+                await _ensure_tts_state(ws)
+                await _append_tts_queue_item(ws, item)
 
         def _call_voice_chat_tool(text: str, meta: dict) -> Any:
             ctx = get_ctx()
@@ -424,7 +437,7 @@ class RouterService:
 
         async def _on_voice_user(ev: Event) -> None:
             payload = ev.payload or {}
-            ws = _resolve_webspace_id(payload)
+            ws = _resolve_webspace_ids(payload)[0]
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return

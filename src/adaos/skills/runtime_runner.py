@@ -59,6 +59,18 @@ def execute_tool(
         raise TypeError(f"attribute '{attr}' from module '{module_name}' is not callable")
 
     mapping = dict(payload)
+    meta = mapping.get("_meta")
+    try:
+        from adaos.sdk.io.context import io_meta  # pylint: disable=import-outside-toplevel
+    except Exception:
+        io_meta = None
+
+    if io_meta is not None and isinstance(meta, Mapping):
+        with io_meta(meta):
+            if _should_expand_keywords(func):
+                return func(**mapping)
+            return func(mapping)
+
     if _should_expand_keywords(func):
         return func(**mapping)
     return func(mapping)

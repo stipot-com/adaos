@@ -11,6 +11,7 @@ import time
 from typing import Any, Mapping
 
 from adaos.sdk.core.decorators import tool
+from adaos.sdk.io.context import get_current_meta
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as _emit
 
@@ -51,8 +52,11 @@ def chat_append(
         "id": str(msg_id) if msg_id else "",
         "ts": float(ts) if ts is not None else time.time(),
     }
+    meta = get_current_meta()
     if _meta:
-        payload["_meta"] = dict(_meta)
+        meta.update(dict(_meta))
+    if meta:
+        payload["_meta"] = meta
     _publish("io.out.chat.append", payload, source="sdk.io.out")
     return {"ok": True}
 
@@ -86,9 +90,11 @@ def say(
         payload["voice"] = voice.strip()
     if isinstance(rate, (int, float)):
         payload["rate"] = float(rate)
+    meta = get_current_meta()
     if _meta:
-        payload["_meta"] = dict(_meta)
+        meta.update(dict(_meta))
+    if meta:
+        payload["_meta"] = meta
 
     _publish("io.out.say", payload, source="sdk.io.out")
     return {"ok": True}
-

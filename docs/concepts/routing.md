@@ -36,10 +36,18 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Source:
   - `io.out.chat.append` (chat message append)
   - `io.out.say` (enqueue TTS)
-- Target selection: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`).
+- Target selection:
+  - default: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`)
+  - broadcast: set `_meta.webspace_ids = [...]` to fan-out into multiple webspaces
 - Projection:
   - `io.out.chat.append` -> `data.voice_chat.messages`
   - `io.out.say` -> `data.tts.queue`
+
+### Routeless skills
+
+When a tool is invoked with a payload that contains `_meta`, AdaOS sets an execution
+context so `io.out.*` helpers inherit it automatically. This allows skills to emit
+outputs without carrying routing logic (no explicit `_meta` plumbing in skill code).
 
 ## Subnet Directory (hub and members)
 
