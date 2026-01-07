@@ -30,6 +30,11 @@ import { SttEvent, SttProvider } from '../../runtime/stt/stt.types'
           (pointerup)="onPttUp($event)"
           (pointercancel)="onPttUp($event)"
           (pointerleave)="onPttUp($event)"
+          (mousedown)="onPttDown($event)"
+          (mouseup)="onPttUp($event)"
+          (touchstart)="onPttDown($event)"
+          (touchend)="onPttUp($event)"
+          (click)="toggleListening()"
           [color]="listening ? 'danger' : 'primary'"
         >
           <ion-icon slot="start" [name]="listening ? 'stop-circle-outline' : 'mic-outline'"></ion-icon>

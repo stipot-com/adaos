@@ -31,6 +31,7 @@ export class HubWavSttProvider implements SttProvider {
   private lastVoiceAt = 0
   private hadVoice = false
   private stopRequested = false
+  private hardStopTimer?: any
 
   constructor(opts: HubSttOptions) {
     this.adaos = opts.adaos
@@ -97,6 +98,13 @@ export class HubWavSttProvider implements SttProvider {
           }
         } catch {}
       }
+      // Hard stop even if ScriptProcessor callbacks are not delivered (some browsers).
+      try {
+        clearTimeout(this.hardStopTimer)
+      } catch {}
+      this.hardStopTimer = setTimeout(() => {
+        void this.stop()
+      }, this.maxMs + 250)
     } catch (err) {
       this.emit({ type: 'error', message: 'Failed to start audio capture.', detail: err })
       await this.stop()
@@ -106,7 +114,15 @@ export class HubWavSttProvider implements SttProvider {
   async stop(): Promise<void> {
     if (this.stopRequested) return
     this.stopRequested = true
-    if (!this.stream) return
+    try {
+      clearTimeout(this.hardStopTimer)
+    } catch {}
+    this.hardStopTimer = undefined
+    if (!this.stream) {
+      await this.cleanupCapture()
+      this.emit({ type: 'state', state: 'idle' })
+      return
+    }
     this.emit({ type: 'state', state: 'processing' })
     const sampleRate = this.ctx?.sampleRate || 48000
     const merged = mergeFloat32(this.chunks)
@@ -144,6 +160,10 @@ export class HubWavSttProvider implements SttProvider {
   }
 
   private async cleanupCapture(): Promise<void> {
+    try {
+      clearTimeout(this.hardStopTimer)
+    } catch {}
+    this.hardStopTimer = undefined
     try {
       this.processor && (this.processor.onaudioprocess = null as any)
     } catch {}
