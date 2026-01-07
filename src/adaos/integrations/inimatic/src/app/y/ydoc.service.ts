@@ -138,7 +138,9 @@ export class YDocService {
       baseUrl: string,
       timeoutMs = 800,
       headers?: Record<string, string>,
-      paths: string[] = ['/healthz', '/api/ping']
+      // Root-proxy under `/hubs/<id>` does not expose `/healthz` on that prefix,
+      // so probe `/api/ping` first to avoid noisy 404s in console/network logs.
+      paths: string[] = ['/api/ping', '/healthz']
     ): Promise<number> => {
       const abs = baseUrl.replace(/\/$/, '')
       for (const p of paths) {

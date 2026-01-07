@@ -18,6 +18,7 @@ import {
 	chevronDownOutline,
 	chevronUpOutline,
 	folderOpenOutline,
+	micOutline,
 } from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
@@ -88,6 +89,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			chevronDownOutline,
 			chevronUpOutline,
 			folderOpenOutline,
+			micOutline,
 		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
