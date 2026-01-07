@@ -106,13 +106,14 @@ class WorkspaceWebsocketServer(WebsocketServer):
 
 y_server = WorkspaceWebsocketServer(auto_clean_rooms=False)
 _y_server_started = False
+_y_server_task: asyncio.Task[None] | None = None
 
 
 async def start_y_server() -> None:
     """
     Ensure the shared Y websocket server background task is running.
     """
-    global _y_server_started
+    global _y_server_started, _y_server_task
     if _y_server_started:
         return
     _y_server_started = True
@@ -120,8 +121,36 @@ async def start_y_server() -> None:
     async def _runner() -> None:
         await y_server.start()
 
-    asyncio.create_task(_runner(), name="adaos-yjs-websocket-server")
+    _y_server_task = asyncio.create_task(_runner(), name="adaos-yjs-websocket-server")
     await y_server.started.wait()
+
+
+async def stop_y_server() -> None:
+    """
+    Stop the shared Y websocket server background task.
+
+    Without an explicit stop, the anyio task group inside ypy-websocket can
+    keep the process alive after FastAPI/uvicorn shutdown.
+    """
+    global _y_server_started, _y_server_task
+    if not _y_server_started:
+        return
+    try:
+        y_server.stop()
+    except Exception:
+        pass
+    task = _y_server_task
+    _y_server_task = None
+    _y_server_started = False
+    if task is None:
+        return
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        # shutdown path: ignore
+        pass
 
 
 async def ensure_webspace_ready(webspace_id: str, scenario_id: str | None = None) -> None:

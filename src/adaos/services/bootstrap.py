@@ -1320,7 +1320,9 @@ class BootstrapService:
                         except Exception:
                             pass
                         try:
-                            route_sub.unsubscribe()
+                            unsub = route_sub.unsubscribe()
+                            if asyncio.iscoroutine(unsub):
+                                await unsub
                         except Exception:
                             pass
                         try:

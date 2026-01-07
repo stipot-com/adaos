@@ -5,12 +5,12 @@ import { WidgetConfig, WidgetType } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { Subscription } from 'rxjs'
 import { MetricTileWidgetComponent } from './metric-tile.widget.component'
-import { PageWidgetHostComponent } from './page-widget-host.component'
+import { CommandBarWidgetComponent } from './command-bar.widget.component'
 
 @Component({
   selector: 'ada-desktop-widgets',
   standalone: true,
-  imports: [CommonModule, IonicModule, MetricTileWidgetComponent, PageWidgetHostComponent],
+  imports: [CommonModule, IonicModule, MetricTileWidgetComponent, CommandBarWidgetComponent],
   template: `
     <div class="widgets-section">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
@@ -23,14 +23,14 @@ import { PageWidgetHostComponent } from './page-widget-host.component'
                 *ngSwitchCase="'visual.metricTile'"
                 [widget]="w"
               ></ada-metric-tile-widget>
-              <ion-card *ngSwitchDefault class="widget-card">
-                <ion-card-header *ngIf="w.title">
-                  <ion-card-title>{{ w.title }}</ion-card-title>
-                </ion-card-header>
-                <ion-card-content>
-                  <ada-page-widget-host [widget]="w"></ada-page-widget-host>
-                </ion-card-content>
-              </ion-card>
+              <ada-command-bar-widget
+                *ngSwitchCase="'input.commandBar'"
+                [widget]="w"
+              ></ada-command-bar-widget>
+              <ada-metric-tile-widget
+                *ngSwitchDefault
+                [widget]="w"
+              ></ada-metric-tile-widget>
             </ng-container>
           </div>
         </div>
@@ -66,9 +66,6 @@ import { PageWidgetHostComponent } from './page-widget-host.component'
         top: 4px;
         right: 4px;
         z-index: 1;
-      }
-      .widget-card {
-        margin: 0;
       }
       .empty-hint {
         color: var(--ion-color-medium);

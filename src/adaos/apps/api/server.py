@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
     from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills
     from adaos.apps.api import io_webhooks
-    from adaos.services.yjs.gateway import router as y_router, start_y_server
+    from adaos.services.yjs.gateway import router as y_router, start_y_server, stop_y_server
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")
@@ -183,6 +183,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await stop_observer()
+        # Stop ypy-websocket background server so it does not keep the process alive.
+        try:
+            await stop_y_server()
+        except Exception:
+            pass
         # On graceful shutdown, notify Telegram and UI if enabled
         try:
             if tg_enabled:
