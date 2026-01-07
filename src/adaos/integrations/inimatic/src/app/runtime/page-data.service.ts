@@ -8,6 +8,8 @@ import {
   SkillDataSource,
   StaticDataSource,
   YDocDataSource,
+  WidgetConfig,
+  WidgetType,
 } from './page-schema.model'
 import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
@@ -229,7 +231,7 @@ export class PageDataService {
     return items
   }
 
-  private resolveDesktopWidgets(): Array<{ id: string; title?: string; type?: string; source?: string; dev?: boolean }> {
+  private resolveDesktopWidgets(): WidgetConfig[] {
     const catalogWidgets: any[] = this.ydoc.toJSON(this.ydoc.getPath('data/catalog/widgets')) || []
     const installedWidgets = this.readInstalled('widgets')
     const app: any = this.ydoc.toJSON(this.ydoc.getPath('ui/application')) || {}
@@ -240,29 +242,33 @@ export class PageDataService {
       if (it?.id) byId[it.id] = it
     }
 
+    const normalize = (raw: any): WidgetConfig | undefined => {
+      if (!raw || typeof raw !== 'object') return undefined
+      const id = raw.id != null ? String(raw.id) : ''
+      if (!id) return undefined
+      const base = byId[id]
+      const merged: any =
+        base && typeof base === 'object'
+          ? { ...base, ...raw } // pinned overrides win over catalog
+          : { ...raw }
+
+      const type = String(merged.type || 'visual.metricTile') as WidgetType
+      merged.id = id
+      merged.type = type
+      return merged as WidgetConfig
+    }
+
     const pinned = pinnedWidgets
       .filter((it) => it && typeof it === 'object' && it.id)
-      .map((it) => ({
-        id: String(it.id),
-        title: it.title,
-        type: it.type,
-        source: it.source,
-        dev: !!it.dev,
-      }))
+      .map((it) => normalize(it))
+      .filter(Boolean) as WidgetConfig[]
 
     const installed = installedWidgets
-      .map((id) => byId[id])
-      .filter(Boolean)
-      .map((it) => ({
-        id: it.id,
-        title: it.title,
-        type: it.type,
-        source: it.source,
-        dev: !!it.dev,
-      }))
+      .map((id) => normalize(byId[id]))
+      .filter(Boolean) as WidgetConfig[]
 
     const seen = new Set<string>()
-    const out: Array<{ id: string; title?: string; type?: string; source?: string; dev?: boolean }> = []
+    const out: WidgetConfig[] = []
     for (const item of [...pinned, ...installed]) {
       if (!item?.id) continue
       if (seen.has(item.id)) continue

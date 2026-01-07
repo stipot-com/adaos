@@ -5,11 +5,12 @@ import { WidgetConfig, WidgetType } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { Subscription } from 'rxjs'
 import { MetricTileWidgetComponent } from './metric-tile.widget.component'
+import { PageWidgetHostComponent } from './page-widget-host.component'
 
 @Component({
   selector: 'ada-desktop-widgets',
   standalone: true,
-  imports: [CommonModule, IonicModule, MetricTileWidgetComponent],
+  imports: [CommonModule, IonicModule, MetricTileWidgetComponent, PageWidgetHostComponent],
   template: `
     <div class="widgets-section">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
@@ -22,10 +23,14 @@ import { MetricTileWidgetComponent } from './metric-tile.widget.component'
                 *ngSwitchCase="'visual.metricTile'"
                 [widget]="w"
               ></ada-metric-tile-widget>
-              <ada-metric-tile-widget
-                *ngSwitchDefault
-                [widget]="w"
-              ></ada-metric-tile-widget>
+              <ion-card *ngSwitchDefault class="widget-card">
+                <ion-card-header *ngIf="w.title">
+                  <ion-card-title>{{ w.title }}</ion-card-title>
+                </ion-card-header>
+                <ion-card-content>
+                  <ada-page-widget-host [widget]="w"></ada-page-widget-host>
+                </ion-card-content>
+              </ion-card>
             </ng-container>
           </div>
         </div>
@@ -62,6 +67,9 @@ import { MetricTileWidgetComponent } from './metric-tile.widget.component'
         right: 4px;
         z-index: 1;
       }
+      .widget-card {
+        margin: 0;
+      }
       .empty-hint {
         color: var(--ion-color-medium);
         font-size: 14px;
@@ -83,23 +91,21 @@ export class DesktopWidgetsWidgetComponent implements OnInit, OnDestroy {
     if (stream) {
       this.dataSub = stream.subscribe((items) => {
         const raw = Array.isArray(items) ? items : []
-        this.widgets = raw.map((it) =>
-          ({
-            id: String(it.id),
-            type: String(it.type || 'visual.metricTile') as WidgetType,
-            area: this.widget.area,
-            title: it.title,
-            dataSource: it.source
-              ? ({
-                  kind: 'y',
-                  path: String(it.source).startsWith('y:')
-                    ? String(it.source).slice(2)
-                    : String(it.source),
-                } as any)
-              : undefined,
-            inputs: { dev: !!it.dev },
-          } as WidgetConfig)
-        )
+        this.widgets = raw.map((it) => {
+          const cfg: any = { ...(it && typeof it === 'object' ? it : {}) }
+          cfg.id = String(cfg.id || '')
+          cfg.type = String(cfg.type || 'visual.metricTile') as WidgetType
+          cfg.area = this.widget.area
+          if (!cfg.inputs || typeof cfg.inputs !== 'object') cfg.inputs = {}
+          cfg.inputs = { ...cfg.inputs, dev: !!cfg.dev }
+          if (!cfg.dataSource && cfg.source) {
+            cfg.dataSource = {
+              kind: 'y',
+              path: String(cfg.source).startsWith('y:') ? String(cfg.source).slice(2) : String(cfg.source),
+            }
+          }
+          return cfg as WidgetConfig
+        })
       })
     }
   }
