@@ -55,3 +55,15 @@ and configure targets in Yjs: `data.routing.routes[route_id] = { webspace_ids: [
 
 - `io.voice.stt.listen(timeout='20s')`
 - `io.voice.tts.speak(text)`
+
+## Web STT (frontend)
+
+`ui.voiceInput` supports pluggable STT providers via `widget.inputs.stt`:
+
+- `provider: 'browser'` — Web Speech API (`SpeechRecognition`) with partials
+- `provider: 'hub'` — records audio, uses `/api/stt/transcribe` (WAV mono 16kHz)
+
+Common options:
+- `pushToTalk: true` (press-and-hold)
+- `vad: true`, `vadThreshold`, `vadSilenceMs` (hub provider only)
+- `autoSend: true` (send without confirmation)
