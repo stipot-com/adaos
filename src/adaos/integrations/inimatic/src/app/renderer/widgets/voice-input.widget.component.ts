@@ -100,6 +100,7 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
   status = ''
   pendingText = ''
   sending = false
+  private stickyStatus = false
 
   startLabel = 'Listen'
   stopLabel = 'Stop'
@@ -178,7 +179,6 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
         vadSilenceMs: opts.vadSilenceMs,
       })
     }
-    // default: browser SR
     return new BrowserSpeechRecognitionProvider({ lang: this.lang, interim: true })
   }
 
@@ -186,10 +186,11 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
     if (ev.type === 'state') {
       this.listening = ev.state === 'listening'
       if (ev.state === 'processing') this.status = 'Обработка…'
-      if (ev.state === 'idle' && !this.pendingText) this.status = ''
+      if (ev.state === 'idle' && !this.pendingText && !this.stickyStatus) this.status = ''
       return
     }
     if (ev.type === 'partial') {
+      this.stickyStatus = false
       this.status = ev.text
       return
     }
@@ -198,26 +199,35 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
       if (!text) return
       this.pendingText = text
       this.status = this.autoSend ? 'Отправка…' : ''
+      this.stickyStatus = false
       if (this.autoSend) void this.sendRecognized(text)
       return
     }
     if (ev.type === 'error') {
       this.status = String(ev.message || 'Ошибка STT')
+      this.stickyStatus = true
       this.listening = false
+      try {
+        const detail = (ev as any)?.detail
+        if (detail) console.warn('[VoiceInput] STT error detail', detail)
+      } catch {}
     }
   }
 
   private async startListening(): Promise<void> {
     if (!this.sendCommand) {
       this.status = 'sendCommand is not configured.'
+      this.stickyStatus = true
       return
     }
     try {
       this.pendingText = ''
       this.status = ''
+      this.stickyStatus = false
       await this.provider?.start()
     } catch (err) {
       this.status = 'Failed to start microphone.'
+      this.stickyStatus = true
       this.listening = false
       try {
         this.provider?.destroy().catch(() => {})
@@ -236,6 +246,7 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
   discard(): void {
     this.pendingText = ''
     this.status = ''
+    this.stickyStatus = false
   }
 
   async confirmSend(): Promise<void> {
@@ -252,15 +263,16 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
       const payload: any = { text, webspace_id: ws }
       if (this.sendMeta) payload._meta = { ...this.sendMeta }
       await this.adaos.sendEventsCommand(this.sendCommand, payload, 15000)
-      // Give router time to append the message into Yjs.
       setTimeout(() => {
         if (this.status === 'Отправка…') this.status = ''
       }, 1200)
       this.pendingText = ''
     } catch {
-      this.status = `Ошибка отправки: ${text}`
+      this.status = 'Не удалось отправить сообщение.'
+      this.stickyStatus = true
     } finally {
       this.sending = false
     }
   }
 }
+

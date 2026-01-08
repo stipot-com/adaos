@@ -14,7 +14,7 @@
 
     <!-- логотип -->
     <g id="adaosLogo" transform="translate(100,100) scale(0.06, -0.06) translate(-1600,-1600)">
-      <path fill="#ffffff" d="M1560 3229 c-228 -21 -423 -167 -549 -409 -22 -41 -84 -174 -139
+      <path class="logoFill" d="M1560 3229 c-228 -21 -423 -167 -549 -409 -22 -41 -84 -174 -139
 -295 -82 -181 -339 -744 -638 -1396 -73 -159 -95 -240 -101 -380 -18 -382 198
 -665 560 -734 107 -20 169 -19 285 6 166 36 304 111 428 235 56 56 164 196
 164 212 0 5 -52 92 -115 193 -63 101 -117 189 -120 194 -2 6 -10 2 -17 -9
@@ -33,54 +33,48 @@
 456 283 612 76 167 175 360 204 394 66 78 176 98 253 45z"/>
     </g>
 
-    <!-- маска луча: центр радара = (100,145) — ровно в пульсирующей точке -->
-<mask id="sweepMask" maskUnits="userSpaceOnUse">
-  <rect x="0" y="0" width="200" height="200" fill="black"/>
+    <!-- маска луча -->
+    <mask id="sweepMask" maskUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="200" height="200" fill="black"/>
 
-  <g transform="translate(100 145)">
+      <g transform="translate(100 145)">
+        <!-- хвост -->
+        <g>
+          <g class="beam" opacity="0.16" filter="url(#tailBlur)">
+            <path d="M0 0 L170 -60 A170 170 0 0 1 170 60 Z"/>
+            <path d="M0 0 L170 -60 A170 170 0 0 1 170 60 Z" transform="rotate(180)"/>
+          </g>
+          <animateTransform attributeName="transform" type="rotate"
+            from="0" to="360" dur="1.75s" repeatCount="indefinite"/>
+        </g>
 
-    <!-- ХВОСТ: медленнее (как было) -->
-    <g>
-      <g fill="white" opacity="0.16" filter="url(#tailBlur)">
-        <path d="M0 0 L170 -60 A170 170 0 0 1 170 60 Z"/>
-        <path d="M0 0 L170 -60 A170 170 0 0 1 170 60 Z" transform="rotate(180)"/>
+        <!-- ядро -->
+        <g>
+          <g class="beam" opacity="0.92">
+            <path d="M0 0 L190 -30 A190 190 0 0 1 190 30 Z"/>
+            <path d="M0 0 L190 -30 A190 190 0 0 1 190 30 Z" transform="rotate(180)"/>
+          </g>
+          <animateTransform attributeName="transform" type="rotate"
+            from="0" to="-360" dur="1.35s" repeatCount="indefinite"/>
+        </g>
       </g>
-
-      <animateTransform
-        attributeName="transform"
-        type="rotate"
-        from="0"
-        to="360"
-        dur="1.75s"
-        repeatCount="indefinite"
-      />
-    </g>
-
-    <!-- ЯДРО: чуть медленнее + в обратную сторону -->
-    <g>
-      <g fill="white" opacity="0.92">
-        <path d="M0 0 L190 -36 A190 190 0 0 1 190 30 Z"/>
-        <path d="M0 0 L190 -36 A190 190 0 0 1 190 30 Z" transform="rotate(180)"/>
-      </g>
-
-      <animateTransform
-        attributeName="transform"
-        type="rotate"
-        from="0"
-        to="-360"
-        dur="1.35s"
-        repeatCount="indefinite"
-      />
-    </g>
-
-  </g>
-</mask>
-
-
-
+    </mask>
   </defs>
 
   <style>
+    /* по умолчанию — СВЕТЛАЯ тема (белый фон => чёрная графика) */
+    navigate, svg {
+      --fg: #111;
+    }
+
+    /* тёмная тема */
+    @media (prefers-color-scheme: dark) {
+      svg { --fg: #fff; }
+    }
+
+    .logoFill { fill: var(--fg); }
+    .beam { fill: var(--fg); }
+
     .base {
       opacity: 0.20;
       filter: url(#glow);
@@ -90,7 +84,7 @@
     .hi { opacity: 0.95; filter: url(#glow); }
 
     .source {
-      fill: #fff;
+      fill: var(--fg);
       filter: url(#glow);
       animation: spark 1.35s ease-in-out infinite;
       transform-origin: 100px 145px;
@@ -113,11 +107,11 @@
     <use href="#adaosLogo"/>
   </g>
 
-  <!-- подсветка лучом (центр совпадает с пульсирующей точкой) -->
+  <!-- подсветка лучом -->
   <g mask="url(#sweepMask)" class="hi">
     <use href="#adaosLogo"/>
   </g>
 
-  <!-- пульсирующая точка = центр радара -->
+  <!-- пульсирующая точка -->
   <circle class="source" cx="100" cy="145" r="2.4"/>
 </svg>

@@ -149,13 +149,21 @@ export class HubWavSttProvider implements SttProvider {
         const detail = await resp.text().catch(() => '')
         throw new Error(`hub stt failed: ${resp.status} ${detail}`.trim())
       }
-      const res = await resp.json()
-      const text = String(res?.text || '').trim()
-      if (text) {
-        this.emit({ type: 'final', text })
-      } else {
-        this.emit({ type: 'error', message: 'Empty transcription result.' })
+      const raw = await resp.text().catch(() => '')
+      if (!raw.trim()) {
+        this.emit({ type: 'error', message: 'Empty STT response from hub.' })
+        return
       }
+      let res: any = undefined
+      try {
+        res = JSON.parse(raw)
+      } catch (err) {
+        this.emit({ type: 'error', message: 'Invalid STT response from hub.', detail: raw })
+        return
+      }
+      const text = String(res?.text || '').trim()
+      if (text) this.emit({ type: 'final', text })
+      else this.emit({ type: 'error', message: 'No speech recognized.' })
     } catch (err) {
       this.emit({ type: 'error', message: 'Hub STT request failed.', detail: err })
     } finally {
