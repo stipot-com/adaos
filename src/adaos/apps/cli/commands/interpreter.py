@@ -9,6 +9,8 @@ import typer
 from adaos.apps.bootstrap import get_ctx
 from adaos.services.interpreter.workspace import IntentMapping, InterpreterWorkspace
 from adaos.services.interpreter.trainer import RasaTrainer
+from adaos.services.interpreter.registry import sync_from_scenarios_and_skills
+from adaos.services.interpreter.runtime import RasaNLURuntime
 
 app = typer.Typer(help="Интерпретатор: конфигурация, датасеты и обучение.")
 intent_app = typer.Typer(help="Работа с интентами интерпретатора.")
@@ -20,6 +22,34 @@ app.add_typer(dataset_app, name="dataset")
 def _workspace() -> InterpreterWorkspace:
     ctx = get_ctx()
     return InterpreterWorkspace(ctx)
+
+
+@app.command("sync-nlu")
+def sync_nlu() -> None:
+    """
+    Синхронизировать NLU-данные из skill.yaml/skill metadata и scenario.json['nlu']
+    в рабочее пространство интерпретатора (config.yaml + datasets).
+    """
+    ctx = get_ctx()
+    summary = sync_from_scenarios_and_skills(ctx)
+    typer.echo(
+        f"NLU sync: skills_intents={summary['skills_intents']} "
+        f"scenario_intents={summary['scenario_intents']}"
+    )
+
+
+@app.command("parse")
+def parse(
+    text: str = typer.Argument(..., help="Текст, который нужно разобрать интерпретатором."),
+) -> None:
+    """
+    Прогоняет текст через последнюю обученную модель интерпретатора (Rasa)
+    и печатает результат распознавания (intent, confidence, slots).
+    """
+    ws = _workspace()
+    runtime = RasaNLURuntime(ws)
+    result = runtime.parse(text)
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 @app.command("status")
