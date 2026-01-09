@@ -35,6 +35,7 @@ class RouterService:
         self._stop_watch: Callable[[], None] | None = None
         self._rules: list[dict[str, Any]] = []
         self._subscribed = False
+        self._vlog = logging.getLogger("adaos.router.voice_chat")
 
     def _pick_target_node(self, desired_io: str, this_node: str) -> str:
         node = this_node
@@ -398,6 +399,16 @@ class RouterService:
                     messages = messages[-60:]
                 with ydoc.begin_transaction() as txn:
                     data_map.set(txn, "voice_chat", {"messages": messages})
+                try:
+                    self._vlog.debug(
+                        "voice_chat.append webspace=%s count=%d last_from=%s last_text=%r",
+                        webspace_id,
+                        len(messages),
+                        msg.get("from"),
+                        msg.get("text"),
+                    )
+                except Exception:
+                    pass
 
         async def _ensure_tts_state(webspace_id: str) -> None:
             async with async_get_ydoc(webspace_id) as ydoc:
@@ -446,7 +457,17 @@ class RouterService:
                 "text": text.strip(),
                 "ts": float(payload.get("ts") or time.time()),
             }
-            for ws in await _resolve_webspace_ids(payload):
+            targets = await _resolve_webspace_ids(payload)
+            try:
+                self._vlog.debug(
+                    "io.out.chat.append received text=%r from=%s targets=%s",
+                    msg["text"],
+                    msg["from"],
+                    targets,
+                )
+            except Exception:
+                pass
+            for ws in targets:
                 await _ensure_voice_chat_state(ws)
                 await _append_voice_chat_message(ws, msg)
 
@@ -525,7 +546,20 @@ class RouterService:
                             "text": text,
                             "ts": time.time(),
                             "_meta": meta,
-                        },
+                          },
+                      )
+                  )
+            except Exception:
+                pass
+            # Fire-and-forget NLU detection so that text commands can be
+            # mapped to scenario/skill actions via Rasa-based interpreter.
+            try:
+                self.bus.publish(
+                    Event(
+                        type="nlp.intent.detect",
+                        source="router.voice",
+                        ts=time.time(),
+                        payload={"text": text, "webspace_id": ws},
                     )
                 )
             except Exception:

@@ -1,41 +1,59 @@
 # src\adaos\services\bootstrap.py
 from __future__ import annotations
-import asyncio, socket, time, uuid, os, logging, traceback
-from typing import Any, List, Optional, Sequence
-from pathlib import Path
-import json as _json
-import base64
 
-from adaos.services.agent_context import AgentContext, get_ctx
-from adaos.sdk.data import bus
-from adaos.services.node_config import load_config, set_role as cfg_set_role, NodeConfig
-from adaos.services.eventbus import LocalEventBus
-from adaos.services.io_bus.local_bus import LocalIoBus
-from adaos.services.io_bus.http_fallback import HttpFallbackBus
+import asyncio
+import base64
+import json as _json
+import logging
+import os
+import socket
+import time
+import traceback
+import uuid
+from pathlib import Path
+from typing import Any, List, Optional, Sequence
+
+import nats as _nats
+
+from adaos.adapters.db.sqlite_schema import ensure_schema
+from adaos.adapters.scenarios.git_repo import GitScenarioRepository
+from adaos.adapters.skills.git_repo import GitSkillRepository
+from adaos.domain import Event
 from adaos.ports.heartbeat import HeartbeatPort
 from adaos.ports.skills_loader import SkillsLoaderPort
 from adaos.ports.subnet_registry import SubnetRegistryPort
-from adaos.adapters.db.sqlite_schema import ensure_schema
-from adaos.adapters.skills.git_repo import GitSkillRepository
-from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.sdk.core.decorators import register_subscriptions
-from adaos.services.scheduler import start_scheduler
+from adaos.sdk.data import bus
 from adaos.services import yjs as _y_store  # ensure YStore subscriptions are registered
-from adaos.services.scenario import webspace_runtime as _scenario_ws_runtime  # ensure core scenario subscriptions
-from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
-  from adaos.services import weather as _weather_services  # ensure weather observers
-  from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
-  from adaos.services.interpreter import registry as _interpreter_registry  # ensure interpreter NLU subscriptions
-  from adaos.services.interpreter import router_runtime as _interpreter_router  # ensure interpreter router subscriptions
-from adaos.integrations.telegram.sender import TelegramSender
-from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
+from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.chat_io import telemetry as tm
-import nats as _nats
-from adaos.domain import Event
+from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
+from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->NLU bridge
+from adaos.services.eventbus import LocalEventBus
+from adaos.services.interpreter import registry as _interpreter_registry  # ensure interpreter NLU subscriptions
+from adaos.services.interpreter import router_runtime as _interpreter_router  # ensure interpreter router subscriptions
+from adaos.services.io_bus.http_fallback import HttpFallbackBus
+from adaos.services.io_bus.local_bus import LocalIoBus
+from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.scheduler import start_scheduler
+from adaos.services.scenario import (
+    webspace_runtime as _scenario_ws_runtime,  # ensure core scenario subscriptions
+)
+from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
+from adaos.services import weather as _weather_services  # ensure weather observers
+from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
+from adaos.integrations.telegram.sender import TelegramSender
 
 
 class BootstrapService:
-    def __init__(self, ctx: AgentContext, *, heartbeat: HeartbeatPort, skills_loader: SkillsLoaderPort, subnet_registry: SubnetRegistryPort) -> None:
+    def __init__(
+        self,
+        ctx: AgentContext,
+        *,
+        heartbeat: HeartbeatPort,
+        skills_loader: SkillsLoaderPort,
+        subnet_registry: SubnetRegistryPort,
+    ) -> None:
         self.ctx = ctx
         self.heartbeat = heartbeat
         self.skills_loader = skills_loader
@@ -142,6 +160,11 @@ class BootstrapService:
         await io_bus.connect()
         print("[bootstrap] IO bus: LocalEventBus")
         self._io_bus = io_bus
+        # Attach chat IO -> NLU bridge (e.g. Telegram text -> nlp.intent.detect)
+        try:
+            register_chat_nlu_bridge(core_bus)
+        except Exception:
+            self._log.warning("failed to register chat_io NLU bridge", exc_info=True)
         # expose in app.state
         try:
             setattr(app.state, "bus", io_bus)

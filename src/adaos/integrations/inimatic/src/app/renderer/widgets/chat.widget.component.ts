@@ -146,7 +146,12 @@ export class ChatWidgetComponent implements OnInit, OnDestroy {
     const stream = this.data.load<any>(this.widget?.dataSource)
     if (stream) {
       this.dataSub = stream.subscribe((value) => {
-        this.messages = coerceChatState(value).messages
+        const next = coerceChatState(value).messages
+        try {
+          // eslint-disable-next-line no-console
+          console.log('[ChatWidget] update', this.widget?.id, 'len=', next.length, next)
+        } catch {}
+        this.messages = next
         this.maybeSpeakNew()
         setTimeout(() => {
           try {

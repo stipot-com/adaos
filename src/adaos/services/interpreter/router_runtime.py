@@ -9,12 +9,15 @@ Listens for ``nlp.intent.detect`` commands carrying raw user text and emits
 """
 
 from typing import Any, Dict, Mapping
+import logging
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.interpreter.workspace import InterpreterWorkspace
 from adaos.services.interpreter.runtime import RasaNLURuntime
+
+_log = logging.getLogger("adaos.interpreter.router")
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -64,8 +67,8 @@ async def _on_nlp_intent_detect(evt: Any) -> None:
     confidence = intent_block.get("confidence") if isinstance(intent_block, dict) else None
 
     if not isinstance(intent_name, str) or not intent_name.strip():
-        # No confident intent – for MVP we silently ignore; later we can emit
-        # nlp.intent.unknown with raw result for LLM-teacher flows.
+        # No confident intent – for MVP log and ignore; later emit nlp.intent.unknown.
+        _log.debug("nlp.intent.detect: no intent for text=%r result=%r", text, result)
         return
 
     # Simple slots extraction from entities: name -> value
@@ -83,6 +86,15 @@ async def _on_nlp_intent_detect(evt: Any) -> None:
 
     webspace_id = _resolve_webspace_id(payload)
 
+    _log.debug(
+        "nlp.intent.detected intent=%s confidence=%s webspace=%s slots=%s text=%r",
+        intent_name,
+        confidence,
+        webspace_id,
+        slots,
+        text,
+    )
+
     detected_payload: Dict[str, Any] = {
         "intent": intent_name,
         "confidence": float(confidence) if isinstance(confidence, (int, float)) else None,
@@ -96,4 +108,3 @@ async def _on_nlp_intent_detect(evt: Any) -> None:
     detected_payload["_raw"] = result
 
     bus_emit(ctx.bus, "nlp.intent.detected", detected_payload, source="interpreter.router")
-
