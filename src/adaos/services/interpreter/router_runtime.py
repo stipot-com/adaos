@@ -9,6 +9,7 @@ Listens for ``nlp.intent.detect`` commands carrying raw user text and emits
 """
 
 from typing import Any, Dict, Mapping
+import asyncio
 import logging
 
 from adaos.sdk.core.decorators import subscribe
@@ -60,7 +61,15 @@ async def _on_nlp_intent_detect(evt: Any) -> None:
     ctx = get_ctx()
     ws = InterpreterWorkspace(ctx)
     runtime = RasaNLURuntime(ws)
-    result = runtime.parse(text)
+
+    # Run heavy Rasa parsing in a worker thread to avoid blocking the
+    # main event loop (which also serves YJS websockets / HTTP).
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, runtime.parse, text)
+    except Exception:
+        _log.warning("nlp.intent.detect failed text=%r", text, exc_info=True)
+        return
 
     intent_block = result.get("intent") or {}
     intent_name = intent_block.get("name") if isinstance(intent_block, dict) else None
