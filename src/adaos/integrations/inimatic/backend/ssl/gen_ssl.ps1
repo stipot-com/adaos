@@ -1,6 +1,6 @@
 # ssh-keygen -t ed25519 -C "adaos-root" -f .\adaos_root
-Push-Location 'C:\git\MUIV\adaos\src\adaos\integrations\inimatic\backend\ssl'
-# openssl genrsa -out ca.key 2048
+Push-Location $PSScriptRoot
+openssl genrsa -out ca.key 2048
 @"
 [ req ]
 distinguished_name = dn
