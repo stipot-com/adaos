@@ -43,9 +43,36 @@
       "minProperties": 1,
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Skill runtime kind: in-process module handlers or an external service managed by the platform.",
+          "enum": ["module", "service"],
+          "default": "module"
+        },
         "python": {
           "type": "string",
           "description": "Required Python version (for example \"3.11\")."
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment installation strategy for the skill runtime.",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["global", "venv"],
+              "default": "global",
+              "description": "Where to install Python dependencies: global node venv or a per-skill venv."
+            },
+            "python": {
+              "type": "string",
+              "description": "Python selector for per-skill venv creation (for example \"3.10\" for `py -3.10`)."
+            },
+            "venv_dir": {
+              "type": "string",
+              "description": "Optional custom venv path (default: state/services/<skill>/venv)."
+            }
+          }
         },
         "node": {
           "type": "string",
@@ -58,6 +85,35 @@
         "bash": {
           "type": "string",
           "description": "Shell interpreter for Bash-style skills."
+        }
+      }
+    },
+
+    "service": {
+      "description": "Service skill configuration (only for runtime.kind=service).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string", "default": "127.0.0.1" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Command argv to start the service process. If the first item is omitted, the platform prepends the selected Python interpreter."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory for the service process (relative to skill root by default)."
+        },
+        "healthcheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "enum": ["http"], "default": "http" },
+            "path": { "type": "string", "default": "/health" },
+            "timeout_ms": { "type": "integer", "minimum": 100, "default": 1000 }
+          }
         }
       }
     },

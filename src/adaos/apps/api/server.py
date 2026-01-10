@@ -17,6 +17,7 @@ from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
+from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
@@ -330,6 +331,55 @@ async def status():
             "build_date": BUILD_INFO.build_date,
         },
     }
+
+
+@app.get("/api/services", dependencies=[Depends(require_token)])
+async def list_services(check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    names = supervisor.list()
+    return {
+        "ok": True,
+        "services": [supervisor.status(name, check_health=check_health) for name in names],
+    }
+
+
+@app.get("/api/services/{name}", dependencies=[Depends(require_token)])
+async def get_service_status(name: str, check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name, check_health=check_health)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "service": status}
+
+
+@app.post("/api/services/{name}/start", dependencies=[Depends(require_token)])
+async def start_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.start(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/stop", dependencies=[Depends(require_token)])
+async def stop_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    # stop is idempotent; 404 only if not configured at all
+    if not supervisor.status(name):
+        raise HTTPException(status_code=404, detail="service not found")
+    await supervisor.stop(name)
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/restart", dependencies=[Depends(require_token)])
+async def restart_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.restart(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
 
 
 class YjsReloadRequest(BaseModel):

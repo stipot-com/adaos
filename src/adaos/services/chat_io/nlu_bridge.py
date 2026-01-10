@@ -4,7 +4,7 @@ from __future__ import annotations
 Chat IO -> NLU bridge.
 
 This helper subscribes to generic io.input envelopes (e.g. from Telegram)
-and, for text messages, publishes ``nlp.intent.detect`` so that the
+and, for text messages, publishes ``nlp.intent.detect.request`` so that the
 interpreter runtime (Rasa) can resolve intents and the NLU dispatcher can
 map them to scenario/skill actions.
 """
@@ -60,7 +60,7 @@ def register_chat_nlu_bridge(bus: LocalEventBus | None = None) -> None:
                 payload["webspace_id"] = webspace_id
             bus.publish(
                 Event(
-                    type="nlp.intent.detect",
+                    type="nlp.intent.detect.request",
                     source="chat_io",
                     ts=evt.ts,
                     payload=payload,
@@ -72,4 +72,3 @@ def register_chat_nlu_bridge(bus: LocalEventBus | None = None) -> None:
 
     # Subscribe to the tg.input.<hub_id> subject emitted by bootstrap.
     bus.subscribe(f"tg.input.{ctx.config.subnet_id}", _on_io_input)
-

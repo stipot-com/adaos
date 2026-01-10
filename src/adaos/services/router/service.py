@@ -25,6 +25,7 @@ from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.skills.runtime_runner import execute_tool
+from adaos.sdk.io.context import io_meta
 
 
 class RouterService:
@@ -501,12 +502,14 @@ class RouterService:
             prev = ctx.skill_ctx.get()
             try:
                 ctx.skill_ctx.set("voice_chat_skill", skill_dir)
-                return execute_tool(
-                    skill_dir,
-                    module="handlers.main",
-                    attr="handle_text",
-                    payload={"text": text, "_meta": meta},
-                )
+                # Ensure SDK io.out helpers (chat_append/say) include routing meta.
+                with io_meta(meta):
+                    return execute_tool(
+                        skill_dir,
+                        module="handlers.main",
+                        attr="handle_text",
+                        payload={"text": text, "_meta": meta},
+                    )
             finally:
                 if prev is None:
                     try:
@@ -521,14 +524,29 @@ class RouterService:
 
         async def _on_voice_user(ev: Event) -> None:
             payload = ev.payload or {}
-            target_webspaces = await _resolve_webspace_ids(payload)
+            try:
+                target_webspaces = await _resolve_webspace_ids(payload)
+            except Exception:
+                target_webspaces = []
             ws = target_webspaces[0] if target_webspaces else "default"
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
             text = text.strip()
 
-            await _ensure_voice_chat_state(ws)
+            try:
+                self._vlog.debug("voice.chat.user received webspace=%s text=%r", ws, text)
+            except Exception:
+                pass
+
+            try:
+                await _ensure_voice_chat_state(ws)
+            except Exception:
+                try:
+                    logging.getLogger("adaos.router").warning("voice.chat.user: failed to ensure voice_chat state", exc_info=True)
+                except Exception:
+                    pass
+                return
 
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
             meta = {**meta, "webspace_id": ws}
@@ -552,14 +570,18 @@ class RouterService:
             except Exception:
                 pass
             # Fire-and-forget NLU detection so that text commands can be
-            # mapped to scenario/skill actions via Rasa-based interpreter.
+            # mapped to scenario/skill actions via an external interpreter.
             try:
                 self.bus.publish(
                     Event(
-                        type="nlp.intent.detect",
+                        type="nlp.intent.detect.request",
                         source="router.voice",
                         ts=time.time(),
-                        payload={"text": text, "webspace_id": ws},
+                        payload={
+                            "text": text,
+                            "webspace_id": ws,
+                            "request_id": meta.get("message_id") or meta.get("id") or _make_id("nlu"),
+                        },
                     )
                 )
             except Exception:

@@ -30,8 +30,6 @@ from adaos.services.chat_io import telemetry as tm
 from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
 from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->NLU bridge
 from adaos.services.eventbus import LocalEventBus
-from adaos.services.interpreter import registry as _interpreter_registry  # ensure interpreter NLU subscriptions
-from adaos.services.interpreter import router_runtime as _interpreter_router  # ensure interpreter router subscriptions
 from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
@@ -42,6 +40,7 @@ from adaos.services.scenario import (
 from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
 from adaos.services import weather as _weather_services  # ensure weather observers
 from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
+from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.integrations.telegram.sender import TelegramSender
 
 
@@ -160,7 +159,7 @@ class BootstrapService:
         await io_bus.connect()
         print("[bootstrap] IO bus: LocalEventBus")
         self._io_bus = io_bus
-        # Attach chat IO -> NLU bridge (e.g. Telegram text -> nlp.intent.detect)
+        # Attach chat IO -> NLU bridge (e.g. Telegram text -> nlp.intent.detect.request)
         try:
             register_chat_nlu_bridge(core_bus)
         except Exception:
@@ -172,6 +171,11 @@ class BootstrapService:
             pass
         await bus.emit("sys.boot.start", {"role": conf.role, "node_id": conf.node_id, "subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
         await self.skills_loader.import_all_handlers(self.ctx.paths.skills_dir())
+        # Start service-type skills (external processes).
+        try:
+            await get_service_supervisor().start_all()
+        except Exception:
+            self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
         await bus.emit("sys.bus.ready", {}, source="lifecycle", actor="system")
         # Start in-process scheduler after the bus is ready.
@@ -1382,6 +1386,10 @@ class BootstrapService:
 
     async def shutdown(self) -> None:
         await bus.emit("sys.stopping", {}, source="lifecycle", actor="system")
+        try:
+            await get_service_supervisor().shutdown()
+        except Exception:
+            pass
         for t in list(self._boot_tasks):
             try:
                 t.cancel()
