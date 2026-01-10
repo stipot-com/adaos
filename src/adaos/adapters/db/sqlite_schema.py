@@ -43,6 +43,22 @@ _SCHEMA = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS scenario_runs (
+        run_id TEXT PRIMARY KEY,
+        scenario_id TEXT NOT NULL,
+        ctx TEXT NOT NULL,
+        priority TEXT NOT NULL CHECK(priority IN ('low', 'normal', 'high')),
+        state TEXT NOT NULL DEFAULT 'pending' 
+            CHECK(state IN ('pending', 'running', 'done', 'failed', 'cancelled', 'timeout')),
+        current_step INT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        cancel_token BOOLEAN NOT NULL DEFAULT 0,
+        trace_id TEXT
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS subnets (
         subnet_id TEXT PRIMARY KEY,
         owner_id TEXT,
