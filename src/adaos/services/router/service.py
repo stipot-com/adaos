@@ -69,6 +69,45 @@ class RouterService:
         text = (payload or {}).get("text")
         if not isinstance(text, str) or not text:
             return
+        meta = payload.get("_meta") if isinstance(payload, dict) else None
+        meta = meta if isinstance(meta, dict) else {}
+
+        # If the notification has an explicit UI route, mirror it into that route.
+        # This keeps skills UI-agnostic: they can emit ui.notify and the router
+        # decides how to deliver the message to chat/TTS.
+        try:
+            route_id = meta.get("route_id") or meta.get("route")
+            if isinstance(route_id, str) and route_id.strip():
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": text,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+                self.bus.publish(
+                    Event(
+                        type="io.out.say",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "text": text,
+                            "ts": time.time(),
+                            "lang": str(meta.get("lang") or "ru-RU"),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+        except Exception:
+            pass
 
         conf = get_ctx().config
         this_node = conf.node_id
@@ -449,6 +488,9 @@ class RouterService:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
                 return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            if isinstance(meta, dict) and meta.get("skip_voice_chat") is True:
+                return
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
@@ -538,6 +580,10 @@ class RouterService:
                 self._vlog.debug("voice.chat.user received webspace=%s text=%r", ws, text)
             except Exception:
                 pass
+            try:
+                logging.getLogger("adaos.router.voice_chat").debug("voice.chat.user -> append+nlp webspace=%s", ws)
+            except Exception:
+                pass
 
             try:
                 await _ensure_voice_chat_state(ws)
@@ -552,6 +598,17 @@ class RouterService:
             meta = {**meta, "webspace_id": ws}
             if len(target_webspaces) > 1:
                 meta["webspace_ids"] = list(target_webspaces)
+            # Ensure voice chat history is updated even if io.out.chat.append routing breaks.
+            msg = {
+                "id": _make_id("m"),
+                "from": "user",
+                "text": text,
+                "ts": time.time(),
+            }
+            try:
+                await _append_voice_chat_message(ws, msg)
+            except Exception:
+                pass
             try:
                 self.bus.publish(
                     Event(
@@ -559,11 +616,11 @@ class RouterService:
                         source="router",
                         ts=time.time(),
                         payload={
-                            "id": _make_id("m"),
-                            "from": "user",
-                            "text": text,
-                            "ts": time.time(),
-                            "_meta": meta,
+                            "id": msg["id"],
+                            "from": msg["from"],
+                            "text": msg["text"],
+                            "ts": msg["ts"],
+                            "_meta": {**meta, "route_id": "voice_chat", "skip_voice_chat": True},
                           },
                       )
                   )
@@ -581,6 +638,7 @@ class RouterService:
                             "text": text,
                             "webspace_id": ws,
                             "request_id": meta.get("message_id") or meta.get("id") or _make_id("nlu"),
+                            "_meta": {**meta, "route_id": "voice_chat"},
                         },
                     )
                 )
@@ -590,30 +648,50 @@ class RouterService:
                 await _ensure_tts_state(ws)
             except Exception:
                 pass
+            # NLU pipeline + dispatcher + skills are responsible for producing
+            # responses via io.out.chat.append / io.out.say.
+
+        async def _on_nlp_intent_not_obtained(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            route_id = meta.get("route_id") or meta.get("route")
+            if not isinstance(route_id, str) or not route_id.strip():
+                return
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                text = ""
+            reason = payload.get("reason")
+            msg_text = "Я пока не понял запрос."
+            if isinstance(reason, str) and reason:
+                msg_text = f"Я пока не понял запрос. ({reason})"
+            if text:
+                msg_text = f"{msg_text} Скажи: «Какая погода в Москве?»"
             try:
-                await asyncio.to_thread(_call_voice_chat_tool, text, meta)
-            except Exception as exc:
-                # Do not crash the router on skill/tool failures; surface the error in chat.
-                try:
-                    msg = {
-                        "id": _make_id("err"),
-                        "from": "hub",
-                        "text": f"Ошибка обработки: {exc}",
-                        "ts": time.time(),
-                    }
-                    msg["text"] = f"Ошибка обработки: {exc}"
-                    await _append_voice_chat_message(ws, msg)
-                except Exception:
-                    pass
-                try:
-                    logging.getLogger("adaos.router").warning("voice.chat.user failed", exc_info=True)
-                except Exception:
-                    pass
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router.nlu",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": msg_text,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
 
         self.bus.subscribe("voice.chat.open", _on_voice_open)
         self.bus.subscribe("voice.chat.user", _on_voice_user)
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
+        self.bus.subscribe("nlp.intent.not_obtained", _on_nlp_intent_not_obtained)
 
         # Watch rules file
         def _reload(rules: list[dict]):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, Mapping
 
 from adaos.sdk.core.decorators import subscribe
@@ -12,6 +13,7 @@ from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.dispatcher")
+_CONFIDENCE_MIN = float(os.getenv("ADAOS_NLU_CONFIDENCE_MIN", "0.7") or "0.7")
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -75,6 +77,44 @@ def _load_scenario_nlu(scenario_id: str) -> Dict[str, Any]:
     return nlu if isinstance(nlu, dict) else {}
 
 
+def _emit_not_obtained(
+    ctx: AgentContext,
+    *,
+    webspace_id: str,
+    scenario_id: str,
+    payload: Mapping[str, Any],
+    reason: str,
+) -> None:
+    try:
+        out: Dict[str, Any] = {
+            "reason": reason,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+        }
+        meta = payload.get("_meta")
+        if isinstance(meta, Mapping):
+            out["_meta"] = dict(meta)
+        if isinstance(payload.get("text"), str) and payload.get("text"):
+            out["text"] = payload.get("text")
+        if isinstance(payload.get("request_id"), str) and payload.get("request_id"):
+            out["request_id"] = payload.get("request_id")
+        if isinstance(payload.get("via"), str) and payload.get("via"):
+            out["via"] = payload.get("via")
+        if isinstance(payload.get("intent"), str) and payload.get("intent"):
+            out["intent"] = payload.get("intent")
+        if isinstance(payload.get("confidence"), (int, float)):
+            out["confidence"] = float(payload.get("confidence"))
+        raw = payload.get("_raw")
+        if isinstance(raw, Mapping):
+            out["_raw"] = raw
+            ranking = raw.get("intent_ranking")
+            if isinstance(ranking, list):
+                out["candidates"] = ranking[:5]
+        bus_emit(ctx.bus, "nlp.intent.not_obtained", out, source="nlu.dispatcher")
+    except Exception:
+        _log.debug("failed to emit nlp.intent.not_obtained", exc_info=True)
+
+
 def _resolve_template(value: Any, *, slots: Mapping[str, Any], ctx_vars: Mapping[str, Any], raw: Mapping[str, Any]) -> Any:
     """
     Very small template helper for params:
@@ -125,6 +165,10 @@ def _build_event_payload(
 
     # Minimal _meta for webspace-aware skills.
     meta = dict(resolved.get("_meta") or {})
+    raw_meta = raw.get("_meta")
+    if isinstance(raw_meta, Mapping):
+        for k, v in raw_meta.items():
+            meta.setdefault(k, v)
     if ctx_vars.get("webspace_id"):
         meta.setdefault("webspace_id", ctx_vars["webspace_id"])
     if ctx_vars.get("scenario_id"):
@@ -211,20 +255,35 @@ async def _on_nlp_intent_detected(evt: Any) -> None:
     ctx = get_ctx()
     webspace_id = _resolve_webspace_id(payload)
     scenario_id = await _resolve_scenario_id(ctx, webspace_id)
+
+    confidence = payload.get("confidence")
+    if isinstance(confidence, (int, float)) and float(confidence) < _CONFIDENCE_MIN:
+        _emit_not_obtained(
+            ctx,
+            webspace_id=webspace_id,
+            scenario_id=scenario_id,
+            payload=payload,
+            reason=f"low_confidence<{_CONFIDENCE_MIN}",
+        )
+        return
+
     nlu_cfg = _load_scenario_nlu(scenario_id)
     intents_cfg = nlu_cfg.get("intents") if isinstance(nlu_cfg, dict) else None
     if not isinstance(intents_cfg, dict):
         _log.debug("nlu.intent %s: scenario=%s has no nlu.intents section", intent, scenario_id)
+        _emit_not_obtained(ctx, webspace_id=webspace_id, scenario_id=scenario_id, payload=payload, reason="no_intents_config")
         return
 
     intent_cfg = intents_cfg.get(intent)
     if not isinstance(intent_cfg, Mapping):
         _log.debug("nlu.intent %s: no mapping in scenario=%s", intent, scenario_id)
+        _emit_not_obtained(ctx, webspace_id=webspace_id, scenario_id=scenario_id, payload=payload, reason="no_intent_mapping")
         return
 
     actions_cfg = intent_cfg.get("actions") or []
     if not isinstance(actions_cfg, list) or not actions_cfg:
         _log.debug("nlu.intent %s: scenario=%s has no actions", intent, scenario_id)
+        _emit_not_obtained(ctx, webspace_id=webspace_id, scenario_id=scenario_id, payload=payload, reason="no_actions")
         return
 
     for action in actions_cfg:
@@ -238,4 +297,3 @@ async def _on_nlp_intent_detected(evt: Any) -> None:
                 slots=slots,
                 raw=payload,
             )
-

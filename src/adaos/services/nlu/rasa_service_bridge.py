@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, Mapping
 from urllib.request import Request, urlopen
 
@@ -13,6 +14,8 @@ from adaos.services.skill.service_supervisor import get_service_supervisor
 
 _log = logging.getLogger("adaos.nlu.rasa")
 _SEMAPHORE = asyncio.Semaphore(2)
+_PARSE_TIMEOUT_S = float(os.getenv("ADAOS_NLU_RASA_PARSE_TIMEOUT_S", "8.0") or "8.0")
+_START_LOCK = asyncio.Lock()
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -36,7 +39,26 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _http_post_json(url: str, payload: dict, *, timeout_ms: int = 5000) -> dict:
+def _emit_not_obtained(
+    *,
+    ctx: Any,
+    text: str,
+    webspace_id: str | None,
+    request_id: str | None,
+    meta: Mapping[str, Any],
+    reason: str,
+) -> None:
+    out: Dict[str, Any] = {"reason": reason, "text": text, "via": "rasa"}
+    if webspace_id:
+        out["webspace_id"] = webspace_id
+    if request_id:
+        out["request_id"] = request_id
+    if isinstance(meta, Mapping) and meta:
+        out["_meta"] = dict(meta)
+    bus_emit(ctx.bus, "nlp.intent.not_obtained", out, source="nlu.rasa")
+
+
+def _http_post_json(url: str, payload: dict, *, timeout_ms: int) -> dict:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -45,39 +67,72 @@ def _http_post_json(url: str, payload: dict, *, timeout_ms: int = 5000) -> dict:
         return json.loads(raw)
 
 
-async def _parse_and_emit(*, text: str, webspace_id: str | None, request_id: str | None = None) -> None:
+async def _parse_and_emit(
+    *,
+    text: str,
+    webspace_id: str | None,
+    request_id: str | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> None:
     ctx = get_ctx()
     supervisor = get_service_supervisor()
+    meta = meta if isinstance(meta, Mapping) else {}
+
+    # Best-effort: ensure service is running (and venv exists) before calling /parse.
+    try:
+        async with _START_LOCK:
+            await supervisor.start("rasa_nlu_service_skill")
+    except KeyError:
+        _log.debug("rasa service is not configured/installed")
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_not_installed")
+        return
+    except Exception:
+        _log.warning("failed to start rasa_nlu_service_skill service", exc_info=True)
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_start_failed")
+        return
+
     base_url = supervisor.resolve_base_url("rasa_nlu_service_skill")
     if not base_url:
-        _log.debug("rasa service is not configured/installed")
+        _log.debug("rasa service base_url unresolved")
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_base_url_unresolved")
         return
 
     loop = asyncio.get_running_loop()
     try:
         async with _SEMAPHORE:
-            future = loop.run_in_executor(None, _http_post_json, f"{base_url}/parse", {"text": text})
-            data = await asyncio.wait_for(future, timeout=2.0)
+            future = loop.run_in_executor(
+                None,
+                _http_post_json,
+                f"{base_url}/parse",
+                {"text": text},
+                int(_PARSE_TIMEOUT_S * 1000),
+            )
+            data = await asyncio.wait_for(future, timeout=_PARSE_TIMEOUT_S)
     except TimeoutError:
-        _log.debug("rasa service parse timed out text=%r", text)
+        _log.warning("rasa service parse timed out text=%r timeout_s=%.1f", text, _PARSE_TIMEOUT_S)
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_timeout")
         return
     except Exception:
         _log.warning("rasa service parse failed text=%r", text, exc_info=True)
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_failed")
         return
 
     if not isinstance(data, dict) or not data.get("ok"):
         _log.debug("rasa parse returned not-ok: %r", data)
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_not_ok")
         return
 
     result = data.get("result") or {}
     if not isinstance(result, dict):
         _log.debug("rasa parse returned invalid result: %r", result)
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_invalid_result")
         return
 
     intent_block = result.get("intent") or {}
     intent_name = intent_block.get("name") if isinstance(intent_block, dict) else None
     confidence = intent_block.get("confidence") if isinstance(intent_block, dict) else None
     if not isinstance(intent_name, str) or not intent_name.strip():
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_no_intent")
         return
 
     slots: Dict[str, Any] = {}
@@ -97,6 +152,7 @@ async def _parse_and_emit(*, text: str, webspace_id: str | None, request_id: str
         "slots": slots,
         "text": text,
         "_raw": result,
+        "_meta": dict(meta) if isinstance(meta, Mapping) else {},
     }
     if webspace_id:
         detected_payload["webspace_id"] = webspace_id
@@ -117,7 +173,8 @@ async def _on_nlp_intent_detect(evt: Any) -> None:
 
     webspace_id = _resolve_webspace_id(payload)
     request_id = payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
     asyncio.create_task(
-        _parse_and_emit(text=text, webspace_id=webspace_id, request_id=request_id),
+        _parse_and_emit(text=text, webspace_id=webspace_id, request_id=request_id, meta=meta),
         name=f"adaos-nlu-rasa-parse:{request_id or 'noid'}",
     )
