@@ -6,6 +6,7 @@ export type WidgetType =
   | 'feedback.log'
   | 'feedback.statusBar'
   | 'ui.chat'
+  | 'ui.nluTeacher'
   | 'ui.voiceInput'
   | 'ui.list'
   | 'ui.form'

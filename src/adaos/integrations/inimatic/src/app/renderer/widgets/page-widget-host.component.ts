@@ -29,6 +29,7 @@ import { ChatWidgetComponent } from './chat.widget.component'
 import { VoiceInputWidgetComponent } from './voice-input.widget.component'
 import { ListWidgetComponent } from './list.widget.component'
 import { FormWidgetComponent } from './form.widget.component'
+import { NluTeacherWidgetComponent } from './nlu-teacher.widget.component'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'collection.grid': CollectionGridWidgetComponent,
@@ -39,6 +40,7 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'feedback.log': MetricTileWidgetComponent,
   'feedback.statusBar': StatusBarWidgetComponent,
   'ui.chat': ChatWidgetComponent,
+  'ui.nluTeacher': NluTeacherWidgetComponent,
   'ui.voiceInput': VoiceInputWidgetComponent,
   'ui.list': ListWidgetComponent,
   'ui.form': FormWidgetComponent,

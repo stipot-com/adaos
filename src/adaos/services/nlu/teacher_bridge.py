@@ -39,14 +39,16 @@ async def _append_teacher_item(webspace_id: str, item: dict) -> None:
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         current = data_map.get("nlu_teacher")
+        teacher: dict = dict(current) if isinstance(current, dict) else {}
         items: list = []
-        if isinstance(current, dict) and isinstance(current.get("items"), list):
-            items = list(current.get("items") or [])
+        if isinstance(teacher.get("items"), list):
+            items = list(teacher.get("items") or [])
         items.append(item)
         if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
             items = items[-_MAX_ITEMS:]
         with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", {"items": items})
+            teacher["items"] = items
+            data_map.set(txn, "nlu_teacher", teacher)
 
 
 @subscribe("nlp.intent.not_obtained")
@@ -89,4 +91,3 @@ async def _on_not_obtained(evt: Any) -> None:
         {"webspace_id": webspace_id, "request": item},
         source="nlu.teacher",
     )
-

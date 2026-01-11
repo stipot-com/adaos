@@ -12,10 +12,12 @@ adaos.egg-info/
 .adaos/route_rules.yaml
 .adaos/state/
 .adaos/skills/.runtime/
+.adaos/skills/
 .adaos/keys/
 .adaos/dev/
 .adaos/cache/
 .adaos/workspace
+.adaos/workspace/skills/**/.skill_env.json
 src/adaos/integrations/inimatic/backend/ssl/adaos_root
 src/adaos/integrations/inimatic/backend/ssl/adaos_root.pub
 src/adaos/integrations/inimatic/backend/ssl/ca.crt

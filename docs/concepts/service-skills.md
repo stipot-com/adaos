@@ -83,13 +83,13 @@ When an issue is recorded:
 - it is persisted to `state/services/<skill>/issues.json`
 - event is emitted: `skill.service.issue { skill, issue }`
 
-### Doctor requests and reports (in-process)
+### Doctor requests and reports
 
 If `service.self_managed.doctor.enabled: true`, the supervisor emits:
 - `skill.service.doctor.request` (with service status + log tail).
 
-AdaOS also includes an in-process doctor consumer:
-- `src/adaos/services/skill/service_doctor_runtime.py`
+Doctor consumer is implemented as a skill (so it can evolve independently and later plug LLM logic):
+- `.adaos/workspace/skills/service_doctor_skill`
 
 It turns `doctor.request` into persisted reports:
 - `state/services/<skill>/doctor_reports.json`
