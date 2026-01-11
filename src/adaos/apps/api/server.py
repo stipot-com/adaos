@@ -2,8 +2,10 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from pydantic import BaseModel, Field
+import json
 import platform, time, os
 
 from adaos.apps.api.auth import require_token
@@ -421,6 +423,59 @@ async def service_self_heal(name: str, body: ServiceSelfHealRequest) -> dict:
     except KeyError:
         raise HTTPException(status_code=404, detail="service not found")
     return {"ok": True, "result": result}
+
+
+@app.get("/api/services/{name}/doctor/requests", dependencies=[Depends(require_token)])
+async def get_service_doctor_requests(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        items = supervisor.doctor_requests(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "requests": items}
+
+
+class ServiceDoctorRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/doctor/request", dependencies=[Depends(require_token)])
+async def request_service_doctor(name: str, body: ServiceDoctorRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.request_doctor(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "request": result}
+
+
+@app.get("/api/services/{name}/doctor/reports", dependencies=[Depends(require_token)])
+async def get_service_doctor_reports(name: str) -> dict:
+    """
+    Return persisted doctor reports produced by the in-process doctor consumer.
+
+    Reports are stored at: state/services/<skill>/doctor_reports.json
+    """
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+
+    # Reuse supervisor state dir logic indirectly via ctx paths.
+    ctx = get_ctx()
+    state_raw = ctx.paths.state_dir()
+    state_dir = Path(state_raw() if callable(state_raw) else state_raw)
+    path = state_dir / "services" / name / "doctor_reports.json"
+    if not path.exists():
+        return {"ok": True, "reports": []}
+    try:
+        reports = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(reports, list):
+            reports = []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read doctor reports: {exc}") from exc
+    return {"ok": True, "reports": reports}
 
 
 class YjsReloadRequest(BaseModel):

@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Any, Dict, Mapping
+
+from adaos.sdk.core.decorators import subscribe
+from adaos.services.agent_context import get_ctx
+from adaos.services.eventbus import emit as bus_emit
+from adaos.services.yjs.webspace import default_webspace_id
+
+_log = logging.getLogger("adaos.nlu.teacher")
+
+_MAX_ITEMS = int(os.getenv("ADAOS_NLU_TEACHER_MAX", "200") or "200")
+_ENABLED = os.getenv("ADAOS_NLU_TEACHER") == "1"
+
+
+def _payload(evt: Any) -> Dict[str, Any]:
+    if isinstance(evt, dict):
+        return evt
+    if hasattr(evt, "payload"):
+        data = getattr(evt, "payload")
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    return default_webspace_id()
+
+
+async def _append_teacher_item(webspace_id: str, item: dict) -> None:
+    from adaos.services.yjs.doc import async_get_ydoc
+
+    async with async_get_ydoc(webspace_id) as ydoc:
+        data_map = ydoc.get_map("data")
+        current = data_map.get("nlu_teacher")
+        items: list = []
+        if isinstance(current, dict) and isinstance(current.get("items"), list):
+            items = list(current.get("items") or [])
+        items.append(item)
+        if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
+            items = items[-_MAX_ITEMS:]
+        with ydoc.begin_transaction() as txn:
+            data_map.set(txn, "nlu_teacher", {"items": items})
+
+
+@subscribe("nlp.intent.not_obtained")
+async def _on_not_obtained(evt: Any) -> None:
+    if not _ENABLED:
+        return
+
+    ctx = get_ctx()
+    payload = _payload(evt)
+    text = payload.get("text") or payload.get("utterance")
+    if not isinstance(text, str) or not text.strip():
+        return
+    text = text.strip()
+
+    webspace_id = _resolve_webspace_id(payload)
+    request_id = payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
+    reason = payload.get("reason") if isinstance(payload.get("reason"), str) else "unknown"
+    via = payload.get("via") if isinstance(payload.get("via"), str) else None
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+
+    item = {
+        "id": f"teach.{int(time.time()*1000)}",
+        "ts": time.time(),
+        "text": text,
+        "reason": reason,
+        "via": via,
+        "request_id": request_id,
+        "_meta": dict(meta),
+    }
+
+    try:
+        await _append_teacher_item(webspace_id, item)
+    except Exception:
+        _log.debug("failed to append nlu_teacher item webspace=%s", webspace_id, exc_info=True)
+
+    # Emit a single, generic event to be consumed by an external teacher (LLM).
+    bus_emit(
+        ctx.bus,
+        "nlp.teacher.request",
+        {"webspace_id": webspace_id, "request": item},
+        source="nlu.teacher",
+    )
+

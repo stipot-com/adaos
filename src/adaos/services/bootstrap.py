@@ -41,6 +41,7 @@ from adaos.services.scenario import workflow_runtime as _scenario_workflow_runti
 from adaos.services import weather as _weather_services  # ensure weather observers
 from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
 from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
+from adaos.services.skill import service_doctor_runtime as _service_doctor_runtime  # ensure service doctor subscriptions
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.integrations.telegram.sender import TelegramSender
 

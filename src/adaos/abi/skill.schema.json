@@ -147,6 +147,17 @@
                 "on_self_heal": { "type": "string" },
                 "timeout_s": { "type": "number", "minimum": 0.1, "default": 10.0 }
               }
+            },
+            "doctor": {
+              "description": "Emit a doctor request event on issues (for external automation/LLM).",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean", "default": false },
+                "cooldown_s": { "type": "integer", "minimum": 0, "default": 60 },
+                "issue_types": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": [] },
+                "include_log_tail_lines": { "type": "integer", "minimum": 0, "default": 200 }
+              }
             }
           }
         }
