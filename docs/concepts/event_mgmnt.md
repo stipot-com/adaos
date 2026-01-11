@@ -304,7 +304,7 @@ def resolve(plan, registry, ctx):
 2. реестр событий и схем: json schema для каждого event_name+version; валидация на входе/выходе. хранить в abi/schemas/events.
 3. соглашения по именам:
 
-   * команды (запросы на действие): namespace.verb (например, nlp.intent.detect, scenario.run, repo.skill.install)
+* команды (запросы на действие): namespace.verb или namespace.noun.request (например, `nlp.intent.detect.request`, `scenario.run`, `repo.skill.install`)
    * события (факты): namespace.noun.past (nlp.intent.detected, scenario.completed, repo.skill.installed)
 4. доставка и надёжность: минимум — at-least-once + idempotency_key у обработчиков, retry с backoff, dead-letter queue (DLQ).
 5. планировщик: генерация timer.* событий по cron/once/interval. это покрывает «запуск по времени/условию».

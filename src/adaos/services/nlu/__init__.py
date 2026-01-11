@@ -11,3 +11,4 @@ from . import dispatcher as _dispatcher  # noqa: F401
 from . import pipeline as _pipeline  # noqa: F401
 from . import rasa_service_bridge as _rasa_service_bridge  # noqa: F401
 from . import rasa_training_bridge as _rasa_training_bridge  # noqa: F401
+from . import trace_store as _trace_store  # noqa: F401

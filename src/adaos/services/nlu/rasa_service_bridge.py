@@ -110,10 +110,28 @@ async def _parse_and_emit(
             data = await asyncio.wait_for(future, timeout=_PARSE_TIMEOUT_S)
     except TimeoutError:
         _log.warning("rasa service parse timed out text=%r timeout_s=%.1f", text, _PARSE_TIMEOUT_S)
+        try:
+            await supervisor.inject_issue(
+                "rasa_nlu_service_skill",
+                issue_type="rasa_timeout",
+                message="rasa parse timed out",
+                details={"timeout_s": _PARSE_TIMEOUT_S, "text": text, "request_id": request_id},
+            )
+        except Exception:
+            pass
         _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_timeout")
         return
     except Exception:
         _log.warning("rasa service parse failed text=%r", text, exc_info=True)
+        try:
+            await supervisor.inject_issue(
+                "rasa_nlu_service_skill",
+                issue_type="rasa_failed",
+                message="rasa parse failed",
+                details={"text": text, "request_id": request_id},
+            )
+        except Exception:
+            pass
         _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_failed")
         return
 

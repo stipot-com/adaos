@@ -114,6 +114,41 @@
             "path": { "type": "string", "default": "/health" },
             "timeout_ms": { "type": "integer", "minimum": 100, "default": 1000 }
           }
+        },
+        "self_managed": {
+          "description": "Optional self-managed behavior for service skills: issue detection and self-heal hooks.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "crash": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_in_window": { "type": "integer", "minimum": 1, "default": 3 },
+                "window_s": { "type": "integer", "minimum": 1, "default": 60 },
+                "cooloff_s": { "type": "integer", "minimum": 0, "default": 30 }
+              }
+            },
+            "health": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "interval_s": { "type": "integer", "minimum": 1, "default": 10 },
+                "failures_before_issue": { "type": "integer", "minimum": 1, "default": 3 }
+              }
+            },
+            "hooks": {
+              "description": "Python entrypoints executed inside the service venv (format: module:function).",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "on_issue": { "type": "string" },
+                "on_self_heal": { "type": "string" },
+                "timeout_s": { "type": "number", "minimum": 0.1, "default": 10.0 }
+              }
+            }
+          }
         }
       }
     },

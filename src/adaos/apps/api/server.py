@@ -382,6 +382,47 @@ async def restart_service(name: str) -> dict:
     return {"ok": True}
 
 
+class ServiceIssueRequest(BaseModel):
+    type: str
+    message: str
+    details: dict | None = None
+
+
+@app.get("/api/services/{name}/issues", dependencies=[Depends(require_token)])
+async def get_service_issues(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        issues = supervisor.issues(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "issues": issues}
+
+
+@app.post("/api/services/{name}/issue", dependencies=[Depends(require_token)])
+async def inject_service_issue(name: str, body: ServiceIssueRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.inject_issue(name, issue_type=body.type, message=body.message, details=body.details or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+class ServiceSelfHealRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/self-heal", dependencies=[Depends(require_token)])
+async def service_self_heal(name: str, body: ServiceSelfHealRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.self_heal(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "result": result}
+
+
 class YjsReloadRequest(BaseModel):
     webspace_id: str | None = Field(default=None, description="Target webspace id; defaults to 'default'")
 
