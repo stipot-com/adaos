@@ -927,6 +927,13 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     if not webspace_id:
         return
     _log.info("reloading webspace %s from scenario %s", webspace_id, scenario_id)
+
+    # Ensure scenario.json changes are picked up (loader caches content in-memory).
+    try:
+        scenarios_loader.invalidate_cache(scenario_id=scenario_id, space="workspace")
+        scenarios_loader.invalidate_cache(scenario_id=scenario_id, space="dev")
+    except Exception:
+        pass
     try:
         from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
         from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel

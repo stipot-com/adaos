@@ -658,6 +658,9 @@ class BootstrapService:
                                 user=user_str,
                                 password=pw_str,
                                 name=f"hub-{hub_id_str}",
+                                # Disable internal reconnect logic to avoid orphaned reconnect tasks
+                                # during shutdown; the surrounding supervisor restarts the bridge.
+                                allow_reconnect=False,
                                 error_cb=_on_error_cb,
                                 disconnected_cb=_on_disconnected,
                                 reconnected_cb=_on_reconnected,
@@ -1327,7 +1330,11 @@ class BootstrapService:
                     # keep task alive
                     try:
                         while True:
-                            await asyncio.sleep(3600)
+                            await asyncio.sleep(1.0)
+                            is_closed_attr = getattr(nc, "is_closed", None)
+                            is_closed = is_closed_attr() if callable(is_closed_attr) else bool(is_closed_attr)
+                            if is_closed:
+                                raise RuntimeError("nats connection closed")
                     finally:
                         # On shutdown/cancel, close any live proxy tunnels and unsubscribe.
                         try:
