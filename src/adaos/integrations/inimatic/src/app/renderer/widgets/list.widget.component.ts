@@ -92,8 +92,8 @@ type ListSubGroup = {
                       size="small"
                       (click)="onButtonClick($event, b, item)"
                     >
-                      <ion-icon *ngIf="b.icon" [name]="b.icon" slot="icon-only"></ion-icon>
-                      <ng-container *ngIf="!b.icon">{{ b.label }}</ng-container>
+                      <ion-icon *ngIf="b.icon" [name]="b.icon" [slot]="b.label ? 'start' : 'icon-only'"></ion-icon>
+                      <ng-container *ngIf="b.label">{{ b.label }}</ng-container>
                     </ion-button>
                   </ng-container>
                 </ion-buttons>
@@ -128,8 +128,8 @@ type ListSubGroup = {
                       size="small"
                       (click)="onButtonClick($event, b, item)"
                     >
-                      <ion-icon *ngIf="b.icon" [name]="b.icon" slot="icon-only"></ion-icon>
-                      <ng-container *ngIf="!b.icon">{{ b.label }}</ng-container>
+                      <ion-icon *ngIf="b.icon" [name]="b.icon" [slot]="b.label ? 'start' : 'icon-only'"></ion-icon>
+                      <ng-container *ngIf="b.label">{{ b.label }}</ng-container>
                     </ion-button>
                   </ng-container>
                 </ion-buttons>
@@ -394,6 +394,7 @@ export class ListWidgetComponent implements OnInit, OnChanges, OnDestroy {
   shouldShowButton(btn: ListButton, item: any): boolean {
     if (!btn.whenKey) return true
     const v = this.getByPath(item, btn.whenKey)
+    if (btn.whenEquals === undefined) return Boolean(v)
     return v === btn.whenEquals
   }
 

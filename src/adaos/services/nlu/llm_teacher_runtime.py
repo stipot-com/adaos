@@ -17,6 +17,8 @@ from adaos.services.root.client import RootHttpClient
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
+from .ycoerce import coerce_dict, is_iterable_like, iter_mappings, iter_scalars
+
 _log = logging.getLogger("adaos.nlu.teacher.llm")
 
 _TEACHER_ENABLED = os.getenv("ADAOS_NLU_TEACHER") == "1"
@@ -36,7 +38,7 @@ def _payload(evt: Any) -> Dict[str, Any]:
 
 
 def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
     token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
     if isinstance(token, str) and token.strip():
         return token.strip()
@@ -44,27 +46,26 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
 
 
 def _teacher_obj(data_map: Any) -> dict[str, Any]:
-    current = data_map.get("nlu_teacher")
-    return dict(current) if isinstance(current, dict) else {}
+    return coerce_dict(data_map.get("nlu_teacher"))
 
 
 def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
-    ui = snapshot.get("ui") if isinstance(snapshot.get("ui"), dict) else {}
-    data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+    ui = coerce_dict(snapshot.get("ui"))
+    data = coerce_dict(snapshot.get("data"))
     current_scenario = ui.get("current_scenario")
     if not isinstance(current_scenario, str):
         current_scenario = None
 
-    catalog = data.get("catalog") if isinstance(data.get("catalog"), dict) else {}
-    apps = catalog.get("apps") if isinstance(catalog.get("apps"), list) else []
-    widgets = catalog.get("widgets") if isinstance(catalog.get("widgets"), list) else []
+    catalog = coerce_dict(data.get("catalog"))
+    apps = list(iter_mappings(catalog.get("apps")))
+    widgets = list(iter_mappings(catalog.get("widgets")))
 
-    installed = data.get("installed") if isinstance(data.get("installed"), dict) else {}
-    installed_apps = installed.get("apps") if isinstance(installed.get("apps"), list) else []
-    installed_widgets = installed.get("widgets") if isinstance(installed.get("widgets"), list) else []
+    installed = coerce_dict(data.get("installed"))
+    installed_apps = list(_iter_scalars(installed.get("apps")))
+    installed_widgets = list(_iter_scalars(installed.get("widgets")))
 
     def _strip_app(app: Any) -> Optional[dict[str, Any]]:
-        if not isinstance(app, dict):
+        if not isinstance(app, Mapping):
             return None
         out = {
             "id": app.get("id"),
@@ -76,16 +77,16 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         return {k: v for k, v in out.items() if v is not None}
 
     def _strip_widget(w: Any) -> Optional[dict[str, Any]]:
-        if not isinstance(w, dict):
+        if not isinstance(w, Mapping):
             return None
         out = {"id": w.get("id"), "title": w.get("title"), "type": w.get("type"), "origin": w.get("origin")}
         return {k: v for k, v in out.items() if v is not None}
 
-    nlu = data.get("nlu") if isinstance(data.get("nlu"), dict) else {}
-    regex_rules = nlu.get("regex_rules") if isinstance(nlu.get("regex_rules"), list) else []
+    nlu = coerce_dict(data.get("nlu"))
+    regex_rules = list(iter_mappings(nlu.get("regex_rules")))
 
     def _strip_rule(rule: Any) -> Optional[dict[str, Any]]:
-        if not isinstance(rule, dict):
+        if not isinstance(rule, Mapping):
             return None
         out = {
             "id": rule.get("id"),
@@ -217,18 +218,17 @@ def _extract_scenario_nlu(*, scenario_id: str | None) -> dict[str, Any]:
     for intent, spec in intents.items():
         if not isinstance(intent, str) or not intent:
             continue
-        if not isinstance(spec, dict):
+        if not isinstance(spec, Mapping):
             continue
-        examples = spec.get("examples") if isinstance(spec.get("examples"), list) else []
-        actions = spec.get("actions") if isinstance(spec.get("actions"), list) else []
+        examples = [x for x in spec.get("examples") if isinstance(x, str) and x.strip()] if is_iterable_like(spec.get("examples")) else []
+        actions = list(iter_mappings(spec.get("actions")))
         out["intents"][intent] = {
             "description": spec.get("description"),
             "scope": spec.get("scope"),
-            "examples": [x for x in examples if isinstance(x, str) and x.strip()][:10],
+            "examples": examples[:10],
             "actions": [
                 {k: v for k, v in a.items() if k in {"type", "target", "params"}}
                 for a in actions
-                if isinstance(a, dict)
             ][:5],
         }
     return out
@@ -342,10 +342,7 @@ async def _append_llm_log(webspace_id: str, entry: dict[str, Any]) -> None:
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _teacher_obj(data_map)
-        logs = teacher.get("llm_logs")
-        if not isinstance(logs, list):
-            logs = []
-        logs = [x for x in logs if isinstance(x, dict)]
+        logs = list(iter_mappings(teacher.get("llm_logs")))
         logs.append(entry)
         teacher["llm_logs"] = logs[-300:]
         with ydoc.begin_transaction() as txn:
@@ -356,13 +353,9 @@ async def _patch_llm_log(webspace_id: str, *, log_id: str, patch: dict[str, Any]
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _teacher_obj(data_map)
-        logs = teacher.get("llm_logs")
-        if not isinstance(logs, list):
-            return
+        logs = list(iter_mappings(teacher.get("llm_logs")))
         next_logs: list[dict[str, Any]] = []
         for item in logs:
-            if not isinstance(item, dict):
-                continue
             if item.get("id") == log_id:
                 updated = dict(item)
                 updated.update(patch)
@@ -383,14 +376,10 @@ async def _update_revision_by_request_id(
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _teacher_obj(data_map)
-        revisions = teacher.get("revisions")
-        if not isinstance(revisions, list):
-            return None
+        revisions = list(iter_mappings(teacher.get("revisions")))
         updated: Optional[dict[str, Any]] = None
         cleaned: list[dict[str, Any]] = []
         for item in revisions:
-            if not isinstance(item, dict):
-                continue
             if item.get("request_id") == request_id and item.get("status") in {"pending", "proposed"}:
                 updated = dict(item)
                 updated.update(patch)
@@ -407,10 +396,7 @@ async def _append_candidate(webspace_id: str, candidate: dict[str, Any]) -> None
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _teacher_obj(data_map)
-        candidates = teacher.get("candidates")
-        if not isinstance(candidates, list):
-            candidates = []
-        candidates = [x for x in candidates if isinstance(x, dict)]
+        candidates = list(iter_mappings(teacher.get("candidates")))
         candidates.append(candidate)
         teacher["candidates"] = candidates[-200:]
         with ydoc.begin_transaction() as txn:
@@ -671,6 +657,32 @@ async def _on_teacher_request(evt: Any) -> None:
                 )
             except Exception:
                 _log.debug("failed to append teacher event (candidate.proposed regex_rule) webspace=%s", webspace_id, exc_info=True)
+
+            # MVP: auto-apply regex rules immediately, to demonstrate "LLM teaches existing NLU"
+            # without requiring any manual UI actions.
+            bus_emit(
+                ctx.bus,
+                "nlp.teacher.candidate.apply",
+                {"webspace_id": webspace_id, "candidate_id": entry["id"], "_meta": dict(req_meta)},
+                source="nlu.teacher.llm",
+            )
+            bus_emit(
+                ctx.bus,
+                "io.out.chat.append",
+                {
+                    "id": "",
+                    "from": "hub",
+                    "text": (
+                        f"Я не сразу понял: «{text}».\n\n"
+                        f"Теперь я понимаю такие фразы (через новое правило NLU):\n"
+                        f"- «{text}»\n\n"
+                        f"Открой «NLU Teacher» (Apps) — там лог запроса/ответа и применённое правило."
+                    ),
+                    "ts": time.time(),
+                    "_meta": {"webspace_id": webspace_id, **dict(req_meta)},
+                },
+                source="router.nlu",
+            )
             return
 
     if decision in {"create_skill_candidate", "create_scenario_candidate"}:

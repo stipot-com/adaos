@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from typing import Any, Mapping, Optional
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.nlu.teacher_events import rebuild_events_by_candidate
 from adaos.services.nlu.teacher_store import load_teacher_state, save_teacher_state
+from adaos.services.nlu.ycoerce import coerce_dict, is_mapping_like, iter_mappings
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -28,7 +30,7 @@ def _payload(evt: Any) -> dict[str, Any]:
 
 
 def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
     token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
     if isinstance(token, str) and token.strip():
         return token.strip()
@@ -36,10 +38,12 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_jsonable(v) for v in value]
+    if is_mapping_like(value):
+        return {str(k): _jsonable(v) for k, v in coerce_dict(value).items()}
+    if isinstance(value, (str, bytes, bytearray)):
+        return value if isinstance(value, str) else value.decode("utf-8", errors="ignore")
+    if isinstance(value, Iterable):
+        return [_jsonable(v) for v in list(value)]
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     try:
@@ -50,31 +54,30 @@ def _jsonable(value: Any) -> Any:
 
 def _merge_list_by_id(
     *,
-    current: list[Any] | None,
-    saved: list[Any] | None,
+    current: Any,
+    saved: Any,
     max_items: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
 
-    def _push_many(raw: list[Any] | None) -> None:
-        if not isinstance(raw, list):
+    def _push_many(raw: Any) -> None:
+        if isinstance(raw, (str, bytes, bytearray)) or isinstance(raw, Mapping) or not isinstance(raw, Iterable):
             return
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
+        for item in iter_mappings(raw):
+            item = dict(item)
             item_id = item.get("id")
             if isinstance(item_id, str) and item_id:
                 prev = by_id.get(item_id)
                 if prev is None:
-                    by_id[item_id] = dict(item)
+                    by_id[item_id] = item
                 else:
                     prev_ts = prev.get("ts")
                     next_ts = item.get("ts")
                     if isinstance(prev_ts, (int, float)) and isinstance(next_ts, (int, float)) and next_ts >= prev_ts:
-                        by_id[item_id] = dict(item)
+                        by_id[item_id] = item
             else:
-                items.append(dict(item))
+                items.append(item)
 
     _push_many(saved)
     _push_many(current)
@@ -106,7 +109,7 @@ async def _read_teacher_from_ydoc(webspace_id: str) -> dict[str, Any]:
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         current = data_map.get("nlu_teacher")
-        teacher = dict(current) if isinstance(current, dict) else {}
+        teacher = coerce_dict(current)
         return _jsonable(teacher)
 
 
@@ -187,4 +190,3 @@ async def _on_candidate_applied(evt: Any) -> None:
 @subscribe("nlp.teacher.regex_rule.applied")
 async def _on_regex_rule_applied(evt: Any) -> None:
     _schedule_persist(_resolve_webspace_id(_payload(evt)))
-

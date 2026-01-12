@@ -8,6 +8,7 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -24,7 +25,7 @@ def _payload(evt: Any) -> Dict[str, Any]:
 
 
 def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
     token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
     if isinstance(token, str) and token.strip():
         return token.strip()
@@ -32,17 +33,12 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
 
 
 def _teacher_obj(data_map: Any) -> dict[str, Any]:
-    current = data_map.get("nlu_teacher")
-    return dict(current) if isinstance(current, dict) else {}
+    return coerce_dict(getattr(data_map, "get", lambda _k: None)("nlu_teacher"))
 
 
 def _find_candidate(teacher: Mapping[str, Any], candidate_id: str) -> Optional[dict[str, Any]]:
     candidates = teacher.get("candidates")
-    if not isinstance(candidates, list):
-        return None
-    for item in candidates:
-        if not isinstance(item, Mapping):
-            continue
+    for item in iter_mappings(candidates):
         if item.get("id") == candidate_id:
             return dict(item)
     return None
@@ -65,7 +61,7 @@ async def _on_candidate_apply(evt: Any) -> None:
     ctx = get_ctx()
     payload = _payload(evt)
     webspace_id = _resolve_webspace_id(payload)
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
 
     candidate_id = payload.get("candidate_id")
     if not isinstance(candidate_id, str) or not candidate_id.strip():
@@ -113,9 +109,7 @@ async def _on_candidate_apply(evt: Any) -> None:
 
             # mark applied
             next_candidates: list[dict[str, Any]] = []
-            for item in teacher.get("candidates") if isinstance(teacher.get("candidates"), list) else []:
-                if not isinstance(item, Mapping):
-                    continue
+            for item in iter_mappings(teacher.get("candidates")):
                 d = dict(item)
                 if d.get("id") == candidate_id:
                     d["status"] = "applied"
@@ -126,9 +120,7 @@ async def _on_candidate_apply(evt: Any) -> None:
 
             # add to plan
             plan = teacher.get("plan")
-            if not isinstance(plan, list):
-                plan = []
-            plan = [x for x in plan if isinstance(x, Mapping)]
+            plan = [dict(x) for x in iter_mappings(plan)]
             plan_item = {
                 "id": f"plan.{int(time.time() * 1000)}",
                 "ts": time.time(),
@@ -137,7 +129,7 @@ async def _on_candidate_apply(evt: Any) -> None:
                 "kind": kind,
                 "request_id": request_id,
                 "text": request_text,
-                "candidate": dict(candidate.get("candidate") or {}) if isinstance(candidate.get("candidate"), Mapping) else {},
+                "candidate": coerce_dict(candidate.get("candidate")),
                 "notes": candidate.get("notes"),
             }
             plan.append(plan_item)
@@ -172,4 +164,3 @@ async def _on_candidate_apply(evt: Any) -> None:
         {"webspace_id": webspace_id, "candidate": candidate, "_meta": dict(meta)},
         source="nlu.teacher.candidates",
     )
-

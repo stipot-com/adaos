@@ -151,7 +151,7 @@ def _resolve_service_spec(skill_name: str, skill_root: Path, manifest: Mapping[s
     doctor_issue_types: list[str] = []
     if isinstance(doctor_issue_types_raw, list):
         doctor_issue_types = [str(x).strip() for x in doctor_issue_types_raw if isinstance(x, str) and x.strip()]
-    doctor_include_log_tail_lines = int(doctor_cfg.get("include_log_tail_lines") or 200)
+    doctor_include_log_tail_lines = int(doctor_cfg.get("include_log_tail_lines") or 50)
 
     return ServiceSpec(
         skill=skill_name,

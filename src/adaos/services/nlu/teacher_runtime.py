@@ -5,12 +5,14 @@ import logging
 import os
 import time
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Dict, Mapping, Optional
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
@@ -31,7 +33,7 @@ def _payload(evt: Any) -> Dict[str, Any]:
 
 
 def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
     token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
     if isinstance(token, str) and token.strip():
         return token.strip()
@@ -39,8 +41,16 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
 
 
 def _read_teacher_obj(data_map: Any) -> dict[str, Any]:
-    current = data_map.get("nlu_teacher")
-    return dict(current) if isinstance(current, dict) else {}
+    return coerce_dict(getattr(data_map, "get", lambda _k: None)("nlu_teacher"))
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, (str, bytes, bytearray)) or isinstance(value, Mapping) or not isinstance(value, Iterable):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in iter_mappings(value):
+        out.append(dict(item))
+    return out
 
 
 def _bounded(items: list[dict[str, Any]], *, max_items: int) -> list[dict[str, Any]]:
@@ -127,11 +137,8 @@ async def _append_revision(webspace_id: str, revision: dict[str, Any]) -> None:
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _read_teacher_obj(data_map)
-        revisions = teacher.get("revisions")
-        if not isinstance(revisions, list):
-            revisions = []
-        revisions = [x for x in revisions if isinstance(x, dict)]
-        revisions.append(revision)
+        revisions = _list_of_dicts(teacher.get("revisions"))
+        revisions.append(dict(revision))
         revisions = _bounded(revisions, max_items=_MAX_ITEMS)
         teacher["revisions"] = revisions
         with ydoc.begin_transaction() as txn:
@@ -148,20 +155,21 @@ async def _update_revision(
         data_map = ydoc.get_map("data")
         teacher = _read_teacher_obj(data_map)
         revisions = teacher.get("revisions")
-        if not isinstance(revisions, list):
+        if isinstance(revisions, (str, bytes, bytearray)) or isinstance(revisions, Mapping) or not isinstance(revisions, Iterable):
             return None
 
         cleaned: list[dict[str, Any]] = []
         updated: Optional[dict[str, Any]] = None
-        for item in revisions:
-            if not isinstance(item, dict):
+        for item in list(revisions):
+            if not isinstance(item, Mapping):
                 continue
-            if item.get("id") == revision_id:
-                updated = dict(item)
+            d = dict(item)
+            if d.get("id") == revision_id:
+                updated = dict(d)
                 updated.update(patch)
                 cleaned.append(updated)
             else:
-                cleaned.append(item)
+                cleaned.append(d)
 
         teacher["revisions"] = _bounded(cleaned, max_items=_MAX_ITEMS)
         with ydoc.begin_transaction() as txn:
@@ -173,11 +181,8 @@ async def _append_dataset_item(webspace_id: str, item: dict[str, Any]) -> None:
     async with async_get_ydoc(webspace_id) as ydoc:
         data_map = ydoc.get_map("data")
         teacher = _read_teacher_obj(data_map)
-        dataset = teacher.get("dataset")
-        if not isinstance(dataset, list):
-            dataset = []
-        dataset = [x for x in dataset if isinstance(x, dict)]
-        dataset.append(item)
+        dataset = _list_of_dicts(teacher.get("dataset"))
+        dataset.append(dict(item))
         dataset = _bounded(dataset, max_items=_MAX_ITEMS)
         teacher["dataset"] = dataset
         with ydoc.begin_transaction() as txn:

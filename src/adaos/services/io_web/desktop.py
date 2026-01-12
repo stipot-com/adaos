@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,48 @@ from adaos.services.yjs.doc import async_get_ydoc, get_ydoc, mutate_live_room
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.io_web.desktop")
+
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    """
+    Best-effort conversion of YJS map-like values to a plain dict.
+
+    y_py map objects are not guaranteed to implement `collections.abc.Mapping`
+    but typically expose `.items()`. Treating them as non-mapping silently
+    drops state (e.g. installed apps/widgets) during scenario switches.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return {str(k): v for k, v in items()}
+        except Exception:
+            return {}
+    return {}
+
+
+def _iter_ids(value: Any) -> List[str]:
+    """
+    Extract string ids from list-like values (including YArray-like iterables).
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes, bytearray)) or isinstance(value, Mapping):
+        return []
+    if not isinstance(value, Iterable):
+        return []
+    out: List[str] = []
+    for item in value:
+        if isinstance(item, (str, int)):
+            out.append(str(item))
+    return out
 
 
 @dataclass(slots=True)
@@ -44,12 +87,9 @@ class WebDesktopService:
         WebDesktopInstalled instance.
         """
         raw = data_map.get("installed") or {}
-        if not isinstance(raw, dict):
-            raw = {}
-        apps_raw = raw.get("apps") or []
-        widgets_raw = raw.get("widgets") or []
-        apps = [str(x) for x in apps_raw if isinstance(x, (str, int))]
-        widgets = [str(x) for x in widgets_raw if isinstance(x, (str, int))]
+        raw_dict = _coerce_dict(raw)
+        apps = _iter_ids(raw_dict.get("apps"))
+        widgets = _iter_ids(raw_dict.get("widgets"))
         return WebDesktopInstalled(apps=apps, widgets=widgets)
 
     @staticmethod
@@ -61,11 +101,10 @@ class WebDesktopService:
         target_id: str,
     ) -> None:
         data_map = ydoc.get_map("data")
-        installed = data_map.get("installed") or {}
-        if not isinstance(installed, dict):
-            installed = {}
-        apps = set(installed.get("apps") or [])
-        widgets = set(installed.get("widgets") or [])
+        installed_raw = data_map.get("installed") or {}
+        installed = _coerce_dict(installed_raw)
+        apps = set(_iter_ids(installed.get("apps")))
+        widgets = set(_iter_ids(installed.get("widgets")))
         if item_type == "app":
             if target_id in apps:
                 apps.remove(target_id)
@@ -78,11 +117,10 @@ class WebDesktopService:
                 widgets.add(target_id)
         next_installed = {"apps": list(apps), "widgets": list(widgets)}
         data_map.set(txn, "installed", next_installed)
-        desktop_value = data_map.get("desktop") or {}
-        if not isinstance(desktop_value, dict):
-            desktop_value = {}
-        desktop_next = dict(desktop_value)
-        desktop_installed = dict(desktop_next.get("installed") or {})
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_installed_raw = desktop_next.get("installed") or {}
+        desktop_installed = _coerce_dict(desktop_installed_raw)
         desktop_installed["apps"] = list(apps)
         desktop_installed["widgets"] = list(widgets)
         desktop_next["installed"] = desktop_installed
@@ -137,10 +175,9 @@ class WebDesktopService:
                 next_installed = {"apps": apps, "widgets": widgets}
                 data_map.set(txn, "installed", next_installed)
                 desktop_value = data_map.get("desktop") or {}
-                if not isinstance(desktop_value, dict):
-                    desktop_value = {}
-                desktop_next = dict(desktop_value)
-                desktop_installed = dict(desktop_next.get("installed") or {})
+                desktop_next = _coerce_dict(desktop_value)
+                desktop_installed_raw = desktop_next.get("installed") or {}
+                desktop_installed = _coerce_dict(desktop_installed_raw)
                 desktop_installed["apps"] = apps
                 desktop_installed["widgets"] = widgets
                 desktop_next["installed"] = desktop_installed
@@ -165,10 +202,8 @@ class WebDesktopService:
                 next_installed = {"apps": apps, "widgets": widgets}
                 data_map.set(txn, "installed", next_installed)
                 desktop_value = data_map.get("desktop") or {}
-                if not isinstance(desktop_value, dict):
-                    desktop_value = {}
-                desktop_next = dict(desktop_value)
-                desktop_installed = dict(desktop_next.get("installed") or {})
+                desktop_next = _coerce_dict(desktop_value)
+                desktop_installed = _coerce_dict(desktop_next.get("installed") or {})
                 desktop_installed["apps"] = apps
                 desktop_installed["widgets"] = widgets
                 desktop_next["installed"] = desktop_installed
@@ -260,10 +295,9 @@ class WebDesktopService:
             next_installed = {"apps": apps, "widgets": widgets}
             data_map.set(txn, "installed", next_installed)
             desktop_value = data_map.get("desktop") or {}
-            if not isinstance(desktop_value, dict):
-                desktop_value = {}
-            desktop_next = dict(desktop_value)
-            desktop_installed = dict(desktop_next.get("installed") or {})
+            desktop_next = dict(desktop_value) if isinstance(desktop_value, Mapping) else {}
+            desktop_installed_raw = desktop_next.get("installed") or {}
+            desktop_installed = dict(desktop_installed_raw) if isinstance(desktop_installed_raw, Mapping) else {}
             desktop_installed["apps"] = apps
             desktop_installed["widgets"] = widgets
             desktop_next["installed"] = desktop_installed

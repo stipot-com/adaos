@@ -13,6 +13,8 @@ from adaos.services.eventbus import emit as bus_emit
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
+from .ycoerce import coerce_dict, iter_mappings
+
 _log = logging.getLogger("adaos.nlu.pipeline")
 
 _RECENT_TTL_S = 60.0
@@ -146,17 +148,12 @@ async def _load_dynamic_regex_rules(webspace_id: str) -> list[dict[str, Any]]:
             async with async_get_ydoc(webspace_id) as ydoc:
                 data_map = ydoc.get_map("data")
                 nlu_obj = data_map.get("nlu")
-                if not isinstance(nlu_obj, dict):
-                    nlu_obj = {}
-                rules = nlu_obj.get("regex_rules")
-                if not isinstance(rules, list):
-                    rules = []
+                nlu_obj = coerce_dict(nlu_obj)
+                rules = list(iter_mappings(nlu_obj.get("regex_rules")))
         except Exception:
             rules = []
 
         for item in rules:
-            if not isinstance(item, dict):
-                continue
             if not item.get("enabled", True):
                 continue
             intent = item.get("intent")

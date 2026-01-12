@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, Mapping, Optional
 
@@ -8,6 +9,7 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -24,7 +26,7 @@ def _payload(evt: Any) -> Dict[str, Any]:
 
 
 def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
     token = payload.get("webspace_id") or payload.get("workspace_id") or meta.get("webspace_id") or meta.get("workspace_id")
     if isinstance(token, str) and token.strip():
         return token.strip()
@@ -32,13 +34,11 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str:
 
 
 def _teacher_obj(data_map: Any) -> dict[str, Any]:
-    current = data_map.get("nlu_teacher")
-    return dict(current) if isinstance(current, dict) else {}
+    return coerce_dict(getattr(data_map, "get", lambda _k: None)("nlu_teacher"))
 
 
 def _read_nlu_obj(data_map: Any) -> dict[str, Any]:
-    current = data_map.get("nlu")
-    return dict(current) if isinstance(current, dict) else {}
+    return coerce_dict(getattr(data_map, "get", lambda _k: None)("nlu"))
 
 
 def _normalize_rule(rule: Mapping[str, Any]) -> Optional[dict[str, Any]]:
@@ -78,11 +78,16 @@ async def _on_regex_rule_apply(evt: Any) -> None:
     candidate_id = payload.get("candidate_id")
     intent = payload.get("intent")
     pattern = payload.get("pattern")
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
+    meta = coerce_dict(payload.get("_meta"))
 
     if not isinstance(intent, str) or not intent.strip():
         return
     if not isinstance(pattern, str) or not pattern.strip():
+        return
+    try:
+        re.compile(pattern)
+    except re.error:
+        _log.warning("invalid regex pattern intent=%s pattern=%s", intent, pattern)
         return
 
     rule_id = f"rx.{int(time.time() * 1000)}"
@@ -105,12 +110,9 @@ async def _on_regex_rule_apply(evt: Any) -> None:
             # Store under data.nlu.regex_rules
             nlu_obj = _read_nlu_obj(data_map)
             rules = nlu_obj.get("regex_rules")
-            if not isinstance(rules, list):
-                rules = []
+            rules = [dict(x) for x in iter_mappings(rules)]
             cleaned: list[dict[str, Any]] = []
             for item in rules:
-                if not isinstance(item, Mapping):
-                    continue
                 normalized = _normalize_rule(item)
                 if normalized:
                     cleaned.append(normalized)
@@ -120,11 +122,9 @@ async def _on_regex_rule_apply(evt: Any) -> None:
             # Mark candidate as applied (if present)
             teacher = _teacher_obj(data_map)
             candidates = teacher.get("candidates")
-            if isinstance(candidates, list) and isinstance(candidate_id, str) and candidate_id:
+            if isinstance(candidate_id, str) and candidate_id:
                 next_candidates: list[dict[str, Any]] = []
-                for item in candidates:
-                    if not isinstance(item, Mapping):
-                        continue
+                for item in iter_mappings(candidates):
                     d = dict(item)
                     if d.get("id") == candidate_id:
                         request_id = d.get("request_id") if isinstance(d.get("request_id"), str) else None

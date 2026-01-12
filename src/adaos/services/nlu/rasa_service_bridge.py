@@ -16,6 +16,10 @@ _log = logging.getLogger("adaos.nlu.rasa")
 _SEMAPHORE = asyncio.Semaphore(2)
 _PARSE_TIMEOUT_S = float(os.getenv("ADAOS_NLU_RASA_PARSE_TIMEOUT_S", "8.0") or "8.0")
 _START_LOCK = asyncio.Lock()
+_ISSUE_WINDOW_S = float(os.getenv("ADAOS_NLU_RASA_ISSUE_WINDOW_S", "60") or "60")
+_ISSUE_THRESHOLD = int(os.getenv("ADAOS_NLU_RASA_ISSUE_THRESHOLD", "3") or "3")
+_MIN_CONFIDENCE = float(os.getenv("ADAOS_NLU_RASA_MIN_CONFIDENCE", "0.6") or "0.6")
+_issue_times: dict[str, list[float]] = {}
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -67,6 +71,16 @@ def _http_post_json(url: str, payload: dict, *, timeout_ms: int) -> dict:
         return json.loads(raw)
 
 
+def _record_failure(kind: str) -> int:
+    now = asyncio.get_running_loop().time()
+    times = _issue_times.get(kind) or []
+    window_s = _ISSUE_WINDOW_S if _ISSUE_WINDOW_S > 0 else 60.0
+    times = [t for t in times if now - t <= window_s]
+    times.append(now)
+    _issue_times[kind] = times
+    return len(times)
+
+
 async def _parse_and_emit(
     *,
     text: str,
@@ -109,29 +123,37 @@ async def _parse_and_emit(
             )
             data = await asyncio.wait_for(future, timeout=_PARSE_TIMEOUT_S)
     except TimeoutError:
-        _log.warning("rasa service parse timed out text=%r timeout_s=%.1f", text, _PARSE_TIMEOUT_S)
-        try:
-            await supervisor.inject_issue(
-                "rasa_nlu_service_skill",
-                issue_type="rasa_timeout",
-                message="rasa parse timed out",
-                details={"timeout_s": _PARSE_TIMEOUT_S, "text": text, "request_id": request_id},
-            )
-        except Exception:
-            pass
+        count = _record_failure("timeout")
+        if count >= max(_ISSUE_THRESHOLD, 1):
+            _log.warning("rasa service parse timed out (x%d) timeout_s=%.1f", count, _PARSE_TIMEOUT_S)
+            try:
+                await supervisor.inject_issue(
+                    "rasa_nlu_service_skill",
+                    issue_type="rasa_timeout",
+                    message="rasa parse timed out",
+                    details={"timeout_s": _PARSE_TIMEOUT_S, "text": text, "request_id": request_id, "count": count},
+                )
+            except Exception:
+                pass
+        else:
+            _log.debug("rasa service parse timed out (x%d) text=%r", count, text)
         _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_timeout")
         return
     except Exception:
-        _log.warning("rasa service parse failed text=%r", text, exc_info=True)
-        try:
-            await supervisor.inject_issue(
-                "rasa_nlu_service_skill",
-                issue_type="rasa_failed",
-                message="rasa parse failed",
-                details={"text": text, "request_id": request_id},
-            )
-        except Exception:
-            pass
+        count = _record_failure("failed")
+        if count >= max(_ISSUE_THRESHOLD, 1):
+            _log.warning("rasa service parse failed (x%d) text=%r", count, text, exc_info=True)
+            try:
+                await supervisor.inject_issue(
+                    "rasa_nlu_service_skill",
+                    issue_type="rasa_failed",
+                    message="rasa parse failed",
+                    details={"text": text, "request_id": request_id, "count": count},
+                )
+            except Exception:
+                pass
+        else:
+            _log.debug("rasa service parse failed (x%d) text=%r", count, text, exc_info=True)
         _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_failed")
         return
 
@@ -151,6 +173,9 @@ async def _parse_and_emit(
     confidence = intent_block.get("confidence") if isinstance(intent_block, dict) else None
     if not isinstance(intent_name, str) or not intent_name.strip():
         _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_no_intent")
+        return
+    if isinstance(confidence, (int, float)) and float(confidence) < _MIN_CONFIDENCE:
+        _emit_not_obtained(ctx=ctx, text=text, webspace_id=webspace_id, request_id=request_id, meta=meta, reason="rasa_low_confidence")
         return
 
     slots: Dict[str, Any] = {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from collections.abc import Iterable
 import asyncio
 import json
 import logging
@@ -106,6 +107,72 @@ def _filter_installed(installed: Dict[str, List[str]], apps: List[Dict[str, Any]
     current_apps = [a for a in (installed.get("apps") or []) if a in app_ids]
     current_widgets = [w for w in (installed.get("widgets") or []) if w in widget_ids]
     return {"apps": current_apps, "widgets": current_widgets}
+
+def _dedupe_str_list(values: Any) -> List[str]:
+    # YJS may return YArray-like values which are iterable but not `list`.
+    if isinstance(values, (str, bytes, bytearray)) or isinstance(values, Mapping):
+        return []
+    if not isinstance(values, Iterable):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        token = v.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    """
+    Best-effort conversion of YJS map-like values to a plain dict.
+
+    y_py map objects are not guaranteed to implement `collections.abc.Mapping`
+    but they often expose `.items()`. Using `isinstance(..., Mapping)` only
+    can silently drop persisted state (e.g. installed apps) during scenario
+    switches.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return dict(items())
+        except Exception:
+            return {}
+    return {}
+
+
+def _merge_installed_with_auto(installed: Dict[str, Any], *, auto_apps: set[str], auto_widgets: set[str]) -> Dict[str, List[str]]:
+    """
+    Merge existing installed apps/widgets with auto-installed ids while
+    preserving user choices across scenario switches.
+
+    Important: we do NOT drop ids that are not present in the current catalog,
+    because switching scenarios would otherwise lose installed apps/widgets
+    that become available again when returning to the previous scenario.
+    """
+    apps = _dedupe_str_list(installed.get("apps"))
+    widgets = _dedupe_str_list(installed.get("widgets"))
+
+    for app_id in sorted(auto_apps):
+        if app_id not in apps:
+            apps.append(app_id)
+    for widget_id in sorted(auto_widgets):
+        if widget_id not in widgets:
+            widgets.append(widget_id)
+
+    return {"apps": apps, "widgets": widgets}
 
 
 class WebspaceScenarioRuntime:
@@ -420,15 +487,13 @@ class WebspaceScenarioRuntime:
             "widgets": _merge_registry_lists(base_registry_widgets, skill_registry_widgets),
         }
 
-        installed_current = data_map.get("installed") or {}
-        if not isinstance(installed_current, dict):
-            installed_current = {}
-        apps_set = set(installed_current.get("apps") or [])
-        widgets_set = set(installed_current.get("widgets") or [])
-        apps_set |= auto_app_ids
-        widgets_set |= auto_widget_ids
-        installed_with_auto = {"apps": list(apps_set), "widgets": list(widgets_set)}
-        filtered_installed = _filter_installed(installed_with_auto, merged_apps, merged_widgets)
+        installed_current_raw = data_map.get("installed") or {}
+        installed_current: Dict[str, Any] = _coerce_dict(installed_current_raw)
+        installed_with_auto = _merge_installed_with_auto(
+            installed_current,
+            auto_apps=auto_app_ids,
+            auto_widgets=auto_widget_ids,
+        )
 
         # Merge scenario-defined modals with skill-provided modal schemas and
         # ensure the generic desktop catalogs (apps/widgets) remain available.
@@ -534,7 +599,7 @@ class WebspaceScenarioRuntime:
             widgets=[dict(it) for it in merged_widgets],
             registry_modals=list(merged_registry.get("modals") or []),
             registry_widgets=list(merged_registry.get("widgets") or []),
-            installed={"apps": list(filtered_installed.get("apps") or []), "widgets": list(filtered_installed.get("widgets") or [])},
+            installed={"apps": list(installed_with_auto.get("apps") or []), "widgets": list(installed_with_auto.get("widgets") or [])},
         )
 
         with ydoc.begin_transaction() as txn:
@@ -547,15 +612,26 @@ class WebspaceScenarioRuntime:
 
             ui_map.set(txn, "application", app_with_modals)
             data_map.set(txn, "catalog", {"apps": merged_apps, "widgets": merged_widgets})
-            data_map.set(txn, "installed", filtered_installed)
+            data_map.set(txn, "installed", installed_with_auto)
+            # Keep `data.desktop.installed` in sync for clients that read it.
+            try:
+                desktop_current = data_map.get("desktop")
+                desktop_next: Dict[str, Any] = _coerce_dict(desktop_current)
+                desktop_installed_raw = desktop_next.get("installed") or {}
+                desktop_installed = _coerce_dict(desktop_installed_raw)
+                desktop_installed["apps"] = list(installed_with_auto.get("apps") or [])
+                desktop_installed["widgets"] = list(installed_with_auto.get("widgets") or [])
+                desktop_next["installed"] = desktop_installed
+                data_map.set(txn, "desktop", desktop_next)
+            except Exception:
+                pass
             # Ensure routing config scaffold exists for runtime-configured routing
             # (RouterService can consult data.routing.routes via _meta.route_id).
             try:
                 routing_current = data_map.get("routing")
-                routing_dict: Dict[str, Any] = routing_current if isinstance(routing_current, dict) else {}
+                routing_dict: Dict[str, Any] = _coerce_dict(routing_current)
                 routes = routing_dict.get("routes")
-                if not isinstance(routes, dict):
-                    routes = {}
+                routes = _coerce_dict(routes)
                 routing_dict = {**routing_dict, "routes": routes}
                 data_map.set(txn, "routing", routing_dict)
             except Exception:
@@ -1032,9 +1108,8 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
 
             with ydoc.begin_transaction() as txn:
                 # ui.scenarios[scenario_id].application
-                scenarios_ui = ui_map.get("scenarios")
-                if not isinstance(scenarios_ui, dict):
-                    scenarios_ui = {}
+                scenarios_ui_raw = ui_map.get("scenarios")
+                scenarios_ui = dict(scenarios_ui_raw) if isinstance(scenarios_ui_raw, Mapping) else {}
                 updated_ui = dict(scenarios_ui)
                 updated_ui[scenario_id] = {"application": ui_section}
                 ui_map.set(txn, "scenarios", updated_ui)
@@ -1042,19 +1117,18 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
                 ui_map.set(txn, "current_scenario", scenario_id)
 
                 # registry.scenarios[scenario_id]
-                reg_scenarios = registry_map.get("scenarios")
-                if not isinstance(reg_scenarios, dict):
-                    reg_scenarios = {}
+                reg_scenarios_raw = registry_map.get("scenarios")
+                reg_scenarios = dict(reg_scenarios_raw) if isinstance(reg_scenarios_raw, Mapping) else {}
                 reg_updated = dict(reg_scenarios)
                 reg_updated[scenario_id] = registry_section
                 registry_map.set(txn, "scenarios", reg_updated)
 
                 # data.scenarios[scenario_id].catalog
-                data_scenarios = data_map.get("scenarios")
-                if not isinstance(data_scenarios, dict):
-                    data_scenarios = {}
+                data_scenarios_raw = data_map.get("scenarios")
+                data_scenarios = dict(data_scenarios_raw) if isinstance(data_scenarios_raw, Mapping) else {}
                 data_updated = dict(data_scenarios)
-                entry = dict(data_updated.get(scenario_id) or {})
+                entry_raw = data_updated.get(scenario_id) or {}
+                entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
                 entry["catalog"] = catalog_section
                 data_updated[scenario_id] = entry
                 data_map.set(txn, "scenarios", data_updated)
