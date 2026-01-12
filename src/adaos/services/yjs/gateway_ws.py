@@ -499,6 +499,13 @@ async def events_ws(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue
 
+            if kind == "desktop.webspace.reset":
+                # For now treat reset as a hard reload; the scenario/webspace layer
+                # can differentiate later if needed.
+                _publish_bus("desktop.webspace.reset", payload)
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
             if kind == "desktop.scenario.set":
                 target = (payload or {}).get("scenario_id")
                 if not target:

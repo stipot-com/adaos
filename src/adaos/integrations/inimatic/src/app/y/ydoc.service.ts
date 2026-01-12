@@ -17,9 +17,25 @@ export class YDocService {
   private readonly webspaceKey = 'adaos_webspace_id'
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
+  private readonly yjsPersistKey = 'adaos_yjs_persist'
 
   constructor(private adaos: AdaosClient) {
     this.deviceId = this.ensureDeviceId()
+  }
+
+  private isPersistenceEnabled(): boolean {
+    try {
+      const url = new URL(window.location.href)
+      const q = url.searchParams.get('yjs_persist')
+      if (q === '1' || q === 'true') return true
+      if (q === '0' || q === 'false') return false
+    } catch {}
+
+    try {
+      return (localStorage.getItem(this.yjsPersistKey) || '').trim() === '1'
+    } catch {
+      return false
+    }
   }
 
   private ensureDeviceId(): string {
@@ -285,19 +301,27 @@ export class YDocService {
     this.currentWebspaceId = webspaceId
     this.setPreferredWebspaceId(webspaceId)
 
-    // Initialise per-webspace IndexedDB persistence *after* webspace is known,
-    // so that local snapshots do not leak state (such as ui/application/desktop)
-    // across different webspaces.
-    try {
-      this.db = new IndexeddbPersistence(`adaos-mobile-${webspaceId}`, this.doc)
-      // On some mobile browsers / private modes IndexedDB can hang indefinitely.
-      // Do not block app startup on persistence.
-      await Promise.race([
-        this.db.whenSynced,
-        new Promise<void>((resolve) => setTimeout(resolve, 1200)),
-      ])
-    } catch {
-      // offline persistence is best-effort
+    // IndexedDB persistence can cause "stale UI" issues during active schema/scenario
+    // development because the browser may replay an old local snapshot back into Yjs
+    // and overwrite a freshly seeded server doc (e.g. after `desktop.webspace.reload`).
+    // For now we keep persistence opt-in.
+    if (this.isPersistenceEnabled()) {
+      try {
+        // Initialise per-webspace IndexedDB persistence *after* webspace is known,
+        // so that local snapshots do not leak state across different webspaces.
+        this.db = new IndexeddbPersistence(`adaos-mobile-${webspaceId}`, this.doc)
+        // On some mobile browsers / private modes IndexedDB can hang indefinitely.
+        // Do not block app startup on persistence.
+        await Promise.race([
+          this.db.whenSynced,
+          new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+        ])
+      } catch {
+        // offline persistence is best-effort
+      }
+    } else if (isDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.info('[YDocService] IndexedDB persistence disabled (set ?yjs_persist=1 to enable)')
     }
 
     // 2) Connect Yjs via y-websocket to /yws/<webspace_id>
@@ -399,17 +423,26 @@ export class YDocService {
         return
       }
     } catch {}
-    // Fallback: best-effort delete by DB name used in IndexeddbPersistence
-    await new Promise<void>((resolve) => {
-      try {
-        const req = indexedDB.deleteDatabase('adaos-mobile')
-        req.onsuccess = () => resolve()
-        req.onerror = () => resolve()
-        req.onblocked = () => resolve()
-      } catch {
-        resolve()
-      }
-    })
+    // Fallback: best-effort delete by DB name used in IndexeddbPersistence.
+    // Historically we used `adaos-mobile` (global). Now it's per-webspace.
+    const webspaceId = (this.currentWebspaceId || '').trim()
+    const names = [
+      webspaceId ? `adaos-mobile-${webspaceId}` : null,
+      'adaos-mobile',
+    ].filter(Boolean) as string[]
+
+    for (const name of names) {
+      await new Promise<void>((resolve) => {
+        try {
+          const req = indexedDB.deleteDatabase(name)
+          req.onsuccess = () => resolve()
+          req.onerror = () => resolve()
+          req.onblocked = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
   }
 
   dumpSnapshot(): void {

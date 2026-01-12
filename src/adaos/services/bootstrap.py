@@ -1336,6 +1336,45 @@ class BootstrapService:
                             if is_closed:
                                 raise RuntimeError("nats connection closed")
                     finally:
+                        async def _force_close_ws_transport() -> None:
+                            # nats-py WebSocketTransport can leave aiohttp.ClientSession unclosed
+                            # if the websocket is already None (close() becomes a no-op and wait_closed() hangs).
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                if not tr:
+                                    return
+
+                                ws = getattr(tr, "_ws", None)
+                                close_task = getattr(tr, "_close_task", None)
+                                client = getattr(tr, "_client", None)
+
+                                try:
+                                    if ws is not None:
+                                        await ws.close()
+                                except Exception:
+                                    pass
+
+                                # Unblock wait_closed() if it would otherwise await an unresolved Future.
+                                try:
+                                    if close_task is not None and hasattr(close_task, "done") and not close_task.done():
+                                        close_task.set_result(None)
+                                except Exception:
+                                    pass
+
+                                try:
+                                    if client is not None:
+                                        await client.close()
+                                except Exception:
+                                    pass
+
+                                try:
+                                    setattr(tr, "_ws", None)
+                                    setattr(tr, "_client", None)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
                         # On shutdown/cancel, close any live proxy tunnels and unsubscribe.
                         try:
                             for k, rec in list(tunnels.items()):
@@ -1364,12 +1403,20 @@ class BootstrapService:
                         except Exception:
                             pass
                         try:
-                            await nc.drain()
+                            await asyncio.wait_for(nc.drain(), timeout=2.0)
                         except Exception:
-                            try:
-                                await nc.close()
-                            except Exception:
-                                pass
+                            pass
+                        try:
+                            await asyncio.wait_for(nc.close(), timeout=2.0)
+                        except Exception:
+                            pass
+                        await _force_close_ws_transport()
+                        # Give canceled subscription tasks a chance to finish to avoid
+                        # "Task was destroyed but it is pending!" warnings.
+                        try:
+                            await asyncio.sleep(0)
+                        except Exception:
+                            pass
 
                 # Supervisor wrapper: never crash on unhandled errors; restart with backoff
                 async def _nats_bridge_supervisor() -> None:
