@@ -1,5 +1,5 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
-import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
+import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule, ModalController } from '@ionic/angular'
 import { Observable } from 'rxjs'
