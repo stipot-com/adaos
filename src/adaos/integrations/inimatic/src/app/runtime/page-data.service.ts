@@ -15,7 +15,7 @@ import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { YDocService } from '../y/ydoc.service'
 import { observeDeep } from '../y/y-helpers'
-import { isDebugEnabled } from '../debug-log'
+import { isVerboseDebugEnabled } from '../debug-log'
 
 let YDOC_DEBUG_EMITS = 0
 
@@ -102,9 +102,9 @@ export class PageDataService {
     return new Observable<T | undefined>((subscriber) => {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
-        const debug = isDebugEnabled()
-        if (debug) YDOC_DEBUG_EMITS++
-        if (debug && YDOC_DEBUG_EMITS <= 20) {
+        const verbose = isVerboseDebugEnabled()
+        if (verbose) YDOC_DEBUG_EMITS++
+        if (verbose && YDOC_DEBUG_EMITS <= 20) {
           try {
             const kind = cfg.transform || cfg.path || 'unknown'
             const size =
@@ -257,7 +257,7 @@ export class PageDataService {
         scenario_id: it.scenario_id,
         dev: !!it.dev,
       }))
-    if (isDebugEnabled()) {
+    if (isVerboseDebugEnabled()) {
       try {
         // eslint-disable-next-line no-console
         console.log(

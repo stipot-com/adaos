@@ -7,6 +7,7 @@ import { PageActionService } from '../../runtime/page-action.service'
 import { PageStateService } from '../../runtime/page-state.service'
 import { WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageModalService } from '../../runtime/page-modal.service'
+import { isVerboseDebugEnabled } from '../../debug-log'
 
 @Component({
   selector: 'ada-collection-grid-widget',
@@ -137,10 +138,12 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   }
 
   async onItemClick(item: any): Promise<void> {
-    try {
-      // eslint-disable-next-line no-console
-      console.log('[CollectionGridWidget] onItemClick', this.widget?.id, item)
-    } catch {}
+    if (isVerboseDebugEnabled()) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[CollectionGridWidget] onItemClick', this.widget?.id, item)
+      } catch {}
+    }
     this.itemClick.emit(item)
     const cfg = this.widget
     if (!cfg?.actions) return
@@ -153,10 +156,12 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
 
   private updateItemsStream(): void {
     this.items$ = this.data.load<any[]>(this.widget?.dataSource)
-    try {
-      // eslint-disable-next-line no-console
-      console.log('[CollectionGridWidget] updateItemsStream', this.widget?.id, 'dataSource=', this.widget?.dataSource)
-    } catch {}
+    if (isVerboseDebugEnabled()) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[CollectionGridWidget] updateItemsStream', this.widget?.id, 'dataSource=', this.widget?.dataSource)
+      } catch {}
+    }
   }
 
   isSelected(item: any): boolean {

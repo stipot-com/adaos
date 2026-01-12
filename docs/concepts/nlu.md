@@ -4,72 +4,74 @@ This document describes the current production MVP direction for intent detectio
 
 ## MVP baseline
 
-- **Pipeline**: `regex` → `rasa (service-skill)` → `teacher (LLM in the loop)`
-- **System boundary**: the interpreter code is **one**, only **data** varies per scenario/skill.
-- **Transport**: intent detection is integrated into AdaOS event bus (not CLI-only).
+- Pipeline: `regex` -> `rasa (service-skill)` -> `teacher (LLM in the loop)`
+- System boundary: NLU runtime code is one; only **data** varies per scenario/skill.
+- Transport: intent detection is integrated into AdaOS event bus (not CLI-only).
 
 ## Event flow (high level)
 
-1. UI / Telegram / Voice publishes a request:
-   - `nlp.intent.detect.request` `{ text, webspace_id, request_id, _meta... }`
-2. `nlu.pipeline` tries:
-   - **regex** rules (fast, deterministic)
-   - if not matched → emits `nlp.intent.detect.rasa` (delegates to Rasa service)
-3. If an intent is found:
-   - `nlp.intent.detected` `{ intent, confidence, slots, text, webspace_id, request_id, via }`
-4. If intent is not obtained:
-   - `nlp.intent.not_obtained` `{ reason, text, via, webspace_id, request_id }`
-   - UI gets a human-friendly message from router (and the request is recorded for training).
-5. If teacher is enabled:
-   - `nlp.teacher.request` is emitted for LLM/teacher processing.
-   - teacher may propose:
-     - `nlp.teacher.revision.suggested` (revise NLU dataset)
-     - `nlp.teacher.candidate.proposed` (new skill/scenario candidate for future implementation)
+1. UI / Telegram / Voice publishes:
+   - `nlp.intent.detect.request { text, webspace_id, request_id, _meta... }`
+2. `nlu.pipeline` tries regex rules:
+   - built-in rules (`nlu.pipeline`)
+   - dynamic rules (`data.nlu.regex_rules`)
+3. If regex does not match:
+   - `nlp.intent.detect.rasa` is emitted (delegates to the Rasa service skill)
+4. If an intent is found:
+   - `nlp.intent.detected { intent, confidence, slots, text, webspace_id, request_id, via }`
+5. If intent is not obtained:
+   - `nlp.intent.not_obtained { reason, text, via, webspace_id, request_id }`
+   - Router emits a human-friendly `io.out.chat.append` and records the request for NLU Teacher.
+6. If teacher is enabled:
+   - `nlp.teacher.request { webspace_id, request }` is emitted for teacher runtimes.
 
 ## Rasa as a service-skill
 
 Rasa is treated as a **service-type skill** (separate Python/venv, managed lifecycle) to avoid dependency conflicts with the hub runtime.
 
-Key properties:
+The hub supervises:
 
-- **Autostart / supervision**: hub starts the service skill and monitors:
-  - health checks,
-  - crash frequency,
-  - request failures / timeouts.
-- **Issues + doctor loop**:
-  - hub emits `skill.service.issue` on repeated problems,
-  - hub emits `skill.service.doctor.request` with status/log tail,
-  - a doctor component can produce `skill.service.doctor.report` (LLM doctor can be plugged later).
+- health checks
+- crash frequency
+- request failures/timeouts
+
+Issues can trigger:
+
+- `skill.service.issue`
+- `skill.service.doctor.request` -> `skill.service.doctor.report` (LLM doctor can be plugged later)
 
 ## Teacher-in-the-loop (LLM)
 
-When `regex` and `rasa` do not produce an intent, AdaOS can call an LLM teacher to:
+When `regex` and `rasa` do not produce an intent, AdaOS calls an LLM teacher to:
 
-- propose a **new NLU revision** (intent name + examples + slots), or
-- propose a **candidate feature** (new skill / scenario) for future implementation, or
-- decide to ignore (non-actionable message).
+- propose a **dataset revision** (existing intent + new examples + slots), or
+- propose a **regex rule** to improve the `regex` stage, or
+- propose a **new capability** (skill / scenario candidate), or
+- decide to ignore (non-actionable).
 
-Teacher data is projected into `data.nlu_teacher.*` for UI inspection.
+Teacher receives scenario + skill context, including:
 
-## Web UI: “NLU Teacher”
+- current scenario NLU (`scenario.json:nlu`)
+- installed catalog (apps/widgets + origins)
+- existing dynamic regex rules (`data.nlu.regex_rules`)
+- built-in regex rules (`nlu.pipeline`)
+- selected skill-level NLU artifacts (e.g. `interpreter/intents.yml`)
 
-In the default web desktop scenario the NLU Teacher UI is implemented as a declarative schema modal that reads:
+Teacher state is projected into YJS under `data.nlu_teacher.*` for UI inspection (MVP; not durable storage).
 
-- `data/nlu_teacher/revisions`
-- `data/nlu_teacher/candidates`
-- `data/nlu_teacher/llm_logs`
+## Web UI: NLU Teacher
 
-No domain-specific Angular components are required: only generic widgets (`ui.list`, `ui.jsonViewer`) + schema.
+In the default web desktop scenario the NLU Teacher UI is a schema-driven modal:
 
-## Debugging
-
-To reduce console noise, frontend debug logs are muted by default.
-
-- Enable verbose UI console output: set `localStorage['adaos.debug'] = '1'` and reload.
+- Tabs: **User requests** / **Candidates**
+- Grouping: entries are grouped by `request_id`
+- Logs: request groups show event payloads inline (raw JSON)
+- Apply actions:
+  - `nlp.teacher.revision.apply`
+  - `nlp.teacher.regex_rule.apply` (stores a dynamic rule under `data.nlu.regex_rules`, used by `nlu.pipeline`)
 
 ## Later (not MVP)
 
 - Rhasspy / offline NLU
 - Retriever-style NLU (graph/context retrieval)
 - Multi-step, stateful NLU workflows across scenarios
-

@@ -30,7 +30,7 @@ import { VoiceInputWidgetComponent } from './voice-input.widget.component'
 import { ListWidgetComponent } from './list.widget.component'
 import { FormWidgetComponent } from './form.widget.component'
 import { JsonViewerWidgetComponent } from './json-viewer.widget.component'
-import { isDebugEnabled } from '../../debug-log'
+import { isVerboseDebugEnabled } from '../../debug-log'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'collection.grid': CollectionGridWidgetComponent,
@@ -97,7 +97,7 @@ export class PageWidgetHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const cmp = PAGE_WIDGET_REGISTRY[this.widget.type]
     if (!cmp) return
-    if (isDebugEnabled()) {
+    if (isVerboseDebugEnabled()) {
       try {
         // eslint-disable-next-line no-console
         console.log('[PageWidgetHost] render widget', this.widget.id, 'type=', this.widget.type)

@@ -9,6 +9,7 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.yjs.webspace import default_webspace_id
+from adaos.services.nlu.teacher_events import append_event, make_event
 
 _log = logging.getLogger("adaos.nlu.teacher")
 
@@ -83,6 +84,23 @@ async def _on_not_obtained(evt: Any) -> None:
         await _append_teacher_item(webspace_id, item)
     except Exception:
         _log.debug("failed to append nlu_teacher item webspace=%s", webspace_id, exc_info=True)
+
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=request_id,
+                request_text=text,
+                kind="not_obtained",
+                title="Intent not obtained",
+                subtitle=f"{reason} via={via}" if via else reason,
+                raw=item,
+                meta=meta,
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append nlu_teacher event webspace=%s", webspace_id, exc_info=True)
 
     # Emit a single, generic event to be consumed by an external teacher (LLM).
     bus_emit(

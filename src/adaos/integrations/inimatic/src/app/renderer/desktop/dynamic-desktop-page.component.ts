@@ -7,7 +7,7 @@ import { YDocService } from '../../y/ydoc.service'
 import { DesktopSchemaService } from '../../runtime/desktop-schema.service'
 import { AdaApp } from '../../runtime/dsl-types'
 import '../../runtime/registry.workspaces'
-import { isDebugEnabled } from '../../debug-log'
+import { isVerboseDebugEnabled } from '../../debug-log'
 
 @Component({
   selector: 'ada-dynamic-desktop-page',
@@ -58,7 +58,7 @@ export class DynamicDesktopPageComponent implements OnInit {
   ) {}
 
   async ngOnInit(): Promise<void> {
-    if (isDebugEnabled()) {
+    if (isVerboseDebugEnabled()) {
       try {
         // eslint-disable-next-line no-console
         console.log('[DynamicDesktop] ngOnInit: initFromHub()...')
@@ -72,7 +72,7 @@ export class DynamicDesktopPageComponent implements OnInit {
   private loadSchema(): void {
     try {
       this.schema = this.schemaService.loadSchema()
-      if (isDebugEnabled()) {
+      if (isVerboseDebugEnabled()) {
         try {
           // eslint-disable-next-line no-console
           console.log(
@@ -84,12 +84,10 @@ export class DynamicDesktopPageComponent implements OnInit {
       }
     } catch (err) {
       this.schema = undefined
-      if (isDebugEnabled()) {
-        try {
-          // eslint-disable-next-line no-console
-          console.log('[DynamicDesktop] failed to load schema', err)
-        } catch {}
-      }
+      try {
+        // eslint-disable-next-line no-console
+        console.warn('[DynamicDesktop] failed to load schema', err)
+      } catch {}
     }
   }
 

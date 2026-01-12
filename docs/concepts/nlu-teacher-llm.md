@@ -1,21 +1,22 @@
-# NLU Teacher (LLM) — MVP
+# NLU Teacher (LLM) MVP
 
-This document describes the minimal **LLM teacher-in-the-loop** implementation for AdaOS NLU.
+This document describes the minimal teacher-in-the-loop implementation for AdaOS NLU.
 
 ## Pipeline (MVP)
 
-1. Router emits `nlp.intent.detect.request` (text + webspace_id + request_id).
-2. If `regex` matches → `nlp.intent.detected { via: "regex" }`.
-3. Else try Rasa (service skill) → `nlp.intent.detected { via: "rasa" }`.
-4. If no intent is obtained → `nlp.intent.not_obtained { via: "rasa", reason: ... }`.
+1. Router emits `nlp.intent.detect.request` (`text` + `webspace_id` + `request_id`).
+2. `nlu.pipeline` tries:
+   - built-in + dynamic `regex` (fast, deterministic)
+   - if not matched -> delegates to Rasa service (`nlp.intent.detect.rasa`)
+3. If intent is found -> `nlp.intent.detected { via: "regex" | "regex.dynamic" | "rasa" }`.
+4. If intent is not obtained -> `nlp.intent.not_obtained { reason, via, ... }`.
 5. Teacher bridge reacts to `nlp.intent.not_obtained` and emits:
    - `nlp.teacher.request { webspace_id, request }`
-6. Teacher runtime creates a placeholder revision and stores teacher state for UI:
-   - `data.nlu_teacher.revisions[]` (e.g. `status="pending"`).
-7. LLM teacher consumes `nlp.teacher.request`, calls Root `/v1/llm/response`, and produces:
-   - `nlp.teacher.candidate.proposed` (suggest new skill/scenario), and/or
-   - `nlp.teacher.revision.proposed` (suggest NLU dataset revision),
-   - also appends structured logs: `data.nlu_teacher.llm_logs[]`.
+6. Teacher runtimes store state for UI inspection (YJS, per webspace):
+   - `data.nlu_teacher.events[]` (includes `llm.request` / `llm.response`)
+   - `data.nlu_teacher.candidates[]` (regex rules / skill candidates / scenario candidates)
+   - `data.nlu_teacher.revisions[]` (proposed dataset revisions)
+   - `data.nlu_teacher.llm_logs[]` (request/response logs; debugging)
 
 ## Enable
 
@@ -26,24 +27,44 @@ Set env vars on hub:
 - optional: `ADAOS_NLU_LLM_MODEL=gpt-4o-mini`
 - optional: `ADAOS_NLU_LLM_TIMEOUT_S=20`
 
-## Storage (YJS, MVP)
+## Teacher context (inputs)
 
-For MVP, teacher state is stored in YJS under `data.nlu_teacher` (projected per webspace):
+LLM teacher receives a compact context snapshot (per webspace), including:
 
-- `revisions[]` — pending/proposed/applied/ignored revisions
-- `candidates[]` — proposed skill/scenario candidates
-- `llm_logs[]` — request/response logs (for debugging and UI)
+- current scenario id
+- scenario-level NLU (`scenario.json:nlu`)
+- catalog of apps/widgets (with origins)
+- installed ids
+- built-in regex rules (`nlu.pipeline`)
+- dynamic regex rules (`data.nlu.regex_rules`)
+- selected skill NLU artifacts (e.g. `interpreter/intents.yml`)
 
-This is intentionally not “durable storage”; later we can project from a persistent store into YJS.
+Goal: prefer improving existing intents (regex rule / dataset revision) over creating a new capability, when possible.
 
 ## Apply (manual, MVP)
 
 Apply is manual in MVP:
 
-- emit `nlp.teacher.revision.apply` with:
-  - `revision_id`
-  - `intent`
-  - `examples[]`
-  - `slots`
+- apply a proposed dataset revision:
+  - `nlp.teacher.revision.apply { revision_id, intent, examples[], slots }`
+- apply a regex rule candidate:
+  - `nlp.teacher.regex_rule.apply { candidate_id, intent, pattern }`
 
-The default Web UI provides this via the “NLU Teacher” modal, implemented as a declarative schema (`ui.list` + `ui.jsonViewer`) reading `data.nlu_teacher.*`.
+The default Web UI provides Apply buttons via the schema-driven **NLU Teacher** modal.
+
+## Example: improve existing intent via regex rule
+
+Utterance: `Какая температура в Москве?`
+
+Assume built-in weather regex only matches `погода` / `weather`, so the regex stage misses the intent.
+
+Expected teacher decision:
+
+- `decision="propose_regex_rule"`
+- `regex_rule.intent="desktop.open_weather"`
+- `regex_rule.pattern` should be a Python regex with named capture groups, e.g. `(?P<city>...)`
+
+After you click **Apply** on the regex-rule candidate:
+
+- a dynamic rule is stored under `data.nlu.regex_rules`
+- the next time the same utterance is sent, `nlu.pipeline` should resolve it as `via="regex.dynamic"` without calling the LLM

@@ -10,6 +10,7 @@ import { PageDataService } from '../../runtime/page-data.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
 import { YDocService } from '../../y/ydoc.service'
 import { coerceChatState, WebIOChatMessage } from '../../runtime/webio-contracts'
+import { isVerboseDebugEnabled } from '../../debug-log'
 
 @Component({
   selector: 'ada-chat-widget',
@@ -147,10 +148,12 @@ export class ChatWidgetComponent implements OnInit, OnDestroy {
     if (stream) {
       this.dataSub = stream.subscribe((value) => {
         const next = coerceChatState(value).messages
-        try {
-          // eslint-disable-next-line no-console
-          console.log('[ChatWidget] update', this.widget?.id, 'len=', next.length, next)
-        } catch {}
+        if (isVerboseDebugEnabled()) {
+          try {
+            // eslint-disable-next-line no-console
+            console.log('[ChatWidget] update', this.widget?.id, 'len=', next.length)
+          } catch {}
+        }
         this.messages = next
         this.maybeSpeakNew()
         setTimeout(() => {

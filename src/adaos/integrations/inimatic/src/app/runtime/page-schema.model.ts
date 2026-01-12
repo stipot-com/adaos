@@ -36,6 +36,11 @@ export interface PageSchema {
   title?: string
   layout: LayoutConfig
   widgets: WidgetConfig[]
+  /**
+   * Optional initial state patch applied when the page/modal is opened.
+   * Used for simple UI state like active tabs.
+   */
+  initialState?: Record<string, any>
 }
 
 export interface WidgetConfig {

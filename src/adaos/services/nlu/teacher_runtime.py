@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping, Optional
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.nlu.teacher_events import append_event, make_event
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -146,6 +147,23 @@ async def _on_teacher_request(evt: Any) -> None:
         _log.debug("failed to append teacher revision webspace=%s", webspace_id, exc_info=True)
         return
 
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=revision.get("request_id") if isinstance(revision.get("request_id"), str) else None,
+                request_text=text.strip(),
+                kind="revision.proposed",
+                title="Revision proposed",
+                subtitle="pending",
+                raw=revision,
+                meta=revision.get("meta") if isinstance(revision.get("meta"), Mapping) else {},
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append nlu_teacher event webspace=%s", webspace_id, exc_info=True)
+
     bus_emit(
         ctx.bus,
         "nlp.teacher.revision.proposed",
@@ -209,6 +227,23 @@ async def _on_revision_apply(evt: Any) -> None:
         await _append_dataset_item(webspace_id, dataset_item)
     except Exception:
         _log.debug("failed to append teacher dataset item webspace=%s", webspace_id, exc_info=True)
+
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=updated.get("request_id") if isinstance(updated, dict) and isinstance(updated.get("request_id"), str) else None,
+                request_text=updated.get("text") if isinstance(updated, dict) and isinstance(updated.get("text"), str) else intent,
+                kind="revision.applied",
+                title="Revision applied",
+                subtitle=intent,
+                raw=updated if isinstance(updated, Mapping) else {"revision_id": revision_id, "intent": intent},
+                meta=updated.get("meta") if isinstance(updated, dict) and isinstance(updated.get("meta"), Mapping) else {},
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append nlu_teacher event webspace=%s", webspace_id, exc_info=True)
 
     bus_emit(
         ctx.bus,

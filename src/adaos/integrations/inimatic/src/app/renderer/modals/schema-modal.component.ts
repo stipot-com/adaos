@@ -1,5 +1,5 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
-import { Component, Input, OnDestroy, OnInit } from '@angular/core'
+import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule, ModalController } from '@ionic/angular'
 import { Observable } from 'rxjs'
@@ -17,6 +17,7 @@ import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.compone
 import { DetailsWidgetComponent } from '../widgets/details.widget.component'
 import { ChatWidgetComponent } from '../widgets/chat.widget.component'
 import { VoiceInputWidgetComponent } from '../widgets/voice-input.widget.component'
+import { PageStateService } from '../../runtime/page-state.service'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -235,6 +236,9 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
       <ion-toolbar>
         <ion-title>{{ title }}</ion-title>
         <ion-buttons slot="end">
+          <ion-button *ngIf="showFullscreenButton" (click)="toggleFullscreen()" aria-label="Fullscreen">
+            <ion-icon [name]="isFullscreen ? 'contract-outline' : 'expand-outline'"></ion-icon>
+          </ion-button>
           <ion-button (click)="dismiss()">Close</ion-button>
         </ion-buttons>
       </ion-toolbar>
@@ -283,9 +287,59 @@ export class SchemaModalComponent {
   @Input() title?: string
   @Input() schema?: PageSchema
 
-  constructor(private modalCtrl: ModalController) {}
+  private appliedInitialState = false
+  showFullscreenButton = false
+  isFullscreen = false
+
+  constructor(
+    private modalCtrl: ModalController,
+    private pageState: PageStateService,
+  ) {}
+
+  ngOnInit(): void {
+    this.showFullscreenButton = this.shouldShowFullscreenButton()
+    this.applyInitialStateIfNeeded()
+  }
+
+  ngOnChanges(_changes: SimpleChanges): void {
+    this.applyInitialStateIfNeeded()
+  }
 
   dismiss(): void {
     this.modalCtrl.dismiss()
+  }
+
+  async toggleFullscreen(): Promise<void> {
+    try {
+      const top: any = await this.modalCtrl.getTop()
+      if (!top) return
+      this.isFullscreen = top.classList.toggle('ada-schema-modal-fullscreen')
+    } catch {
+      // best-effort
+    }
+  }
+
+  private applyInitialStateIfNeeded(): void {
+    if (this.appliedInitialState) return
+    const init = this.schema?.initialState
+    if (!init || typeof init !== 'object') return
+    const snapshot = this.pageState.getSnapshot()
+    const patch: Record<string, any> = {}
+    for (const [k, v] of Object.entries(init)) {
+      if (snapshot[k] === undefined) patch[k] = v
+    }
+    if (Object.keys(patch).length) {
+      this.pageState.patch(patch)
+    }
+    this.appliedInitialState = true
+  }
+
+  private shouldShowFullscreenButton(): boolean {
+    try {
+      // On small screens Ionic modals are already fullscreen.
+      return window.matchMedia('(min-width: 768px)').matches
+    } catch {
+      return false
+    }
   }
 }

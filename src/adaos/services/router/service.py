@@ -703,7 +703,10 @@ class RouterService:
             name = cdef.get("name") if isinstance(cdef.get("name"), str) else ""
             desc = cdef.get("description") if isinstance(cdef.get("description"), str) else ""
 
-            label_kind = "навык" if kind == "skill" else "сценарий"
+            if kind == "regex_rule":
+                label_kind = "правило regex"
+            else:
+                label_kind = "навык" if kind == "skill" else "сценарий"
             msg = "Я подготовил предложение для обучения NLU."
             if req_text:
                 msg = f"Вы просили: «{req_text}».\n\nЯ подумал и добавил в план разработки кандидат: {label_kind}."

@@ -5,11 +5,14 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.root.client import RootHttpClient
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
@@ -78,7 +81,27 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         out = {"id": w.get("id"), "title": w.get("title"), "type": w.get("type"), "origin": w.get("origin")}
         return {k: v for k, v in out.items() if v is not None}
 
-    return {
+    nlu = data.get("nlu") if isinstance(data.get("nlu"), dict) else {}
+    regex_rules = nlu.get("regex_rules") if isinstance(nlu.get("regex_rules"), list) else []
+
+    def _strip_rule(rule: Any) -> Optional[dict[str, Any]]:
+        if not isinstance(rule, dict):
+            return None
+        out = {
+            "id": rule.get("id"),
+            "intent": rule.get("intent"),
+            "pattern": rule.get("pattern"),
+            "enabled": rule.get("enabled"),
+            "source": rule.get("source"),
+        }
+        out = {k: v for k, v in out.items() if v is not None}
+        if not isinstance(out.get("intent"), str) or not out.get("intent"):
+            return None
+        if not isinstance(out.get("pattern"), str) or not out.get("pattern"):
+            return None
+        return out
+
+    out: dict[str, Any] = {
         "current_scenario": current_scenario,
         "catalog": {
             "apps": [x for x in (_strip_app(a) for a in apps) if x],
@@ -88,7 +111,127 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
             "apps": [x for x in installed_apps if isinstance(x, (str, int))],
             "widgets": [x for x in installed_widgets if isinstance(x, (str, int))],
         },
+        "regex_rules": [x for x in (_strip_rule(r) for r in regex_rules) if x][:50],
     }
+
+    # Provide a lightweight view of existing skill-level NLU artifacts, so the LLM can
+    # propose improvements to existing skills instead of always creating new ones.
+    try:
+        skills = _infer_skills_from_catalog(apps=apps, widgets=widgets)
+        out["skill_nlu"] = _load_skill_nlu_artifacts(skills)
+    except Exception:
+        out["skill_nlu"] = {}
+
+    return out
+
+
+def _infer_skills_from_catalog(*, apps: list[Any], widgets: list[Any]) -> list[str]:
+    skills: set[str] = set()
+    for item in list(apps) + list(widgets):
+        if not isinstance(item, dict):
+            continue
+        origin = item.get("origin")
+        if not isinstance(origin, str):
+            continue
+        if origin.startswith("skill:") and len(origin) > len("skill:"):
+            skills.add(origin[len("skill:") :].strip())
+    return sorted([s for s in skills if s])
+
+
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for p in [here.parent, *here.parents]:
+        if (p / ".adaos" / "workspace" / "skills").is_dir():
+            return p
+    return Path.cwd()
+
+
+def _safe_read_text(path: Path, *, limit: int = 6000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
+    s = text.strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"... <truncated {len(s) - limit} chars>"
+
+
+def _load_skill_nlu_artifacts(skills: list[str]) -> dict[str, Any]:
+    """
+    Returns a small, prompt-friendly mapping of skill->nlu files (raw text).
+
+    This is intentionally conservative: we only include a few files per skill and we truncate.
+    """
+    root = _find_repo_root()
+    base = root / ".adaos" / "workspace" / "skills"
+    out: dict[str, Any] = {}
+
+    # Keep token usage bounded.
+    for skill in skills[:10]:
+        if not skill or "/" in skill or "\\" in skill:
+            continue
+        skill_dir = base / skill
+        if not skill_dir.is_dir():
+            continue
+
+        files: dict[str, str] = {}
+        intents_yml = skill_dir / "interpreter" / "intents.yml"
+        if intents_yml.is_file():
+            content = _safe_read_text(intents_yml, limit=8000)
+            if content:
+                files["interpreter/intents.yml"] = content
+
+        nlu_yml = skill_dir / "interpreter" / "nlu.yml"
+        if nlu_yml.is_file() and "interpreter/intents.yml" not in files:
+            content = _safe_read_text(nlu_yml, limit=8000)
+            if content:
+                files["interpreter/nlu.yml"] = content
+
+        if files:
+            out[skill] = files
+
+    return out
+
+
+def _extract_scenario_nlu(*, scenario_id: str | None) -> dict[str, Any]:
+    if not scenario_id:
+        return {}
+    try:
+        content = scenarios_loader.read_content(scenario_id)
+    except Exception:
+        return {}
+    if not isinstance(content, dict):
+        return {}
+    nlu = content.get("nlu")
+    if not isinstance(nlu, dict):
+        return {}
+    intents = nlu.get("intents")
+    if not isinstance(intents, dict):
+        return {}
+
+    out: dict[str, Any] = {"intents": {}}
+    for intent, spec in intents.items():
+        if not isinstance(intent, str) or not intent:
+            continue
+        if not isinstance(spec, dict):
+            continue
+        examples = spec.get("examples") if isinstance(spec.get("examples"), list) else []
+        actions = spec.get("actions") if isinstance(spec.get("actions"), list) else []
+        out["intents"][intent] = {
+            "description": spec.get("description"),
+            "scope": spec.get("scope"),
+            "examples": [x for x in examples if isinstance(x, str) and x.strip()][:10],
+            "actions": [
+                {k: v for k, v in a.items() if k in {"type", "target", "params"}}
+                for a in actions
+                if isinstance(a, dict)
+            ][:5],
+        }
+    return out
 
 
 def _extract_first_output_text(res: Any) -> str:
@@ -146,14 +289,15 @@ def _redact_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     return out
 
 
-def _build_prompt(*, utterance: str, webspace_id: str, context: dict[str, Any]) -> list[dict[str, str]]:
+def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[str, Any]) -> list[dict[str, str]]:
     system = (
         "You are AdaOS NLU teacher. Decide what to do with a user utterance.\n"
         "You must return ONLY valid JSON (no markdown).\n\n"
         "Output schema:\n"
         "{\n"
-        '  \"decision\": \"revise_nlu\" | \"create_skill_candidate\" | \"create_scenario_candidate\" | \"ignore\",\n'
+        '  \"decision\": \"revise_nlu\" | \"propose_regex_rule\" | \"create_skill_candidate\" | \"create_scenario_candidate\" | \"ignore\",\n'
         '  \"intent\": string|null,\n'
+        '  \"regex_rule\": {\"intent\": string, \"pattern\": string} | null,\n'
         '  \"examples\": string[],\n'
         '  \"slots\": object,  // e.g. {\"city\": {\"type\": \"string\"}}\n'
         '  \"confidence\": number, // 0..1\n'
@@ -162,13 +306,26 @@ def _build_prompt(*, utterance: str, webspace_id: str, context: dict[str, Any]) 
         "}\n\n"
         "Rules:\n"
         "- If the utterance is not actionable for AdaOS, decision=ignore.\n"
-        "- If it matches a known app/widget/scenario, prefer revise_nlu and propose an intent name.\n"
+        "- Prefer existing intents from context (scenario_nlu.intents keys) over inventing new ones.\n"
+        "- Use provided context (scenario_nlu, builtin_regex, regex_rules, catalog, skill_nlu) to reuse existing intents.\n"
+        "- If it matches a known app/widget/scenario, prefer revise_nlu with an existing intent name.\n"
+        "- If an existing intent is the right match but regex stage likely misses it, prefer propose_regex_rule.\n"
+        "- propose_regex_rule.pattern MUST be a Python regex with named capture groups for slots (e.g. (?P<city>...)).\n"
+        "- Avoid proposing duplicate regex rules if builtin_regex or regex_rules already cover the utterance.\n"
+        "- If user asks about weather/temperature but doesn't say the exact keyword, propose a regex rule for intent desktop.open_weather.\n"
         "- If it suggests a new capability, propose create_skill_candidate or create_scenario_candidate.\n"
         "- Keep intent names short and namespaced (e.g. desktop.open_weather, smalltalk.how_are_you).\n"
     )
+    utterance = request.get("text") if isinstance(request.get("text"), str) else ""
     user = {
         "webspace_id": webspace_id,
-        "utterance": utterance,
+        "request": {
+            "id": request.get("id"),
+            "request_id": request.get("request_id"),
+            "text": utterance,
+            "reason": request.get("reason"),
+            "via": request.get("via"),
+        },
         "context": context,
     }
     return [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}]
@@ -289,8 +446,15 @@ async def _on_teacher_request(evt: Any) -> None:
     except Exception:
         snapshot = {}
     context = _extract_webspace_context(snapshot if isinstance(snapshot, dict) else {})
+    context["scenario_nlu"] = _extract_scenario_nlu(scenario_id=context.get("current_scenario"))
+    try:
+        from adaos.services.nlu.pipeline import describe_builtin_regex_rules  # local import to avoid cycles
 
-    messages = _build_prompt(utterance=text, webspace_id=webspace_id, context=context)
+        context["builtin_regex"] = describe_builtin_regex_rules()
+    except Exception:
+        context["builtin_regex"] = []
+
+    messages = _build_prompt(request=dict(req), webspace_id=webspace_id, context=context)
 
     log_id = f"llm.{int(time.time() * 1000)}"
     started_at = time.time()
@@ -313,6 +477,29 @@ async def _on_teacher_request(evt: Any) -> None:
         )
     except Exception:
         _log.debug("failed to append llm log webspace=%s", webspace_id, exc_info=True)
+
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=request_id,
+                request_text=text,
+                kind="llm.request",
+                title="LLM request",
+                subtitle=_MODEL,
+                raw={
+                    "log_id": log_id,
+                    "model": _MODEL,
+                    "messages": _redact_messages(messages),
+                    "max_tokens": _MAX_TOKENS,
+                    "timeout_s": _TIMEOUT_S,
+                },
+                meta=req_meta,
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append teacher event (llm.request) webspace=%s", webspace_id, exc_info=True)
 
     try:
         res = await _llm_call(messages)
@@ -377,6 +564,7 @@ async def _on_teacher_request(evt: Any) -> None:
 
     decision = suggestion.get("decision") if isinstance(suggestion.get("decision"), str) else "ignore"
     intent = suggestion.get("intent") if isinstance(suggestion.get("intent"), str) else None
+    regex_rule = suggestion.get("regex_rule") if isinstance(suggestion.get("regex_rule"), Mapping) else None
     examples = suggestion.get("examples") if isinstance(suggestion.get("examples"), list) else None
     if examples is None:
         examples = [text]
@@ -390,6 +578,23 @@ async def _on_teacher_request(evt: Any) -> None:
     notes = suggestion.get("notes") if isinstance(suggestion.get("notes"), str) else ""
 
     llm_meta = {"model": _MODEL, "ts": time.time(), "decision": decision, "confidence": confidence_f}
+
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=request_id,
+                request_text=text,
+                kind="llm.response",
+                title="LLM response",
+                subtitle=f"{decision} ({confidence_f:.2f})",
+                raw={"log_id": log_id, "decision": decision, "suggestion": suggestion},
+                meta=req_meta,
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append teacher event (llm.response) webspace=%s", webspace_id, exc_info=True)
 
     if decision == "revise_nlu" and intent:
         patch = {
@@ -406,7 +611,67 @@ async def _on_teacher_request(evt: Any) -> None:
             {"webspace_id": webspace_id, "request_id": request_id, "revision": updated, "suggestion": suggestion},
             source="nlu.teacher.llm",
         )
+        try:
+            await append_event(
+                webspace_id,
+                make_event(
+                    webspace_id=webspace_id,
+                    request_id=request_id,
+                    request_text=text,
+                    kind="revision.suggested",
+                    title="Revision suggested",
+                    subtitle=intent,
+                    raw=updated if isinstance(updated, Mapping) else {"intent": intent, "examples": examples},
+                    meta=req_meta,
+                ),
+            )
+        except Exception:
+            _log.debug("failed to append teacher event (revision.suggested) webspace=%s", webspace_id, exc_info=True)
         return
+
+    if decision == "propose_regex_rule" and regex_rule:
+        rr_intent = regex_rule.get("intent")
+        rr_pattern = regex_rule.get("pattern")
+        if isinstance(rr_intent, str) and rr_intent.strip() and isinstance(rr_pattern, str) and rr_pattern.strip():
+            entry = {
+                "id": f"cand.{int(time.time()*1000)}",
+                "ts": time.time(),
+                "kind": "regex_rule",
+                "text": text,
+                "request_id": request_id,
+                "candidate": {"name": f"Regex rule for {rr_intent.strip()}", "description": "Proposed regex rule to improve fast NLU stage."},
+                "regex_rule": {"intent": rr_intent.strip(), "pattern": rr_pattern},
+                "llm": llm_meta,
+                "notes": notes,
+                "status": "pending",
+            }
+            try:
+                await _append_candidate(webspace_id, entry)
+            except Exception:
+                _log.debug("failed to append regex rule candidate webspace=%s", webspace_id, exc_info=True)
+            bus_emit(
+                ctx.bus,
+                "nlp.teacher.candidate.proposed",
+                {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
+                source="nlu.teacher.llm",
+            )
+            try:
+                await append_event(
+                    webspace_id,
+                    make_event(
+                        webspace_id=webspace_id,
+                        request_id=request_id,
+                        request_text=text,
+                        kind="candidate.proposed",
+                        title="Candidate proposed",
+                        subtitle=f"regex_rule: {rr_intent.strip()}",
+                        raw=entry,
+                        meta=req_meta,
+                    ),
+                )
+            except Exception:
+                _log.debug("failed to append teacher event (candidate.proposed regex_rule) webspace=%s", webspace_id, exc_info=True)
+            return
 
     if decision in {"create_skill_candidate", "create_scenario_candidate"}:
         candidate = suggestion.get("candidate") if isinstance(suggestion.get("candidate"), Mapping) else {}
@@ -432,9 +697,41 @@ async def _on_teacher_request(evt: Any) -> None:
             {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
             source="nlu.teacher.llm",
         )
+        try:
+            await append_event(
+                webspace_id,
+                make_event(
+                    webspace_id=webspace_id,
+                    request_id=request_id,
+                    request_text=text,
+                    kind="candidate.proposed",
+                    title="Candidate proposed",
+                    subtitle=f"{entry.get('kind')}: {(entry.get('candidate') or {}).get('name') or ''}".strip(),
+                    raw=entry,
+                    meta=req_meta,
+                ),
+            )
+        except Exception:
+            _log.debug("failed to append teacher event (candidate.proposed) webspace=%s", webspace_id, exc_info=True)
         return
 
     # ignore: just annotate revision (if present) so UI can show why.
     patch = {"status": "ignored", "llm": llm_meta, "note": notes or "LLM decided to ignore.", "ignored_at": time.time()}
     await _update_revision_by_request_id(webspace_id, request_id=request_id, patch=patch)
     bus_emit(ctx.bus, "nlp.teacher.ignored", {"webspace_id": webspace_id, "request_id": request_id, "suggestion": suggestion}, source="nlu.teacher.llm")
+    try:
+        await append_event(
+            webspace_id,
+            make_event(
+                webspace_id=webspace_id,
+                request_id=request_id,
+                request_text=text,
+                kind="llm.ignored",
+                title="LLM ignored",
+                subtitle=notes or "",
+                raw={"suggestion": suggestion},
+                meta=req_meta,
+            ),
+        )
+    except Exception:
+        _log.debug("failed to append teacher event (llm.ignored) webspace=%s", webspace_id, exc_info=True)

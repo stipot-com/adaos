@@ -15,3 +15,4 @@ from . import trace_store as _trace_store  # noqa: F401
 from . import teacher_bridge as _teacher_bridge  # noqa: F401
 from . import teacher_runtime as _teacher_runtime  # noqa: F401
 from . import llm_teacher_runtime as _llm_teacher_runtime  # noqa: F401
+from . import regex_rules_runtime as _regex_rules_runtime  # noqa: F401
