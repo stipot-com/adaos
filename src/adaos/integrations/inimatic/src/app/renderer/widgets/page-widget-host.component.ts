@@ -29,7 +29,8 @@ import { ChatWidgetComponent } from './chat.widget.component'
 import { VoiceInputWidgetComponent } from './voice-input.widget.component'
 import { ListWidgetComponent } from './list.widget.component'
 import { FormWidgetComponent } from './form.widget.component'
-import { NluTeacherWidgetComponent } from './nlu-teacher.widget.component'
+import { JsonViewerWidgetComponent } from './json-viewer.widget.component'
+import { isDebugEnabled } from '../../debug-log'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'collection.grid': CollectionGridWidgetComponent,
@@ -40,11 +41,11 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'feedback.log': MetricTileWidgetComponent,
   'feedback.statusBar': StatusBarWidgetComponent,
   'ui.chat': ChatWidgetComponent,
-  'ui.nluTeacher': NluTeacherWidgetComponent,
   'ui.voiceInput': VoiceInputWidgetComponent,
   'ui.list': ListWidgetComponent,
   'ui.form': FormWidgetComponent,
   'ui.actions': CommandBarWidgetComponent,
+  'ui.jsonViewer': JsonViewerWidgetComponent,
   'item.textEditor': TextEditorWidgetComponent,
   'item.codeViewer': CodeViewerWidgetComponent,
   'item.details': DetailsWidgetComponent,
@@ -96,15 +97,12 @@ export class PageWidgetHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const cmp = PAGE_WIDGET_REGISTRY[this.widget.type]
     if (!cmp) return
-    try {
-      // eslint-disable-next-line no-console
-      console.log(
-        '[PageWidgetHost] render widget',
-        this.widget.id,
-        'type=',
-        this.widget.type
-      )
-    } catch {}
+    if (isDebugEnabled()) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[PageWidgetHost] render widget', this.widget.id, 'type=', this.widget.type)
+      } catch {}
+    }
     this.ref = this.vc.createComponent(cmp)
     Object.assign(this.ref.instance, { widget: this.widget })
     try {

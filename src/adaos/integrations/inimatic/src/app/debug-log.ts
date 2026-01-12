@@ -8,6 +8,16 @@ export interface DebugLogEntry {
 
 const LOG_BUFFER_KEY = '__ADAOS_DEBUG_LOGS__'
 
+const DEBUG_FLAG_KEY = 'adaos.debug'
+
+export function isDebugEnabled(): boolean {
+  try {
+    return (globalThis?.localStorage?.getItem(DEBUG_FLAG_KEY) || '') === '1'
+  } catch {
+    return false
+  }
+}
+
 export function initDebugConsole(): void {
   const g: any = (globalThis as any) || (window as any)
   const original = {
@@ -38,13 +48,15 @@ export function initDebugConsole(): void {
     }
   }
 
+  const echoDebug = isDebugEnabled()
+
   console.log = (...args: any[]) => {
     push('log', args)
-    original.log(...args)
+    if (echoDebug) original.log(...args)
   }
   console.info = (...args: any[]) => {
     push('info', args)
-    original.info(...args)
+    if (echoDebug) original.info(...args)
   }
   console.warn = (...args: any[]) => {
     push('warn', args)
@@ -59,6 +71,6 @@ export function initDebugConsole(): void {
     original,
     push,
     bufferKey: LOG_BUFFER_KEY,
+    debugFlagKey: DEBUG_FLAG_KEY,
   }
 }
-

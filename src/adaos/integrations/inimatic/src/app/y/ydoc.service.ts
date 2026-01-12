@@ -3,6 +3,7 @@ import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { WebsocketProvider } from 'y-websocket'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
+import { isDebugEnabled } from '../debug-log'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
@@ -416,8 +417,10 @@ export class YDocService {
       const ui = this.toJSON(this.getPath('ui'))
       const data = this.toJSON(this.getPath('data'))
       const registry = this.toJSON(this.getPath('registry'))
-      // eslint-disable-next-line no-console
-      console.log('[YDoc Snapshot]', { ui, data, registry })
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.log('[YDoc Snapshot]', { ui, data, registry })
+      }
     } catch {
       // ignore dump errors
     }

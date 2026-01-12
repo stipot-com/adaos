@@ -15,6 +15,7 @@ import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { YDocService } from '../y/ydoc.service'
 import { observeDeep } from '../y/y-helpers'
+import { isDebugEnabled } from '../debug-log'
 
 let YDOC_DEBUG_EMITS = 0
 
@@ -101,8 +102,9 @@ export class PageDataService {
     return new Observable<T | undefined>((subscriber) => {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
-        YDOC_DEBUG_EMITS++
-        if (YDOC_DEBUG_EMITS <= 20) {
+        const debug = isDebugEnabled()
+        if (debug) YDOC_DEBUG_EMITS++
+        if (debug && YDOC_DEBUG_EMITS <= 20) {
           try {
             const kind = cfg.transform || cfg.path || 'unknown'
             const size =
@@ -163,6 +165,15 @@ export class PageDataService {
       return [unsubscribe]
     }
 
+    // Teacher artifacts are stored as plain JSON under data.nlu_teacher (not Y.Maps),
+    // so observe the whole data map and project the subpath from it.
+    if (cfg.path && (cfg.path === 'data/nlu_teacher' || cfg.path.startsWith('data/nlu_teacher/'))) {
+      const node = this.ydoc.getPath('data')
+      if (!node) return [() => {}]
+      const unsubscribe = observeDeep(node, emit)
+      return [unsubscribe]
+    }
+
     const paths = this.pathsForYDoc(cfg)
     if (!paths.length) return [() => {}]
     return paths.map((path) => {
@@ -209,6 +220,16 @@ export class PageDataService {
           }
           return cur
         }
+        if (cfg.path && (cfg.path === 'data/nlu_teacher' || cfg.path.startsWith('data/nlu_teacher/'))) {
+          const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
+          const segs = cfg.path.split('/').filter(Boolean)
+          let cur: any = root
+          for (const s of segs.slice(1)) {
+            if (cur == null) return undefined
+            cur = cur?.[s]
+          }
+          return cur
+        }
         if (cfg.path) {
           return this.ydoc.toJSON(this.ydoc.getPath(cfg.path))
         }
@@ -236,18 +257,20 @@ export class PageDataService {
         scenario_id: it.scenario_id,
         dev: !!it.dev,
       }))
-    try {
-      // eslint-disable-next-line no-console
-      console.log(
-        '[PageDataService] resolveDesktopIcons',
-        'catalogApps=',
-        catalogApps.length,
-        'installedApps=',
-        installedApps.length,
-        'resolved=',
-        items.length
-      )
-    } catch {}
+    if (isDebugEnabled()) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(
+          '[PageDataService] resolveDesktopIcons',
+          'catalogApps=',
+          catalogApps.length,
+          'installedApps=',
+          installedApps.length,
+          'resolved=',
+          items.length
+        )
+      } catch {}
+    }
     return items
   }
 
