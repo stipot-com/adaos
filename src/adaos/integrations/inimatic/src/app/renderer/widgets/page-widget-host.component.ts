@@ -97,12 +97,6 @@ export class PageWidgetHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const cmp = PAGE_WIDGET_REGISTRY[this.widget.type]
     if (!cmp) return
-    if (isVerboseDebugEnabled()) {
-      try {
-        // eslint-disable-next-line no-console
-        console.log('[PageWidgetHost] render widget', this.widget.id, 'type=', this.widget.type)
-      } catch {}
-    }
     this.ref = this.vc.createComponent(cmp)
     Object.assign(this.ref.instance, { widget: this.widget })
     try {

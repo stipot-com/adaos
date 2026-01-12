@@ -57,18 +57,23 @@ Teacher receives scenario + skill context, including:
 - built-in regex rules (`nlu.pipeline`)
 - selected skill-level NLU artifacts (e.g. `interpreter/intents.yml`)
 
-Teacher state is projected into YJS under `data.nlu_teacher.*` for UI inspection (MVP; not durable storage).
+Teacher state is projected into YJS under `data.nlu_teacher.*` for UI inspection, and also persisted on disk
+under `.adaos/state/skills/nlu_teacher/<webspace_id>.json` so it survives YJS reload/reset.
 
 ## Web UI: NLU Teacher
 
 In the default web desktop scenario the NLU Teacher UI is a schema-driven modal:
 
 - Tabs: **User requests** / **Candidates**
-- Grouping: entries are grouped by `request_id`
-- Logs: request groups show event payloads inline (raw JSON)
+- Grouping:
+  - User requests: grouped by `request_id`
+  - Candidates: grouped by `candidate.name`, then by `request_id`
+- Logs: groups show event payloads inline (raw JSON)
 - Apply actions:
   - `nlp.teacher.revision.apply`
-  - `nlp.teacher.regex_rule.apply` (stores a dynamic rule under `data.nlu.regex_rules`, used by `nlu.pipeline`)
+  - `nlp.teacher.candidate.apply`:
+    - for `regex_rule` candidates: stores a dynamic rule under `data.nlu.regex_rules` (used by `nlu.pipeline`)
+    - for `skill`/`scenario` candidates: creates a development plan item
 
 ## Later (not MVP)
 

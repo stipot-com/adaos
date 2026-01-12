@@ -15,9 +15,7 @@ import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { YDocService } from '../y/ydoc.service'
 import { observeDeep } from '../y/y-helpers'
-import { isVerboseDebugEnabled } from '../debug-log'
 
-let YDOC_DEBUG_EMITS = 0
 
 @Injectable({ providedIn: 'root' })
 export class PageDataService {
@@ -102,19 +100,6 @@ export class PageDataService {
     return new Observable<T | undefined>((subscriber) => {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
-        const verbose = isVerboseDebugEnabled()
-        if (verbose) YDOC_DEBUG_EMITS++
-        if (verbose && YDOC_DEBUG_EMITS <= 20) {
-          try {
-            const kind = cfg.transform || cfg.path || 'unknown'
-            const size =
-              Array.isArray(value) ? `len=${value.length}` : value && typeof value === 'object' ? 'object' : typeof value
-            // eslint-disable-next-line no-console
-            console.log('[PageDataService] fromYDoc emit', kind, size)
-          } catch {
-            // ignore logging errors
-          }
-        }
         subscriber.next(value)
       }
       const unsubscribers = this.observeYDocPaths(cfg, emit)
@@ -257,20 +242,6 @@ export class PageDataService {
         scenario_id: it.scenario_id,
         dev: !!it.dev,
       }))
-    if (isVerboseDebugEnabled()) {
-      try {
-        // eslint-disable-next-line no-console
-        console.log(
-          '[PageDataService] resolveDesktopIcons',
-          'catalogApps=',
-          catalogApps.length,
-          'installedApps=',
-          installedApps.length,
-          'resolved=',
-          items.length
-        )
-      } catch {}
-    }
     return items
   }
 

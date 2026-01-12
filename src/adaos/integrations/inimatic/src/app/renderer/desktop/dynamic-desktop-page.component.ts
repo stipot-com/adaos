@@ -58,12 +58,6 @@ export class DynamicDesktopPageComponent implements OnInit {
   ) {}
 
   async ngOnInit(): Promise<void> {
-    if (isVerboseDebugEnabled()) {
-      try {
-        // eslint-disable-next-line no-console
-        console.log('[DynamicDesktop] ngOnInit: initFromHub()...')
-      } catch {}
-    }
     await this.ydoc.initFromHub()
     this.readBackground()
     this.loadSchema()
@@ -72,16 +66,6 @@ export class DynamicDesktopPageComponent implements OnInit {
   private loadSchema(): void {
     try {
       this.schema = this.schemaService.loadSchema()
-      if (isVerboseDebugEnabled()) {
-        try {
-          // eslint-disable-next-line no-console
-          console.log(
-            '[DynamicDesktop] schema loaded',
-            this.schema?.id,
-            Array.isArray(this.schema?.widgets) ? `widgets=${this.schema.widgets.length}` : 'widgets=0'
-          )
-        } catch {}
-      }
     } catch (err) {
       this.schema = undefined
       try {

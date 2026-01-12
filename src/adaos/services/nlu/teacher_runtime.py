@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -46,6 +49,78 @@ def _bounded(items: list[dict[str, Any]], *, max_items: int) -> list[dict[str, A
     if len(items) <= max_items:
         return items
     return items[-max_items:]
+
+
+async def _get_current_scenario_id(webspace_id: str) -> str | None:
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            raw = ui_map.get("current_scenario")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        s = v.strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _apply_revision_to_scenario_file(*, scenario_id: str, intent: str, examples: list[str]) -> None:
+    if not scenario_id or not intent:
+        return
+    root = scenarios_loader.scenario_root(scenario_id)
+    path = root / "scenario.json"
+    if not path.exists():
+        return
+
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+        doc = json.loads(raw)
+    except Exception:
+        _log.warning("teacher revision apply: failed to read scenario.json scenario=%s", scenario_id, exc_info=True)
+        return
+    if not isinstance(doc, dict):
+        return
+
+    nlu = doc.get("nlu")
+    if not isinstance(nlu, dict):
+        nlu = {}
+        doc["nlu"] = nlu
+    intents = nlu.get("intents")
+    if not isinstance(intents, dict):
+        intents = {}
+        nlu["intents"] = intents
+
+    spec = intents.get(intent)
+    if not isinstance(spec, dict):
+        spec = {"scope": "scenario", "examples": []}
+        intents[intent] = spec
+
+    existing = spec.get("examples")
+    if not isinstance(existing, list):
+        existing = []
+    merged = _dedupe_keep_order([*(str(x) for x in existing if isinstance(x, str)), *examples])
+    spec["examples"] = merged
+
+    try:
+        path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        _log.warning("teacher revision apply: failed to write scenario.json scenario=%s", scenario_id, exc_info=True)
+        return
+
+    scenarios_loader.invalidate_cache(scenario_id=scenario_id, space="workspace")
 
 
 async def _append_revision(webspace_id: str, revision: dict[str, Any]) -> None:
@@ -198,6 +273,7 @@ async def _on_revision_apply(evt: Any) -> None:
         examples = []
 
     slots = payload.get("slots") if isinstance(payload.get("slots"), Mapping) else {}
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), Mapping) else {}
 
     apply_patch = {
         "status": "applied",
@@ -229,6 +305,15 @@ async def _on_revision_apply(evt: Any) -> None:
         _log.debug("failed to append teacher dataset item webspace=%s", webspace_id, exc_info=True)
 
     try:
+        scenario_id = meta.get("scenario_id") if isinstance(meta.get("scenario_id"), str) else None
+        if not scenario_id:
+            scenario_id = await _get_current_scenario_id(webspace_id)
+        if scenario_id:
+            _apply_revision_to_scenario_file(scenario_id=scenario_id, intent=intent, examples=examples)
+    except Exception:
+        _log.debug("teacher revision apply: scenario update failed webspace=%s", webspace_id, exc_info=True)
+
+    try:
         await append_event(
             webspace_id,
             make_event(
@@ -251,3 +336,9 @@ async def _on_revision_apply(evt: Any) -> None:
         {"webspace_id": webspace_id, "revision": updated, "dataset_item": dataset_item},
         source="nlu.teacher.runtime",
     )
+
+    # Optional: kick auto-train if enabled (service skill decides by env flag).
+    try:
+        bus_emit(ctx.bus, "nlp.rasa.train", {"webspace_id": webspace_id}, source="nlu.teacher.runtime")
+    except Exception:
+        _log.debug("failed to emit nlp.rasa.train webspace=%s", webspace_id, exc_info=True)

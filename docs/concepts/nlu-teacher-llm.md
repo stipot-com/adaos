@@ -17,6 +17,8 @@ This document describes the minimal teacher-in-the-loop implementation for AdaOS
    - `data.nlu_teacher.candidates[]` (regex rules / skill candidates / scenario candidates)
    - `data.nlu_teacher.revisions[]` (proposed dataset revisions)
    - `data.nlu_teacher.llm_logs[]` (request/response logs; debugging)
+7. Teacher state is also persisted on disk so it survives YJS reload/reset:
+   - `.adaos/state/skills/nlu_teacher/<webspace_id>.json`
 
 ## Enable
 
@@ -47,14 +49,15 @@ Apply is manual in MVP:
 
 - apply a proposed dataset revision:
   - `nlp.teacher.revision.apply { revision_id, intent, examples[], slots }`
-- apply a regex rule candidate:
-  - `nlp.teacher.regex_rule.apply { candidate_id, intent, pattern }`
+- apply a teacher candidate (preferred UI command):
+  - `nlp.teacher.candidate.apply { candidate_id }`
+  - for `regex_rule` candidates the runtime delegates to `nlp.teacher.regex_rule.apply { intent, pattern }`
 
 The default Web UI provides Apply buttons via the schema-driven **NLU Teacher** modal.
 
 ## Example: improve existing intent via regex rule
 
-Utterance: `Какая температура в Москве?`
+Utterance: `покажи температуру в Москве`
 
 Assume built-in weather regex only matches `погода` / `weather`, so the regex stage misses the intent.
 
@@ -64,7 +67,7 @@ Expected teacher decision:
 - `regex_rule.intent="desktop.open_weather"`
 - `regex_rule.pattern` should be a Python regex with named capture groups, e.g. `(?P<city>...)`
 
-After you click **Apply** on the regex-rule candidate:
+After you click **Apply** on the regex-rule candidate (UI emits `nlp.teacher.candidate.apply`):
 
 - a dynamic rule is stored under `data.nlu.regex_rules`
 - the next time the same utterance is sent, `nlu.pipeline` should resolve it as `via="regex.dynamic"` without calling the LLM
