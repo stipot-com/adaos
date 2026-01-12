@@ -8,6 +8,7 @@ import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
 import { YDocService } from '../../y/ydoc.service'
 import { observeDeep } from '../../y/y-helpers'
+import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { MetricTileWidgetComponent } from '../widgets/metric-tile.widget.component'
 import { SelectorWidgetComponent } from '../widgets/selector.widget.component'
 import { TextInputWidgetComponent } from '../widgets/text-input.widget.component'
@@ -227,14 +228,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     CommonModule,
     IonicModule,
     SchemaCollectionGridComponent,
-    MetricTileWidgetComponent,
-    SelectorWidgetComponent,
-    TextInputWidgetComponent,
-    CommandBarWidgetComponent,
-    TextEditorWidgetComponent,
-    DetailsWidgetComponent,
-    ChatWidgetComponent,
-    VoiceInputWidgetComponent,
+    PageWidgetHostComponent,
   ],
   template: `
     <ion-header *ngIf="title">
@@ -254,44 +248,11 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
               *ngIf="widget.type === 'collection.grid'"
               [widget]="widget"
             ></ada-schema-collection-grid>
-            <!-- simple metric-tile based modals (e.g. weather summary) -->
-            <ada-metric-tile-widget
-              *ngIf="widget.type === 'visual.metricTile'"
+            <!-- everything else: use the unified widget host -->
+            <ada-page-widget-host
+              *ngIf="widget.type !== 'collection.grid'"
               [widget]="widget"
-            ></ada-metric-tile-widget>
-            <!-- selector-based widgets, e.g. city picker -->
-            <ada-selector-widget
-              *ngIf="widget.type === 'input.selector'"
-              [widget]="widget"
-            ></ada-selector-widget>
-            <!-- text input widgets (e.g. project name) -->
-            <ada-text-input-widget
-              *ngIf="widget.type === 'input.text'"
-              [widget]="widget"
-            ></ada-text-input-widget>
-            <!-- command bar actions (e.g. Create button) -->
-            <ada-command-bar-widget
-              *ngIf="widget.type === 'input.commandBar'"
-              [widget]="widget"
-            ></ada-command-bar-widget>
-            <!-- text editor widgets (e.g. addendum body) -->
-            <ada-text-editor-widget
-              *ngIf="widget.type === 'item.textEditor'"
-              [widget]="widget"
-            ></ada-text-editor-widget>
-            <!-- simple JSON/details viewer widgets -->
-            <ada-details-widget
-              *ngIf="widget.type === 'item.details'"
-              [widget]="widget"
-            ></ada-details-widget>
-            <ada-chat-widget
-              *ngIf="widget.type === 'ui.chat'"
-              [widget]="widget"
-            ></ada-chat-widget>
-            <ada-voice-input-widget
-              *ngIf="widget.type === 'ui.voiceInput'"
-              [widget]="widget"
-            ></ada-voice-input-widget>
+            ></ada-page-widget-host>
           </ng-container>
         </ng-container>
       </div>

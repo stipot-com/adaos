@@ -128,7 +128,7 @@ async def _on_teacher_request(evt: Any) -> None:
     revision = {
         "id": f"rev.{int(time.time()*1000)}",
         "ts": time.time(),
-        "status": "pending",
+        "status": "proposed",
         "request_id": req.get("request_id"),
         "text": text.strip(),
         "meta": dict(req.get("_meta") or {}) if isinstance(req.get("_meta"), Mapping) else {},
@@ -216,4 +216,3 @@ async def _on_revision_apply(evt: Any) -> None:
         {"webspace_id": webspace_id, "revision": updated, "dataset_item": dataset_item},
         source="nlu.teacher.runtime",
     )
-

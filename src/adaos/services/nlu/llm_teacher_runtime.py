@@ -271,6 +271,7 @@ async def _on_teacher_request(evt: Any) -> None:
     req = payload.get("request") if isinstance(payload.get("request"), Mapping) else None
     if not req:
         return
+    req_meta = req.get("_meta") if isinstance(req.get("_meta"), Mapping) else {}
 
     text = req.get("text")
     request_id = req.get("request_id")
@@ -424,7 +425,13 @@ async def _on_teacher_request(evt: Any) -> None:
             await _append_candidate(webspace_id, entry)
         except Exception:
             _log.debug("failed to append candidate webspace=%s", webspace_id, exc_info=True)
-        bus_emit(ctx.bus, "nlp.teacher.candidate.proposed", {"webspace_id": webspace_id, "candidate": entry}, source="nlu.teacher.llm")
+        # Include original meta so router can respond in the right UI route (voice_chat/telegram/etc).
+        bus_emit(
+            ctx.bus,
+            "nlp.teacher.candidate.proposed",
+            {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
+            source="nlu.teacher.llm",
+        )
         return
 
     # ignore: just annotate revision (if present) so UI can show why.

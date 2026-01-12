@@ -26,6 +26,15 @@ type TeacherState = {
         <ion-button size="small" fill="outline" (click)="reload()">Reload</ion-button>
       </div>
 
+      <ion-card *ngIf="error">
+        <ion-card-header>
+          <ion-card-title>Error</ion-card-title>
+        </ion-card-header>
+        <ion-card-content>
+          <div class="err">{{ error }}</div>
+        </ion-card-content>
+      </ion-card>
+
       <ion-card>
         <ion-card-header>
           <ion-card-title>Revisions</ion-card-title>
@@ -52,6 +61,27 @@ type TeacherState = {
               >
                 Apply
               </ion-button>
+            </div>
+          </div>
+        </ion-card-content>
+      </ion-card>
+
+      <ion-card>
+        <ion-card-header>
+          <ion-card-title>Candidates</ion-card-title>
+          <ion-card-subtitle *ngIf="candidates.length">Latest first</ion-card-subtitle>
+        </ion-card-header>
+        <ion-card-content>
+          <div class="empty" *ngIf="!candidates.length">No candidates</div>
+          <div class="rev" *ngFor="let c of candidates">
+            <div class="row">
+              <ion-badge color="secondary">{{ c.kind || 'unknown' }}</ion-badge>
+              <div class="text">{{ c.text || '' }}</div>
+            </div>
+            <div class="meta">
+              <div *ngIf="c.candidate?.name">name: {{ c.candidate.name }}</div>
+              <div *ngIf="c.status">status: {{ c.status }}</div>
+              <div *ngIf="c.request_id">request_id: {{ c.request_id }}</div>
             </div>
           </div>
         </ion-card-content>
@@ -202,6 +232,8 @@ export class NluTeacherWidgetComponent implements OnInit, OnDestroy {
 
   revisions: any[] = []
   llmLogs: any[] = []
+  candidates: any[] = []
+  error?: string
 
   constructor(private data: PageDataService, private adaos: AdaosClient, private ydoc: YDocService) {}
 
@@ -215,6 +247,7 @@ export class NluTeacherWidgetComponent implements OnInit, OnDestroy {
 
   reload(): void {
     this.sub?.unsubscribe()
+    this.error = undefined
     const src =
       this.widget?.dataSource ||
       ({
@@ -222,10 +255,19 @@ export class NluTeacherWidgetComponent implements OnInit, OnDestroy {
         path: 'data/nlu_teacher',
       } as any)
     const stream = this.data.load<any>(src)
-    this.sub = stream.subscribe((value) => {
-      this.lastValue = (value && typeof value === 'object' ? value : {}) as TeacherState
-      this.revisions = this.normalizeList(this.lastValue?.revisions).slice(0, 100)
-      this.llmLogs = this.normalizeList(this.lastValue?.llm_logs).slice(0, 50)
+    this.sub = stream.subscribe({
+      next: (value) => {
+        this.lastValue = (value && typeof value === 'object' ? value : {}) as TeacherState
+        this.revisions = this.normalizeList(this.lastValue?.revisions).slice(0, 100)
+        this.candidates = this.normalizeList(this.lastValue?.candidates).slice(0, 50)
+        this.llmLogs = this.normalizeList(this.lastValue?.llm_logs).slice(0, 50)
+      },
+      error: (err) => {
+        this.error = String(err?.message || err || 'unknown error')
+        this.revisions = []
+        this.candidates = []
+        this.llmLogs = []
+      },
     })
   }
 

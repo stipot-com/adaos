@@ -665,9 +665,10 @@ class RouterService:
             reason = payload.get("reason")
             msg_text = "Я пока не понял запрос."
             if isinstance(reason, str) and reason:
-                msg_text = f"Я пока не понял запрос. ({reason})"
+                msg_text = f"{msg_text} ({reason})"
             if text:
-                msg_text = f"{msg_text} Скажи: «Какая погода в Москве?»"
+                msg_text = f"{msg_text} Вы сказали: «{text}»."
+            msg_text = f"{msg_text} Я записал запрос для обучения. Открой «NLU Teacher» в Apps, чтобы посмотреть детали."
             try:
                 self.bus.publish(
                     Event(
@@ -686,12 +687,57 @@ class RouterService:
             except Exception:
                 pass
 
+        async def _on_nlp_teacher_candidate_proposed(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            route_id = meta.get("route_id") or meta.get("route")
+            if not isinstance(route_id, str) or not route_id.strip():
+                return
+
+            cand = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+            req_text = cand.get("text") if isinstance(cand.get("text"), str) else ""
+            kind = cand.get("kind") if isinstance(cand.get("kind"), str) else "skill"
+            cdef = cand.get("candidate") if isinstance(cand.get("candidate"), dict) else {}
+            name = cdef.get("name") if isinstance(cdef.get("name"), str) else ""
+            desc = cdef.get("description") if isinstance(cdef.get("description"), str) else ""
+
+            label_kind = "навык" if kind == "skill" else "сценарий"
+            msg = "Я подготовил предложение для обучения NLU."
+            if req_text:
+                msg = f"Вы просили: «{req_text}».\n\nЯ подумал и добавил в план разработки кандидат: {label_kind}."
+            if name:
+                msg += f"\nНазвание: {name}"
+            if desc:
+                msg += f"\nОписание: {desc}"
+            msg += "\n\nОткрой «NLU Teacher» (Apps) — там лог запроса/ответа и список кандидатов."
+
+            try:
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router.nlu",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": msg,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
 
         self.bus.subscribe("voice.chat.open", _on_voice_open)
         self.bus.subscribe("voice.chat.user", _on_voice_user)
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
         self.bus.subscribe("nlp.intent.not_obtained", _on_nlp_intent_not_obtained)
+        self.bus.subscribe("nlp.teacher.candidate.proposed", _on_nlp_teacher_candidate_proposed)
 
         # Watch rules file
         def _reload(rules: list[dict]):
