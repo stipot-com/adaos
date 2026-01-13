@@ -149,6 +149,59 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         out["skill_nlu"] = _load_skill_nlu_artifacts(skills)
     except Exception:
         out["skill_nlu"] = {}
+        skills = []
+
+    # Provide intent routing hints: which skill event is called by a scenario intent,
+    # and which installed skill subscribes to that event.
+    try:
+        routes: list[dict[str, Any]] = []
+        scenario_nlu = out.get("scenario_nlu") if isinstance(out.get("scenario_nlu"), dict) else {}
+        intents_map = scenario_nlu.get("intents") if isinstance(scenario_nlu, dict) else None
+        if isinstance(intents_map, dict):
+            ctx = get_ctx()
+            skills_dir = Path(ctx.paths.skills_dir())
+
+            # Build a quick lookup: topic -> skill name for installed skills.
+            topic_to_skill: dict[str, str] = {}
+            for skill_name in skills:
+                path = skills_dir / skill_name / "skill.yaml"
+                if not path.exists():
+                    continue
+                try:
+                    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                events = payload.get("events")
+                subs = (events or {}).get("subscribe") if isinstance(events, dict) else None
+                if isinstance(subs, list):
+                    for t in subs:
+                        if isinstance(t, str) and t.strip() and t not in topic_to_skill:
+                            topic_to_skill[t.strip()] = skill_name
+
+            for intent_name, spec in intents_map.items():
+                if not isinstance(intent_name, str) or not isinstance(spec, dict):
+                    continue
+                actions = spec.get("actions")
+                if not isinstance(actions, list):
+                    continue
+                for a in actions:
+                    if not isinstance(a, dict) or a.get("type") != "callSkill":
+                        continue
+                    target = a.get("target")
+                    if not isinstance(target, str) or not target.strip():
+                        continue
+                    routes.append(
+                        {
+                            "intent": intent_name,
+                            "callSkill": target.strip(),
+                            "skill": topic_to_skill.get(target.strip()),
+                        }
+                    )
+        out["intent_routes"] = routes[:50]
+    except Exception:
+        out["intent_routes"] = []
 
     # Prefer workspace-owned regex rules (scenario/skills) so the LLM can avoid duplicates.
     try:
@@ -378,6 +431,7 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
         '  \"decision\": \"revise_nlu\" | \"propose_regex_rule\" | \"create_skill_candidate\" | \"create_scenario_candidate\" | \"ignore\",\n'
         '  \"intent\": string|null,\n'
         '  \"regex_rule\": {\"intent\": string, \"pattern\": string} | null,\n'
+        '  \"target\": {\"type\": \"skill\"|\"scenario\", \"id\": string} | null,\n'
         '  \"examples\": string[],\n'
         '  \"slots\": object,  // e.g. {\"city\": {\"type\": \"string\"}}\n'
         '  \"confidence\": number, // 0..1\n'
@@ -394,6 +448,8 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
         "- Avoid proposing duplicate regex rules if builtin_regex or regex_rules already cover the utterance.\n"
         "- If user asks about weather/temperature but doesn't say the exact keyword, propose a regex rule for intent desktop.open_weather.\n"
         "- Regex rules should be reasonably general (avoid overfitting to a single verb like \"покажи\"); capture city via (?P<city>...).\n"
+        "- When proposing a regex rule, also set target to where the rule should be stored:\n"
+        "  - Prefer the skill that handles the intent (see context.intent_routes) over the scenario.\n"
         "- If it suggests a new capability, propose create_skill_candidate or create_scenario_candidate.\n"
         "- Keep intent names short and namespaced (e.g. desktop.open_weather, smalltalk.how_are_you).\n"
     )
@@ -631,6 +687,7 @@ async def _on_teacher_request(evt: Any) -> None:
         decision = suggestion.get("decision") if isinstance(suggestion.get("decision"), str) else "ignore"
         intent = suggestion.get("intent") if isinstance(suggestion.get("intent"), str) else None
         regex_rule = suggestion.get("regex_rule") if isinstance(suggestion.get("regex_rule"), Mapping) else None
+        target = suggestion.get("target") if isinstance(suggestion.get("target"), Mapping) else None
         examples = suggestion.get("examples") if isinstance(suggestion.get("examples"), list) else None
         if examples is None:
             examples = [text]
@@ -705,6 +762,13 @@ async def _on_teacher_request(evt: Any) -> None:
             rr_intent = regex_rule.get("intent")
             rr_pattern = regex_rule.get("pattern")
             if isinstance(rr_intent, str) and rr_intent.strip() and isinstance(rr_pattern, str) and rr_pattern.strip():
+                target_out: dict[str, Any] | None = None
+                if isinstance(target, Mapping):
+                    t_type = target.get("type")
+                    t_id = target.get("id")
+                    if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
+                        if t_type.strip() in {"skill", "scenario"}:
+                            target_out = {"type": t_type.strip(), "id": t_id.strip()}
                 entry = {
                     "id": f"cand.{int(time.time()*1000)}",
                     "ts": time.time(),
@@ -716,6 +780,7 @@ async def _on_teacher_request(evt: Any) -> None:
                         "description": "Proposed regex rule to improve fast NLU stage.",
                     },
                     "regex_rule": {"intent": rr_intent.strip(), "pattern": rr_pattern},
+                    **({"target": target_out} if target_out else {}),
                     "llm": llm_meta,
                     "notes": notes,
                     "status": "pending",

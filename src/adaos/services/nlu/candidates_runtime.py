@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
+
+import yaml
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
@@ -55,6 +58,66 @@ def _read_current_scenario_id(ydoc: Any) -> str | None:
     return None
 
 
+def _extract_callskill_targets_for_intent(*, scenario_id: str, intent: str) -> list[str]:
+    try:
+        from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
+
+        content = scenarios_loader.read_content(scenario_id)
+    except Exception:
+        return []
+    if not isinstance(content, dict):
+        return []
+    nlu = content.get("nlu")
+    if not isinstance(nlu, dict):
+        return []
+    intents = nlu.get("intents")
+    if not isinstance(intents, dict):
+        return []
+    spec = intents.get(intent)
+    if not isinstance(spec, dict):
+        return []
+    actions = spec.get("actions")
+    if not isinstance(actions, list):
+        return []
+    out: list[str] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        if a.get("type") != "callSkill":
+            continue
+        target = a.get("target")
+        if isinstance(target, str) and target.strip():
+            out.append(target.strip())
+    return out
+
+
+def _find_skill_subscribing_to(topic: str) -> str | None:
+    if not isinstance(topic, str) or not topic.strip():
+        return None
+    ctx = get_ctx()
+    skills_dir = Path(ctx.paths.skills_dir())
+    try:
+        skill_yamls = list(skills_dir.glob("*/skill.yaml"))
+    except Exception:
+        return None
+    for path in skill_yamls:
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        events = payload.get("events")
+        if not isinstance(events, dict):
+            continue
+        subs = events.get("subscribe")
+        if not isinstance(subs, list):
+            continue
+        if any(isinstance(x, str) and x.strip() == topic for x in subs):
+            return path.parent.name
+    return None
+
+
 @subscribe("nlp.teacher.candidate.apply")
 async def _on_candidate_apply(evt: Any) -> None:
     """
@@ -102,17 +165,35 @@ async def _on_candidate_apply(evt: Any) -> None:
                 pattern = rr.get("pattern")
                 if isinstance(intent, str) and intent.strip() and isinstance(pattern, str) and pattern.strip():
                     target: dict[str, Any] | None = None
-                    scenario_id = _read_current_scenario_id(ydoc)
-                    if scenario_id:
-                        try:
-                            from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
+                    # If the candidate already carries a preferred target, keep it.
+                    cand_target = candidate.get("target") if isinstance(candidate.get("target"), Mapping) else None
+                    if isinstance(cand_target, Mapping):
+                        t_type = cand_target.get("type")
+                        t_id = cand_target.get("id")
+                        if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
+                            target = {"type": t_type.strip(), "id": t_id.strip()}
 
-                            content = scenarios_loader.read_content(scenario_id)
-                            intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
-                            if isinstance(intents, dict) and intent.strip() in intents:
-                                target = {"type": "scenario", "id": scenario_id}
-                        except Exception:
-                            target = None
+                    scenario_id = _read_current_scenario_id(ydoc)
+                    if target is None and scenario_id:
+                        # Prefer attaching regex rules to the skill that actually handles the intent,
+                        # so they survive scenario tweaks and remain reusable.
+                        for call_target in _extract_callskill_targets_for_intent(scenario_id=scenario_id, intent=intent.strip()):
+                            skill = _find_skill_subscribing_to(call_target)
+                            if skill:
+                                target = {"type": "skill", "id": skill}
+                                break
+
+                        # Fallback: scenario itself owns the intent mapping.
+                        if target is None:
+                            try:
+                                from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
+
+                                content = scenarios_loader.read_content(scenario_id)
+                                intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
+                                if isinstance(intents, dict) and intent.strip() in intents:
+                                    target = {"type": "scenario", "id": scenario_id}
+                            except Exception:
+                                target = None
                     bus_emit(
                         ctx.bus,
                         "nlp.teacher.regex_rule.apply",

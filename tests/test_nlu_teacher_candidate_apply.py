@@ -15,7 +15,7 @@ async def test_candidate_apply_persists_rule_and_notifies():
 
     ctx = get_ctx()
     scenario_id = "web_desktop"
-    webspace_id = "ws-test"
+    webspace_id = "ws-test-cand"
 
     # Minimal scenario that owns the intent mapping.
     scenario_root = Path(ctx.paths.scenarios_dir()) / scenario_id

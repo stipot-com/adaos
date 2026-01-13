@@ -164,6 +164,21 @@ def _iter_rules_from_scenario(scenario_id: str) -> list[dict[str, Any]]:
     return [dict(x) for x in rules if isinstance(x, dict)] if isinstance(rules, list) else []
 
 
+def _iter_rules_from_all_scenarios() -> list[dict[str, Any]]:
+    ctx = get_ctx()
+    root = Path(ctx.paths.scenarios_dir())
+    out: list[dict[str, Any]] = []
+    try:
+        dirs = [p for p in root.iterdir() if p.is_dir()]
+    except Exception:
+        return out
+    for d in dirs:
+        sid = d.name
+        for rule in _iter_rules_from_scenario(sid):
+            out.append({**dict(rule), "scenario_id": sid})
+    return out
+
+
 def _iter_rules_from_skills() -> list[dict[str, Any]]:
     ctx = get_ctx()
     skills_dir = Path(ctx.paths.skills_dir())
@@ -216,9 +231,11 @@ async def _load_dynamic_regex_rules(webspace_id: str) -> list[dict[str, Any]]:
         compiled: list[dict[str, Any]] = []
 
         rules: list[dict[str, Any]] = []
-        scenario_id = await _resolve_current_scenario_id(webspace_id)
-        if scenario_id:
-            rules.extend(_iter_rules_from_scenario(scenario_id))
+
+        # Collect scenario rules from all installed workspace scenarios. If we can
+        # resolve the active scenario for this webspace, we'll use it to scope
+        # scenario-owned rules during matching.
+        rules.extend(_iter_rules_from_all_scenarios())
         rules.extend(_iter_rules_from_skills())
 
         # Backward-compatible: per-webspace rules (will be deprecated).
@@ -245,7 +262,15 @@ async def _load_dynamic_regex_rules(webspace_id: str) -> list[dict[str, Any]]:
                 rx = re.compile(pattern, re.IGNORECASE | re.UNICODE)
             except re.error:
                 continue
-            compiled.append({"id": item.get("id"), "intent": intent.strip(), "pattern": pattern, "rx": rx})
+            compiled.append(
+                {
+                    "id": item.get("id"),
+                    "intent": intent.strip(),
+                    "pattern": pattern,
+                    "rx": rx,
+                    "scenario_id": item.get("scenario_id"),
+                }
+            )
 
         _rules_cache[webspace_id] = (now, compiled)
         return compiled
@@ -259,7 +284,11 @@ async def _try_regex_intent(text: str, *, webspace_id: str) -> tuple[str | None,
     external interpreters.
     """
     # 1) Dynamic rules (LLM/teacher-applied) take precedence.
+    current_scenario = await _resolve_current_scenario_id(webspace_id)
     for rule in await _load_dynamic_regex_rules(webspace_id):
+        scoped = rule.get("scenario_id")
+        if isinstance(scoped, str) and scoped and current_scenario and scoped != current_scenario:
+            continue
         rx = rule.get("rx")
         if not isinstance(rx, re.Pattern):
             continue

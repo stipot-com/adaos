@@ -14,7 +14,7 @@ async def test_teacher_regex_rule_applies_to_scenario_and_pipeline_picks_it_up()
 
     ctx = get_ctx()
     scenario_id = "web_desktop"
-    webspace_id = "ws-test"
+    webspace_id = "ws-test-regex"
 
     # Minimal scenario that owns the intent mapping (scope=scenario).
     scenario_root = Path(ctx.paths.scenarios_dir()) / scenario_id
@@ -74,3 +74,14 @@ async def test_teacher_regex_rule_applies_to_scenario_and_pipeline_picks_it_up()
     saved = json.loads(scenario_json.read_text(encoding="utf-8"))
     rules = (saved.get("nlu") or {}).get("regex_rules") or []
     assert any(r.get("intent") == "desktop.open_weather" and r.get("pattern") == pattern for r in rules if isinstance(r, dict))
+
+    # Also mirrored into per-webspace state as runtime cache.
+    async with async_get_ydoc(webspace_id) as ydoc:
+        data_map = ydoc.get_map("data")
+        nlu_obj = data_map.get("nlu") or {}
+        stored = []
+        try:
+            stored = list((nlu_obj or {}).get("regex_rules") or [])
+        except Exception:
+            stored = []
+        assert any(isinstance(r, dict) and r.get("intent") == "desktop.open_weather" and r.get("pattern") == pattern for r in stored)

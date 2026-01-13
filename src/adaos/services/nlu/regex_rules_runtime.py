@@ -257,6 +257,25 @@ async def _on_regex_rule_apply(evt: Any) -> None:
                 with ydoc.begin_transaction() as txn:
                     data_map.set(txn, "nlu", nlu_obj)
                 applied_to = {"type": "webspace", "id": webspace_id}
+            else:
+                # Mirror applied rules into per-webspace state as a runtime cache so the
+                # regex stage can pick them up immediately without depending on scenario
+                # reloads. Primary source-of-truth remains scenario.json / skill.yaml.
+                try:
+                    nlu_obj = _read_nlu_obj(data_map)
+                    rules = nlu_obj.get("regex_rules")
+                    rules = [dict(x) for x in iter_mappings(rules)]
+                    cleaned: list[dict[str, Any]] = []
+                    for item in rules:
+                        normalized = _normalize_rule(item)
+                        if normalized:
+                            cleaned.append(normalized)
+                    cleaned.append(rule)
+                    nlu_obj["regex_rules"] = cleaned[-200:]
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "nlu", nlu_obj)
+                except Exception:
+                    pass
 
             # Mark candidate as applied (if present)
             teacher = _teacher_obj(data_map)
