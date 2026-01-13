@@ -14,7 +14,10 @@ This document describes the current production MVP direction for intent detectio
    - `nlp.intent.detect.request { text, webspace_id, request_id, _meta... }`
 2. `nlu.pipeline` tries regex rules:
    - built-in rules (`nlu.pipeline`)
-   - dynamic rules (`data.nlu.regex_rules`)
+   - dynamic rules loaded centrally from:
+     - workspace scenarios (`scenario.json:nlu.regex_rules`)
+     - workspace skills (`skill.yaml:nlu.regex_rules`)
+     - legacy per-webspace cache (`data.nlu.regex_rules`)
 3. If regex does not match:
    - `nlp.intent.detect.rasa` is emitted (delegates to the Rasa service skill)
 4. If an intent is found:
@@ -53,9 +56,11 @@ Teacher receives scenario + skill context, including:
 
 - current scenario NLU (`scenario.json:nlu`)
 - installed catalog (apps/widgets + origins)
-- existing dynamic regex rules (`data.nlu.regex_rules`)
+- existing dynamic regex rules (from scenarios/skills + legacy per-webspace cache)
 - built-in regex rules (`nlu.pipeline`)
 - selected skill-level NLU artifacts (e.g. `interpreter/intents.yml`)
+- intent routing hints (`intent_routes`: scenario intent -> callSkill topic -> skill)
+- system/host actions catalog (`system_actions`, `host_actions`)
 
 Teacher state is projected into YJS under `data.nlu_teacher.*` for UI inspection, and also persisted on disk
 under `.adaos/state/skills/nlu_teacher/<webspace_id>.json` so it survives YJS reload/reset.
@@ -72,8 +77,22 @@ In the default web desktop scenario the NLU Teacher UI is a schema-driven modal:
 - Apply actions:
   - `nlp.teacher.revision.apply`
   - `nlp.teacher.candidate.apply`:
-    - for `regex_rule` candidates: stores a dynamic rule under `data.nlu.regex_rules` (used by `nlu.pipeline`)
+    - for `regex_rule` candidates: persists the rule into a workspace owner (preferably a skill), then mirrors into
+      `data.nlu.regex_rules` as a runtime cache so the next request matches immediately (`via="regex.dynamic"`)
     - for `skill`/`scenario` candidates: creates a development plan item
+  - a successful apply emits `ui.notify` with the owner (skill/scenario) where the rule was installed
+
+## Dynamic regex rules (current contract)
+
+- Storage (source of truth):
+  - skill: `.adaos/workspace/skills/<skill>/skill.yaml` → `nlu.regex_rules[]`
+  - scenario: `.adaos/workspace/scenarios/<scenario>/scenario.json` → `nlu.regex_rules[]`
+- Rule identity:
+  - every rule has `id="rx.<uuid>"`
+- Observability:
+  - every `regex.dynamic` match appends a JSONL record into `state/nlu/regex_usage.jsonl` (webspace_id, scenario_id, rule_id, intent, slots…)
+- Optional trust policy:
+  - `skill.yaml: llm_policy.autoapply_nlu_teacher=true` enables automatic Apply for teacher-proposed regex candidates targeting that skill
 
 ## Later (not MVP)
 

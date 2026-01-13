@@ -1417,10 +1417,19 @@ class BootstrapService:
                                 except Exception:
                                     pass
 
+                            # Ensure internal subscription tasks are stopped even if the connection is already closed.
+                            for sub in list(subs):
+                                try:
+                                    stop = getattr(sub, "_stop_processing", None)
+                                    if callable(stop):
+                                        stop()
+                                except Exception:
+                                    pass
+
                             # Await/cancel internal subscription tasks, if present.
                             wait_tasks: list[asyncio.Task] = []
                             for sub in list(subs):
-                                t = getattr(sub, "_task", None)
+                                t = getattr(sub, "_wait_for_msgs_task", None)
                                 if isinstance(t, asyncio.Task) and not t.done():
                                     try:
                                         t.cancel()
