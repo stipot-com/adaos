@@ -150,58 +150,7 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         out["skill_nlu"] = {}
         skills = []
-
-    # Provide intent routing hints: which skill event is called by a scenario intent,
-    # and which installed skill subscribes to that event.
-    try:
-        routes: list[dict[str, Any]] = []
-        scenario_nlu = out.get("scenario_nlu") if isinstance(out.get("scenario_nlu"), dict) else {}
-        intents_map = scenario_nlu.get("intents") if isinstance(scenario_nlu, dict) else None
-        if isinstance(intents_map, dict):
-            ctx = get_ctx()
-            skills_dir = Path(ctx.paths.skills_dir())
-
-            # Build a quick lookup: topic -> skill name for installed skills.
-            topic_to_skill: dict[str, str] = {}
-            for skill_name in skills:
-                path = skills_dir / skill_name / "skill.yaml"
-                if not path.exists():
-                    continue
-                try:
-                    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                events = payload.get("events")
-                subs = (events or {}).get("subscribe") if isinstance(events, dict) else None
-                if isinstance(subs, list):
-                    for t in subs:
-                        if isinstance(t, str) and t.strip() and t not in topic_to_skill:
-                            topic_to_skill[t.strip()] = skill_name
-
-            for intent_name, spec in intents_map.items():
-                if not isinstance(intent_name, str) or not isinstance(spec, dict):
-                    continue
-                actions = spec.get("actions")
-                if not isinstance(actions, list):
-                    continue
-                for a in actions:
-                    if not isinstance(a, dict) or a.get("type") != "callSkill":
-                        continue
-                    target = a.get("target")
-                    if not isinstance(target, str) or not target.strip():
-                        continue
-                    routes.append(
-                        {
-                            "intent": intent_name,
-                            "callSkill": target.strip(),
-                            "skill": topic_to_skill.get(target.strip()),
-                        }
-                    )
-        out["intent_routes"] = routes[:50]
-    except Exception:
-        out["intent_routes"] = []
+    out["skills"] = [s for s in skills if isinstance(s, str)]
 
     # Prefer workspace-owned regex rules (scenario/skills) so the LLM can avoid duplicates.
     try:
@@ -216,7 +165,11 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
             nlu_section = content.get("nlu") if isinstance(content, dict) else None
             rr = (nlu_section or {}).get("regex_rules") if isinstance(nlu_section, dict) else None
             if isinstance(rr, list):
-                collected.extend([x for x in (_strip_rule(r) for r in rr) if x])
+                for x in (_strip_rule(r) for r in rr):
+                    if not x:
+                        continue
+                    x["owner"] = {"type": "scenario", "id": current_scenario}
+                    collected.append(x)
 
         # Skill rules
         ctx = get_ctx()
@@ -237,7 +190,11 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
             rr = nlu_section.get("regex_rules")
             if not isinstance(rr, list):
                 continue
-            collected.extend([x for x in (_strip_rule(r) for r in rr) if x])
+            for x in (_strip_rule(r) for r in rr):
+                if not x:
+                    continue
+                x["owner"] = {"type": "skill", "id": skill_name}
+                collected.append(x)
 
         # De-dupe
         uniq: list[dict[str, Any]] = []
@@ -257,6 +214,117 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         pass
 
     return out
+
+
+def _build_intent_routes_and_policies(
+    *, scenario_nlu: Mapping[str, Any], skills: list[str]
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+    """
+    Derive routing hints for the LLM:
+    - intent -> callSkill topic -> skill name (by subscription)
+    - intent -> callHost target (system action)
+
+    Also returns per-skill llm_policy flags so we can auto-apply teacher changes when trusted.
+    """
+    intents_map = scenario_nlu.get("intents") if isinstance(scenario_nlu.get("intents"), dict) else None
+    if not isinstance(intents_map, dict):
+        return ([], {}, [])
+
+    ctx = get_ctx()
+    skills_dir = Path(ctx.paths.skills_dir())
+
+    topic_to_skill: dict[str, str] = {}
+    skill_policies: dict[str, Any] = {}
+    skill_manifests: list[dict[str, Any]] = []
+    for skill_name in [s for s in skills if isinstance(s, str) and s.strip()]:
+        path = skills_dir / skill_name / "skill.yaml"
+        if not path.exists():
+            continue
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        llm_policy = payload.get("llm_policy")
+        skill_policies[skill_name] = llm_policy if isinstance(llm_policy, dict) else {}
+
+        try:
+            tools = payload.get("tools")
+            if isinstance(tools, list):
+                tools_list = [
+                    {"name": t.get("name"), "description": t.get("description")}
+                    for t in tools
+                    if isinstance(t, dict) and isinstance(t.get("name"), str)
+                ]
+            else:
+                tools_list = []
+        except Exception:
+            tools_list = []
+
+        events = payload.get("events")
+        subs = (events or {}).get("subscribe") if isinstance(events, dict) else None
+        pubs = (events or {}).get("publish") if isinstance(events, dict) else None
+        try:
+            nlu = payload.get("nlu")
+            rr = (nlu or {}).get("regex_rules") if isinstance(nlu, dict) else None
+            regex_count = len(rr) if isinstance(rr, list) else 0
+        except Exception:
+            regex_count = 0
+        skill_manifests.append(
+            {
+                "name": skill_name,
+                "description": payload.get("description"),
+                "llm_policy": skill_policies.get(skill_name) or {},
+                "events": {
+                    "subscribe": [x for x in (subs or []) if isinstance(x, str)][:50] if isinstance(subs, list) else [],
+                    "publish": [x for x in (pubs or []) if isinstance(x, str)][:50] if isinstance(pubs, list) else [],
+                },
+                "tools": tools_list[:30],
+                "regex_rules_count": regex_count,
+            }
+        )
+
+        events = payload.get("events")
+        subs = (events or {}).get("subscribe") if isinstance(events, dict) else None
+        if isinstance(subs, list):
+            for t in subs:
+                if isinstance(t, str) and t.strip() and t.strip() not in topic_to_skill:
+                    topic_to_skill[t.strip()] = skill_name
+
+    routes: list[dict[str, Any]] = []
+    for intent_name, spec in intents_map.items():
+        if not isinstance(intent_name, str) or not isinstance(spec, dict):
+            continue
+        actions = spec.get("actions")
+        if not isinstance(actions, list):
+            continue
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            a_type = a.get("type")
+            target = a.get("target")
+            if not isinstance(a_type, str) or not isinstance(target, str) or not target.strip():
+                continue
+            if a_type == "callSkill":
+                routes.append(
+                    {
+                        "intent": intent_name,
+                        "action": "callSkill",
+                        "target": target.strip(),
+                        "skill": topic_to_skill.get(target.strip()),
+                    }
+                )
+            elif a_type == "callHost":
+                routes.append(
+                    {
+                        "intent": intent_name,
+                        "action": "callHost",
+                        "target": target.strip(),
+                    }
+                )
+    return (routes[:150], skill_policies, skill_manifests[:50])
 
 
 def _infer_skills_from_catalog(*, apps: list[Any], widgets: list[Any]) -> list[str]:
@@ -441,7 +509,7 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
         "Rules:\n"
         "- If the utterance is not actionable for AdaOS, decision=ignore.\n"
         "- Prefer existing intents from context (scenario_nlu.intents keys) over inventing new ones.\n"
-        "- Use provided context (scenario_nlu, builtin_regex, regex_rules, catalog, skill_nlu) to reuse existing intents.\n"
+        "- Use provided context (scenario_nlu, intent_routes, system_actions, host_actions, skills_manifest, builtin_regex, regex_rules, catalog, skill_nlu) to reuse existing intents.\n"
         "- If it matches a known app/widget/scenario, prefer revise_nlu with an existing intent name.\n"
         "- If an existing intent is the right match but regex stage likely misses it, prefer propose_regex_rule.\n"
         "- propose_regex_rule.pattern MUST be a Python regex with named capture groups for slots (e.g. (?P<city>...)).\n"
@@ -450,6 +518,7 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
         "- Regex rules should be reasonably general (avoid overfitting to a single verb like \"покажи\"); capture city via (?P<city>...).\n"
         "- When proposing a regex rule, also set target to where the rule should be stored:\n"
         "  - Prefer the skill that handles the intent (see context.intent_routes) over the scenario.\n"
+        "  - For intents that trigger system actions (callHost targets from context.system_actions), target should usually be the scenario.\n"
         "- If it suggests a new capability, propose create_skill_candidate or create_scenario_candidate.\n"
         "- Keep intent names short and namespaced (e.g. desktop.open_weather, smalltalk.how_are_you).\n"
     )
@@ -573,6 +642,25 @@ async def _on_teacher_request(evt: Any) -> None:
             snapshot = {}
         context = _extract_webspace_context(snapshot if isinstance(snapshot, dict) else {})
         context["scenario_nlu"] = _extract_scenario_nlu(scenario_id=context.get("current_scenario"))
+        try:
+            routes, skill_policies, skill_manifests = _build_intent_routes_and_policies(
+                scenario_nlu=context.get("scenario_nlu") if isinstance(context.get("scenario_nlu"), Mapping) else {},
+                skills=context.get("skills") if isinstance(context.get("skills"), list) else [],
+            )
+        except Exception:
+            routes, skill_policies, skill_manifests = ([], {}, [])
+        context["intent_routes"] = routes
+        # System actions are "callHost" targets exposed by the current scenario intents.
+        context["system_actions"] = sorted(
+            {str(r.get("target")) for r in routes if r.get("action") == "callHost" and isinstance(r.get("target"), str)}
+        )[:150]
+        context["skills_manifest"] = skill_manifests
+        try:
+            from adaos.services.nlu.system_actions_catalog import describe_system_actions
+
+            context["host_actions"] = describe_system_actions()
+        except Exception:
+            context["host_actions"] = []
         try:
             from adaos.services.nlu.pipeline import describe_builtin_regex_rules  # local import to avoid cycles
 
@@ -769,12 +857,27 @@ async def _on_teacher_request(evt: Any) -> None:
                     if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
                         if t_type.strip() in {"skill", "scenario"}:
                             target_out = {"type": t_type.strip(), "id": t_id.strip()}
+                if target_out is None:
+                    for r in routes:
+                        if r.get("intent") != rr_intent.strip() or r.get("action") != "callSkill":
+                            continue
+                        skill = r.get("skill")
+                        if isinstance(skill, str) and skill.strip():
+                            target_out = {"type": "skill", "id": skill.strip()}
+                            break
+                    if target_out is None:
+                        scenario_id = context.get("current_scenario")
+                        if isinstance(scenario_id, str) and scenario_id.strip():
+                            target_out = {"type": "scenario", "id": scenario_id.strip()}
                 entry = {
                     "id": f"cand.{int(time.time()*1000)}",
                     "ts": time.time(),
                     "kind": "regex_rule",
                     "text": text,
                     "request_id": request_id,
+                    "origin_scenario_id": context.get("current_scenario")
+                    if isinstance(context.get("current_scenario"), str)
+                    else None,
                     "candidate": {
                         "name": f"Regex rule for {rr_intent.strip()}",
                         "description": "Proposed regex rule to improve fast NLU stage.",
@@ -795,6 +898,25 @@ async def _on_teacher_request(evt: Any) -> None:
                     {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
                     source="nlu.teacher.llm",
                 )
+                # Auto-apply if the owning skill explicitly trusts NLU Teacher output.
+                try:
+                    if isinstance(target_out, dict) and target_out.get("type") == "skill":
+                        skill_name = target_out.get("id")
+                        policy = skill_policies.get(skill_name) if isinstance(skill_name, str) else None
+                        if isinstance(policy, Mapping) and bool(policy.get("autoapply_nlu_teacher")):
+                            bus_emit(
+                                ctx.bus,
+                                "nlp.teacher.candidate.apply",
+                                {
+                                    "webspace_id": webspace_id,
+                                    "candidate_id": entry.get("id"),
+                                    "target": dict(target_out),
+                                    "_meta": dict(req_meta),
+                                },
+                                source="nlu.teacher.llm",
+                            )
+                except Exception:
+                    _log.debug("failed to auto-apply teacher regex candidate webspace=%s", webspace_id, exc_info=True)
                 try:
                     await append_event(
                         webspace_id,

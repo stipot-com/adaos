@@ -539,6 +539,7 @@ async def events_ws(websocket: WebSocket):
                     "nlp.teacher.candidate.apply",
                     {
                         "candidate_id": payload.get("candidate_id"),
+                        "target": payload.get("target"),
                         "webspace_id": payload.get("webspace_id"),
                     },
                 )

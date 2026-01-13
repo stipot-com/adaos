@@ -18,6 +18,7 @@ from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
 from .ycoerce import coerce_dict, iter_mappings
+from .regex_usage_runtime import record_regex_rule_hit
 
 _log = logging.getLogger("adaos.nlu.pipeline")
 
@@ -300,6 +301,20 @@ async def _try_regex_intent(text: str, *, webspace_id: str) -> tuple[str | None,
             continue
         slots = _clean_slots(m.groupdict())
         raw = {"rule_id": rule.get("id"), "pattern": rule.get("pattern"), "slots": slots}
+        try:
+            record_regex_rule_hit(
+                webspace_id=webspace_id,
+                scenario_id=current_scenario,
+                rule_id=str(rule.get("id") or ""),
+                intent=intent,
+                pattern=str(rule.get("pattern") or ""),
+                text=text,
+                slots=slots,
+                raw=raw,
+                via="regex.dynamic",
+            )
+        except Exception:
+            pass
         return (intent, slots, "regex.dynamic", raw)
 
     # 2) Built-in fallback (desktop weather MVP)

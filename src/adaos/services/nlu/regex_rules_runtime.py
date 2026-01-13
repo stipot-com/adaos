@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -68,6 +69,11 @@ def _append_or_update_rule(existing: list[dict[str, Any]], rule: dict[str, Any])
             continue
         if item.get("intent") == intent and item.get("pattern") == pattern:
             updated = dict(item)
+            # Backfill IDs on pre-existing rules to keep rule-level identity stable.
+            if updated.get("id") in (None, "") and rule.get("id"):
+                updated["id"] = rule.get("id")
+            if updated.get("created_at") is None and rule.get("created_at") is not None:
+                updated["created_at"] = rule.get("created_at")
             if updated.get("enabled") is None:
                 updated["enabled"] = True
             cleaned.append(updated)
@@ -193,7 +199,7 @@ async def _on_regex_rule_apply(evt: Any) -> None:
         _log.warning("invalid regex pattern intent=%s pattern=%s", intent, pattern)
         return
 
-    rule_id = f"rx.{int(time.time() * 1000)}"
+    rule_id = f"rx.{uuid.uuid4()}"
     rule = {
         "id": rule_id,
         "created_at": time.time(),

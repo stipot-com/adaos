@@ -1,6 +1,7 @@
 # tests/test_nlu_teacher_regex_rules.py
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -73,7 +74,9 @@ async def test_teacher_regex_rule_applies_to_scenario_and_pipeline_picks_it_up()
     # Verify it was persisted into scenario.json (workspace scope).
     saved = json.loads(scenario_json.read_text(encoding="utf-8"))
     rules = (saved.get("nlu") or {}).get("regex_rules") or []
-    assert any(r.get("intent") == "desktop.open_weather" and r.get("pattern") == pattern for r in rules if isinstance(r, dict))
+    matching = [r for r in rules if isinstance(r, dict) and r.get("intent") == "desktop.open_weather" and r.get("pattern") == pattern]
+    assert matching
+    assert any(isinstance(r.get("id"), str) and re.match(r"^rx\.[0-9a-f-]{36}$", r.get("id")) for r in matching)
 
     # Also mirrored into per-webspace state as runtime cache.
     async with async_get_ydoc(webspace_id) as ydoc:
@@ -85,3 +88,11 @@ async def test_teacher_regex_rule_applies_to_scenario_and_pipeline_picks_it_up()
         except Exception:
             stored = []
         assert any(isinstance(r, dict) and r.get("intent") == "desktop.open_weather" and r.get("pattern") == pattern for r in stored)
+
+    # Regex usage journal should record dynamic hits (JSONL).
+    usage_path = Path(ctx.paths.state_dir()) / "nlu" / "regex_usage.jsonl"
+    assert usage_path.exists()
+    last_lines = usage_path.read_text(encoding="utf-8").splitlines()[-50:]
+    rule_id = str((_raw or {}).get("rule_id") or "")
+    assert rule_id
+    assert any(rule_id in line for line in last_lines)

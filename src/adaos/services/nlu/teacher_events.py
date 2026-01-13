@@ -215,6 +215,20 @@ def rebuild_threads(teacher: dict[str, Any]) -> dict[str, Any]:
             cand_obj = coerce_dict(c.get("candidate"))
             name = cand_obj.get("name") if isinstance(cand_obj.get("name"), str) else ""
             description = cand_obj.get("description") if isinstance(cand_obj.get("description"), str) else ""
+            target_obj = c.get("target") if isinstance(c.get("target"), Mapping) else None
+            target_type = target_obj.get("type") if isinstance(target_obj, Mapping) else None
+            target_id = target_obj.get("id") if isinstance(target_obj, Mapping) else None
+            if not isinstance(target_type, str) or not target_type.strip():
+                target_type = ""
+            if not isinstance(target_id, str) or not target_id.strip():
+                target_id = ""
+            target_label = f"{target_type}:{target_id}".strip(":") if target_type and target_id else ""
+
+            cand_kind = c.get("kind") if isinstance(c.get("kind"), str) else ""
+            candidate_meta = cand_kind
+            if target_label:
+                candidate_meta = f"{cand_kind} → {target_label}".strip()
+
             cid = c.get("id") if isinstance(c.get("id"), str) else ""
             if not cid:
                 continue
@@ -222,9 +236,17 @@ def rebuild_threads(teacher: dict[str, Any]) -> dict[str, Any]:
                 {
                     "id": cid,
                     "candidate_id": cid,
-                    "candidate_kind": c.get("kind") if isinstance(c.get("kind"), str) else "",
+                    "candidate_kind": cand_kind,
                     "candidate_name": name,
                     "candidate_description": description,
+                    "candidate_target": dict(target_obj) if isinstance(target_obj, Mapping) else None,
+                    "candidate_target_type": target_type,
+                    "candidate_target_id": target_id,
+                    "candidate_target_label": target_label,
+                    "candidate_meta": candidate_meta,
+                    "candidate_origin_scenario_id": c.get("origin_scenario_id")
+                    if isinstance(c.get("origin_scenario_id"), str)
+                    else "",
                     "candidate_status": c.get("status") if isinstance(c.get("status"), str) else "",
                     "request_id": rid,
                     "title": name or cid,

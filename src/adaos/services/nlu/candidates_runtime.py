@@ -136,6 +136,7 @@ async def _on_candidate_apply(evt: Any) -> None:
     payload = _payload(evt)
     webspace_id = _resolve_webspace_id(payload)
     meta = coerce_dict(payload.get("_meta"))
+    payload_target = payload.get("target") if isinstance(payload.get("target"), Mapping) else None
 
     candidate_id = payload.get("candidate_id")
     if not isinstance(candidate_id, str) or not candidate_id.strip():
@@ -165,13 +166,21 @@ async def _on_candidate_apply(evt: Any) -> None:
                 pattern = rr.get("pattern")
                 if isinstance(intent, str) and intent.strip() and isinstance(pattern, str) and pattern.strip():
                     target: dict[str, Any] | None = None
-                    # If the candidate already carries a preferred target, keep it.
-                    cand_target = candidate.get("target") if isinstance(candidate.get("target"), Mapping) else None
-                    if isinstance(cand_target, Mapping):
-                        t_type = cand_target.get("type")
-                        t_id = cand_target.get("id")
+                    # UI override has the highest priority.
+                    if isinstance(payload_target, Mapping):
+                        t_type = payload_target.get("type")
+                        t_id = payload_target.get("id")
                         if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
                             target = {"type": t_type.strip(), "id": t_id.strip()}
+
+                    # If the candidate already carries a preferred target, keep it.
+                    if target is None:
+                        cand_target = candidate.get("target") if isinstance(candidate.get("target"), Mapping) else None
+                        if isinstance(cand_target, Mapping):
+                            t_type = cand_target.get("type")
+                            t_id = cand_target.get("id")
+                            if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
+                                target = {"type": t_type.strip(), "id": t_id.strip()}
 
                     scenario_id = _read_current_scenario_id(ydoc)
                     if target is None and scenario_id:
