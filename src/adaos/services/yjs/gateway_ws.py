@@ -534,6 +534,45 @@ async def events_ws(websocket: WebSocket):
                     )
                 continue
 
+            if kind == "nlp.teacher.candidate.apply":
+                _publish_bus(
+                    "nlp.teacher.candidate.apply",
+                    {
+                        "candidate_id": payload.get("candidate_id"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
+            if kind == "nlp.teacher.revision.apply":
+                _publish_bus(
+                    "nlp.teacher.revision.apply",
+                    {
+                        "revision_id": payload.get("revision_id"),
+                        "intent": payload.get("intent"),
+                        "examples": payload.get("examples"),
+                        "slots": payload.get("slots"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
+            if kind == "nlp.teacher.regex_rule.apply":
+                _publish_bus(
+                    "nlp.teacher.regex_rule.apply",
+                    {
+                        "candidate_id": payload.get("candidate_id"),
+                        "intent": payload.get("intent"),
+                        "pattern": payload.get("pattern"),
+                        "target": payload.get("target"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
             if kind == "scenario.workflow.action":
                 _publish_bus("scenario.workflow.action", payload)
                 await websocket.send_text(

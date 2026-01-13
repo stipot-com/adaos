@@ -2,6 +2,7 @@
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule, ModalController } from '@ionic/angular'
+import { addIcons } from 'ionicons'
 import { Observable } from 'rxjs'
 import { PageSchema, WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -18,6 +19,7 @@ import { DetailsWidgetComponent } from '../widgets/details.widget.component'
 import { ChatWidgetComponent } from '../widgets/chat.widget.component'
 import { VoiceInputWidgetComponent } from '../widgets/voice-input.widget.component'
 import { PageStateService } from '../../runtime/page-state.service'
+import { contractOutline, expandOutline } from 'ionicons/icons'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -294,7 +296,12 @@ export class SchemaModalComponent {
   constructor(
     private modalCtrl: ModalController,
     private pageState: PageStateService,
-  ) {}
+  ) {
+    addIcons({
+      'contract-outline': contractOutline,
+      'expand-outline': expandOutline,
+    })
+  }
 
   ngOnInit(): void {
     this.showFullscreenButton = this.shouldShowFullscreenButton()
