@@ -310,3 +310,21 @@ async def _on_regex_rule_apply(evt: Any) -> None:
         {"webspace_id": webspace_id, "rule": {**rule, "target": dict(applied_to or {})}, "_meta": dict(meta)},
         source="nlu.regex_rules",
     )
+
+    try:
+        tgt = dict(applied_to or {})
+        tgt_type = tgt.get("type")
+        tgt_id = tgt.get("id")
+        if tgt_type in {"skill", "scenario"} and isinstance(tgt_id, str) and tgt_id:
+            where = "навык" if tgt_type == "skill" else "сценарий"
+            text = f"Правило распознавания установлено в {where} «{tgt_id}»."
+        else:
+            text = "Правило распознавания установлено."
+        bus_emit(
+            ctx.bus,
+            "ui.notify",
+            {"text": text, "webspace_id": webspace_id, "_meta": dict(meta)},
+            source="nlu.regex_rules",
+        )
+    except Exception:
+        pass

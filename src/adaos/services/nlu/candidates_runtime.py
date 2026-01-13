@@ -44,6 +44,17 @@ def _find_candidate(teacher: Mapping[str, Any], candidate_id: str) -> Optional[d
     return None
 
 
+def _read_current_scenario_id(ydoc: Any) -> str | None:
+    try:
+        ui_map = ydoc.get_map("ui")
+        token = ui_map.get("current_scenario")
+    except Exception:
+        return None
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    return None
+
+
 @subscribe("nlp.teacher.candidate.apply")
 async def _on_candidate_apply(evt: Any) -> None:
     """
@@ -90,6 +101,18 @@ async def _on_candidate_apply(evt: Any) -> None:
                 intent = rr.get("intent")
                 pattern = rr.get("pattern")
                 if isinstance(intent, str) and intent.strip() and isinstance(pattern, str) and pattern.strip():
+                    target: dict[str, Any] | None = None
+                    scenario_id = _read_current_scenario_id(ydoc)
+                    if scenario_id:
+                        try:
+                            from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
+
+                            content = scenarios_loader.read_content(scenario_id)
+                            intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
+                            if isinstance(intents, dict) and intent.strip() in intents:
+                                target = {"type": "scenario", "id": scenario_id}
+                        except Exception:
+                            target = None
                     bus_emit(
                         ctx.bus,
                         "nlp.teacher.regex_rule.apply",
@@ -98,6 +121,7 @@ async def _on_candidate_apply(evt: Any) -> None:
                             "candidate_id": candidate_id,
                             "intent": intent.strip(),
                             "pattern": pattern,
+                            **({"target": target} if target else {}),
                             "_meta": dict(meta),
                         },
                         source="nlu.teacher.candidates",

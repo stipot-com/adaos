@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 import y_py as Y
+import yaml
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
@@ -107,6 +108,7 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         out = {"id": w.get("id"), "title": w.get("title"), "type": w.get("type"), "origin": w.get("origin")}
         return {k: v for k, v in out.items() if v is not None}
 
+    # Backward-compatible (legacy) per-webspace rules.
     nlu = coerce_dict(data.get("nlu"))
     regex_rules = list(iter_mappings(nlu.get("regex_rules")))
 
@@ -147,6 +149,59 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         out["skill_nlu"] = _load_skill_nlu_artifacts(skills)
     except Exception:
         out["skill_nlu"] = {}
+
+    # Prefer workspace-owned regex rules (scenario/skills) so the LLM can avoid duplicates.
+    try:
+        collected: list[dict[str, Any]] = list(out.get("regex_rules") or [])
+
+        # Scenario rules
+        if isinstance(current_scenario, str) and current_scenario:
+            try:
+                content = scenarios_loader.read_content(current_scenario)
+            except Exception:
+                content = {}
+            nlu_section = content.get("nlu") if isinstance(content, dict) else None
+            rr = (nlu_section or {}).get("regex_rules") if isinstance(nlu_section, dict) else None
+            if isinstance(rr, list):
+                collected.extend([x for x in (_strip_rule(r) for r in rr) if x])
+
+        # Skill rules
+        ctx = get_ctx()
+        skills_dir = Path(ctx.paths.skills_dir())
+        for skill_name in skills:
+            path = skills_dir / skill_name / "skill.yaml"
+            if not path.exists():
+                continue
+            try:
+                payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            nlu_section = payload.get("nlu")
+            if not isinstance(nlu_section, dict):
+                continue
+            rr = nlu_section.get("regex_rules")
+            if not isinstance(rr, list):
+                continue
+            collected.extend([x for x in (_strip_rule(r) for r in rr) if x])
+
+        # De-dupe
+        uniq: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for r in collected:
+            intent = r.get("intent")
+            pattern = r.get("pattern")
+            if not isinstance(intent, str) or not isinstance(pattern, str):
+                continue
+            key = (intent, pattern)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(r)
+        out["regex_rules"] = uniq[:80]
+    except Exception:
+        pass
 
     return out
 
@@ -338,6 +393,7 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
         "- propose_regex_rule.pattern MUST be a Python regex with named capture groups for slots (e.g. (?P<city>...)).\n"
         "- Avoid proposing duplicate regex rules if builtin_regex or regex_rules already cover the utterance.\n"
         "- If user asks about weather/temperature but doesn't say the exact keyword, propose a regex rule for intent desktop.open_weather.\n"
+        "- Regex rules should be reasonably general (avoid overfitting to a single verb like \"покажи\"); capture city via (?P<city>...).\n"
         "- If it suggests a new capability, propose create_skill_candidate or create_scenario_candidate.\n"
         "- Keep intent names short and namespaced (e.g. desktop.open_weather, smalltalk.how_are_you).\n"
     )
