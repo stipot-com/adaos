@@ -665,6 +665,16 @@ class BootstrapService:
                                 disconnected_cb=_on_disconnected,
                                 reconnected_cb=_on_reconnected,
                             )
+
+                            # Track subscriptions explicitly. When the connection closes (or this task is cancelled),
+                            # unsubscribing helps nats-py cancel internal `_wait_for_msgs()` tasks and avoids
+                            # "Task was destroyed but it is pending!" warnings on reconnect/shutdown.
+                            subs: list[Any] = []
+
+                            async def _sub(subject: str, *, cb: Any):
+                                sub = await nc.subscribe(subject, cb=cb)
+                                subs.append(sub)
+                                return sub
                             subj = f"tg.input.{hub_id}"
                             subj_legacy = f"io.tg.in.{hub_id}.text"
                             print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
@@ -698,7 +708,7 @@ class BootstrapService:
                                         except Exception:
                                             pass
 
-                                await nc.subscribe(ctl_alias, cb=_ctl_alias_cb)
+                                await _sub(ctl_alias, cb=_ctl_alias_cb)
                                 print(f"[hub-io] NATS subscribe control {ctl_alias}")
                             except Exception:
                                 pass
@@ -796,7 +806,7 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                    await nc.subscribe(subj, cb=cb)
+                    await _sub(subj, cb=cb)
 
                     # Browser<->Hub routing over NATS (root proxy fallback).
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
@@ -1241,7 +1251,7 @@ class BootstrapService:
                                         pass
                                 return
 
-                        route_sub = await nc.subscribe("route.to_hub.*", cb=_route_cb)
+                        route_sub = await _sub("route.to_hub.*", cb=_route_cb)
                         print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
@@ -1270,7 +1280,7 @@ class BootstrapService:
                             seen.add(aid)
                             alt = f"tg.input.{aid}"
                             print(f"[hub-io] NATS subscribe (alias) {alt}")
-                            await nc.subscribe(alt, cb=cb)
+                            await _sub(alt, cb=cb)
                     except Exception:
                         pass
 
@@ -1314,7 +1324,7 @@ class BootstrapService:
                     # Legacy classic path subscription only when explicitly enabled
                     try:
                         if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
-                            await nc.subscribe(subj_legacy, cb=cb_legacy)
+                            await _sub(subj_legacy, cb=cb_legacy)
                             aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
                             aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
                             seen = set([hub_id])
@@ -1324,7 +1334,7 @@ class BootstrapService:
                                 seen.add(aid)
                                 alt_legacy = f"io.tg.in.{aid}.text"
                                 print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
-                                await nc.subscribe(alt_legacy, cb=cb_legacy)
+                                await _sub(alt_legacy, cb=cb_legacy)
                     except Exception:
                         pass
                     # keep task alive
@@ -1397,9 +1407,31 @@ class BootstrapService:
                         except Exception:
                             pass
                         try:
-                            unsub = route_sub.unsubscribe()
-                            if asyncio.iscoroutine(unsub):
-                                await unsub
+                            # Unsubscribe all subscriptions explicitly to ensure nats-py cancels
+                            # internal subscription tasks before the next reconnect attempt.
+                            for sub in list(subs):
+                                try:
+                                    unsub = sub.unsubscribe()
+                                    if asyncio.iscoroutine(unsub):
+                                        await unsub
+                                except Exception:
+                                    pass
+
+                            # Await/cancel internal subscription tasks, if present.
+                            wait_tasks: list[asyncio.Task] = []
+                            for sub in list(subs):
+                                t = getattr(sub, "_task", None)
+                                if isinstance(t, asyncio.Task) and not t.done():
+                                    try:
+                                        t.cancel()
+                                    except Exception:
+                                        pass
+                                    wait_tasks.append(t)
+                            if wait_tasks:
+                                try:
+                                    await asyncio.wait_for(asyncio.gather(*wait_tasks, return_exceptions=True), timeout=1.0)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                         try:

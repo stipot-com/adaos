@@ -5,11 +5,15 @@ import hashlib
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, Mapping
+
+import yaml
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -38,6 +42,13 @@ _WEATHER_CITY_EN_RE = re.compile(
 _RULES_CACHE_TTL_S = 2.0
 _rules_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _rules_lock = asyncio.Lock()
+
+
+def invalidate_dynamic_regex_cache(*, webspace_id: str | None = None) -> None:
+    if webspace_id is None:
+        _rules_cache.clear()
+        return
+    _rules_cache.pop(str(webspace_id), None)
 
 
 def describe_builtin_regex_rules() -> list[dict[str, Any]]:
@@ -127,11 +138,70 @@ def _clean_slots(values: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def _resolve_current_scenario_id(webspace_id: str) -> str | None:
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            token = ui_map.get("current_scenario")
+    except Exception:
+        return None
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    return None
+
+
+def _iter_rules_from_scenario(scenario_id: str) -> list[dict[str, Any]]:
+    try:
+        content = scenarios_loader.read_content(scenario_id)
+    except Exception:
+        return []
+    if not isinstance(content, dict):
+        return []
+    nlu = content.get("nlu")
+    if not isinstance(nlu, dict):
+        return []
+    rules = nlu.get("regex_rules")
+    return [dict(x) for x in rules if isinstance(x, dict)] if isinstance(rules, list) else []
+
+
+def _iter_rules_from_skills() -> list[dict[str, Any]]:
+    ctx = get_ctx()
+    skills_dir = Path(ctx.paths.skills_dir())
+    out: list[dict[str, Any]] = []
+    try:
+        candidates = list(skills_dir.glob("*/skill.yaml"))
+    except Exception:
+        return out
+
+    for path in candidates:
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        nlu = payload.get("nlu")
+        if not isinstance(nlu, dict):
+            continue
+        rules = nlu.get("regex_rules")
+        if not isinstance(rules, list):
+            continue
+        for item in rules:
+            if isinstance(item, dict):
+                out.append(dict(item))
+    return out
+
+
 async def _load_dynamic_regex_rules(webspace_id: str) -> list[dict[str, Any]]:
     """
-    Load compiled regex rules from YJS for the given webspace.
+    Load compiled regex rules for the given webspace.
 
-    Storage: data.nlu.regex_rules = [{ id, intent, pattern, enabled, ... }]
+    Primary storage (workspace):
+      - scenario.json:nlu.regex_rules
+      - skill.yaml:nlu.regex_rules
+
+    Backward-compatible storage (per-webspace/YJS):
+      - data.nlu.regex_rules
     """
     now = time.time()
     cached = _rules_cache.get(webspace_id)
@@ -144,14 +214,23 @@ async def _load_dynamic_regex_rules(webspace_id: str) -> list[dict[str, Any]]:
             return cached[1]
 
         compiled: list[dict[str, Any]] = []
+
+        rules: list[dict[str, Any]] = []
+        scenario_id = await _resolve_current_scenario_id(webspace_id)
+        if scenario_id:
+            rules.extend(_iter_rules_from_scenario(scenario_id))
+        rules.extend(_iter_rules_from_skills())
+
+        # Backward-compatible: per-webspace rules (will be deprecated).
         try:
             async with async_get_ydoc(webspace_id) as ydoc:
                 data_map = ydoc.get_map("data")
                 nlu_obj = data_map.get("nlu")
                 nlu_obj = coerce_dict(nlu_obj)
-                rules = list(iter_mappings(nlu_obj.get("regex_rules")))
+                for item in iter_mappings(nlu_obj.get("regex_rules")):
+                    rules.append(dict(item))
         except Exception:
-            rules = []
+            pass
 
         for item in rules:
             if not item.get("enabled", True):

@@ -11,7 +11,7 @@ from typing import Any, Dict, Mapping, Optional
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
-from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.nlu.teacher_events import append_event, make_event, rebuild_events_by_candidate
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
@@ -141,6 +141,7 @@ async def _append_revision(webspace_id: str, revision: dict[str, Any]) -> None:
         revisions.append(dict(revision))
         revisions = _bounded(revisions, max_items=_MAX_ITEMS)
         teacher["revisions"] = revisions
+        rebuild_events_by_candidate(teacher)
         with ydoc.begin_transaction() as txn:
             data_map.set(txn, "nlu_teacher", teacher)
 
@@ -172,6 +173,7 @@ async def _update_revision(
                 cleaned.append(d)
 
         teacher["revisions"] = _bounded(cleaned, max_items=_MAX_ITEMS)
+        rebuild_events_by_candidate(teacher)
         with ydoc.begin_transaction() as txn:
             data_map.set(txn, "nlu_teacher", teacher)
         return updated
@@ -185,6 +187,7 @@ async def _append_dataset_item(webspace_id: str, item: dict[str, Any]) -> None:
         dataset.append(dict(item))
         dataset = _bounded(dataset, max_items=_MAX_ITEMS)
         teacher["dataset"] = dataset
+        rebuild_events_by_candidate(teacher)
         with ydoc.begin_transaction() as txn:
             data_map.set(txn, "nlu_teacher", teacher)
 
@@ -194,62 +197,68 @@ async def _on_teacher_request(evt: Any) -> None:
     if not _ENABLED:
         return
 
-    ctx = get_ctx()
-    payload = _payload(evt)
-    webspace_id = _resolve_webspace_id(payload)
-
-    req = payload.get("request") if isinstance(payload.get("request"), Mapping) else None
-    if not req:
-        return
-
-    text = req.get("text")
-    if not isinstance(text, str) or not text.strip():
-        return
-
-    revision = {
-        "id": f"rev.{int(time.time()*1000)}",
-        "ts": time.time(),
-        "status": "proposed",
-        "request_id": req.get("request_id"),
-        "text": text.strip(),
-        "meta": dict(req.get("_meta") or {}) if isinstance(req.get("_meta"), Mapping) else {},
-        "proposal": {
-            "intent": None,
-            "examples": [text.strip()],
-            "slots": {},
-        },
-        "note": "Awaiting teacher/LLM suggestion (stub).",
-    }
-
+    ctx = None
+    webspace_id = None
     try:
-        await _append_revision(webspace_id, revision)
-    except Exception:
-        _log.debug("failed to append teacher revision webspace=%s", webspace_id, exc_info=True)
-        return
+        ctx = get_ctx()
+        payload = _payload(evt)
+        webspace_id = _resolve_webspace_id(payload)
 
-    try:
-        await append_event(
-            webspace_id,
-            make_event(
-                webspace_id=webspace_id,
-                request_id=revision.get("request_id") if isinstance(revision.get("request_id"), str) else None,
-                request_text=text.strip(),
-                kind="revision.proposed",
-                title="Revision proposed",
-                subtitle="pending",
-                raw=revision,
-                meta=revision.get("meta") if isinstance(revision.get("meta"), Mapping) else {},
-            ),
+        req = payload.get("request") if isinstance(payload.get("request"), Mapping) else None
+        if not req:
+            return
+
+        text = req.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return
+
+        revision = {
+            "id": f"rev.{int(time.time()*1000)}",
+            "ts": time.time(),
+            "status": "proposed",
+            "request_id": req.get("request_id"),
+            "text": text.strip(),
+            "meta": dict(req.get("_meta") or {}) if isinstance(req.get("_meta"), Mapping) else {},
+            "proposal": {
+                "intent": None,
+                "examples": [text.strip()],
+                "slots": {},
+            },
+            "note": "Awaiting teacher/LLM suggestion (stub).",
+        }
+
+        try:
+            await _append_revision(webspace_id, revision)
+        except Exception:
+            _log.debug("failed to append teacher revision webspace=%s", webspace_id, exc_info=True)
+            return
+
+        try:
+            await append_event(
+                webspace_id,
+                make_event(
+                    webspace_id=webspace_id,
+                    request_id=revision.get("request_id") if isinstance(revision.get("request_id"), str) else None,
+                    request_text=text.strip(),
+                    kind="revision.proposed",
+                    title="Revision proposed",
+                    subtitle="pending",
+                    raw=revision,
+                    meta=revision.get("meta") if isinstance(revision.get("meta"), Mapping) else {},
+                ),
+            )
+        except Exception:
+            _log.debug("failed to append nlu_teacher event webspace=%s", webspace_id, exc_info=True)
+
+        bus_emit(
+            ctx.bus,
+            "nlp.teacher.revision.proposed",
+            {"webspace_id": webspace_id, "revision": revision},
+            source="nlu.teacher.runtime",
         )
     except Exception:
-        _log.debug("failed to append nlu_teacher event webspace=%s", webspace_id, exc_info=True)
-
-    bus_emit(
-        ctx.bus,
-        "nlp.teacher.revision.proposed",
-        {"webspace_id": webspace_id, "revision": revision},
-        source="nlu.teacher.runtime",
-    )
+        _log.warning("teacher runtime handler crashed webspace=%s", webspace_id, exc_info=True)
+        return
 
 
 @subscribe("nlp.teacher.revision.apply")

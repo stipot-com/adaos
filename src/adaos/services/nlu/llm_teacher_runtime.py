@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+import y_py as Y
+
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
@@ -49,6 +51,29 @@ def _teacher_obj(data_map: Any) -> dict[str, Any]:
     return coerce_dict(data_map.get("nlu_teacher"))
 
 
+def _ydoc_to_snapshot(ydoc: Any) -> dict[str, Any]:
+    def _normalize(node: Any):
+        if isinstance(node, dict):
+            return {str(k): _normalize(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_normalize(x) for x in node]
+        if isinstance(node, Y.YMap):
+            keys = list(node.keys())
+            return {str(k): _normalize(node.get(k)) for k in keys}
+        if isinstance(node, Y.YArray):
+            return [_normalize(x) for x in node]
+        if node is None:
+            return None
+        return node
+
+    try:
+        ui_map = ydoc.get_map("ui")
+        data_map = ydoc.get_map("data")
+    except Exception:
+        return {}
+    return {"ui": _normalize(ui_map) or {}, "data": _normalize(data_map) or {}}
+
+
 def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     ui = coerce_dict(snapshot.get("ui"))
     data = coerce_dict(snapshot.get("data"))
@@ -61,8 +86,8 @@ def _extract_webspace_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     widgets = list(iter_mappings(catalog.get("widgets")))
 
     installed = coerce_dict(data.get("installed"))
-    installed_apps = list(_iter_scalars(installed.get("apps")))
-    installed_widgets = list(_iter_scalars(installed.get("widgets")))
+    installed_apps = list(iter_scalars(installed.get("apps")))
+    installed_widgets = list(iter_scalars(installed.get("widgets")))
 
     def _strip_app(app: Any) -> Optional[dict[str, Any]]:
         if not isinstance(app, Mapping):
@@ -408,195 +433,66 @@ async def _on_teacher_request(evt: Any) -> None:
     if not (_TEACHER_ENABLED and _LLM_TEACHER_ENABLED):
         return
 
-    ctx = get_ctx()
-    payload = _payload(evt)
-    webspace_id = _resolve_webspace_id(payload)
-    req = payload.get("request") if isinstance(payload.get("request"), Mapping) else None
-    if not req:
-        return
-    req_meta = req.get("_meta") if isinstance(req.get("_meta"), Mapping) else {}
-
-    text = req.get("text")
-    request_id = req.get("request_id")
-    if not isinstance(text, str) or not text.strip():
-        return
-    if not isinstance(request_id, str) or not request_id.strip():
-        return
-    text = text.strip()
-    request_id = request_id.strip()
-
-    # Build lightweight context snapshot for LLM.
+    ctx = None
+    webspace_id = None
     try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            snapshot = ydoc.to_json()
-    except Exception:
-        snapshot = {}
-    context = _extract_webspace_context(snapshot if isinstance(snapshot, dict) else {})
-    context["scenario_nlu"] = _extract_scenario_nlu(scenario_id=context.get("current_scenario"))
-    try:
-        from adaos.services.nlu.pipeline import describe_builtin_regex_rules  # local import to avoid cycles
+        ctx = get_ctx()
+        payload = _payload(evt)
+        webspace_id = _resolve_webspace_id(payload)
+        req = payload.get("request") if isinstance(payload.get("request"), Mapping) else None
+        if not req:
+            return
 
-        context["builtin_regex"] = describe_builtin_regex_rules()
-    except Exception:
-        context["builtin_regex"] = []
+        req_meta = req.get("_meta") if isinstance(req.get("_meta"), Mapping) else {}
+        text = req.get("text")
+        request_id = req.get("request_id")
+        if not isinstance(text, str) or not text.strip():
+            return
+        if not isinstance(request_id, str) or not request_id.strip():
+            return
+        text = text.strip()
+        request_id = request_id.strip()
 
-    messages = _build_prompt(request=dict(req), webspace_id=webspace_id, context=context)
+        # Build lightweight context snapshot for LLM.
+        try:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                snapshot = _ydoc_to_snapshot(ydoc)
+        except Exception:
+            snapshot = {}
+        context = _extract_webspace_context(snapshot if isinstance(snapshot, dict) else {})
+        context["scenario_nlu"] = _extract_scenario_nlu(scenario_id=context.get("current_scenario"))
+        try:
+            from adaos.services.nlu.pipeline import describe_builtin_regex_rules  # local import to avoid cycles
 
-    log_id = f"llm.{int(time.time() * 1000)}"
-    started_at = time.time()
-    try:
-        await _append_llm_log(
-            webspace_id,
-            {
-                "id": log_id,
-                "ts": started_at,
-                "request_id": request_id,
-                "webspace_id": webspace_id,
-                "model": _MODEL,
-                "request": {
-                    "messages": _redact_messages(messages),
-                    "max_tokens": _MAX_TOKENS,
-                    "timeout_s": _TIMEOUT_S,
-                },
-                "status": "request",
-            },
-        )
-    except Exception:
-        _log.debug("failed to append llm log webspace=%s", webspace_id, exc_info=True)
+            context["builtin_regex"] = describe_builtin_regex_rules()
+        except Exception:
+            context["builtin_regex"] = []
 
-    try:
-        await append_event(
-            webspace_id,
-            make_event(
-                webspace_id=webspace_id,
-                request_id=request_id,
-                request_text=text,
-                kind="llm.request",
-                title="LLM request",
-                subtitle=_MODEL,
-                raw={
-                    "log_id": log_id,
+        messages = _build_prompt(request=dict(req), webspace_id=webspace_id, context=context)
+
+        log_id = f"llm.{int(time.time() * 1000)}"
+        started_at = time.time()
+
+        try:
+            await _append_llm_log(
+                webspace_id,
+                {
+                    "id": log_id,
+                    "ts": started_at,
+                    "request_id": request_id,
+                    "webspace_id": webspace_id,
                     "model": _MODEL,
-                    "messages": _redact_messages(messages),
-                    "max_tokens": _MAX_TOKENS,
-                    "timeout_s": _TIMEOUT_S,
-                },
-                meta=req_meta,
-            ),
-        )
-    except Exception:
-        _log.debug("failed to append teacher event (llm.request) webspace=%s", webspace_id, exc_info=True)
-
-    try:
-        res = await _llm_call(messages)
-    except Exception as exc:
-        _log.warning("llm teacher call failed: %s", exc)
-        try:
-            await _patch_llm_log(
-                webspace_id,
-                log_id=log_id,
-                patch={
-                    "status": "error",
-                    "error": str(exc),
-                    "duration_s": max(0.0, time.time() - started_at),
+                    "request": {
+                        "messages": _redact_messages(messages),
+                        "max_tokens": _MAX_TOKENS,
+                        "timeout_s": _TIMEOUT_S,
+                    },
+                    "status": "request",
                 },
             )
         except Exception:
-            _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
-        return
+            _log.debug("failed to append llm log webspace=%s", webspace_id, exc_info=True)
 
-    raw_text = _extract_first_output_text(res)
-    if not raw_text:
-        _log.warning("llm teacher returned empty output")
-        try:
-            await _patch_llm_log(
-                webspace_id,
-                log_id=log_id,
-                patch={
-                    "status": "error",
-                    "error": "empty_output",
-                    "response": {"raw": None},
-                    "duration_s": max(0.0, time.time() - started_at),
-                },
-            )
-        except Exception:
-            _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
-        return
-
-    try:
-        suggestion = json.loads(raw_text)
-    except Exception:
-        # Fallback: store raw in revision note.
-        suggestion = {"decision": "ignore", "notes": raw_text, "confidence": 0.0}
-
-    if not isinstance(suggestion, dict):
-        suggestion = {"decision": "ignore", "notes": raw_text, "confidence": 0.0}
-
-    try:
-        await _patch_llm_log(
-            webspace_id,
-            log_id=log_id,
-            patch={
-                "status": "response",
-                "response": {
-                    "raw": _truncate(raw_text, 4000),
-                    "parsed": suggestion,
-                },
-                "duration_s": max(0.0, time.time() - started_at),
-            },
-        )
-    except Exception:
-        _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
-
-    decision = suggestion.get("decision") if isinstance(suggestion.get("decision"), str) else "ignore"
-    intent = suggestion.get("intent") if isinstance(suggestion.get("intent"), str) else None
-    regex_rule = suggestion.get("regex_rule") if isinstance(suggestion.get("regex_rule"), Mapping) else None
-    examples = suggestion.get("examples") if isinstance(suggestion.get("examples"), list) else None
-    if examples is None:
-        examples = [text]
-    examples = [x.strip() for x in examples if isinstance(x, str) and x.strip()]
-    slots = suggestion.get("slots") if isinstance(suggestion.get("slots"), Mapping) else {}
-    confidence = suggestion.get("confidence")
-    try:
-        confidence_f = float(confidence) if confidence is not None else 0.0
-    except Exception:
-        confidence_f = 0.0
-    notes = suggestion.get("notes") if isinstance(suggestion.get("notes"), str) else ""
-
-    llm_meta = {"model": _MODEL, "ts": time.time(), "decision": decision, "confidence": confidence_f}
-
-    try:
-        await append_event(
-            webspace_id,
-            make_event(
-                webspace_id=webspace_id,
-                request_id=request_id,
-                request_text=text,
-                kind="llm.response",
-                title="LLM response",
-                subtitle=f"{decision} ({confidence_f:.2f})",
-                raw={"log_id": log_id, "decision": decision, "suggestion": suggestion},
-                meta=req_meta,
-            ),
-        )
-    except Exception:
-        _log.debug("failed to append teacher event (llm.response) webspace=%s", webspace_id, exc_info=True)
-
-    if decision == "revise_nlu" and intent:
-        patch = {
-            "status": "proposed",
-            "proposal": {"intent": intent, "examples": examples, "slots": dict(slots)},
-            "llm": llm_meta,
-            "note": notes or "LLM proposed NLU revision.",
-            "proposed_at": time.time(),
-        }
-        updated = await _update_revision_by_request_id(webspace_id, request_id=request_id, patch=patch)
-        bus_emit(
-            ctx.bus,
-            "nlp.teacher.revision.suggested",
-            {"webspace_id": webspace_id, "request_id": request_id, "revision": updated, "suggestion": suggestion},
-            source="nlu.teacher.llm",
-        )
         try:
             await append_event(
                 webspace_id,
@@ -604,29 +500,225 @@ async def _on_teacher_request(evt: Any) -> None:
                     webspace_id=webspace_id,
                     request_id=request_id,
                     request_text=text,
-                    kind="revision.suggested",
-                    title="Revision suggested",
-                    subtitle=intent,
-                    raw=updated if isinstance(updated, Mapping) else {"intent": intent, "examples": examples},
+                    kind="llm.request",
+                    title="LLM request",
+                    subtitle=_MODEL,
+                    raw={
+                        "log_id": log_id,
+                        "model": _MODEL,
+                        "messages": _redact_messages(messages),
+                        "max_tokens": _MAX_TOKENS,
+                        "timeout_s": _TIMEOUT_S,
+                    },
                     meta=req_meta,
                 ),
             )
         except Exception:
-            _log.debug("failed to append teacher event (revision.suggested) webspace=%s", webspace_id, exc_info=True)
-        return
+            _log.debug("failed to append teacher event (llm.request) webspace=%s", webspace_id, exc_info=True)
 
-    if decision == "propose_regex_rule" and regex_rule:
-        rr_intent = regex_rule.get("intent")
-        rr_pattern = regex_rule.get("pattern")
-        if isinstance(rr_intent, str) and rr_intent.strip() and isinstance(rr_pattern, str) and rr_pattern.strip():
+        try:
+            res = await _llm_call(messages)
+        except Exception as exc:
+            _log.warning("llm teacher call failed: %s", exc)
+            try:
+                await _patch_llm_log(
+                    webspace_id,
+                    log_id=log_id,
+                    patch={
+                        "status": "error",
+                        "error": str(exc),
+                        "duration_s": max(0.0, time.time() - started_at),
+                    },
+                )
+            except Exception:
+                _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
+            return
+
+        raw_text = _extract_first_output_text(res)
+        if not raw_text:
+            _log.warning("llm teacher returned empty output")
+            try:
+                await _patch_llm_log(
+                    webspace_id,
+                    log_id=log_id,
+                    patch={
+                        "status": "error",
+                        "error": "empty_output",
+                        "response": {"raw": None},
+                        "duration_s": max(0.0, time.time() - started_at),
+                    },
+                )
+            except Exception:
+                _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
+            return
+
+        try:
+            suggestion = json.loads(raw_text)
+        except Exception:
+            suggestion = {"decision": "ignore", "notes": raw_text, "confidence": 0.0}
+        if not isinstance(suggestion, dict):
+            suggestion = {"decision": "ignore", "notes": raw_text, "confidence": 0.0}
+
+        try:
+            await _patch_llm_log(
+                webspace_id,
+                log_id=log_id,
+                patch={
+                    "status": "response",
+                    "response": {"raw": _truncate(raw_text, 4000), "parsed": suggestion},
+                    "duration_s": max(0.0, time.time() - started_at),
+                },
+            )
+        except Exception:
+            _log.debug("failed to patch llm log webspace=%s", webspace_id, exc_info=True)
+
+        decision = suggestion.get("decision") if isinstance(suggestion.get("decision"), str) else "ignore"
+        intent = suggestion.get("intent") if isinstance(suggestion.get("intent"), str) else None
+        regex_rule = suggestion.get("regex_rule") if isinstance(suggestion.get("regex_rule"), Mapping) else None
+        examples = suggestion.get("examples") if isinstance(suggestion.get("examples"), list) else None
+        if examples is None:
+            examples = [text]
+        examples = [x.strip() for x in examples if isinstance(x, str) and x.strip()]
+        slots = suggestion.get("slots") if isinstance(suggestion.get("slots"), Mapping) else {}
+        confidence = suggestion.get("confidence")
+        try:
+            confidence_f = float(confidence) if confidence is not None else 0.0
+        except Exception:
+            confidence_f = 0.0
+        notes = suggestion.get("notes") if isinstance(suggestion.get("notes"), str) else ""
+
+        llm_meta = {"model": _MODEL, "ts": time.time(), "decision": decision, "confidence": confidence_f}
+
+        try:
+            await append_event(
+                webspace_id,
+                make_event(
+                    webspace_id=webspace_id,
+                    request_id=request_id,
+                    request_text=text,
+                    kind="llm.response",
+                    title="LLM response",
+                    subtitle=f"{decision} ({confidence_f:.2f})",
+                    raw={"log_id": log_id, "decision": decision, "suggestion": suggestion},
+                    meta=req_meta,
+                ),
+            )
+        except Exception:
+            _log.debug("failed to append teacher event (llm.response) webspace=%s", webspace_id, exc_info=True)
+
+        if decision == "revise_nlu" and intent:
+            patch = {
+                "status": "proposed",
+                "proposal": {"intent": intent, "examples": examples, "slots": dict(slots)},
+                "llm": llm_meta,
+                "note": notes or "LLM proposed NLU revision.",
+                "proposed_at": time.time(),
+            }
+            try:
+                updated = await _update_revision_by_request_id(webspace_id, request_id=request_id, patch=patch)
+            except Exception:
+                _log.warning(
+                    "failed to update teacher revision webspace=%s request_id=%s", webspace_id, request_id, exc_info=True
+                )
+                updated = None
+            bus_emit(
+                ctx.bus,
+                "nlp.teacher.revision.suggested",
+                {"webspace_id": webspace_id, "request_id": request_id, "revision": updated, "suggestion": suggestion},
+                source="nlu.teacher.llm",
+            )
+            try:
+                await append_event(
+                    webspace_id,
+                    make_event(
+                        webspace_id=webspace_id,
+                        request_id=request_id,
+                        request_text=text,
+                        kind="revision.suggested",
+                        title="Revision suggested",
+                        subtitle=intent,
+                        raw=updated if isinstance(updated, Mapping) else {"intent": intent, "examples": examples},
+                        meta=req_meta,
+                    ),
+                )
+            except Exception:
+                _log.debug("failed to append teacher event (revision.suggested) webspace=%s", webspace_id, exc_info=True)
+            return
+
+        if decision == "propose_regex_rule" and regex_rule:
+            rr_intent = regex_rule.get("intent")
+            rr_pattern = regex_rule.get("pattern")
+            if isinstance(rr_intent, str) and rr_intent.strip() and isinstance(rr_pattern, str) and rr_pattern.strip():
+                entry = {
+                    "id": f"cand.{int(time.time()*1000)}",
+                    "ts": time.time(),
+                    "kind": "regex_rule",
+                    "text": text,
+                    "request_id": request_id,
+                    "candidate": {
+                        "name": f"Regex rule for {rr_intent.strip()}",
+                        "description": "Proposed regex rule to improve fast NLU stage.",
+                    },
+                    "regex_rule": {"intent": rr_intent.strip(), "pattern": rr_pattern},
+                    "llm": llm_meta,
+                    "notes": notes,
+                    "status": "pending",
+                }
+                try:
+                    await _append_candidate(webspace_id, entry)
+                except Exception:
+                    _log.debug("failed to append regex rule candidate webspace=%s", webspace_id, exc_info=True)
+                bus_emit(
+                    ctx.bus,
+                    "nlp.teacher.candidate.proposed",
+                    {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
+                    source="nlu.teacher.llm",
+                )
+                try:
+                    await append_event(
+                        webspace_id,
+                        make_event(
+                            webspace_id=webspace_id,
+                            request_id=request_id,
+                            request_text=text,
+                            kind="candidate.proposed",
+                            title="Candidate proposed",
+                            subtitle=f"regex_rule: {rr_intent.strip()}",
+                            raw=entry,
+                            meta=req_meta,
+                        ),
+                    )
+                except Exception:
+                    _log.debug("failed to append teacher event (candidate.proposed regex_rule) webspace=%s", webspace_id, exc_info=True)
+
+                bus_emit(
+                    ctx.bus,
+                    "io.out.chat.append",
+                    {
+                        "id": "",
+                        "from": "hub",
+                        "text": (
+                            f"Я не смог распознать запрос в Rasa: «{text}».\n\n"
+                            "Я предложил улучшение NLU в виде regex-правила, чтобы такие запросы распознавались сразу.\n"
+                            "Открой «NLU Teacher» (Apps) и нажми Apply у кандидата типа regex_rule.\n"
+                            "После Apply тот же запрос начнёт распознаваться на этапе regex без обращения к LLM."
+                        ),
+                        "ts": time.time(),
+                        "_meta": {"webspace_id": webspace_id, **dict(req_meta)},
+                    },
+                    source="router.nlu",
+                )
+                return
+
+        if decision in {"create_skill_candidate", "create_scenario_candidate"}:
+            candidate = suggestion.get("candidate") if isinstance(suggestion.get("candidate"), Mapping) else {}
             entry = {
                 "id": f"cand.{int(time.time()*1000)}",
                 "ts": time.time(),
-                "kind": "regex_rule",
+                "kind": "skill" if decision == "create_skill_candidate" else "scenario",
                 "text": text,
                 "request_id": request_id,
-                "candidate": {"name": f"Regex rule for {rr_intent.strip()}", "description": "Proposed regex rule to improve fast NLU stage."},
-                "regex_rule": {"intent": rr_intent.strip(), "pattern": rr_pattern},
+                "candidate": dict(candidate),
                 "llm": llm_meta,
                 "notes": notes,
                 "status": "pending",
@@ -634,7 +726,7 @@ async def _on_teacher_request(evt: Any) -> None:
             try:
                 await _append_candidate(webspace_id, entry)
             except Exception:
-                _log.debug("failed to append regex rule candidate webspace=%s", webspace_id, exc_info=True)
+                _log.debug("failed to append candidate webspace=%s", webspace_id, exc_info=True)
             bus_emit(
                 ctx.bus,
                 "nlp.teacher.candidate.proposed",
@@ -650,63 +742,24 @@ async def _on_teacher_request(evt: Any) -> None:
                         request_text=text,
                         kind="candidate.proposed",
                         title="Candidate proposed",
-                        subtitle=f"regex_rule: {rr_intent.strip()}",
+                        subtitle=f"{entry.get('kind')}: {(entry.get('candidate') or {}).get('name') or ''}".strip(),
                         raw=entry,
                         meta=req_meta,
                     ),
                 )
             except Exception:
-                _log.debug("failed to append teacher event (candidate.proposed regex_rule) webspace=%s", webspace_id, exc_info=True)
-
-            # MVP: auto-apply regex rules immediately, to demonstrate "LLM teaches existing NLU"
-            # without requiring any manual UI actions.
-            bus_emit(
-                ctx.bus,
-                "nlp.teacher.candidate.apply",
-                {"webspace_id": webspace_id, "candidate_id": entry["id"], "_meta": dict(req_meta)},
-                source="nlu.teacher.llm",
-            )
-            bus_emit(
-                ctx.bus,
-                "io.out.chat.append",
-                {
-                    "id": "",
-                    "from": "hub",
-                    "text": (
-                        f"Я не сразу понял: «{text}».\n\n"
-                        f"Теперь я понимаю такие фразы (через новое правило NLU):\n"
-                        f"- «{text}»\n\n"
-                        f"Открой «NLU Teacher» (Apps) — там лог запроса/ответа и применённое правило."
-                    ),
-                    "ts": time.time(),
-                    "_meta": {"webspace_id": webspace_id, **dict(req_meta)},
-                },
-                source="router.nlu",
-            )
+                _log.debug("failed to append teacher event (candidate.proposed) webspace=%s", webspace_id, exc_info=True)
             return
 
-    if decision in {"create_skill_candidate", "create_scenario_candidate"}:
-        candidate = suggestion.get("candidate") if isinstance(suggestion.get("candidate"), Mapping) else {}
-        entry = {
-            "id": f"cand.{int(time.time()*1000)}",
-            "ts": time.time(),
-            "kind": "skill" if decision == "create_skill_candidate" else "scenario",
-            "text": text,
-            "request_id": request_id,
-            "candidate": dict(candidate),
-            "llm": llm_meta,
-            "notes": notes,
-            "status": "pending",
-        }
+        patch = {"status": "ignored", "llm": llm_meta, "note": notes or "LLM decided to ignore.", "ignored_at": time.time()}
         try:
-            await _append_candidate(webspace_id, entry)
+            await _update_revision_by_request_id(webspace_id, request_id=request_id, patch=patch)
         except Exception:
-            _log.debug("failed to append candidate webspace=%s", webspace_id, exc_info=True)
-        # Include original meta so router can respond in the right UI route (voice_chat/telegram/etc).
+            _log.debug("failed to update ignored revision webspace=%s request_id=%s", webspace_id, request_id, exc_info=True)
         bus_emit(
             ctx.bus,
-            "nlp.teacher.candidate.proposed",
-            {"webspace_id": webspace_id, "candidate": entry, "_meta": dict(req_meta)},
+            "nlp.teacher.ignored",
+            {"webspace_id": webspace_id, "request_id": request_id, "suggestion": suggestion},
             source="nlu.teacher.llm",
         )
         try:
@@ -716,34 +769,16 @@ async def _on_teacher_request(evt: Any) -> None:
                     webspace_id=webspace_id,
                     request_id=request_id,
                     request_text=text,
-                    kind="candidate.proposed",
-                    title="Candidate proposed",
-                    subtitle=f"{entry.get('kind')}: {(entry.get('candidate') or {}).get('name') or ''}".strip(),
-                    raw=entry,
+                    kind="llm.ignored",
+                    title="LLM ignored",
+                    subtitle=notes or "",
+                    raw={"suggestion": suggestion},
                     meta=req_meta,
                 ),
             )
         except Exception:
-            _log.debug("failed to append teacher event (candidate.proposed) webspace=%s", webspace_id, exc_info=True)
-        return
-
-    # ignore: just annotate revision (if present) so UI can show why.
-    patch = {"status": "ignored", "llm": llm_meta, "note": notes or "LLM decided to ignore.", "ignored_at": time.time()}
-    await _update_revision_by_request_id(webspace_id, request_id=request_id, patch=patch)
-    bus_emit(ctx.bus, "nlp.teacher.ignored", {"webspace_id": webspace_id, "request_id": request_id, "suggestion": suggestion}, source="nlu.teacher.llm")
-    try:
-        await append_event(
-            webspace_id,
-            make_event(
-                webspace_id=webspace_id,
-                request_id=request_id,
-                request_text=text,
-                kind="llm.ignored",
-                title="LLM ignored",
-                subtitle=notes or "",
-                raw={"suggestion": suggestion},
-                meta=req_meta,
-            ),
-        )
+            _log.debug("failed to append teacher event (llm.ignored) webspace=%s", webspace_id, exc_info=True)
     except Exception:
-        _log.debug("failed to append teacher event (llm.ignored) webspace=%s", webspace_id, exc_info=True)
+        # Never crash the eventbus handler; log and exit.
+        _log.warning("llm teacher handler crashed webspace=%s", webspace_id, exc_info=True)
+        return
