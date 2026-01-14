@@ -697,8 +697,10 @@ class BootstrapService:
                                             password=pw_str,
                                             name=f"hub-{hub_id_str}",
                                             allow_reconnect=False,
-                                            ping_interval=20.0,
-                                            max_outstanding_pings=3,
+                                            # Be tolerant to intermittent WS proxy hiccups: missed PONGs should not
+                                            # tear down the whole hub IO bridge too aggressively.
+                                            ping_interval=15.0,
+                                            max_outstanding_pings=10,
                                             connect_timeout=5.0,
                                             error_cb=_on_error_cb,
                                             disconnected_cb=_on_disconnected,

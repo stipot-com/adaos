@@ -154,6 +154,9 @@ export function installWsNatsProxy(server: HttpsServer) {
 			try {
 				;(upstreamSock as any).setNoDelay?.(true)
 			} catch {}
+			try {
+				upstreamSock.setKeepAlive(true, 20_000)
+			} catch {}
 			upstreamSock.on('connect', () => {
 				connected = true
 			})
@@ -164,9 +167,16 @@ export function installWsNatsProxy(server: HttpsServer) {
 				if (scan.hit) {
 					lastUpstreamPingAt = Date.now()
 					try {
-						upstreamSock?.write(NATS_PONG)
+						const ok = upstreamSock?.write(NATS_PONG)
+						if (ok === false) {
+							logSummary('upstream backpressure on PONG', { writableLength: upstreamSock?.writableLength })
+						}
 						proxySentPong += 1
-					} catch {}
+					} catch (e) {
+						logSummary('upstream write PONG failed', { err: String(e) })
+						closeBoth(1011, 'upstream_write_failed')
+						return
+					}
 				}
 				try {
 					// If WS backpressure builds up, upstream PONG can be lost and the client will disconnect.
@@ -262,8 +272,12 @@ export function installWsNatsProxy(server: HttpsServer) {
 					connectUpstream()
 					setTimeout(() => {
 						try {
-							upstreamSock?.write(rewritten)
-							if (rest.length) upstreamSock?.write(rest)
+							const ok1 = upstreamSock?.write(rewritten)
+							if (ok1 === false) logSummary('upstream backpressure on CONNECT', { writableLength: upstreamSock?.writableLength })
+							if (rest.length) {
+								const ok2 = upstreamSock?.write(rest)
+								if (ok2 === false) logSummary('upstream backpressure on CONNECT rest', { writableLength: upstreamSock?.writableLength })
+							}
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
 							log.info({ from: rip, hub_id: hubId }, 'auth ok')
@@ -293,8 +307,19 @@ export function installWsNatsProxy(server: HttpsServer) {
 					}
 				} catch {}
 				try {
-					upstreamSock?.write(buf)
-				} catch {}
+					if (!upstreamSock || (upstreamSock as any).destroyed) {
+						logSummary('upstream missing while writing', {})
+						closeBoth(1011, 'upstream_missing')
+						return
+					}
+					const ok = upstreamSock.write(buf)
+					if (ok === false) {
+						logSummary('upstream backpressure', { writableLength: upstreamSock.writableLength })
+					}
+				} catch (e) {
+					logSummary('upstream write failed', { err: String(e) })
+					closeBoth(1011, 'upstream_write_failed')
+				}
 				return
 			}
 			clientBuf = Buffer.concat([clientBuf, buf])
