@@ -9,12 +9,15 @@ interpreter runtime (Rasa) can resolve intents and the NLU dispatcher can
 map them to scenario/skill actions.
 """
 
+import logging
+import os
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import LocalEventBus
 from adaos.domain import Event
 
+_log = logging.getLogger("adaos.chat_io.nlu_bridge")
 
 def _extract_text_io_input(env: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str], Dict[str, Any]]:
     """
@@ -101,6 +104,16 @@ def register_chat_nlu_bridge(bus: LocalEventBus | None = None) -> None:
             text, webspace_id, meta = _extract_text_io_input(env)
             if not text:
                 return
+            try:
+                if os.getenv("HUB_TG_DEBUG", "0") == "1" and isinstance(meta, dict) and meta.get("io_type") == "telegram":
+                    _log.info(
+                        "tg.input received hub_id=%s chat_id=%s text=%r",
+                        meta.get("hub_id"),
+                        meta.get("chat_id"),
+                        text[:200],
+                    )
+            except Exception:
+                pass
             payload: Dict[str, Any] = {"text": text}
             if webspace_id:
                 payload["webspace_id"] = webspace_id

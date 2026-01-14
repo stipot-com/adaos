@@ -797,6 +797,31 @@ class RootDeveloperService:
             emit(self.ctx.bus, "root.dev.init.error", {"node_id": node_id}, "root.dev")
             raise
 
+    def dev_logs(
+        self,
+        *,
+        minutes: int = 30,
+        limit: int = 2000,
+        hub_id: str | None = None,
+        contains: str | None = None,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_logs(
+            root_token=token,
+            minutes=minutes,
+            limit=limit,
+            hub_id=hub_id,
+            contains=contains,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
+
     def login(
         self,
         *,

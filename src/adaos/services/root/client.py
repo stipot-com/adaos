@@ -230,6 +230,33 @@ class RootHttpClient:
         payload = {"csr_pem": csr_pem}
         return dict(self._request("POST", "/v1/subnets/register", json=payload, headers=headers, verify=(verify if verify is not None else self.verify), timeout=120.0))
 
+    def dev_logs(
+        self,
+        *,
+        root_token: str,
+        minutes: int = 30,
+        limit: int = 2000,
+        hub_id: str | None = None,
+        contains: str | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {"minutes": int(minutes), "limit": int(limit)}
+        if hub_id:
+            params["hub_id"] = hub_id
+        if contains:
+            params["contains"] = contains
+        return dict(
+            self._request(
+                "GET",
+                "/v1/dev/logs",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
     def device_authorize(
         self,
         *,

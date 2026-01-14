@@ -109,7 +109,20 @@ async def lifespan(app: FastAPI):
 
             link_url = f"{api_base.rstrip('/')}/io/tg/pair/link"
             r = _requests.get(link_url, params={"hub_id": conf.subnet_id}, timeout=3.0)
-            if r.status_code == 200 and (r.json() or {}).get("ok"):
+            link_ok = False
+            try:
+                link_ok = r.status_code == 200 and (r.json() or {}).get("ok")
+            except Exception:
+                link_ok = False
+            if not link_ok:
+                try:
+                    logging.getLogger("adaos.io.telegram").warning(
+                        "telegram binding not found or unreachable",
+                        extra={"hub_id": conf.subnet_id, "url": link_url, "status": r.status_code, "body": (r.text or "")[:300]},
+                    )
+                except Exception:
+                    pass
+            if link_ok:
                 # install telegram IO into capacity and refresh directory snapshot for this node
                 install_io_in_capacity("telegram", ["text", "lang:ru", "lang:en"], priority=60)
                 try:
@@ -141,7 +154,7 @@ async def lifespan(app: FastAPI):
                     if r2.status_code not in (200, 201, 202):
                         logging.getLogger("adaos.router").warning(
                             "telegram broadcast (subnet.started) failed",
-                            extra={"hub_id": conf.subnet_id, "status": r2.status_code},
+                            extra={"hub_id": conf.subnet_id, "status": r2.status_code, "body": (r2.text or "")[:300]},
                         )
                 except Exception:
                     logging.getLogger("adaos.router").warning("telegram broadcast (subnet.started) exception", exc_info=True)

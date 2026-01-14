@@ -180,7 +180,15 @@ class RouterService:
                 body = {"hub_id": hub_id, "text": prefixed_text}
                 try:
                     r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
-                    logging.getLogger("adaos.router").info("router: telegram sent", extra={"hub_id": hub_id, "status": r.status_code})
+                    if not (200 <= int(r.status_code) < 300):
+                        logging.getLogger("adaos.router").warning(
+                            "router: telegram send failed",
+                            extra={"hub_id": hub_id, "status": r.status_code, "body": (r.text or "")[:300]},
+                        )
+                    else:
+                        logging.getLogger("adaos.router").info(
+                            "router: telegram sent", extra={"hub_id": hub_id, "status": r.status_code}
+                        )
                 except Exception as pe:
                     logging.getLogger("adaos.router").warning("router: telegram request failed", extra={"hub_id": hub_id, "error": str(pe)})
                     raise
@@ -522,6 +530,50 @@ class RouterService:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
+
+            # Request/response Telegram delivery: if the originating request came from Telegram,
+            # send this chat message back into that chat via Root (/io/tg/send).
+            # This avoids dependency on hub->NATS connectivity for replies.
+            try:
+                if str((meta or {}).get("io_type") or "").lower() == "telegram":
+                    chat_id = (meta or {}).get("chat_id")
+                    if isinstance(chat_id, str) and chat_id.strip():
+                        bot_id = (meta or {}).get("bot_id")
+                        if not isinstance(bot_id, str) or not bot_id.strip():
+                            bot_id = "main-bot"
+                        hub_id = (meta or {}).get("hub_id")
+                        if not isinstance(hub_id, str) or not hub_id.strip():
+                            hub_id = get_ctx().config.subnet_id
+                        ctx = get_ctx()
+                        api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
+                        url = f"{api_base.rstrip('/')}/io/tg/send"
+                        body = {"hub_id": hub_id, "bot_id": bot_id, "chat_id": chat_id.strip(), "text": text.strip()}
+                        try:
+                            r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+                            if not (200 <= int(r.status_code) < 300):
+                                logging.getLogger("adaos.router").warning(
+                                    "router: telegram send failed (chat reply)",
+                                    extra={
+                                        "hub_id": hub_id,
+                                        "chat_id": chat_id.strip(),
+                                        "status": r.status_code,
+                                        "body": (r.text or "")[:300],
+                                    },
+                                )
+                            else:
+                                logging.getLogger("adaos.router").info(
+                                    "router: telegram sent (chat reply)",
+                                    extra={"hub_id": hub_id, "chat_id": chat_id.strip(), "status": r.status_code},
+                                )
+                        except Exception as pe:
+                            logging.getLogger("adaos.router").warning(
+                                "router: telegram request failed (chat reply)",
+                                extra={"hub_id": hub_id, "chat_id": chat_id.strip(), "error": str(pe)},
+                            )
+                        return
+            except Exception:
+                pass
+
             msg = {
                 "id": str(payload.get("id") or _make_id("m")),
                 "from": str(payload.get("from") or "hub"),

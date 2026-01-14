@@ -35,6 +35,7 @@ import { ensureSchema as ensureTgSchema, ensureHubToken } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
+import { installRootLogCapture, queryRootLogs } from './dev/logs.js'
 
 type FollowerData = {
 	followerName: string
@@ -226,6 +227,17 @@ const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
 // Using the apex domain keeps it valid across app subdomains (app., v1.app., etc).
 const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
+
+// Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
+try {
+	installRootLogCapture({
+		maxLines:
+			Number.parseInt(String(process.env['ROOT_LOG_MAX_LINES'] || ''), 10) ||
+			50_000,
+	})
+} catch {
+	// best-effort
+}
 
 function resolveNodeYamlPath(): string | null {
 	const explicit = (process.env['ADAOS_NODE_YAML_PATH'] || process.env['ADAOS_NODE_YAML'] || '').trim()
@@ -1417,6 +1429,34 @@ app.post('/v1/bootstrap_token', async (req, res) => {
 		one_time_token: oneTimeToken,
 		expires_at: expiresAt.toISOString(),
 	})
+})
+
+// Developer endpoint: fetch recent Root logs (captured from stdout/stderr).
+// Protected by ROOT_TOKEN.
+app.get('/v1/dev/logs', async (req, res) => {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	const minutesRaw = Number(String(req.query['minutes'] ?? '30'))
+	const minutes = Number.isFinite(minutesRaw)
+		? Math.max(1, Math.min(12 * 60, Math.floor(minutesRaw)))
+		: 30
+	const limitRaw = Number(String(req.query['limit'] ?? '2000'))
+	const limit = Number.isFinite(limitRaw)
+		? Math.max(1, Math.min(50_000, Math.floor(limitRaw)))
+		: 2000
+	const contains =
+		typeof req.query['contains'] === 'string'
+			? String(req.query['contains'])
+			: null
+	const hubId =
+		typeof req.query['hub_id'] === 'string'
+			? String(req.query['hub_id'])
+			: null
+	const sinceMs = Date.now() - minutes * 60 * 1000
+	const items = queryRootLogs({ sinceMs, limit, contains, hubId })
+	return res.json({ ok: true, minutes, limit, since_ms: sinceMs, items })
 })
 
 app.post('/v1/subnets/register', async (req, res) => {
