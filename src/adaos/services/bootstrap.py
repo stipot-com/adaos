@@ -522,16 +522,24 @@ class BootstrapService:
                                         try:
                                             pr2 = urlparse(base)
                                             if (pr2.scheme or "").startswith("ws"):
-                                                # hosts to try: configured host + known public aliases
+                                                # hosts to try: configured host (+ optional explicit override).
+                                                # Do not automatically probe unrelated hosts like api.inimatic.com:
+                                                # that can result in silent "Authentication Timeout" hangs when the
+                                                # endpoint is not a NATS WS proxy.
                                                 host_candidates: List[str] = []
                                                 try:
                                                     if pr2.hostname:
                                                         host_candidates.append(pr2.hostname)
                                                 except Exception:
                                                     pass
-                                                for h in ("nats.inimatic.com", "api.inimatic.com"):
-                                                    if h not in host_candidates:
-                                                        host_candidates.append(h)
+                                                extra_hosts = os.getenv("NATS_WS_HOST_ALT", "")
+                                                if extra_hosts:
+                                                    for h in [x.strip() for x in extra_hosts.split(",") if x.strip()]:
+                                                        if h not in host_candidates:
+                                                            host_candidates.append(h)
+                                                # Known public endpoint as a fallback (explicitly WS-nats proxy).
+                                                if "nats.inimatic.com" not in host_candidates:
+                                                    host_candidates.append("nats.inimatic.com")
 
                                                 # paths to try: keep configured path plus default WS mount
                                                 path_candidates: List[str] = []
@@ -684,22 +692,78 @@ class BootstrapService:
                                 except Exception:
                                     pass
 
-                            nc = await _nats.connect(
-                                servers=[str(s) for s in candidates],
-                                user=user_str,
-                                password=pw_str,
-                                name=f"hub-{hub_id_str}",
-                                # Keep the connection stable across transient WS EOFs/timeouts.
-                                allow_reconnect=True,
-                                max_reconnect_attempts=-1,
-                                reconnect_time_wait=1.0,
-                                ping_interval=20.0,
-                                max_outstanding_pings=3,
-                                connect_timeout=5.0,
-                                error_cb=_on_error_cb,
-                                disconnected_cb=_on_disconnected,
-                                reconnected_cb=_on_reconnected,
-                            )
+                            # NOTE: Connect to candidates sequentially. Some endpoints can hang the WS handshake
+                            # (leading to "Authentication Timeout") while others work; trying one-by-one keeps
+                            # failures isolated and helps cleanup transports.
+                            async def _try_connect(server: str) -> _nats.Client:
+                                nc_local = _nats.Client()
+                                try:
+                                    await nc_local.connect(
+                                        servers=[str(server)],
+                                        user=user_str,
+                                        password=pw_str,
+                                        name=f"hub-{hub_id_str}",
+                                        allow_reconnect=False,
+                                        ping_interval=20.0,
+                                        max_outstanding_pings=3,
+                                        connect_timeout=5.0,
+                                        error_cb=_on_error_cb,
+                                        disconnected_cb=_on_disconnected,
+                                        reconnected_cb=_on_reconnected,
+                                    )
+                                    return nc_local
+                                except Exception as e:
+                                    # Best-effort token refresh on auth-ish failures.
+                                    try:
+                                        msg = str(e).lower()
+                                        if (
+                                            "authentication timeout" in msg
+                                            or "authorization violation" in msg
+                                            or "auth" in msg
+                                            or type(e).__name__ == "UnexpectedEOF"
+                                            or "unexpected eof" in msg
+                                        ):
+                                            await _fetch_nats_credentials()
+                                    except Exception:
+                                        pass
+                                    # Best-effort cleanup of partially created WS transport
+                                    try:
+                                        await nc_local.close()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        tr = getattr(nc_local, "_transport", None)
+                                        if tr:
+                                            ws = getattr(tr, "_ws", None)
+                                            client = getattr(tr, "_client", None)
+                                            try:
+                                                if ws is not None:
+                                                    await ws.close()
+                                            except Exception:
+                                                pass
+                                            try:
+                                                if client is not None:
+                                                    await client.close()
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                                    raise e
+
+                            last_exc: Exception | None = None
+                            nc = None
+                            for srv in [str(s) for s in candidates]:
+                                try:
+                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        print(f"[hub-io] NATS connect try server={srv}")
+                                    nc = await _try_connect(srv)
+                                    last_exc = None
+                                    break
+                                except Exception as e:
+                                    last_exc = e
+                                    continue
+                            if nc is None:
+                                raise last_exc or RuntimeError("nats connect failed (no candidates)")
 
                             # Track subscriptions explicitly. When the connection closes (or this task is cancelled),
                             # unsubscribing helps nats-py cancel internal `_wait_for_msgs()` tasks and avoids
@@ -1576,6 +1640,8 @@ class BootstrapService:
                             await _nats_bridge()
                             # If bridge returns cleanly, keep it alive
                             await asyncio.sleep(3600)
+                        except asyncio.CancelledError:
+                            return
                         except Exception as e:
                             try:
                                 print(f"[hub-io] nats: encountered error: {e}")

@@ -230,7 +230,13 @@ export class YDocService {
         const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
         if (persisted && !isLoopbackUrl(persisted)) candidates.push(persisted)
       } catch {}
-      if (allowLoopback) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
+      if (allowLoopback)
+        candidates.push(
+          'http://127.0.0.1:8777',
+          'http://localhost:8777',
+          'http://127.0.0.1:8778',
+          'http://localhost:8778'
+        )
       if (!candidates.length) return false
       for (const base of candidates) {
         const authQuery = (() => {

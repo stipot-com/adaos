@@ -309,11 +309,17 @@ export function installHubRouteProxy(
 				body_b64: bodyB64,
 			}
 
+			const timeoutMs = (() => {
+				// Keep status probes fast: the frontend uses short fetch timeouts (≈1–2s).
+				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 2500
+				return 15000
+			})()
+
 			const reply = await natsRequest(bus, {
 				subjectToHub: toHub,
 				subjectToBrowser: toBrowser,
 				payload,
-				timeoutMs: 15000,
+				timeoutMs,
 			})
 
 			const status = Number(reply?.status || 502)
