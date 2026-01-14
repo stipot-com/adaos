@@ -37,6 +37,28 @@ function mask(tok: string): string {
 	return tok.slice(0, 3) + '***' + tok.slice(-2)
 }
 
+function toBuffer(data: any): Buffer {
+	if (Buffer.isBuffer(data)) return data
+	if (typeof data === 'string') return Buffer.from(data, 'utf8')
+	// ws can deliver ArrayBuffer/TypedArray/Buffer[] depending on environment and options
+	try {
+		if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data))
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+		if (ArrayBuffer.isView(data)) return Buffer.from(data as Uint8Array)
+	} catch {}
+	try {
+		if (Array.isArray(data)) {
+			const parts = data.map((p: any) => toBuffer(p))
+			return Buffer.concat(parts)
+		}
+	} catch {}
+	try {
+		return Buffer.from(String(data), 'utf8')
+	} catch {
+		return Buffer.alloc(0)
+	}
+}
+
 export function installWsNatsProxy(server: HttpsServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
@@ -218,17 +240,17 @@ export function installWsNatsProxy(server: HttpsServer) {
 		}
 
 		ws.on('message', (data: any) => {
+			const buf = toBuffer(data)
 			if (handshaked) {
 				try {
-					const s = typeof data === 'string' ? data : (data as Buffer).toString('utf8')
+					const s = buf.toString('utf8')
 					if (s.includes('PONG')) disarmUpstreamPingWatch()
 				} catch {}
 				try {
-					upstreamSock?.write(data as Buffer)
+					upstreamSock?.write(buf)
 				} catch {}
 				return
 			}
-			const buf = typeof data === 'string' ? Buffer.from(data) : (data as Buffer)
 			clientBuf = Buffer.concat([clientBuf, buf])
 			tryProcessHandshake()
 		})
