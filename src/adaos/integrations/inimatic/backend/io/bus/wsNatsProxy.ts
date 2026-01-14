@@ -70,6 +70,22 @@ function hasMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { hit: 
 	return { hit, tail: nextTail }
 }
 
+function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
+	let count = 0
+	let idx = 0
+	const parts: Buffer[] = []
+	while (true) {
+		const at = buf.indexOf(marker, idx)
+		if (at < 0) break
+		if (at > idx) parts.push(buf.subarray(idx, at))
+		idx = at + marker.length
+		count += 1
+	}
+	if (idx === 0) return { out: buf, count: 0 }
+	if (idx < buf.length) parts.push(buf.subarray(idx))
+	return { out: Buffer.concat(parts), count }
+}
+
 export function installWsNatsProxy(server: HttpsServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
@@ -112,7 +128,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let handshaked = false
 		let clientBuf = Buffer.alloc(0)
 		let clientTail = Buffer.alloc(0)
-		let upstreamTail = Buffer.alloc(0)
+		let upstreamCarry = Buffer.alloc(0) // keep last bytes to avoid splitting PING\r\n across chunks
 		let bytesUp = 0
 		let bytesDown = 0
 		let lastUpstreamPingAt: number | null = null
@@ -120,25 +136,6 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let proxySentPong = 0
 		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
-		let upstreamPingTimer: NodeJS.Timeout | null = null
-
-		function armUpstreamPingWatch() {
-			if (upstreamPingTimer) clearTimeout(upstreamPingTimer)
-			upstreamPingTimer = setTimeout(() => {
-				try {
-					upstreamSock?.write(Buffer.from('PONG\r\n', 'utf8'))
-					proxySentPong += 1
-				} catch {}
-				upstreamPingTimer = null
-			}, 1500)
-		}
-
-		function disarmUpstreamPingWatch() {
-			if (upstreamPingTimer) {
-				clearTimeout(upstreamPingTimer)
-				upstreamPingTimer = null
-			}
-		}
 
 		function closeBoth(code?: number, reason?: string) {
 			try {
@@ -178,12 +175,25 @@ export function installWsNatsProxy(server: HttpsServer) {
 			})
 			upstreamSock.on('data', (chunk) => {
 				bytesDown += chunk.length
-				const scan = hasMarkerWithTail(upstreamTail, chunk, NATS_PING)
-				upstreamTail = scan.tail
-				if (scan.hit) {
+
+				// Avoid splitting `PING\r\n` across chunks: keep the last 4 bytes aside.
+				const combined = upstreamCarry.length ? Buffer.concat([upstreamCarry, chunk]) : chunk
+				const keep = Math.min(4, combined.length)
+				const sendable = combined.subarray(0, combined.length - keep)
+				upstreamCarry = combined.subarray(combined.length - keep)
+
+				// If upstream sends PINGs, respond immediately from the proxy (TCP-side client),
+				// and strip `PING\r\n` from data forwarded to the WS client to prevent duplicate PONGs.
+				const stripped = stripAll(sendable, NATS_PING)
+				if (stripped.count > 0) {
 					lastUpstreamPingAt = Date.now()
-					armUpstreamPingWatch()
+					try {
+						// One PONG is enough even if we saw multiple PINGs in the same batch.
+						upstreamSock?.write(NATS_PONG)
+						proxySentPong += 1
+					} catch {}
 				}
+				const payload = stripped.out
 				try {
 					// If WS backpressure builds up, upstream PONG can be lost and the client will disconnect.
 					// Prefer failing fast with diagnostics rather than silently dropping frames.
@@ -192,7 +202,8 @@ export function installWsNatsProxy(server: HttpsServer) {
 						closeBoth(1001, 'ws_not_open')
 						return
 					}
-					ws.send(chunk, { binary: true }, (err: any) => {
+					if (payload.length === 0) return
+					ws.send(payload, { binary: true }, (err: any) => {
 						if (err) {
 							logSummary('ws send downstream failed', { err: String(err) })
 							closeBoth(1011, 'ws_send_failed')
@@ -306,7 +317,6 @@ export function installWsNatsProxy(server: HttpsServer) {
 					clientTail = scanPong.tail
 					if (scanPong.hit) {
 						lastClientPongAt = Date.now()
-						disarmUpstreamPingWatch()
 					}
 				} catch {}
 				try {
