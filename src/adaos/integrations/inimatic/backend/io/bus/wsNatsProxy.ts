@@ -5,6 +5,8 @@ import { WebSocketServer } from 'ws'
 import { verifyHubToken } from '../../db/tg.repo.js'
 
 const log = pino({ name: 'ws-nats-proxy' })
+const NATS_PING = Buffer.from('PING\r\n', 'utf8')
+const NATS_PONG = Buffer.from('PONG\r\n', 'utf8')
 
 type UpstreamOpts = {
 	host: string
@@ -59,6 +61,15 @@ function toBuffer(data: any): Buffer {
 	}
 }
 
+function hasMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { hit: boolean; tail: Buffer } {
+	// Search for marker possibly split across boundaries by keeping the last (len-1) bytes as tail.
+	const combined = tail.length ? Buffer.concat([tail, chunk]) : chunk
+	const hit = combined.indexOf(marker) >= 0
+	const keep = Math.max(marker.length - 1, 0)
+	const nextTail = keep > 0 ? combined.subarray(Math.max(combined.length - keep, 0)) : Buffer.alloc(0)
+	return { hit, tail: nextTail }
+}
+
 export function installWsNatsProxy(server: HttpsServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
@@ -100,6 +111,14 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let connected = false
 		let handshaked = false
 		let clientBuf = Buffer.alloc(0)
+		let clientTail = Buffer.alloc(0)
+		let upstreamTail = Buffer.alloc(0)
+		let bytesUp = 0
+		let bytesDown = 0
+		let lastUpstreamPingAt: number | null = null
+		let lastClientPongAt: number | null = null
+		let proxySentPong = 0
+		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
 		let upstreamPingTimer: NodeJS.Timeout | null = null
 
@@ -108,6 +127,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			upstreamPingTimer = setTimeout(() => {
 				try {
 					upstreamSock?.write(Buffer.from('PONG\r\n', 'utf8'))
+					proxySentPong += 1
 				} catch {}
 				upstreamPingTimer = null
 			}, 1500)
@@ -129,6 +149,24 @@ export function installWsNatsProxy(server: HttpsServer) {
 			} catch {}
 		}
 
+		function logSummary(event: string, extra?: Record<string, unknown>) {
+			log.info(
+				{
+					from: rip,
+					handshaked,
+					connected,
+					uptime_s: (Date.now() - openedAt) / 1000,
+					bytesUp,
+					bytesDown,
+					lastUpstreamPingAgo_s: lastUpstreamPingAt ? (Date.now() - lastUpstreamPingAt) / 1000 : null,
+					lastClientPongAgo_s: lastClientPongAt ? (Date.now() - lastClientPongAt) / 1000 : null,
+					proxySentPong,
+					...(extra || {}),
+				},
+				event,
+			)
+		}
+
 		function connectUpstream() {
 			if (connected) return
 			upstreamSock = net.createConnection({ host: upstream.host, port: upstream.port })
@@ -139,18 +177,38 @@ export function installWsNatsProxy(server: HttpsServer) {
 				connected = true
 			})
 			upstreamSock.on('data', (chunk) => {
-				const txt = chunk.toString('utf8')
-				if (txt.includes('PING')) armUpstreamPingWatch()
+				bytesDown += chunk.length
+				const scan = hasMarkerWithTail(upstreamTail, chunk, NATS_PING)
+				upstreamTail = scan.tail
+				if (scan.hit) {
+					lastUpstreamPingAt = Date.now()
+					armUpstreamPingWatch()
+				}
 				try {
-					ws.send(chunk, { binary: true })
-				} catch {}
+					// If WS backpressure builds up, upstream PONG can be lost and the client will disconnect.
+					// Prefer failing fast with diagnostics rather than silently dropping frames.
+					if (ws.readyState !== 1) {
+						logSummary('ws not open while sending downstream', { wsReadyState: ws.readyState })
+						closeBoth(1001, 'ws_not_open')
+						return
+					}
+					ws.send(chunk, { binary: true }, (err: any) => {
+						if (err) {
+							logSummary('ws send downstream failed', { err: String(err) })
+							closeBoth(1011, 'ws_send_failed')
+						}
+					})
+				} catch (e) {
+					logSummary('ws send downstream threw', { err: String(e) })
+					closeBoth(1011, 'ws_send_throw')
+				}
 			})
 			upstreamSock.on('close', (hadError) => {
-				log.info({ from: rip, hadError: Boolean(hadError) }, 'upstream close')
+				logSummary('upstream close', { hadError: Boolean(hadError) })
 				closeBoth(1000, 'upstream_close')
 			})
 			upstreamSock.on('error', (err) => {
-				log.warn({ from: rip, err: String(err) }, 'upstream error')
+				logSummary('upstream error', { err: String(err) })
 				closeBoth(1011, 'upstream_error')
 			})
 		}
@@ -243,8 +301,13 @@ export function installWsNatsProxy(server: HttpsServer) {
 			const buf = toBuffer(data)
 			if (handshaked) {
 				try {
-					const s = buf.toString('utf8')
-					if (s.includes('PONG')) disarmUpstreamPingWatch()
+					bytesUp += buf.length
+					const scanPong = hasMarkerWithTail(clientTail, buf, NATS_PONG)
+					clientTail = scanPong.tail
+					if (scanPong.hit) {
+						lastClientPongAt = Date.now()
+						disarmUpstreamPingWatch()
+					}
 				} catch {}
 				try {
 					upstreamSock?.write(buf)
@@ -256,7 +319,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		})
 
 		ws.on('error', (err: any) => {
-			log.warn({ from: rip, err: String(err) }, 'ws error')
+			logSummary('ws error', { err: String(err) })
 			closeBoth()
 		})
 
@@ -272,7 +335,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 					return ''
 				}
 			})()
-			log.info({ from: rip, code, reason }, 'conn close')
+			logSummary('conn close', { code, reason })
 			try {
 				upstreamSock?.destroy()
 			} catch {}
