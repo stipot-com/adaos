@@ -40,11 +40,18 @@ class RootOwnerSettings:
 
 
 @dataclass
+class RootLlmSettings:
+    # Global kill-switch for NLU Teacher pipeline (teacher_bridge/teacher_runtime/llm_teacher_runtime).
+    allow_nlu_teacher: bool = True
+
+
+@dataclass
 class RootSettings:
     base_url: str = "https://api.inimatic.com"
     # Store relative/default-friendly path; resolve via _expand_path
     ca_cert: str | None = "keys/ca.cert"
     owner: RootOwnerSettings = field(default_factory=RootOwnerSettings)
+    llm: RootLlmSettings = field(default_factory=RootLlmSettings)
 
 
 @dataclass
@@ -287,10 +294,23 @@ def _settings_from_dict(settings_cls: type, payload: Any):
         ca_cert = payload.get("ca_cert") if isinstance(payload, dict) else None
         owner_raw = payload.get("owner") if isinstance(payload, dict) else None
         owner_id = owner_raw.get("owner_id") if isinstance(owner_raw, dict) else None
+        llm_raw = payload.get("llm") if isinstance(payload, dict) else None
+        allow_nlu_teacher = True
+        try:
+            token = llm_raw.get("allow_nlu_teacher") if isinstance(llm_raw, dict) else None
+            if isinstance(token, bool):
+                allow_nlu_teacher = token
+            elif isinstance(token, str) and token.strip():
+                allow_nlu_teacher = token.strip().lower() not in {"0", "false", "no", "off"}
+            elif isinstance(token, int):
+                allow_nlu_teacher = bool(token)
+        except Exception:
+            allow_nlu_teacher = True
         return RootSettings(
             base_url=base_url or "https://api.inimatic.com",
             ca_cert=ca_cert or "keys/ca.cert",
             owner=RootOwnerSettings(owner_id=owner_id),
+            llm=RootLlmSettings(allow_nlu_teacher=allow_nlu_teacher),
         )
     if settings_cls is SubnetSettings:
         hub_raw = payload.get("hub") if isinstance(payload, dict) else None

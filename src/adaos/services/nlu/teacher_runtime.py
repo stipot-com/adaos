@@ -201,6 +201,12 @@ async def _on_teacher_request(evt: Any) -> None:
     webspace_id = None
     try:
         ctx = get_ctx()
+        try:
+            allow = bool(getattr(getattr(ctx.config, "root_settings", None), "llm", None).allow_nlu_teacher)  # type: ignore[attr-defined]
+        except Exception:
+            allow = True
+        if not allow:
+            return
         payload = _payload(evt)
         webspace_id = _resolve_webspace_id(payload)
 

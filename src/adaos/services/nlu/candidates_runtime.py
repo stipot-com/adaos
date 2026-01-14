@@ -133,8 +133,23 @@ async def _on_candidate_apply(evt: Any) -> None:
       - _meta (optional; preserved for downstream responses)
     """
     ctx = get_ctx()
+    try:
+        allow = bool(getattr(getattr(ctx.config, "root_settings", None), "llm", None).allow_nlu_teacher)  # type: ignore[attr-defined]
+    except Exception:
+        allow = True
     payload = _payload(evt)
     webspace_id = _resolve_webspace_id(payload)
+    if not allow:
+        try:
+            bus_emit(
+                ctx.bus,
+                "ui.notify",
+                {"text": "NLU Teacher отключён политикой (root.llm.allow_nlu_teacher=false).", "webspace_id": webspace_id},
+                source="nlu.teacher.candidates",
+            )
+        except Exception:
+            pass
+        return
     meta = coerce_dict(payload.get("_meta"))
     payload_target = payload.get("target") if isinstance(payload.get("target"), Mapping) else None
 

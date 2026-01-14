@@ -64,6 +64,13 @@ async def _on_not_obtained(evt: Any) -> None:
         return
 
     ctx = get_ctx()
+    try:
+        allow = bool(getattr(getattr(ctx.config, "root_settings", None), "llm", None).allow_nlu_teacher)  # type: ignore[attr-defined]
+    except Exception:
+        allow = True
+    if not allow:
+        return
+
     payload = _payload(evt)
     text = payload.get("text") or payload.get("utterance")
     if not isinstance(text, str) or not text.strip():

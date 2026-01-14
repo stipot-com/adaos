@@ -269,7 +269,22 @@ export class YDocService {
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
     // automatically fall back to the root proxy route over NATS.
     const directBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-    const directStatus = await probeHttpStatus(directBase, 650)
+    const isDefinitelyNotAHubBase = (() => {
+      try {
+        const abs = String(directBase || '').replace(/\/+$/, '')
+        // Root base (no /hubs/<id>) can respond 200 to /api/ping, but it is not a hub API base.
+        if (abs.includes('/hubs/')) return false
+        const u = new URL(abs)
+        const host = (u.hostname || '').toLowerCase()
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+        // Anything remote without /hubs/<id> is treated as "not a hub base".
+        return true
+      } catch {
+        return false
+      }
+    })()
+
+    const directStatus = isDefinitelyNotAHubBase ? 0 : await probeHttpStatus(directBase, 650)
     if (!(directStatus >= 200 && directStatus < 300)) {
       const switched = useRootProxyIfAvailable()
       if (!switched) {

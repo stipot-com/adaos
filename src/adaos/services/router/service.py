@@ -739,6 +739,10 @@ class RouterService:
             route_id = meta.get("route_id") or meta.get("route")
             if not isinstance(route_id, str) or not route_id.strip():
                 return
+            try:
+                allow_teacher = bool(getattr(getattr(get_ctx().config, "root_settings", None), "llm", None).allow_nlu_teacher)  # type: ignore[attr-defined]
+            except Exception:
+                allow_teacher = True
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 text = ""
@@ -748,7 +752,8 @@ class RouterService:
                 msg_text = f"{msg_text} ({reason})"
             if text:
                 msg_text = f"{msg_text} Вы сказали: «{text}»."
-            msg_text = f"{msg_text} Я записал запрос для обучения. Открой «NLU Teacher» в Apps, чтобы посмотреть детали."
+            if allow_teacher:
+                msg_text = f"{msg_text} Я записал запрос для обучения. Открой «NLU Teacher» в Apps, чтобы посмотреть детали."
             try:
                 self.bus.publish(
                     Event(

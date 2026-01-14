@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json, os, traceback
+import functools
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import asdict
@@ -45,6 +46,7 @@ app.add_typer(scenario_app, name="scenario")
 
 
 def _run_safe(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)

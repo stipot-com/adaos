@@ -373,6 +373,15 @@ app.use((req, _res, next) => {
 })
 app.use(express.json({ limit: '2mb' }))
 
+// Public liveness probe for the Root backend itself.
+// The frontend may hit this before a hub session is established (no hub_id yet).
+app.get('/api/ping', (_req, res) => {
+	res.status(200).json({ ok: true, service: 'root', ts: Date.now() })
+})
+app.get('/healthz', (_req, res) => {
+	res.status(200).json({ ok: true })
+})
+
 function withLeadingSlash(value: string, fallback: string): string {
 	const trimmed = value.trim()
 	if (!trimmed) {

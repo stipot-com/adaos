@@ -481,7 +481,9 @@ class BootstrapService:
                                         from urllib.parse import urlparse, urlunparse
 
                                         pr0 = urlparse(s)
-                                        if not pr0.path or pr0.path == "/":
+                                        # Keep an explicit "/" WS mount intact: some deployments terminate WS on "/".
+                                        # Only inject the default mount when the path is missing entirely.
+                                        if not pr0.path:
                                             pr0 = pr0._replace(path=ws_default_path)
                                             s = urlunparse(pr0)
                                     except Exception:
@@ -531,14 +533,21 @@ class BootstrapService:
                                                     if h not in host_candidates:
                                                         host_candidates.append(h)
 
-                                                # paths to try: keep configured path plus common ones
+                                                # paths to try: keep configured path plus default WS mount
                                                 path_candidates: List[str] = []
                                                 pth = pr2.path or ""
+                                                # NOTE: Do not probe "/" by default: our deployments typically mount
+                                                # WS->NATS proxy under "/nats"; probing "/" causes frequent WS EOFs.
                                                 if pth and pth != "/":
                                                     path_candidates.append(pth)
-                                                for p in ("/", "/nats"):
-                                                    if p not in path_candidates:
-                                                        path_candidates.append(p)
+                                                ws_default_path = os.getenv("NATS_WS_DEFAULT_PATH", "/nats") or "/nats"
+                                                if not ws_default_path.startswith("/"):
+                                                    ws_default_path = "/" + ws_default_path
+                                                if ws_default_path not in path_candidates:
+                                                    path_candidates.append(ws_default_path)
+                                                # Also include "/" mount by default: some deployments expose WS->NATS on "/".
+                                                if "/" not in path_candidates:
+                                                    path_candidates.append("/")
 
                                                 for h in host_candidates:
                                                     for p in path_candidates:
@@ -680,9 +689,13 @@ class BootstrapService:
                                 user=user_str,
                                 password=pw_str,
                                 name=f"hub-{hub_id_str}",
-                                # Disable internal reconnect logic to avoid orphaned reconnect tasks
-                                # during shutdown; the surrounding supervisor restarts the bridge.
-                                allow_reconnect=False,
+                                # Keep the connection stable across transient WS EOFs/timeouts.
+                                allow_reconnect=True,
+                                max_reconnect_attempts=-1,
+                                reconnect_time_wait=1.0,
+                                ping_interval=20.0,
+                                max_outstanding_pings=3,
+                                connect_timeout=5.0,
                                 error_cb=_on_error_cb,
                                 disconnected_cb=_on_disconnected,
                                 reconnected_cb=_on_reconnected,
@@ -1208,25 +1221,46 @@ class BootstrapService:
                                                 from adaos.services.node_config import load_config
 
                                                 cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                                base_http = (
+                                                # IMPORTANT: Route-proxy HTTP requests must target the local hub instance,
+                                                # not the public Root proxy URL that might be stored in node.yaml as hub_url.
+                                                env_base = (
                                                     os.getenv("ADAOS_SELF_BASE_URL")
-                                                    or str(getattr(cfg, "hub_url", None) or "")
-                                                    or "http://127.0.0.1:8777"
-                                                ).rstrip("/")
-                                                base_http = base_http.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
+                                                    or os.getenv("ADAOS_BASE")
+                                                    or os.getenv("ADAOS_API_BASE")
+                                                    or ""
+                                                ).strip()
+                                                cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
+
+                                                def _is_local_base(url: str) -> bool:
+                                                    try:
+                                                        from urllib.parse import urlparse
+
+                                                        u = urlparse(url)
+                                                        host = (u.hostname or "").lower()
+                                                        return host in ("127.0.0.1", "localhost")
+                                                    except Exception:
+                                                        return False
+
+                                                bases: list[str] = []
+                                                if env_base:
+                                                    bases.append(env_base.rstrip("/"))
+                                                if cfg_base and _is_local_base(cfg_base):
+                                                    bases.append(cfg_base.rstrip("/"))
+                                                # Prefer direct core port, then sentinel gateway.
+                                                bases.extend(["http://127.0.0.1:8778", "http://127.0.0.1:8777"])
+                                                # Deduplicate while preserving order.
+                                                seen_bases: set[str] = set()
+                                                bases = [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
                                                 token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                             except Exception:
-                                                base_http = "http://127.0.0.1:8777"
+                                                bases = ["http://127.0.0.1:8778", "http://127.0.0.1:8777"]
                                                 token_local = os.getenv("ADAOS_TOKEN", "") or None
 
-                                            # Build candidate bases. Some setups expose a gateway on 8777 (sentinel)
-                                            # while the actual core runs on another port (often 8788). If the default
-                                            # base isn't reachable, retry with the target port.
-                                            bases = [base_http]
+                                            # Add optional target/core port fallback for local setups.
                                             try:
                                                 from urllib.parse import urlparse
 
-                                                u0 = urlparse(base_http)
+                                                u0 = urlparse(bases[0])
                                                 h0 = u0.hostname or "127.0.0.1"
                                                 p0 = u0.port
                                                 scheme0 = u0.scheme or "http"
@@ -1269,7 +1303,9 @@ class BootstrapService:
                                             for base in bases:
                                                 url_try = f"{base}{path}{search}"
                                                 try:
-                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=12)
+                                                    # Root times out fairly quickly while waiting for route.to_browser.* replies.
+                                                    # Keep local proxy attempts short to avoid systematic timeouts.
+                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=(1.5, 2.5))
                                                     last_exc = None
                                                     break
                                                 except Exception as e:
