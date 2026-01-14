@@ -157,7 +157,8 @@ export class YDocService {
       headers?: Record<string, string>,
       // Root-proxy under `/hubs/<id>` does not expose `/healthz` on that prefix,
       // so probe `/api/ping` first to avoid noisy 404s in console/network logs.
-      paths: string[] = ['/api/ping', '/healthz']
+      paths: string[] = ['/api/ping', '/healthz'],
+      queryParams?: Record<string, string>
     ): Promise<number> => {
       const abs = baseUrl.replace(/\/$/, '')
       for (const p of paths) {
@@ -167,7 +168,19 @@ export class YDocService {
           const ctrl = new AbortController()
           const timer = setTimeout(() => ctrl.abort(), timeoutMs)
           try {
-            const resp = await fetch(url, { method: 'GET', signal: ctrl.signal, headers })
+            const finalUrl = (() => {
+              try {
+                if (!queryParams || !Object.keys(queryParams).length) return url
+                const u = new URL(url)
+                for (const [k, v] of Object.entries(queryParams)) {
+                  if (typeof v === 'string' && v) u.searchParams.set(k, v)
+                }
+                return u.toString()
+              } catch {
+                return url
+              }
+            })()
+            const resp = await fetch(finalUrl, { method: 'GET', signal: ctrl.signal, headers })
             const st = resp.status || 0
             // 404 means "reachable but endpoint missing" – keep trying other probes.
             if (st === 404) continue
@@ -220,25 +233,22 @@ export class YDocService {
       if (allowLoopback) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
       if (!candidates.length) return false
       for (const base of candidates) {
-        const st = await probeHttpStatus(
-          base,
-          650,
-          (() => {
-            // If a persisted base is actually the root-proxy `/hubs/<id>` route,
-            // it requires session JWT even for `/api/ping` probes.
-            try {
-              const abs = String(base || '').replace(/\/$/, '')
-              if (!abs.includes('/hubs/')) return undefined
-              const { sessionJwt } = readSession()
-              if (!sessionJwt) return undefined
-              if (!sessionJwt.includes('.')) return undefined
-              if (!this.isJwtValid(sessionJwt)) return undefined
-              return { Authorization: `Bearer ${sessionJwt}` }
-            } catch {
-              return undefined
-            }
-          })()
-        )
+        const authQuery = (() => {
+          // If a persisted base is actually the root-proxy `/hubs/<id>` route,
+          // it requires session JWT even for `/api/ping` probes.
+          try {
+            const abs = String(base || '').replace(/\/$/, '')
+            if (!abs.includes('/hubs/')) return undefined
+            const { sessionJwt } = readSession()
+            if (!sessionJwt) return undefined
+            if (!sessionJwt.includes('.')) return undefined
+            if (!this.isJwtValid(sessionJwt)) return undefined
+            return { session_jwt: sessionJwt }
+          } catch {
+            return undefined
+          }
+        })()
+        const st = await probeHttpStatus(base, 650, undefined, undefined, authQuery)
         if (st >= 200 && st < 300) {
           this.adaos.setBase(base)
           // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
@@ -268,24 +278,24 @@ export class YDocService {
 
       // Validate session against root-proxy before attempting WS.
       const token = this.adaos.getToken()
-      const authHeaders = (() => {
-        try {
-          const h = this.adaos.getAuthHeaders()
-          return Object.keys(h).length ? h : undefined
-        } catch {
-          return undefined
-        }
-      })()
+      const authQuery = token ? { session_jwt: String(token) } : undefined
       const rootBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-      const reachability = await probeHttpStatus(rootBase, 1200, authHeaders)
+      const reachability = await probeHttpStatus(
+        rootBase,
+        1200,
+        undefined,
+        ['/api/ping', '/healthz'],
+        authQuery
+      )
       if (reachability === 0) {
         throw new Error('hub_unreachable')
       }
       const rootStatus = await probeHttpStatus(
         rootBase,
         1600,
-        authHeaders ?? (token ? { Authorization: `Bearer ${token}` } : undefined),
-        ['/api/node/status']
+        undefined,
+        ['/api/node/status'],
+        authQuery
       )
       if (rootStatus === 401 || rootStatus === 403) {
         this.invalidateWebSession()
