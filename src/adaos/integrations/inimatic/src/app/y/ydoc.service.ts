@@ -250,15 +250,23 @@ export class YDocService {
 
       // Validate session against root-proxy before attempting WS.
       const token = this.adaos.getToken()
+      const authHeaders = (() => {
+        try {
+          const h = this.adaos.getAuthHeaders()
+          return Object.keys(h).length ? h : undefined
+        } catch {
+          return undefined
+        }
+      })()
       const rootBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-      const reachability = await probeHttpStatus(rootBase, 1200)
+      const reachability = await probeHttpStatus(rootBase, 1200, authHeaders)
       if (reachability === 0) {
         throw new Error('hub_unreachable')
       }
       const rootStatus = await probeHttpStatus(
         rootBase,
         1600,
-        token ? { Authorization: `Bearer ${token}` } : undefined,
+        authHeaders ?? (token ? { Authorization: `Bearer ${token}` } : undefined),
         ['/api/node/status']
       )
       if (rootStatus === 401 || rootStatus === 403) {

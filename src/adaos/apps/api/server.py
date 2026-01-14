@@ -133,13 +133,18 @@ async def lifespan(app: FastAPI):
                 alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
                 try:
                     prefixed_text = f"[{alias}]: {text}" if alias else text
-                    _requests.post(
+                    r2 = _requests.post(
                         f"{api_base.rstrip('/')}/io/tg/send",
                         json={"hub_id": conf.subnet_id, "text": prefixed_text},
                         timeout=3.0,
                     )
+                    if r2.status_code not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (subnet.started) failed",
+                            extra={"hub_id": conf.subnet_id, "status": r2.status_code},
+                        )
                 except Exception:
-                    pass
+                    logging.getLogger("adaos.router").warning("telegram broadcast (subnet.started) exception", exc_info=True)
                 tg_enabled = True
     except Exception:
         pass
@@ -229,11 +234,16 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     routed = False
                 if not routed:
-                    _requests.post(
+                    r3 = _requests.post(
                         f"{api_base.rstrip('/')}/io/tg/send",
                         json={"hub_id": conf.subnet_id, "text": prefixed_text},
                         timeout=2.5,
                     )
+                    if r3.status_code not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (subnet.stopped) failed",
+                            extra={"hub_id": conf.subnet_id, "status": r3.status_code},
+                        )
                 # Also emit a subnet.stopped event on the local bus so that
                 # skills (e.g. greet_on_boot_skill) can update infra status.
                 try:

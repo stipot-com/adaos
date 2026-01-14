@@ -72,6 +72,34 @@ class RouterService:
         meta = payload.get("_meta") if isinstance(payload, dict) else None
         meta = meta if isinstance(meta, dict) else {}
 
+        # If this came from a chat platform (telegram), reply back into that chat via tg.output.*.
+        # This path does not depend on route rules and is meant to be "request/response" style.
+        try:
+            if str(meta.get("io_type") or "").lower() == "telegram":
+                chat_id = meta.get("chat_id")
+                if isinstance(chat_id, str) and chat_id.strip():
+                    bot_id = meta.get("bot_id")
+                    if not isinstance(bot_id, str) or not bot_id.strip():
+                        bot_id = "main-bot"
+                    hub_id = meta.get("hub_id")
+                    if not isinstance(hub_id, str) or not hub_id.strip():
+                        hub_id = get_ctx().config.subnet_id
+                    out_payload = {
+                        "target": {"bot_id": bot_id, "hub_id": hub_id, "chat_id": chat_id.strip()},
+                        "messages": [{"type": "text", "text": text}],
+                        "options": {"reply_to": meta.get("reply_to")} if meta.get("reply_to") else None,
+                    }
+                    self.bus.publish(
+                        Event(
+                            type=f"tg.output.{bot_id}.chat.{chat_id.strip()}",
+                            source="router",
+                            ts=time.time(),
+                            payload=out_payload,
+                        )
+                    )
+        except Exception:
+            pass
+
         # If the notification has an explicit UI route, mirror it into that route.
         # This keeps skills UI-agnostic: they can emit ui.notify and the router
         # decides how to deliver the message to chat/TTS.

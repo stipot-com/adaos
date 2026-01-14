@@ -98,6 +98,28 @@ class BootstrapService:
         if os.getenv("ADAOS_TESTING") == "1":
             return
 
+        # Default routing rules for RouterService (stdout + telegram broadcast).
+        # This file is a runtime config (often ignored by git) but must exist for
+        # system notifications (subnet.started/stopped, greet_on_boot, etc).
+        try:
+            base_dir = getattr(ctx.paths, "base_dir", None)
+            base_dir = base_dir() if callable(base_dir) else base_dir
+            if base_dir:
+                rules_path = Path(base_dir) / "route_rules.yaml"
+                if not rules_path.exists():
+                    rules_path.write_text(
+                        "rules:\n"
+                        "  - priority: 60\n"
+                        "    match: {}\n"
+                        "    target: {node_id: this, kind: io_type, io_type: stdout}\n"
+                        "  - priority: 50\n"
+                        "    match: {}\n"
+                        "    target: {node_id: this, kind: io_type, io_type: telegram}\n",
+                        encoding="utf-8",
+                    )
+        except Exception:
+            pass
+
         # монорепо навыков
         try:
             if ctx.settings.skills_monorepo_url and not (skills_root / ".git").exists():
@@ -209,8 +231,8 @@ class BootstrapService:
         try:
             if hasattr(self._io_bus, "subscribe_output"):
 
-                bot_id = "main-bot"  # one-bot assumption for MVP
-                sender = TelegramSender(bot_id)
+                # Subscribe to all bot ids ("tg.output.*") and use the single configured TG_BOT_TOKEN.
+                sender = TelegramSender("any-bot")
 
                 async def _handler(subject: str, data: bytes) -> None:
                     try:
@@ -230,7 +252,7 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                await self._io_bus.subscribe_output(bot_id, _handler)
+                await self._io_bus.subscribe_output("*", _handler)
         except Exception:
             pass
 
@@ -675,9 +697,49 @@ class BootstrapService:
                                 sub = await nc.subscribe(subject, cb=cb)
                                 subs.append(sub)
                                 return sub
+
+                            # Outbound bridge: local bus -> root NATS.
+                            # This lets skills/router publish `tg.output.<bot>.chat.<chat_id>` and have
+                            # the backend deliver it to Telegram, without requiring TG_BOT_TOKEN on the hub.
+                            try:
+                                setattr(self, "_tg_output_nats_nc", nc)
+                            except Exception:
+                                pass
+
+                            try:
+                                if not bool(getattr(self, "_tg_output_bridge_hooked", False)):
+
+                                    def _on_local_output(ev: Event) -> None:
+                                        try:
+                                            subj = ev.type
+                                            if not isinstance(subj, str) or not subj.startswith("tg.output."):
+                                                return
+                                            nc2 = getattr(self, "_tg_output_nats_nc", None)
+                                            if not nc2:
+                                                return
+                                            try:
+                                                data = _json.dumps(ev.payload or {}, ensure_ascii=False).encode("utf-8")
+                                            except Exception:
+                                                data = b"{}"
+                                            coro = nc2.publish(subj, data)
+                                            if asyncio.iscoroutine(coro):
+                                                try:
+                                                    loop = asyncio.get_running_loop()
+                                                    loop.create_task(coro)
+                                                except RuntimeError:
+                                                    asyncio.run(coro)
+                                        except Exception:
+                                            return
+
+                                    # Prefix subscription on LocalEventBus works as "starts with".
+                                    core_bus.subscribe("tg.output.", _on_local_output)
+                                    setattr(self, "_tg_output_bridge_hooked", True)
+                            except Exception:
+                                pass
                             subj = f"tg.input.{hub_id}"
                             subj_legacy = f"io.tg.in.{hub_id}.text"
-                            print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
+                            if hub_nats_verbose or not hub_nats_quiet:
+                                print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
                             # First successful connect after failures
                             _emit_up()
 
@@ -709,7 +771,8 @@ class BootstrapService:
                                             pass
 
                                 await _sub(ctl_alias, cb=_ctl_alias_cb)
-                                print(f"[hub-io] NATS subscribe control {ctl_alias}")
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(f"[hub-io] NATS subscribe control {ctl_alias}")
                             except Exception:
                                 pass
                             break
@@ -1252,7 +1315,8 @@ class BootstrapService:
                                 return
 
                         route_sub = await _sub("route.to_hub.*", cb=_route_cb)
-                        print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
+                        if hub_nats_verbose or not hub_nats_quiet:
+                            print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
@@ -1279,7 +1343,8 @@ class BootstrapService:
                                 continue
                             seen.add(aid)
                             alt = f"tg.input.{aid}"
-                            print(f"[hub-io] NATS subscribe (alias) {alt}")
+                            if hub_nats_verbose or not hub_nats_quiet:
+                                print(f"[hub-io] NATS subscribe (alias) {alt}")
                             await _sub(alt, cb=cb)
                     except Exception:
                         pass
@@ -1333,7 +1398,8 @@ class BootstrapService:
                                     continue
                                 seen.add(aid)
                                 alt_legacy = f"io.tg.in.{aid}.text"
-                                print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
                                 await _sub(alt_legacy, cb=cb_legacy)
                     except Exception:
                         pass
@@ -1344,8 +1410,15 @@ class BootstrapService:
                             is_closed_attr = getattr(nc, "is_closed", None)
                             is_closed = is_closed_attr() if callable(is_closed_attr) else bool(is_closed_attr)
                             if is_closed:
-                                raise RuntimeError("nats connection closed")
+                                last_err = getattr(nc, "last_error", None)
+                                details = f"{type(last_err).__name__}: {last_err}" if last_err else ""
+                                raise RuntimeError(f"nats connection closed{(': ' + details) if details else ''}")
                     finally:
+                        try:
+                            if getattr(self, "_tg_output_nats_nc", None) is nc:
+                                setattr(self, "_tg_output_nats_nc", None)
+                        except Exception:
+                            pass
                         async def _force_close_ws_transport() -> None:
                             # nats-py WebSocketTransport can leave aiohttp.ClientSession unclosed
                             # if the websocket is already None (close() becomes a no-op and wait_closed() hangs).
