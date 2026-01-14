@@ -220,7 +220,25 @@ export class YDocService {
       if (allowLoopback) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
       if (!candidates.length) return false
       for (const base of candidates) {
-        const st = await probeHttpStatus(base, 650)
+        const st = await probeHttpStatus(
+          base,
+          650,
+          (() => {
+            // If a persisted base is actually the root-proxy `/hubs/<id>` route,
+            // it requires session JWT even for `/api/ping` probes.
+            try {
+              const abs = String(base || '').replace(/\/$/, '')
+              if (!abs.includes('/hubs/')) return undefined
+              const { sessionJwt } = readSession()
+              if (!sessionJwt) return undefined
+              if (!sessionJwt.includes('.')) return undefined
+              if (!this.isJwtValid(sessionJwt)) return undefined
+              return { Authorization: `Bearer ${sessionJwt}` }
+            } catch {
+              return undefined
+            }
+          })()
+        )
         if (st >= 200 && st < 300) {
           this.adaos.setBase(base)
           // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
