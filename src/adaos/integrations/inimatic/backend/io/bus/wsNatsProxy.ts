@@ -120,10 +120,18 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let bytesDown = 0
 		let lastUpstreamPingAt: number | null = null
 		let lastClientPongAt: number | null = null
+		let lastClientPingAt: number | null = null
+		let lastUpstreamPongAt: number | null = null
 		let proxySentPong = 0
+		let clientSentPong = 0
+		let clientSentPing = 0
+		let upstreamSentPong = 0
 		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
 		let wsPingTimer: NodeJS.Timeout | null = null
+		let wsPingsSent = 0
+		let wsPongsReceived = 0
+		let lastWsPongAt: number | null = null
 
 		function closeBoth(code?: number, reason?: string) {
 			try {
@@ -146,7 +154,15 @@ export function installWsNatsProxy(server: HttpsServer) {
 					bytesDown,
 					lastUpstreamPingAgo_s: lastUpstreamPingAt ? (Date.now() - lastUpstreamPingAt) / 1000 : null,
 					lastClientPongAgo_s: lastClientPongAt ? (Date.now() - lastClientPongAt) / 1000 : null,
+					lastClientPingAgo_s: lastClientPingAt ? (Date.now() - lastClientPingAt) / 1000 : null,
+					lastUpstreamPongAgo_s: lastUpstreamPongAt ? (Date.now() - lastUpstreamPongAt) / 1000 : null,
 					proxySentPong,
+					clientSentPong,
+					clientSentPing,
+					upstreamSentPong,
+					wsPingsSent,
+					wsPongsReceived,
+					lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
 					...(extra || {}),
 				},
 				event,
@@ -159,6 +175,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 				try {
 					if (ws.readyState !== 1) return
 					ws.ping()
+					wsPingsSent += 1
 				} catch {}
 			}, 25_000)
 		}
@@ -200,6 +217,12 @@ export function installWsNatsProxy(server: HttpsServer) {
 						return
 					}
 				}
+				try {
+					if (chunk.includes(NATS_PONG)) {
+						lastUpstreamPongAt = Date.now()
+						upstreamSentPong += 1
+					}
+				} catch {}
 				try {
 					// If WS backpressure builds up, upstream PONG can be lost and the client will disconnect.
 					// Prefer failing fast with diagnostics rather than silently dropping frames.
@@ -346,6 +369,12 @@ export function installWsNatsProxy(server: HttpsServer) {
 					clientTail = scanPong.tail
 					if (scanPong.hit) {
 						lastClientPongAt = Date.now()
+						clientSentPong += 1
+					}
+					// Track client PINGs too (nats-py sends these as keepalive).
+					if (buf.includes(NATS_PING)) {
+						lastClientPingAt = Date.now()
+						clientSentPing += 1
 					}
 				} catch {}
 				try {
@@ -366,6 +395,11 @@ export function installWsNatsProxy(server: HttpsServer) {
 			}
 			clientBuf = Buffer.concat([clientBuf, buf])
 			tryProcessHandshake()
+		})
+
+		ws.on('pong', () => {
+			wsPongsReceived += 1
+			lastWsPongAt = Date.now()
 		})
 
 		ws.on('error', (err: any) => {
