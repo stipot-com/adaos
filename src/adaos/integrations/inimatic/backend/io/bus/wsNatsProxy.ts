@@ -111,7 +111,9 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let connected = false
 		let handshaked = false
 		let hubIdForLog: string | null = null
+		let authInFlight = false
 		let clientBuf = Buffer.alloc(0)
+		let preHandshakeQueue: Buffer[] = []
 		let clientTail = Buffer.alloc(0)
 		let upstreamTail = Buffer.alloc(0)
 		let bytesUp = 0
@@ -228,6 +230,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		}
 
 		function tryProcessHandshake(): boolean {
+			if (handshaked || authInFlight) return false
 			const raw = clientBuf.toString('utf8')
 			const lineEnd = raw.indexOf('\r\n')
 			if (lineEnd <= 0) return false
@@ -240,12 +243,15 @@ export function installWsNatsProxy(server: HttpsServer) {
 			}
 
 			const rest = clientBuf.subarray(lineEnd + 2)
+			clientBuf = Buffer.alloc(0)
+			authInFlight = true
 			let obj: any
 			try {
 				obj = JSON.parse(line.slice('CONNECT '.length))
 			} catch (e) {
 				log.warn({ from: rip, err: String(e) }, 'bad CONNECT json')
 				closeBoth(1002, 'bad_connect_json')
+				authInFlight = false
 				return true
 			}
 
@@ -254,6 +260,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			if (!userRaw || !passRaw) {
 				log.warn({ from: rip }, 'missing CONNECT credentials')
 				closeBoth(1008, 'missing_creds')
+				authInFlight = false
 				return true
 			}
 
@@ -269,6 +276,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 					if (!ok) {
 						log.warn({ from: rip, hub_id: hubId, user: userRaw, pass: mask(passRaw) }, 'auth failed')
 						closeBoth(1008, 'auth_failed')
+						authInFlight = false
 						return
 					}
 
@@ -296,21 +304,28 @@ export function installWsNatsProxy(server: HttpsServer) {
 						try {
 							const ok1 = upstreamSock?.write(rewritten)
 							if (ok1 === false) logSummary('upstream backpressure on CONNECT', { writableLength: upstreamSock?.writableLength })
-							if (rest.length) {
-								const ok2 = upstreamSock?.write(rest)
-								if (ok2 === false) logSummary('upstream backpressure on CONNECT rest', { writableLength: upstreamSock?.writableLength })
+							// Send any bytes that arrived after CONNECT while auth was in flight.
+							const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
+							preHandshakeQueue = []
+							const tail = queued.length ? Buffer.concat([rest, queued]) : rest
+							if (tail.length) {
+								const ok2 = upstreamSock?.write(tail)
+								if (ok2 === false) logSummary('upstream backpressure on CONNECT tail', { writableLength: upstreamSock?.writableLength })
 							}
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
+							authInFlight = false
 							log.info({ from: rip, hub_id: hubId }, 'auth ok')
 						} catch (e) {
 							log.warn({ err: String(e) }, 'write upstream failed')
+							authInFlight = false
 							closeBoth(1011, 'upstream_write_failed')
 						}
 					}, 0)
 				})
 				.catch((e) => {
 					log.error({ from: rip, err: String(e) }, 'auth error')
+					authInFlight = false
 					closeBoth(1011, 'auth_error')
 				})
 
@@ -319,6 +334,11 @@ export function installWsNatsProxy(server: HttpsServer) {
 
 		ws.on('message', (data: any) => {
 			const buf = toBuffer(data)
+			if (authInFlight && !handshaked) {
+				// Prevent double CONNECT parsing when the client keeps sending data while auth is in-flight.
+				preHandshakeQueue.push(buf)
+				return
+			}
 			if (handshaked) {
 				try {
 					bytesUp += buf.length
