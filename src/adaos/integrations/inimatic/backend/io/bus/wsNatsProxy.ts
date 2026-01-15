@@ -70,6 +70,22 @@ function hasMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { hit: 
 	return { hit, tail: nextTail }
 }
 
+function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
+	let count = 0
+	let idx = 0
+	const parts: Buffer[] = []
+	while (true) {
+		const at = buf.indexOf(marker, idx)
+		if (at < 0) break
+		if (at > idx) parts.push(buf.subarray(idx, at))
+		idx = at + marker.length
+		count += 1
+	}
+	if (idx === 0) return { out: buf, count: 0 }
+	if (idx < buf.length) parts.push(buf.subarray(idx))
+	return { out: Buffer.concat(parts), count }
+}
+
 export function installWsNatsProxy(server: HttpsServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
@@ -129,9 +145,11 @@ export function installWsNatsProxy(server: HttpsServer) {
 		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
 		let wsPingTimer: NodeJS.Timeout | null = null
+		let natsKeepaliveTimer: NodeJS.Timeout | null = null
 		let wsPingsSent = 0
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
+		let natsKeepalivesSent = 0
 
 		function closeBoth(code?: number, reason?: string) {
 			try {
@@ -163,6 +181,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 					wsPingsSent,
 					wsPongsReceived,
 					lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
+					natsKeepalivesSent,
 					...(extra || {}),
 				},
 				event,
@@ -178,6 +197,28 @@ export function installWsNatsProxy(server: HttpsServer) {
 					wsPingsSent += 1
 				} catch {}
 			}, 25_000)
+		}
+
+		function armNatsKeepalive() {
+			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
+			// Many NATs/firewalls time out idle outbound mappings. WS control frames may be ignored by
+			// intermediaries, so we send a tiny NATS protocol keepalive as *data* to the client.
+			// The hub's nats client will respond with `PONG`, which creates outbound traffic hub->root.
+			natsKeepaliveTimer = setInterval(() => {
+				try {
+					if (!handshaked) return
+					if (ws.readyState !== 1) return
+					ws.send(NATS_PING, { binary: true })
+					natsKeepalivesSent += 1
+				} catch {}
+			}, 20_000)
+		}
+
+		function disarmNatsKeepalive() {
+			try {
+				if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
+			} catch {}
+			natsKeepaliveTimer = null
 		}
 
 		function disarmWsPing() {
@@ -356,7 +397,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		}
 
 		ws.on('message', (data: any) => {
-			const buf = toBuffer(data)
+			let buf = toBuffer(data)
 			if (authInFlight && !handshaked) {
 				// Prevent double CONNECT parsing when the client keeps sending data while auth is in-flight.
 				preHandshakeQueue.push(buf)
@@ -377,12 +418,19 @@ export function installWsNatsProxy(server: HttpsServer) {
 						clientSentPing += 1
 					}
 				} catch {}
+				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
+				// Stripping them avoids sending unsolicited PONGs to upstream and keeps outbound traffic intact.
+				try {
+					const stripped = stripAll(buf, NATS_PONG)
+					if (stripped.count > 0) buf = stripped.out
+				} catch {}
 				try {
 					if (!upstreamSock || (upstreamSock as any).destroyed) {
 						logSummary('upstream missing while writing', {})
 						closeBoth(1011, 'upstream_missing')
 						return
 					}
+					if (buf.length === 0) return
 					const ok = upstreamSock.write(buf)
 					if (ok === false) {
 						logSummary('upstream backpressure', { writableLength: upstreamSock.writableLength })
@@ -421,6 +469,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			})()
 			logSummary('conn close', { code, reason })
 			disarmWsPing()
+			disarmNatsKeepalive()
 			try {
 				upstreamSock?.destroy()
 			} catch {}
@@ -429,6 +478,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		// Keep the WS tunnel alive even if the NATS protocol is temporarily idle, otherwise
 		// intermediaries may cut the connection (common 60–120s idle timeouts).
 		armWsPing()
+		armNatsKeepalive()
 		connectUpstream()
 	})
 }
