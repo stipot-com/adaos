@@ -110,6 +110,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 
 		let connected = false
 		let handshaked = false
+		let hubIdForLog: string | null = null
 		let clientBuf = Buffer.alloc(0)
 		let clientTail = Buffer.alloc(0)
 		let upstreamTail = Buffer.alloc(0)
@@ -135,6 +136,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			log.info(
 				{
 					from: rip,
+					hub_id: hubIdForLog,
 					handshaked,
 					connected,
 					uptime_s: (Date.now() - openedAt) / 1000,
@@ -269,6 +271,8 @@ export function installWsNatsProxy(server: HttpsServer) {
 						closeBoth(1008, 'auth_failed')
 						return
 					}
+
+					hubIdForLog = hubId
 
 					const u: any = { ...obj }
 					try {
