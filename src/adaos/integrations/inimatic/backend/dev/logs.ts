@@ -78,6 +78,50 @@ export function installRootLogCapture(opts?: { maxLines?: number }) {
 		} catch {}
 		return origErr(chunk, encoding, cb)
 	}
+
+	// pino (via sonic-boom) can write directly to file descriptors using fs.writeSync/write,
+	// bypassing process.stdout.write. Capture those as well.
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const fs = require('node:fs') as typeof import('node:fs')
+		const origWriteSync = fs.writeSync.bind(fs)
+		const origWrite = fs.write.bind(fs)
+		let inFsHook = false
+
+		;(fs as any).writeSync = (fd: number, buffer: any, ...rest: any[]) => {
+			if (!inFsHook) {
+				try {
+					inFsHook = true
+					if (fd === 1) ingestChunk('stdout', buffer)
+					else if (fd === 2) ingestChunk('stderr', buffer)
+				} catch {
+					/* ignore */
+				} finally {
+					inFsHook = false
+				}
+			}
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+			return (origWriteSync as any)(fd, buffer, ...rest)
+		}
+
+		;(fs as any).write = (fd: number, buffer: any, ...rest: any[]) => {
+			if (!inFsHook) {
+				try {
+					inFsHook = true
+					if (fd === 1) ingestChunk('stdout', buffer)
+					else if (fd === 2) ingestChunk('stderr', buffer)
+				} catch {
+					/* ignore */
+				} finally {
+					inFsHook = false
+				}
+			}
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+			return (origWrite as any)(fd, buffer, ...rest)
+		}
+	} catch {
+		// best-effort
+	}
 }
 
 export function queryRootLogs(opts: {
@@ -103,4 +147,3 @@ export function queryRootLogs(opts: {
 	out.reverse()
 	return out
 }
-

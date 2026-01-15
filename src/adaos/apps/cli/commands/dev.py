@@ -231,7 +231,11 @@ def root_login() -> None:
 def root_logs(
     minutes: int = typer.Option(30, "--minutes", help="How many minutes back to fetch (1..720)."),
     limit: int = typer.Option(2000, "--limit", help="Max lines to return (1..50000)."),
-    hub_id: str = typer.Option(None, "--hub-id", help="Filter only lines containing this hub/subnet id (default: current subnet)."),
+    hub_id: str = typer.Option(
+        None,
+        "--hub-id",
+        help="Filter only lines containing this hub/subnet id (default: current subnet). Pass an empty string to disable hub filtering.",
+    ),
     contains: str = typer.Option(None, "--contains", help="Filter only lines containing this substring."),
     token: str = typer.Option(
         None,
@@ -242,7 +246,9 @@ def root_logs(
 ) -> None:
     service = _service()
     cfg = get_ctx().config
-    if not hub_id:
+    # Default hub filter only when option is not provided at all.
+    # Passing `--hub-id ""` disables hub filtering and allows searching across all root logs.
+    if hub_id is None:
         try:
             hub_id = cfg.subnet_id
         except Exception:

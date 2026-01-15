@@ -120,6 +120,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		let proxySentPong = 0
 		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
+		let wsPingTimer: NodeJS.Timeout | null = null
 
 		function closeBoth(code?: number, reason?: string) {
 			try {
@@ -146,6 +147,23 @@ export function installWsNatsProxy(server: HttpsServer) {
 				},
 				event,
 			)
+		}
+
+		function armWsPing() {
+			if (wsPingTimer) clearInterval(wsPingTimer)
+			wsPingTimer = setInterval(() => {
+				try {
+					if (ws.readyState !== 1) return
+					ws.ping()
+				} catch {}
+			}, 25_000)
+		}
+
+		function disarmWsPing() {
+			try {
+				if (wsPingTimer) clearInterval(wsPingTimer)
+			} catch {}
+			wsPingTimer = null
 		}
 
 		function connectUpstream() {
@@ -344,11 +362,15 @@ export function installWsNatsProxy(server: HttpsServer) {
 				}
 			})()
 			logSummary('conn close', { code, reason })
+			disarmWsPing()
 			try {
 				upstreamSock?.destroy()
 			} catch {}
 		})
 
+		// Keep the WS tunnel alive even if the NATS protocol is temporarily idle, otherwise
+		// intermediaries may cut the connection (common 60–120s idle timeouts).
+		armWsPing()
 		connectUpstream()
 	})
 }
