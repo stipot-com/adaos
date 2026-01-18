@@ -1,7 +1,12 @@
 # vhost/api.inimatic.com
 
 # Allow TLS 1.2 for SmartTV/legacy clients (TLS 1.3 remains enabled).
-ssl_protocols TLSv1.2 TLSv1.3;
+# ssl_protocols TLSv1.2 TLSv1.3;
+# ssl_ecdh_curve prime256v1:X25519:secp384r1;
+# ssl_ciphers 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA';
+
+# ssl_prefer_server_ciphers on;
+# ssl_conf_command SignatureAlgorithms RSA+SHA256:RSA+SHA384:RSA+SHA512;
 
 ssl_client_certificate /etc/nginx/certs/adaos_ca.pem;
 ssl_verify_client optional;
@@ -63,7 +68,7 @@ location ^~ /hubs/ {
 
   proxy_read_timeout  3600s;
   proxy_send_timeout  3600s;
-  proxy_connect_timeout 60s;
+  proxy_connect_timeout 3600s;
 
   proxy_pass https://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
@@ -80,8 +85,8 @@ location ^~ /nats {
   proxy_set_header Host $host;
   # Preserve WS subprotocol (NATS uses `Sec-WebSocket-Protocol: nats`)
   proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
-  proxy_read_timeout  60s;
-  proxy_send_timeout  60s;
+  proxy_read_timeout  3600s;
+  proxy_send_timeout  3600s;
   proxy_connect_timeout 5s;
   # Important: keep trailing slash so `/nats` maps to `/` on upstream (NATS WS listener doesn't know `/nats`).
   proxy_pass http://nats:8080/;

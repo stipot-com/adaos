@@ -1,332 +1,328 @@
 networks:
-    proxy:
-        name: inimatic_proxy
+  proxy:
+    name: inimatic_proxy
 
 volumes:
-    nginx_conf:
-        name: inimatic_nginx_conf
-    nginx_vhost:
-        name: inimatic_nginx_vhost
-    nginx_html:
-        name: inimatic_nginx_html
-    nginx_certs:
-        name: inimatic_nginx_certs
-    nats_data:
-        name: inimatic_nats_data
-    pg_data:
-        name: inimatic_pg_data
+  nginx_conf:
+    name: inimatic_nginx_conf
+  nginx_vhost:
+    name: inimatic_nginx_vhost
+  nginx_html:
+    name: inimatic_nginx_html
+  nginx_certs:
+    name: inimatic_nginx_certs
+  nats_data:
+    name: inimatic_nats_data
+  pg_data:
+    name: inimatic_pg_data
 
 services:
-    reverse-proxy:
-        image: nginxproxy/nginx-proxy:alpine
-        container_name: reverse-proxy
-        restart: unless-stopped
-        ports: ['80:80', '443:443']
-        networks: [proxy]
-        environment:
-            # Mozilla-Modern disables TLSv1.2 (TLSv1.3-only). Some SmartTV browsers (e.g. LG) still require TLSv1.2.
-            SSL_POLICY: Mozilla-Intermediate
-            TRUST_DOWNSTREAM_PROXY: 'false'
-            # включаем логи ошибок в stdout для быстрой диагностики TLS/mTLS
-            ENABLE_IPV6: 'false'
-        volumes:
-            - /var/run/docker.sock:/tmp/docker.sock:ro
-            - nginx_conf:/etc/nginx/conf.d
-            - nginx_vhost:/etc/nginx/vhost.d
-            - nginx_html:/usr/share/nginx/html
-            - nginx_certs:/etc/nginx/certs
-            # ваши пользовательские сниппеты (server/location) — здесь будем управлять mTLS
-            - /opt/inimatic/vhost.d:/etc/nginx/vhost.d:ro
-            - /opt/inimatic/vhost:/etc/nginx/vhost.user.d:ro
-            # CA, которой доверяем при проверке клиентских сертификатов
-            - /opt/inimatic/secrets/ca/ca.crt:/etc/nginx/certs/adaos_ca.pem:ro
-        labels:
-            - com.github.nginx-proxy.nginx=true
-        healthcheck:
-            test: ['CMD-SHELL', 'nginx -t || exit 1']
-            interval: 30s
-            timeout: 3s
-            retries: 5
-            start_period: 10s
+  reverse-proxy:
+    image: nginxproxy/nginx-proxy:alpine
+    container_name: reverse-proxy
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    networks: [proxy]
+    environment:
+      # Mozilla-Modern disables TLSv1.2 (TLSv1.3-only). Some SmartTV browsers (e.g. LG) still require TLSv1.2.
+      SSL_POLICY: Mozilla-Intermediate
+      TRUST_DOWNSTREAM_PROXY: "false"
+      # включаем логи ошибок в stdout для быстрой диагностики TLS/mTLS
+      ENABLE_IPV6: "false"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - nginx_conf:/etc/nginx/conf.d
+      - nginx_html:/usr/share/nginx/html
+      - nginx_certs:/etc/nginx/certs
+      # ваши пользовательские сниппеты (server/location) — здесь будем управлять mTLS
+      - /opt/inimatic/vhost.d:/etc/nginx/vhost.d:ro
+      - /opt/inimatic/vhost:/etc/nginx/vhost.user.d:ro
+      # CA, которой доверяем при проверке клиентских сертификатов
+      - /opt/inimatic/secrets/ca/ca.crt:/etc/nginx/certs/adaos_ca.pem:ro
+    labels:
+      - com.github.nginx-proxy.nginx=true
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
-    acme:
-        image: nginxproxy/acme-companion:latest
-        container_name: acme
-        restart: unless-stopped
-        networks: [proxy]
-        depends_on: [reverse-proxy]
-        env_file:
-            - /opt/inimatic/.env
-        environment:
-            DEFAULT_EMAIL: 'connect@stipot.com'
-            NGINX_PROXY_CONTAINER: reverse-proxy
-            # ACME_CA_URI: https://acme-staging-v02.api.letsencrypt.org/directory
-        volumes:
-            - /var/run/docker.sock:/var/run/docker.sock:ro
-            - nginx_conf:/etc/nginx/conf.d
-            - nginx_vhost:/etc/nginx/vhost.d
-            - nginx_html:/usr/share/nginx/html
-            - nginx_certs:/etc/nginx/certs
+  acme:
+    image: nginxproxy/acme-companion:latest
+    container_name: acme
+    restart: unless-stopped
+    networks: [proxy]
+    depends_on: [reverse-proxy]
+    env_file:
+      - /opt/inimatic/.env
+    environment:
+      DEFAULT_EMAIL: "connect@stipot.com"
+      NGINX_PROXY_CONTAINER: reverse-proxy
+      # ACME_CA_URI: https://acme-staging-v02.api.letsencrypt.org/directory
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/inimatic/vhost.d:/etc/nginx/vhost.d
+      - nginx_conf:/etc/nginx/conf.d
+      - nginx_html:/usr/share/nginx/html
+      - nginx_certs:/etc/nginx/certs
 
-    redis:
-        image: redis:7-alpine
-        command: ['redis-server', '--appendonly', 'no']
-        restart: unless-stopped
-        healthcheck:
-            test: ['CMD', 'redis-cli', 'ping']
-            interval: 10s
-            timeout: 3s
-            retries: 10
-            start_period: 5s
-        networks: [proxy]
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [proxy]
 
-    nats:
-        image: nats:2.10-alpine
-        container_name: nats
-        restart: unless-stopped
-        networks: [proxy]
-        expose: ['4222', '8222', '8080']
-        environment:
-            - NATS_HTTP_PORT=${NATS_HTTP_PORT:-8222}
-            - NATS_ISSUER_PUB=${NATS_ISSUER_PUB}
-            - NATS_AUTH_PASSWORD=${NATS_AUTH_PASSWORD}
-            - NATS_USER=${NATS_USER}
-            - NATS_PASS=${NATS_PASS}
-            - NATS_PORT=${NATS_PORT:-4222}
-        command:
-            - '-c'
-            - '/etc/nats/nats.conf'
-        volumes:
-            - nats_data:/data
-            # Config file with WS + mixed auth (static user + callout)
-            - /opt/inimatic/scripts/nats.conf:/etc/nats/nats.conf:ro
-        healthcheck:
-            test:
-                [
-                    'CMD',
-                    'wget',
-                    '-qO-',
-                    'http://localhost:${NATS_HTTP_PORT:-8222}/healthz',
-                ]
-            interval: 5s
-            timeout: 2s
-            retries: 30
-            start_period: 5s
+  nats:
+    image: nats:2.10-alpine
+    container_name: nats
+    restart: unless-stopped
+    networks: [proxy]
+    expose: ["4222", "8222", "8080"]
+    environment:
+      - VIRTUAL_HOST=nats.inimatic.com
+      - VIRTUAL_PORT=8080
+      - VIRTUAL_PROTO=http
+      - LETSENCRYPT_HOST=nats.inimatic.com
+      - LETSENCRYPT_EMAIL=connect@stipot.com
+      - NATS_HTTP_PORT=${NATS_HTTP_PORT:-8222}
+      - NATS_ISSUER_PUB=${NATS_ISSUER_PUB}
+      - NATS_AUTH_PASSWORD=${NATS_AUTH_PASSWORD}
+      - NATS_USER=${NATS_USER}
+      - NATS_PASS=${NATS_PASS}
+      - NATS_PORT=${NATS_PORT:-4222}
+    command:
+      - "-c"
+      - "/etc/nats/nats.conf"
+    volumes:
+      - nats_data:/data
+      # Config file with WS + mixed auth (static user + callout)
+      - /opt/inimatic/scripts/nats.conf:/etc/nats/nats.conf:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-qO-",
+          "http://localhost:${NATS_HTTP_PORT:-8222}/healthz",
+        ]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
 
-    postgres:
-        image: postgres:15-alpine
-        container_name: postgres
-        restart: unless-stopped
-        networks: [proxy]
-        environment:
-            POSTGRES_USER: ${PG_USER:-inimatic}
-            POSTGRES_PASSWORD: ${PG_PASS:-inimatic}
-            POSTGRES_DB: ${PG_DB:-inimatic}
-        volumes:
-            - pg_data:/var/lib/postgresql/data
-        healthcheck:
-            test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER']
-            interval: 10s
-            timeout: 5s
-            retries: 10
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    networks: [proxy]
+    environment:
+      POSTGRES_USER: ${PG_USER:-inimatic}
+      POSTGRES_PASSWORD: ${PG_PASS:-inimatic}
+      POSTGRES_DB: ${PG_DB:-inimatic}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
-    nats_init:
-        image: natsio/nats-box:latest
-        container_name: nats-init
-        restart: 'no'
-        networks: [proxy]
-        depends_on:
-            nats:
-                condition: service_healthy
-        environment:
-            - NATS_HOST=${NATS_HOST:-nats}
-            - NATS_PORT=${NATS_PORT:-4222}
-            - NATS_USER=${NATS_USER}
-            - NATS_PASS=${NATS_PASS}
-        command:
-            - /bin/sh
-            - -ec
-            - |
-                S="nats://$${NATS_HOST}:$${NATS_PORT}"
-                U="$${NATS_USER}"; P="$${NATS_PASS}"
-                nats -s "$$S" --user "$$U" --password "$$P" str add TG_INPUT  \
-                  --subjects "tg.input.*"  --storage file --retention limits \
-                  --discard old --dupe-window 2m --max-msgs=-1 --max-bytes=-1 --ack --replicas 1 --defaults || true
-                nats -s "$$S" --user "$$U" --password "$$P" str add TG_OUTPUT \
-                  --subjects "tg.output.*" --storage file --retention limits \
-                  --discard old --dupe-window 2m --max-msgs=-1 --max-bytes=-1 --ack --replicas 1 --defaults || true
-                nats -s "$$S" --user "$$U" --password "$$P" str add TG_DLQ    \
-                  --subjects "tg.dlq.*"   --storage file --retention limits \
-                  --discard old --dupe-window 10m --max-msgs=-1 --max-bytes=536870912 --ack --replicas 1 --defaults || true
-                echo "[ok] JetStream ensured"
+  nats_init:
+    image: natsio/nats-box:latest
+    container_name: nats-init
+    restart: "no"
+    networks: [proxy]
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      - NATS_HOST=${NATS_HOST:-nats}
+      - NATS_PORT=${NATS_PORT:-4222}
+      - NATS_USER=${NATS_USER}
+      - NATS_PASS=${NATS_PASS}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        S="nats://$${NATS_HOST}:$${NATS_PORT}"
+        U="$${NATS_USER}"; P="$${NATS_PASS}"
+        nats -s "$$S" --user "$$U" --password "$$P" str add TG_INPUT  \
+          --subjects "tg.input.*"  --storage file --retention limits \
+          --discard old --dupe-window 2m --max-msgs=-1 --max-bytes=-1 --ack --replicas 1 --defaults || true
+        nats -s "$$S" --user "$$U" --password "$$P" str add TG_OUTPUT \
+          --subjects "tg.output.*" --storage file --retention limits \
+          --discard old --dupe-window 2m --max-msgs=-1 --max-bytes=-1 --ack --replicas 1 --defaults || true
+        nats -s "$$S" --user "$$U" --password "$$P" str add TG_DLQ    \
+          --subjects "tg.dlq.*"   --storage file --retention limits \
+          --discard old --dupe-window 10m --max-msgs=-1 --max-bytes=536870912 --ack --replicas 1 --defaults || true
+        echo "[ok] JetStream ensured"
 
-    # BLUE
-    frontend_a:
-        image: ghcr.io/stipot-com/inimatic-frontend:latest
-        restart: unless-stopped
-        expose: ['8080']
-        networks: [proxy]
-        environment:
-            VIRTUAL_HOST: app.inimatic.com, v1.app.inimatic.com
-            VIRTUAL_PORT: '8080'
-            LETSENCRYPT_HOST: app.inimatic.com, v1.app.inimatic.com
-            LETSENCRYPT_EMAIL: connect@stipot.com
-        healthcheck:
-            test:
-                [
-                    'CMD-SHELL',
-                    'curl -fsS http://localhost:8080/ >/dev/null || exit 1',
-                ]
-            interval: 10s
-            timeout: 3s
-            retries: 10
-            start_period: 20s
-        labels:
-            - com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy=true
+  # BLUE
+  frontend_a:
+    image: ghcr.io/stipot-com/inimatic-frontend:latest
+    restart: unless-stopped
+    expose: ["8080"]
+    networks: [proxy]
+    environment:
+      VIRTUAL_HOST: app.inimatic.com,v1.app.inimatic.com
+      VIRTUAL_PORT: 8080
+      LETSENCRYPT_HOST: app.inimatic.com,v1.app.inimatic.com
+      LETSENCRYPT_EMAIL: connect@stipot.com
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -fsS http://localhost:8080/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    labels:
+      - com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy=true
 
-    backend_a:
-        image: ghcr.io/stipot-com/inimatic-backend:latest
-        restart: unless-stopped
-        depends_on:
-            redis:
-                condition: service_healthy
-            nats:
-                condition: service_healthy
-            postgres:
-                condition: service_healthy
-        expose: ['3030']
-        networks: [proxy]
-        env_file:
-            - /opt/inimatic/.env
-        environment:
-            VIRTUAL_HOST: api.inimatic.com,nats.inimatic.com
-            VIRTUAL_PORT: '3030'
-            VIRTUAL_PROTO: 'https'
-            LETSENCRYPT_HOST: api.inimatic.com,nats.inimatic.com
-            LETSENCRYPT_EMAIL: connect@stipot.com
-            # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
-            # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
-            WS_NATS_PATH: '/nats'
-            GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
-            CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
-            CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
-            # важно: одной строкой
-            GIT_SSH_COMMAND: 'ssh -i /run/inimatic/ssh/forge_ssh_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
-            IO_BUS_KIND: ${IO_BUS_KIND}
-            NATS_URL: ${NATS_URL}
-            NATS_USER: ${NATS_USER}
-            NATS_PASS: ${NATS_PASS}
-            NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
-            NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
-            TG_BOTS: ${TG_BOTS}
-            BOT_ID: adaos_home_bot
-            TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
-            TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
-            TG_WEBHOOK_BASE: ${TG_WEBHOOK_BASE}
-            TG_WEBHOOK_PATH_PREFIX: ${TG_WEBHOOK_PATH_PREFIX}
-            PG_URL: ${PG_URL}
-            TG_ROUTER_ENABLED: ${TG_ROUTER_ENABLED}
-            REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-            WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
-            # Browser->Hub route proxy (debug)
-            ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
-            # Reduce log noise from transient NATS WS disconnects (can be enabled with HUB_NATS_VERBOSE=1).
-            HUB_NATS_QUIET: ${HUB_NATS_QUIET:-1}
-        volumes:
-            - /opt/inimatic/secrets:/run/inimatic/secrets:ro
-            - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
-            - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
-        healthcheck:
-            test:
-                [
-                    'CMD-SHELL',
-                    'curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1',
-                ]
-            interval: 10s
-            timeout: 3s
-            retries: 30
-            start_period: 60s
+  backend_a:
+    image: ghcr.io/stipot-com/inimatic-backend:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    expose: ["3030"]
+    networks: [proxy]
+    env_file:
+      - /opt/inimatic/.env
+    environment:
+      VIRTUAL_HOST: api.inimatic.com
+      VIRTUAL_PORT: 3030
+      VIRTUAL_PROTO: https
+      LETSENCRYPT_HOST: api.inimatic.com
+      LETSENCRYPT_EMAIL: connect@stipot.com
+      # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
+      # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
+      WS_NATS_PATH: "/nats"
+      GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
+      CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
+      CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
+      # важно: одной строкой
+      GIT_SSH_COMMAND: "ssh -i /run/inimatic/ssh/forge_ssh_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+      IO_BUS_KIND: ${IO_BUS_KIND}
+      NATS_URL: ${NATS_URL}
+      NATS_USER: ${NATS_USER}
+      NATS_PASS: ${NATS_PASS}
+      NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
+      NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
+      TG_BOTS: ${TG_BOTS}
+      BOT_ID: adaos_home_bot
+      TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
+      TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
+      TG_WEBHOOK_BASE: ${TG_WEBHOOK_BASE}
+      TG_WEBHOOK_PATH_PREFIX: ${TG_WEBHOOK_PATH_PREFIX}
+      PG_URL: ${PG_URL}
+      TG_ROUTER_ENABLED: ${TG_ROUTER_ENABLED}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
+      # Browser->Hub route proxy (debug)
+      ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
+    volumes:
+      - /opt/inimatic/secrets:/run/inimatic/secrets:ro
+      - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
+      - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
 
-    # GREEN
-    frontend_b:
-        image: ghcr.io/stipot-com/inimatic-frontend:latest
-        restart: unless-stopped
-        expose: ['8080']
-        networks: [proxy]
-        environment:
-            VIRTUAL_HOST: app.inimatic.com, v1.app.inimatic.com
-            VIRTUAL_PORT: '8080'
-            LETSENCRYPT_HOST: app.inimatic.com, v1.app.inimatic.com
-            LETSENCRYPT_EMAIL: connect@stipot.com
-        healthcheck:
-            test:
-                [
-                    'CMD-SHELL',
-                    'curl -fsS http://localhost:8080/ >/dev/null || exit 1',
-                ]
-            interval: 10s
-            timeout: 3s
-            retries: 10
-            start_period: 20s
-        labels:
-            - com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy=true
+  # GREEN
+  frontend_b:
+    image: ghcr.io/stipot-com/inimatic-frontend:latest
+    restart: unless-stopped
+    expose: ["8080"]
+    networks: [proxy]
+    environment:
+      VIRTUAL_HOST: app.inimatic.com,v1.app.inimatic.com
+      VIRTUAL_PORT: 8080
+      LETSENCRYPT_HOST: app.inimatic.com,v1.app.inimatic.com
+      LETSENCRYPT_EMAIL: connect@stipot.com
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -fsS http://localhost:8080/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    labels:
+      - com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy=true
 
-    backend_b:
-        image: ghcr.io/stipot-com/inimatic-backend:latest
-        restart: unless-stopped
-        depends_on:
-            redis:
-                condition: service_healthy
-            nats:
-                condition: service_healthy
-            postgres:
-                condition: service_healthy
-        expose: ['3030']
-        networks: [proxy]
-        env_file:
-            - /opt/inimatic/.env
-        environment:
-            VIRTUAL_HOST: api.inimatic.com,nats.inimatic.com
-            VIRTUAL_PORT: '3030'
-            VIRTUAL_PROTO: 'https'
-            LETSENCRYPT_HOST: api.inimatic.com,nats.inimatic.com
-            LETSENCRYPT_EMAIL: connect@stipot.com
-            # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
-            # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
-            WS_NATS_PATH: '/nats'
-            GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
-            CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
-            CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
-            GIT_SSH_COMMAND: 'ssh -i /run/inimatic/ssh/forge_ssh_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
-            IO_BUS_KIND: ${IO_BUS_KIND}
-            NATS_URL: ${NATS_URL}
-            NATS_USER: ${NATS_USER}
-            NATS_PASS: ${NATS_PASS}
-            NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
-            NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
-            BOT_ID: adaos_home_bot
-            TG_BOTS: ${TG_BOTS}
-            TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
-            TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
-            TG_WEBHOOK_BASE: ${TG_WEBHOOK_BASE}
-            TG_WEBHOOK_PATH_PREFIX: ${TG_WEBHOOK_PATH_PREFIX}
-            PG_URL: ${PG_URL}
-            TG_ROUTER_ENABLED: ${TG_ROUTER_ENABLED}
-            REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-            WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
-            # Browser->Hub route proxy (debug)
-            ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
-        volumes:
-            - /opt/inimatic/secrets:/run/inimatic/secrets:ro
-            - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
-            - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
-        healthcheck:
-            test:
-                [
-                    'CMD-SHELL',
-                    'curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1',
-                ]
-            interval: 10s
-            timeout: 3s
-            retries: 30
-            start_period: 60s
+  backend_b:
+    image: ghcr.io/stipot-com/inimatic-backend:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    expose: ["3030"]
+    networks: [proxy]
+    env_file:
+      - /opt/inimatic/.env
+    environment:
+      VIRTUAL_HOST: api.inimatic.com
+      VIRTUAL_PORT: 3030
+      VIRTUAL_PROTO: https
+      LETSENCRYPT_HOST: api.inimatic.com
+      LETSENCRYPT_EMAIL: connect@stipot.com
+      # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
+      # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
+      WS_NATS_PATH: "/nats"
+      GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
+      CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
+      CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
+      GIT_SSH_COMMAND: "ssh -i /run/inimatic/ssh/forge_ssh_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+      IO_BUS_KIND: ${IO_BUS_KIND}
+      NATS_URL: ${NATS_URL}
+      NATS_USER: ${NATS_USER}
+      NATS_PASS: ${NATS_PASS}
+      NATS_ISSUER_SEED: ${NATS_ISSUER_SEED}
+      NATS_ISSUER_PUB: ${NATS_ISSUER_PUB}
+      BOT_ID: adaos_home_bot
+      TG_BOTS: ${TG_BOTS}
+      TG_ADAOS_BOT_BOT_TOKEN_FILE: ${TG_ADAOS_BOT_BOT_TOKEN_FILE}
+      TG_ADAOS_BOT_BOT_SECRET_FILE: ${TG_ADAOS_BOT_BOT_SECRET_FILE}
+      TG_WEBHOOK_BASE: ${TG_WEBHOOK_BASE}
+      TG_WEBHOOK_PATH_PREFIX: ${TG_WEBHOOK_PATH_PREFIX}
+      PG_URL: ${PG_URL}
+      TG_ROUTER_ENABLED: ${TG_ROUTER_ENABLED}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
+      # Browser->Hub route proxy (debug)
+      ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
+    volumes:
+      - /opt/inimatic/secrets:/run/inimatic/secrets:ro
+      - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
+      - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s

@@ -1,7 +1,7 @@
-# vhost/api.inimatic.com
+# vhost.d\api.inimatic.com
 
 # Allow TLS 1.2 for SmartTV/legacy clients (TLS 1.3 remains enabled).
-ssl_protocols TLSv1.2 TLSv1.3;
+# ssl_protocols TLSv1.2 TLSv1.3;
 
 ssl_client_certificate /etc/nginx/certs/adaos_ca.pem;
 ssl_verify_client optional;
@@ -26,16 +26,11 @@ location = /v1/pair/confirm {
     include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-location /nats {
-  # No client cert required for WS bridge
-  proxy_pass http://nats:8080;
-  include /etc/nginx/vhost.d/api.inimatic.com_location;
-}
-
 # --- защищённые пути под mTLS ---
 
 # --- Browser -> Hub proxy over Root (WS + HTTP) ---
 location ^~ /hubs/ {
+
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
@@ -45,7 +40,7 @@ location ^~ /hubs/ {
 
   proxy_read_timeout 3600s;
   proxy_send_timeout 3600s;
-  proxy_connect_timeout 60s;
+  proxy_connect_timeout 3600s;
 
   proxy_pass https://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;

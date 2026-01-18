@@ -1,3 +1,4 @@
+# vhost\api.inimatic.com_location
 # Прокидываем идентичность клиента в бэкенд
 proxy_set_header X-SSL-Client-Verify $ssl_client_verify;   # SUCCESS / FAILED
 proxy_set_header X-Client-Subject     $ssl_client_s_dn;    # DN субъекта
