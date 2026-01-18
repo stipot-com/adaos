@@ -1,38 +1,59 @@
 # src\adaos\services\bootstrap.py
 from __future__ import annotations
-import asyncio, socket, time, uuid, os, logging, traceback
-from typing import Any, List, Optional, Sequence
-from pathlib import Path
-import json as _json
-import base64
 
-from adaos.services.agent_context import AgentContext, get_ctx
-from adaos.sdk.data import bus
-from adaos.services.node_config import load_config, set_role as cfg_set_role, NodeConfig
-from adaos.services.eventbus import LocalEventBus
-from adaos.services.io_bus.local_bus import LocalIoBus
-from adaos.services.io_bus.http_fallback import HttpFallbackBus
+import asyncio
+import base64
+import json as _json
+import logging
+import os
+import socket
+import time
+import traceback
+import uuid
+from pathlib import Path
+from typing import Any, List, Optional, Sequence
+
+import nats as _nats
+
+from adaos.adapters.db.sqlite_schema import ensure_schema
+from adaos.adapters.scenarios.git_repo import GitScenarioRepository
+from adaos.adapters.skills.git_repo import GitSkillRepository
+from adaos.domain import Event
 from adaos.ports.heartbeat import HeartbeatPort
 from adaos.ports.skills_loader import SkillsLoaderPort
 from adaos.ports.subnet_registry import SubnetRegistryPort
-from adaos.adapters.db.sqlite_schema import ensure_schema
-from adaos.adapters.skills.git_repo import GitSkillRepository
-from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.sdk.core.decorators import register_subscriptions
-from adaos.services.scheduler import start_scheduler
+from adaos.sdk.data import bus
 from adaos.services import yjs as _y_store  # ensure YStore subscriptions are registered
-from adaos.services.scenario import webspace_runtime as _scenario_ws_runtime  # ensure core scenario subscriptions
+from adaos.services.agent_context import AgentContext, get_ctx
+from adaos.services.chat_io import telemetry as tm
+from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
+from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->NLU bridge
+from adaos.services.eventbus import LocalEventBus
+from adaos.services.io_bus.http_fallback import HttpFallbackBus
+from adaos.services.io_bus.local_bus import LocalIoBus
+from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.scheduler import start_scheduler
+from adaos.services.scenario import (
+    webspace_runtime as _scenario_ws_runtime,  # ensure core scenario subscriptions
+)
 from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
 from adaos.services import weather as _weather_services  # ensure weather observers
+from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
+from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
+from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.integrations.telegram.sender import TelegramSender
-from adaos.services.chat_io.interfaces import ChatOutputEvent, ChatOutputMessage
-from adaos.services.chat_io import telemetry as tm
-import nats as _nats
-from adaos.domain import Event
 
 
 class BootstrapService:
-    def __init__(self, ctx: AgentContext, *, heartbeat: HeartbeatPort, skills_loader: SkillsLoaderPort, subnet_registry: SubnetRegistryPort) -> None:
+    def __init__(
+        self,
+        ctx: AgentContext,
+        *,
+        heartbeat: HeartbeatPort,
+        skills_loader: SkillsLoaderPort,
+        subnet_registry: SubnetRegistryPort,
+    ) -> None:
         self.ctx = ctx
         self.heartbeat = heartbeat
         self.skills_loader = skills_loader
@@ -76,6 +97,28 @@ class BootstrapService:
         # в тестах — не трогаем удалённые репозитории/сеть
         if os.getenv("ADAOS_TESTING") == "1":
             return
+
+        # Default routing rules for RouterService (stdout + telegram broadcast).
+        # This file is a runtime config (often ignored by git) but must exist for
+        # system notifications (subnet.started/stopped, greet_on_boot, etc).
+        try:
+            base_dir = getattr(ctx.paths, "base_dir", None)
+            base_dir = base_dir() if callable(base_dir) else base_dir
+            if base_dir:
+                rules_path = Path(base_dir) / "route_rules.yaml"
+                if not rules_path.exists():
+                    rules_path.write_text(
+                        "rules:\n"
+                        "  - priority: 60\n"
+                        "    match: {}\n"
+                        "    target: {node_id: this, kind: io_type, io_type: stdout}\n"
+                        "  - priority: 50\n"
+                        "    match: {}\n"
+                        "    target: {node_id: this, kind: io_type, io_type: telegram}\n",
+                        encoding="utf-8",
+                    )
+        except Exception:
+            pass
 
         # монорепо навыков
         try:
@@ -139,6 +182,11 @@ class BootstrapService:
         await io_bus.connect()
         print("[bootstrap] IO bus: LocalEventBus")
         self._io_bus = io_bus
+        # Attach chat IO -> NLU bridge (e.g. Telegram text -> nlp.intent.detect.request)
+        try:
+            register_chat_nlu_bridge(core_bus)
+        except Exception:
+            self._log.warning("failed to register chat_io NLU bridge", exc_info=True)
         # expose in app.state
         try:
             setattr(app.state, "bus", io_bus)
@@ -146,6 +194,11 @@ class BootstrapService:
             pass
         await bus.emit("sys.boot.start", {"role": conf.role, "node_id": conf.node_id, "subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
         await self.skills_loader.import_all_handlers(self.ctx.paths.skills_dir())
+        # Start service-type skills (external processes).
+        try:
+            await get_service_supervisor().start_all()
+        except Exception:
+            self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
         await bus.emit("sys.bus.ready", {}, source="lifecycle", actor="system")
         # Start in-process scheduler after the bus is ready.
@@ -178,8 +231,8 @@ class BootstrapService:
         try:
             if hasattr(self._io_bus, "subscribe_output"):
 
-                bot_id = "main-bot"  # one-bot assumption for MVP
-                sender = TelegramSender(bot_id)
+                # Subscribe to all bot ids ("tg.output.*") and use the single configured TG_BOT_TOKEN.
+                sender = TelegramSender("any-bot")
 
                 async def _handler(subject: str, data: bytes) -> None:
                     try:
@@ -199,7 +252,7 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                await self._io_bus.subscribe_output(bot_id, _handler)
+                await self._io_bus.subscribe_output("*", _handler)
         except Exception:
             pass
 
@@ -211,6 +264,23 @@ class BootstrapService:
 
                 # Track connectivity state to log/emit only on transitions
                 reported_down = False
+                nats_last_log_at: dict[str, float] = {}
+                nats_last_ok_at: float | None = None
+
+                def _rl_log(key: str, msg: str, *, every_s: float = 5.0) -> None:
+                    """
+                    Rate-limited console log helper for noisy NATS diagnostics.
+                    Uses monotonic time to avoid being affected by clock changes.
+                    """
+                    try:
+                        now = time.monotonic()
+                        last = nats_last_log_at.get(key, 0.0)
+                        if now - last < every_s:
+                            return
+                        nats_last_log_at[key] = now
+                        print(msg)
+                    except Exception:
+                        return
 
                 def _read_node_nats() -> tuple[str | None, str | None, str | None]:
                     try:
@@ -334,6 +404,16 @@ class BootstrapService:
                     token = data.get("hub_nats_token")
                     nats_user = data.get("nats_user")
                     nats_ws_url = data.get("nats_ws_url")
+                    # NATS WS is served via a dedicated hostname. Some deployments historically returned
+                    # `wss://api.inimatic.com/nats` which results in a 400 during WS upgrade.
+                    try:
+                        if isinstance(nats_ws_url, str):
+                            if nats_ws_url.startswith("wss://api.inimatic.com/nats"):
+                                nats_ws_url = "wss://nats.inimatic.com/nats"
+                            elif nats_ws_url == "wss://nats.inimatic.com":
+                                nats_ws_url = "wss://nats.inimatic.com/nats"
+                    except Exception:
+                        pass
                     if not token or not nats_user or not nats_ws_url:
                         if debug:
                             try:
@@ -375,7 +455,9 @@ class BootstrapService:
 
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
+                    nonlocal nats_last_ok_at
                     backoff = 1.0
+                    trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
 
                     def _explain_connect_error(err: Exception) -> str:
                         try:
@@ -428,7 +510,9 @@ class BootstrapService:
                                         from urllib.parse import urlparse, urlunparse
 
                                         pr0 = urlparse(s)
-                                        if not pr0.path or pr0.path == "/":
+                                        # Keep an explicit "/" WS mount intact: some deployments terminate WS on "/".
+                                        # Only inject the default mount when the path is missing entirely.
+                                        if not pr0.path:
                                             pr0 = pr0._replace(path=ws_default_path)
                                             s = urlunparse(pr0)
                                     except Exception:
@@ -458,43 +542,13 @@ class BootstrapService:
                                         is_ws_mode = True
 
                                 if is_ws_mode:
-                                    # Prefer WS endpoints only. Always include provided base (even api.inimatic.com)
+                                    # Prefer WS endpoints only.
+                                    # IMPORTANT: Keep this conservative — probing extra mounts/hosts has caused
+                                    # "Authentication Timeout" hangs when we accidentally hit non-NATS WS endpoints.
                                     if base:
                                         _dedup_push(base)
-                                        # Avoid generating trailing slash variants which may 400
-                                        # Also try common WS mounts. Different deployments may expose the WS proxy
-                                        # either on "/" (default) or on "/nats" (legacy).
-                                        try:
-                                            pr2 = urlparse(base)
-                                            if (pr2.scheme or "").startswith("ws"):
-                                                # hosts to try: configured host + known public aliases
-                                                host_candidates: List[str] = []
-                                                try:
-                                                    if pr2.hostname:
-                                                        host_candidates.append(pr2.hostname)
-                                                except Exception:
-                                                    pass
-                                                for h in ("nats.inimatic.com", "api.inimatic.com"):
-                                                    if h not in host_candidates:
-                                                        host_candidates.append(h)
-
-                                                # paths to try: keep configured path plus common ones
-                                                path_candidates: List[str] = []
-                                                pth = pr2.path or ""
-                                                if pth and pth != "/":
-                                                    path_candidates.append(pth)
-                                                for p in ("/", "/nats"):
-                                                    if p not in path_candidates:
-                                                        path_candidates.append(p)
-
-                                                for h in host_candidates:
-                                                    for p in path_candidates:
-                                                        prx = pr2._replace(netloc=h, path=p, params="", query="", fragment="")
-                                                        _dedup_push(urlunparse(prx))
-                                        except Exception:
-                                            pass
-                                    # Known public endpoint as a fallback
-                                    _dedup_push("wss://nats.inimatic.com")
+                                    # Known public endpoint as a fallback (explicitly WS-nats proxy).
+                                    _dedup_push("wss://nats.inimatic.com/nats")
                                     # Allow explicit WS alternates via env (comma-separated)
                                     extra = os.getenv("NATS_WS_URL_ALT")
                                     if extra:
@@ -517,6 +571,13 @@ class BootstrapService:
                                     _dedup_push(base)
                                 else:
                                     _dedup_push("wss://nats.inimatic.com")
+
+                            # `wss://api.inimatic.com/nats` is known to return HTTP 400 on WS upgrade in some
+                            # environments; keep only the dedicated NATS hostname.
+                            try:
+                                candidates = [c for c in candidates if not c.startswith("wss://api.inimatic.com/nats")]
+                            except Exception:
+                                pass
 
                             hub_nats_verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                             hub_nats_quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
@@ -622,20 +683,155 @@ class BootstrapService:
                                 except Exception:
                                     pass
 
-                            nc = await _nats.connect(
-                                servers=[str(s) for s in candidates],
-                                user=user_str,
-                                password=pw_str,
-                                name=f"hub-{hub_id_str}",
-                                error_cb=_on_error_cb,
-                                disconnected_cb=_on_disconnected,
-                                reconnected_cb=_on_reconnected,
-                            )
+                            # NOTE: Connect to candidates sequentially. Some endpoints can hang the WS handshake
+                            # (leading to "Authentication Timeout") while others work; trying one-by-one keeps
+                            # failures isolated and helps cleanup transports.
+                            async def _try_connect(server: str) -> Any:
+                                # `nats` package does not expose Client at top-level; use nats.aio.client.Client.
+                                nc_local = _nats.aio.client.Client()
+                                try:
+                                    await asyncio.wait_for(
+                                        nc_local.connect(
+                                            servers=[str(server)],
+                                            user=user_str,
+                                            password=pw_str,
+                                            name=f"hub-{hub_id_str}",
+                                            allow_reconnect=False,
+                                            # Be tolerant to intermittent WS proxy hiccups: missed PONGs should not
+                                            # tear down the whole hub IO bridge too aggressively.
+                                            ping_interval=15.0,
+                                            max_outstanding_pings=10,
+                                            connect_timeout=5.0,
+                                            error_cb=_on_error_cb,
+                                            disconnected_cb=_on_disconnected,
+                                            reconnected_cb=_on_reconnected,
+                                        ),
+                                        timeout=7.0,
+                                    )
+                                    return nc_local
+                                except Exception as e:
+                                    # Best-effort token refresh on auth-ish failures.
+                                    try:
+                                        msg = str(e).lower()
+                                        if (
+                                            "authentication timeout" in msg
+                                            or "authorization violation" in msg
+                                            or "auth" in msg
+                                            or type(e).__name__ == "UnexpectedEOF"
+                                            or "unexpected eof" in msg
+                                        ):
+                                            await _fetch_nats_credentials()
+                                    except Exception:
+                                        pass
+                                    # Best-effort cleanup of partially created WS transport
+                                    try:
+                                        await nc_local.close()
+                                    except Exception:
+                                        pass
+                                    # Ensure WS transport is fully torn down if connect() was cancelled/timed out.
+                                    try:
+                                        tr = getattr(nc_local, "_transport", None)
+                                        if tr:
+                                            ws = getattr(tr, "_ws", None)
+                                            client = getattr(tr, "_client", None)
+                                            try:
+                                                if ws is not None:
+                                                    await ws.close()
+                                            except Exception:
+                                                pass
+                                            try:
+                                                if client is not None:
+                                                    await client.close()
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                                    raise e
+
+                            last_exc: Exception | None = None
+                            nc = None
+                            connected_server: str | None = None
+                            for srv in [str(s) for s in candidates]:
+                                try:
+                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        print(f"[hub-io] NATS connect try server={srv}")
+                                    elif trace:
+                                        _rl_log("nats.try", f"[hub-io] nats connect try server={srv}", every_s=1.0)
+                                    nc = await _try_connect(srv)
+                                    last_exc = None
+                                    connected_server = srv
+                                    break
+                                except Exception as e:
+                                    last_exc = e
+                                    if trace:
+                                        _rl_log("nats.try_fail", f"[hub-io] nats connect failed server={srv} err={type(e).__name__}", every_s=1.0)
+                                    continue
+                            if nc is None:
+                                raise last_exc or RuntimeError("nats connect failed (no candidates)")
+
+                            # Track subscriptions explicitly. When the connection closes (or this task is cancelled),
+                            # unsubscribing helps nats-py cancel internal `_wait_for_msgs()` tasks and avoids
+                            # "Task was destroyed but it is pending!" warnings on reconnect/shutdown.
+                            subs: list[Any] = []
+
+                            async def _sub(subject: str, *, cb: Any):
+                                sub = await nc.subscribe(subject, cb=cb)
+                                subs.append(sub)
+                                return sub
+
+                            # Outbound bridge: local bus -> root NATS.
+                            # This lets skills/router publish `tg.output.<bot>.chat.<chat_id>` and have
+                            # the backend deliver it to Telegram, without requiring TG_BOT_TOKEN on the hub.
+                            try:
+                                setattr(self, "_tg_output_nats_nc", nc)
+                            except Exception:
+                                pass
+
+                            try:
+                                if not bool(getattr(self, "_tg_output_bridge_hooked", False)):
+
+                                    def _on_local_output(ev: Event) -> None:
+                                        try:
+                                            subj = ev.type
+                                            if not isinstance(subj, str) or not subj.startswith("tg.output."):
+                                                return
+                                            nc2 = getattr(self, "_tg_output_nats_nc", None)
+                                            if not nc2:
+                                                return
+                                            try:
+                                                data = _json.dumps(ev.payload or {}, ensure_ascii=False).encode("utf-8")
+                                            except Exception:
+                                                data = b"{}"
+                                            coro = nc2.publish(subj, data)
+                                            if asyncio.iscoroutine(coro):
+                                                try:
+                                                    loop = asyncio.get_running_loop()
+                                                    loop.create_task(coro)
+                                                except RuntimeError:
+                                                    asyncio.run(coro)
+                                        except Exception:
+                                            return
+
+                                    # Prefix subscription on LocalEventBus works as "starts with".
+                                    core_bus.subscribe("tg.output.", _on_local_output)
+                                    setattr(self, "_tg_output_bridge_hooked", True)
+                            except Exception:
+                                pass
                             subj = f"tg.input.{hub_id}"
                             subj_legacy = f"io.tg.in.{hub_id}.text"
-                            print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
+                            if hub_nats_verbose or not hub_nats_quiet:
+                                print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
+                            else:
+                                # In quiet mode we still want a single signal that we are connected, because
+                                # troubleshooting "TG stops responding" depends on correlating with NATS flaps.
+                                _rl_log(
+                                    "nats.connected",
+                                    f"[hub-io] nats connected ({connected_server or 'unknown'})",
+                                    every_s=2.0,
+                                )
                             # First successful connect after failures
                             _emit_up()
+                            nats_last_ok_at = time.monotonic()
 
                             # Control channel: hub alias updates from backend
                             try:
@@ -664,8 +860,9 @@ class BootstrapService:
                                         except Exception:
                                             pass
 
-                                await nc.subscribe(ctl_alias, cb=_ctl_alias_cb)
-                                print(f"[hub-io] NATS subscribe control {ctl_alias}")
+                                await _sub(ctl_alias, cb=_ctl_alias_cb)
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(f"[hub-io] NATS subscribe control {ctl_alias}")
                             except Exception:
                                 pass
                             break
@@ -699,6 +896,11 @@ class BootstrapService:
                             backoff = min(backoff * 2.0, 30.0)
 
                     async def cb(msg):
+                        if trace:
+                            try:
+                                _rl_log("nats.msg", f"[hub-io] nats recv subject={getattr(msg, 'subject', '')} bytes={len(getattr(msg, 'data', b'') or b'')}", every_s=0.2)
+                            except Exception:
+                                pass
                         try:
                             data = _json.loads(msg.data.decode("utf-8"))
                         except Exception:
@@ -762,7 +964,7 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                    await nc.subscribe(subj, cb=cb)
+                    await _sub(subj, cb=cb)
 
                     # Browser<->Hub routing over NATS (root proxy fallback).
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
@@ -1101,25 +1303,46 @@ class BootstrapService:
                                                 from adaos.services.node_config import load_config
 
                                                 cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                                base_http = (
+                                                # IMPORTANT: Route-proxy HTTP requests must target the local hub instance,
+                                                # not the public Root proxy URL that might be stored in node.yaml as hub_url.
+                                                env_base = (
                                                     os.getenv("ADAOS_SELF_BASE_URL")
-                                                    or str(getattr(cfg, "hub_url", None) or "")
-                                                    or "http://127.0.0.1:8777"
-                                                ).rstrip("/")
-                                                base_http = base_http.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
+                                                    or os.getenv("ADAOS_BASE")
+                                                    or os.getenv("ADAOS_API_BASE")
+                                                    or ""
+                                                ).strip()
+                                                cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
+
+                                                def _is_local_base(url: str) -> bool:
+                                                    try:
+                                                        from urllib.parse import urlparse
+
+                                                        u = urlparse(url)
+                                                        host = (u.hostname or "").lower()
+                                                        return host in ("127.0.0.1", "localhost")
+                                                    except Exception:
+                                                        return False
+
+                                                bases: list[str] = []
+                                                if env_base:
+                                                    bases.append(env_base.rstrip("/"))
+                                                if cfg_base and _is_local_base(cfg_base):
+                                                    bases.append(cfg_base.rstrip("/"))
+                                                # Prefer direct core port, then sentinel gateway.
+                                                bases.extend(["http://127.0.0.1:8778", "http://127.0.0.1:8777"])
+                                                # Deduplicate while preserving order.
+                                                seen_bases: set[str] = set()
+                                                bases = [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
                                                 token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                             except Exception:
-                                                base_http = "http://127.0.0.1:8777"
+                                                bases = ["http://127.0.0.1:8778", "http://127.0.0.1:8777"]
                                                 token_local = os.getenv("ADAOS_TOKEN", "") or None
 
-                                            # Build candidate bases. Some setups expose a gateway on 8777 (sentinel)
-                                            # while the actual core runs on another port (often 8788). If the default
-                                            # base isn't reachable, retry with the target port.
-                                            bases = [base_http]
+                                            # Add optional target/core port fallback for local setups.
                                             try:
                                                 from urllib.parse import urlparse
 
-                                                u0 = urlparse(base_http)
+                                                u0 = urlparse(bases[0])
                                                 h0 = u0.hostname or "127.0.0.1"
                                                 p0 = u0.port
                                                 scheme0 = u0.scheme or "http"
@@ -1162,7 +1385,9 @@ class BootstrapService:
                                             for base in bases:
                                                 url_try = f"{base}{path}{search}"
                                                 try:
-                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=12)
+                                                    # Root times out fairly quickly while waiting for route.to_browser.* replies.
+                                                    # Keep local proxy attempts short to avoid systematic timeouts.
+                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=(1.5, 2.5))
                                                     last_exc = None
                                                     break
                                                 except Exception as e:
@@ -1207,8 +1432,9 @@ class BootstrapService:
                                         pass
                                 return
 
-                        route_sub = await nc.subscribe("route.to_hub.*", cb=_route_cb)
-                        print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
+                        route_sub = await _sub("route.to_hub.*", cb=_route_cb)
+                        if hub_nats_verbose or not hub_nats_quiet:
+                            print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
@@ -1235,8 +1461,9 @@ class BootstrapService:
                                 continue
                             seen.add(aid)
                             alt = f"tg.input.{aid}"
-                            print(f"[hub-io] NATS subscribe (alias) {alt}")
-                            await nc.subscribe(alt, cb=cb)
+                            if hub_nats_verbose or not hub_nats_quiet:
+                                print(f"[hub-io] NATS subscribe (alias) {alt}")
+                            await _sub(alt, cb=cb)
                     except Exception:
                         pass
 
@@ -1280,7 +1507,7 @@ class BootstrapService:
                     # Legacy classic path subscription only when explicitly enabled
                     try:
                         if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
-                            await nc.subscribe(subj_legacy, cb=cb_legacy)
+                            await _sub(subj_legacy, cb=cb_legacy)
                             aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
                             aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
                             seen = set([hub_id])
@@ -1289,15 +1516,66 @@ class BootstrapService:
                                     continue
                                 seen.add(aid)
                                 alt_legacy = f"io.tg.in.{aid}.text"
-                                print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
-                                await nc.subscribe(alt_legacy, cb=cb_legacy)
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
+                                await _sub(alt_legacy, cb=cb_legacy)
                     except Exception:
                         pass
                     # keep task alive
                     try:
                         while True:
-                            await asyncio.sleep(3600)
+                            await asyncio.sleep(1.0)
+                            is_closed_attr = getattr(nc, "is_closed", None)
+                            is_closed = is_closed_attr() if callable(is_closed_attr) else bool(is_closed_attr)
+                            if is_closed:
+                                last_err = getattr(nc, "last_error", None)
+                                details = f"{type(last_err).__name__}: {last_err}" if last_err else ""
+                                raise RuntimeError(f"nats connection closed{(': ' + details) if details else ''}")
                     finally:
+                        try:
+                            if getattr(self, "_tg_output_nats_nc", None) is nc:
+                                setattr(self, "_tg_output_nats_nc", None)
+                        except Exception:
+                            pass
+                        async def _force_close_ws_transport() -> None:
+                            # nats-py WebSocketTransport can leave aiohttp.ClientSession unclosed
+                            # if the websocket is already None (close() becomes a no-op and wait_closed() hangs).
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                if not tr:
+                                    return
+
+                                ws = getattr(tr, "_ws", None)
+                                close_task = getattr(tr, "_close_task", None)
+                                client = getattr(tr, "_client", None)
+
+                                try:
+                                    if ws is not None:
+                                        await ws.close()
+                                except Exception:
+                                    pass
+
+                                # Unblock wait_closed() if it would otherwise await an unresolved Future.
+                                try:
+                                    if close_task is not None and hasattr(close_task, "done") and not close_task.done():
+                                        close_task.set_result(None)
+                                except Exception:
+                                    pass
+
+                                try:
+                                    if client is not None:
+                                        await client.close()
+                                except Exception:
+                                    pass
+
+                                try:
+                                    setattr(tr, "_ws", None)
+                                    setattr(tr, "_client", None)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
                         # On shutdown/cancel, close any live proxy tunnels and unsubscribe.
                         try:
                             for k, rec in list(tunnels.items()):
@@ -1320,34 +1598,106 @@ class BootstrapService:
                         except Exception:
                             pass
                         try:
-                            unsub = route_sub.unsubscribe()
-                            if asyncio.iscoroutine(unsub):
-                                await unsub
+                            # Unsubscribe all subscriptions explicitly to ensure nats-py cancels
+                            # internal subscription tasks before the next reconnect attempt.
+                            for sub in list(subs):
+                                try:
+                                    unsub = sub.unsubscribe()
+                                    if asyncio.iscoroutine(unsub):
+                                        await unsub
+                                except Exception:
+                                    pass
+
+                            # Ensure internal subscription tasks are stopped even if the connection is already closed.
+                            for sub in list(subs):
+                                try:
+                                    stop = getattr(sub, "_stop_processing", None)
+                                    if callable(stop):
+                                        stop()
+                                except Exception:
+                                    pass
+
+                            # Await/cancel internal subscription tasks, if present.
+                            wait_tasks: list[asyncio.Task] = []
+                            for sub in list(subs):
+                                t = getattr(sub, "_wait_for_msgs_task", None)
+                                if isinstance(t, asyncio.Task) and not t.done():
+                                    try:
+                                        t.cancel()
+                                    except Exception:
+                                        pass
+                                    wait_tasks.append(t)
+                            if wait_tasks:
+                                try:
+                                    await asyncio.wait_for(asyncio.gather(*wait_tasks, return_exceptions=True), timeout=1.0)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                         try:
-                            await nc.drain()
+                            await asyncio.wait_for(nc.drain(), timeout=2.0)
                         except Exception:
-                            try:
-                                await nc.close()
-                            except Exception:
-                                pass
+                            pass
+                        try:
+                            await asyncio.wait_for(nc.close(), timeout=2.0)
+                        except Exception:
+                            pass
+                        await _force_close_ws_transport()
+                        # Give canceled subscription tasks a chance to finish to avoid
+                        # "Task was destroyed but it is pending!" warnings.
+                        try:
+                            await asyncio.sleep(0)
+                        except Exception:
+                            pass
 
                 # Supervisor wrapper: never crash on unhandled errors; restart with backoff
                 async def _nats_bridge_supervisor() -> None:
                     delay = 1.0
                     while True:
+                        started_at = time.monotonic()
                         try:
+                            _rl_log("nats.supervisor.start", "[hub-io] nats supervisor: start bridge", every_s=5.0)
                             await _nats_bridge()
                             # If bridge returns cleanly, keep it alive
                             await asyncio.sleep(3600)
+                        except asyncio.CancelledError:
+                            return
                         except Exception as e:
                             try:
                                 print(f"[hub-io] nats: encountered error: {e}")
                             except Exception:
                                 pass
+                            # If we had a stable connection for a while and then dropped (e.g. transient
+                            # WS proxy hiccup / network flap), reconnect quickly instead of exponential backoff.
+                            ran_for_s = time.monotonic() - started_at
+                            try:
+                                is_transient = (
+                                    type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError")
+                                    or "unexpected eof" in str(e).lower()
+                                    or "connection reset" in str(e).lower()
+                                )
+                            except Exception:
+                                is_transient = False
+
+                            if ran_for_s >= 10.0 or is_transient:
+                                delay = 0.5
+                            try:
+                                ok_ago = None
+                                if nats_last_ok_at is not None:
+                                    ok_ago = time.monotonic() - nats_last_ok_at
+                                _rl_log(
+                                    "nats.supervisor.retry",
+                                    f"[hub-io] nats supervisor: retry in {delay:.1f}s (ran_for={ran_for_s:.1f}s ok_ago={ok_ago:.1f}s transient={is_transient})",
+                                    every_s=1.0,
+                                )
+                            except Exception:
+                                pass
                             await asyncio.sleep(delay)
-                            delay = min(delay * 2.0, 30.0)
+                            # Only apply exponential backoff for rapid repeated failures.
+                            if ran_for_s < 10.0 and not is_transient:
+                                delay = min(delay * 2.0, 30.0)
+                            else:
+                                delay = min(max(delay, 0.5), 2.0)
 
                 # TODO restore nats WS subscription
                 self._boot_tasks.append(asyncio.create_task(_nats_bridge_supervisor(), name="adaos-nats-io-bridge"))
@@ -1356,6 +1706,10 @@ class BootstrapService:
 
     async def shutdown(self) -> None:
         await bus.emit("sys.stopping", {}, source="lifecycle", actor="system")
+        try:
+            await get_service_supervisor().shutdown()
+        except Exception:
+            pass
         for t in list(self._boot_tasks):
             try:
                 t.cancel()

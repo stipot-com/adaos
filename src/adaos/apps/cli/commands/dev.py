@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json, os, traceback
+import functools
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import asdict
@@ -45,6 +46,7 @@ app.add_typer(scenario_app, name="scenario")
 
 
 def _run_safe(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -222,6 +224,58 @@ def root_login() -> None:
         _print_error(str(exc))
         raise typer.Exit(1)
     _echo_login_result(result)
+
+
+@root_app.command("logs")
+@_run_safe
+def root_logs(
+    minutes: int = typer.Option(30, "--minutes", help="How many minutes back to fetch (1..720)."),
+    limit: int = typer.Option(2000, "--limit", help="Max lines to return (1..50000)."),
+    hub_id: str = typer.Option(
+        None,
+        "--hub-id",
+        help="Filter only lines containing this hub/subnet id (default: current subnet). Pass an empty string to disable hub filtering.",
+    ),
+    contains: str = typer.Option(None, "--contains", help="Filter only lines containing this substring."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    service = _service()
+    cfg = get_ctx().config
+    # Default hub filter only when option is not provided at all.
+    # Passing `--hub-id ""` disables hub filtering and allows searching across all root logs.
+    if hub_id is None:
+        try:
+            hub_id = cfg.subnet_id
+        except Exception:
+            hub_id = None
+    try:
+        result = service.dev_logs(minutes=minutes, limit=limit, hub_id=hub_id, contains=contains, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list) or not items:
+        typer.echo("No logs returned.")
+        return
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        ts = it.get("ts")
+        stream = it.get("stream")
+        line = it.get("line")
+        try:
+            ts_s = str(int(ts)) if isinstance(ts, (int, float)) else str(ts or "")
+        except Exception:
+            ts_s = str(ts or "")
+        typer.echo(f"{ts_s} {stream}: {line}")
 
 
 def _echo_login_result(result: RootLoginResult) -> None:

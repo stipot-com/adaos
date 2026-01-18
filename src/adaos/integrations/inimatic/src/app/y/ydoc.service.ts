@@ -3,6 +3,7 @@ import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { WebsocketProvider } from 'y-websocket'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
+import { isDebugEnabled } from '../debug-log'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
@@ -16,9 +17,25 @@ export class YDocService {
   private readonly webspaceKey = 'adaos_webspace_id'
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
+  private readonly yjsPersistKey = 'adaos_yjs_persist'
 
   constructor(private adaos: AdaosClient) {
     this.deviceId = this.ensureDeviceId()
+  }
+
+  private isPersistenceEnabled(): boolean {
+    try {
+      const url = new URL(window.location.href)
+      const q = url.searchParams.get('yjs_persist')
+      if (q === '1' || q === 'true') return true
+      if (q === '0' || q === 'false') return false
+    } catch {}
+
+    try {
+      return (localStorage.getItem(this.yjsPersistKey) || '').trim() === '1'
+    } catch {
+      return false
+    }
   }
 
   private ensureDeviceId(): string {
@@ -140,7 +157,8 @@ export class YDocService {
       headers?: Record<string, string>,
       // Root-proxy under `/hubs/<id>` does not expose `/healthz` on that prefix,
       // so probe `/api/ping` first to avoid noisy 404s in console/network logs.
-      paths: string[] = ['/api/ping', '/healthz']
+      paths: string[] = ['/api/ping', '/healthz'],
+      queryParams?: Record<string, string>
     ): Promise<number> => {
       const abs = baseUrl.replace(/\/$/, '')
       for (const p of paths) {
@@ -150,7 +168,19 @@ export class YDocService {
           const ctrl = new AbortController()
           const timer = setTimeout(() => ctrl.abort(), timeoutMs)
           try {
-            const resp = await fetch(url, { method: 'GET', signal: ctrl.signal, headers })
+            const finalUrl = (() => {
+              try {
+                if (!queryParams || !Object.keys(queryParams).length) return url
+                const u = new URL(url)
+                for (const [k, v] of Object.entries(queryParams)) {
+                  if (typeof v === 'string' && v) u.searchParams.set(k, v)
+                }
+                return u.toString()
+              } catch {
+                return url
+              }
+            })()
+            const resp = await fetch(finalUrl, { method: 'GET', signal: ctrl.signal, headers })
             const st = resp.status || 0
             // 404 means "reachable but endpoint missing" – keep trying other probes.
             if (st === 404) continue
@@ -200,10 +230,31 @@ export class YDocService {
         const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
         if (persisted && !isLoopbackUrl(persisted)) candidates.push(persisted)
       } catch {}
-      if (allowLoopback) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
+      if (allowLoopback)
+        candidates.push(
+          'http://127.0.0.1:8777',
+          'http://localhost:8777',
+          'http://127.0.0.1:8778',
+          'http://localhost:8778'
+        )
       if (!candidates.length) return false
       for (const base of candidates) {
-        const st = await probeHttpStatus(base, 650)
+        const authQuery = (() => {
+          // If a persisted base is actually the root-proxy `/hubs/<id>` route,
+          // it requires session JWT even for `/api/ping` probes.
+          try {
+            const abs = String(base || '').replace(/\/$/, '')
+            if (!abs.includes('/hubs/')) return undefined
+            const { sessionJwt } = readSession()
+            if (!sessionJwt) return undefined
+            if (!sessionJwt.includes('.')) return undefined
+            if (!this.isJwtValid(sessionJwt)) return undefined
+            return { session_jwt: sessionJwt }
+          } catch {
+            return undefined
+          }
+        })()
+        const st = await probeHttpStatus(base, 650, undefined, undefined, authQuery)
         if (st >= 200 && st < 300) {
           this.adaos.setBase(base)
           // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
@@ -224,7 +275,22 @@ export class YDocService {
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
     // automatically fall back to the root proxy route over NATS.
     const directBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-    const directStatus = await probeHttpStatus(directBase, 650)
+    const isDefinitelyNotAHubBase = (() => {
+      try {
+        const abs = String(directBase || '').replace(/\/+$/, '')
+        // Root base (no /hubs/<id>) can respond 200 to /api/ping, but it is not a hub API base.
+        if (abs.includes('/hubs/')) return false
+        const u = new URL(abs)
+        const host = (u.hostname || '').toLowerCase()
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+        // Anything remote without /hubs/<id> is treated as "not a hub base".
+        return true
+      } catch {
+        return false
+      }
+    })()
+
+    const directStatus = isDefinitelyNotAHubBase ? 0 : await probeHttpStatus(directBase, 650)
     if (!(directStatus >= 200 && directStatus < 300)) {
       const switched = useRootProxyIfAvailable()
       if (!switched) {
@@ -233,16 +299,24 @@ export class YDocService {
 
       // Validate session against root-proxy before attempting WS.
       const token = this.adaos.getToken()
+      const authQuery = token ? { session_jwt: String(token) } : undefined
       const rootBase = this.adaos.getBaseUrl().replace(/\/$/, '')
-      const reachability = await probeHttpStatus(rootBase, 1200)
+      const reachability = await probeHttpStatus(
+        rootBase,
+        1200,
+        undefined,
+        ['/api/ping', '/healthz'],
+        authQuery
+      )
       if (reachability === 0) {
         throw new Error('hub_unreachable')
       }
       const rootStatus = await probeHttpStatus(
         rootBase,
         1600,
-        token ? { Authorization: `Bearer ${token}` } : undefined,
-        ['/api/node/status']
+        undefined,
+        ['/api/node/status'],
+        authQuery
       )
       if (rootStatus === 401 || rootStatus === 403) {
         this.invalidateWebSession()
@@ -284,19 +358,27 @@ export class YDocService {
     this.currentWebspaceId = webspaceId
     this.setPreferredWebspaceId(webspaceId)
 
-    // Initialise per-webspace IndexedDB persistence *after* webspace is known,
-    // so that local snapshots do not leak state (such as ui/application/desktop)
-    // across different webspaces.
-    try {
-      this.db = new IndexeddbPersistence(`adaos-mobile-${webspaceId}`, this.doc)
-      // On some mobile browsers / private modes IndexedDB can hang indefinitely.
-      // Do not block app startup on persistence.
-      await Promise.race([
-        this.db.whenSynced,
-        new Promise<void>((resolve) => setTimeout(resolve, 1200)),
-      ])
-    } catch {
-      // offline persistence is best-effort
+    // IndexedDB persistence can cause "stale UI" issues during active schema/scenario
+    // development because the browser may replay an old local snapshot back into Yjs
+    // and overwrite a freshly seeded server doc (e.g. after `desktop.webspace.reload`).
+    // For now we keep persistence opt-in.
+    if (this.isPersistenceEnabled()) {
+      try {
+        // Initialise per-webspace IndexedDB persistence *after* webspace is known,
+        // so that local snapshots do not leak state across different webspaces.
+        this.db = new IndexeddbPersistence(`adaos-mobile-${webspaceId}`, this.doc)
+        // On some mobile browsers / private modes IndexedDB can hang indefinitely.
+        // Do not block app startup on persistence.
+        await Promise.race([
+          this.db.whenSynced,
+          new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+        ])
+      } catch {
+        // offline persistence is best-effort
+      }
+    } else if (isDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.info('[YDocService] IndexedDB persistence disabled (set ?yjs_persist=1 to enable)')
     }
 
     // 2) Connect Yjs via y-websocket to /yws/<webspace_id>
@@ -398,17 +480,26 @@ export class YDocService {
         return
       }
     } catch {}
-    // Fallback: best-effort delete by DB name used in IndexeddbPersistence
-    await new Promise<void>((resolve) => {
-      try {
-        const req = indexedDB.deleteDatabase('adaos-mobile')
-        req.onsuccess = () => resolve()
-        req.onerror = () => resolve()
-        req.onblocked = () => resolve()
-      } catch {
-        resolve()
-      }
-    })
+    // Fallback: best-effort delete by DB name used in IndexeddbPersistence.
+    // Historically we used `adaos-mobile` (global). Now it's per-webspace.
+    const webspaceId = (this.currentWebspaceId || '').trim()
+    const names = [
+      webspaceId ? `adaos-mobile-${webspaceId}` : null,
+      'adaos-mobile',
+    ].filter(Boolean) as string[]
+
+    for (const name of names) {
+      await new Promise<void>((resolve) => {
+        try {
+          const req = indexedDB.deleteDatabase(name)
+          req.onsuccess = () => resolve()
+          req.onerror = () => resolve()
+          req.onblocked = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
   }
 
   dumpSnapshot(): void {
@@ -416,8 +507,10 @@ export class YDocService {
       const ui = this.toJSON(this.getPath('ui'))
       const data = this.toJSON(this.getPath('data'))
       const registry = this.toJSON(this.getPath('registry'))
-      // eslint-disable-next-line no-console
-      console.log('[YDoc Snapshot]', { ui, data, registry })
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.log('[YDoc Snapshot]', { ui, data, registry })
+      }
     } catch {
       // ignore dump errors
     }

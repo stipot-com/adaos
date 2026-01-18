@@ -499,6 +499,13 @@ async def events_ws(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue
 
+            if kind == "desktop.webspace.reset":
+                # For now treat reset as a hard reload; the scenario/webspace layer
+                # can differentiate later if needed.
+                _publish_bus("desktop.webspace.reset", payload)
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
             if kind == "desktop.scenario.set":
                 target = (payload or {}).get("scenario_id")
                 if not target:
@@ -525,6 +532,46 @@ async def events_ws(websocket: WebSocket):
                             }
                         )
                     )
+                continue
+
+            if kind == "nlp.teacher.candidate.apply":
+                _publish_bus(
+                    "nlp.teacher.candidate.apply",
+                    {
+                        "candidate_id": payload.get("candidate_id"),
+                        "target": payload.get("target"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
+            if kind == "nlp.teacher.revision.apply":
+                _publish_bus(
+                    "nlp.teacher.revision.apply",
+                    {
+                        "revision_id": payload.get("revision_id"),
+                        "intent": payload.get("intent"),
+                        "examples": payload.get("examples"),
+                        "slots": payload.get("slots"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
+                continue
+
+            if kind == "nlp.teacher.regex_rule.apply":
+                _publish_bus(
+                    "nlp.teacher.regex_rule.apply",
+                    {
+                        "candidate_id": payload.get("candidate_id"),
+                        "intent": payload.get("intent"),
+                        "pattern": payload.get("pattern"),
+                        "target": payload.get("target"),
+                        "webspace_id": payload.get("webspace_id"),
+                    },
+                )
+                await websocket.send_text(json.dumps({"ch": "events", "t": "ack", "id": cmd_id, "ok": True}))
                 continue
 
             if kind == "scenario.workflow.action":

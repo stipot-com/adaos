@@ -2,8 +2,10 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from pydantic import BaseModel, Field
+import json
 import platform, time, os
 
 from adaos.apps.api.auth import require_token
@@ -17,6 +19,7 @@ from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
+from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
@@ -31,13 +34,14 @@ async def lifespan(app: FastAPI):
     # 1) инициализируем AgentContext (публикуется через set_ctx внутри bootstrap_app)
 
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
-    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api
+    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api, nlu_teacher_api
     from adaos.apps.api import io_webhooks
     from adaos.services.yjs.gateway import router as y_router, start_y_server, stop_y_server
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")
     app.include_router(subnet_api.router, prefix="/api")
+    app.include_router(nlu_teacher_api.router, prefix="/api")
     app.include_router(node_api.router, prefix="/api/node")
     app.include_router(observe_api.router, prefix="/api/observe")
     app.include_router(scenarios.router, prefix="/api/scenarios")
@@ -105,7 +109,20 @@ async def lifespan(app: FastAPI):
 
             link_url = f"{api_base.rstrip('/')}/io/tg/pair/link"
             r = _requests.get(link_url, params={"hub_id": conf.subnet_id}, timeout=3.0)
-            if r.status_code == 200 and (r.json() or {}).get("ok"):
+            link_ok = False
+            try:
+                link_ok = r.status_code == 200 and (r.json() or {}).get("ok")
+            except Exception:
+                link_ok = False
+            if not link_ok:
+                try:
+                    logging.getLogger("adaos.io.telegram").warning(
+                        "telegram binding not found or unreachable",
+                        extra={"hub_id": conf.subnet_id, "url": link_url, "status": r.status_code, "body": (r.text or "")[:300]},
+                    )
+                except Exception:
+                    pass
+            if link_ok:
                 # install telegram IO into capacity and refresh directory snapshot for this node
                 install_io_in_capacity("telegram", ["text", "lang:ru", "lang:en"], priority=60)
                 try:
@@ -129,13 +146,18 @@ async def lifespan(app: FastAPI):
                 alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
                 try:
                     prefixed_text = f"[{alias}]: {text}" if alias else text
-                    _requests.post(
+                    r2 = _requests.post(
                         f"{api_base.rstrip('/')}/io/tg/send",
                         json={"hub_id": conf.subnet_id, "text": prefixed_text},
                         timeout=3.0,
                     )
+                    if r2.status_code not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (subnet.started) failed",
+                            extra={"hub_id": conf.subnet_id, "status": r2.status_code, "body": (r2.text or "")[:300]},
+                        )
                 except Exception:
-                    pass
+                    logging.getLogger("adaos.router").warning("telegram broadcast (subnet.started) exception", exc_info=True)
                 tg_enabled = True
     except Exception:
         pass
@@ -225,11 +247,16 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     routed = False
                 if not routed:
-                    _requests.post(
+                    r3 = _requests.post(
                         f"{api_base.rstrip('/')}/io/tg/send",
                         json={"hub_id": conf.subnet_id, "text": prefixed_text},
                         timeout=2.5,
                     )
+                    if r3.status_code not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (subnet.stopped) failed",
+                            extra={"hub_id": conf.subnet_id, "status": r3.status_code},
+                        )
                 # Also emit a subnet.stopped event on the local bus so that
                 # skills (e.g. greet_on_boot_skill) can update infra status.
                 try:
@@ -330,6 +357,149 @@ async def status():
             "build_date": BUILD_INFO.build_date,
         },
     }
+
+
+@app.get("/api/services", dependencies=[Depends(require_token)])
+async def list_services(check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    names = supervisor.list()
+    return {
+        "ok": True,
+        "services": [supervisor.status(name, check_health=check_health) for name in names],
+    }
+
+
+@app.get("/api/services/{name}", dependencies=[Depends(require_token)])
+async def get_service_status(name: str, check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name, check_health=check_health)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "service": status}
+
+
+@app.post("/api/services/{name}/start", dependencies=[Depends(require_token)])
+async def start_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.start(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/stop", dependencies=[Depends(require_token)])
+async def stop_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    # stop is idempotent; 404 only if not configured at all
+    if not supervisor.status(name):
+        raise HTTPException(status_code=404, detail="service not found")
+    await supervisor.stop(name)
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/restart", dependencies=[Depends(require_token)])
+async def restart_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.restart(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+class ServiceIssueRequest(BaseModel):
+    type: str
+    message: str
+    details: dict | None = None
+
+
+@app.get("/api/services/{name}/issues", dependencies=[Depends(require_token)])
+async def get_service_issues(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        issues = supervisor.issues(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "issues": issues}
+
+
+@app.post("/api/services/{name}/issue", dependencies=[Depends(require_token)])
+async def inject_service_issue(name: str, body: ServiceIssueRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.inject_issue(name, issue_type=body.type, message=body.message, details=body.details or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+class ServiceSelfHealRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/self-heal", dependencies=[Depends(require_token)])
+async def service_self_heal(name: str, body: ServiceSelfHealRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.self_heal(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "result": result}
+
+
+@app.get("/api/services/{name}/doctor/requests", dependencies=[Depends(require_token)])
+async def get_service_doctor_requests(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        items = supervisor.doctor_requests(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "requests": items}
+
+
+class ServiceDoctorRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/doctor/request", dependencies=[Depends(require_token)])
+async def request_service_doctor(name: str, body: ServiceDoctorRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.request_doctor(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "request": result}
+
+
+@app.get("/api/services/{name}/doctor/reports", dependencies=[Depends(require_token)])
+async def get_service_doctor_reports(name: str) -> dict:
+    """
+    Return persisted doctor reports produced by the in-process doctor consumer.
+
+    Reports are stored at: state/services/<skill>/doctor_reports.json
+    """
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+
+    # Reuse supervisor state dir logic indirectly via ctx paths.
+    ctx = get_ctx()
+    state_raw = ctx.paths.state_dir()
+    state_dir = Path(state_raw() if callable(state_raw) else state_raw)
+    path = state_dir / "services" / name / "doctor_reports.json"
+    if not path.exists():
+        return {"ok": True, "reports": []}
+    try:
+        reports = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(reports, list):
+            reports = []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read doctor reports: {exc}") from exc
+    return {"ok": True, "reports": reports}
 
 
 class YjsReloadRequest(BaseModel):

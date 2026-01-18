@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Mapping
+
+import yaml
+
+from adaos.services.agent_context import AgentContext
+from adaos.services.interpreter.workspace import InterpreterWorkspace, IntentMapping
+from adaos.services.scenarios import loader as scenarios_loader
+
+_log = logging.getLogger("adaos.nlu.registry")
+
+
+def _sync_skill_nlu_metadata(ctx: AgentContext) -> int:
+    """
+    Project skill-level ``skill.yaml["nlu"]`` sections into interpreter
+    metadata files (``<skill>/interpreter/intents.yml``) so that
+    InterpreterWorkspace.collect_skill_intents() can see them.
+    """
+    skills_dir = Path(ctx.paths.skills_dir())
+    count = 0
+    try:
+        skills = ctx.skills_repo.list()
+    except Exception:  # pragma: no cover
+        _log.warning("failed to list skills for nlu registry", exc_info=True)
+        return 0
+
+    for meta in skills:
+        skill_id = getattr(meta, "id", None)
+        skill_name = getattr(skill_id, "value", None) if skill_id is not None else None
+        if not skill_name:
+            skill_name = getattr(meta, "name", None)
+        if not skill_name:
+            continue
+        root = skills_dir / str(skill_name)
+        skill_yaml = root / "skill.yaml"
+        if not skill_yaml.exists():
+            continue
+        try:
+            payload = yaml.safe_load(skill_yaml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            _log.debug("failed to read skill.yaml for %s", skill_name, exc_info=True)
+            continue
+
+        nlu_section = payload.get("nlu") or {}
+        intents_raw = nlu_section.get("intents") or []
+        if not isinstance(intents_raw, list) or not intents_raw:
+            continue
+
+        intents_doc: List[Dict[str, Any]] = []
+        for entry in intents_raw:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name") or entry.get("intent")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            utterances = entry.get("utterances") or entry.get("examples") or []
+            if not isinstance(utterances, list) or not utterances:
+                continue
+            intents_doc.append(
+                {
+                    "intent": str(name).strip(),
+                    "description": entry.get("description"),
+                    "skill": str(skill_name),
+                    "examples": [str(u) for u in utterances if isinstance(u, str) and u.strip()],
+                }
+            )
+
+        if not intents_doc:
+            continue
+
+        meta_dir = root / InterpreterWorkspace.SKILL_METADATA_DIR
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        target = meta_dir / InterpreterWorkspace.SKILL_METADATA_FILE
+        try:
+            target.write_text(
+                yaml.safe_dump({"intents": intents_doc}, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            count += len(intents_doc)
+        except Exception:
+            _log.warning("failed to write interpreter metadata for skill=%s", skill_name, exc_info=True)
+    return count
+
+
+def _collect_scenario_intents(ctx: AgentContext) -> List[IntentMapping]:
+    mappings: List[IntentMapping] = []
+    scenarios_root = Path(ctx.paths.scenarios_dir())
+    try:
+        children = [p for p in scenarios_root.iterdir() if p.is_dir()]
+    except Exception:  # pragma: no cover
+        _log.warning("failed to list scenarios_dir=%s", scenarios_root, exc_info=True)
+        return mappings
+
+    for child in children:
+        scenario_id = child.name
+        try:
+            content = scenarios_loader.read_content(scenario_id)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            _log.warning("failed to read scenario.json for %s", scenario_id, exc_info=True)
+            continue
+        if not isinstance(content, dict):
+            continue
+        nlu_section = content.get("nlu") or {}
+        intents = nlu_section.get("intents") or {}
+        if not isinstance(intents, dict):
+            continue
+        for intent_id, spec in intents.items():
+            if not isinstance(intent_id, str) or not isinstance(spec, dict):
+                continue
+            examples = spec.get("examples") or []
+            if not isinstance(examples, list):
+                examples = []
+            mappings.append(
+                IntentMapping(
+                    intent=intent_id,
+                    description=spec.get("description"),
+                    skill=None,
+                    tool=None,
+                    scenario=scenario_id,
+                    examples=[str(e) for e in examples if isinstance(e, str) and e.strip()],
+                )
+            )
+    return mappings
+
+
+def sync_from_scenarios_and_skills(ctx: AgentContext) -> Dict[str, Any]:
+    """
+    Refresh interpreter workspace datasets/config from installed skills and scenarios.
+
+    This is pure-Python and does not depend on a particular NLU engine.
+    """
+    ws = InterpreterWorkspace(ctx)
+    skill_count = _sync_skill_nlu_metadata(ctx)
+    scenario_mappings = _collect_scenario_intents(ctx)
+
+    for mapping in scenario_mappings:
+        ws.upsert_intent(mapping)
+
+    _log.info(
+        "nlu registry sync: skills_intents=%d scenario_intents=%d",
+        skill_count,
+        len(scenario_mappings),
+    )
+    return {
+        "skills_intents": skill_count,
+        "scenario_intents": len(scenario_mappings),
+    }
+

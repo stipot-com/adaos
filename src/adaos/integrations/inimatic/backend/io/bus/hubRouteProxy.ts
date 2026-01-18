@@ -211,6 +211,24 @@ export function installHubRouteProxy(
 	const bus = new NatsBus(opts.natsUrl)
 	let busReady: Promise<void> | null = null
 
+	// Lightweight unauthenticated reachability probes for the hub-prefixed route.
+	// The browser UI uses these endpoints to decide whether the root-proxy is reachable
+	// before attempting authenticated status probes / websockets.
+	//
+	// IMPORTANT: Do not leak any hub data here; just report that the proxy path is alive.
+	app.get('/hubs/:hubId/api/ping', (req, res) => {
+		const hubId = String(req.params.hubId || '').trim()
+		if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
+		return res.status(200).json({ ok: true, hub_id: hubId, ts: Date.now() })
+	})
+
+	// Some UI components probe `/healthz`. Keep a hub-prefixed variant for consistency.
+	app.get('/hubs/:hubId/healthz', (req, res) => {
+		const hubId = String(req.params.hubId || '').trim()
+		if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
+		return res.status(200).json({ ok: true, hub_id: hubId, ts: Date.now() })
+	})
+
 	function ensureBus(): Promise<void> {
 		if (busReady) return busReady
 		busReady = bus
@@ -291,11 +309,17 @@ export function installHubRouteProxy(
 				body_b64: bodyB64,
 			}
 
+			const timeoutMs = (() => {
+				// Keep status probes fast: the frontend uses short fetch timeouts (≈1–2s).
+				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 2500
+				return 15000
+			})()
+
 			const reply = await natsRequest(bus, {
 				subjectToHub: toHub,
 				subjectToBrowser: toBrowser,
 				payload,
-				timeoutMs: 15000,
+				timeoutMs,
 			})
 
 			const status = Number(reply?.status || 502)

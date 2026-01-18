@@ -332,9 +332,9 @@ export class AppComponent implements OnInit, OnDestroy {
 	async onClickYjsReload(): Promise<void> {
 		if (!this.isAuthenticated) return
 		const ws = this.ydoc.getWebspaceId() || 'default'
-		// Backend currently treats reload/reset identically; keep a single
-		// one-click "refresh" action to save UI space.
-		await this.runWebspaceYjsAction('desktop.webspace.reset', ws)
+		// Keep the header refresh button semantically aligned with the existing
+		// "YJS reload" action (reseed current webspace from scenario).
+		await this.runWebspaceYjsAction('desktop.webspace.reload', ws)
 	}
 
 	private async runWebspaceYjsAction(

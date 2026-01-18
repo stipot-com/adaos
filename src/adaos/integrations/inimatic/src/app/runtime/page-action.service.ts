@@ -132,6 +132,14 @@ export class PageActionService {
     const out: any = {}
     for (const [k, v] of Object.entries(input)) {
       if (typeof v === 'string') {
+        if (v === '$event') {
+          out[k] = ctx.event
+          continue
+        }
+        if (v === '$state') {
+          out[k] = state
+          continue
+        }
         if (v.startsWith('$state.')) {
           const path = v.slice('$state.'.length)
           out[k] = this.readByPath(state, path)

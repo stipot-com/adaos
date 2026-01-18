@@ -13,6 +13,8 @@ import {
   refresh,
   cloudOutline,
   appsOutline,
+  contractOutline,
+  expandOutline,
 } from 'ionicons/icons'
 
 export function registerIcons(): void {
@@ -30,6 +32,7 @@ export function registerIcons(): void {
     refresh,
     'cloud-outline': cloudOutline,
     'apps-outline': appsOutline,
+    'contract-outline': contractOutline,
+    'expand-outline': expandOutline,
   })
 }
-

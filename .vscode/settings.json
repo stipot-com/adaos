@@ -84,6 +84,7 @@
 		"VPOP",
 		"VPOV",
 		"Vyar",
+		"webspace",
 		"Wicsz",
 		"Wizs",
 		"xldir",
@@ -134,7 +135,7 @@
 	"[python]": {
 		"editor.formatOnType": true
 	},
-  	"prettier.configPath": "src/adaos/integrations/inimatic/.prettierrc",
+	"prettier.configPath": "src/adaos/integrations/inimatic/.prettierrc",
 	"editor.defaultFormatter": "esbenp.prettier-vscode",
 	"liveServer.settings.donotShowInfoMsg": true,
 	"[markdown]": {

@@ -16,7 +16,6 @@ import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { YDocService } from '../y/ydoc.service'
 import { observeDeep } from '../y/y-helpers'
 
-let YDOC_DEBUG_EMITS = 0
 
 @Injectable({ providedIn: 'root' })
 export class PageDataService {
@@ -101,18 +100,6 @@ export class PageDataService {
     return new Observable<T | undefined>((subscriber) => {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
-        YDOC_DEBUG_EMITS++
-        if (YDOC_DEBUG_EMITS <= 20) {
-          try {
-            const kind = cfg.transform || cfg.path || 'unknown'
-            const size =
-              Array.isArray(value) ? `len=${value.length}` : value && typeof value === 'object' ? 'object' : typeof value
-            // eslint-disable-next-line no-console
-            console.log('[PageDataService] fromYDoc emit', kind, size)
-          } catch {
-            // ignore logging errors
-          }
-        }
         subscriber.next(value)
       }
       const unsubscribers = this.observeYDocPaths(cfg, emit)
@@ -157,6 +144,15 @@ export class PageDataService {
     // Voice chat + TTS queues: server mutates nested plain JSON under data.voice_chat / data.tts.
     // Observe the whole data tree so updates are delivered reliably.
     if (cfg.path && (cfg.path === 'data/voice_chat' || cfg.path.startsWith('data/voice_chat/') || cfg.path === 'data/tts' || cfg.path.startsWith('data/tts/'))) {
+      const node = this.ydoc.getPath('data')
+      if (!node) return [() => {}]
+      const unsubscribe = observeDeep(node, emit)
+      return [unsubscribe]
+    }
+
+    // Teacher artifacts are stored as plain JSON under data.nlu_teacher (not Y.Maps),
+    // so observe the whole data map and project the subpath from it.
+    if (cfg.path && (cfg.path === 'data/nlu_teacher' || cfg.path.startsWith('data/nlu_teacher/'))) {
       const node = this.ydoc.getPath('data')
       if (!node) return [() => {}]
       const unsubscribe = observeDeep(node, emit)
@@ -209,6 +205,16 @@ export class PageDataService {
           }
           return cur
         }
+        if (cfg.path && (cfg.path === 'data/nlu_teacher' || cfg.path.startsWith('data/nlu_teacher/'))) {
+          const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
+          const segs = cfg.path.split('/').filter(Boolean)
+          let cur: any = root
+          for (const s of segs.slice(1)) {
+            if (cur == null) return undefined
+            cur = cur?.[s]
+          }
+          return cur
+        }
         if (cfg.path) {
           return this.ydoc.toJSON(this.ydoc.getPath(cfg.path))
         }
@@ -236,18 +242,6 @@ export class PageDataService {
         scenario_id: it.scenario_id,
         dev: !!it.dev,
       }))
-    try {
-      // eslint-disable-next-line no-console
-      console.log(
-        '[PageDataService] resolveDesktopIcons',
-        'catalogApps=',
-        catalogApps.length,
-        'installedApps=',
-        installedApps.length,
-        'resolved=',
-        items.length
-      )
-    } catch {}
     return items
   }
 

@@ -37,6 +37,8 @@ from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.yjs.webspace import default_webspace_id
 
 app = typer.Typer(help=_("cli.help_skill"))
+service_app = typer.Typer(help="Manage service-type skills (start/stop/restart/status).")
+app.add_typer(service_app, name="service")
 
 
 def _run_safe(func):
@@ -56,6 +58,94 @@ def _mgr() -> SkillManager:
     repo = ctx.skills_repo
     reg = SqliteSkillRegistry(ctx.sql)
     return SkillManager(repo=repo, registry=reg, git=ctx.git, paths=ctx.paths, bus=getattr(ctx, "bus", None), caps=ctx.caps)
+
+
+def _hub_base_url() -> str:
+    conf = load_config()
+    url = getattr(conf, "hub_url", None) or os.getenv("ADAOS_HUB_URL") or "http://127.0.0.1:8778"
+    return str(url).rstrip("/")
+
+
+def _hub_headers() -> dict[str, str]:
+    conf = load_config()
+    token = getattr(conf, "token", None) or os.getenv("ADAOS_TOKEN") or "dev-local-token"
+    return {"X-AdaOS-Token": str(token)}
+
+
+def _hub_get(path: str, *, params: dict | None = None) -> dict:
+    url = _hub_base_url() + path
+    resp = requests.get(url, headers=_hub_headers(), params=params or {}, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _hub_post(path: str, *, body: dict | None = None) -> dict:
+    url = _hub_base_url() + path
+    resp = requests.post(url, headers=_hub_headers(), json=body or {}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+@_run_safe
+@service_app.command("list")
+def service_list(
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+    check_health: bool = typer.Option(False, "--health", help="Also call each service /health endpoint."),
+):
+    data = _hub_get("/api/services", params={"check_health": check_health})
+    if json_output:
+        typer.echo(json.dumps(data, ensure_ascii=False))
+        return
+    services = data.get("services") or []
+    if not services:
+        typer.echo("no service skills discovered")
+        return
+    for s in services:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name") or "<unknown>"
+        running = "running" if s.get("running") else "stopped"
+        base = s.get("base_url") or ""
+        extra = ""
+        if check_health and "health_ok" in s:
+            extra = " health=ok" if s.get("health_ok") else " health=fail"
+        typer.echo(f"{name}: {running} {base}{extra}")
+
+
+@_run_safe
+@service_app.command("status")
+def service_status(
+    name: str = typer.Argument(..., help="Service skill name (folder name in skills workspace)."),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+    check_health: bool = typer.Option(False, "--health", help="Also call the service /health endpoint."),
+):
+    data = _hub_get(f"/api/services/{name}", params={"check_health": check_health})
+    if json_output:
+        typer.echo(json.dumps(data, ensure_ascii=False))
+        return
+    svc = data.get("service") or {}
+    typer.echo(json.dumps(svc, ensure_ascii=False, indent=2))
+
+
+@_run_safe
+@service_app.command("start")
+def service_start(name: str = typer.Argument(..., help="Service skill name.")):
+    _hub_post(f"/api/services/{name}/start")
+    typer.secho(f"started {name}", fg=typer.colors.GREEN)
+
+
+@_run_safe
+@service_app.command("stop")
+def service_stop(name: str = typer.Argument(..., help="Service skill name.")):
+    _hub_post(f"/api/services/{name}/stop")
+    typer.secho(f"stopped {name}", fg=typer.colors.GREEN)
+
+
+@_run_safe
+@service_app.command("restart")
+def service_restart(name: str = typer.Argument(..., help="Service skill name.")):
+    _hub_post(f"/api/services/{name}/restart")
+    typer.secho(f"restarted {name}", fg=typer.colors.GREEN)
 
 
 def _ensure_workspace_gitignore(workspace: Path) -> None:

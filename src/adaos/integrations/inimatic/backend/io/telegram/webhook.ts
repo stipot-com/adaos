@@ -274,6 +274,23 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 				if (sessionHub) hub = sessionHub
 			}
 			if (!hub) hub = defaultHub
+
+			// If resolved hub is missing or does not belong to this chat, try auto-selecting
+			// a bound hub for the chat (common case: user has bound a hub, but has no session/default yet).
+			try {
+				const bindings = await listBindings(Number(evt.chat_id))
+				if (bindings?.length) {
+					const allowed = (bindings || []).some(b => String(b.hub_id) === String(hub))
+					if (!hub || !allowed) {
+						if (bindings.length === 1 && bindings[0]?.hub_id) {
+							hub = String(bindings[0].hub_id)
+							try { await setSession(Number(evt.chat_id), hub, 'auto') } catch { }
+							log.info({ hub, chat_id: evt.chat_id }, 'tg webhook: auto-selected bound hub')
+						}
+					}
+				}
+			} catch { }
+
 			// Optional address override: leading @<hub_id|alias> text -> route to that hub and strip the address token
 			try {
 				if (evt.type === 'text') {
