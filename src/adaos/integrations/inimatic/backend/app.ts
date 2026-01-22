@@ -16,6 +16,7 @@ import { randomBytes, createHash } from 'node:crypto'
 import type { PeerCertificate, TLSSocket } from 'node:tls'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { installMetaRoutes } from './io/root/meta.js'
 import YAML from 'yaml'
 
 import { installAdaosBridge } from './adaos-bridge.js'
@@ -371,7 +372,7 @@ app.use((req, _res, next) => {
 	req.locale = resolveLocale(req)
 	next()
 })
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json({ limit: '8mb' }))
 
 // Public liveness probe for the Root backend itself.
 // The frontend may hit this before a hub session is established (no hub_id yet).
@@ -671,6 +672,19 @@ function authenticateOwnerBearer(
 	next()
 }
 
+function requireRootToken(
+	req: express.Request,
+	res: express.Response,
+	next: express.NextFunction
+  ) {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+	  respondError(req, res, 401, 'unauthorized')
+	  return
+	}
+	next()
+  }
+  
 function requireJsonField(body: unknown, field: string): string {
 	if (!body || typeof body !== 'object') {
 		throw new HttpError(400, 'missing_field', { field })
@@ -975,6 +989,11 @@ app.get('/metrics', async (_req, res) => {
 }) */
 
 const rootRouter = express.Router()
+
+const metaRouter = express.Router()
+metaRouter.use(requireRootToken)
+installMetaRoutes(metaRouter, { respondError })
+rootRouter.use(metaRouter)
 
 rootRouter.post('/auth/owner/start', (req, res) => {
 	let ownerId: string
