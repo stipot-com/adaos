@@ -1,52 +1,32 @@
 # vhost/api.inimatic.com
 
-# Allow TLS 1.2 for SmartTV/legacy clients (TLS 1.3 remains enabled).
-# ssl_protocols TLSv1.2 TLSv1.3;
-# ssl_ecdh_curve prime256v1:X25519:secp384r1;
-# ssl_ciphers 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA';
-
-# ssl_prefer_server_ciphers on;
-# ssl_conf_command SignatureAlgorithms RSA+SHA256:RSA+SHA384:RSA+SHA512;
-
 ssl_client_certificate /etc/nginx/certs/adaos_ca.pem;
 ssl_verify_client optional;
 ssl_verify_depth 2;
 
-# для пары endpoint — выключаем mTLS (хабу будет достаточно обычного TLS)
+# Pairing confirmation is allowed without mTLS (legacy clients / bootstrap).
 location /v1/pair/confirm {
-  # отключить только здесь
   ssl_verify_client off;
-
-  # стандартный прокси-набор nginx-proxy уже добавляет proxy_pass,
-  # мы лишь подстрахуемся заголовками
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 
-# --- эндпоинты bootstrap без mTLS ---
+# --- Bootstrap endpoints without mTLS ---
 location = /v1/bootstrap_token {
-    # не требуем SUCCESS
-    proxy_pass https://api.inimatic.com;
-    include /etc/nginx/vhost.d/api.inimatic.com_location;
+  proxy_pass https://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
 location = /v1/subnets/register {
-    # не требуем SUCCESS
-    proxy_pass https://api.inimatic.com;
-    include /etc/nginx/vhost.d/api.inimatic.com_location;
+  proxy_pass https://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-# телеграм-вебхуки — небольшой лимит и базовая защита от мусора
+# Telegram webhooks are public and must not require mTLS.
 location ^~ /io/tg/webhook/ {
-  # тело входящего JSON крошечное
   client_max_body_size 1m;
-
-  # только POST
   if ($request_method !~ ^(POST)$) { return 405; }
-
-  # (если используете глобальный mTLS) вебхуку обычно не нужен mTLS
   ssl_verify_client off;
-
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
@@ -54,10 +34,6 @@ location ^~ /io/tg/webhook/ {
 location = /healthz { ssl_verify_client off; }
 
 # --- Browser -> Hub proxy over Root (WS + HTTP) ---
-# Routes:
-#   /hubs/<hub_id>/ws   (events websocket)
-#   /hubs/<hub_id>/yws  (yjs websocket)
-#   /hubs/<hub_id>/api  (HTTP passthrough)
 location ^~ /hubs/ {
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
@@ -66,8 +42,8 @@ location ^~ /hubs/ {
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-  proxy_read_timeout  3600s;
-  proxy_send_timeout  3600s;
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
   proxy_connect_timeout 3600s;
 
   proxy_pass https://api.inimatic.com;
@@ -76,25 +52,21 @@ location ^~ /hubs/ {
 
 # --- NATS WebSocket passthrough ---
 location ^~ /nats {
-  # No client cert required for WS bridge
-  ssl_verify_client off;
-
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
   proxy_set_header Host $host;
-  # Preserve WS subprotocol (NATS uses `Sec-WebSocket-Protocol: nats`)
   proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
-  proxy_read_timeout  3600s;
-  proxy_send_timeout  3600s;
-  proxy_connect_timeout 5s;
-  # Important: keep trailing slash so `/nats` maps to `/` on upstream (NATS WS listener doesn't know `/nats`).
-  proxy_pass http://nats:8080/;
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
+  proxy_connect_timeout 10s;
+  proxy_pass https://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-# --- защищённые пути под mTLS ---
+# --- Protected paths require mTLS ---
 location ~ ^/v1/(owner|pki|registry|drafts|devices)/ {
-    if ($ssl_client_verify != SUCCESS) { return 400; }
-    proxy_pass http://api.inimatic.com;
-    include /etc/nginx/vhost.d/api.inimatic.com_location;
+  if ($ssl_client_verify != SUCCESS) { return 400; }
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
 }

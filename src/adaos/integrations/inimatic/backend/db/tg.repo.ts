@@ -30,6 +30,14 @@ create unique index if not exists ux_tg_bindings_chat_hub on tg_bindings(chat_id
 -- nats ws token for hub auth
 alter table if exists tg_bindings add column if not exists hub_nats_token text;
 
+-- Dedicated hub token store for NATS WS auth (hub connects before any Telegram binding exists)
+create table if not exists hub_nats_tokens (
+  hub_id text primary key,
+  token text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tg_sessions (
   chat_id bigint primary key,
   current_hub_id text,
@@ -93,12 +101,33 @@ export async function upsertBinding(chatId: number, hubId: string, alias: string
 }
 
 export async function getHubToken(hubId: string): Promise<string | null> {
-  const { rows } = await pg().query('select hub_nats_token from tg_bindings where hub_id=$1 and hub_nats_token is not null limit 1', [hubId])
-  return (rows[0]?.hub_nats_token as string | undefined) || null
+  const { rows } = await pg().query('select token from hub_nats_tokens where hub_id=$1 limit 1', [hubId])
+  const token = (rows[0]?.token as string | undefined) || null
+  if (token) return token
+
+  // Backward-compat: old deployments stored hub tokens in tg_bindings.
+  const { rows: oldRows } = await pg().query(
+    'select hub_nats_token from tg_bindings where hub_id=$1 and hub_nats_token is not null limit 1',
+    [hubId]
+  )
+  const oldToken = (oldRows[0]?.hub_nats_token as string | undefined) || null
+  if (oldToken) {
+    try {
+      await setHubToken(hubId, oldToken)
+    } catch {
+      // best-effort backfill
+    }
+  }
+  return oldToken
 }
 
 export async function setHubToken(hubId: string, token: string): Promise<void> {
-  await pg().query('update tg_bindings set hub_nats_token=$2 where hub_id=$1', [hubId, token])
+  await pg().query(
+    `insert into hub_nats_tokens(hub_id, token)
+     values($1, $2)
+     on conflict (hub_id) do update set token=excluded.token, updated_at=now()`,
+    [hubId, token]
+  )
 }
 
 export async function ensureHubToken(hubId: string): Promise<string> {
@@ -111,8 +140,18 @@ export async function ensureHubToken(hubId: string): Promise<string> {
 }
 
 export async function verifyHubToken(hubId: string, token: string): Promise<boolean> {
-  const { rowCount } = await pg().query('select 1 from tg_bindings where hub_id=$1 and hub_nats_token=$2 limit 1', [hubId, token])
-  return (rowCount || 0) > 0
+  const { rowCount } = await pg().query(
+    'select 1 from hub_nats_tokens where hub_id=$1 and token=$2 limit 1',
+    [hubId, token]
+  )
+  if ((rowCount || 0) > 0) return true
+
+  // Backward-compat check (old deployments)
+  const { rowCount: oldCount } = await pg().query(
+    'select 1 from tg_bindings where hub_id=$1 and hub_nats_token=$2 limit 1',
+    [hubId, token]
+  )
+  return (oldCount || 0) > 0
 }
 
 export async function setDefault(chatId: number, alias: string): Promise<void> {

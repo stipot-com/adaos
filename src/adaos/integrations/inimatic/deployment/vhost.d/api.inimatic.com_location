@@ -1,6 +1,6 @@
-# vhost.d\api.inimatic.com_location
-# Прокидываем идентичность клиента в бэкенд
-proxy_set_header X-SSL-Client-Verify $ssl_client_verify;   # SUCCESS / FAILED
-proxy_set_header X-Client-Subject     $ssl_client_s_dn;    # DN субъекта
-proxy_set_header X-Client-Issuer      $ssl_client_i_dn;    # DN издателя
+# vhost.d/api.inimatic.com_location
+# Shared include: forward optional mTLS client identity headers to the upstream.
+proxy_set_header X-SSL-Client-Verify $ssl_client_verify;        # SUCCESS / FAILED
+proxy_set_header X-Client-Subject     $ssl_client_s_dn;         # Client subject DN
+proxy_set_header X-Client-Issuer      $ssl_client_i_dn;         # Client issuer DN
 proxy_set_header X-Client-Cert        $ssl_client_escaped_cert; # PEM (escaped)

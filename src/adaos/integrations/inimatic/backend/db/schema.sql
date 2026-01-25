@@ -11,6 +11,17 @@ create table if not exists tg_bindings (
 create unique index if not exists ux_tg_bindings_chat_alias on tg_bindings(chat_id, alias);
 create unique index if not exists ux_tg_bindings_chat_hub on tg_bindings(chat_id, hub_id);
 
+-- Backward-compat: older deployments stored hub token alongside a binding
+alter table if exists tg_bindings add column if not exists hub_nats_token text;
+
+-- Dedicated hub token store for NATS WS auth (hub connects before any Telegram binding exists)
+create table if not exists hub_nats_tokens (
+  hub_id text primary key,
+  token text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tg_sessions (
   chat_id bigint primary key,
   current_hub_id text,

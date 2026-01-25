@@ -1,4 +1,4 @@
-# vhost.d\nats.inimatic.com
+# vhost.d/nats.inimatic.com
 client_max_body_size 10m;
 
 # NATS WebSocket passthrough (no mTLS)
@@ -19,5 +19,6 @@ location ^~ /nats {
   proxy_buffering off;
   proxy_request_buffering off;
 
-  proxy_pass http://nats:8080/;
+  # Forward to the backend ws-nats-proxy so hub tokens work on this host too.
+  proxy_pass https://api.inimatic.com;
 }
