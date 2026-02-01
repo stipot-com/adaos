@@ -4,7 +4,15 @@ import pino from 'pino'
 import { WebSocketServer } from 'ws'
 import { verifyHubToken } from '../../db/tg.repo.js'
 
-const log = pino({ name: 'ws-nats-proxy' })
+// Keep logger lazy. This module is imported before `installRootLogCapture()` runs in `app.ts`,
+// and pino's destination can bind to `fs.writeSync` early. Creating the logger lazily ensures
+// dev log capture can still intercept ws-nats-proxy output via the fs hooks.
+let _log: ReturnType<typeof pino> | null = null
+function log() {
+	if (_log) return _log
+	_log = pino({ name: 'ws-nats-proxy' })
+	return _log
+}
 const NATS_PING = Buffer.from('PING\r\n', 'utf8')
 const NATS_PONG = Buffer.from('PONG\r\n', 'utf8')
 
@@ -89,7 +97,7 @@ function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 export function installWsNatsProxy(server: HttpsServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
-	log.info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
+	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
 
 	// IMPORTANT: keep this in `noServer` mode.
 	// Attaching via `{ server }` registers a global `server.on('upgrade')` listener inside `ws`,
@@ -116,13 +124,13 @@ export function installWsNatsProxy(server: HttpsServer) {
 			try {
 				socket.destroy()
 			} catch {}
-			log.warn({ err: String(e) }, 'ws-nats-proxy upgrade failed')
+			log().warn({ err: String(e) }, 'ws-nats-proxy upgrade failed')
 		}
 	})
 
 	wss.on('connection', (ws: any, req: any) => {
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
-		log.info({ from: rip }, 'conn open')
+		log().info({ from: rip }, 'conn open')
 
 		let connected = false
 		let handshaked = false
@@ -161,7 +169,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 		}
 
 		function logSummary(event: string, extra?: Record<string, unknown>) {
-			log.info(
+			log().info(
 				{
 					from: rip,
 					hub_id: hubIdForLog,
@@ -293,7 +301,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 
 			const line = raw.slice(0, lineEnd)
 			if (!line.startsWith('CONNECT ')) {
-				log.warn({ from: rip, line: line.slice(0, 200) }, 'unexpected first line')
+				log().warn({ from: rip, line: line.slice(0, 200) }, 'unexpected first line')
 				closeBoth(1002, 'bad_client')
 				return true
 			}
@@ -305,7 +313,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			try {
 				obj = JSON.parse(line.slice('CONNECT '.length))
 			} catch (e) {
-				log.warn({ from: rip, err: String(e) }, 'bad CONNECT json')
+				log().warn({ from: rip, err: String(e) }, 'bad CONNECT json')
 				closeBoth(1002, 'bad_connect_json')
 				authInFlight = false
 				return true
@@ -314,7 +322,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			const userRaw = String(obj?.user || '')
 			const passRaw = String(obj?.pass || '')
 			if (!userRaw || !passRaw) {
-				log.warn({ from: rip }, 'missing CONNECT credentials')
+				log().warn({ from: rip }, 'missing CONNECT credentials')
 				closeBoth(1008, 'missing_creds')
 				authInFlight = false
 				return true
@@ -330,7 +338,7 @@ export function installWsNatsProxy(server: HttpsServer) {
 			verifyHubToken(hubId, passRaw)
 				.then((ok) => {
 					if (!ok) {
-						log.warn({ from: rip, hub_id: hubId, user: userRaw, pass: mask(passRaw) }, 'auth failed')
+						log().warn({ from: rip, hub_id: hubId, user: userRaw, pass: mask(passRaw) }, 'auth failed')
 						closeBoth(1008, 'auth_failed')
 						authInFlight = false
 						return
@@ -371,16 +379,16 @@ export function installWsNatsProxy(server: HttpsServer) {
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
 							authInFlight = false
-							log.info({ from: rip, hub_id: hubId }, 'auth ok')
+							log().info({ from: rip, hub_id: hubId }, 'auth ok')
 						} catch (e) {
-							log.warn({ err: String(e) }, 'write upstream failed')
+							log().warn({ err: String(e) }, 'write upstream failed')
 							authInFlight = false
 							closeBoth(1011, 'upstream_write_failed')
 						}
 					}, 0)
 				})
 				.catch((e) => {
-					log.error({ from: rip, err: String(e) }, 'auth error')
+					log().error({ from: rip, err: String(e) }, 'auth error')
 					authInFlight = false
 					closeBoth(1011, 'auth_error')
 				})
