@@ -246,17 +246,9 @@ export function installWsNatsProxy(server: HttpsServer) {
 				upstreamTail = scan.tail
 				if (scan.hit) {
 					lastUpstreamPingAt = Date.now()
-					try {
-						const ok = upstreamSock?.write(NATS_PONG)
-						if (ok === false) {
-							logSummary('upstream backpressure on PONG', { writableLength: upstreamSock?.writableLength })
-						}
-						proxySentPong += 1
-					} catch (e) {
-						logSummary('upstream write PONG failed', { err: String(e) })
-						closeBoth(1011, 'upstream_write_failed')
-						return
-					}
+					// Do not reply to upstream PING here. Forward it to the client and let the client
+					// respond with PONG as per NATS protocol. This keeps the proxy transparent and avoids
+					// subtle ping/pong desyncs when PING is split across chunk boundaries.
 				}
 				try {
 					if (chunk.includes(NATS_PONG)) {
@@ -419,11 +411,8 @@ export function installWsNatsProxy(server: HttpsServer) {
 					}
 				} catch {}
 				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
-				// Stripping them avoids sending unsolicited PONGs to upstream and keeps outbound traffic intact.
-				try {
-					const stripped = stripAll(buf, NATS_PONG)
-					if (stripped.count > 0) buf = stripped.out
-				} catch {}
+				// Forward client PONGs to upstream (do NOT strip). If we strip and our upstream PING detection
+				// ever misses (e.g. boundary split), NATS will close the connection leading to flaky UnexpectedEOFs.
 				try {
 					if (!upstreamSock || (upstreamSock as any).destroyed) {
 						logSummary('upstream missing while writing', {})

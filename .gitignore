@@ -5,6 +5,7 @@ commands/__pycache__/
 adaos.egg-info/
 .adaos_1
 .adaos/logs/
+.adaos/root_logs/
 .adaos/models/
 .adaos/subnet_ctx.json
 .adaos/skill_db.sqlite
