@@ -341,7 +341,8 @@ services:
   # Dev-only helper: copies docker logs into /opt/inimatic/runtime/logs/*.log so the backend can tail them.
   # SECURITY WARNING: mounts docker.sock. Use only on trusted debugging hosts.
   logtap:
-    image: alpine:3.20
+    # Needs `docker` CLI to read container logs via mounted docker.sock.
+    image: docker:27-cli
     container_name: logtap
     restart: unless-stopped
     networks: [proxy]

@@ -311,7 +311,9 @@ export function installHubRouteProxy(
 
 			const timeoutMs = (() => {
 				// Keep status probes fast: the frontend uses short fetch timeouts (≈1–2s).
-				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 2500
+				// NOTE: hub-side proxying can take a bit longer (local HTTP + NATS WS + flush).
+				// Keep this slightly higher to avoid systematic timeouts that look like hub disconnects.
+				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 6500
 				return 15000
 			})()
 

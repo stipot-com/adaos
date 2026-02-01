@@ -1432,7 +1432,9 @@ class BootstrapService:
                                                 try:
                                                     # Root times out fairly quickly while waiting for route.to_browser.* replies.
                                                     # Keep local proxy attempts short to avoid systematic timeouts.
-                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=(1.5, 2.5))
+                                                    is_probe = path in ("/api/node/status", "/api/ping", "/healthz")
+                                                    timeout = (0.5, 1.2) if is_probe else (1.5, 2.5)
+                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=timeout)
                                                     last_exc = None
                                                     break
                                                 except Exception as e:
