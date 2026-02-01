@@ -36,6 +36,7 @@ import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
 import { installRootLogCapture, queryRootLogs } from './dev/logs.js'
+import { listLogFiles, tailLogFile } from './dev/log_files.js'
 
 type FollowerData = {
 	followerName: string
@@ -1468,6 +1469,45 @@ app.get('/v1/dev/logs', async (req, res) => {
 	return res.json({ ok: true, minutes, limit, since_ms: sinceMs, items })
 })
 
+// Developer endpoint: list/tail log files from a shared directory mounted into the backend container.
+// Protected by ROOT_TOKEN.
+app.get('/v1/dev/log_files', async (req, res) => {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	try {
+		const contains =
+			typeof req.query['contains'] === 'string'
+				? String(req.query['contains'])
+				: null
+		const limitRaw = Number(String(req.query['limit'] ?? '500'))
+		const limit = Number.isFinite(limitRaw) ? limitRaw : 500
+		const items = await listLogFiles({ contains, limit })
+		return res.json({ ok: true, items })
+	} catch (e: any) {
+		return res.status(500).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+app.get('/v1/dev/log_tail', async (req, res) => {
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	try {
+		const file = typeof req.query['file'] === 'string' ? String(req.query['file']) : ''
+		const linesRaw = Number(String(req.query['lines'] ?? '200'))
+		const lines = Number.isFinite(linesRaw) ? linesRaw : 200
+		const maxBytesRaw = Number(String(req.query['max_bytes'] ?? '2000000'))
+		const maxBytes = Number.isFinite(maxBytesRaw) ? maxBytesRaw : 2_000_000
+		const result = await tailLogFile({ relPath: file, lines, maxBytes })
+		return res.json({ ok: true, ...result })
+	} catch (e: any) {
+		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
 app.post('/v1/subnets/register', async (req, res) => {
 	const t0 = Date.now()
 	console.log('register: start')
@@ -1810,6 +1850,71 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 			status: 500,
 			code: 'internal_error',
 		})
+	}
+})
+
+// Hub developer endpoints: allow hubs to fetch Root logs without ROOT_TOKEN.
+// NOTE: still unsafe in production; keep behind mTLS and use only for debugging.
+mtlsRouter.get('/hub/dev/logs', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	const minutesRaw = Number(String(req.query['minutes'] ?? '30'))
+	const minutes = Number.isFinite(minutesRaw)
+		? Math.max(1, Math.min(12 * 60, Math.floor(minutesRaw)))
+		: 30
+	const limitRaw = Number(String(req.query['limit'] ?? '2000'))
+	const limit = Number.isFinite(limitRaw)
+		? Math.max(1, Math.min(50_000, Math.floor(limitRaw)))
+		: 2000
+	const contains =
+		typeof req.query['contains'] === 'string'
+			? String(req.query['contains'])
+			: null
+	const sinceMs = Date.now() - minutes * 60 * 1000
+	// Default filter to the requesting hub id to reduce accidental leaks.
+	const hubId = typeof req.query['hub_id'] === 'string'
+		? String(req.query['hub_id'])
+		: identity.subnetId
+	const items = queryRootLogs({ sinceMs, limit, contains, hubId })
+	return res.json({ ok: true, minutes, limit, since_ms: sinceMs, items })
+})
+
+mtlsRouter.get('/hub/dev/log_files', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const contains =
+			typeof req.query['contains'] === 'string'
+				? String(req.query['contains'])
+				: null
+		const limitRaw = Number(String(req.query['limit'] ?? '200'))
+		const limit = Number.isFinite(limitRaw) ? limitRaw : 200
+		const items = await listLogFiles({ contains, limit })
+		return res.json({ ok: true, items })
+	} catch (e: any) {
+		return res.status(500).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+mtlsRouter.get('/hub/dev/log_tail', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const file = typeof req.query['file'] === 'string' ? String(req.query['file']) : ''
+		const linesRaw = Number(String(req.query['lines'] ?? '200'))
+		const lines = Number.isFinite(linesRaw) ? linesRaw : 200
+		const maxBytesRaw = Number(String(req.query['max_bytes'] ?? '2000000'))
+		const maxBytes = Number.isFinite(maxBytesRaw) ? maxBytesRaw : 2_000_000
+		const result = await tailLogFile({ relPath: file, lines, maxBytes })
+		return res.json({ ok: true, ...result })
+	} catch (e: any) {
+		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
 	}
 })
 

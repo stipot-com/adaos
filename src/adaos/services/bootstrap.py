@@ -473,6 +473,29 @@ class BootstrapService:
                         except Exception:
                             return type(err).__name__
 
+                    def _looks_like_auth_failure(err: Exception) -> bool:
+                        """
+                        Heuristic: when root-side NATS WS proxy closes after CONNECT because of invalid credentials,
+                        nats-py can surface confusing exceptions (historically observed in this project).
+                        Treat these as auth-ish failures and trigger credential refresh.
+                        """
+                        try:
+                            msg = str(err) or ""
+                            low = msg.lower()
+                            if isinstance(err, TypeError) and "argument of type 'int' is not iterable" in low:
+                                return True
+                            if "authentication timeout" in low:
+                                return True
+                            if "authorization violation" in low:
+                                return True
+                            if "auth" in low:
+                                return True
+                            if type(err).__name__ == "UnexpectedEOF" or "unexpected eof" in low:
+                                return True
+                        except Exception:
+                            return False
+                        return False
+
                     while True:
                         try:
                             nurl, nuser, npass = _read_node_nats()
@@ -710,16 +733,38 @@ class BootstrapService:
                                     )
                                     return nc_local
                                 except Exception as e:
+                                    # Extra diagnostics for flaky WS/NATS drops (e.g. UnexpectedEOF without close frame).
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                            tr = getattr(nc_local, "_transport", None)
+                                            ws = getattr(tr, "_ws", None) if tr else None
+                                            ws_closed = getattr(ws, "closed", None) if ws is not None else None
+                                            ws_close_code = getattr(ws, "close_code", None) if ws is not None else None
+                                            ws_exc = None
+                                            try:
+                                                exf = getattr(ws, "exception", None)
+                                                if callable(exf):
+                                                    ws_exc = exf()
+                                            except Exception:
+                                                ws_exc = None
+                                            _rl_log(
+                                                "nats.ws_diag",
+                                                f"[hub-io] nats ws diag: err={type(e).__name__} closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
+                                                every_s=2.0,
+                                            )
+                                    except Exception:
+                                        pass
+
                                     # Best-effort token refresh on auth-ish failures.
                                     try:
-                                        msg = str(e).lower()
-                                        if (
-                                            "authentication timeout" in msg
-                                            or "authorization violation" in msg
-                                            or "auth" in msg
-                                            or type(e).__name__ == "UnexpectedEOF"
-                                            or "unexpected eof" in msg
-                                        ):
+                                        if _looks_like_auth_failure(e):
+                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                try:
+                                                    print(
+                                                        f"[hub-io] NATS auth failure suspected; refreshing credentials (err={type(e).__name__}: {e})"
+                                                    )
+                                                except Exception:
+                                                    pass
                                             await _fetch_nats_credentials()
                                     except Exception:
                                         pass

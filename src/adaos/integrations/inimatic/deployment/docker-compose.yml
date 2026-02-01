@@ -69,6 +69,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: redis
     command: ["redis-server", "--appendonly", "no"]
     restart: unless-stopped
     healthcheck:
@@ -167,6 +168,7 @@ services:
   # BLUE
   frontend_a:
     image: ghcr.io/stipot-com/inimatic-frontend:latest
+    container_name: frontend-a
     restart: unless-stopped
     expose: ["8080"]
     networks: [proxy]
@@ -187,6 +189,7 @@ services:
 
   backend_a:
     image: ghcr.io/stipot-com/inimatic-backend:latest
+    container_name: backend-a
     restart: unless-stopped
     depends_on:
       redis:
@@ -231,10 +234,13 @@ services:
       WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
       # Browser->Hub route proxy (debug)
       ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
+      # Dev-only: expose shared container logs directory via /v1/dev/log_* endpoints
+      ADAOS_DEBUG_LOGS_DIR: /logs
     volumes:
       - /opt/inimatic/secrets:/run/inimatic/secrets:ro
       - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
       - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
+      - /opt/inimatic/runtime/logs:/logs:ro
     healthcheck:
       test:
         [
@@ -249,6 +255,7 @@ services:
   # GREEN
   frontend_b:
     image: ghcr.io/stipot-com/inimatic-frontend:latest
+    container_name: frontend-b
     restart: unless-stopped
     expose: ["8080"]
     networks: [proxy]
@@ -269,6 +276,7 @@ services:
 
   backend_b:
     image: ghcr.io/stipot-com/inimatic-backend:latest
+    container_name: backend-b
     restart: unless-stopped
     depends_on:
       redis:
@@ -312,10 +320,13 @@ services:
       WEB_SESSION_JWT_SECRET: ${WEB_SESSION_JWT_SECRET:-}
       # Browser->Hub route proxy (debug)
       ROUTE_PROXY_VERBOSE: ${ROUTE_PROXY_VERBOSE:-0}
+      # Dev-only: expose shared container logs directory via /v1/dev/log_* endpoints
+      ADAOS_DEBUG_LOGS_DIR: /logs
     volumes:
       - /opt/inimatic/secrets:/run/inimatic/secrets:ro
       - /opt/inimatic/runtime/ssh/forge_ssh_key:/run/inimatic/ssh/forge_ssh_key:ro
       - /opt/inimatic/runtime/ssh/known_hosts:/root/.ssh/known_hosts:ro
+      - /opt/inimatic/runtime/logs:/logs:ro
     healthcheck:
       test:
         [
@@ -326,3 +337,20 @@ services:
       timeout: 3s
       retries: 30
       start_period: 60s
+
+  # Dev-only helper: copies docker logs into /opt/inimatic/runtime/logs/*.log so the backend can tail them.
+  # SECURITY WARNING: mounts docker.sock. Use only on trusted debugging hosts.
+  logtap:
+    image: alpine:3.20
+    container_name: logtap
+    restart: unless-stopped
+    networks: [proxy]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/inimatic/runtime/logs:/logs
+      - /opt/inimatic/scripts/logtap.sh:/logtap.sh:ro
+    environment:
+      LOG_DIR: /logs
+      # Override if you add more containers:
+      # LOGTAP_CONTAINERS: "reverse-proxy acme redis nats postgres nats-init frontend-a backend-a frontend-b backend-b"
+    command: ["/bin/sh", "/logtap.sh"]
