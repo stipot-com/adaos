@@ -20,5 +20,5 @@ location ^~ /nats {
   proxy_request_buffering off;
 
   # Forward to the backend ws-nats-proxy so hub tokens work on this host too.
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
 }

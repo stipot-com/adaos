@@ -9,17 +9,17 @@ ssl_verify_depth 2;
 
 # --- Bootstrap endpoints without mTLS ---
 location = /v1/bootstrap_token {
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
 location = /v1/subnets/register {
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
 location = /v1/pair/confirm {
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
@@ -36,7 +36,7 @@ location ^~ /hubs/ {
   proxy_send_timeout 3600s;
   proxy_connect_timeout 3600s;
 
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
@@ -55,7 +55,7 @@ location ^~ /nats {
   proxy_connect_timeout 10s;
 
   # Forward to the backend container (it runs ws-nats-proxy on WS_NATS_PATH=/nats).
-  proxy_pass https://api.inimatic.com;
+  proxy_pass http://api.inimatic.com;
 }
 
 # --- Protected paths require mTLS ---

@@ -205,9 +205,10 @@ services:
     environment:
       VIRTUAL_HOST: api.inimatic.com
       VIRTUAL_PORT: 3030
-      VIRTUAL_PROTO: https
+      VIRTUAL_PROTO: http
       LETSENCRYPT_HOST: api.inimatic.com
       LETSENCRYPT_EMAIL: connect@stipot.com
+      ROOT_SERVER_PROTO: http
       # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
       # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
       WS_NATS_PATH: "/nats"
@@ -292,9 +293,10 @@ services:
     environment:
       VIRTUAL_HOST: api.inimatic.com
       VIRTUAL_PORT: 3030
-      VIRTUAL_PROTO: https
+      VIRTUAL_PROTO: http
       LETSENCRYPT_HOST: api.inimatic.com
       LETSENCRYPT_EMAIL: connect@stipot.com
+      ROOT_SERVER_PROTO: http
       # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
       # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
       WS_NATS_PATH: "/nats"

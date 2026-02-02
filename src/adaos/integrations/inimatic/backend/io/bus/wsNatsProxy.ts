@@ -1,4 +1,4 @@
-import type { Server as HttpsServer } from 'https'
+import type { Server as HttpServer } from 'node:http'
 import net from 'node:net'
 import pino from 'pino'
 import { WebSocketServer } from 'ws'
@@ -94,7 +94,7 @@ function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 	return { out: Buffer.concat(parts), count }
 }
 
-export function installWsNatsProxy(server: HttpsServer) {
+export function installWsNatsProxy(server: HttpServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')

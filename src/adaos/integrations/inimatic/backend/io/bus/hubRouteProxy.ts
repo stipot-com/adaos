@@ -1,4 +1,4 @@
-import type { Server as HttpsServer } from 'https'
+import type { Server as HttpServer } from 'node:http'
 import type express from 'express'
 import pino from 'pino'
 import { randomUUID } from 'crypto'
@@ -201,7 +201,7 @@ async function natsRequest(
 
 export function installHubRouteProxy(
 	app: express.Express,
-	server: HttpsServer,
+	server: HttpServer,
 	opts: ProxyOpts
 ) {
 	const allowCrossHubOwner =

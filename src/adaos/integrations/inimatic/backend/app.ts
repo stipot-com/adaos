@@ -2,9 +2,10 @@
 import 'dotenv/config'
 import express from 'express'
 import cors, { type CorsOptions } from 'cors'
-import https from 'https'
+import http from 'node:http'
+import https from 'node:https'
 import path from 'path'
-import type { IncomingMessage } from 'http'
+import type { IncomingMessage } from 'node:http'
 import { fetch } from 'undici'
 import { v4 as uuidv4 } from 'uuid'
 import AdmZip from 'adm-zip'
@@ -259,6 +260,12 @@ function resolveNodeYamlPath(): string | null {
 	return null
 }
 
+const ROOT_SERVER_PROTO = (process.env['ROOT_SERVER_PROTO'] || process.env['SERVER_PROTO'] || 'https').toLowerCase()
+const USE_HTTP_SERVER = ROOT_SERVER_PROTO === 'http'
+if (USE_HTTP_SERVER) {
+	console.warn('[root] starting in HTTP mode (ROOT_SERVER_PROTO=http)')
+}
+
 function resolveWebSessionTtlSeconds(): number {
 	// Highest priority: explicit env override
 	const envRaw = (process.env['WEB_SESSION_TTL_SECONDS'] || '').trim()
@@ -421,16 +428,18 @@ const SOCKET_CHANNEL_VERSION =
 const SOCKET_LEGACY_FALLBACK_ENABLED =
 	(process.env['SOCKET_LEGACY_FALLBACK'] ?? '1') !== '0'
 
-const server = https.createServer(
-	{
-		key: TLS_KEY_PEM,
-		cert: TLS_CERT_PEM,
-		ca: [CA_CERT_PEM],
-		requestCert: true,
-		rejectUnauthorized: false,
-	},
-	app
-)
+const server = USE_HTTP_SERVER
+	? http.createServer(app)
+	: https.createServer(
+			{
+				key: TLS_KEY_PEM,
+				cert: TLS_CERT_PEM,
+				ca: [CA_CERT_PEM],
+				requestCert: true,
+				rejectUnauthorized: false,
+			},
+			app
+		)
 
 const io = new Server(server, {
 	cors: { origin: '*' },
