@@ -75,6 +75,10 @@ wait_healthy() {
     sleep 2
   done
   echo "[fatal] $svc failed to become healthy in time"
+  echo "[debug] $svc container id=$id"
+  docker inspect --format='[debug] state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}(none){{end}}' "$id" 2>/dev/null || true
+  echo "[debug] last logs (tail=200) for $svc"
+  docker logs --tail 200 "$id" 2>/dev/null || true
   return 1
 }
 

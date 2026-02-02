@@ -5,6 +5,12 @@ import { randomUUID } from 'crypto'
 import { WebSocketServer } from 'ws'
 import { NatsBus } from './nats.js'
 import { verifyWebSessionJwt } from '../../sessionJwt.js'
+import {
+	route_http_proxy_failed_total,
+	route_http_replies_total,
+	route_http_requests_total,
+	route_ws_client_close_total,
+} from '../telemetry.js'
 
 type RedisLike = {
 	get(key: string): Promise<string | null>
@@ -269,6 +275,10 @@ export function installHubRouteProxy(
 
 			const url = new URL(`https://x${req.originalUrl}`)
 			const path = stripHubPrefix(url.pathname) // /api/...
+			const kind = isNoisyPath(path) || path === '/healthz' ? 'probe' : 'app'
+			try {
+				route_http_requests_total.labels(kind).inc()
+			} catch {}
 			const key = `${hubId}--http--${randomUUID()}`
 			const toHub = `route.to_hub.${key}`
 			const toBrowser = `route.to_browser.${key}`
@@ -325,6 +335,10 @@ export function installHubRouteProxy(
 			})
 
 			const status = Number(reply?.status || 502)
+			try {
+				const cls = status >= 200 && status < 300 ? '2xx' : status >= 300 && status < 400 ? '3xx' : status >= 400 && status < 500 ? '4xx' : '5xx'
+				route_http_replies_total.labels(kind, cls).inc()
+			} catch {}
 			const headers = reply?.headers && typeof reply.headers === 'object' ? reply.headers : {}
 			const body = typeof reply?.body_b64 === 'string' ? reply.body_b64 : ''
 			const isTrunc = reply?.truncated === true
@@ -373,6 +387,9 @@ export function installHubRouteProxy(
 			const buf = body ? Buffer.from(body, 'base64') : Buffer.from('')
 			return res.status(status).send(buf)
 		} catch (e) {
+			try {
+				route_http_proxy_failed_total.labels(String(req?.params?.hubId || '') || 'unknown').inc()
+			} catch {}
 			log.warn({ err: String(e), hubId: String(req?.params?.hubId || '') }, 'http proxy failed')
 			return res.status(502).json({ ok: false, error: 'hub_unreachable' })
 		}
@@ -550,7 +567,16 @@ export function installHubRouteProxy(
 					} catch {
 						r = null
 					}
-					log.info({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close')
+					// Closing is expected on navigation / reload. Avoid log spam unless debugging
+					// or the close looks abnormal.
+					if (verbose) {
+						log.info({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close')
+					} else if (![1000, 1001].includes(code)) {
+						log.warn({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close (abnormal)')
+					}
+					try {
+						route_ws_client_close_total.labels(String(kind), String(code)).inc()
+					} catch {}
 					try {
 						pendingChunks.clear()
 						earlyFrames.length = 0

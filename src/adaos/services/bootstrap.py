@@ -1031,6 +1031,8 @@ class BootstrapService:
                         MAX_CHUNK_RAW = 300_000
 
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
+                        # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
+                        _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
                             try:
@@ -1044,7 +1046,7 @@ class BootstrapService:
                                     t = (payload or {}).get("t")
                                     if t in ("http_resp", "close"):
                                         await nc.flush(timeout=0.8)
-                                        if _route_verbose:
+                                        if _route_tx_verbose:
                                             try:
                                                 print(f"[hub-route] tx {t} key={key}")
                                             except Exception:
@@ -1054,7 +1056,9 @@ class BootstrapService:
                             except Exception as e:
                                 if _route_verbose:
                                     try:
-                                        print(f"[hub-route] publish to_browser failed key={key}: {type(e).__name__}: {e}")
+                                        print(
+                                            f"[hub-route] publish to_browser failed key={key}: {type(e).__name__}: {e}"
+                                        )
                                     except Exception:
                                         pass
 

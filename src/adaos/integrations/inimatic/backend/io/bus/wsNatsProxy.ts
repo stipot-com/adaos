@@ -3,6 +3,7 @@ import net from 'node:net'
 import pino from 'pino'
 import { WebSocketServer } from 'ws'
 import { verifyHubToken } from '../../db/tg.repo.js'
+import { ws_nats_proxy_conn_close_total, ws_nats_proxy_conn_open_total, ws_nats_proxy_upstream_close_total } from '../telemetry.js'
 
 // Keep logger lazy. This module is imported before `installRootLogCapture()` runs in `app.ts`,
 // and pino's destination can bind to `fs.writeSync` early. Creating the logger lazily ensures
@@ -114,6 +115,7 @@ function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 export function installWsNatsProxy(server: HttpServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
+	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
 
 	// IMPORTANT: keep this in `noServer` mode.
@@ -147,7 +149,10 @@ export function installWsNatsProxy(server: HttpServer) {
 
 	wss.on('connection', (ws: any, req: any) => {
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
-		log().info({ from: rip }, 'conn open')
+		if (verbose) log().info({ from: rip }, 'conn open')
+		try {
+			ws_nats_proxy_conn_open_total.inc()
+		} catch {}
 
 		let connected = false
 		let handshaked = false
@@ -186,31 +191,45 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function logSummary(event: string, extra?: Record<string, unknown>) {
-			log().info(
-				{
-					from: rip,
-					hub_id: hubIdForLog,
-					handshaked,
-					connected,
-					uptime_s: (Date.now() - openedAt) / 1000,
-					bytesUp,
-					bytesDown,
-					lastUpstreamPingAgo_s: lastUpstreamPingAt ? (Date.now() - lastUpstreamPingAt) / 1000 : null,
-					lastClientPongAgo_s: lastClientPongAt ? (Date.now() - lastClientPongAt) / 1000 : null,
-					lastClientPingAgo_s: lastClientPingAt ? (Date.now() - lastClientPingAt) / 1000 : null,
-					lastUpstreamPongAgo_s: lastUpstreamPongAt ? (Date.now() - lastUpstreamPongAt) / 1000 : null,
-					proxySentPong,
-					clientSentPong,
-					clientSentPing,
-					upstreamSentPong,
-					wsPingsSent,
-					wsPongsReceived,
-					lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
-					natsKeepalivesSent,
-					...(extra || {}),
-				},
-				event,
-			)
+			const base = {
+				from: rip,
+				hub_id: hubIdForLog,
+				handshaked,
+				connected,
+				uptime_s: (Date.now() - openedAt) / 1000,
+				bytesUp,
+				bytesDown,
+				lastUpstreamPingAgo_s: lastUpstreamPingAt ? (Date.now() - lastUpstreamPingAt) / 1000 : null,
+				lastClientPongAgo_s: lastClientPongAt ? (Date.now() - lastClientPongAt) / 1000 : null,
+				lastClientPingAgo_s: lastClientPingAt ? (Date.now() - lastClientPingAt) / 1000 : null,
+				lastUpstreamPongAgo_s: lastUpstreamPongAt ? (Date.now() - lastUpstreamPongAt) / 1000 : null,
+				proxySentPong,
+				clientSentPong,
+				clientSentPing,
+				upstreamSentPong,
+				wsPingsSent,
+				wsPongsReceived,
+				lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
+				natsKeepalivesSent,
+				...(extra || {}),
+			}
+			// Avoid log spam on expected closes; keep signal for abnormal drops.
+			// - Clean shutdowns (1000/1001) are common on reload/navigation.
+			// - 1006 indicates an abnormal close (no close frame) and is worth surfacing.
+			const code = typeof (extra || {})?.['code'] === 'number' ? (extra as any).code : null
+			if (verbose) {
+				log().info(base, event)
+				return
+			}
+			if (event === 'conn close' && (code === 1000 || code === 1001)) {
+				log().debug(base, event)
+				return
+			}
+			if (event === 'conn close' && code === 1006) {
+				log().warn(base, event)
+				return
+			}
+			log().info(base, event)
 		}
 
 		function armWsPing() {
@@ -318,6 +337,9 @@ export function installWsNatsProxy(server: HttpServer) {
 			})
 			upstreamSock.on('close', (hadError) => {
 				logSummary('upstream close', { hadError: Boolean(hadError) })
+				try {
+					ws_nats_proxy_upstream_close_total.labels(hadError ? '1' : '0').inc()
+				} catch {}
 				closeBoth(1000, 'upstream_close')
 			})
 			upstreamSock.on('error', (err) => {
@@ -368,7 +390,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					? userRaw.slice(4)
 					: userRaw
 
-			verifyHubToken(hubId, passRaw)
+					verifyHubToken(hubId, passRaw)
 				.then((ok) => {
 					if (!ok) {
 						log().warn({ from: rip, hub_id: hubId, user: userRaw, pass: mask(passRaw) }, 'auth failed')
@@ -412,7 +434,7 @@ export function installWsNatsProxy(server: HttpServer) {
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
 							authInFlight = false
-							log().info({ from: rip, hub_id: hubId }, 'auth ok')
+							if (verbose) log().info({ from: rip, hub_id: hubId }, 'auth ok')
 						} catch (e) {
 							log().warn({ err: String(e) }, 'write upstream failed')
 							authInFlight = false
@@ -498,6 +520,9 @@ export function installWsNatsProxy(server: HttpServer) {
 				}
 			})()
 			logSummary('conn close', { code, reason })
+			try {
+				ws_nats_proxy_conn_close_total.labels(String(code)).inc()
+			} catch {}
 			disarmWsPing()
 			disarmNatsKeepalive()
 			try {
