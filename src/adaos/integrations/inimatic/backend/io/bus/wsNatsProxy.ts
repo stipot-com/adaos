@@ -78,6 +78,23 @@ function hasMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { hit: 
 	return { hit, tail: nextTail }
 }
 
+function countMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { count: number; tail: Buffer } {
+	// Count marker occurrences, including those split across chunk boundaries (using tail).
+	// The tail is limited to (len-1) bytes, so it cannot contain a full marker and won't double-count.
+	const combined = tail.length ? Buffer.concat([tail, chunk]) : chunk
+	let count = 0
+	let idx = 0
+	while (true) {
+		const at = combined.indexOf(marker, idx)
+		if (at < 0) break
+		count += 1
+		idx = at + marker.length
+	}
+	const keep = Math.max(marker.length - 1, 0)
+	const nextTail = keep > 0 ? combined.subarray(Math.max(combined.length - keep, 0)) : Buffer.alloc(0)
+	return { count, tail: nextTail }
+}
+
 function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 	let count = 0
 	let idx = 0
@@ -250,13 +267,29 @@ export function installWsNatsProxy(server: HttpServer) {
 			})
 			upstreamSock.on('data', (chunk) => {
 				bytesDown += chunk.length
-				const scan = hasMarkerWithTail(upstreamTail, chunk, NATS_PING)
-				upstreamTail = scan.tail
-				if (scan.hit) {
+				const scanPing = countMarkerWithTail(upstreamTail, chunk, NATS_PING)
+				upstreamTail = scanPing.tail
+				if (scanPing.count > 0) {
 					lastUpstreamPingAt = Date.now()
-					// Do not reply to upstream PING here. Forward it to the client and let the client
-					// respond with PONG as per NATS protocol. This keeps the proxy transparent and avoids
-					// subtle ping/pong desyncs when PING is split across chunk boundaries.
+					// Be defensive: reply to upstream PINGs ourselves.
+					// Some hubs/proxies may not reliably forward/respond to NATS PING/PONG, which can lead to
+					// the server closing the TCP connection and the hub seeing "UnexpectedEOF".
+					//
+					// Extra PONGs are safe in the NATS protocol and help keep the upstream connection stable.
+					try {
+						for (let i = 0; i < scanPing.count; i += 1) {
+							const ok = upstreamSock?.write(NATS_PONG)
+							proxySentPong += 1
+							if (ok === false) {
+								logSummary('upstream backpressure on PONG', { writableLength: upstreamSock?.writableLength })
+								break
+							}
+						}
+					} catch (e) {
+						logSummary('upstream PONG write failed', { err: String(e) })
+						closeBoth(1011, 'upstream_pong_failed')
+						return
+					}
 				}
 				try {
 					if (chunk.includes(NATS_PONG)) {
