@@ -731,6 +731,23 @@ class BootstrapService:
                                         ),
                                         timeout=7.0,
                                     )
+                                    # Workaround for a shutdown race in some nats-py versions where
+                                    # a late PONG can complete an already-finished Future and crash the
+                                    # internal read loop with asyncio.InvalidStateError.
+                                    # This is best-effort and safe to disable via env.
+                                    try:
+                                        if os.getenv("HUB_NATS_PATCH_INVALIDSTATE", "1") == "1":
+                                            orig_pong = getattr(nc_local, "_process_pong", None)
+                                            if callable(orig_pong):
+                                                async def _safe_process_pong():  # type: ignore[no-redef]
+                                                    try:
+                                                        return await orig_pong()
+                                                    except asyncio.InvalidStateError:
+                                                        return None
+
+                                                setattr(nc_local, "_process_pong", _safe_process_pong)
+                                    except Exception:
+                                        pass
                                     return nc_local
                                 except Exception as e:
                                     # Extra diagnostics for flaky WS/NATS drops (e.g. UnexpectedEOF without close frame).
@@ -1031,6 +1048,8 @@ class BootstrapService:
                         MAX_CHUNK_RAW = 300_000
 
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
+                        # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
+                        _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
                             try:
@@ -1044,7 +1063,7 @@ class BootstrapService:
                                     t = (payload or {}).get("t")
                                     if t in ("http_resp", "close"):
                                         await nc.flush(timeout=0.8)
-                                        if _route_verbose:
+                                        if _route_tx_verbose:
                                             try:
                                                 print(f"[hub-route] tx {t} key={key}")
                                             except Exception:
@@ -1054,7 +1073,9 @@ class BootstrapService:
                             except Exception as e:
                                 if _route_verbose:
                                     try:
-                                        print(f"[hub-route] publish to_browser failed key={key}: {type(e).__name__}: {e}")
+                                        print(
+                                            f"[hub-route] publish to_browser failed key={key}: {type(e).__name__}: {e}"
+                                        )
                                     except Exception:
                                         pass
 

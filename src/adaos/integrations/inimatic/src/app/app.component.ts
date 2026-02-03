@@ -109,7 +109,9 @@ export class AppComponent implements OnInit, OnDestroy {
 		// If we loaded via cache-bust URL, clean it up for nicer sharing/bookmarks.
 		setTimeout(() => this.stripVersionParam(), 0)
 
-		this.hubStatus$ = timer(0, 5000).pipe(
+		// Keep this lightweight: it only drives a small "online/offline" indicator.
+		// Polling too frequently creates log noise on the root proxy and on hubs.
+		this.hubStatus$ = timer(0, 15000).pipe(
 			switchMap(() => {
 				const { url, headers } = this.getHubStatusRequest()
 				return this.http.get(url, { responseType: 'text', headers }).pipe(

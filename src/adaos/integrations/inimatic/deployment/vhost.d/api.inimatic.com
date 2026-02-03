@@ -7,6 +7,31 @@ ssl_client_certificate /etc/nginx/certs/adaos_ca.pem;
 ssl_verify_client optional;
 ssl_verify_depth 2;
 
+# --- Noisy health/probe endpoints (keep but don't flood access logs) ---
+location = /api/ping {
+  access_log off;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
+location = /healthz {
+  access_log off;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
+location = /metrics {
+  access_log off;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
+location = /v1/browser/pair/status {
+  access_log off;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
 # --- Bootstrap endpoints without mTLS ---
 location = /v1/bootstrap_token {
   proxy_pass http://api.inimatic.com;
