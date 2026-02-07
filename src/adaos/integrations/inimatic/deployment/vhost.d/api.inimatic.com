@@ -49,7 +49,9 @@ location = /v1/pair/confirm {
 }
 
 # --- Browser -> Hub proxy over Root (WS + HTTP) ---
-location ^~ /hubs/ {
+# Important: only set Upgrade/Connection headers for websocket endpoints.
+# Sending `Connection: upgrade` for normal HTTP requests can confuse upstreams and lead to 502/timeouts.
+location ~ ^/hubs/[^/]+/(ws|yws/).*$ {
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
@@ -57,9 +59,24 @@ location ^~ /hubs/ {
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
+  proxy_buffering off;
+  proxy_request_buffering off;
   proxy_read_timeout 3600s;
   proxy_send_timeout 3600s;
   proxy_connect_timeout 3600s;
+
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
+location /hubs/ {
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto https;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+  proxy_read_timeout 60s;
+  proxy_send_timeout 60s;
+  proxy_connect_timeout 10s;
 
   proxy_pass http://api.inimatic.com;
   include /etc/nginx/vhost.d/api.inimatic.com_location;

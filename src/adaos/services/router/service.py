@@ -306,54 +306,62 @@ class RouterService:
                     return False
                 return False
 
-            def _on_say(ev: Event) -> None:
-                text = ""
-                try:
-                    payload = ev.payload or {}
-                    text = (payload or {}).get("text")
-                    if not isinstance(text, str) or not text:
-                        return
-                    voice = (payload or {}).get("voice")
-                    conf = load_config()
-                    this_node = conf.node_id
-                    target_node = self._pick_target_node("say", this_node)
-                    base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
-                    token = conf.token or "dev-local-token"
-                    if base_url and target_node != this_node:
-                        try:
-                            requests.post(
-                                f"{base_url.rstrip('/')}/api/say",
-                                json={"text": text, "voice": voice},
-                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                                timeout=3.0,
-                            )
-                            return
-                        except Exception:
-                            pass
-                    # local fallback via API if self base_url known, else direct adapter
-                    self_url = os.environ.get("ADAOS_SELF_BASE_URL")
-                    if self_url:
-                        try:
-                            requests.post(
-                                f"{self_url.rstrip('/')}/api/say",
-                                json={"text": text, "voice": voice},
-                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                                timeout=3.0,
-                            )
-                            return
-                        except Exception:
-                            pass
+            def _say_sync(ev: Event, text: str, voice: Any) -> None:
+                """
+                Execute TTS routing in a worker thread so it never blocks the event loop.
+                This is important because ui.say can be emitted early during boot and any
+                blocking work (subprocess/requests/TTS engines) can stall NATS WS handshakes.
+                """
+                conf = load_config()
+                this_node = conf.node_id
+                target_node = self._pick_target_node("say", this_node)
+                base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
+                token = conf.token or "dev-local-token"
+                if base_url and target_node != this_node:
                     try:
-                        mode = get_tts_backend()
-                        adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
-                        adapter.say(text)
+                        requests.post(
+                            f"{base_url.rstrip('/')}/api/say",
+                            json={"text": text, "voice": voice},
+                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                            timeout=3.0,
+                        )
+                        return
                     except Exception:
-                        if not _say_via_system(text):
-                            print_text(text, node_id=this_node, origin={"source": ev.source})
+                        pass
+                # local fallback via API if self base_url known, else direct adapter
+                self_url = os.environ.get("ADAOS_SELF_BASE_URL")
+                if self_url:
+                    try:
+                        requests.post(
+                            f"{self_url.rstrip('/')}/api/say",
+                            json={"text": text, "voice": voice},
+                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                            timeout=3.0,
+                        )
+                        return
+                    except Exception:
+                        pass
+                try:
+                    mode = get_tts_backend()
+                    adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
+                    adapter.say(text)
+                    return
+                except Exception:
+                    if not _say_via_system(text):
+                        print_text(text, node_id=this_node, origin={"source": ev.source})
+
+            async def _on_say(ev: Event) -> None:
+                payload = ev.payload or {}
+                text = (payload or {}).get("text")
+                if not isinstance(text, str) or not text.strip():
+                    return
+                voice = (payload or {}).get("voice")
+                try:
+                    await asyncio.to_thread(_say_sync, ev, text.strip(), voice)
                 except Exception:
                     try:
                         conf = get_ctx().config
-                        print_text(text if isinstance(text, str) else "", node_id=conf.node_id, origin={"source": ev.source})
+                        print_text(text.strip(), node_id=conf.node_id, origin={"source": ev.source})
                     except Exception:
                         pass
 

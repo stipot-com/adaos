@@ -16,6 +16,7 @@ function log() {
 }
 const NATS_PING = Buffer.from('PING\r\n', 'utf8')
 const NATS_PONG = Buffer.from('PONG\r\n', 'utf8')
+const NATS_ERR = Buffer.from('-ERR', 'utf8')
 
 type UpstreamOpts = {
 	host: string
@@ -180,6 +181,8 @@ export function installWsNatsProxy(server: HttpServer) {
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
+		let upstreamConnecting = false
+		const upstreamPendingWrites: Buffer[] = []
 
 		function closeBoth(code?: number, reason?: string) {
 			try {
@@ -188,6 +191,29 @@ export function installWsNatsProxy(server: HttpServer) {
 			try {
 				upstreamSock?.destroy()
 			} catch {}
+		}
+
+		function writeUpstream(buf: Buffer, why: string) {
+			if (!buf.length) return
+			if (!upstreamSock || (upstreamSock as any).destroyed) {
+				logSummary('upstream missing while writing', { why })
+				closeBoth(1011, 'upstream_missing')
+				return
+			}
+			// If the upstream connection is still in-flight, queue writes until `connect`.
+			// Node will also buffer writes, but keeping an explicit queue avoids subtle races
+			// with repeated `connectUpstream()` calls and makes diagnostics clearer.
+			if (!connected) {
+				upstreamPendingWrites.push(buf)
+				return
+			}
+			try {
+				const ok = upstreamSock.write(buf)
+				if (ok === false) logSummary('upstream backpressure', { writableLength: upstreamSock.writableLength, why })
+			} catch (e) {
+				logSummary('upstream write failed', { err: String(e), why })
+				closeBoth(1011, 'upstream_write_failed')
+			}
 		}
 
 		function logSummary(event: string, extra?: Record<string, unknown>) {
@@ -217,8 +243,15 @@ export function installWsNatsProxy(server: HttpServer) {
 			// - Clean shutdowns (1000/1001) are common on reload/navigation.
 			// - 1006 indicates an abnormal close (no close frame) and is worth surfacing.
 			const code = typeof (extra || {})?.['code'] === 'number' ? (extra as any).code : null
+			const reason = typeof (extra || {})?.['reason'] === 'string' ? (extra as any).reason : null
 			if (verbose) {
 				log().info(base, event)
+				return
+			}
+			// If we close the WS because the upstream NATS socket closed, we still want visibility even if
+			// the WS close code is "clean". This is the dominant symptom for hub-side "UnexpectedEOF".
+			if (event === 'conn close' && code === 1000 && reason && String(reason).includes('upstream_')) {
+				log().warn(base, event)
 				return
 			}
 			if (event === 'conn close' && (code === 1000 || code === 1001)) {
@@ -273,19 +306,50 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function connectUpstream() {
-			if (connected) return
-			upstreamSock = net.createConnection({ host: upstream.host, port: upstream.port })
+			// Never create more than one upstream socket per WS connection.
+			// `connectUpstream()` is called on connect (to forward INFO) and again after auth (to ensure upstream exists).
+			// Without this guard, a timing race can create two sockets and overwrite `upstreamSock`, leading to
+			// protocol corruption and upstream-initiated closes that surface as "UnexpectedEOF" on the hub.
+			if (upstreamSock && !(upstreamSock as any).destroyed) return
+			if (upstreamConnecting) return
+			upstreamConnecting = true
+			const sock = net.createConnection({ host: upstream.host, port: upstream.port })
+			upstreamSock = sock
 			try {
-				;(upstreamSock as any).setNoDelay?.(true)
+				;(sock as any).setNoDelay?.(true)
 			} catch {}
 			try {
-				upstreamSock.setKeepAlive(true, 20_000)
+				sock.setKeepAlive(true, 20_000)
 			} catch {}
-			upstreamSock.on('connect', () => {
+			sock.on('connect', () => {
 				connected = true
+				upstreamConnecting = false
+				try {
+					// Flush any queued writes (CONNECT, subscriptions, etc).
+					while (upstreamPendingWrites.length) {
+						const chunk = upstreamPendingWrites.shift()!
+						const ok = sock.write(chunk)
+						if (ok === false) {
+							logSummary('upstream backpressure on flush', { writableLength: sock.writableLength })
+							break
+						}
+					}
+				} catch (e) {
+					logSummary('upstream flush failed', { err: String(e) })
+					closeBoth(1011, 'upstream_flush_failed')
+				}
 			})
-			upstreamSock.on('data', (chunk) => {
+			sock.on('data', (chunk) => {
 				bytesDown += chunk.length
+				try {
+					const at = chunk.indexOf(NATS_ERR)
+					if (at >= 0) {
+						// Keep a short excerpt for diagnostics (avoid dumping payloads).
+						const raw = chunk.subarray(at, Math.min(at + 240, chunk.length)).toString('utf8')
+						const line = raw.split('\r\n', 1)[0]
+						logSummary('upstream -ERR', { line })
+					}
+				} catch {}
 				const scanPing = countMarkerWithTail(upstreamTail, chunk, NATS_PING)
 				upstreamTail = scanPing.tail
 				if (scanPing.count > 0) {
@@ -297,10 +361,10 @@ export function installWsNatsProxy(server: HttpServer) {
 					// Extra PONGs are safe in the NATS protocol and help keep the upstream connection stable.
 					try {
 						for (let i = 0; i < scanPing.count; i += 1) {
-							const ok = upstreamSock?.write(NATS_PONG)
+							const ok = sock.write(NATS_PONG)
 							proxySentPong += 1
 							if (ok === false) {
-								logSummary('upstream backpressure on PONG', { writableLength: upstreamSock?.writableLength })
+								logSummary('upstream backpressure on PONG', { writableLength: sock.writableLength })
 								break
 							}
 						}
@@ -335,14 +399,18 @@ export function installWsNatsProxy(server: HttpServer) {
 					closeBoth(1011, 'ws_send_throw')
 				}
 			})
-			upstreamSock.on('close', (hadError) => {
+			sock.on('close', (hadError) => {
+				upstreamConnecting = false
+				connected = false
 				logSummary('upstream close', { hadError: Boolean(hadError) })
 				try {
 					ws_nats_proxy_upstream_close_total.labels(hadError ? '1' : '0').inc()
 				} catch {}
 				closeBoth(1000, 'upstream_close')
 			})
-			upstreamSock.on('error', (err) => {
+			sock.on('error', (err) => {
+				upstreamConnecting = false
+				connected = false
 				logSummary('upstream error', { err: String(err) })
 				closeBoth(1011, 'upstream_error')
 			})
@@ -421,15 +489,13 @@ export function installWsNatsProxy(server: HttpServer) {
 					connectUpstream()
 					setTimeout(() => {
 						try {
-							const ok1 = upstreamSock?.write(rewritten)
-							if (ok1 === false) logSummary('upstream backpressure on CONNECT', { writableLength: upstreamSock?.writableLength })
+							writeUpstream(rewritten, 'connect')
 							// Send any bytes that arrived after CONNECT while auth was in flight.
 							const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
 							preHandshakeQueue = []
 							const tail = queued.length ? Buffer.concat([rest, queued]) : rest
 							if (tail.length) {
-								const ok2 = upstreamSock?.write(tail)
-								if (ok2 === false) logSummary('upstream backpressure on CONNECT tail', { writableLength: upstreamSock?.writableLength })
+								writeUpstream(tail, 'connect_tail')
 							}
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
@@ -476,21 +542,7 @@ export function installWsNatsProxy(server: HttpServer) {
 				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
 				// Forward client PONGs to upstream (do NOT strip). If we strip and our upstream PING detection
 				// ever misses (e.g. boundary split), NATS will close the connection leading to flaky UnexpectedEOFs.
-				try {
-					if (!upstreamSock || (upstreamSock as any).destroyed) {
-						logSummary('upstream missing while writing', {})
-						closeBoth(1011, 'upstream_missing')
-						return
-					}
-					if (buf.length === 0) return
-					const ok = upstreamSock.write(buf)
-					if (ok === false) {
-						logSummary('upstream backpressure', { writableLength: upstreamSock.writableLength })
-					}
-				} catch (e) {
-					logSummary('upstream write failed', { err: String(e) })
-					closeBoth(1011, 'upstream_write_failed')
-				}
+				writeUpstream(buf, 'client_data')
 				return
 			}
 			clientBuf = Buffer.concat([clientBuf, buf])

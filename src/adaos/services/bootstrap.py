@@ -266,6 +266,9 @@ class BootstrapService:
                 reported_down = False
                 nats_last_log_at: dict[str, float] = {}
                 nats_last_ok_at: float | None = None
+                # Track flaky NATS WS endpoints and temporarily avoid them after short transient drops.
+                nats_server_quarantine_until: dict[str, float] = {}
+                nats_last_server: str | None = None
 
                 def _rl_log(key: str, msg: str, *, every_s: float = 5.0) -> None:
                     """
@@ -456,8 +459,10 @@ class BootstrapService:
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
                     nonlocal nats_last_ok_at
+                    nonlocal nats_last_server
                     backoff = 1.0
                     trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
+                    raw_keepalive_task: asyncio.Task | None = None
 
                     def _explain_connect_error(err: Exception) -> str:
                         try:
@@ -595,10 +600,17 @@ class BootstrapService:
                                 else:
                                     _dedup_push("wss://nats.inimatic.com")
 
-                            # `wss://api.inimatic.com/nats` is known to return HTTP 400 on WS upgrade in some
-                            # environments; keep only the dedicated NATS hostname.
+                            # Keep both `/nats` WS entrypoints:
+                            # - `wss://api.inimatic.com/nats` (root ingress)
+                            # - `wss://nats.inimatic.com/nats` (dedicated hostname)
+                            # Some environments historically observed HTTP 400 on the api-domain upgrade, but
+                            # keeping it as a candidate is safer than hard-filtering it out (it can be the only
+                            # reachable WS endpoint on certain networks).
                             try:
-                                candidates = [c for c in candidates if not c.startswith("wss://api.inimatic.com/nats")]
+                                now_m = time.monotonic()
+                                available = [s for s in candidates if now_m >= float(nats_server_quarantine_until.get(str(s), 0.0))]
+                                if available:
+                                    candidates = available
                             except Exception:
                                 pass
 
@@ -713,6 +725,19 @@ class BootstrapService:
                                 # `nats` package does not expose Client at top-level; use nats.aio.client.Client.
                                 nc_local = _nats.aio.client.Client()
                                 try:
+                                    # In some environments aiohttp-based NATS-over-WS can intermittently stop
+                                    # delivering `PONG` frames even while the socket stays open; nats-py will
+                                    # then mark the connection stale and close it. Root/WS proxy already sends
+                                    # NATS PINGs to the hub, so hub-initiated periodic PINGs are not required
+                                    # for liveness. Keep them effectively disabled by default.
+                                    try:
+                                        ping_interval = int(os.getenv("HUB_NATS_PING_INTERVAL_S", "3600") or "3600")
+                                    except Exception:
+                                        ping_interval = 3600
+                                    try:
+                                        max_outstanding_pings = int(os.getenv("HUB_NATS_MAX_OUTSTANDING_PINGS", "10") or "10")
+                                    except Exception:
+                                        max_outstanding_pings = 10
                                     await asyncio.wait_for(
                                         nc_local.connect(
                                             servers=[str(server)],
@@ -722,8 +747,8 @@ class BootstrapService:
                                             allow_reconnect=False,
                                             # Be tolerant to intermittent WS proxy hiccups: missed PONGs should not
                                             # tear down the whole hub IO bridge too aggressively.
-                                            ping_interval=15.0,
-                                            max_outstanding_pings=10,
+                                            ping_interval=ping_interval,
+                                            max_outstanding_pings=max_outstanding_pings,
                                             connect_timeout=5.0,
                                             error_cb=_on_error_cb,
                                             disconnected_cb=_on_disconnected,
@@ -731,21 +756,42 @@ class BootstrapService:
                                         ),
                                         timeout=7.0,
                                     )
-                                    # Workaround for a shutdown race in some nats-py versions where
-                                    # a late PONG can complete an already-finished Future and crash the
-                                    # internal read loop with asyncio.InvalidStateError.
-                                    # This is best-effort and safe to disable via env.
+                                    # Guard against nats-py flush timeout bug: flush() cancels the Future
+                                    # but keeps it in `self._pongs`, causing InvalidStateError on next PONG.
+                                    # Also covers shutdown races with late PONGs.
                                     try:
                                         if os.getenv("HUB_NATS_PATCH_INVALIDSTATE", "1") == "1":
-                                            orig_pong = getattr(nc_local, "_process_pong", None)
-                                            if callable(orig_pong):
-                                                async def _safe_process_pong():  # type: ignore[no-redef]
+                                            async def _safe_process_pong():  # type: ignore[no-redef]
+                                                try:
+                                                    pongs = getattr(nc_local, "_pongs", None)
+                                                    if not isinstance(pongs, list) or not pongs:
+                                                        return
+                                                    # Drop cancelled/done futures first.
+                                                    while pongs and getattr(pongs[0], "done", lambda: False)():
+                                                        try:
+                                                            pongs.pop(0)
+                                                        except Exception:
+                                                            break
+                                                    if not pongs:
+                                                        return
+                                                    fut = pongs.pop(0)
                                                     try:
-                                                        return await orig_pong()
+                                                        fut.set_result(True)
                                                     except asyncio.InvalidStateError:
-                                                        return None
+                                                        pass
+                                                    # Keep bookkeeping consistent with upstream implementation.
+                                                    try:
+                                                        setattr(nc_local, "_pongs_received", int(getattr(nc_local, "_pongs_received", 0)) + 1)
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        setattr(nc_local, "_pings_outstanding", 0)
+                                                    except Exception:
+                                                        pass
+                                                except Exception:
+                                                    return
 
-                                                setattr(nc_local, "_process_pong", _safe_process_pong)
+                                            setattr(nc_local, "_process_pong", _safe_process_pong)
                                     except Exception:
                                         pass
                                     return nc_local
@@ -830,6 +876,60 @@ class BootstrapService:
                                     continue
                             if nc is None:
                                 raise last_exc or RuntimeError("nats connect failed (no candidates)")
+                            try:
+                                nats_last_server = connected_server
+                            except Exception:
+                                pass
+
+                            # Keepalive: periodically send a tiny NATS protocol frame from hub->root.
+                            #
+                            # Root's WS proxy already sends NATS `PING` frames to the hub, but the main purpose of that
+                            # is to elicit outbound traffic hub->root (`PONG`) to keep some NAT/firewall mappings alive.
+                            # In practice, hubs sometimes end up mostly silent and the WS gets closed abnormally (1006),
+                            # then hub sees `UnexpectedEOF`. To reduce dependency on nats-py's internal ping futures and
+                            # ensure regular outbound traffic, optionally send raw `PING` via `_send_command`+`_flush_pending`.
+                            #
+                            # This avoids using `flush()` and avoids creating `_pongs` futures which can later explode
+                            # with `InvalidStateError` on late/cancelled PONGs.
+                            try:
+                                # Disabled by default: some environments/proxies close the WS/NATS tunnel when the client
+                                # actively emits periodic pings (both WS control pings and NATS protocol PING frames).
+                                raw_keepalive_enabled = os.getenv("HUB_NATS_RAW_KEEPALIVE", "0") == "1"
+                            except Exception:
+                                raw_keepalive_enabled = False
+                            if raw_keepalive_enabled:
+                                try:
+                                    raw_keepalive_s = float(os.getenv("HUB_NATS_RAW_KEEPALIVE_S", "15") or "15")
+                                except Exception:
+                                    raw_keepalive_s = 15.0
+                                if raw_keepalive_s < 5.0:
+                                    raw_keepalive_s = 5.0
+
+                                async def _raw_keepalive_loop() -> None:
+                                    ping_cmd = b"PING\r\n"
+                                    while True:
+                                        await asyncio.sleep(raw_keepalive_s)
+                                        try:
+                                            is_closed_attr = getattr(nc, "is_closed", None)
+                                            is_closed = is_closed_attr() if callable(is_closed_attr) else bool(is_closed_attr)
+                                            if is_closed:
+                                                return
+                                        except Exception:
+                                            pass
+                                        try:
+                                            sc = getattr(nc, "_send_command", None)
+                                            fp = getattr(nc, "_flush_pending", None)
+                                            if callable(sc) and callable(fp):
+                                                await sc(ping_cmd)
+                                                await fp()
+                                        except Exception:
+                                            # Keepalive is best-effort; connection supervisor will handle reconnects.
+                                            pass
+
+                                try:
+                                    raw_keepalive_task = asyncio.create_task(_raw_keepalive_loop(), name="adaos-nats-raw-keepalive")
+                                except Exception:
+                                    raw_keepalive_task = None
 
                             # Track subscriptions explicitly. When the connection closes (or this task is cancelled),
                             # unsubscribing helps nats-py cancel internal `_wait_for_msgs()` tasks and avoids
@@ -985,33 +1085,37 @@ class BootstrapService:
                                 import urllib.request as _ureq
                                 import uuid as _uuid
                                 import mimetypes as _mtypes
+                                # `urllib` is blocking; run the download and file write in a worker thread so it
+                                # doesn't stall the hub event loop (and therefore NATS keepalives).
+                                def _download() -> str:
+                                    req = _ureq.Request(url, headers={"X-AdaOS-Token": token})
+                                    with _ureq.urlopen(req, timeout=20) as resp:
+                                        # Prefer filename from header; fallback to Content-Disposition; then use type
+                                        fname = resp.headers.get("X-File-Name") or ""
+                                        if not fname:
+                                            cd = resp.headers.get("Content-Disposition") or ""
+                                            try:
+                                                import cgi as _cgi
 
-                                req = _ureq.Request(url, headers={"X-AdaOS-Token": token})
-                                with _ureq.urlopen(req, timeout=20) as resp:
-                                    # Prefer filename from header; fallback to Content-Disposition; then use type
-                                    fname = resp.headers.get("X-File-Name") or ""
-                                    if not fname:
-                                        cd = resp.headers.get("Content-Disposition") or ""
-                                        try:
-                                            import cgi as _cgi
+                                                _val, _params = _cgi.parse_header(cd)
+                                                fname = _params.get("filename") or ""
+                                            except Exception:
+                                                fname = ""
+                                        if fname:
+                                            import os as _os
 
-                                            _val, _params = _cgi.parse_header(cd)
-                                            fname = _params.get("filename") or ""
-                                        except Exception:
-                                            fname = ""
-                                    if fname:
-                                        import os as _os
+                                            fname = _os.path.basename(fname)
+                                        else:
+                                            # fallback to type-based extension
+                                            ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+                                            ext = _mtypes.guess_extension(ctype) or ""
+                                            fname = f"tg_{_uuid.uuid4().hex}{ext}"
+                                        dest = cache_dir / fname
+                                        with open(dest, "wb") as out:
+                                            out.write(resp.read())
+                                    return str(dest)
 
-                                        fname = _os.path.basename(fname)
-                                    else:
-                                        # fallback to type-based extension
-                                        ctype = resp.headers.get("Content-Type") or "application/octet-stream"
-                                        ext = _mtypes.guess_extension(ctype) or ""
-                                        fname = f"tg_{_uuid.uuid4().hex}{ext}"
-                                    dest = cache_dir / fname
-                                    with open(dest, "wb") as out:
-                                        out.write(resp.read())
-                                media_path = str(dest)
+                                media_path = await asyncio.to_thread(_download)
                                 # annotate
                                 if isinstance(p, dict):
                                     if isinstance(p.get("payload"), dict):
@@ -1050,6 +1154,9 @@ class BootstrapService:
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
                         # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
                         _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
+                        # In WS-proxied NATS setups, route replies can sit in local buffers and root times out
+                        # waiting for `route.to_browser.*`. Keep fast drain enabled by default.
+                        _route_force_flush = os.getenv("HUB_ROUTE_FORCE_FLUSH", "1") == "1"
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
                             try:
@@ -1061,8 +1168,22 @@ class BootstrapService:
                                 # waiting on `route.to_browser.<key>` (especially over websocket-proxied NATS).
                                 try:
                                     t = (payload or {}).get("t")
-                                    if t in ("http_resp", "close"):
-                                        await nc.flush(timeout=0.8)
+                                    if _route_force_flush and t in ("http_resp", "close"):
+                                        # Flush pending writes promptly so Root doesn't time out waiting for
+                                        # `route.to_browser.<key>` replies.
+                                        #
+                                        # Avoid `flush()` (it sends PING+waits for PONG, and historically could leave
+                                        # cancelled futures behind). We only need to kick the flusher to drain the
+                                        # socket; no server roundtrip is required here.
+                                        try:
+                                            fp = getattr(nc, "_flush_pending", None)
+                                            if callable(fp):
+                                                await fp()
+                                            else:
+                                                # Fallback: best-effort (may send PING).
+                                                await nc.flush()
+                                        except Exception:
+                                            pass
                                         if _route_tx_verbose:
                                             try:
                                                 print(f"[hub-route] tx {t} key={key}")
@@ -1601,6 +1722,19 @@ class BootstrapService:
                                 raise RuntimeError(f"nats connection closed{(': ' + details) if details else ''}")
                     finally:
                         try:
+                            if raw_keepalive_task is not None:
+                                try:
+                                    raw_keepalive_task.cancel()
+                                except Exception:
+                                    pass
+                                try:
+                                    await asyncio.wait_for(asyncio.gather(raw_keepalive_task, return_exceptions=True), timeout=1.0)
+                                except Exception:
+                                    pass
+                                raw_keepalive_task = None
+                        except Exception:
+                            pass
+                        try:
                             if getattr(self, "_tg_output_nats_nc", None) is nc:
                                 setattr(self, "_tg_output_nats_nc", None)
                         except Exception:
@@ -1746,6 +1880,25 @@ class BootstrapService:
                                 )
                             except Exception:
                                 is_transient = False
+                            try:
+                                q_min_uptime_s = float(os.getenv("HUB_NATS_QUARANTINE_MIN_UPTIME_S", "90") or "90")
+                            except Exception:
+                                q_min_uptime_s = 90.0
+                            try:
+                                q_for_s = float(os.getenv("HUB_NATS_QUARANTINE_S", "300") or "300")
+                            except Exception:
+                                q_for_s = 300.0
+                            try:
+                                if is_transient and ran_for_s < q_min_uptime_s and isinstance(nats_last_server, str) and nats_last_server:
+                                    q_seconds = max(30.0, q_for_s)
+                                    nats_server_quarantine_until[nats_last_server] = time.monotonic() + q_seconds
+                                    _rl_log(
+                                        "nats.supervisor.quarantine",
+                                        f"[hub-io] nats supervisor: quarantine server={nats_last_server} for {q_seconds:.0f}s (ran_for={ran_for_s:.1f}s)",
+                                        every_s=1.0,
+                                    )
+                            except Exception:
+                                pass
 
                             if ran_for_s >= 10.0 or is_transient:
                                 delay = 0.5
