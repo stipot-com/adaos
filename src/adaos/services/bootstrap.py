@@ -463,6 +463,183 @@ class BootstrapService:
                     backoff = 1.0
                     trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
                     raw_keepalive_task: asyncio.Task | None = None
+                    # nats-py WS transport (aiohttp) has historically surfaced WS CLOSE frames as `int` (close code),
+                    # causing the NATS parser to crash with `TypeError: argument of type 'int' is not iterable` and
+                    # leaving the connection in a half-dead state (read loop stopped, socket still open).
+                    # Patch transport.readline() to ignore WS control frames and always return bytes.
+                    try:
+                        from nats.aio import transport as _nats_transport  # type: ignore
+                        from nats.aio import client as _nats_client  # type: ignore
+                        import aiohttp  # type: ignore
+
+                        _ws_tr = getattr(_nats_transport, "WebSocketTransport", None)
+                        _orig_rl = getattr(_ws_tr, "readline", None) if _ws_tr else None
+                        _orig_connect = getattr(_ws_tr, "connect", None) if _ws_tr else None
+                        _orig_connect_tls = getattr(_ws_tr, "connect_tls", None) if _ws_tr else None
+                        _orig_process_pong = getattr(getattr(_nats_client, "Client", None), "_process_pong", None)
+                        patched_any = False
+                        if _ws_tr is not None and callable(_orig_rl) and not getattr(_orig_rl, "_adaos_ws_patch", False):
+                            async def _ws_readline_safe(self):  # type: ignore[no-redef]
+                                # aiohttp surfaces WS control frames (PING/PONG/CLOSE) as WSMessage objects.
+                                # nats-py expects bytes and will crash if we pass through e.g. close codes (int).
+                                # Skip control frames and actively close on CLOSE to avoid half-dead sockets.
+                                while True:
+                                    try:
+                                        data = await self._ws.receive()
+                                    except Exception:
+                                        return b""
+                                    # Track last RX time for a higher-level watchdog.
+                                    try:
+                                        setattr(self, "_adaos_last_rx_at", time.monotonic())
+                                    except Exception:
+                                        pass
+                                    try:
+                                        t = getattr(data, "type", None)
+                                        if t == aiohttp.WSMsgType.PING:
+                                            # Be defensive even if aiohttp autoping is enabled.
+                                            try:
+                                                await self._ws.pong(getattr(data, "data", b""))
+                                            except Exception:
+                                                pass
+                                            continue
+                                        if t == aiohttp.WSMsgType.PONG:
+                                            continue
+                                        if t in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING):
+                                            try:
+                                                await self._ws.close()
+                                            except Exception:
+                                                pass
+                                            return b""
+                                        if t in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                            return b""
+                                        d = getattr(data, "data", b"")
+                                        if isinstance(d, (bytes, bytearray)):
+                                            return bytes(d)
+                                        if isinstance(d, str):
+                                            return d.encode("utf-8")
+                                    except Exception:
+                                        return b""
+
+                            try:
+                                setattr(_ws_readline_safe, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "readline", _ws_readline_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Patch connect() to disable aiohttp autoping/autoclose so control frames are surfaced to
+                        # our safe readline() loop and can never get passed into the NATS parser.
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_connect)
+                            and not getattr(_orig_connect, "_adaos_ws_patch", False)
+                        ):
+                            async def _ws_connect_safe(self, uri, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                headers = self._get_custom_headers()
+                                self._ws = await self._client.ws_connect(
+                                    uri.geturl(),
+                                    timeout=connect_timeout,
+                                    headers=headers,
+                                    autoping=False,
+                                    autoclose=False,
+                                )
+                                self._using_tls = False
+
+                            try:
+                                setattr(_ws_connect_safe, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "connect", _ws_connect_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Same as above, but for `wss://` (TLS) URLs which use connect_tls().
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_connect_tls)
+                            and not getattr(_orig_connect_tls, "_adaos_ws_patch", False)
+                        ):
+                            async def _ws_connect_tls_safe(self, uri, ssl_context, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                # Mirror upstream behavior (refuse upgrading a live non-TLS socket).
+                                try:
+                                    if getattr(self, "_ws", None) is not None and not getattr(self._ws, "closed", True):
+                                        if getattr(self, "_using_tls", None):
+                                            return
+                                        raise ProtocolError("ws: cannot upgrade to TLS")
+                                except Exception:
+                                    # If something goes wrong introspecting state, fall back to opening a new ws.
+                                    pass
+
+                                headers = self._get_custom_headers()
+                                target = uri if isinstance(uri, str) else uri.geturl()
+                                self._ws = await self._client.ws_connect(
+                                    target,
+                                    ssl=ssl_context,
+                                    timeout=connect_timeout,
+                                    headers=headers,
+                                    autoping=False,
+                                    autoclose=False,
+                                )
+                                self._using_tls = True
+
+                            try:
+                                setattr(_ws_connect_tls_safe, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "connect_tls", _ws_connect_tls_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # nats-py 2.12.0 can crash its _reading_task with InvalidStateError if a late PONG arrives
+                        # after the future was cancelled/timed out. Make _process_pong idempotent.
+                        if callable(_orig_process_pong) and not getattr(_orig_process_pong, "_adaos_ws_patch", False):
+                            async def _process_pong_safe(self) -> None:  # type: ignore[no-redef]
+                                if len(self._pongs) > 0:
+                                    future = self._pongs.pop(0)
+                                    try:
+                                        if future.cancelled() or future.done():
+                                            return
+                                        future.set_result(True)
+                                    except asyncio.InvalidStateError:
+                                        return
+                                    self._pongs_received += 1
+                                    self._pings_outstanding = 0
+
+                            try:
+                                setattr(_process_pong_safe, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_nats_client.Client, "_process_pong", _process_pong_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        if patched_any:
+                            try:
+                                import importlib.metadata as _md  # type: ignore
+
+                                _nats_ver = None
+                                try:
+                                    _nats_ver = _md.version("nats-py")
+                                except Exception:
+                                    _nats_ver = None
+                                _rl_log(
+                                    "nats.patch",
+                                    f"[hub-io] nats ws patch applied (nats-py={_nats_ver} aiohttp={getattr(aiohttp,'__version__',None)})",
+                                    every_s=3600.0,
+                                )
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
                     def _explain_connect_error(err: Exception) -> str:
                         try:
@@ -668,14 +845,44 @@ class BootstrapService:
                                         pass
                                     reported_down = False
 
-                            async def _on_error_cb(e: Exception) -> None:
+                            def _ws_state(nc_for_diag: Any) -> tuple[Any, Any, Any, Any]:
+                                try:
+                                    tr = getattr(nc_for_diag, "_transport", None)
+                                    ws = getattr(tr, "_ws", None) if tr is not None else None
+                                    ws_closed = getattr(ws, "closed", None) if ws is not None else None
+                                    ws_close_code = getattr(ws, "close_code", None) if ws is not None else None
+                                    ws_close_reason = getattr(ws, "close_reason", None) if ws is not None else None
+                                    ws_exc = None
+                                    try:
+                                        exf = getattr(ws, "exception", None)
+                                        if callable(exf):
+                                            ws_exc = exf()
+                                    except Exception:
+                                        ws_exc = None
+                                    return ws_closed, ws_close_code, ws_close_reason, ws_exc
+                                except Exception:
+                                    return None, None, None, None
+
+                            async def _on_error_cb(e: Exception, *, nc_for_diag: Any | None = None) -> None:
                                 # Best-effort; keep quiet unless explicitly verbose or useful
-                                if os.getenv("SILENCE_NATS_EOF", "0") == "1" and (type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower()):
+                                is_eof = type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower()
+                                if os.getenv("SILENCE_NATS_EOF", "0") == "1" and is_eof:
                                     return
+                                # UnexpectedEOF is our primary signal; always emit WS close diagnostics for it.
+                                if is_eof and nc_for_diag is not None:
+                                    try:
+                                        ws_closed, ws_close_code, ws_close_reason, ws_exc = _ws_state(nc_for_diag)
+                                        _rl_log(
+                                            "nats.ws_eof",
+                                            f"[hub-io] nats ws eof: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
+                                            every_s=1.0,
+                                        )
+                                    except Exception:
+                                        pass
                                 try:
                                     verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                                     quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
-                                    if quiet and not verbose:
+                                    if quiet and not verbose and not is_eof:
                                         return
                                     if type(e).__name__ == "WSServerHandshakeError" and not verbose:
                                         print("[hub-io] nats error_cb: WSServerHandshakeError (check nats.ws_url path: '/' vs '/nats')")
@@ -750,7 +957,7 @@ class BootstrapService:
                                             ping_interval=ping_interval,
                                             max_outstanding_pings=max_outstanding_pings,
                                             connect_timeout=5.0,
-                                            error_cb=_on_error_cb,
+                                            error_cb=(lambda e, _nc=nc_local: _on_error_cb(e, nc_for_diag=_nc)),
                                             disconnected_cb=_on_disconnected,
                                             reconnected_cb=_on_reconnected,
                                         ),
@@ -892,9 +1099,14 @@ class BootstrapService:
                             # This avoids using `flush()` and avoids creating `_pongs` futures which can later explode
                             # with `InvalidStateError` on late/cancelled PONGs.
                             try:
-                                # Disabled by default: some environments/proxies close the WS/NATS tunnel when the client
-                                # actively emits periodic pings (both WS control pings and NATS protocol PING frames).
-                                raw_keepalive_enabled = os.getenv("HUB_NATS_RAW_KEEPALIVE", "0") == "1"
+                                # Enabled by default for WS transports: hub can go mostly silent and some environments
+                                # end up with half-dead WS connections. Keepalive helps keep the flusher/transport active
+                                # and surfaces failures earlier. Can be disabled explicitly via env.
+                                raw_keepalive_env = os.getenv("HUB_NATS_RAW_KEEPALIVE", "")
+                                if raw_keepalive_env.strip() == "":
+                                    raw_keepalive_enabled = bool(connected_server and str(connected_server).startswith("ws"))
+                                else:
+                                    raw_keepalive_enabled = raw_keepalive_env == "1"
                             except Exception:
                                 raw_keepalive_enabled = False
                             if raw_keepalive_enabled:
@@ -994,6 +1206,13 @@ class BootstrapService:
                             # First successful connect after failures
                             _emit_up()
                             nats_last_ok_at = time.monotonic()
+                            # Baseline for RX watchdog (updated by patched WebSocketTransport.readline()).
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                if tr is not None and not hasattr(tr, "_adaos_last_rx_at"):
+                                    setattr(tr, "_adaos_last_rx_at", time.monotonic())
+                            except Exception:
+                                pass
 
                             # Control channel: hub alias updates from backend
                             try:
@@ -1714,9 +1933,74 @@ class BootstrapService:
                     try:
                         while True:
                             await asyncio.sleep(1.0)
+                            # Watchdog: nats-py can silently lose its internal loops on unexpected WS/control frames
+                            # (or other exceptions), leaving the socket open but the client effectively dead.
+                            # If any core task terminates unexpectedly, restart the bridge.
+                            try:
+                                for _tname in ("_reading_task", "_flusher_task", "_ping_interval_task"):
+                                    _t = getattr(nc, _tname, None)
+                                    if isinstance(_t, asyncio.Task) and _t.done():
+                                        _exc = None
+                                        try:
+                                            _exc = _t.exception()
+                                        except asyncio.CancelledError:
+                                            _exc = None
+                                        # If task ended without exception, still restart - it should live forever.
+                                        _msg = (
+                                            f"[hub-io] nats watchdog: task={_tname} terminated exc={type(_exc).__name__}: {_exc}"
+                                            if _exc
+                                            else f"[hub-io] nats watchdog: task={_tname} terminated"
+                                        )
+                                        _rl_log("nats.watchdog", _msg, every_s=1.0)
+                                        raise RuntimeError(_msg)
+                            except RuntimeError:
+                                raise
+                            except Exception:
+                                pass
+                            # RX watchdog: if we stop receiving WS frames (including keepalives) for too long,
+                            # treat the connection as dead even if `nc.is_closed()` is still False.
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                last_rx = getattr(tr, "_adaos_last_rx_at", None) if tr is not None else None
+                                if isinstance(last_rx, (int, float)):
+                                    try:
+                                        rx_timeout_s = float(os.getenv("HUB_NATS_RX_TIMEOUT_S", "35") or "35")
+                                    except Exception:
+                                        rx_timeout_s = 35.0
+                                    if rx_timeout_s >= 10.0 and (time.monotonic() - float(last_rx)) > rx_timeout_s:
+                                        _idle = time.monotonic() - float(last_rx)
+                                        _msg = f"[hub-io] nats watchdog: no RX for {_idle:.1f}s (timeout={rx_timeout_s:.1f}s)"
+                                        _rl_log("nats.watchdog", _msg, every_s=1.0)
+                                        raise RuntimeError(_msg)
+                            except RuntimeError:
+                                raise
+                            except Exception:
+                                pass
+
                             is_closed_attr = getattr(nc, "is_closed", None)
                             is_closed = is_closed_attr() if callable(is_closed_attr) else bool(is_closed_attr)
                             if is_closed:
+                                # Extra WS diagnostics (close code/reason) for debugging UnexpectedEOF.
+                                try:
+                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                        tr = getattr(nc, "_transport", None)
+                                        ws = getattr(tr, "_ws", None) if tr else None
+                                        ws_closed = getattr(ws, "closed", None) if ws is not None else None
+                                        ws_close_code = getattr(ws, "close_code", None) if ws is not None else None
+                                        ws_exc = None
+                                        try:
+                                            exf = getattr(ws, "exception", None)
+                                            if callable(exf):
+                                                ws_exc = exf()
+                                        except Exception:
+                                            ws_exc = None
+                                        _rl_log(
+                                            "nats.ws_state",
+                                            f"[hub-io] nats ws state: closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
+                                            every_s=1.0,
+                                        )
+                                except Exception:
+                                    pass
                                 last_err = getattr(nc, "last_error", None)
                                 details = f"{type(last_err).__name__}: {last_err}" if last_err else ""
                                 raise RuntimeError(f"nats connection closed{(': ' + details) if details else ''}")

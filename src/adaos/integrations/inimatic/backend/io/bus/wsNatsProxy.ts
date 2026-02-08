@@ -117,6 +117,7 @@ export function installWsNatsProxy(server: HttpServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
+	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
 
 	// IMPORTANT: keep this in `noServer` mode.
@@ -549,9 +550,22 @@ export function installWsNatsProxy(server: HttpServer) {
 			tryProcessHandshake()
 		})
 
-		ws.on('pong', () => {
+		ws.on('ping', (data: any) => {
+			if (!pingTrace) return
+			try {
+				const buf = toBuffer(data)
+				log().info({ hub_id: hubIdForLog, len: buf.length }, 'ws ping (from client)')
+			} catch {}
+		})
+
+		ws.on('pong', (data: any) => {
 			wsPongsReceived += 1
 			lastWsPongAt = Date.now()
+			if (!pingTrace) return
+			try {
+				const buf = toBuffer(data)
+				log().info({ hub_id: hubIdForLog, len: buf.length }, 'ws pong (to proxy ping)')
+			} catch {}
 		})
 
 		ws.on('error', (err: any) => {
@@ -571,6 +585,20 @@ export function installWsNatsProxy(server: HttpServer) {
 					return ''
 				}
 			})()
+			// Extra diagnostics for abnormal closes (1006 = no close frame).
+			if (code === 1006) {
+				try {
+					const sock: any = (ws as any)?._socket
+					logSummary('ws close 1006 diag', {
+						socketDestroyed: sock ? Boolean(sock.destroyed) : null,
+						socketHadError: sock ? Boolean(sock.errored) : null,
+						socketBytesRead: sock ? Number(sock.bytesRead || 0) : null,
+						socketBytesWritten: sock ? Number(sock.bytesWritten || 0) : null,
+						remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
+						local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
+					})
+				} catch {}
+			}
 			logSummary('conn close', { code, reason })
 			try {
 				ws_nats_proxy_conn_close_total.labels(String(code)).inc()

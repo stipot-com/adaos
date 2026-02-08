@@ -212,6 +212,9 @@ services:
       # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
       # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
       WS_NATS_PATH: "/nats"
+      # WS->NATS proxy diagnostics (see backend/io/bus/wsNatsProxy.ts)
+      WS_NATS_PROXY_VERBOSE: ${WS_NATS_PROXY_VERBOSE:-0}
+      WS_NATS_PROXY_PING_TRACE: ${WS_NATS_PROXY_PING_TRACE:-0}
       GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
       CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
       CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
@@ -300,6 +303,9 @@ services:
       # IMPORTANT: must not be '/', otherwise ws-nats-proxy will catch *all* WS upgrades (including /hubs/*)
       # and break the Browser<->Hub WS tunnel. Keep this in sync with vhost `/nats`.
       WS_NATS_PATH: "/nats"
+      # WS->NATS proxy diagnostics (see backend/io/bus/wsNatsProxy.ts)
+      WS_NATS_PROXY_VERBOSE: ${WS_NATS_PROXY_VERBOSE:-0}
+      WS_NATS_PROXY_PING_TRACE: ${WS_NATS_PROXY_PING_TRACE:-0}
       GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
       CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
       CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt
