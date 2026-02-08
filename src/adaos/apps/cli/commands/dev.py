@@ -243,6 +243,8 @@ def root_logs(
         help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+    save_dir: str = typer.Option(".adaos/root_logs", "--save-dir", help="Save logs snapshot into this directory."),
+    save: bool = typer.Option(False, "--save", help="Save logs snapshot to a file in --save-dir."),
 ) -> None:
     service = _service()
     cfg = get_ctx().config
@@ -265,6 +267,32 @@ def root_logs(
     if not isinstance(items, list) or not items:
         typer.echo("No logs returned.")
         return
+    if save:
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            out_dir = Path(save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            hub_tag = (hub_id if hub_id is not None else "auto") or "all"
+            fname = f"root_logs_{ts}_min{int(minutes)}_hub{hub_tag}.log"
+            out_path = out_dir / fname
+            with out_path.open("w", encoding="utf-8") as f:
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    ts0 = it.get("ts")
+                    stream0 = it.get("stream")
+                    line0 = it.get("line")
+                    try:
+                        ts_s = str(int(ts0)) if isinstance(ts0, (int, float)) else str(ts0 or "")
+                    except Exception:
+                        ts_s = str(ts0 or "")
+                    f.write(f"{ts_s} {stream0}: {line0}\n")
+            typer.echo(f"Saved: {out_path}")
+        except Exception as exc:
+            _print_error(f"failed to save logs: {exc}")
     for it in items:
         if not isinstance(it, dict):
             continue

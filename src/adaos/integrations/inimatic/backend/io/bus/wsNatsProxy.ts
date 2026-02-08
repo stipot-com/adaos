@@ -1,4 +1,5 @@
 import type { Server as HttpServer } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import net from 'node:net'
 import pino from 'pino'
 import { WebSocketServer } from 'ws'
@@ -149,9 +150,10 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 	})
 
-	wss.on('connection', (ws: any, req: any) => {
+wss.on('connection', (ws: any, req: any) => {
+		const connId = randomBytes(4).toString('hex')
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
-		if (verbose) log().info({ from: rip }, 'conn open')
+		if (verbose) log().info({ conn: connId, from: rip }, 'conn open')
 		try {
 			ws_nats_proxy_conn_open_total.inc()
 		} catch {}
@@ -219,6 +221,7 @@ export function installWsNatsProxy(server: HttpServer) {
 
 		function logSummary(event: string, extra?: Record<string, unknown>) {
 			const base = {
+				conn: connId,
 				from: rip,
 				hub_id: hubIdForLog,
 				handshaked,
@@ -266,6 +269,19 @@ export function installWsNatsProxy(server: HttpServer) {
 			log().info(base, event)
 		}
 
+		// Extra diagnostics: attach to the underlying TCP socket events to see whether the connection
+		// is being cut at the transport layer (which shows up as WS close 1006 on the hub).
+		try {
+			const sock: any = (ws as any)?._socket
+			if (sock && !sock.__adaos_ws_diag_attached) {
+				sock.__adaos_ws_diag_attached = true
+				sock.on('end', () => logSummary('ws socket end'))
+				sock.on('close', (hadErr: any) => logSummary('ws socket close', { hadError: Boolean(hadErr) }))
+				sock.on('timeout', () => logSummary('ws socket timeout'))
+				sock.on('error', (e: any) => logSummary('ws socket error', { err: String(e) }))
+			}
+		} catch {}
+
 		function armWsPing() {
 			if (wsPingTimer) clearInterval(wsPingTimer)
 			wsPingTimer = setInterval(() => {
@@ -273,6 +289,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					if (ws.readyState !== 1) return
 					ws.ping()
 					wsPingsSent += 1
+					if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'ws ping (from proxy)')
 				} catch {}
 			}, 25_000)
 		}
@@ -288,6 +305,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					if (ws.readyState !== 1) return
 					ws.send(NATS_PING, { binary: true })
 					natsKeepalivesSent += 1
+					if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (keepalive -> client)')
 				} catch {}
 			}, 20_000)
 		}
@@ -533,11 +551,13 @@ export function installWsNatsProxy(server: HttpServer) {
 					if (scanPong.hit) {
 						lastClientPongAt = Date.now()
 						clientSentPong += 1
+						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats pong (from client)')
 					}
 					// Track client PINGs too (nats-py sends these as keepalive).
 					if (buf.includes(NATS_PING)) {
 						lastClientPingAt = Date.now()
 						clientSentPing += 1
+						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (from client)')
 					}
 				} catch {}
 				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
@@ -564,7 +584,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			if (!pingTrace) return
 			try {
 				const buf = toBuffer(data)
-				log().info({ hub_id: hubIdForLog, len: buf.length }, 'ws pong (to proxy ping)')
+				log().info({ conn: connId, hub_id: hubIdForLog, len: buf.length }, 'ws pong (to proxy ping)')
 			} catch {}
 		})
 

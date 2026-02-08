@@ -10,6 +10,7 @@ import socket
 import time
 import traceback
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
@@ -463,6 +464,12 @@ class BootstrapService:
                     backoff = 1.0
                     trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
                     raw_keepalive_task: asyncio.Task | None = None
+                    # Best-effort outbox for telegram replies when NATS is flapping.
+                    try:
+                        if not hasattr(self, "_tg_output_pending"):
+                            setattr(self, "_tg_output_pending", deque())
+                    except Exception:
+                        pass
                     # nats-py WS transport (aiohttp) has historically surfaced WS CLOSE frames as `int` (close code),
                     # causing the NATS parser to crash with `TypeError: argument of type 'int' is not iterable` and
                     # leaving the connection in a half-dead state (read loop stopped, socket still open).
@@ -470,6 +477,7 @@ class BootstrapService:
                     try:
                         from nats.aio import transport as _nats_transport  # type: ignore
                         from nats.aio import client as _nats_client  # type: ignore
+                        from nats.aio.errors import ProtocolError as _NatsProtocolError  # type: ignore
                         import aiohttp  # type: ignore
 
                         _ws_tr = getattr(_nats_transport, "WebSocketTransport", None)
@@ -538,13 +546,23 @@ class BootstrapService:
                             and not getattr(_orig_connect, "_adaos_ws_patch", False)
                         ):
                             async def _ws_connect_safe(self, uri, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                try:
+                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
+                                    if hb_env.strip() == "":
+                                        hb = 20.0
+                                    else:
+                                        v = float(hb_env)
+                                        hb = v if v > 0.0 else None
+                                except Exception:
+                                    hb = 20.0
                                 headers = self._get_custom_headers()
                                 self._ws = await self._client.ws_connect(
                                     uri.geturl(),
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=False,
+                                    autoping=True,
                                     autoclose=False,
+                                    heartbeat=hb,
                                 )
                                 self._using_tls = False
 
@@ -565,12 +583,21 @@ class BootstrapService:
                             and not getattr(_orig_connect_tls, "_adaos_ws_patch", False)
                         ):
                             async def _ws_connect_tls_safe(self, uri, ssl_context, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                try:
+                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
+                                    if hb_env.strip() == "":
+                                        hb = 20.0
+                                    else:
+                                        v = float(hb_env)
+                                        hb = v if v > 0.0 else None
+                                except Exception:
+                                    hb = 20.0
                                 # Mirror upstream behavior (refuse upgrading a live non-TLS socket).
                                 try:
                                     if getattr(self, "_ws", None) is not None and not getattr(self._ws, "closed", True):
                                         if getattr(self, "_using_tls", None):
                                             return
-                                        raise ProtocolError("ws: cannot upgrade to TLS")
+                                        raise _NatsProtocolError("ws: cannot upgrade to TLS")
                                 except Exception:
                                     # If something goes wrong introspecting state, fall back to opening a new ws.
                                     pass
@@ -582,8 +609,9 @@ class BootstrapService:
                                     ssl=ssl_context,
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=False,
+                                    autoping=True,
                                     autoclose=False,
+                                    heartbeat=hb,
                                 )
                                 self._using_tls = True
 
@@ -791,6 +819,15 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                            # Prefer the dedicated hostname over the root ingress when both are available.
+                            try:
+                                if os.getenv("HUB_NATS_PREFER_DEDICATED", "1") == "1":
+                                    preferred = "wss://nats.inimatic.com/nats"
+                                    if preferred in candidates and candidates and candidates[0] != preferred:
+                                        candidates = [preferred] + [c for c in candidates if c != preferred]
+                            except Exception:
+                                pass
+
                             hub_nats_verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                             hub_nats_quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
                             if hub_nats_verbose or not hub_nats_quiet:
@@ -931,6 +968,8 @@ class BootstrapService:
                             async def _try_connect(server: str) -> Any:
                                 # `nats` package does not expose Client at top-level; use nats.aio.client.Client.
                                 nc_local = _nats.aio.client.Client()
+                                async def _on_error_cb_local(e: Exception) -> None:
+                                    await _on_error_cb(e, nc_for_diag=nc_local)
                                 try:
                                     # In some environments aiohttp-based NATS-over-WS can intermittently stop
                                     # delivering `PONG` frames even while the socket stays open; nats-py will
@@ -957,7 +996,7 @@ class BootstrapService:
                                             ping_interval=ping_interval,
                                             max_outstanding_pings=max_outstanding_pings,
                                             connect_timeout=5.0,
-                                            error_cb=(lambda e, _nc=nc_local: _on_error_cb(e, nc_for_diag=_nc)),
+                                            error_cb=_on_error_cb_local,
                                             disconnected_cb=_on_disconnected,
                                             reconnected_cb=_on_reconnected,
                                         ),
@@ -1133,7 +1172,12 @@ class BootstrapService:
                                             fp = getattr(nc, "_flush_pending", None)
                                             if callable(sc) and callable(fp):
                                                 await sc(ping_cmd)
-                                                await fp()
+                                                # Ensure the frame actually hits the wire; otherwise some proxies/LBs
+                                                # may still consider the connection idle and close it (1006/EOF).
+                                                try:
+                                                    await fp(force_flush=True)
+                                                except TypeError:
+                                                    await fp()
                                         except Exception:
                                             # Keepalive is best-effort; connection supervisor will handle reconnects.
                                             pass
@@ -1161,6 +1205,38 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                            # Drain outbox (replay replies produced while NATS was down/flapping).
+                            try:
+                                q = getattr(self, "_tg_output_pending", None)
+                                if q:
+                                    drained = 0
+                                    max_drain = 200
+                                    try:
+                                        max_drain = int(os.getenv("HUB_TG_OUTBOX_DRAIN_MAX", "200") or "200")
+                                    except Exception:
+                                        max_drain = 200
+                                    while q and (max_drain <= 0 or drained < max_drain):
+                                        try:
+                                            subj0, data0 = q[0]
+                                        except Exception:
+                                            break
+                                        try:
+                                            await nc.publish(str(subj0), bytes(data0))
+                                            fp = getattr(nc, "_flush_pending", None)
+                                            if callable(fp):
+                                                await fp(force_flush=True)
+                                            try:
+                                                q.popleft()
+                                            except Exception:
+                                                pass
+                                            drained += 1
+                                        except Exception:
+                                            break
+                                    if drained and (hub_nats_verbose or trace):
+                                        _rl_log("nats.outbox", f"[hub-io] tg outbox drained={drained}", every_s=1.0)
+                            except Exception:
+                                pass
+
                             try:
                                 if not bool(getattr(self, "_tg_output_bridge_hooked", False)):
 
@@ -1169,20 +1245,47 @@ class BootstrapService:
                                             subj = ev.type
                                             if not isinstance(subj, str) or not subj.startswith("tg.output."):
                                                 return
-                                            nc2 = getattr(self, "_tg_output_nats_nc", None)
-                                            if not nc2:
-                                                return
                                             try:
                                                 data = _json.dumps(ev.payload or {}, ensure_ascii=False).encode("utf-8")
                                             except Exception:
                                                 data = b"{}"
-                                            coro = nc2.publish(subj, data)
-                                            if asyncio.iscoroutine(coro):
+                                            max_outbox = 200
+                                            try:
+                                                max_outbox = int(os.getenv("HUB_TG_OUTBOX_MAX", "200") or "200")
+                                            except Exception:
+                                                max_outbox = 200
+
+                                            def _queue() -> None:
                                                 try:
-                                                    loop = asyncio.get_running_loop()
-                                                    loop.create_task(coro)
-                                                except RuntimeError:
-                                                    asyncio.run(coro)
+                                                    q = getattr(self, "_tg_output_pending", None)
+                                                    if q is None:
+                                                        q = deque()
+                                                        setattr(self, "_tg_output_pending", q)
+                                                    while max_outbox > 0 and len(q) >= max_outbox:
+                                                        q.popleft()
+                                                    q.append((subj, data))
+                                                except Exception:
+                                                    return
+
+                                            nc2 = getattr(self, "_tg_output_nats_nc", None)
+                                            if not nc2:
+                                                _queue()
+                                                return
+
+                                            async def _publish_or_queue() -> None:
+                                                try:
+                                                    await nc2.publish(subj, data)
+                                                    fp = getattr(nc2, "_flush_pending", None)
+                                                    if callable(fp):
+                                                        await fp(force_flush=True)
+                                                except Exception:
+                                                    _queue()
+
+                                            try:
+                                                loop = asyncio.get_running_loop()
+                                                loop.create_task(_publish_or_queue())
+                                            except RuntimeError:
+                                                _queue()
                                         except Exception:
                                             return
 
@@ -1931,8 +2034,22 @@ class BootstrapService:
                         pass
                     # keep task alive
                     try:
+                        last_watchdog_tick_at = time.monotonic()
                         while True:
                             await asyncio.sleep(1.0)
+                            now = time.monotonic()
+                            tick_gap = now - last_watchdog_tick_at
+                            last_watchdog_tick_at = now
+                            skip_rx_watchdog = tick_gap > 5.0
+                            if skip_rx_watchdog:
+                                # If the event loop was stalled (e.g. a long sync handler), don't treat lack of RX
+                                # during that window as a dead connection; refresh the baseline instead.
+                                try:
+                                    tr = getattr(nc, "_transport", None)
+                                    if tr is not None:
+                                        setattr(tr, "_adaos_last_rx_at", now)
+                                except Exception:
+                                    pass
                             # Watchdog: nats-py can silently lose its internal loops on unexpected WS/control frames
                             # (or other exceptions), leaving the socket open but the client effectively dead.
                             # If any core task terminates unexpectedly, restart the bridge.
@@ -1945,6 +2062,15 @@ class BootstrapService:
                                             _exc = _t.exception()
                                         except asyncio.CancelledError:
                                             _exc = None
+                                        # If the core task stopped without an exception, surface the last_error
+                                        # so the supervisor can classify transient EOFs and quarantine the server.
+                                        try:
+                                            if _exc is None:
+                                                _le = getattr(nc, "last_error", None)
+                                                if isinstance(_le, Exception):
+                                                    _exc = _le
+                                        except Exception:
+                                            pass
                                         # If task ended without exception, still restart - it should live forever.
                                         _msg = (
                                             f"[hub-io] nats watchdog: task={_tname} terminated exc={type(_exc).__name__}: {_exc}"
@@ -1952,6 +2078,8 @@ class BootstrapService:
                                             else f"[hub-io] nats watchdog: task={_tname} terminated"
                                         )
                                         _rl_log("nats.watchdog", _msg, every_s=1.0)
+                                        if isinstance(_exc, Exception):
+                                            raise _exc
                                         raise RuntimeError(_msg)
                             except RuntimeError:
                                 raise
@@ -1960,18 +2088,22 @@ class BootstrapService:
                             # RX watchdog: if we stop receiving WS frames (including keepalives) for too long,
                             # treat the connection as dead even if `nc.is_closed()` is still False.
                             try:
+                                if skip_rx_watchdog:
+                                    raise StopIteration()
                                 tr = getattr(nc, "_transport", None)
                                 last_rx = getattr(tr, "_adaos_last_rx_at", None) if tr is not None else None
                                 if isinstance(last_rx, (int, float)):
                                     try:
-                                        rx_timeout_s = float(os.getenv("HUB_NATS_RX_TIMEOUT_S", "35") or "35")
+                                        rx_timeout_s = float(os.getenv("HUB_NATS_RX_TIMEOUT_S", "90") or "90")
                                     except Exception:
-                                        rx_timeout_s = 35.0
+                                        rx_timeout_s = 90.0
                                     if rx_timeout_s >= 10.0 and (time.monotonic() - float(last_rx)) > rx_timeout_s:
                                         _idle = time.monotonic() - float(last_rx)
                                         _msg = f"[hub-io] nats watchdog: no RX for {_idle:.1f}s (timeout={rx_timeout_s:.1f}s)"
                                         _rl_log("nats.watchdog", _msg, every_s=1.0)
                                         raise RuntimeError(_msg)
+                            except StopIteration:
+                                pass
                             except RuntimeError:
                                 raise
                             except Exception:
