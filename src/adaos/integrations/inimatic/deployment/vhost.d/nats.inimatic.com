@@ -2,6 +2,11 @@
 client_max_body_size 10m;
 
 # NATS WebSocket passthrough (no mTLS)
+#
+# NOTE: This vhost exists primarily to expose the hub WS-NATS bridge on `/nats` (proxied to the backend
+# ws-nats-proxy). To keep accidental plain HTTP probes (e.g. `/`) from hitting NATS' WS listener and
+# spamming NATS logs with "websocket handshake error: invalid value for header 'Upgrade'", the NATS
+# container's `VIRTUAL_PORT` should point at the HTTP monitoring port (8222), not the WS port (8080).
 location ^~ /nats {
 
   proxy_http_version 1.1;
@@ -21,4 +26,22 @@ location ^~ /nats {
 
   # Forward to the backend ws-nats-proxy so hub tokens work on this host too.
   proxy_pass http://api.inimatic.com;
+}
+
+# Let nginx-proxy/acme-companion serve HTTP-01 challenges.
+# (Files are written into the shared nginx html volume.)
+location ^~ /.well-known/acme-challenge/ {
+  try_files $uri =404;
+}
+
+# Block everything except `/nats` so the NATS monitoring port (8222) is not exposed publicly via this vhost.
+location ~* ^/(?!nats(?:/|$)) {
+  return 404;
+}
+
+# IMPORTANT: nginx-proxy already generates `location / { ... }` for the upstream container.
+# Do NOT add another `location /` here (it causes "duplicate location \"/\"").
+# If you want to block accidental plain HTTP probes to the vhost root, use an exact match:
+location = / {
+  return 404;
 }

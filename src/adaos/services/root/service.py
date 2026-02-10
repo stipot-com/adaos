@@ -822,6 +822,50 @@ class RootDeveloperService:
         )
         return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
 
+    def dev_log_files(
+        self,
+        *,
+        contains: str | None = None,
+        limit: int = 500,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_log_files(
+            root_token=token,
+            contains=contains,
+            limit=limit,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
+
+    def dev_log_tail(
+        self,
+        *,
+        file: str,
+        lines: int = 200,
+        max_bytes: int = 2_000_000,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_log_tail(
+            root_token=token,
+            file=file,
+            lines=lines,
+            max_bytes=max_bytes,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
+
     def login(
         self,
         *,

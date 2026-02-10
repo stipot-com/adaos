@@ -257,6 +257,51 @@ class RootHttpClient:
             )
         )
 
+    def dev_log_files(
+        self,
+        *,
+        root_token: str,
+        contains: str | None = None,
+        limit: int = 500,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {"limit": int(limit)}
+        if contains:
+            params["contains"] = contains
+        return dict(
+            self._request(
+                "GET",
+                "/v1/dev/log_files",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def dev_log_tail(
+        self,
+        *,
+        root_token: str,
+        file: str,
+        lines: int = 200,
+        max_bytes: int = 2_000_000,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {"file": str(file), "lines": int(lines), "max_bytes": int(max_bytes)}
+        return dict(
+            self._request(
+                "GET",
+                "/v1/dev/log_tail",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
     def device_authorize(
         self,
         *,

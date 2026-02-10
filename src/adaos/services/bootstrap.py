@@ -549,12 +549,12 @@ class BootstrapService:
                                 try:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
                                     if hb_env.strip() == "":
-                                        hb = 20.0
+                                        hb = None
                                     else:
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
                                 except Exception:
-                                    hb = 20.0
+                                    hb = None
                                 headers = self._get_custom_headers()
                                 self._ws = await self._client.ws_connect(
                                     uri.geturl(),
@@ -586,12 +586,12 @@ class BootstrapService:
                                 try:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
                                     if hb_env.strip() == "":
-                                        hb = 20.0
+                                        hb = None
                                     else:
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
                                 except Exception:
-                                    hb = 20.0
+                                    hb = None
                                 # Mirror upstream behavior (refuse upgrading a live non-TLS socket).
                                 try:
                                     if getattr(self, "_ws", None) is not None and not getattr(self._ws, "closed", True):

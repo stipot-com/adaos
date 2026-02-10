@@ -236,6 +236,7 @@ def root_logs(
         "--hub-id",
         help="Filter only lines containing this hub/subnet id (default: current subnet). Pass an empty string to disable hub filtering.",
     ),
+    all_hubs: bool = typer.Option(False, "--all-hubs", help="Disable hub filtering (PowerShell-friendly)."),
     contains: str = typer.Option(None, "--contains", help="Filter only lines containing this substring."),
     token: str = typer.Option(
         None,
@@ -250,7 +251,9 @@ def root_logs(
     cfg = get_ctx().config
     # Default hub filter only when option is not provided at all.
     # Passing `--hub-id ""` disables hub filtering and allows searching across all root logs.
-    if hub_id is None:
+    if all_hubs:
+        hub_id = ""
+    elif hub_id is None:
         try:
             hub_id = cfg.subnet_id
         except Exception:
@@ -304,6 +307,89 @@ def root_logs(
         except Exception:
             ts_s = str(ts or "")
         typer.echo(f"{ts_s} {stream}: {line}")
+
+
+@root_app.command("log-files")
+@_run_safe
+def root_log_files(
+    contains: str = typer.Option(None, "--contains", help="Filter filenames containing this substring."),
+    limit: int = typer.Option(500, "--limit", help="Max files to return (1..5000)."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    service = _service()
+    try:
+        result = service.dev_log_files(contains=contains, limit=limit, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list) or not items:
+        typer.echo("No log files returned.")
+        return
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        rel = it.get("rel") or it.get("name") or ""
+        bytes_ = it.get("bytes")
+        mtime_ms = it.get("mtime_ms")
+        typer.echo(f"{rel} bytes={bytes_} mtime_ms={mtime_ms}")
+
+
+@root_app.command("log-tail")
+@_run_safe
+def root_log_tail(
+    file: str = typer.Option(..., "--file", help="Relative log file path from backend logs dir (see `log-files`)."),
+    lines: int = typer.Option(200, "--lines", help="How many lines from the end (1..50000)."),
+    max_bytes: int = typer.Option(2_000_000, "--max-bytes", help="Max bytes to read from the end."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+    save_dir: str = typer.Option(".adaos/root_logs", "--save-dir", help="Save log tail into this directory."),
+    save: bool = typer.Option(False, "--save", help="Save log tail to a file in --save-dir."),
+) -> None:
+    service = _service()
+    try:
+        result = service.dev_log_tail(file=file, lines=lines, max_bytes=max_bytes, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    out_lines = result.get("lines") if isinstance(result, dict) else None
+    rel = (result.get("rel") if isinstance(result, dict) else None) or file
+    if not isinstance(out_lines, list) or not out_lines:
+        typer.echo("No log lines returned.")
+        return
+    if save:
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            out_dir = Path(save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            safe_rel = str(rel).replace("/", "_").replace("\\", "_")
+            out_path = out_dir / f"log_tail_{ts}_{safe_rel}.log"
+            with out_path.open("w", encoding="utf-8") as f:
+                for ln in out_lines:
+                    f.write(str(ln) + "\n")
+            typer.echo(f"Saved: {out_path}")
+        except Exception as exc:
+            _print_error(f"failed to save log tail: {exc}")
+    for ln in out_lines:
+        typer.echo(str(ln))
 
 
 def _echo_login_result(result: RootLoginResult) -> None:

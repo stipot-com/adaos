@@ -88,7 +88,9 @@ services:
     expose: ["4222", "8222", "8080"]
     environment:
       - VIRTUAL_HOST=nats.inimatic.com
-      - VIRTUAL_PORT=8080
+      # Route plain HTTP probes to NATS' monitoring port; the WS entrypoint for hubs is served on `/nats`
+      # via nginx `vhost.d/nats.inimatic.com` -> backend ws-nats-proxy.
+      - VIRTUAL_PORT=8222
       - VIRTUAL_PROTO=http
       - LETSENCRYPT_HOST=nats.inimatic.com
       - LETSENCRYPT_EMAIL=connect@stipot.com
