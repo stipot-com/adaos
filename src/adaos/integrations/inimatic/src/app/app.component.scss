@@ -61,6 +61,26 @@ ion-header ion-toolbar {
 	background: var(--ion-color-danger);
 }
 
+.transport-status {
+	display: inline-flex;
+	align-items: center;
+	font-size: 16px;
+}
+
+.transport-icon {
+	font-size: 16px;
+}
+
+.transport-icon.ws {
+	color: var(--ion-color-warning);
+	opacity: 0.9;
+}
+
+.transport-icon.p2p {
+	color: var(--ion-color-success);
+	opacity: 0.75;
+}
+
 @media (max-width: 900px) {
 	.hub-status .label {
 		display: none;

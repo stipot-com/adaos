@@ -14,6 +14,9 @@
 	"status.online": "онлайн",
 	"status.offline": "офлайн",
 
+	"transport.cloud_relay": "Соединение через облако — возможны задержки",
+	"transport.p2p": "Прямое P2P-соединение",
+
 	"aria.logout_debug": "Выйти",
 	"aria.reload": "Обновить",
 

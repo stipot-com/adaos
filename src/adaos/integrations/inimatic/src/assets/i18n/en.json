@@ -14,6 +14,9 @@
 	"status.online": "online",
 	"status.offline": "offline",
 
+	"transport.cloud_relay": "Cloud relay — possible delays",
+	"transport.p2p": "Direct P2P connection",
+
 	"aria.logout_debug": "Logout",
 	"aria.reload": "Reload",
 

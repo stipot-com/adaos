@@ -1,6 +1,7 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { Injectable } from '@angular/core'
 import { map } from 'rxjs/operators'
+import { WebRtcTransportService } from './webrtc-transport.service'
 
 export type AdaosEvent = { type: string; [k: string]: any }
 export interface AdaosConfig {
@@ -58,8 +59,12 @@ export class AdaosClient {
 			timeout: any
 		}
 	>()
+	private useWebRtc = false
 
-	constructor(private http: HttpClient) {
+	constructor(
+		private http: HttpClient,
+		public readonly rtc: WebRtcTransportService
+	) {
 		const lsBase = (() => {
 			try {
 				return localStorage.getItem('adaos_hub_base')
@@ -75,6 +80,36 @@ export class AdaosClient {
 			token: (window as any).__ADAOS_TOKEN__ ?? null,
 			authKind: 'adaos-token',
 		}
+	}
+
+	/**
+	 * Attempt to upgrade the current WS connection to WebRTC DataChannels.
+	 * Returns `true` if WebRTC is active, `false` on failure (WS remains).
+	 */
+	async enableWebRtc(signalingWs: WebSocket): Promise<boolean> {
+		// Wire RTC events-channel messages into the same pending-cmd handler
+		this.rtc.onEventsMessage = (data: string) => {
+			this.onEventsMessage({ data } as MessageEvent)
+		}
+
+		const sendCmd = (kind: string, payload: Record<string, any>) =>
+			this.sendEventsCommand(kind, payload, 8000)
+
+		const ok = await this.rtc.negotiate(signalingWs, sendCmd)
+		this.useWebRtc = ok
+
+		// Listen for WebRTC failure → automatic fallback to WS
+		this.rtc.state$.subscribe((st) => {
+			if (st === 'failed' && this.useWebRtc) {
+				this.useWebRtc = false
+			}
+		})
+
+		return ok
+	}
+
+	isWebRtcActive(): boolean {
+		return this.useWebRtc && this.rtc.isConnected()
 	}
 
 	getBaseUrl() {
@@ -218,10 +253,10 @@ export class AdaosClient {
 
 	subscribe(topics: string[]) {
 		if (!topics.length) return
+		const msg = JSON.stringify({ type: 'subscribe', topics })
+		if (this.useWebRtc && this.rtc.sendEvents(msg)) return
 		this.ensureEventsSocket()
-			.then((ws) => {
-				ws.send(JSON.stringify({ type: 'subscribe', topics }))
-			})
+			.then((ws) => ws.send(msg))
 			.catch(() => {})
 	}
 
@@ -252,7 +287,14 @@ export class AdaosClient {
 				timeout,
 			})
 		})
-		ws.send(JSON.stringify(envelope))
+		const json = JSON.stringify(envelope)
+		// Signaling commands (rtc.*) must always go through WS even when WebRTC is active.
+		const isSignaling = kind.startsWith('rtc.')
+		if (!isSignaling && this.useWebRtc && this.rtc.sendEvents(json)) {
+			// Sent via WebRTC DataChannel
+		} else {
+			ws.send(json)
+		}
 		return ack
 	}
 

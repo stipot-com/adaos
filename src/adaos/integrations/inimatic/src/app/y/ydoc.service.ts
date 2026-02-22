@@ -3,13 +3,14 @@ import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { WebsocketProvider } from 'y-websocket'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
+import { DataChannelProvider } from './datachannel-provider'
 import { isDebugEnabled } from '../debug-log'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
   private db?: IndexeddbPersistence
-  private provider?: WebsocketProvider
+  private provider?: WebsocketProvider | DataChannelProvider
   private initialized = false
   private initPromise?: Promise<void>
   private readonly deviceId: string
@@ -381,13 +382,34 @@ export class YDocService {
       console.info('[YDocService] IndexedDB persistence disabled (set ?yjs_persist=1 to enable)')
     }
 
-    // 2) Connect Yjs via y-websocket to /yws/<webspace_id>
-    // WebsocketProvider builds URL as `${serverUrl}/${room}`.
-    const serverUrl = `${baseWs}/yws`
-    const room = webspaceId || 'default'
-    this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
-      params: { dev: this.deviceId, ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}) },
-    })
+    // 2) Attempt WebRTC upgrade when using root-proxy (hub behind NAT)
+    const isRemoteProxy = baseHttp.includes('/hubs/')
+    let webRtcActive = false
+    if (isRemoteProxy) {
+      try {
+        const ws = this.adaos.getEventsSocket()
+        if (ws) {
+          webRtcActive = await this.adaos.enableWebRtc(ws)
+        }
+      } catch {
+        // WebRTC negotiation failed — continue with WS
+      }
+    }
+
+    // 3) Connect Yjs via DataChannel (WebRTC) or y-websocket (WS fallback)
+    if (webRtcActive) {
+      const yjsDc = this.adaos.rtc.getYjsChannel()
+      if (yjsDc) {
+        this.provider = new DataChannelProvider(this.doc, yjsDc)
+      }
+    }
+    if (!this.provider) {
+      const serverUrl = `${baseWs}/yws`
+      const room = webspaceId || 'default'
+      this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
+        params: { dev: this.deviceId, ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}) },
+      })
+    }
 
     await Promise.race([
       new Promise<void>((resolve) => {

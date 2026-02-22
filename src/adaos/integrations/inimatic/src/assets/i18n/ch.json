@@ -14,6 +14,9 @@
 	"status.online": "在线",
 	"status.offline": "离线",
 
+	"transport.cloud_relay": "云中继 — 可能有延迟",
+	"transport.p2p": "直连 P2P",
+
 	"aria.logout_debug": "退出",
 	"aria.reload": "刷新",
 
