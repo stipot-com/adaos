@@ -113,6 +113,10 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
 		this.applyTheme(this.colorSchemeMedia.matches)
 		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
+
+		// Initialize visibility tracking for WebRTC reconnection on mobile devices
+		this.rtc.initVisibilityTracking()
+
 		try {
 			window.addEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
 		} catch { }
@@ -156,24 +160,42 @@ export class AppComponent implements OnInit, OnDestroy {
 			distinctUntilChanged(),
 			pairwise(),
 			filter(([prev, cur]) => {
-				// Only show toast for meaningful transitions
+				// Show toast for meaningful transitions
 				return (prev === 'connected' && cur === 'failed') ||
 					(prev === 'failed' && cur === 'connected') ||
 					(prev === 'connecting' && cur === 'failed') ||
-					(prev === 'signaling' && cur === 'connected')
+					(prev === 'signaling' && cur === 'connected') ||
+					(prev === 'connecting' && cur === 'connected') ||  // Recovery
+					(prev === 'idle' && cur === 'connecting')  // Renegotiation
 			}),
-		).subscribe(async ([_prev, cur]) => {
-			const message = cur === 'failed'
-				? 'Direct connection unavailable. Using cloud relay — possible delays.'
-				: 'Direct P2P connection established.'
-			const color = cur === 'failed' ? 'warning' : 'success'
-			const toast = await this.toastCtrl.create({
-				message,
-				duration: 4000,
-				position: 'bottom',
-				color,
-			})
-			await toast.present()
+		).subscribe(async ([prev, cur]) => {
+			let message = ''
+			let color: 'warning' | 'success' | 'primary' = 'success'
+
+			if (cur === 'failed') {
+				message = 'Direct connection unavailable. Using cloud relay — possible delays.'
+				color = 'warning'
+			} else if (cur === 'connected') {
+				if (prev === 'failed' || prev === 'connecting') {
+					message = 'Direct P2P connection established.'
+					color = 'success'
+				}
+			} else if (cur === 'connecting') {
+				if (prev === 'idle') {
+					message = 'Reconnecting...'
+					color = 'primary'
+				}
+			}
+
+			if (message) {
+				const toast = await this.toastCtrl.create({
+					message,
+					duration: 4000,
+					position: 'bottom',
+					color,
+				})
+				await toast.present()
+			}
 		})
 	}
 

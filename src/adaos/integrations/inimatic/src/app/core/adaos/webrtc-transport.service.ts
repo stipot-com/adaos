@@ -23,8 +23,12 @@ export class WebRtcTransportService {
 		{ urls: 'stun:stun1.l.google.com:19302' },
 	]
 	private static readonly CONNECT_TIMEOUT_MS = 8000
-	private static readonly ICE_RESTART_MAX = 2
+	private static readonly ICE_RESTART_MAX = 5  // Changed from 2 to 5
 	private static readonly DISCONNECT_GRACE_MS = 3000
+	private static readonly RECONNECT_BACKOFF_BASE_MS = 1000
+	private static readonly RECONNECT_BACKOFF_MAX_MS = 16000
+	private static readonly CONNECTION_HEALTH_CHECK_MS = 30000
+	private static readonly VISIBILITY_RECONNECT_DEBOUNCE_MS = 1000
 
 	private pc: RTCPeerConnection | null = null
 	private eventsChannel: RTCDataChannel | null = null
@@ -32,6 +36,12 @@ export class WebRtcTransportService {
 	private iceRestartCount = 0
 	private signalingWs: WebSocket | null = null
 	private signalingListener: ((ev: MessageEvent) => void) | null = null
+	private lastConnectedTimestamp: number = 0
+	private lastIceRestartTimestamp: number = 0
+	private isPageVisible: boolean = true
+	private visibilityChangeDebounce: ReturnType<typeof setTimeout> | null = null
+	private explicitlyDisabled: boolean = false
+	private pendingSendCommand: ((kind: string, payload: Record<string, any>) => Promise<any>) | null = null
 
 	/** Pending answer resolve/reject for the current negotiation round. */
 	private answerResolve: ((sdp: RTCSessionDescriptionInit) => void) | null =
@@ -109,6 +119,12 @@ export class WebRtcTransportService {
 
 	close(): void {
 		this.removeSignalingListener()
+
+		if (this.visibilityChangeDebounce) {
+			clearTimeout(this.visibilityChangeDebounce)
+			this.visibilityChangeDebounce = null
+		}
+
 		if (this.eventsChannel) {
 			try {
 				this.eventsChannel.close()
@@ -129,10 +145,70 @@ export class WebRtcTransportService {
 		}
 		this.answerResolve = null
 		this.answerReject = null
+		this.pendingSendCommand = null
 		this.state$.next('idle')
 	}
 
+	/**
+	 * Initialize visibility tracking to detect screen wake-up on mobile devices.
+	 * Call this once during application initialization.
+	 */
+	initVisibilityTracking(): void {
+		if (typeof document === 'undefined') return
+
+		this.isPageVisible = !document.hidden
+
+		const handleVisibilityChange = () => {
+			const nowVisible = !document.hidden
+			if (this.isPageVisible === nowVisible) return
+
+			this.isPageVisible = nowVisible
+			console.log(`🔍 Visibility changed: ${nowVisible ? 'visible' : 'hidden'}`)
+
+			if (nowVisible) {
+				// Debounce to avoid rapid reconnection attempts
+				if (this.visibilityChangeDebounce) {
+					clearTimeout(this.visibilityChangeDebounce)
+				}
+				this.visibilityChangeDebounce = setTimeout(() => {
+					this.handlePageBecameVisible()
+				}, WebRtcTransportService.VISIBILITY_RECONNECT_DEBOUNCE_MS)
+			}
+		}
+
+		document.addEventListener('visibilitychange', handleVisibilityChange)
+	}
+
+	/**
+	 * Trigger full WebRTC renegotiation. Used for reconnection after visibility changes.
+	 */
+	async triggerFullRenegotiation(): Promise<boolean> {
+		if (!this.signalingWs || !this.pendingSendCommand) {
+			console.warn('⚠️ Cannot renegotiate: missing WebSocket or sendCommand')
+			return false
+		}
+
+		// Reset restart counter for fresh attempt
+		this.iceRestartCount = 0
+
+		return await this.negotiate(this.signalingWs, this.pendingSendCommand)
+	}
+
 	// -- internals ------------------------------------------------------------
+
+	private handlePageBecameVisible(): void {
+		const currentState = this.state$.value
+		const timeSinceLastConnection = Date.now() - this.lastConnectedTimestamp
+
+		const shouldReconnect =
+			currentState === 'failed' ||
+			(currentState !== 'connected' && timeSinceLastConnection > WebRtcTransportService.CONNECTION_HEALTH_CHECK_MS)
+
+		if (shouldReconnect && !this.explicitlyDisabled) {
+			console.log('🔄 Attempting full WebRTC renegotiation after visibility change')
+			this.triggerFullRenegotiation()
+		}
+	}
 
 	private async doNegotiate(
 		sendCommand: (
@@ -264,6 +340,9 @@ export class WebRtcTransportService {
 	): void {
 		let disconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+		// Store sendCommand for later renegotiation
+		this.pendingSendCommand = sendCommand
+
 		pc.oniceconnectionstatechange = () => {
 			const st = pc.iceConnectionState
 
@@ -272,6 +351,11 @@ export class WebRtcTransportService {
 					clearTimeout(disconnectTimer)
 					disconnectTimer = null
 				}
+
+				// Reset ICE restart counter on successful connection
+				this.iceRestartCount = 0
+				this.lastConnectedTimestamp = Date.now()
+
 				if (this.state$.value !== 'connected') {
 					this.state$.next('connected')
 				}
@@ -305,12 +389,32 @@ export class WebRtcTransportService {
 			payload: Record<string, any>,
 		) => Promise<any>,
 	): Promise<void> {
+		const now = Date.now()
+		const timeSinceLastRestart = now - this.lastIceRestartTimestamp
+
+		// Calculate exponential backoff delay
+		const backoffDelay = Math.min(
+			WebRtcTransportService.RECONNECT_BACKOFF_BASE_MS * Math.pow(2, this.iceRestartCount),
+			WebRtcTransportService.RECONNECT_BACKOFF_MAX_MS
+		)
+
+		// Enforce backoff if restarted too recently
+		if (timeSinceLastRestart < backoffDelay) {
+			console.log(`⏳ ICE restart backoff: waiting ${backoffDelay - timeSinceLastRestart}ms`)
+			await new Promise(resolve => setTimeout(resolve, backoffDelay - timeSinceLastRestart))
+		}
+
 		if (this.iceRestartCount >= WebRtcTransportService.ICE_RESTART_MAX) {
+			console.warn(`❌ ICE restart limit reached (${WebRtcTransportService.ICE_RESTART_MAX})`)
 			this.state$.next('failed')
 			return
 		}
+
 		this.iceRestartCount++
+		this.lastIceRestartTimestamp = Date.now()
 		this.state$.next('connecting')
+
+		console.log(`🔄 ICE restart attempt ${this.iceRestartCount}/${WebRtcTransportService.ICE_RESTART_MAX}`)
 
 		try {
 			const offer = await pc.createOffer({ iceRestart: true })
@@ -320,13 +424,15 @@ export class WebRtcTransportService {
 				sdp: offer.sdp,
 				type: offer.type,
 			})
+
 			if (ack?.data?.sdp) {
 				await pc.setRemoteDescription({
 					type: ack.data.type || 'answer',
 					sdp: ack.data.sdp,
 				})
 			}
-		} catch {
+		} catch (err) {
+			console.error('❌ ICE restart failed:', err)
 			this.state$.next('failed')
 		}
 	}
