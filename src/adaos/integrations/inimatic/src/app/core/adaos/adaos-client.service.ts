@@ -60,6 +60,7 @@ export class AdaosClient {
 		}
 	>()
 	private useWebRtc = false
+	private rtcStateSub: { unsubscribe(): void } | null = null
 
 	constructor(
 		private http: HttpClient,
@@ -98,8 +99,11 @@ export class AdaosClient {
 		const ok = await this.rtc.negotiate(signalingWs, sendCmd)
 		this.useWebRtc = ok
 
+		// Clean up previous subscription to avoid memory leaks
+		this.rtcStateSub?.unsubscribe()
+
 		// Listen for WebRTC failure → automatic fallback to WS
-		this.rtc.state$.subscribe((st) => {
+		this.rtcStateSub = this.rtc.state$.subscribe((st) => {
 			if (st === 'failed' && this.useWebRtc) {
 				this.useWebRtc = false
 			}

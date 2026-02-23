@@ -249,18 +249,12 @@ export class WebRtcTransportService {
 		const offer = await pc.createOffer()
 		await pc.setLocalDescription(offer)
 
-		// Send offer and wait for answer
+		// Prepare fallback answer promise (resolved by signaling listener)
 		const answerPromise = new Promise<RTCSessionDescriptionInit>(
 			(resolve, reject) => {
 				this.answerResolve = resolve
 				this.answerReject = reject
 			},
-		)
-		const timeoutPromise = new Promise<never>((_, reject) =>
-			setTimeout(
-				() => reject(new Error('rtc_answer_timeout')),
-				WebRtcTransportService.CONNECT_TIMEOUT_MS,
-			),
 		)
 
 		// Send the offer; the hub will reply with an ack containing the SDP answer
@@ -269,7 +263,8 @@ export class WebRtcTransportService {
 			type: offer.type,
 		})
 
-		console.log('🔍 rtc.offer ack:', ack)
+		this.answerResolve = null
+		this.answerReject = null
 
 		// The ack.data contains the answer SDP
 		if (ack?.data?.sdp) {
@@ -279,22 +274,40 @@ export class WebRtcTransportService {
 			})
 		} else {
 			// Fall back to waiting for a separate rtc.answer message
-			const answer = await Promise.race([answerPromise, timeoutPromise])
-			await pc.setRemoteDescription(answer)
+			let answerTimer: ReturnType<typeof setTimeout> | null = null
+			try {
+				const answer = await Promise.race([
+					answerPromise,
+					new Promise<never>((_, reject) => {
+						answerTimer = setTimeout(
+							() => reject(new Error('rtc_answer_timeout')),
+							WebRtcTransportService.CONNECT_TIMEOUT_MS,
+						)
+					}),
+				])
+				await pc.setRemoteDescription(answer)
+			} finally {
+				if (answerTimer) clearTimeout(answerTimer)
+			}
 		}
 
 		this.state$.next('connecting')
 
 		// Wait for both DataChannels to open
-		await Promise.race([
-			this.waitForChannelsOpen(),
-			new Promise<never>((_, reject) =>
-				setTimeout(
-					() => reject(new Error('dc_open_timeout')),
-					WebRtcTransportService.CONNECT_TIMEOUT_MS,
-				),
-			),
-		])
+		let dcTimer: ReturnType<typeof setTimeout> | null = null
+		try {
+			await Promise.race([
+				this.waitForChannelsOpen(),
+				new Promise<never>((_, reject) => {
+					dcTimer = setTimeout(
+						() => reject(new Error('dc_open_timeout')),
+						WebRtcTransportService.CONNECT_TIMEOUT_MS,
+					)
+				}),
+			])
+		} finally {
+			if (dcTimer) clearTimeout(dcTimer)
+		}
 
 		this.state$.next('connected')
 		return true
