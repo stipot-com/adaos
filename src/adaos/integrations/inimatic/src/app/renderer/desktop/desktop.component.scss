@@ -89,6 +89,7 @@
     "sidebar bottom bottom";
   gap: var(--desktop-gap);
   padding: var(--desktop-padding);
+  padding-top: calc(var(--desktop-padding) + 8px);
   max-width: var(--desktop-max-width);
   margin: 0 auto;
   min-height: 100%;

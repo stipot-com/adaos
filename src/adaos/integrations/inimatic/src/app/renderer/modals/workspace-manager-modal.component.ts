@@ -20,7 +20,7 @@ import { observeDeep } from '../../y/y-helpers'
         </ion-buttons>
       </ion-toolbar>
     </ion-header>
-    <ion-content>
+    <ion-content [scrollY]="true" class="ion-padding-bottom">
       <div class="form">
         <ion-card>
           <ion-card-header>
@@ -92,12 +92,18 @@ import { observeDeep } from '../../y/y-helpers'
       ion-content {
         --padding-start: 16px;
         --padding-end: 16px;
+        --padding-bottom: 24px;
       }
       .form {
         margin-top: 16px;
+        margin-bottom: 16px;
         display: flex;
         flex-direction: column;
         gap: 12px;
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+      ion-card:last-child {
+        margin-bottom: 0;
       }
     `,
   ],

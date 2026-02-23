@@ -1,7 +1,12 @@
 import { Injectable } from '@angular/core'
 import { BehaviorSubject } from 'rxjs'
 
-export type RtcTransportState = 'idle' | 'signaling' | 'connecting' | 'connected' | 'failed'
+export type RtcTransportState =
+	| 'idle'
+	| 'signaling'
+	| 'connecting'
+	| 'connected'
+	| 'failed'
 
 /**
  * Manages a WebRTC peer connection with two DataChannels:
@@ -29,7 +34,8 @@ export class WebRtcTransportService {
 	private signalingListener: ((ev: MessageEvent) => void) | null = null
 
 	/** Pending answer resolve/reject for the current negotiation round. */
-	private answerResolve: ((sdp: RTCSessionDescriptionInit) => void) | null = null
+	private answerResolve: ((sdp: RTCSessionDescriptionInit) => void) | null =
+		null
 	private answerReject: ((err: Error) => void) | null = null
 
 	/** Observable transport state. */
@@ -52,7 +58,10 @@ export class WebRtcTransportService {
 	 */
 	async negotiate(
 		signalingWs: WebSocket,
-		sendCommand: (kind: string, payload: Record<string, any>) => Promise<any>
+		sendCommand: (
+			kind: string,
+			payload: Record<string, any>,
+		) => Promise<any>,
 	): Promise<boolean> {
 		this.close()
 		this.signalingWs = signalingWs
@@ -101,15 +110,21 @@ export class WebRtcTransportService {
 	close(): void {
 		this.removeSignalingListener()
 		if (this.eventsChannel) {
-			try { this.eventsChannel.close() } catch {}
+			try {
+				this.eventsChannel.close()
+			} catch {}
 			this.eventsChannel = null
 		}
 		if (this.yjsChannel) {
-			try { this.yjsChannel.close() } catch {}
+			try {
+				this.yjsChannel.close()
+			} catch {}
 			this.yjsChannel = null
 		}
 		if (this.pc) {
-			try { this.pc.close() } catch {}
+			try {
+				this.pc.close()
+			} catch {}
 			this.pc = null
 		}
 		this.answerResolve = null
@@ -120,7 +135,10 @@ export class WebRtcTransportService {
 	// -- internals ------------------------------------------------------------
 
 	private async doNegotiate(
-		sendCommand: (kind: string, payload: Record<string, any>) => Promise<any>
+		sendCommand: (
+			kind: string,
+			payload: Record<string, any>,
+		) => Promise<any>,
 	): Promise<boolean> {
 		const pc = new RTCPeerConnection({
 			iceServers: WebRtcTransportService.STUN_SERVERS,
@@ -129,7 +147,10 @@ export class WebRtcTransportService {
 
 		// Create DataChannels (browser is the offerer → creates channels)
 		this.eventsChannel = pc.createDataChannel('events', { ordered: true })
-		this.yjsChannel = pc.createDataChannel('yjs', { ordered: true, protocol: 'binary' })
+		this.yjsChannel = pc.createDataChannel('yjs', {
+			ordered: true,
+			protocol: 'binary',
+		})
 		this.yjsChannel.binaryType = 'arraybuffer'
 
 		this.wireChannelCallbacks()
@@ -153,12 +174,17 @@ export class WebRtcTransportService {
 		await pc.setLocalDescription(offer)
 
 		// Send offer and wait for answer
-		const answerPromise = new Promise<RTCSessionDescriptionInit>((resolve, reject) => {
-			this.answerResolve = resolve
-			this.answerReject = reject
-		})
+		const answerPromise = new Promise<RTCSessionDescriptionInit>(
+			(resolve, reject) => {
+				this.answerResolve = resolve
+				this.answerReject = reject
+			},
+		)
 		const timeoutPromise = new Promise<never>((_, reject) =>
-			setTimeout(() => reject(new Error('rtc_answer_timeout')), WebRtcTransportService.CONNECT_TIMEOUT_MS)
+			setTimeout(
+				() => reject(new Error('rtc_answer_timeout')),
+				WebRtcTransportService.CONNECT_TIMEOUT_MS,
+			),
 		)
 
 		// Send the offer; the hub will reply with an ack containing the SDP answer
@@ -167,9 +193,14 @@ export class WebRtcTransportService {
 			type: offer.type,
 		})
 
+		console.log('🔍 rtc.offer ack:', ack)
+
 		// The ack.data contains the answer SDP
 		if (ack?.data?.sdp) {
-			await pc.setRemoteDescription({ type: ack.data.type || 'answer', sdp: ack.data.sdp })
+			await pc.setRemoteDescription({
+				type: ack.data.type || 'answer',
+				sdp: ack.data.sdp,
+			})
 		} else {
 			// Fall back to waiting for a separate rtc.answer message
 			const answer = await Promise.race([answerPromise, timeoutPromise])
@@ -182,7 +213,10 @@ export class WebRtcTransportService {
 		await Promise.race([
 			this.waitForChannelsOpen(),
 			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error('dc_open_timeout')), WebRtcTransportService.CONNECT_TIMEOUT_MS)
+				setTimeout(
+					() => reject(new Error('dc_open_timeout')),
+					WebRtcTransportService.CONNECT_TIMEOUT_MS,
+				),
 			),
 		])
 
@@ -209,7 +243,9 @@ export class WebRtcTransportService {
 	private wireChannelCallbacks(): void {
 		if (this.eventsChannel) {
 			this.eventsChannel.onmessage = (ev: MessageEvent) => {
-				this.onEventsMessage?.(typeof ev.data === 'string' ? ev.data : '')
+				this.onEventsMessage?.(
+					typeof ev.data === 'string' ? ev.data : '',
+				)
 			}
 		}
 		if (this.yjsChannel) {
@@ -221,7 +257,10 @@ export class WebRtcTransportService {
 
 	private wireConnectionStateHandlers(
 		pc: RTCPeerConnection,
-		sendCommand: (kind: string, payload: Record<string, any>) => Promise<any>
+		sendCommand: (
+			kind: string,
+			payload: Record<string, any>,
+		) => Promise<any>,
 	): void {
 		let disconnectTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -261,7 +300,10 @@ export class WebRtcTransportService {
 
 	private async attemptIceRestart(
 		pc: RTCPeerConnection,
-		sendCommand: (kind: string, payload: Record<string, any>) => Promise<any>
+		sendCommand: (
+			kind: string,
+			payload: Record<string, any>,
+		) => Promise<any>,
 	): Promise<void> {
 		if (this.iceRestartCount >= WebRtcTransportService.ICE_RESTART_MAX) {
 			this.state$.next('failed')
@@ -279,7 +321,10 @@ export class WebRtcTransportService {
 				type: offer.type,
 			})
 			if (ack?.data?.sdp) {
-				await pc.setRemoteDescription({ type: ack.data.type || 'answer', sdp: ack.data.sdp })
+				await pc.setRemoteDescription({
+					type: ack.data.type || 'answer',
+					sdp: ack.data.sdp,
+				})
 			}
 		} catch {
 			this.state$.next('failed')
@@ -297,12 +342,21 @@ export class WebRtcTransportService {
 				if (msg?.ch === 'events' && msg?.kind === 'rtc.ice') {
 					const c = msg.payload?.candidate
 					if (c && this.pc) {
-						this.pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+						this.pc
+							.addIceCandidate(new RTCIceCandidate(c))
+							.catch(() => {})
 					}
 				}
 				// Fallback: separate rtc.answer message (not used when answer is in ack.data)
-				if (msg?.ch === 'events' && msg?.kind === 'rtc.answer' && msg?.payload?.sdp) {
-					this.answerResolve?.({ type: msg.payload.type || 'answer', sdp: msg.payload.sdp })
+				if (
+					msg?.ch === 'events' &&
+					msg?.kind === 'rtc.answer' &&
+					msg?.payload?.sdp
+				) {
+					this.answerResolve?.({
+						type: msg.payload.type || 'answer',
+						sdp: msg.payload.sdp,
+					})
 				}
 			} catch {
 				// ignore non-json or irrelevant messages
@@ -314,7 +368,10 @@ export class WebRtcTransportService {
 
 	private removeSignalingListener(): void {
 		if (this.signalingWs && this.signalingListener) {
-			this.signalingWs.removeEventListener('message', this.signalingListener)
+			this.signalingWs.removeEventListener(
+				'message',
+				this.signalingListener,
+			)
 		}
 		this.signalingListener = null
 		this.signalingWs = null
