@@ -86,7 +86,22 @@ ion-header ion-toolbar {
 		display: none;
 	}
 	.app-title {
-		gap: 8px;
+		gap: 6px;
+	}
+	.build-id {
+		display: none;
+	}
+	.transport-icon {
+		font-size: 14px;
+	}
+}
+
+@media (max-width: 600px) {
+	.app-title {
+		gap: 4px;
+	}
+	.transport-icon {
+		font-size: 13px;
 	}
 }
 
