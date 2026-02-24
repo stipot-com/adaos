@@ -43,7 +43,7 @@
 
 .mobile-panelbar {
   position: sticky;
-  top: 0;
+  top: calc(var(--ada-app-header-height, 56px) + env(safe-area-inset-top, 0px));
   z-index: 5;
   display: none;
   align-items: center;
@@ -89,6 +89,7 @@
     "sidebar bottom bottom";
   gap: var(--desktop-gap);
   padding: var(--desktop-padding);
+  padding-top: calc(var(--ada-app-header-height, 56px) + var(--desktop-padding));
   max-width: var(--desktop-max-width);
   margin: 0 auto;
   min-height: 100%;
@@ -171,7 +172,7 @@
 
   .topbar {
     position: sticky;
-    top: 0;
+    top: calc(var(--ada-app-header-height, 56px) + 8px);
     padding: 8px 12px;
     display: flex;
     align-items: center;
@@ -306,6 +307,7 @@
 .area-role-main {
   grid-area: main;
   overflow: auto;
+  padding-top: 8px;
 }
 
 .area-role-aux {

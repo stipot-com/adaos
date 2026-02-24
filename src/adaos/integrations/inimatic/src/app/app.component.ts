@@ -19,16 +19,20 @@ import {
 	chevronUpOutline,
 	folderOpenOutline,
 	micOutline,
+	cloudOutline,
+	flashOutline,
 } from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
-import { Observable, of, timer } from 'rxjs'
-import { catchError, distinctUntilChanged, map, startWith, switchMap, timeout } from 'rxjs/operators'
+import { Observable, of, timer, Subscription } from 'rxjs'
+import { catchError, distinctUntilChanged, filter, map, pairwise, startWith, switchMap, timeout } from 'rxjs/operators'
 import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { PairingService } from './runtime/pairing.service'
+import { WebRtcTransportService } from './core/adaos/webrtc-transport.service'
+import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
 import { HttpErrorResponse } from '@angular/common/http'
@@ -54,6 +58,7 @@ import { HttpErrorResponse } from '@angular/common/http'
 export class AppComponent implements OnInit, OnDestroy {
 	isAndroid: boolean
 	hubStatus$!: Observable<'checking' | 'online' | 'offline'>
+	transportState$!: Observable<string>
 	readonly buildId = buildId
 	logoSrc = 'assets/icon/favicon.svg'
 	private colorSchemeMedia?: MediaQueryList
@@ -62,6 +67,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	private narrowListener = () => this.applyNarrow()
 	isNarrow = false
 	private sessionInvalidated = false
+	private transportSub?: Subscription
 	sidebarAvailable = false
 	private sidebarAvailabilityHandler = (ev: any) => {
 		try {
@@ -79,6 +85,8 @@ export class AppComponent implements OnInit, OnDestroy {
 		private http: HttpClient,
 		private pairing: PairingService,
 		private zone: NgZone,
+		private rtc: WebRtcTransportService,
+		private toastCtrl: ToastController,
 	) {
 		addIcons({
 			homeOutline,
@@ -90,6 +98,8 @@ export class AppComponent implements OnInit, OnDestroy {
 			chevronUpOutline,
 			folderOpenOutline,
 			micOutline,
+			cloudOutline,
+			flashOutline,
 		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
@@ -103,6 +113,10 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
 		this.applyTheme(this.colorSchemeMedia.matches)
 		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
+
+		// Initialize visibility tracking for WebRTC reconnection on mobile devices
+		this.rtc.initVisibilityTracking()
+
 		try {
 			window.addEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
 		} catch { }
@@ -133,6 +147,56 @@ export class AppComponent implements OnInit, OnDestroy {
 			startWith('checking' as const),
 			distinctUntilChanged(),
 		)
+
+		// Transport state: maps RTC state to a simplified view for the header indicator.
+		// 'failed' means we fell back to WS, so show it as 'ws' in the UI.
+		this.transportState$ = this.rtc.state$.pipe(
+			map((s) => s === 'failed' ? 'ws' : s),
+			distinctUntilChanged(),
+		)
+
+		// Toast notifications on transport state transitions.
+		this.transportSub = this.rtc.state$.pipe(
+			distinctUntilChanged(),
+			pairwise(),
+			filter(([prev, cur]) => {
+				// Show toast for meaningful transitions
+				return (prev === 'connected' && cur === 'failed') ||
+					(prev === 'failed' && cur === 'connected') ||
+					(prev === 'connecting' && cur === 'failed') ||
+					(prev === 'signaling' && cur === 'connected') ||
+					(prev === 'connecting' && cur === 'connected') ||  // Recovery
+					(prev === 'idle' && cur === 'connecting')  // Renegotiation
+			}),
+		).subscribe(async ([prev, cur]) => {
+			let message = ''
+			let color: 'warning' | 'success' | 'primary' = 'success'
+
+			if (cur === 'failed') {
+				message = 'Direct connection unavailable. Using cloud relay — possible delays.'
+				color = 'warning'
+			} else if (cur === 'connected') {
+				if (prev === 'failed' || prev === 'connecting') {
+					message = 'Direct P2P connection established.'
+					color = 'success'
+				}
+			} else if (cur === 'connecting') {
+				if (prev === 'idle') {
+					message = 'Reconnecting...'
+					color = 'primary'
+				}
+			}
+
+			if (message) {
+				const toast = await this.toastCtrl.create({
+					message,
+					duration: 4000,
+					position: 'bottom',
+					color,
+				})
+				await toast.present()
+			}
+		})
 	}
 
 	private getHubStatusRequest(): { url: string; headers?: HttpHeaders } {
@@ -181,6 +245,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	ngOnDestroy(): void {
+		this.transportSub?.unsubscribe()
 		this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener)
 		try {
 			window.removeEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)

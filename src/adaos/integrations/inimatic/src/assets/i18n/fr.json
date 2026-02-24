@@ -14,6 +14,9 @@
 	"status.online": "en ligne",
 	"status.offline": "hors ligne",
 
+	"transport.cloud_relay": "Relais cloud — latence possible",
+	"transport.p2p": "Connexion P2P directe",
+
 	"aria.logout_debug": "Déconnexion",
 	"aria.reload": "Recharger",
 
