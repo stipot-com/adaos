@@ -549,7 +549,20 @@ class BootstrapService:
                                 try:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
                                     if hb_env.strip() == "":
+                                        # Some WS/LB setups aggressively close "idle" websocket connections even when
+                                        # application-level frames are infrequent. Enable a conservative websocket-level
+                                        # heartbeat by default for inimatic endpoints to keep the TCP mapping alive.
                                         hb = None
+                                        try:
+                                            from urllib.parse import urlparse as _urlparse
+
+                                            u = _urlparse(uri.geturl())
+                                            host = (u.hostname or "").lower()
+                                            if host.endswith("inimatic.com"):
+                                                v = float(os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S", "20") or "20")
+                                                hb = v if v > 0.0 else None
+                                        except Exception:
+                                            hb = None
                                     else:
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
@@ -560,11 +573,17 @@ class BootstrapService:
                                     uri.geturl(),
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=True,
+                                    # We handle WS PING/PONG in our patched readline() to ensure control frames never
+                                    # bubble up into the NATS protocol parser (and to avoid any double-PONG races).
+                                    autoping=False,
                                     autoclose=False,
                                     heartbeat=hb,
                                 )
                                 self._using_tls = False
+                                try:
+                                    setattr(self, "_adaos_ws_heartbeat", hb)
+                                except Exception:
+                                    pass
 
                             try:
                                 setattr(_ws_connect_safe, "_adaos_ws_patch", True)
@@ -587,6 +606,17 @@ class BootstrapService:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
                                     if hb_env.strip() == "":
                                         hb = None
+                                        try:
+                                            from urllib.parse import urlparse as _urlparse
+
+                                            target0 = uri if isinstance(uri, str) else uri.geturl()
+                                            u = _urlparse(str(target0))
+                                            host = (u.hostname or "").lower()
+                                            if host.endswith("inimatic.com"):
+                                                v = float(os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S", "20") or "20")
+                                                hb = v if v > 0.0 else None
+                                        except Exception:
+                                            hb = None
                                     else:
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
@@ -609,11 +639,15 @@ class BootstrapService:
                                     ssl=ssl_context,
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=True,
+                                    autoping=False,
                                     autoclose=False,
                                     heartbeat=hb,
                                 )
                                 self._using_tls = True
+                                try:
+                                    setattr(self, "_adaos_ws_heartbeat", hb)
+                                except Exception:
+                                    pass
 
                             try:
                                 setattr(_ws_connect_tls_safe, "_adaos_ws_patch", True)
@@ -1002,6 +1036,14 @@ class BootstrapService:
                                         ),
                                         timeout=7.0,
                                     )
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                            tr = getattr(nc_local, "_transport", None)
+                                            hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr else None
+                                            if hb is not None:
+                                                _rl_log("nats.ws_hb", f"[hub-io] nats ws heartbeat: {hb!s}s", every_s=60.0)
+                                    except Exception:
+                                        pass
                                     # Guard against nats-py flush timeout bug: flush() cancels the Future
                                     # but keeps it in `self._pongs`, causing InvalidStateError on next PONG.
                                     # Also covers shutdown races with late PONGs.
@@ -1177,7 +1219,18 @@ class BootstrapService:
                                                 try:
                                                     await fp(force_flush=True)
                                                 except TypeError:
-                                                    await fp()
+                                                    try:
+                                                        await fp(True)
+                                                    except TypeError:
+                                                        await fp()
+                                            else:
+                                                # Fallback: if internals changed, use public flush() to force outbound IO.
+                                                flush = getattr(nc, "flush", None)
+                                                if callable(flush):
+                                                    try:
+                                                        await flush(timeout=1.0)
+                                                    except Exception:
+                                                        pass
                                         except Exception:
                                             # Keepalive is best-effort; connection supervisor will handle reconnects.
                                             pass
@@ -2289,10 +2342,13 @@ class BootstrapService:
                             # WS proxy hiccup / network flap), reconnect quickly instead of exponential backoff.
                             ran_for_s = time.monotonic() - started_at
                             try:
+                                low = str(e).lower()
                                 is_transient = (
                                     type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError")
-                                    or "unexpected eof" in str(e).lower()
-                                    or "connection reset" in str(e).lower()
+                                    or "unexpected eof" in low
+                                    or "connection reset" in low
+                                    or "clientconnectionreseterror" in low
+                                    or "cannot write to closing transport" in low
                                 )
                             except Exception:
                                 is_transient = False

@@ -275,10 +275,25 @@ wss.on('connection', (ws: any, req: any) => {
 			const sock: any = (ws as any)?._socket
 			if (sock && !sock.__adaos_ws_diag_attached) {
 				sock.__adaos_ws_diag_attached = true
-				sock.on('end', () => logSummary('ws socket end'))
-				sock.on('close', (hadErr: any) => logSummary('ws socket close', { hadError: Boolean(hadErr) }))
-				sock.on('timeout', () => logSummary('ws socket timeout'))
-				sock.on('error', (e: any) => logSummary('ws socket error', { err: String(e) }))
+				const sockDiag = (extra?: Record<string, unknown>) => {
+					try {
+						return {
+							socketDestroyed: Boolean(sock.destroyed),
+							socketHadError: Boolean(sock.errored),
+							socketBytesRead: Number(sock.bytesRead || 0),
+							socketBytesWritten: Number(sock.bytesWritten || 0),
+							remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
+							local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
+							...(extra || {}),
+						}
+					} catch {
+						return extra || {}
+					}
+				}
+				sock.on('end', () => logSummary('ws socket end', sockDiag()))
+				sock.on('close', (hadErr: any) => logSummary('ws socket close', sockDiag({ hadError: Boolean(hadErr) })))
+				sock.on('timeout', () => logSummary('ws socket timeout', sockDiag()))
+				sock.on('error', (e: any) => logSummary('ws socket error', sockDiag({ err: String(e) })))
 			}
 		} catch {}
 
