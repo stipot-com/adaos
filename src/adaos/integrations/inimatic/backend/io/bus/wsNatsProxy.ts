@@ -150,10 +150,17 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 	})
 
-wss.on('connection', (ws: any, req: any) => {
+ wss.on('connection', (ws: any, req: any) => {
 		const connId = randomBytes(4).toString('hex')
+		const connTag = (() => {
+			try {
+				const v = req?.headers?.['x-adaos-nats-conn']
+				if (typeof v === 'string' && v.trim()) return v.trim()
+			} catch {}
+			return null
+		})()
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
-		if (verbose) log().info({ conn: connId, from: rip }, 'conn open')
+		if (verbose) log().info({ conn: connId, from: rip, tag: connTag }, 'conn open')
 		try {
 			ws_nats_proxy_conn_open_total.inc()
 		} catch {}
@@ -222,6 +229,7 @@ wss.on('connection', (ws: any, req: any) => {
 		function logSummary(event: string, extra?: Record<string, unknown>) {
 			const base = {
 				conn: connId,
+				tag: connTag,
 				from: rip,
 				hub_id: hubIdForLog,
 				handshaked,
