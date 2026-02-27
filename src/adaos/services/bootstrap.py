@@ -207,6 +207,82 @@ class BootstrapService:
             await start_scheduler()
         except Exception:
             self._log.warning("failed to start scheduler", exc_info=True)
+
+        # Optional: monitor asyncio event loop lag to catch blocking handlers (which can manifest as
+        # WebSocket stalls/timeouts and cascading disconnects).
+        try:
+            if os.getenv("ADAOS_LOOP_LAG_MONITOR", "0") == "1":
+                try:
+                    interval_s = float(os.getenv("ADAOS_LOOP_LAG_INTERVAL_S", "0.5") or "0.5")
+                except Exception:
+                    interval_s = 0.5
+                if interval_s < 0.05:
+                    interval_s = 0.05
+                try:
+                    warn_ms = float(os.getenv("ADAOS_LOOP_LAG_WARN_MS", "250") or "250")
+                except Exception:
+                    warn_ms = 250.0
+                try:
+                    dump_ms = float(os.getenv("ADAOS_LOOP_LAG_DUMP_MS", "2000") or "2000")
+                except Exception:
+                    dump_ms = 2000.0
+                try:
+                    dump_top = int(os.getenv("ADAOS_LOOP_LAG_DUMP_TOP", "10") or "10")
+                except Exception:
+                    dump_top = 10
+                if dump_top < 1:
+                    dump_top = 1
+                if dump_top > 50:
+                    dump_top = 50
+
+                async def _loop_lag_monitor() -> None:
+                    expected = time.monotonic()
+                    last_dump = 0.0
+                    while True:
+                        await asyncio.sleep(interval_s)
+                        now = time.monotonic()
+                        expected += interval_s
+                        drift_s = now - expected
+                        if drift_s < 0:
+                            drift_s = 0.0
+                        drift_ms = drift_s * 1000.0
+                        if drift_ms >= warn_ms:
+                            try:
+                                _rl_log(
+                                    "loop.lag",
+                                    f"[diag] event loop lag {drift_ms:.0f}ms (interval={interval_s:.2f}s warn={warn_ms:.0f}ms dump={dump_ms:.0f}ms)",
+                                    every_s=1.0,
+                                )
+                            except Exception:
+                                pass
+                        if drift_ms >= dump_ms and (now - last_dump) >= max(5.0, interval_s):
+                            last_dump = now
+                            try:
+                                tasks = list(asyncio.all_tasks())
+                                # Keep deterministic ordering for repeated dumps.
+                                tasks.sort(key=lambda t: (0 if t is asyncio.current_task() else 1, t.get_name()))
+                                lines: list[str] = []
+                                for t in tasks[:dump_top]:
+                                    try:
+                                        frames = t.get_stack(limit=1)
+                                        top = frames[-1] if frames else None
+                                        loc = None
+                                        if top is not None:
+                                            try:
+                                                loc = f"{top.f_code.co_filename}:{top.f_lineno}"
+                                            except Exception:
+                                                loc = None
+                                        lines.append(f"- task={t.get_name()} done={t.done()} cancelled={t.cancelled()} at={loc}")
+                                    except Exception:
+                                        continue
+                                if lines:
+                                    _rl_log("loop.lag.dump", "[diag] loop lag dump:\n" + "\n".join(lines), every_s=5.0)
+                            except Exception:
+                                pass
+
+                self._boot_tasks.append(asyncio.create_task(_loop_lag_monitor(), name="adaos-loop-lag-monitor"))
+        except Exception:
+            pass
         if conf.role == "hub":
             await bus.emit("net.subnet.hub.ready", {"subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
 
@@ -1028,6 +1104,28 @@ class BootstrapService:
                                         ws_connect_tag = f"{hub_id_str}-{uuid.uuid4().hex[:10]}"
                                     except Exception:
                                         ws_connect_tag = None
+                                    connect_server = str(server)
+                                    # Some transports do not reliably propagate custom WS headers.
+                                    # Optionally attach the correlation id as a query param to help root-side
+                                    # logs correlate abnormal closes (1006/EOF) to hub attempts.
+                                    try:
+                                        if os.getenv("HUB_NATS_CONNECT_TAG_QUERY", "0") == "1" and isinstance(ws_connect_tag, str) and ws_connect_tag:
+                                            from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse, parse_qsl as _parse_qsl, urlencode as _urlencode
+                                            u = _urlparse(connect_server)
+                                            q = dict(_parse_qsl(u.query, keep_blank_values=True))
+                                            q.setdefault("adaos_conn", ws_connect_tag)
+                                            connect_server = _urlunparse(u._replace(query=_urlencode(q)))
+                                    except Exception:
+                                        connect_server = str(server)
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                            _rl_log(
+                                                "nats.connect_try",
+                                                f"[hub-io] NATS connect try server={connect_server} tag={ws_connect_tag}",
+                                                every_s=1.0,
+                                            )
+                                    except Exception:
+                                        pass
                                     # In some environments aiohttp-based NATS-over-WS can intermittently stop
                                     # delivering `PONG` frames even while the socket stays open; nats-py will
                                     # then mark the connection stale and close it. Root/WS proxy already sends
@@ -1043,7 +1141,7 @@ class BootstrapService:
                                         max_outstanding_pings = 10
                                     await asyncio.wait_for(
                                         nc_local.connect(
-                                            servers=[str(server)],
+                                            servers=[connect_server],
                                             user=user_str,
                                             password=pw_str,
                                             name=f"hub-{hub_id_str}",

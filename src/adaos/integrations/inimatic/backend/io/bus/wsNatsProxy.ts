@@ -119,6 +119,11 @@ export function installWsNatsProxy(server: HttpServer) {
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
+	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
+	let wiretapEveryMs = 1000
+	try {
+		wiretapEveryMs = Math.max(0, Number(process.env['WS_NATS_PROXY_WIRETAP_EVERY_MS'] || '1000'))
+	} catch {}
 	const wsPingEnabled = (process.env['WS_NATS_PROXY_WS_PING'] || '0') === '1'
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
 
@@ -158,6 +163,12 @@ export function installWsNatsProxy(server: HttpServer) {
 				const v = req?.headers?.['x-adaos-nats-conn']
 				if (typeof v === 'string' && v.trim()) return v.trim()
 			} catch {}
+			try {
+				const rawUrl = String(req?.url || '')
+				const u = new URL(rawUrl, 'https://x')
+				const q = u.searchParams.get('adaos_conn') || u.searchParams.get('conn') || u.searchParams.get('tag')
+				if (typeof q === 'string' && q.trim()) return q.trim()
+			} catch {}
 			return null
 		})()
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
@@ -192,6 +203,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
+		let lastWiretapAt = 0
 		let upstreamConnecting = false
 		const upstreamPendingWrites: Buffer[] = []
 
@@ -571,6 +583,29 @@ export function installWsNatsProxy(server: HttpServer) {
 			if (handshaked) {
 				try {
 					bytesUp += buf.length
+					if (wiretap) {
+						const now = Date.now()
+						if (wiretapEveryMs === 0 || now - lastWiretapAt >= wiretapEveryMs) {
+							lastWiretapAt = now
+							try {
+								// Do NOT log raw payloads (may contain Telegram/user content).
+								// Instead, log coarse protocol markers to answer "client sends nothing?" questions.
+								const head = buf.subarray(0, Math.min(buf.length, 2048)).toString('utf8')
+								const counts = {
+									connect: head.includes('CONNECT ') ? 1 : 0,
+									ping: (head.match(/\bPING\r\n/g) || []).length,
+									pong: (head.match(/\bPONG\r\n/g) || []).length,
+									sub: (head.match(/\bSUB /g) || []).length,
+									unsub: (head.match(/\bUNSUB /g) || []).length,
+									pub: (head.match(/\bPUB /g) || []).length,
+									msg: (head.match(/\bMSG /g) || []).length,
+									info: (head.match(/\bINFO /g) || []).length,
+									err: head.includes('-ERR') ? 1 : 0,
+								}
+								log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, len: buf.length, ...counts }, 'nats wiretap (client->proxy)')
+							} catch {}
+						}
+					}
 					const scanPong = hasMarkerWithTail(clientTail, buf, NATS_PONG)
 					clientTail = scanPong.tail
 					if (scanPong.hit) {
