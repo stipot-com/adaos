@@ -262,6 +262,11 @@ class BootstrapService:
             # Hot-reload friendly: read NATS config from node.yaml on every connect attempt.
             hub_id = (getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)).subnet_id
             if hub_id:
+                try:
+                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                        print(f"[hub-io] nats init: hub_id={hub_id}")
+                except Exception:
+                    pass
 
                 # Track connectivity state to log/emit only on transitions
                 reported_down = False
@@ -550,24 +555,13 @@ class BootstrapService:
                             and not getattr(_orig_connect, "_adaos_ws_patch", False)
                         ):
                             async def _ws_connect_safe(self, uri, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                hb = None
                                 try:
-                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
-                                    if hb_env.strip() == "":
-                                        # Some WS/LB setups aggressively close "idle" websocket connections even when
-                                        # application-level frames are infrequent. Enable a conservative websocket-level
-                                        # heartbeat by default for inimatic endpoints to keep the TCP mapping alive.
-                                        hb = None
-                                        try:
-                                            from urllib.parse import urlparse as _urlparse
-
-                                            u = _urlparse(uri.geturl())
-                                            host = (u.hostname or "").lower()
-                                            if host.endswith("inimatic.com"):
-                                                v = float(os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S", "20") or "20")
-                                                hb = v if v > 0.0 else None
-                                        except Exception:
-                                            hb = None
-                                    else:
+                                    # NOTE: aiohttp's heartbeat sends WS PINGs and expects WS PONGs; if the server/proxy
+                                    # doesn't respond correctly this can cause periodic disconnects (~2*heartbeat).
+                                    # Keep default OFF; enable explicitly via env.
+                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
+                                    if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
                                 except Exception:
@@ -579,14 +573,24 @@ class BootstrapService:
                                         headers["X-AdaOS-Nats-Conn"] = ws_connect_tag
                                 except Exception:
                                     pass
+                                try:
+                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                        _rl_log(
+                                            "nats.ws_connect",
+                                            f"[hub-io] nats ws_connect uri={uri.geturl()} heartbeat={hb} autoping=1 tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                            every_s=1.0,
+                                        )
+                                except Exception:
+                                    pass
                                 self._ws = await self._client.ws_connect(
                                     uri.geturl(),
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    # We handle WS PING/PONG in our patched readline() to ensure control frames never
-                                    # bubble up into the NATS protocol parser (and to avoid any double-PONG races).
-                                    autoping=False,
-                                    autoclose=False,
+                                    # Keep aiohttp WS-level ping/pong handling enabled so reverse-proxies that
+                                    # enforce PING/PONG liveness checks don't drop the connection while NATS is idle.
+                                    # Our patched readline() still protects the NATS parser if control frames surface.
+                                    autoping=True,
+                                    autoclose=True,
                                     heartbeat=hb,
                                 )
                                 self._using_tls = False
@@ -612,22 +616,10 @@ class BootstrapService:
                             and not getattr(_orig_connect_tls, "_adaos_ws_patch", False)
                         ):
                             async def _ws_connect_tls_safe(self, uri, ssl_context, buffer_size, connect_timeout):  # type: ignore[no-redef]
+                                hb = None
                                 try:
-                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S", "")
-                                    if hb_env.strip() == "":
-                                        hb = None
-                                        try:
-                                            from urllib.parse import urlparse as _urlparse
-
-                                            target0 = uri if isinstance(uri, str) else uri.geturl()
-                                            u = _urlparse(str(target0))
-                                            host = (u.hostname or "").lower()
-                                            if host.endswith("inimatic.com"):
-                                                v = float(os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S", "20") or "20")
-                                                hb = v if v > 0.0 else None
-                                        except Exception:
-                                            hb = None
-                                    else:
+                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
+                                    if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
                                 except Exception:
@@ -650,13 +642,22 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 target = uri if isinstance(uri, str) else uri.geturl()
+                                try:
+                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                        _rl_log(
+                                            "nats.ws_connect_tls",
+                                            f"[hub-io] nats ws_connect_tls uri={target} heartbeat={hb} autoping=1 tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                            every_s=1.0,
+                                        )
+                                except Exception:
+                                    pass
                                 self._ws = await self._client.ws_connect(
                                     target,
                                     ssl=ssl_context,
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=False,
-                                    autoclose=False,
+                                    autoping=True,
+                                    autoclose=True,
                                     heartbeat=hb,
                                 )
                                 self._using_tls = True
@@ -2345,109 +2346,134 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                    # Supervisor wrapper: never crash on unhandled errors; restart with backoff
-                    async def _nats_bridge_supervisor() -> None:
-                        delay = 1.0
-                        while True:
-                            started_at = time.monotonic()
+                async def _maybe_snapshot_root_logs(*, trace: bool) -> None:
+                    try:
+                        if os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") != "1":
+                            return
+                        now = time.monotonic()
+                        try:
+                            snap_every_s = float(os.getenv("HUB_ROOT_LOG_SNAPSHOT_EVERY_S", "60") or "60")
+                        except Exception:
+                            snap_every_s = 60.0
+                        if snap_every_s < 5.0:
+                            snap_every_s = 5.0
+
+                        nonlocal last_root_snapshot_at
+                        if last_root_snapshot_at is not None and (now - last_root_snapshot_at) < snap_every_s:
+                            return
+                        last_root_snapshot_at = now
+
+                        base = None
+                        try:
+                            from urllib.parse import urlparse as _urlparse
+
+                            u = _urlparse(str(nats_last_server or ""))
+                            host = (u.hostname or "").strip()
+                            if host:
+                                # Dev endpoints (like /v1/dev/log_tail) live on the API host, not the NATS host.
+                                # If we connected to `nats.<domain>`, try `api.<domain>` for snapshots.
+                                if host.startswith("nats.") and host.count(".") >= 2:
+                                    host = "api." + host.split(".", 1)[1]
+                                base = ("https://" if str(u.scheme).startswith("wss") else "http://") + host
+                        except Exception:
+                            base = None
+                        if not base:
+                            return
+
+                        files = os.getenv("HUB_ROOT_LOG_SNAPSHOT_FILES", "reverse-proxy.log,nats.log,backend-b.log") or ""
+                        want = [x.strip() for x in files.split(",") if x.strip()]
+                        if not want:
+                            return
+                        try:
+                            lines = int(os.getenv("HUB_ROOT_LOG_SNAPSHOT_LINES", "250") or "250")
+                        except Exception:
+                            lines = 250
+                        if lines < 50:
+                            lines = 50
+
+                        out_dir = Path(".adaos") / "root_log_snapshots"
+                        out_dir.mkdir(parents=True, exist_ok=True)
+
+                        def _fetch_one(fname: str) -> tuple[str, str]:
+                            import urllib.parse as _up
+                            import urllib.request as _ureq
+
+                            qs = _up.urlencode({"file": fname, "lines": str(lines)})
+                            url = f"{base}/v1/dev/log_tail?{qs}"
+                            hdrs = {}
                             try:
-                                _rl_log("nats.supervisor.start", "[hub-io] nats supervisor: start bridge", every_s=5.0)
-                                await _nats_bridge()
-                                # If bridge returns cleanly, keep it alive
-                                await asyncio.sleep(3600)
-                            except asyncio.CancelledError:
-                                return
-                            except Exception as e:
-                                try:
-                                    print(f"[hub-io] nats: encountered error: {e}")
-                                except Exception:
-                                    pass
+                                # Root dev endpoints are protected by X-Root-Token.
+                                tok = (os.getenv("HUB_ROOT_LOG_SNAPSHOT_ROOT_TOKEN", "") or "").strip()
+                                if not tok:
+                                    tok = (os.getenv("ROOT_TOKEN", "") or "").strip()
+                                if not tok:
+                                    tok = (os.getenv("ADAOS_ROOT_OWNER_TOKEN", "") or "").strip()
+                                if not tok:
+                                    # Back-compat: previously this env existed and users sometimes set
+                                    # `Bearer <token>`; accept and normalize it.
+                                    tok = (os.getenv("HUB_ROOT_LOG_SNAPSHOT_AUTH", "") or "").strip()
+                                if tok.lower().startswith("bearer "):
+                                    tok = tok.split(" ", 1)[1].strip()
+                                if tok:
+                                    hdrs["X-Root-Token"] = tok
+                            except Exception:
+                                pass
+                            req = _ureq.Request(url, headers=hdrs)
+                            with _ureq.urlopen(req, timeout=10) as resp:
+                                body = resp.read().decode("utf-8", errors="replace")
+                            return url, body
 
-                                # Optional: snapshot root logs via /v1/dev/log_tail into the hub's .adaos directory.
-                                try:
-                                    if os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") == "1":
-                                        now = time.monotonic()
-                                        # Rate-limit snapshots to avoid spamming on rapid reconnect loops.
-                                        snap_every_s = 60.0
-                                        try:
-                                            snap_every_s = float(os.getenv("HUB_ROOT_LOG_SNAPSHOT_EVERY_S", "60") or "60")
-                                        except Exception:
-                                            snap_every_s = 60.0
-                                        if snap_every_s < 5.0:
-                                            snap_every_s = 5.0
-                                        nonlocal last_root_snapshot_at
-                                        nonlocal ws_connect_tag
-                                        if last_root_snapshot_at is None or (now - last_root_snapshot_at) >= snap_every_s:
-                                            last_root_snapshot_at = now
+                        nonlocal ws_connect_tag
+                        tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
+                        ts = time.strftime("%Y%m%d_%H%M%SZ", time.gmtime())
+                        for fname in want:
+                            try:
+                                url, body = await asyncio.to_thread(_fetch_one, fname)
+                                fn = out_dir / f"{ts}__{(tag0 or 'no_tag')}__{fname.replace('/', '_')}"
+                                fn.write_text(body, encoding="utf-8", errors="replace")
+                                if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                    _rl_log("root.snap", f"[hub-io] saved root log snapshot {fn} (from {url})", every_s=1.0)
+                            except Exception as _se:
+                                if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                    _rl_log("root.snap_fail", f"[hub-io] root log snapshot failed file={fname} err={type(_se).__name__}: {_se}", every_s=1.0)
+                    except Exception:
+                        return
 
-                                            # Derive root base URL from last WS server (wss://host/nats -> https://host).
-                                            base = None
-                                            try:
-                                                from urllib.parse import urlparse as _urlparse
+                # Supervisor wrapper: never crash on unhandled errors; restart with backoff
+                async def _nats_bridge_supervisor() -> None:
+                    delay = 1.0
+                    while True:
+                        started_at = time.monotonic()
+                        trace0 = os.getenv("HUB_NATS_TRACE", "0") == "1"
+                        try:
+                            _rl_log("nats.supervisor.start", "[hub-io] nats supervisor: start bridge", every_s=5.0)
+                            await _nats_bridge()
+                            await asyncio.sleep(3600)
+                        except asyncio.CancelledError:
+                            return
+                        except Exception as e:
+                            try:
+                                print(f"[hub-io] nats: encountered error: {e}")
+                            except Exception:
+                                pass
+                            try:
+                                await _maybe_snapshot_root_logs(trace=trace0)
+                            except Exception:
+                                pass
 
-                                                u = _urlparse(str(nats_last_server or ""))
-                                                host = (u.hostname or "").strip()
-                                                if host:
-                                                    base = ("https://" if str(u.scheme).startswith("wss") else "http://") + host
-                                            except Exception:
-                                                base = None
+                            ran_for_s = time.monotonic() - started_at
+                            try:
+                                low = str(e).lower()
+                                is_transient = (
+                                    type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError")
+                                    or "unexpected eof" in low
+                                    or "connection reset" in low
+                                    or "clientconnectionreseterror" in low
+                                    or "cannot write to closing transport" in low
+                                )
+                            except Exception:
+                                is_transient = False
 
-                                            if base:
-                                                try:
-                                                    files = os.getenv("HUB_ROOT_LOG_SNAPSHOT_FILES", "reverse-proxy.log,nats.log,backend-b.log") or ""
-                                                    want = [x.strip() for x in files.split(",") if x.strip()]
-                                                    try:
-                                                        lines = int(os.getenv("HUB_ROOT_LOG_SNAPSHOT_LINES", "250") or "250")
-                                                    except Exception:
-                                                        lines = 250
-                                                    if lines < 50:
-                                                        lines = 50
-
-                                                    from pathlib import Path as _Path
-                                                    out_dir = _Path(".adaos") / "root_log_snapshots"
-                                                    out_dir.mkdir(parents=True, exist_ok=True)
-
-                                                    # Keep snapshot I/O out of the event loop.
-                                                    def _fetch_one(fname: str) -> tuple[str, str]:
-                                                        import urllib.parse as _up
-                                                        import urllib.request as _ureq
-
-                                                        qs = _up.urlencode({"file": fname, "lines": str(lines)})
-                                                        url = f"{base}/v1/dev/log_tail?{qs}"
-                                                        with _ureq.urlopen(url, timeout=10) as resp:
-                                                            body = resp.read().decode("utf-8", errors="replace")
-                                                        return url, body
-
-                                                    tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
-                                                    ts = time.strftime("%Y%m%d_%H%M%SZ", time.gmtime())
-                                                    for fname in want:
-                                                        try:
-                                                            url, body = await asyncio.to_thread(_fetch_one, fname)
-                                                            fn = out_dir / f"{ts}__{(tag0 or 'no_tag')}__{fname.replace('/', '_')}"
-                                                            fn.write_text(body, encoding="utf-8", errors="replace")
-                                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
-                                                                _rl_log("root.snap", f"[hub-io] saved root log snapshot {fn} (from {url})", every_s=1.0)
-                                                        except Exception as _se:
-                                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
-                                                                _rl_log("root.snap_fail", f"[hub-io] root log snapshot failed file={fname} err={type(_se).__name__}: {_se}", every_s=1.0)
-                                                except Exception:
-                                                    pass
-                                except Exception:
-                                    pass
-                                # If we had a stable connection for a while and then dropped (e.g. transient
-                                # WS proxy hiccup / network flap), reconnect quickly instead of exponential backoff.
-                                ran_for_s = time.monotonic() - started_at
-                                try:
-                                    low = str(e).lower()
-                                    is_transient = (
-                                        type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError")
-                                        or "unexpected eof" in low
-                                        or "connection reset" in low
-                                        or "clientconnectionreseterror" in low
-                                        or "cannot write to closing transport" in low
-                                    )
-                                except Exception:
-                                    is_transient = False
                             try:
                                 q_min_uptime_s = float(os.getenv("HUB_NATS_QUARANTINE_MIN_UPTIME_S", "90") or "90")
                             except Exception:
@@ -2482,7 +2508,6 @@ class BootstrapService:
                             except Exception:
                                 pass
                             await asyncio.sleep(delay)
-                            # Only apply exponential backoff for rapid repeated failures.
                             if ran_for_s < 10.0 and not is_transient:
                                 delay = min(delay * 2.0, 30.0)
                             else:
@@ -2491,7 +2516,16 @@ class BootstrapService:
                 # TODO restore nats WS subscription
                 self._boot_tasks.append(asyncio.create_task(_nats_bridge_supervisor(), name="adaos-nats-io-bridge"))
         except Exception:
-            pass
+            try:
+                if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
+                    print("[hub-io] nats init failed")
+                    try:
+                        tb = "".join(traceback.format_exception(*__import__("sys").exc_info()))
+                        print(tb.rstrip())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     async def shutdown(self) -> None:
         await bus.emit("sys.stopping", {}, source="lifecycle", actor="system")

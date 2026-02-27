@@ -119,6 +119,7 @@ export function installWsNatsProxy(server: HttpServer) {
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
+	const wsPingEnabled = (process.env['WS_NATS_PROXY_WS_PING'] || '0') === '1'
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
 
 	// IMPORTANT: keep this in `noServer` mode.
@@ -306,6 +307,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		} catch {}
 
 		function armWsPing() {
+			if (!wsPingEnabled) return
 			if (wsPingTimer) clearInterval(wsPingTimer)
 			wsPingTimer = setInterval(() => {
 				try {
