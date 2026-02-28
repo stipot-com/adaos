@@ -108,17 +108,43 @@ async def lifespan(app: FastAPI):
             import requests as _requests
 
             link_url = f"{api_base.rstrip('/')}/io/tg/pair/link"
-            r = _requests.get(link_url, params={"hub_id": conf.subnet_id}, timeout=3.0)
+            def _safe_get() -> tuple[int, dict[str, Any] | None, str]:
+                # requests is sync; never run it on the asyncio event loop thread.
+                # Also ignore environment proxy vars (HTTP_PROXY/HTTPS_PROXY), which can otherwise
+                # cause long stalls in urllib3 proxy tunneling on some Windows setups.
+                sess = _requests.Session()
+                try:
+                    try:
+                        sess.trust_env = False
+                    except Exception:
+                        pass
+                    resp = sess.get(link_url, params={"hub_id": conf.subnet_id}, timeout=(1.5, 1.5))
+                    try:
+                        js = resp.json() if resp.status_code == 200 else None
+                    except Exception:
+                        js = None
+                    try:
+                        txt = (resp.text or "")[:300]
+                    except Exception:
+                        txt = ""
+                    return int(resp.status_code or 0), js if isinstance(js, dict) else None, txt
+                finally:
+                    try:
+                        sess.close()
+                    except Exception:
+                        pass
+
+            status, js, body_txt = await asyncio.to_thread(_safe_get)
             link_ok = False
             try:
-                link_ok = r.status_code == 200 and (r.json() or {}).get("ok")
+                link_ok = status == 200 and (js or {}).get("ok")
             except Exception:
                 link_ok = False
             if not link_ok:
                 try:
                     logging.getLogger("adaos.io.telegram").warning(
                         "telegram binding not found or unreachable",
-                        extra={"hub_id": conf.subnet_id, "url": link_url, "status": r.status_code, "body": (r.text or "")[:300]},
+                        extra={"hub_id": conf.subnet_id, "url": link_url, "status": status, "body": body_txt},
                     )
                 except Exception:
                     pass
@@ -146,15 +172,32 @@ async def lifespan(app: FastAPI):
                 alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
                 try:
                     prefixed_text = f"[{alias}]: {text}" if alias else text
-                    r2 = _requests.post(
-                        f"{api_base.rstrip('/')}/io/tg/send",
-                        json={"hub_id": conf.subnet_id, "text": prefixed_text},
-                        timeout=3.0,
-                    )
-                    if r2.status_code not in (200, 201, 202):
+                    send_url = f"{api_base.rstrip('/')}/io/tg/send"
+
+                    def _safe_post() -> tuple[int, str]:
+                        sess = _requests.Session()
+                        try:
+                            try:
+                                sess.trust_env = False
+                            except Exception:
+                                pass
+                            resp = sess.post(send_url, json={"hub_id": conf.subnet_id, "text": prefixed_text}, timeout=(1.5, 1.5))
+                            try:
+                                txt = (resp.text or "")[:300]
+                            except Exception:
+                                txt = ""
+                            return int(resp.status_code or 0), txt
+                        finally:
+                            try:
+                                sess.close()
+                            except Exception:
+                                pass
+
+                    st2, body2 = await asyncio.to_thread(_safe_post)
+                    if st2 not in (200, 201, 202):
                         logging.getLogger("adaos.router").warning(
                             "telegram broadcast (subnet.started) failed",
-                            extra={"hub_id": conf.subnet_id, "status": r2.status_code, "body": (r2.text or "")[:300]},
+                            extra={"hub_id": conf.subnet_id, "status": st2, "body": body2},
                         )
                 except Exception:
                     logging.getLogger("adaos.router").warning("telegram broadcast (subnet.started) exception", exc_info=True)

@@ -333,16 +333,24 @@ export function installWsNatsProxy(server: HttpServer) {
 
 		function armNatsKeepalive() {
 			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
+			const requireHandshake = String(process.env.WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE || '1') !== '0'
+			let warnedNoHandshake = false
 			// Many NATs/firewalls time out idle outbound mappings. WS control frames may be ignored by
 			// intermediaries, so we send a tiny NATS protocol keepalive as *data* to the client.
 			// The hub's nats client will respond with `PONG`, which creates outbound traffic hub->root.
 			natsKeepaliveTimer = setInterval(() => {
 				try {
-					if (!handshaked) return
+					if (requireHandshake && !handshaked) {
+						if (!warnedNoHandshake && (verbose || pingTrace)) {
+							warnedNoHandshake = true
+							log().warn({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats keepalive skipped: not handshaked yet')
+						}
+						return
+					}
 					if (ws.readyState !== 1) return
 					ws.send(NATS_PING, { binary: true })
 					natsKeepalivesSent += 1
-					if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (keepalive -> client)')
+					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
 				} catch {}
 			}, 20_000)
 		}

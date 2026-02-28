@@ -236,23 +236,27 @@ class BootstrapService:
                     dump_top = 50
 
                 async def _loop_lag_monitor() -> None:
-                    expected = time.monotonic()
+                    # Measure *per-interval* overshoot (do not accumulate drift), so we can distinguish
+                    # a single stall from a slow-but-steady loop.
+                    last_tick = time.monotonic()
+                    last_log = 0.0
                     last_dump = 0.0
                     while True:
                         await asyncio.sleep(interval_s)
                         now = time.monotonic()
-                        expected += interval_s
-                        drift_s = now - expected
+                        drift_s = (now - last_tick) - interval_s
+                        last_tick = now
                         if drift_s < 0:
                             drift_s = 0.0
                         drift_ms = drift_s * 1000.0
                         if drift_ms >= warn_ms:
                             try:
-                                _rl_log(
-                                    "loop.lag",
-                                    f"[diag] event loop lag {drift_ms:.0f}ms (interval={interval_s:.2f}s warn={warn_ms:.0f}ms dump={dump_ms:.0f}ms)",
-                                    every_s=1.0,
-                                )
+                                # Local rate-limit (do not depend on hub-io _rl_log).
+                                if now - last_log >= 1.0:
+                                    last_log = now
+                                    print(
+                                        f"[diag] event loop lag {drift_ms:.0f}ms (interval={interval_s:.2f}s warn={warn_ms:.0f}ms dump={dump_ms:.0f}ms)"
+                                    )
                             except Exception:
                                 pass
                         if drift_ms >= dump_ms and (now - last_dump) >= max(5.0, interval_s):
@@ -276,11 +280,81 @@ class BootstrapService:
                                     except Exception:
                                         continue
                                 if lines:
-                                    _rl_log("loop.lag.dump", "[diag] loop lag dump:\n" + "\n".join(lines), every_s=5.0)
+                                    print("[diag] loop lag dump:\n" + "\n".join(lines))
                             except Exception:
                                 pass
 
                 self._boot_tasks.append(asyncio.create_task(_loop_lag_monitor(), name="adaos-loop-lag-monitor"))
+        except Exception:
+            pass
+
+        # Optional: hang watchdog (thread-based) to capture the main thread stack during prolonged
+        # event loop stalls. This catches cases where asyncio tasks show "await" positions only.
+        try:
+            if os.getenv("ADAOS_LOOP_HANG_WATCHDOG", "0") == "1":
+                try:
+                    import threading as _threading
+                    import sys as _sys
+                    import traceback as _traceback
+                except Exception:
+                    _threading = None  # type: ignore[assignment]
+                    _sys = None  # type: ignore[assignment]
+                    _traceback = None  # type: ignore[assignment]
+                if _threading and _sys and _traceback:
+                    try:
+                        hang_ms = float(os.getenv("ADAOS_LOOP_HANG_MS", "3000") or "3000")
+                    except Exception:
+                        hang_ms = 3000.0
+                    try:
+                        every_s = float(os.getenv("ADAOS_LOOP_HANG_EVERY_S", "10") or "10")
+                    except Exception:
+                        every_s = 10.0
+                    try:
+                        stack_limit = int(os.getenv("ADAOS_LOOP_HANG_STACK", "40") or "40")
+                    except Exception:
+                        stack_limit = 40
+                    if stack_limit < 5:
+                        stack_limit = 5
+                    if stack_limit > 200:
+                        stack_limit = 200
+                    if hang_ms < 200:
+                        hang_ms = 200.0
+                    if every_s < 1:
+                        every_s = 1.0
+
+                    main_tid = _threading.get_ident()
+                    last_tick_box = {"t": time.monotonic()}
+
+                    async def _tick() -> None:
+                        while True:
+                            last_tick_box["t"] = time.monotonic()
+                            await asyncio.sleep(0.2)
+
+                    self._boot_tasks.append(asyncio.create_task(_tick(), name="adaos-loop-tick"))
+
+                    def _watch() -> None:
+                        last_dump = 0.0
+                        while True:
+                            time.sleep(0.25)
+                            now = time.monotonic()
+                            dt_ms = (now - float(last_tick_box.get("t", now))) * 1000.0
+                            if dt_ms < hang_ms:
+                                continue
+                            if now - last_dump < every_s:
+                                continue
+                            last_dump = now
+                            try:
+                                fr = _sys._current_frames().get(main_tid)  # type: ignore[attr-defined]
+                                if fr is None:
+                                    print(f"[diag] event loop hang {dt_ms:.0f}ms (no frame)")
+                                    continue
+                                st = "".join(_traceback.format_stack(fr, limit=stack_limit))
+                                print(f"[diag] event loop hang {dt_ms:.0f}ms stack:\n{st.rstrip()}")
+                            except Exception:
+                                continue
+
+                    t = _threading.Thread(target=_watch, name="adaos-loop-hang-watchdog", daemon=True)
+                    t.start()
         except Exception:
             pass
         if conf.role == "hub":
@@ -567,8 +641,10 @@ class BootstrapService:
 
                         _ws_tr = getattr(_nats_transport, "WebSocketTransport", None)
                         _orig_rl = getattr(_ws_tr, "readline", None) if _ws_tr else None
+                        _orig_write = getattr(_ws_tr, "write", None) if _ws_tr else None
                         _orig_connect = getattr(_ws_tr, "connect", None) if _ws_tr else None
                         _orig_connect_tls = getattr(_ws_tr, "connect_tls", None) if _ws_tr else None
+                        _orig_process_ping = getattr(getattr(_nats_client, "Client", None), "_process_ping", None)
                         _orig_process_pong = getattr(getattr(_nats_client, "Client", None), "_process_pong", None)
                         patched_any = False
                         if _ws_tr is not None and callable(_orig_rl) and not getattr(_orig_rl, "_adaos_ws_patch", False):
@@ -579,7 +655,21 @@ class BootstrapService:
                                 while True:
                                     try:
                                         data = await self._ws.receive()
-                                    except Exception:
+                                    except Exception as _rx_e:
+                                        try:
+                                            if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                ws_exc = None
+                                                try:
+                                                    ws_exc = self._ws.exception()
+                                                except Exception:
+                                                    ws_exc = None
+                                                _rl_log(
+                                                    "nats.ws_receive_exc",
+                                                    f"[hub-io] nats ws receive exception: err={type(_rx_e).__name__}: {_rx_e} ws_exc={ws_exc}",
+                                                    every_s=1.0,
+                                                )
+                                        except Exception:
+                                            pass
                                         return b""
                                     # Track last RX time for a higher-level watchdog.
                                     try:
@@ -589,6 +679,13 @@ class BootstrapService:
                                     try:
                                         t = getattr(data, "type", None)
                                         if t == aiohttp.WSMsgType.PING:
+                                            try:
+                                                if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    b0 = getattr(data, "data", b"")
+                                                    ln = len(b0) if isinstance(b0, (bytes, bytearray)) else 0
+                                                    _rl_log("nats.ws_rx_ws_ping", f"[hub-io] nats ws rx WS PING len={ln} -> send WS PONG", every_s=1.0)
+                                            except Exception:
+                                                pass
                                             # Be defensive even if aiohttp autoping is enabled.
                                             try:
                                                 await self._ws.pong(getattr(data, "data", b""))
@@ -596,17 +693,104 @@ class BootstrapService:
                                                 pass
                                             continue
                                         if t == aiohttp.WSMsgType.PONG:
+                                            try:
+                                                if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    b0 = getattr(data, "data", b"")
+                                                    ln = len(b0) if isinstance(b0, (bytes, bytearray)) else 0
+                                                    _rl_log("nats.ws_rx_ws_pong", f"[hub-io] nats ws rx WS PONG len={ln}", every_s=1.0)
+                                            except Exception:
+                                                pass
                                             continue
                                         if t in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING):
+                                            try:
+                                                if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    code = getattr(data, "data", None)
+                                                    extra = getattr(data, "extra", None)
+                                                    reason = None
+                                                    try:
+                                                        if isinstance(extra, (bytes, bytearray)):
+                                                            reason = extra.decode("utf-8", errors="replace")
+                                                        else:
+                                                            reason = str(extra) if extra is not None else None
+                                                    except Exception:
+                                                        reason = None
+                                                    ws_code = None
+                                                    try:
+                                                        ws_code = getattr(self._ws, "close_code", None)
+                                                    except Exception:
+                                                        ws_code = None
+                                                    _rl_log(
+                                                        "nats.ws_close_frame",
+                                                        f"[hub-io] nats ws close frame: code={code} reason={reason} ws_close_code={ws_code}",
+                                                        every_s=1.0,
+                                                    )
+                                            except Exception:
+                                                pass
                                             try:
                                                 await self._ws.close()
                                             except Exception:
                                                 pass
                                             return b""
                                         if t in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                            try:
+                                                if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    exc = None
+                                                    try:
+                                                        exc = self._ws.exception()
+                                                    except Exception:
+                                                        exc = None
+                                                    _rl_log(
+                                                        "nats.ws_closed",
+                                                        f"[hub-io] nats ws closed/error: type={t} ws_exc={exc}",
+                                                        every_s=1.0,
+                                                    )
+                                            except Exception:
+                                                pass
                                             return b""
                                         d = getattr(data, "data", b"")
                                         if isinstance(d, (bytes, bytearray)):
+                                            try:
+                                                if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    # Best-effort scan for NATS protocol keepalives (PING/PONG) without logging payloads.
+                                                    # Use a small tail buffer to catch boundary-split sequences.
+                                                    tail = getattr(self, "_adaos_nats_pp_tail", b"")
+                                                    if not isinstance(tail, (bytes, bytearray)):
+                                                        tail = b""
+                                                    bb = bytes(d)
+                                                    blob = bytes(tail) + bb
+                                                    ping_n = blob.count(b"PING\r\n")
+                                                    pong_n = blob.count(b"PONG\r\n")
+                                                    try:
+                                                        setattr(self, "_adaos_nats_pp_tail", blob[-5:])
+                                                    except Exception:
+                                                        pass
+                                                    if ping_n or pong_n:
+                                                        _rl_log(
+                                                            "nats.ws_rx_nats_pp",
+                                                            f"[hub-io] nats ws rx data ping={ping_n} pong={pong_n} len={len(bb)}",
+                                                            every_s=1.0,
+                                                        )
+                                            except Exception:
+                                                pass
+                                            try:
+                                                if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    head = bytes(d[:512])
+                                                    info_n = (1 if head.startswith(b"INFO ") else 0) + head.count(b"\nINFO ") + head.count(b"\r\nINFO ")
+                                                    msg_n = (1 if head.startswith(b"MSG ") else 0) + head.count(b"\nMSG ") + head.count(b"\r\nMSG ")
+                                                    err_n = 1 if b"-ERR" in head else 0
+                                                    if info_n or msg_n or err_n:
+                                                        _rl_log(
+                                                            "nats.ws_rx_wiretap",
+                                                            f"[hub-io] nats ws rx wiretap len={len(d)} info={info_n} msg={msg_n} err={err_n}",
+                                                            every_s=1.0,
+                                                        )
+                                                    if info_n:
+                                                        try:
+                                                            setattr(self, "_adaos_rx_info_at", time.monotonic())
+                                                        except Exception:
+                                                            pass
+                                            except Exception:
+                                                pass
                                             return bytes(d)
                                         if isinstance(d, str):
                                             return d.encode("utf-8")
@@ -619,6 +803,81 @@ class BootstrapService:
                                 pass
                             try:
                                 setattr(_ws_tr, "readline", _ws_readline_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Trace outgoing NATS protocol keepalives without logging payloads.
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_write)
+                            and not getattr(_orig_write, "_adaos_ws_patch", False)
+                        ):
+                            async def _ws_write_logged(self, data, *args, **kwargs):  # type: ignore[no-redef]
+                                try:
+                                    if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        bb = None
+                                        if isinstance(data, (bytes, bytearray, memoryview)):
+                                            bb = bytes(data)
+                                        elif isinstance(data, str):
+                                            bb = data.encode("utf-8")
+                                        if isinstance(bb, (bytes, bytearray)) and len(bb) <= 16 and bb in (b"PING\r\n", b"PONG\r\n"):
+                                            kind = "PING" if bb.startswith(b"PING") else "PONG"
+                                            _rl_log("nats.ws_tx_nats_pp", f"[hub-io] nats ws tx data {kind}", every_s=1.0)
+                                        if isinstance(bb, (bytes, bytearray)):
+                                            head = bytes(bb[:512])
+                                            connect_n = (1 if head.startswith(b"CONNECT ") else 0) + head.count(b"\nCONNECT ") + head.count(b"\r\nCONNECT ")
+                                            sub_n = (1 if head.startswith(b"SUB ") else 0) + head.count(b"\nSUB ") + head.count(b"\r\nSUB ")
+                                            pub_n = (1 if head.startswith(b"PUB ") else 0) + head.count(b"\nPUB ") + head.count(b"\r\nPUB ")
+                                            ping_n = head.count(b"PING\r\n")
+                                            pong_n = head.count(b"PONG\r\n")
+                                            err_n = 1 if b"-ERR" in head else 0
+                                            if connect_n or sub_n or pub_n or ping_n or pong_n or err_n:
+                                                _rl_log(
+                                                    "nats.ws_tx_wiretap",
+                                                    f"[hub-io] nats ws tx wiretap len={len(bb)} connect={connect_n} sub={sub_n} pub={pub_n} ping={ping_n} pong={pong_n} err={err_n}",
+                                                    every_s=1.0,
+                                                )
+                                            if connect_n:
+                                                try:
+                                                    setattr(self, "_adaos_tx_connect_at", time.monotonic())
+                                                except Exception:
+                                                    pass
+                                except Exception:
+                                    pass
+                                return await _orig_write(self, data, *args, **kwargs)
+
+                            try:
+                                setattr(_ws_write_logged, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "write", _ws_write_logged)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Log whether the hub actually receives NATS protocol PINGs (and therefore sends PONGs).
+                        # This helps distinguish "connection drops because we don't respond to keepalive" from
+                        # "connection drops despite healthy ping/pong".
+                        if (
+                            callable(_orig_process_ping)
+                            and not getattr(_orig_process_ping, "_adaos_ws_patch", False)
+                        ):
+                            async def _process_ping_logged(self) -> None:  # type: ignore[no-redef]
+                                try:
+                                    if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        _rl_log("nats.rx_ping", "[hub-io] nats rx PING (will reply PONG)", every_s=1.0)
+                                except Exception:
+                                    pass
+                                return await _orig_process_ping(self)
+
+                            try:
+                                setattr(_process_ping_logged, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(getattr(_nats_client, "Client", object), "_process_ping", _process_ping_logged)
                             except Exception:
                                 pass
                             patched_any = True
@@ -650,10 +909,16 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 try:
+                                    max_msg_size = int(os.getenv("HUB_NATS_WS_MAX_MSG_SIZE", "0") or "0")
+                                except Exception:
+                                    max_msg_size = 0
+                                if max_msg_size < 0:
+                                    max_msg_size = 0
+                                try:
                                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
                                         _rl_log(
                                             "nats.ws_connect",
-                                            f"[hub-io] nats ws_connect uri={uri.geturl()} heartbeat={hb} autoping=1 tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                            f"[hub-io] nats ws_connect uri={uri.geturl()} heartbeat={hb} autoping=0 max_msg_size={max_msg_size} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
                                             every_s=1.0,
                                         )
                                 except Exception:
@@ -662,16 +927,22 @@ class BootstrapService:
                                     uri.geturl(),
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    # Keep aiohttp WS-level ping/pong handling enabled so reverse-proxies that
-                                    # enforce PING/PONG liveness checks don't drop the connection while NATS is idle.
-                                    # Our patched readline() still protects the NATS parser if control frames surface.
-                                    autoping=True,
-                                    autoclose=True,
+                                    protocols=("nats",),
+                                    # Avoid aiohttp auto-ping/auto-close logic; we handle WS control frames
+                                    # explicitly in the patched readline(). This reduces the surface area for
+                                    # abrupt 1006 closes on flaky proxies/middleboxes.
+                                    autoping=False,
+                                    autoclose=False,
                                     heartbeat=hb,
+                                    max_msg_size=max_msg_size,
                                 )
                                 self._using_tls = False
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
+                                except Exception:
+                                    pass
+                                try:
+                                    setattr(self, "_adaos_ws_proto", getattr(self._ws, "protocol", None))
                                 except Exception:
                                     pass
 
@@ -719,10 +990,16 @@ class BootstrapService:
                                     pass
                                 target = uri if isinstance(uri, str) else uri.geturl()
                                 try:
+                                    max_msg_size = int(os.getenv("HUB_NATS_WS_MAX_MSG_SIZE", "0") or "0")
+                                except Exception:
+                                    max_msg_size = 0
+                                if max_msg_size < 0:
+                                    max_msg_size = 0
+                                try:
                                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
                                         _rl_log(
                                             "nats.ws_connect_tls",
-                                            f"[hub-io] nats ws_connect_tls uri={target} heartbeat={hb} autoping=1 tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                            f"[hub-io] nats ws_connect_tls uri={target} heartbeat={hb} autoping=0 max_msg_size={max_msg_size} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
                                             every_s=1.0,
                                         )
                                 except Exception:
@@ -732,13 +1009,19 @@ class BootstrapService:
                                     ssl=ssl_context,
                                     timeout=connect_timeout,
                                     headers=headers,
-                                    autoping=True,
-                                    autoclose=True,
+                                    protocols=("nats",),
+                                    autoping=False,
+                                    autoclose=False,
                                     heartbeat=hb,
+                                    max_msg_size=max_msg_size,
                                 )
                                 self._using_tls = True
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
+                                except Exception:
+                                    pass
+                                try:
+                                    setattr(self, "_adaos_ws_proto", getattr(self._ws, "protocol", None))
                                 except Exception:
                                     pass
 
@@ -766,6 +1049,11 @@ class BootstrapService:
                                         return
                                     self._pongs_received += 1
                                     self._pings_outstanding = 0
+                                try:
+                                    if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        _rl_log("nats.rx_pong", "[hub-io] nats rx PONG", every_s=1.0)
+                                except Exception:
+                                    pass
 
                             try:
                                 setattr(_process_pong_safe, "_adaos_ws_patch", True)
@@ -1032,10 +1320,72 @@ class BootstrapService:
                                 is_eof = type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower()
                                 if os.getenv("SILENCE_NATS_EOF", "0") == "1" and is_eof:
                                     return
-                                # UnexpectedEOF is our primary signal; always emit WS close diagnostics for it.
-                                if is_eof and nc_for_diag is not None:
+                                # Emit extra transport diagnostics to correlate client-side errors with root-side logs.
+                                if nc_for_diag is not None and (is_eof or os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1"):
                                     try:
                                         ws_closed, ws_close_code, ws_close_reason, ws_exc = _ws_state(nc_for_diag)
+                                        try:
+                                            tr = getattr(nc_for_diag, "_transport", None)
+                                            ws = getattr(tr, "_ws", None) if tr is not None else None
+                                            last_rx_at = getattr(tr, "_adaos_last_rx_at", None)
+                                            last_rx_ago_s = None
+                                            try:
+                                                if isinstance(last_rx_at, (int, float)):
+                                                    last_rx_ago_s = round(time.monotonic() - float(last_rx_at), 3)
+                                            except Exception:
+                                                last_rx_ago_s = None
+                                            tx_connect_ago_s = None
+                                            try:
+                                                tx_connect_at = getattr(tr, "_adaos_tx_connect_at", None) if tr is not None else None
+                                                if isinstance(tx_connect_at, (int, float)):
+                                                    tx_connect_ago_s = round(time.monotonic() - float(tx_connect_at), 3)
+                                            except Exception:
+                                                tx_connect_ago_s = None
+                                            rx_info_ago_s = None
+                                            try:
+                                                rx_info_at = getattr(tr, "_adaos_rx_info_at", None) if tr is not None else None
+                                                if isinstance(rx_info_at, (int, float)):
+                                                    rx_info_ago_s = round(time.monotonic() - float(rx_info_at), 3)
+                                            except Exception:
+                                                rx_info_ago_s = None
+                                            pending_data_size = getattr(nc_for_diag, "_pending_data_size", None)
+                                            pings_outstanding = getattr(nc_for_diag, "_pings_outstanding", None)
+                                            pongs_q = None
+                                            try:
+                                                pongs = getattr(nc_for_diag, "_pongs", None)
+                                                if isinstance(pongs, list):
+                                                    pongs_q = len(pongs)
+                                            except Exception:
+                                                pongs_q = None
+                                            tr_pending_q = None
+                                            try:
+                                                q = getattr(tr, "_pending", None) if tr is not None else None
+                                                if q is not None:
+                                                    tr_pending_q = q.qsize()
+                                            except Exception:
+                                                tr_pending_q = None
+                                            ws_proto = None
+                                            try:
+                                                ws_proto = getattr(tr, "_adaos_ws_proto", None) if tr is not None else None
+                                            except Exception:
+                                                ws_proto = None
+                                            if not ws_proto:
+                                                try:
+                                                    ws_proto = getattr(ws, "protocol", None) if ws is not None else None
+                                                except Exception:
+                                                    ws_proto = None
+                                            if not ws_proto:
+                                                try:
+                                                    ws_proto = getattr(ws, "_response", None).headers.get("Sec-WebSocket-Protocol") if ws is not None and getattr(ws, "_response", None) is not None else None
+                                                except Exception:
+                                                    ws_proto = None
+                                            _rl_log(
+                                                "nats.ws_diag",
+                                                f"[hub-io] nats ws diag: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto}",
+                                                every_s=1.0,
+                                            )
+                                        except Exception:
+                                            pass
                                         _rl_log(
                                             "nats.ws_eof",
                                             f"[hub-io] nats ws eof: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
@@ -1303,14 +1653,11 @@ class BootstrapService:
                             # This avoids using `flush()` and avoids creating `_pongs` futures which can later explode
                             # with `InvalidStateError` on late/cancelled PONGs.
                             try:
-                                # Enabled by default for WS transports: hub can go mostly silent and some environments
-                                # end up with half-dead WS connections. Keepalive helps keep the flusher/transport active
-                                # and surfaces failures earlier. Can be disabled explicitly via env.
                                 raw_keepalive_env = os.getenv("HUB_NATS_RAW_KEEPALIVE", "")
-                                if raw_keepalive_env.strip() == "":
-                                    raw_keepalive_enabled = bool(connected_server and str(connected_server).startswith("ws"))
-                                else:
-                                    raw_keepalive_enabled = raw_keepalive_env == "1"
+                                # Default OFF: this uses nats-py internals (`_send_command`/`_flush_pending`) from a
+                                # separate task and can introduce hard-to-debug races. Root already sends NATS PINGs to
+                                # elicit hub->root traffic (PONG), and nats-py also has its own ping interval.
+                                raw_keepalive_enabled = raw_keepalive_env.strip() == "1"
                             except Exception:
                                 raw_keepalive_enabled = False
                             if raw_keepalive_enabled:
@@ -1323,6 +1670,7 @@ class BootstrapService:
 
                                 async def _raw_keepalive_loop() -> None:
                                     ping_cmd = b"PING\r\n"
+                                    sent = 0
                                     while True:
                                         await asyncio.sleep(raw_keepalive_s)
                                         try:
@@ -1354,7 +1702,34 @@ class BootstrapService:
                                                         await flush(timeout=1.0)
                                                     except Exception:
                                                         pass
-                                        except Exception:
+                                            sent += 1
+                                            try:
+                                                # Log early pings too: if we disconnect before reaching 10,
+                                                # it is still useful to know whether we managed to send keepalives.
+                                                if sent <= 3 and (os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace):
+                                                    _rl_log(
+                                                        "nats.raw_keepalive_first",
+                                                        f"[hub-io] nats raw keepalive sent={sent} every_s={raw_keepalive_s:.1f}",
+                                                        every_s=0.5,
+                                                    )
+                                                if (sent % 10) == 0 and (os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace):
+                                                    _rl_log(
+                                                        "nats.raw_keepalive",
+                                                        f"[hub-io] nats raw keepalive sent={sent} every_s={raw_keepalive_s:.1f}",
+                                                        every_s=5.0,
+                                                    )
+                                            except Exception:
+                                                pass
+                                        except Exception as e:
+                                            try:
+                                                if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                                    _rl_log(
+                                                        "nats.raw_keepalive_err",
+                                                        f"[hub-io] nats raw keepalive failed err={type(e).__name__}: {e}",
+                                                        every_s=1.0,
+                                                    )
+                                            except Exception:
+                                                pass
                                             # Keepalive is best-effort; connection supervisor will handle reconnects.
                                             pass
 
@@ -2444,7 +2819,7 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                async def _maybe_snapshot_root_logs(*, trace: bool) -> None:
+                async def _maybe_snapshot_root_logs(*, trace: bool, force: bool = False) -> None:
                     try:
                         if os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") != "1":
                             return
@@ -2457,7 +2832,7 @@ class BootstrapService:
                             snap_every_s = 5.0
 
                         nonlocal last_root_snapshot_at
-                        if last_root_snapshot_at is not None and (now - last_root_snapshot_at) < snap_every_s:
+                        if (not force) and last_root_snapshot_at is not None and (now - last_root_snapshot_at) < snap_every_s:
                             return
                         last_root_snapshot_at = now
 
@@ -2558,6 +2933,37 @@ class BootstrapService:
                                 await _maybe_snapshot_root_logs(trace=trace0)
                             except Exception:
                                 pass
+                            # Optional delayed snapshot: root-side logs (ECONNRESET/conn close) can be emitted
+                            # slightly after the hub notices EOF. A second tail a few seconds later often captures it.
+                            try:
+                                after_env = os.getenv("HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S", "3") or "3"
+                            except Exception:
+                                after_env = "3"
+                            delays: list[float] = []
+                            try:
+                                for part in str(after_env).split(","):
+                                    p = str(part).strip()
+                                    if not p:
+                                        continue
+                                    try:
+                                        v = float(p)
+                                    except Exception:
+                                        continue
+                                    if v > 0:
+                                        delays.append(v)
+                            except Exception:
+                                delays = []
+                            if delays:
+                                # Keep this bounded so the supervisor can restart promptly.
+                                for after_s in delays[:5]:
+                                    try:
+                                        await asyncio.sleep(min(30.0, max(0.1, float(after_s))))
+                                    except Exception:
+                                        pass
+                                    try:
+                                        await _maybe_snapshot_root_logs(trace=trace0, force=True)
+                                    except Exception:
+                                        pass
 
                             ran_for_s = time.monotonic() - started_at
                             try:
