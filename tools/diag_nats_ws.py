@@ -5,6 +5,7 @@ import os
 import random
 import string
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -85,27 +86,60 @@ class RunResult:
     ws_pongs_rx: int
     nats_pings_rx: int
     nats_pongs_tx: int
+    client_pings_tx: int
+    client_pongs_rx: int
+    client_pong_timeouts: int
     info_rx: int
     errors: list[str]
 
 
-async def _run_one(url: str, user: str, password: str, duration_s: float, trace: bool) -> RunResult:
+def _add_conn_tag(url: str, tag: str) -> str:
+    if not tag:
+        return url
+    try:
+        u = urllib.parse.urlsplit(url)
+        qs = urllib.parse.parse_qs(u.query, keep_blank_values=True)
+        if "adaos_conn" not in qs:
+            qs["adaos_conn"] = [tag]
+        query = urllib.parse.urlencode(qs, doseq=True)
+        return urllib.parse.urlunsplit((u.scheme, u.netloc, u.path, query, u.fragment))
+    except Exception:
+        return url
+
+
+async def _run_one(
+    url: str,
+    *,
+    user: str,
+    password: str,
+    duration_s: float,
+    trace: bool,
+    conn_tag: str,
+    client_ping_every_s: float,
+    client_pong_timeout_s: float,
+) -> RunResult:
     started_at = time.monotonic()
     errors: list[str] = []
     ws_pings_rx = 0
     ws_pongs_rx = 0
     nats_pings_rx = 0
     nats_pongs_tx = 0
+    client_pings_tx = 0
+    client_pongs_rx = 0
+    client_pong_timeouts = 0
     info_rx = 0
 
     timeout = aiohttp.ClientTimeout(total=10)
     headers = {"Sec-WebSocket-Protocol": "nats"}
+    if conn_tag:
+        headers["X-AdaOS-Nats-Conn"] = conn_tag
 
     close_code: Optional[int] = None
     close_reason: Optional[str] = None
 
     async with aiohttp.ClientSession(timeout=timeout) as sess:
         try:
+            url = _add_conn_tag(url, conn_tag)
             async with sess.ws_connect(
                 url,
                 headers=headers,
@@ -129,10 +163,32 @@ async def _run_one(url: str, user: str, password: str, duration_s: float, trace:
                 await ws.send_bytes(b"CONNECT " + json.dumps(connect_obj).encode("utf-8") + b"\r\n")
 
                 deadline = time.monotonic() + duration_s
+                pending_pongs: list[float] = []
+                next_ping_at: Optional[float] = None
+                if isinstance(client_ping_every_s, (int, float)) and client_ping_every_s > 0:
+                    next_ping_at = time.monotonic() + float(client_ping_every_s)
                 while time.monotonic() < deadline:
+                    now = time.monotonic()
+                    if next_ping_at is not None and now >= next_ping_at:
+                        try:
+                            await ws.send_bytes(NATS_PING)
+                            client_pings_tx += 1
+                            pending_pongs.append(now + max(0.1, float(client_pong_timeout_s)))
+                            if trace:
+                                print(f"[diag] nats PING tx #{client_pings_tx}")
+                        except Exception as e:
+                            errors.append(f"send client PING failed: {type(e).__name__}: {e}")
+                            break
+                        next_ping_at = now + float(client_ping_every_s)
+                    if pending_pongs and now >= pending_pongs[0]:
+                        client_pong_timeouts += 1
+                        errors.append(
+                            f"client PONG timeout after PING #{client_pings_tx} (timeouts={client_pong_timeouts})"
+                        )
+                        break
                     left = max(deadline - time.monotonic(), 0.1)
                     try:
-                        msg = await ws.receive(timeout=min(left, 5.0))
+                        msg = await ws.receive(timeout=min(left, 0.5))
                     except asyncio.TimeoutError:
                         continue
 
@@ -180,6 +236,14 @@ async def _run_one(url: str, user: str, password: str, duration_s: float, trace:
                             if trace:
                                 line = raw.split(b"\r\n", 1)[0][:200]
                                 print(f"[diag] nats INFO: {line!r}")
+                        # Count protocol pongs from the server (responses to our client PINGs)
+                        if b"PONG\r\n" in raw:
+                            got = raw.count(NATS_PONG)
+                            client_pongs_rx += got
+                            if pending_pongs and got > 0:
+                                pending_pongs = pending_pongs[got:]
+                            if trace and got:
+                                print(f"[diag] nats PONG rx +{got} (total={client_pongs_rx}) pending={len(pending_pongs)}")
                         # Count protocol pings and respond
                         if b"PING\r\n" in raw:
                             nats_pings_rx += raw.count(NATS_PING)
@@ -207,6 +271,9 @@ async def _run_one(url: str, user: str, password: str, duration_s: float, trace:
         ws_pongs_rx=ws_pongs_rx,
         nats_pings_rx=nats_pings_rx,
         nats_pongs_tx=nats_pongs_tx,
+        client_pings_tx=client_pings_tx,
+        client_pongs_rx=client_pongs_rx,
+        client_pong_timeouts=client_pong_timeouts,
         info_rx=info_rx,
         errors=errors,
     )
@@ -216,7 +283,10 @@ async def _amain() -> int:
     ap = argparse.ArgumentParser(description="Diagnose NATS-over-WebSocket connection to Root (ping/pong + NATS INFO/PING).")
     ap.add_argument("--node-yaml", default=".adaos/node.yaml", help="Path to node.yaml (default: .adaos/node.yaml)")
     ap.add_argument("--url", default="", help="Override WS URL (e.g. wss://api.inimatic.com/nats)")
+    ap.add_argument("--tag", default="", help="Connection tag for Root logs (sets X-AdaOS-Nats-Conn + ?adaos_conn=...)")
     ap.add_argument("--duration", type=float, default=70.0, help="Run duration per URL in seconds (default: 70)")
+    ap.add_argument("--client-ping-every", type=float, default=0.0, help="Send NATS protocol PING every N seconds (0=off)")
+    ap.add_argument("--client-pong-timeout", type=float, default=2.0, help="Timeout waiting for PONG after client PING (seconds)")
     ap.add_argument("--trace", action="store_true", help="Print live ping/pong/info lines")
     args = ap.parse_args()
 
@@ -239,8 +309,20 @@ async def _amain() -> int:
         u = _coerce_ws_url(u)
         if not u:
             continue
+        tag = str(args.tag or "").strip()
+        if not tag:
+            tag = f"diag-{_rand_id()}"
         print(f"[diag] url={u} user={user} duration={args.duration:.1f}s")
-        res = await _run_one(u, user=user, password=password, duration_s=float(args.duration), trace=bool(args.trace))
+        res = await _run_one(
+            u,
+            user=user,
+            password=password,
+            duration_s=float(args.duration),
+            trace=bool(args.trace),
+            conn_tag=tag,
+            client_ping_every_s=float(args.client_ping_every),
+            client_pong_timeout_s=float(args.client_pong_timeout),
+        )
         results.append(res)
         print(
             "[diag] result:",
@@ -255,6 +337,9 @@ async def _amain() -> int:
                     "ws_pongs_rx": res.ws_pongs_rx,
                     "nats_pings_rx": res.nats_pings_rx,
                     "nats_pongs_tx": res.nats_pongs_tx,
+                    "client_pings_tx": res.client_pings_tx,
+                    "client_pongs_rx": res.client_pongs_rx,
+                    "client_pong_timeouts": res.client_pong_timeouts,
                     "info_rx": res.info_rx,
                     "errors": res.errors,
                 },

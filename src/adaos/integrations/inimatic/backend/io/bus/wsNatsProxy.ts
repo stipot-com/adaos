@@ -120,6 +120,10 @@ export function installWsNatsProxy(server: HttpServer) {
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
+	// Workaround for flaky upstream PONG delivery: some environments drop NATS PONG after a few client PINGs
+	// (breaking `flush()` and keepalives). When enabled, the proxy terminates client PINGs by immediately
+	// replying with PONG and not forwarding the PING upstream.
+	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '1') !== '0'
 	let wiretapEveryMs = 1000
 	try {
 		wiretapEveryMs = Math.max(0, Number(process.env['WS_NATS_PROXY_WIRETAP_EVERY_MS'] || '1000'))
@@ -192,6 +196,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		let lastClientPingAt: number | null = null
 		let lastUpstreamPongAt: number | null = null
 		let proxySentPong = 0
+		let proxySentPongToClient = 0
 		let clientSentPong = 0
 		let clientSentPing = 0
 		let upstreamSentPong = 0
@@ -203,7 +208,8 @@ export function installWsNatsProxy(server: HttpServer) {
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
-		let lastWiretapAt = 0
+		let lastClientWiretapAt = 0
+		let lastUpstreamWiretapAt = 0
 		let upstreamConnecting = false
 		const upstreamPendingWrites: Buffer[] = []
 
@@ -255,6 +261,7 @@ export function installWsNatsProxy(server: HttpServer) {
 				lastClientPingAgo_s: lastClientPingAt ? (Date.now() - lastClientPingAt) / 1000 : null,
 				lastUpstreamPongAgo_s: lastUpstreamPongAt ? (Date.now() - lastUpstreamPongAt) / 1000 : null,
 				proxySentPong,
+				proxySentPongToClient,
 				clientSentPong,
 				clientSentPing,
 				upstreamSentPong,
@@ -405,6 +412,28 @@ export function installWsNatsProxy(server: HttpServer) {
 			})
 			sock.on('data', (chunk) => {
 				bytesDown += chunk.length
+				if (wiretap) {
+					try {
+						const now = Date.now()
+						if (wiretapEveryMs === 0 || now - lastUpstreamWiretapAt >= wiretapEveryMs) {
+							lastUpstreamWiretapAt = now
+							try {
+								const head = chunk.subarray(0, Math.min(chunk.length, 2048)).toString('utf8')
+								const counts = {
+									ping: (head.match(/\bPING\r\n/g) || []).length,
+									pong: (head.match(/\bPONG\r\n/g) || []).length,
+									msg: (head.match(/\bMSG /g) || []).length,
+									info: (head.match(/\bINFO /g) || []).length,
+									err: head.includes('-ERR') ? 1 : 0,
+								}
+								log().info(
+									{ conn: connId, tag: connTag, hub_id: hubIdForLog, len: chunk.length, ...counts },
+									'nats wiretap (upstream->proxy)',
+								)
+							} catch {}
+						}
+					} catch {}
+				}
 				try {
 					const at = chunk.indexOf(NATS_ERR)
 					if (at >= 0) {
@@ -589,12 +618,28 @@ export function installWsNatsProxy(server: HttpServer) {
 				return
 			}
 			if (handshaked) {
+				// Terminate standalone NATS PING from the client. This makes hub flush/keepalive resilient even if
+				// upstream stops responding with PONG after a few PINGs.
+				if (terminateClientPing && buf.length === NATS_PING.length && buf.equals(NATS_PING)) {
+					try {
+						bytesUp += buf.length
+						lastClientPingAt = Date.now()
+						clientSentPing += 1
+						ws.send(NATS_PONG, { binary: true })
+						proxySentPongToClient += 1
+						if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats ping (client->proxy) -> pong (proxy)')
+					} catch (e) {
+						logSummary('proxy pong to client failed', { err: String(e) })
+						closeBoth(1011, 'client_pong_failed')
+					}
+					return
+				}
 				try {
 					bytesUp += buf.length
 					if (wiretap) {
 						const now = Date.now()
-						if (wiretapEveryMs === 0 || now - lastWiretapAt >= wiretapEveryMs) {
-							lastWiretapAt = now
+						if (wiretapEveryMs === 0 || now - lastClientWiretapAt >= wiretapEveryMs) {
+							lastClientWiretapAt = now
 							try {
 								// Do NOT log raw payloads (may contain Telegram/user content).
 								// Instead, log coarse protocol markers to answer "client sends nothing?" questions.

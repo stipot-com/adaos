@@ -636,17 +636,27 @@ class BootstrapService:
                     try:
                         from nats.aio import transport as _nats_transport  # type: ignore
                         from nats.aio import client as _nats_client  # type: ignore
-                        from nats.aio.errors import ProtocolError as _NatsProtocolError  # type: ignore
+                        # nats-py 2.12.0 does not expose ProtocolError in nats.aio.errors; avoid import-time crashes.
+                        # We only need an exception type for "cannot upgrade to TLS" (non-fatal diagnostic).
+                        try:
+                            from nats.aio.errors import NatsError as _NatsProtocolError  # type: ignore
+                        except Exception:
+                            _NatsProtocolError = RuntimeError  # type: ignore[assignment]
                         import aiohttp  # type: ignore
 
                         _ws_tr = getattr(_nats_transport, "WebSocketTransport", None)
                         _orig_rl = getattr(_ws_tr, "readline", None) if _ws_tr else None
                         _orig_write = getattr(_ws_tr, "write", None) if _ws_tr else None
+                        _orig_writelines = getattr(_ws_tr, "writelines", None) if _ws_tr else None
+                        _orig_drain = getattr(_ws_tr, "drain", None) if _ws_tr else None
                         _orig_connect = getattr(_ws_tr, "connect", None) if _ws_tr else None
                         _orig_connect_tls = getattr(_ws_tr, "connect_tls", None) if _ws_tr else None
                         _orig_process_ping = getattr(getattr(_nats_client, "Client", None), "_process_ping", None)
                         _orig_process_pong = getattr(getattr(_nats_client, "Client", None), "_process_pong", None)
                         patched_any = False
+                        # Keep aiohttp WS autoping/autoclose enabled so WS-level PING/PONG works even when the NATS
+                        # client is idle (otherwise a proxy WS ping can time out and force-close with 1006).
+                        ws_safe_mode = False
                         if _ws_tr is not None and callable(_orig_rl) and not getattr(_orig_rl, "_adaos_ws_patch", False):
                             async def _ws_readline_safe(self):  # type: ignore[no-redef]
                                 # aiohttp surfaces WS control frames (PING/PONG/CLOSE) as WSMessage objects.
@@ -750,6 +760,12 @@ class BootstrapService:
                                         d = getattr(data, "data", b"")
                                         if isinstance(d, (bytes, bytearray)):
                                             try:
+                                                if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                                    _rl_log(
+                                                        "nats.ws_rx_any",
+                                                        f"[hub-io] nats ws rx data len={len(d)}",
+                                                        every_s=5.0,
+                                                    )
                                                 if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                                     # Best-effort scan for NATS protocol keepalives (PING/PONG) without logging payloads.
                                                     # Use a small tail buffer to catch boundary-split sequences.
@@ -784,9 +800,67 @@ class BootstrapService:
                                                             f"[hub-io] nats ws rx wiretap len={len(d)} info={info_n} msg={msg_n} err={err_n}",
                                                             every_s=1.0,
                                                         )
+                                                    # Optional: extract and log a couple of subjects from MSG headers (no payload).
+                                                    # This helps confirm whether root is sending `route.to_hub.*` while browser reports hub_unreachable.
+                                                    if os.getenv("HUB_NATS_TRACE_SUBJECTS", "0") == "1" or os.getenv("HUB_ROUTE_VERBOSE", "0") == "1":
+                                                        try:
+                                                            # Look for "MSG <subject> ..." tokens.
+                                                            # Data may contain multiple frames; only log the first match per chunk.
+                                                            idx = head.find(b"MSG ")
+                                                            if idx >= 0:
+                                                                # require start or line boundary
+                                                                if idx == 0 or head[idx - 1 : idx] in (b"\n", b"\r"):
+                                                                    line_end = head.find(b"\n", idx)
+                                                                    if line_end < 0:
+                                                                        line_end = len(head)
+                                                                    line = head[idx:line_end]
+                                                                    # line: b"MSG <subj> <sid> [reply] <len>\\r"
+                                                                    parts = line.split()
+                                                                    subj = parts[1] if len(parts) >= 2 else b""
+                                                                    if subj.startswith(b"route.to_hub.") or subj.startswith(b"tg.") or subj.startswith(b"hub."):
+                                                                        _rl_log(
+                                                                            "nats.ws_rx_subject",
+                                                                            f"[hub-io] nats ws rx MSG subj={subj.decode('utf-8', errors='replace')}",
+                                                                            every_s=1.0,
+                                                                        )
+                                                        except Exception:
+                                                            pass
                                                     if info_n:
                                                         try:
                                                             setattr(self, "_adaos_rx_info_at", time.monotonic())
+                                                        except Exception:
+                                                            pass
+                                                        # Parse INFO and log a couple of key fields (avoid printing nonce/connect_urls).
+                                                        # This helps detect server-side max_payload / headers support issues when large PUBs
+                                                        # appear to trigger immediate closes (1006/UnexpectedEOF).
+                                                        try:
+                                                            if head.startswith(b"INFO "):
+                                                                line_end = head.find(b"\n")
+                                                                if line_end < 0:
+                                                                    line_end = len(head)
+                                                                line = head[:line_end].strip()
+                                                                if line.endswith(b"\r"):
+                                                                    line = line[:-1]
+                                                                js0 = line[len(b"INFO ") :].strip()
+                                                                import json as _json
+
+                                                                obj = _json.loads(js0.decode("utf-8", errors="replace"))
+                                                                if isinstance(obj, dict):
+                                                                    max_payload = obj.get("max_payload", None)
+                                                                    version = obj.get("version", None)
+                                                                    headers = obj.get("headers", None)
+                                                                    tls_required = obj.get("tls_required", None)
+                                                                    auth_required = obj.get("auth_required", None)
+                                                                    try:
+                                                                        setattr(self, "_adaos_nats_max_payload", max_payload)
+                                                                    except Exception:
+                                                                        pass
+                                                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                                                        _rl_log(
+                                                                            "nats.ws_info",
+                                                                            f"[hub-io] nats INFO version={version} max_payload={max_payload} headers={headers} tls_required={tls_required} auth_required={auth_required}",
+                                                                            every_s=3600.0,
+                                                                        )
                                                         except Exception:
                                                             pass
                                             except Exception:
@@ -806,6 +880,7 @@ class BootstrapService:
                             except Exception:
                                 pass
                             patched_any = True
+                            ws_safe_mode = True
 
                         # Trace outgoing NATS protocol keepalives without logging payloads.
                         if (
@@ -813,18 +888,18 @@ class BootstrapService:
                             and callable(_orig_write)
                             and not getattr(_orig_write, "_adaos_ws_patch", False)
                         ):
-                            async def _ws_write_logged(self, data, *args, **kwargs):  # type: ignore[no-redef]
+                            def _ws_write_logged(self, payload):  # type: ignore[no-redef]
                                 try:
                                     if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                         bb = None
-                                        if isinstance(data, (bytes, bytearray, memoryview)):
-                                            bb = bytes(data)
-                                        elif isinstance(data, str):
-                                            bb = data.encode("utf-8")
+                                        if isinstance(payload, (bytes, bytearray, memoryview)):
+                                            bb = bytes(payload)
+                                        elif isinstance(payload, str):
+                                            bb = payload.encode("utf-8")
                                         if isinstance(bb, (bytes, bytearray)) and len(bb) <= 16 and bb in (b"PING\r\n", b"PONG\r\n"):
                                             kind = "PING" if bb.startswith(b"PING") else "PONG"
                                             _rl_log("nats.ws_tx_nats_pp", f"[hub-io] nats ws tx data {kind}", every_s=1.0)
-                                        if isinstance(bb, (bytes, bytearray)):
+                                        if isinstance(bb, (bytes, bytearray)) and (os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1"):
                                             head = bytes(bb[:512])
                                             connect_n = (1 if head.startswith(b"CONNECT ") else 0) + head.count(b"\nCONNECT ") + head.count(b"\r\nCONNECT ")
                                             sub_n = (1 if head.startswith(b"SUB ") else 0) + head.count(b"\nSUB ") + head.count(b"\r\nSUB ")
@@ -838,14 +913,32 @@ class BootstrapService:
                                                     f"[hub-io] nats ws tx wiretap len={len(bb)} connect={connect_n} sub={sub_n} pub={pub_n} ping={ping_n} pong={pong_n} err={err_n}",
                                                     every_s=1.0,
                                                 )
-                                            if connect_n:
+                                                if connect_n:
+                                                    try:
+                                                        setattr(self, "_adaos_tx_connect_at", time.monotonic())
+                                                    except Exception:
+                                                        pass
+                                            # Optional: extract subject from PUB/SUB line (no payload).
+                                            if os.getenv("HUB_NATS_TRACE_SUBJECTS", "0") == "1" or os.getenv("HUB_ROUTE_VERBOSE", "0") == "1":
                                                 try:
-                                                    setattr(self, "_adaos_tx_connect_at", time.monotonic())
+                                                    if head.startswith(b"PUB ") or head.startswith(b"SUB "):
+                                                        line_end = head.find(b"\n")
+                                                        if line_end < 0:
+                                                            line_end = len(head)
+                                                        line = head[:line_end]
+                                                        parts = line.split()
+                                                        subj = parts[1] if len(parts) >= 2 else b""
+                                                        if subj.startswith(b"route.to_browser.") or subj.startswith(b"route.to_hub.") or subj.startswith(b"tg."):
+                                                            _rl_log(
+                                                                "nats.ws_tx_subject",
+                                                                f"[hub-io] nats ws tx {('PUB' if head.startswith(b'PUB ') else 'SUB')} subj={subj.decode('utf-8', errors='replace')}",
+                                                                every_s=1.0,
+                                                            )
                                                 except Exception:
                                                     pass
                                 except Exception:
                                     pass
-                                return await _orig_write(self, data, *args, **kwargs)
+                                return _orig_write(self, payload)
 
                             try:
                                 setattr(_ws_write_logged, "_adaos_ws_patch", True)
@@ -853,6 +946,164 @@ class BootstrapService:
                                 pass
                             try:
                                 setattr(_ws_tr, "write", _ws_write_logged)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Transport flush path uses writelines() (not write()).
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_writelines)
+                            and not getattr(_orig_writelines, "_adaos_ws_patch", False)
+                        ):
+                            def _ws_writelines_logged(self, payload):  # type: ignore[no-redef]
+                                try:
+                                    if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                        connect_n = sub_n = pub_n = ping_n = pong_n = err_n = 0
+                                        total_len = 0
+                                        subj_samples: list[tuple[str, str]] = []
+                                        try:
+                                            it = payload if isinstance(payload, (list, tuple)) else []
+                                        except Exception:
+                                            it = []
+                                        for msg in it:
+                                            bb = None
+                                            if isinstance(msg, (bytes, bytearray, memoryview)):
+                                                bb = bytes(msg)
+                                            elif isinstance(msg, str):
+                                                bb = msg.encode("utf-8")
+                                            if not isinstance(bb, (bytes, bytearray)):
+                                                continue
+                                            total_len += len(bb)
+                                            head = bytes(bb[:512])
+                                            connect_n += (1 if head.startswith(b"CONNECT ") else 0) + head.count(b"\nCONNECT ") + head.count(b"\r\nCONNECT ")
+                                            sub_n += (1 if head.startswith(b"SUB ") else 0) + head.count(b"\nSUB ") + head.count(b"\r\nSUB ")
+                                            pub_n += (1 if head.startswith(b"PUB ") else 0) + head.count(b"\nPUB ") + head.count(b"\r\nPUB ")
+                                            ping_n += head.count(b"PING\r\n")
+                                            pong_n += head.count(b"PONG\r\n")
+                                            err_n += 1 if b"-ERR" in head else 0
+                                            if os.getenv("HUB_NATS_TRACE_SUBJECTS", "0") == "1" or os.getenv("HUB_ROUTE_VERBOSE", "0") == "1":
+                                                try:
+                                                    if head.startswith(b"PUB ") or head.startswith(b"SUB "):
+                                                        line_end = head.find(b"\n")
+                                                        if line_end < 0:
+                                                            line_end = len(head)
+                                                        line = head[:line_end]
+                                                        parts = line.split()
+                                                        subj = parts[1] if len(parts) >= 2 else b""
+                                                        if subj.startswith(b"route.to_browser.") or subj.startswith(b"route.to_hub.") or subj.startswith(b"tg."):
+                                                            kind = "PUB" if head.startswith(b"PUB ") else "SUB"
+                                                            subj_samples.append((kind, subj.decode("utf-8", errors="replace")))
+                                                except Exception:
+                                                    pass
+                                        if connect_n or sub_n or pub_n or ping_n or pong_n or err_n:
+                                            _rl_log(
+                                                "nats.ws_tx_wiretap",
+                                                f"[hub-io] nats ws tx wiretap len={total_len} connect={connect_n} sub={sub_n} pub={pub_n} ping={ping_n} pong={pong_n} err={err_n}",
+                                                every_s=1.0,
+                                            )
+                                        if subj_samples:
+                                            # Log a few samples per flush to avoid flooding.
+                                            for kind, subj in subj_samples[:3]:
+                                                _rl_log(
+                                                    "nats.ws_tx_subject",
+                                                    f"[hub-io] nats ws tx {kind} subj={subj}",
+                                                    every_s=1.0,
+                                                )
+                                        if connect_n:
+                                            try:
+                                                setattr(self, "_adaos_tx_connect_at", time.monotonic())
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
+                                return _orig_writelines(self, payload)
+
+                            try:
+                                setattr(_ws_writelines_logged, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "writelines", _ws_writelines_logged)
+                            except Exception:
+                                pass
+                            patched_any = True
+
+                        # Log send failures at the actual WS write point (`drain()` -> `send_bytes()`), not only when
+                        # nats-py later surfaces UnexpectedEOF. This helps distinguish "remote reset" vs "local close"
+                        # and correlates failures to specific PUB/SUB operations (without logging payloads).
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_drain)
+                            and not getattr(_orig_drain, "_adaos_ws_patch", False)
+                        ):
+                            async def _ws_drain_logged(self):  # type: ignore[no-redef]
+                                ws = getattr(self, "_ws", None)
+                                if ws is None:
+                                    return await _orig_drain(self)
+                                while not self._pending.empty():
+                                    message = self._pending.get_nowait()
+                                    try:
+                                        setattr(self, "_adaos_last_tx_at", time.monotonic())
+                                    except Exception:
+                                        pass
+                                    try:
+                                        await ws.send_bytes(message)
+                                    except Exception as _tx_e:
+                                        try:
+                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                                ws_closed = getattr(ws, "closed", None)
+                                                ws_close_code = getattr(ws, "close_code", None)
+                                                ws_close_reason = getattr(ws, "close_reason", None)
+                                                ws_exc = None
+                                                try:
+                                                    exf = getattr(ws, "exception", None)
+                                                    if callable(exf):
+                                                        ws_exc = exf()
+                                                except Exception:
+                                                    ws_exc = None
+
+                                                kind = None
+                                                subj = None
+                                                try:
+                                                    bb = bytes(message) if isinstance(message, (bytes, bytearray, memoryview)) else None
+                                                    if bb:
+                                                        if bb.startswith(b"PUB "):
+                                                            kind = "PUB"
+                                                        elif bb.startswith(b"SUB "):
+                                                            kind = "SUB"
+                                                        elif bb.startswith(b"CONNECT "):
+                                                            kind = "CONNECT"
+                                                        elif bb.startswith(b"PING"):
+                                                            kind = "PING"
+                                                        elif bb.startswith(b"PONG"):
+                                                            kind = "PONG"
+                                                        if kind in ("PUB", "SUB"):
+                                                            line_end = bb.find(b"\n")
+                                                            if line_end < 0:
+                                                                line_end = min(len(bb), 256)
+                                                            parts = bb[:line_end].split()
+                                                            if len(parts) >= 2:
+                                                                subj = parts[1].decode("utf-8", errors="replace")
+                                                except Exception:
+                                                    kind = kind or None
+                                                    subj = subj or None
+
+                                                _rl_log(
+                                                    "nats.ws_send_exc",
+                                                    f"[hub-io] nats ws send_bytes failed err={type(_tx_e).__name__}: {_tx_e} msg_len={len(message) if hasattr(message,'__len__') else None} kind={kind} subj={subj} ws_closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
+                                                    every_s=1.0,
+                                                )
+                                        except Exception:
+                                            pass
+                                        raise
+
+                            try:
+                                setattr(_ws_drain_logged, "_adaos_ws_patch", True)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "drain", _ws_drain_logged)
                             except Exception:
                                 pass
                             patched_any = True
@@ -882,8 +1133,9 @@ class BootstrapService:
                                 pass
                             patched_any = True
 
-                        # Patch connect() to disable aiohttp autoping/autoclose so control frames are surfaced to
-                        # our safe readline() loop and can never get passed into the NATS parser.
+                        # Patch connect() to add observability for WS params and attach our per-connection tag.
+                        # NOTE: do NOT disable aiohttp autoping/autoclose: some proxies/servers rely on WS-level
+                        # PING/PONG. Disabling autoping can cause periodic 1006 disconnects (browser sees hub_unreachable).
                         if (
                             _ws_tr is not None
                             and callable(_orig_connect)
@@ -896,6 +1148,8 @@ class BootstrapService:
                                     # doesn't respond correctly this can cause periodic disconnects (~2*heartbeat).
                                     # Keep default OFF; enable explicitly via env.
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
+                                    if hb_env is None or hb_env.strip() == "":
+                                        hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
                                     if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
@@ -908,34 +1162,40 @@ class BootstrapService:
                                         headers["X-AdaOS-Nats-Conn"] = ws_connect_tag
                                 except Exception:
                                     pass
+                                # aiohttp's `max_msg_size`:
+                                # - unset/empty => use aiohttp default
+                                # - 0 => unlimited
+                                # - >0 => explicit cap
+                                max_msg_size_raw = os.getenv("HUB_NATS_WS_MAX_MSG_SIZE")
+                                max_msg_size_kw = None
                                 try:
-                                    max_msg_size = int(os.getenv("HUB_NATS_WS_MAX_MSG_SIZE", "0") or "0")
+                                    if max_msg_size_raw is not None and str(max_msg_size_raw).strip() != "":
+                                        v = int(str(max_msg_size_raw).strip())
+                                        if v < 0:
+                                            v = 0
+                                        max_msg_size_kw = v
                                 except Exception:
-                                    max_msg_size = 0
-                                if max_msg_size < 0:
-                                    max_msg_size = 0
+                                    max_msg_size_kw = None
                                 try:
                                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
-                                        _rl_log(
-                                            "nats.ws_connect",
-                                            f"[hub-io] nats ws_connect uri={uri.geturl()} heartbeat={hb} autoping=0 max_msg_size={max_msg_size} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
-                                            every_s=1.0,
-                                        )
+                                            _rl_log(
+                                                "nats.ws_connect",
+                                                f"[hub-io] nats ws_connect uri={uri.geturl()} heartbeat={hb} ws_safe={int(ws_safe_mode)} autoping=1 max_msg_size={max_msg_size_kw if max_msg_size_kw is not None else 'default'} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                                every_s=1.0,
+                                            )
                                 except Exception:
                                     pass
-                                self._ws = await self._client.ws_connect(
-                                    uri.geturl(),
-                                    timeout=connect_timeout,
-                                    headers=headers,
-                                    protocols=("nats",),
-                                    # Avoid aiohttp auto-ping/auto-close logic; we handle WS control frames
-                                    # explicitly in the patched readline(). This reduces the surface area for
-                                    # abrupt 1006 closes on flaky proxies/middleboxes.
-                                    autoping=False,
-                                    autoclose=False,
-                                    heartbeat=hb,
-                                    max_msg_size=max_msg_size,
-                                )
+                                ws_kwargs: dict[str, Any] = {
+                                    "timeout": connect_timeout,
+                                    "headers": headers,
+                                    "protocols": ("nats",),
+                                    "autoping": True,
+                                    "autoclose": True,
+                                    "heartbeat": hb,
+                                }
+                                if max_msg_size_kw is not None:
+                                    ws_kwargs["max_msg_size"] = int(max_msg_size_kw)
+                                self._ws = await self._client.ws_connect(uri.geturl(), **ws_kwargs)
                                 self._using_tls = False
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
@@ -966,6 +1226,8 @@ class BootstrapService:
                                 hb = None
                                 try:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
+                                    if hb_env is None or hb_env.strip() == "":
+                                        hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
                                     if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
                                         hb = v if v > 0.0 else None
@@ -989,32 +1251,41 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 target = uri if isinstance(uri, str) else uri.geturl()
+                                # aiohttp's `max_msg_size`:
+                                # - unset/empty => use aiohttp default
+                                # - 0 => unlimited
+                                # - >0 => explicit cap
+                                max_msg_size_raw = os.getenv("HUB_NATS_WS_MAX_MSG_SIZE")
+                                max_msg_size_kw = None
                                 try:
-                                    max_msg_size = int(os.getenv("HUB_NATS_WS_MAX_MSG_SIZE", "0") or "0")
+                                    if max_msg_size_raw is not None and str(max_msg_size_raw).strip() != "":
+                                        v = int(str(max_msg_size_raw).strip())
+                                        if v < 0:
+                                            v = 0
+                                        max_msg_size_kw = v
                                 except Exception:
-                                    max_msg_size = 0
-                                if max_msg_size < 0:
-                                    max_msg_size = 0
+                                    max_msg_size_kw = None
                                 try:
                                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
-                                        _rl_log(
-                                            "nats.ws_connect_tls",
-                                            f"[hub-io] nats ws_connect_tls uri={target} heartbeat={hb} autoping=0 max_msg_size={max_msg_size} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
-                                            every_s=1.0,
-                                        )
+                                            _rl_log(
+                                                "nats.ws_connect_tls",
+                                                f"[hub-io] nats ws_connect_tls uri={target} heartbeat={hb} ws_safe={int(ws_safe_mode)} autoping=1 max_msg_size={max_msg_size_kw if max_msg_size_kw is not None else 'default'} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                                every_s=1.0,
+                                            )
                                 except Exception:
                                     pass
-                                self._ws = await self._client.ws_connect(
-                                    target,
-                                    ssl=ssl_context,
-                                    timeout=connect_timeout,
-                                    headers=headers,
-                                    protocols=("nats",),
-                                    autoping=False,
-                                    autoclose=False,
-                                    heartbeat=hb,
-                                    max_msg_size=max_msg_size,
-                                )
+                                ws_kwargs: dict[str, Any] = {
+                                    "ssl": ssl_context,
+                                    "timeout": connect_timeout,
+                                    "headers": headers,
+                                    "protocols": ("nats",),
+                                    "autoping": True,
+                                    "autoclose": True,
+                                    "heartbeat": hb,
+                                }
+                                if max_msg_size_kw is not None:
+                                    ws_kwargs["max_msg_size"] = int(max_msg_size_kw)
+                                self._ws = await self._client.ws_connect(target, **ws_kwargs)
                                 self._using_tls = True
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
@@ -1081,8 +1352,50 @@ class BootstrapService:
                                 )
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
+                        else:
+                            try:
+                                if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                    _rl_log(
+                                        "nats.patch_none",
+                                        f"[hub-io] nats ws patch not applied in this boot (hooks may already be patched) (ws_tr={type(_ws_tr).__name__ if _ws_tr is not None else None} rl={callable(_orig_rl)} write={callable(_orig_write)} writelines={callable(_orig_writelines)} connect={callable(_orig_connect)} connect_tls={callable(_orig_connect_tls)})",
+                                        every_s=3600.0,
+                                    )
+                            except Exception:
+                                pass
+                        # Always print a compact patch status summary in verbose/trace mode so we can verify which
+                        # hooks are active when diagnosing 1006/UnexpectedEOF flaps.
+                        try:
+                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                def _has_patch(fn: Any | None) -> bool:
+                                    try:
+                                        return bool(getattr(fn, "_adaos_ws_patch", False))
+                                    except Exception:
+                                        return False
+
+                                st_rl = _has_patch(getattr(_ws_tr, "readline", None)) if _ws_tr else False
+                                st_wr = _has_patch(getattr(_ws_tr, "write", None)) if _ws_tr else False
+                                st_wrl = _has_patch(getattr(_ws_tr, "writelines", None)) if _ws_tr else False
+                                st_c = _has_patch(getattr(_ws_tr, "connect", None)) if _ws_tr else False
+                                st_ct = _has_patch(getattr(_ws_tr, "connect_tls", None)) if _ws_tr else False
+                                st_ping = _has_patch(getattr(getattr(_nats_client, "Client", object), "_process_ping", None))
+                                st_pong = _has_patch(getattr(getattr(_nats_client, "Client", object), "_process_pong", None))
+                                _rl_log(
+                                    "nats.patch_status",
+                                    f"[hub-io] nats ws patch status: rl={int(st_rl)} wr={int(st_wr)} wrl={int(st_wrl)} c={int(st_c)} ct={int(st_ct)} ping={int(st_ping)} pong={int(st_pong)}",
+                                    every_s=1.0,
+                                )
+                        except Exception:
+                            pass
+                    except Exception as _patch_e:
+                        try:
+                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                _rl_log(
+                                    "nats.patch_exc",
+                                    f"[hub-io] nats ws patch error: {type(_patch_e).__name__}: {_patch_e}",
+                                    every_s=1.0,
+                                )
+                        except Exception:
+                            pass
 
                     def _explain_connect_error(err: Exception) -> str:
                         try:
@@ -1334,6 +1647,13 @@ class BootstrapService:
                                                     last_rx_ago_s = round(time.monotonic() - float(last_rx_at), 3)
                                             except Exception:
                                                 last_rx_ago_s = None
+                                            last_tx_ago_s = None
+                                            try:
+                                                last_tx_at = getattr(tr, "_adaos_last_tx_at", None)
+                                                if isinstance(last_tx_at, (int, float)):
+                                                    last_tx_ago_s = round(time.monotonic() - float(last_tx_at), 3)
+                                            except Exception:
+                                                last_tx_ago_s = None
                                             tx_connect_ago_s = None
                                             try:
                                                 tx_connect_at = getattr(tr, "_adaos_tx_connect_at", None) if tr is not None else None
@@ -1348,6 +1668,11 @@ class BootstrapService:
                                                     rx_info_ago_s = round(time.monotonic() - float(rx_info_at), 3)
                                             except Exception:
                                                 rx_info_ago_s = None
+                                            max_payload = None
+                                            try:
+                                                max_payload = getattr(tr, "_adaos_nats_max_payload", None) if tr is not None else None
+                                            except Exception:
+                                                max_payload = None
                                             pending_data_size = getattr(nc_for_diag, "_pending_data_size", None)
                                             pings_outstanding = getattr(nc_for_diag, "_pings_outstanding", None)
                                             pongs_q = None
@@ -1381,7 +1706,7 @@ class BootstrapService:
                                                     ws_proto = None
                                             _rl_log(
                                                 "nats.ws_diag",
-                                                f"[hub-io] nats ws diag: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto}",
+                                                f"[hub-io] nats ws diag: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto}",
                                                 every_s=1.0,
                                             )
                                         except Exception:
@@ -2896,6 +3221,22 @@ class BootstrapService:
                                 body = resp.read().decode("utf-8", errors="replace")
                             return url, body
 
+                        def _extract_tag_lines(body: str, tag: str) -> str:
+                            try:
+                                if not tag:
+                                    return ""
+                                import json as _json
+
+                                obj = _json.loads(body)
+                                lines0 = obj.get("lines", [])
+                                if not isinstance(lines0, list):
+                                    return ""
+                                hits = [str(s) for s in lines0 if isinstance(s, str) and tag in s]
+                                # Keep this file small and focused.
+                                return "\n".join(hits[-500:])
+                            except Exception:
+                                return ""
+
                         nonlocal ws_connect_tag
                         tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
                         ts = time.strftime("%Y%m%d_%H%M%SZ", time.gmtime())
@@ -2904,6 +3245,13 @@ class BootstrapService:
                                 url, body = await asyncio.to_thread(_fetch_one, fname)
                                 fn = out_dir / f"{ts}__{(tag0 or 'no_tag')}__{fname.replace('/', '_')}"
                                 fn.write_text(body, encoding="utf-8", errors="replace")
+                                try:
+                                    ex = _extract_tag_lines(body, tag0)
+                                    if ex:
+                                        fn2 = out_dir / f"{ts}__{(tag0 or 'no_tag')}__{fname.replace('/', '_')}__extract.log"
+                                        fn2.write_text(ex, encoding="utf-8", errors="replace")
+                                except Exception:
+                                    pass
                                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
                                     _rl_log("root.snap", f"[hub-io] saved root log snapshot {fn} (from {url})", every_s=1.0)
                             except Exception as _se:
@@ -2930,15 +3278,17 @@ class BootstrapService:
                             except Exception:
                                 pass
                             try:
-                                await _maybe_snapshot_root_logs(trace=trace0)
+                                await _maybe_snapshot_root_logs(trace=trace0, force=True)
                             except Exception:
                                 pass
                             # Optional delayed snapshot: root-side logs (ECONNRESET/conn close) can be emitted
                             # slightly after the hub notices EOF. A second tail a few seconds later often captures it.
                             try:
-                                after_env = os.getenv("HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S", "3") or "3"
+                                # Always include an immediate post-error snapshot (0s) unless the user explicitly
+                                # disables delayed snapshots by setting this to an empty string.
+                                after_env = os.getenv("HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S", "0,3") or "0,3"
                             except Exception:
-                                after_env = "3"
+                                after_env = "0,3"
                             delays: list[float] = []
                             try:
                                 for part in str(after_env).split(","):
@@ -2949,15 +3299,17 @@ class BootstrapService:
                                         v = float(p)
                                     except Exception:
                                         continue
-                                    if v > 0:
+                                    if v >= 0:
                                         delays.append(v)
                             except Exception:
                                 delays = []
                             if delays:
                                 # Keep this bounded so the supervisor can restart promptly.
-                                for after_s in delays[:5]:
+                                for after_s in delays[:8]:
                                     try:
-                                        await asyncio.sleep(min(30.0, max(0.1, float(after_s))))
+                                        s = float(after_s)
+                                        if s > 0:
+                                            await asyncio.sleep(min(30.0, max(0.1, s)))
                                     except Exception:
                                         pass
                                     try:
