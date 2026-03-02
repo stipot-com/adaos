@@ -1,4 +1,13 @@
 # src/adaos/api/server.py
+# NOTE: CLI (`adaos ...`) loads `.env`, but direct `uvicorn adaos.apps.api.server:app` does not.
+# Many subsystems (notably NATS-over-WS tuning) rely on env vars, so best-effort load `.env` here too.
+try:  # pragma: no cover
+    from dotenv import find_dotenv, load_dotenv  # type: ignore
+
+    load_dotenv(find_dotenv(), override=False)
+except Exception:
+    pass
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager

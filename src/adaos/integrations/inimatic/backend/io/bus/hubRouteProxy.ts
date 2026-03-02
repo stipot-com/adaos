@@ -251,8 +251,17 @@ export function installHubRouteProxy(
 
 	// ---- HTTP proxy: /hubs/:hubId/api/... -> hub local http://127.0.0.1:8777/api/...
 	app.all('/hubs/:hubId/api/*', async (req, res) => {
+		let hubIdForLog = ''
+		let keyForLog = ''
+		let toHubForLog = ''
+		let toBrowserForLog = ''
+		let pathForLog = ''
+		let methodForLog = ''
+		let kindForLog: string | null = null
+		let timeoutMsForLog: number | null = null
 		try {
 			const hubId = String(req.params.hubId || '').trim()
+			hubIdForLog = hubId
 			if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
 
 			const sessionJwt = extractToken(req)
@@ -275,13 +284,19 @@ export function installHubRouteProxy(
 
 			const url = new URL(`https://x${req.originalUrl}`)
 			const path = stripHubPrefix(url.pathname) // /api/...
+			pathForLog = path
+			methodForLog = String(req.method || 'GET').toUpperCase()
 			const kind = isNoisyPath(path) || path === '/healthz' ? 'probe' : 'app'
+			kindForLog = kind
 			try {
 				route_http_requests_total.labels(kind).inc()
 			} catch {}
 			const key = `${hubId}--http--${randomUUID()}`
 			const toHub = `route.to_hub.${key}`
 			const toBrowser = `route.to_browser.${key}`
+			keyForLog = key
+			toHubForLog = toHub
+			toBrowserForLog = toBrowser
 			if (verbose && !isNoisyPath(path)) {
 				log.info(
 					{
@@ -326,6 +341,7 @@ export function installHubRouteProxy(
 				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 6500
 				return 15000
 			})()
+			timeoutMsForLog = timeoutMs
 
 			const reply = await natsRequest(bus, {
 				subjectToHub: toHub,
@@ -390,7 +406,20 @@ export function installHubRouteProxy(
 			try {
 				route_http_proxy_failed_total.labels(String(req?.params?.hubId || '') || 'unknown').inc()
 			} catch {}
-			log.warn({ err: String(e), hubId: String(req?.params?.hubId || '') }, 'http proxy failed')
+			log.warn(
+				{
+					err: String(e),
+					hubId: hubIdForLog || String(req?.params?.hubId || ''),
+					key: keyForLog || null,
+					method: methodForLog || null,
+					path: pathForLog || null,
+					kind: kindForLog || null,
+					timeoutMs: timeoutMsForLog,
+					toHub: toHubForLog || null,
+					toBrowser: toBrowserForLog || null,
+				},
+				'http proxy failed'
+			)
 			return res.status(502).json({ ok: false, error: 'hub_unreachable' })
 		}
 	})

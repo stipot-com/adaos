@@ -114,12 +114,33 @@ function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 	return { out: Buffer.concat(parts), count }
 }
 
+function extractNatsCmdSubject(head: string, cmd: 'MSG' | 'PUB' | 'SUB'): string | null {
+	try {
+		const needle = `${cmd} `
+		let idx = head.indexOf(needle)
+		while (idx >= 0) {
+			// Avoid false positives inside payloads: require start-of-buffer or start-of-line.
+			if (idx === 0 || head[idx - 1] === '\n') break
+			idx = head.indexOf(needle, idx + needle.length)
+		}
+		if (idx < 0) return null
+		const lineEnd = head.indexOf('\n', idx)
+		const line = (lineEnd >= 0 ? head.slice(idx, lineEnd) : head.slice(idx, idx + 240)).trim()
+		const parts = line.split(/\s+/g)
+		if (parts.length < 2) return null
+		return String(parts[1] || '')
+	} catch {
+		return null
+	}
+}
+
 export function installWsNatsProxy(server: HttpServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
+	const traceHttpRoute = (process.env['WS_NATS_PROXY_TRACE_HTTP_ROUTE'] || '0') === '1'
 	// Workaround for flaky upstream PONG delivery: some environments drop NATS PONG after a few client PINGs
 	// (breaking `flush()` and keepalives). When enabled, the proxy terminates client PINGs by immediately
 	// replying with PONG and not forwarding the PING upstream.
@@ -412,6 +433,18 @@ export function installWsNatsProxy(server: HttpServer) {
 			})
 			sock.on('data', (chunk) => {
 				bytesDown += chunk.length
+				if (traceHttpRoute) {
+					try {
+						const head = chunk.subarray(0, Math.min(chunk.length, 2048)).toString('utf8')
+						const subj = extractNatsCmdSubject(head, 'MSG')
+						if (subj && subj.startsWith('route.to_hub.') && subj.includes('--http--')) {
+							log().info(
+								{ conn: connId, tag: connTag, hub_id: hubIdForLog, len: chunk.length, subj },
+								'nats http route (upstream->proxy)'
+							)
+						}
+					} catch {}
+				}
 				if (wiretap) {
 					try {
 						const now = Date.now()
@@ -636,6 +669,18 @@ export function installWsNatsProxy(server: HttpServer) {
 				}
 				try {
 					bytesUp += buf.length
+					if (traceHttpRoute) {
+						try {
+							const head = buf.subarray(0, Math.min(buf.length, 2048)).toString('utf8')
+							const subj = extractNatsCmdSubject(head, 'PUB')
+							if (subj && subj.startsWith('route.to_browser.') && subj.includes('--http--')) {
+								log().info(
+									{ conn: connId, tag: connTag, hub_id: hubIdForLog, len: buf.length, subj },
+									'nats http route (client->proxy)'
+								)
+							}
+						} catch {}
+					}
 					if (wiretap) {
 						const now = Date.now()
 						if (wiretapEveryMs === 0 || now - lastClientWiretapAt >= wiretapEveryMs) {

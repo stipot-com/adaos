@@ -1148,7 +1148,8 @@ class BootstrapService:
                                     # doesn't respond correctly this can cause periodic disconnects (~2*heartbeat).
                                     # Keep default OFF; enable explicitly via env.
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
-                                    if hb_env is None or hb_env.strip() == "":
+                                    # If explicitly set to empty, treat as "off" (do not fall back to defaults).
+                                    if hb_env is None:
                                         hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
                                     if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
@@ -1226,7 +1227,7 @@ class BootstrapService:
                                 hb = None
                                 try:
                                     hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
-                                    if hb_env is None or hb_env.strip() == "":
+                                    if hb_env is None:
                                         hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
                                     if hb_env is not None and hb_env.strip() != "":
                                         v = float(hb_env)
@@ -1304,24 +1305,49 @@ class BootstrapService:
                                 setattr(_ws_tr, "connect_tls", _ws_connect_tls_safe)
                             except Exception:
                                 pass
-                            patched_any = True
+                        patched_any = True
 
                         # nats-py 2.12.0 can crash its _reading_task with InvalidStateError if a late PONG arrives
                         # after the future was cancelled/timed out. Make _process_pong idempotent.
                         if callable(_orig_process_pong) and not getattr(_orig_process_pong, "_adaos_ws_patch", False):
                             async def _process_pong_safe(self) -> None:  # type: ignore[no-redef]
-                                if len(self._pongs) > 0:
-                                    future = self._pongs.pop(0)
-                                    try:
-                                        if future.cancelled() or future.done():
-                                            return
-                                        future.set_result(True)
-                                    except asyncio.InvalidStateError:
-                                        return
-                                    self._pongs_received += 1
-                                    self._pings_outstanding = 0
+                                # nats-py can leave cancelled/done futures in `self._pongs` (e.g. flush timeout),
+                                # and later crash when a PONG arrives and it tries to set_result().
+                                #
+                                # IMPORTANT: regardless of future state, a PONG means the connection is alive and
+                                # `_pings_outstanding` must be reset; otherwise ping-interval can falsely trigger
+                                # ErrStaleConnection and flap the WS tunnel.
                                 try:
-                                    if os.getenv("HUB_NATS_PING_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                    pongs = getattr(self, "_pongs", None)
+                                    if isinstance(pongs, list):
+                                        # Drop cancelled/done futures first.
+                                        while pongs and getattr(pongs[0], "done", lambda: False)():
+                                            try:
+                                                pongs.pop(0)
+                                            except Exception:
+                                                break
+                                        if pongs:
+                                            future = pongs.pop(0)
+                                            try:
+                                                if not future.cancelled() and not future.done():
+                                                    future.set_result(True)
+                                            except asyncio.InvalidStateError:
+                                                pass
+                                    try:
+                                        self._pongs_received += 1
+                                    except Exception:
+                                        pass
+                                finally:
+                                    try:
+                                        self._pings_outstanding = 0
+                                    except Exception:
+                                        pass
+                                try:
+                                    if (
+                                        os.getenv("HUB_NATS_PING_TRACE", "0") == "1"
+                                        or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1"
+                                        or os.getenv("HUB_NATS_VERBOSE", "0") == "1"
+                                    ):
                                         _rl_log("nats.rx_pong", "[hub-io] nats rx PONG", every_s=1.0)
                                 except Exception:
                                     pass
@@ -1628,6 +1654,36 @@ class BootstrapService:
                                 except Exception:
                                     return None, None, None, None
 
+                            def _env_is_sensitive(name: str) -> bool:
+                                try:
+                                    n = (name or "").upper()
+                                except Exception:
+                                    return False
+                                return any(x in n for x in ("PASS", "PASSWORD", "TOKEN", "SECRET", "KEY", "JWT", "AUTH"))
+
+                            def _env_snapshot(keys: list[str]) -> str:
+                                parts: list[str] = []
+                                for k in keys:
+                                    try:
+                                        v = os.getenv(k)
+                                    except Exception:
+                                        v = None
+                                    if v is None:
+                                        parts.append(f"{k}=<unset>")
+                                        continue
+                                    vv = str(v)
+                                    if _env_is_sensitive(k):
+                                        if not vv:
+                                            parts.append(f"{k}=<empty>")
+                                        else:
+                                            parts.append(f"{k}=<set:{len(vv)}>")
+                                    else:
+                                        # Avoid huge env values in logs.
+                                        if len(vv) > 200:
+                                            vv = vv[:200] + "…"
+                                        parts.append(f"{k}={vv}")
+                                return " ".join(parts)
+
                             async def _on_error_cb(e: Exception, *, nc_for_diag: Any | None = None) -> None:
                                 # Best-effort; keep quiet unless explicitly verbose or useful
                                 is_eof = type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower()
@@ -1718,6 +1774,29 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
+                                # Capture the effective env knobs around NATS-over-WS on errors to make log sharing actionable.
+                                try:
+                                    _env = _env_snapshot(
+                                        [
+                                            "HUB_NATS_PING_INTERVAL_S",
+                                            "HUB_NATS_MAX_OUTSTANDING_PINGS",
+                                            "HUB_NATS_DISABLE_PING_INTERVAL_TASK",
+                                            "HUB_NATS_RX_TIMEOUT_S",
+                                            "HUB_NATS_WS_HEARTBEAT_S",
+                                            "HUB_NATS_WS_MAX_MSG_SIZE",
+                                            "HUB_NATS_RAW_KEEPALIVE",
+                                            "HUB_NATS_RAW_KEEPALIVE_S",
+                                            "HUB_NATS_CONNECT_TAG_QUERY",
+                                            "WS_NATS_PROXY_WS_PING",
+                                            "WS_NATS_PROXY_TERMINATE_CLIENT_PING",
+                                            "WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE",
+                                            "WS_NATS_PROXY_WIRETAP",
+                                        ]
+                                    )
+                                    if _env:
+                                        _rl_log("nats.env", f"[hub-io] nats env: {_env}", every_s=30.0)
+                                except Exception:
+                                    pass
                                 try:
                                     verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                                     quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
@@ -1801,13 +1880,27 @@ class BootstrapService:
                                             )
                                     except Exception:
                                         pass
-                                    # In some environments aiohttp-based NATS-over-WS can intermittently stop
-                                    # delivering `PONG` frames even while the socket stays open; nats-py will
-                                    # then mark the connection stale and close it. Root/WS proxy already sends
-                                    # NATS PINGs to the hub, so hub-initiated periodic PINGs are not required
-                                    # for liveness. Keep them effectively disabled by default.
+                                    # Keepalive:
+                                    # - Root's ws-nats-proxy sends NATS `PING\r\n` frames to the hub, but those
+                                    #   only keep the WS tunnel alive if the hub actually replies with `PONG\r\n`.
+                                    # - Some reverse proxies / LBs will still cut long-lived WS connections if the
+                                    #   client stays silent (observed as ~1000s / close 1006 + ECONNRESET on root).
+                                    #
+                                    # Therefore, for WS transports default to a small hub->root ping interval to
+                                    # guarantee outbound traffic even when the hub is otherwise idle.
+                                    # NOTE: Some NATS-over-WS proxies (observed on inimatic ws-nats-proxy) can
+                                    # flap with close 1006/UnexpectedEOF when the client sends periodic NATS PINGs.
+                                    # Root/proxy already sends server PINGs, so the hub still generates outbound
+                                    # traffic by replying with PONGs even if the client ping interval is conservative.
                                     try:
-                                        ping_interval = int(os.getenv("HUB_NATS_PING_INTERVAL_S", "3600") or "3600")
+                                        ping_interval_default = "3600" if connect_server.startswith("ws") else "3600"
+                                        ping_interval = int(
+                                            os.getenv("HUB_NATS_PING_INTERVAL_S", ping_interval_default)
+                                            or ping_interval_default
+                                        )
+                                        # nats-py always starts the ping task; 0 would create a busy-loop.
+                                        if ping_interval <= 0:
+                                            ping_interval = int(ping_interval_default)
                                     except Exception:
                                         ping_interval = 3600
                                     try:
@@ -1842,32 +1935,70 @@ class BootstrapService:
                                                 _rl_log("nats.ws_tag", f"[hub-io] nats ws tag: {ws_connect_tag}", every_s=1.0)
                                     except Exception:
                                         pass
+                                    # Optionally disable periodic client PINGs on WS transports.
+                                    # Some proxies respond poorly to client-initiated PINGs and can force-close (1006/EOF).
+                                    # Default: disable for WS; can be re-enabled with HUB_NATS_DISABLE_PING_INTERVAL_TASK=0.
+                                    try:
+                                        if connect_server.startswith("ws"):
+                                            disable_env = os.getenv("HUB_NATS_DISABLE_PING_INTERVAL_TASK", "1")
+                                            disable_ping_task = str(disable_env or "").strip() != "0"
+                                            if disable_ping_task:
+                                                pt = getattr(nc_local, "_ping_interval_task", None)
+                                                if isinstance(pt, asyncio.Task):
+                                                    try:
+                                                        if not pt.done():
+                                                            pt.cancel()
+                                                    except Exception:
+                                                        pass
+                                                    # Important: our own bridge watchdog treats core task termination as fatal.
+                                                    # When we intentionally disable the ping task, clear the reference so the
+                                                    # watchdog doesn't restart the whole bridge on a cancelled task.
+                                                    try:
+                                                        setattr(nc_local, "_ping_interval_task", None)
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        setattr(nc_local, "_adaos_ping_interval_task_disabled", True)
+                                                    except Exception:
+                                                        pass
+                                                    if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                                        _rl_log(
+                                                            "nats.ping_task_off",
+                                                            "[hub-io] nats ping interval task disabled for WS transport",
+                                                            every_s=60.0,
+                                                        )
+                                    except Exception:
+                                        pass
+
                                     # Guard against nats-py flush timeout bug: flush() cancels the Future
                                     # but keeps it in `self._pongs`, causing InvalidStateError on next PONG.
                                     # Also covers shutdown races with late PONGs.
                                     try:
                                         if os.getenv("HUB_NATS_PATCH_INVALIDSTATE", "1") == "1":
-                                            async def _safe_process_pong():  # type: ignore[no-redef]
+                                            async def _safe_process_pong() -> None:  # type: ignore[no-redef]
                                                 try:
                                                     pongs = getattr(nc_local, "_pongs", None)
-                                                    if not isinstance(pongs, list) or not pongs:
-                                                        return
-                                                    # Drop cancelled/done futures first.
-                                                    while pongs and getattr(pongs[0], "done", lambda: False)():
-                                                        try:
-                                                            pongs.pop(0)
-                                                        except Exception:
-                                                            break
-                                                    if not pongs:
-                                                        return
-                                                    fut = pongs.pop(0)
-                                                    try:
-                                                        fut.set_result(True)
-                                                    except asyncio.InvalidStateError:
-                                                        pass
+                                                    if isinstance(pongs, list):
+                                                        # Drop cancelled/done futures first.
+                                                        while pongs and getattr(pongs[0], "done", lambda: False)():
+                                                            try:
+                                                                pongs.pop(0)
+                                                            except Exception:
+                                                                break
+                                                        if pongs:
+                                                            fut = pongs.pop(0)
+                                                            try:
+                                                                if not fut.cancelled() and not fut.done():
+                                                                    fut.set_result(True)
+                                                            except asyncio.InvalidStateError:
+                                                                pass
                                                     # Keep bookkeeping consistent with upstream implementation.
                                                     try:
-                                                        setattr(nc_local, "_pongs_received", int(getattr(nc_local, "_pongs_received", 0)) + 1)
+                                                        setattr(
+                                                            nc_local,
+                                                            "_pongs_received",
+                                                            int(getattr(nc_local, "_pongs_received", 0)) + 1,
+                                                        )
                                                     except Exception:
                                                         pass
                                                     try:
@@ -2350,38 +2481,182 @@ class BootstrapService:
                         MAX_CHUNK_RAW = 300_000
 
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
+                        _route_diag = _route_verbose or os.getenv("HUB_ROUTE_DIAG", "0") == "1"
                         # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
                         _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
                         # In WS-proxied NATS setups, route replies can sit in local buffers and root times out
                         # waiting for `route.to_browser.*`. Keep fast drain enabled by default.
                         _route_force_flush = os.getenv("HUB_ROUTE_FORCE_FLUSH", "1") == "1"
+                        try:
+                            _route_send_timeout_s = float(os.getenv("HUB_ROUTE_SEND_TIMEOUT_S", "2.0") or "2.0")
+                        except Exception:
+                            _route_send_timeout_s = 2.0
+                        try:
+                            _route_upstream_ws_send_timeout_s = float(
+                                os.getenv("HUB_ROUTE_UPSTREAM_WS_SEND_TIMEOUT_S", "2.0") or "2.0"
+                            )
+                        except Exception:
+                            _route_upstream_ws_send_timeout_s = 2.0
+                        try:
+                            _route_flush_timeout_s = float(os.getenv("HUB_ROUTE_FLUSH_TIMEOUT_S", "1.0") or "1.0")
+                        except Exception:
+                            _route_flush_timeout_s = 1.0
+
+                        # Optional probe mitigation: resend inline probe replies after short delays.
+                        # Useful when NATS-over-WS intermittently drops a single PUB frame and Root times out.
+                        _route_probe_resend_delays_s: list[float] = []
+                        try:
+                            raw_delays = str(os.getenv("HUB_ROUTE_PROBE_RESEND_S", "") or "").strip()
+                            if raw_delays:
+                                seen_delays: set[float] = set()
+                                for it in raw_delays.split(","):
+                                    it = it.strip()
+                                    if not it:
+                                        continue
+                                    try:
+                                        d = float(it)
+                                    except Exception:
+                                        continue
+                                    if d <= 0:
+                                        continue
+                                    # Avoid runaway schedules.
+                                    if d > 10.0:
+                                        d = 10.0
+                                    if d in seen_delays:
+                                        continue
+                                    seen_delays.add(d)
+                                    _route_probe_resend_delays_s.append(d)
+                        except Exception:
+                            _route_probe_resend_delays_s = []
+                        if _route_probe_resend_delays_s and (_route_verbose or _route_tx_verbose):
+                            try:
+                                _rl_log(
+                                    "hub-route.probe_resend_cfg",
+                                    f"[hub-route] probe resend delays_s={_route_probe_resend_delays_s}",
+                                    every_s=60.0,
+                                )
+                            except Exception:
+                                pass
+
+                        def _route_nc_diag() -> str:
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                ws = getattr(tr, "_ws", None) if tr is not None else None
+                                ws_closed = getattr(ws, "closed", None) if ws is not None else None
+                                ws_close_code = getattr(ws, "close_code", None) if ws is not None else None
+                                ws_close_reason = getattr(ws, "close_reason", None) if ws is not None else None
+                                ws_exc = None
+                                try:
+                                    exf = getattr(ws, "exception", None)
+                                    if callable(exf):
+                                        ws_exc = exf()
+                                except Exception:
+                                    ws_exc = None
+                                ws_proto = None
+                                try:
+                                    ws_proto = getattr(ws, "protocol", None) if ws is not None else None
+                                except Exception:
+                                    ws_proto = None
+                                try:
+                                    if not ws_proto and ws is not None and getattr(ws, "_response", None) is not None:
+                                        ws_proto = ws._response.headers.get("Sec-WebSocket-Protocol")  # type: ignore[attr-defined]
+                                except Exception:
+                                    ws_proto = ws_proto or None
+
+                                last_rx_ago_s = None
+                                last_tx_ago_s = None
+                                try:
+                                    last_rx_at = getattr(tr, "_adaos_last_rx_at", None) if tr is not None else None
+                                    last_tx_at = getattr(tr, "_adaos_last_tx_at", None) if tr is not None else None
+                                    if isinstance(last_rx_at, (int, float)):
+                                        last_rx_ago_s = round(time.monotonic() - float(last_rx_at), 3)
+                                    if isinstance(last_tx_at, (int, float)):
+                                        last_tx_ago_s = round(time.monotonic() - float(last_tx_at), 3)
+                                except Exception:
+                                    last_rx_ago_s = last_rx_ago_s or None
+                                    last_tx_ago_s = last_tx_ago_s or None
+
+                                pending_data_size = getattr(nc, "_pending_data_size", None)
+                                pings_outstanding = getattr(nc, "_pings_outstanding", None)
+                                pongs_q = None
+                                try:
+                                    pongs = getattr(nc, "_pongs", None)
+                                    if isinstance(pongs, list):
+                                        pongs_q = len(pongs)
+                                except Exception:
+                                    pongs_q = None
+                                return (
+                                    f"ws_closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} "
+                                    f"ws_exc={ws_exc} ws_proto={ws_proto} "
+                                    f"last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} "
+                                    f"pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q}"
+                                )
+                            except Exception:
+                                return ""
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
                             try:
-                                await nc.publish(
-                                    f"route.to_browser.{key}",
-                                    _json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                                )
+                                try:
+                                    await asyncio.wait_for(
+                                        nc.publish(
+                                            f"route.to_browser.{key}",
+                                            _json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                        ),
+                                        timeout=max(0.1, float(_route_send_timeout_s)),
+                                    )
+                                except asyncio.TimeoutError:
+                                    raise RuntimeError("publish timeout")
                                 # Ensure the reply is actually flushed quickly; otherwise Root may time out
                                 # waiting on `route.to_browser.<key>` (especially over websocket-proxied NATS).
                                 try:
                                     t = (payload or {}).get("t")
                                     if _route_force_flush and t in ("http_resp", "close"):
-                                        # Flush pending writes promptly so Root doesn't time out waiting for
-                                        # `route.to_browser.<key>` replies.
-                                        #
-                                        # Avoid `flush()` (it sends PING+waits for PONG, and historically could leave
-                                        # cancelled futures behind). We only need to kick the flusher to drain the
-                                        # socket; no server roundtrip is required here.
+                                        # Fast-drain pending bytes without relying on NATS PING/PONG.
+                                        # This avoids `flush()` (which can time out when PONGs are flaky behind WS proxies).
                                         try:
-                                            fp = getattr(nc, "_flush_pending", None)
-                                            if callable(fp):
-                                                await fp()
-                                            else:
-                                                # Fallback: best-effort (may send PING).
-                                                await nc.flush()
+                                            tout = max(0.1, float(_route_flush_timeout_s))
                                         except Exception:
-                                            pass
+                                            tout = 1.0
+                                        flush_err = None
+                                        flush_started = time.monotonic()
+                                        fp = getattr(nc, "_flush_pending", None)
+                                        if callable(fp):
+                                            try:
+                                                try:
+                                                    await asyncio.wait_for(fp(force_flush=True), timeout=tout)
+                                                except TypeError:
+                                                    try:
+                                                        await asyncio.wait_for(fp(True), timeout=tout)
+                                                    except TypeError:
+                                                        await asyncio.wait_for(fp(), timeout=tout)
+                                            except Exception as e:
+                                                flush_err = e
+                                        else:
+                                            # Fallback: old clients might not have `_flush_pending`.
+                                            try:
+                                                await nc.flush(timeout=tout)
+                                            except Exception as e:
+                                                flush_err = e
+                                        flush_took_s = time.monotonic() - flush_started
+                                        if flush_err is not None:
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.flush_fail",
+                                                    f"[hub-route] flush failed t={t} key={key}: {type(flush_err).__name__}: {flush_err} {_route_nc_diag()}",
+                                                    every_s=1.0,
+                                                )
+                                            except Exception:
+                                                pass
+                                        elif flush_took_s >= max(0.5, float(tout) * 0.9) and t == "http_resp":
+                                            # Slow flush can still cause root timeouts even if publish succeeds.
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.flush_slow",
+                                                    f"[hub-route] flush slow took_s={flush_took_s:.3f} t={t} key={key} {_route_nc_diag()}",
+                                                    every_s=1.0,
+                                                )
+                                            except Exception:
+                                                pass
                                         if _route_tx_verbose:
                                             try:
                                                 print(f"[hub-route] tx {t} key={key}")
@@ -2390,10 +2665,17 @@ class BootstrapService:
                                 except Exception:
                                     pass
                             except Exception as e:
-                                if _route_verbose:
+                                try:
+                                    t0 = (payload or {}).get("t")
+                                except Exception:
+                                    t0 = None
+                                # Do not silently drop probe replies: Root will time out and surface `hub_unreachable`.
+                                if t0 in ("http_resp", "close") or _route_verbose:
                                     try:
-                                        print(
-                                            f"[hub-route] publish to_browser failed key={key}: {type(e).__name__}: {e}"
+                                        _rl_log(
+                                            "hub-route.publish_fail",
+                                            f"[hub-route] publish to_browser failed t={t0} key={key}: {type(e).__name__}: {e} {_route_nc_diag()}",
+                                            every_s=1.0,
                                         )
                                     except Exception:
                                         pass
@@ -2473,28 +2755,118 @@ class BootstrapService:
                                     pass
 
                         async def _route_cb(msg) -> None:
+                            key = ""
+                            is_http_key = False
                             try:
                                 subject = str(getattr(msg, "subject", "") or "")
                                 parts = subject.split(".", 2)
                                 # route.to_hub.<key>
                                 if len(parts) < 3:
+                                    if _route_diag:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.drop_subject",
+                                                f"[hub-route] drop: bad subject={subject!s}",
+                                                every_s=2.0,
+                                            )
+                                        except Exception:
+                                            pass
                                     return
                                 key = parts[2]
+                                is_http_key = isinstance(key, str) and "--http--" in key
                                 if not _hub_key_match(key):
+                                    if _route_diag:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.drop_key",
+                                                f"[hub-route] drop: key mismatch subject={subject!s} key={key!s} expected_prefix={hub_id}--",
+                                                every_s=2.0,
+                                            )
+                                        except Exception:
+                                            pass
                                     return
 
                                 try:
-                                    data = _json.loads(msg.data.decode("utf-8"))
+                                    raw = bytes(getattr(msg, "data", b"") or b"")
                                 except Exception:
-                                    data = {}
+                                    raw = b""
+                                try:
+                                    data = _json.loads(raw.decode("utf-8"))
+                                except Exception as e:
+                                    if _route_diag:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.drop_json",
+                                                f"[hub-route] drop: invalid json key={key} bytes={len(raw)} err={type(e).__name__}: {e}",
+                                                every_s=2.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                    # Avoid systematic `hub_unreachable` timeouts for HTTP keys.
+                                    try:
+                                        if is_http_key:
+                                            await _route_reply(
+                                                key,
+                                                {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "truncated": False, "err": "invalid_json"},
+                                            )
+                                    except Exception:
+                                        pass
+                                    return
+                                if not isinstance(data, dict):
+                                    if _route_diag:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.drop_payload",
+                                                f"[hub-route] drop: unexpected payload type key={key} type={type(data).__name__}",
+                                                every_s=2.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                    try:
+                                        if is_http_key:
+                                            await _route_reply(
+                                                key,
+                                                {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "truncated": False, "err": "invalid_payload"},
+                                            )
+                                    except Exception:
+                                        pass
+                                    return
                                 t = (data or {}).get("t")
+                                if not isinstance(t, str) or not t:
+                                    if _route_diag:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.drop_missing_t",
+                                                f"[hub-route] drop: missing t key={key}",
+                                                every_s=2.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                    try:
+                                        if is_http_key:
+                                            await _route_reply(
+                                                key,
+                                                {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "truncated": False, "err": "missing_t"},
+                                            )
+                                    except Exception:
+                                        pass
+                                    return
                                 if _route_verbose:
                                     try:
                                         if t == "http":
                                             _m = str((data or {}).get("method") or "GET").upper()
                                             _p = str((data or {}).get("path") or "")
-                                            if _p not in ("/api/node/status", "/api/ping"):
+                                            if _p not in ("/api/node/status", "/api/ping", "/healthz"):
                                                 print(f"[hub-route] rx http key={key} {_m} {_p}")
+                                            else:
+                                                try:
+                                                    _rl_log(
+                                                        "hub-route.rx_http_probe",
+                                                        f"[hub-route] rx http probe key={key} {_m} {_p}",
+                                                        every_s=5.0,
+                                                    )
+                                                except Exception:
+                                                    pass
                                         elif t == "open":
                                             _p = str((data or {}).get("path") or "")
                                             if _p not in ("/api/node/status", "/api/ping"):
@@ -2572,7 +2944,18 @@ class BootstrapService:
                                         pass
                                     try:
                                         # Yjs sync frames can exceed 1 MiB; do not enforce a small client-side cap.
-                                        ws = await websockets_mod.connect(url, max_size=None)
+                                        try:
+                                            ws_connect_timeout_s = float(
+                                                os.getenv("HUB_ROUTE_UPSTREAM_WS_CONNECT_TIMEOUT_S", "2.5") or "2.5"
+                                            )
+                                        except Exception:
+                                            ws_connect_timeout_s = 2.5
+                                        if ws_connect_timeout_s < 0.1:
+                                            ws_connect_timeout_s = 0.1
+                                        ws = await asyncio.wait_for(
+                                            websockets_mod.connect(url, max_size=None),
+                                            timeout=ws_connect_timeout_s,
+                                        )
                                     except Exception as e:
                                         await _route_reply(key, {"t": "close", "err": str(e)})
                                         return
@@ -2605,7 +2988,10 @@ class BootstrapService:
                                         b64 = (data or {}).get("data_b64")
                                         if isinstance(b64, str) and b64:
                                             try:
-                                                await ws.send(base64.b64decode(b64.encode("ascii")))
+                                                await asyncio.wait_for(
+                                                    ws.send(base64.b64decode(b64.encode("ascii"))),
+                                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                                )
                                             except Exception as e:
                                                 if _route_verbose:
                                                     try:
@@ -2616,7 +3002,10 @@ class BootstrapService:
                                         txt = (data or {}).get("data")
                                         if isinstance(txt, str):
                                             try:
-                                                await ws.send(txt)
+                                                await asyncio.wait_for(
+                                                    ws.send(txt),
+                                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                                )
                                             except Exception as e:
                                                 if _route_verbose:
                                                     try:
@@ -2662,9 +3051,15 @@ class BootstrapService:
                                     try:
                                         if kind == "bin":
                                             blob = b"".join([p for p in parts if isinstance(p, (bytes, bytearray))])
-                                            await ws.send(blob)
+                                            await asyncio.wait_for(
+                                                ws.send(blob),
+                                                timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                            )
                                         else:
-                                            await ws.send("".join([p for p in parts if isinstance(p, str)]))
+                                            await asyncio.wait_for(
+                                                ws.send("".join([p for p in parts if isinstance(p, str)])),
+                                                timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                            )
                                     except Exception as e:
                                         if _route_verbose:
                                             try:
@@ -2676,9 +3071,82 @@ class BootstrapService:
                                 if t == "http":
                                     method = str((data or {}).get("method") or "GET").upper()
                                     path = str((data or {}).get("path") or "/api/ping")
+                                    # Be tolerant: root might send trailing slashes.
+                                    path_norm = (path.rstrip("/") or "/") if isinstance(path, str) else "/"
                                     search = str((data or {}).get("search") or "")
                                     headers = (data or {}).get("headers") or {}
                                     body_b64 = (data or {}).get("body_b64")
+
+                                    # Root continuously probes `/api/node/status` (and `/api/ping`) with a short timeout
+                                    # to decide whether the hub is reachable. When the hub is under load (YJS/WebRTC
+                                    # init) the local HTTP stack may respond slowly, and root will surface
+                                    # `hub_unreachable` / `yjs_sync_timeout`.
+                                    #
+                                    # Return these probe endpoints inline (no local HTTP) so the browser can log in
+                                    # even when the hub API is busy.
+                                    try:
+                                        if method in ("GET", "HEAD") and path_norm in ("/api/node/status", "/api/ping", "/healthz"):
+                                            if path_norm == "/api/node/status":
+                                                try:
+                                                    cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+                                                except Exception:
+                                                    cfg = load_config(ctx=self.ctx)
+                                                payload0 = {
+                                                    "node_id": str(getattr(cfg, "node_id", "") or ""),
+                                                    "subnet_id": str(getattr(cfg, "subnet_id", "") or ""),
+                                                    "role": str(getattr(cfg, "role", "") or ""),
+                                                    "ready": bool(is_ready()),
+                                                }
+                                            else:
+                                                payload0 = {"ok": True, "ts": time.time()}
+                                            raw = _json.dumps(payload0, ensure_ascii=False).encode("utf-8")
+                                            resp = {
+                                                "t": "http_resp",
+                                                "status": 200,
+                                                "headers": {"content-type": "application/json"},
+                                                "body_b64": base64.b64encode(raw).decode("ascii"),
+                                                "truncated": False,
+                                            }
+                                            try:
+                                                await _route_reply(key, resp)
+                                            except Exception:
+                                                pass
+                                            if _route_probe_resend_delays_s:
+                                                for delay_s in _route_probe_resend_delays_s:
+                                                    async def _resend(delay_s: float = float(delay_s)) -> None:
+                                                        try:
+                                                            await asyncio.sleep(max(0.0, delay_s))
+                                                            await _route_reply(key, resp)
+                                                            if _route_tx_verbose or _route_verbose:
+                                                                try:
+                                                                    _rl_log(
+                                                                        "hub-route.probe_resend",
+                                                                        f"[hub-route] http probe resend delay_s={delay_s} key={key}",
+                                                                        every_s=1.0,
+                                                                    )
+                                                                except Exception:
+                                                                    pass
+                                                        except Exception:
+                                                            return
+
+                                                    try:
+                                                        asyncio.create_task(
+                                                            _resend(),
+                                                            name=f"hub-route-probe-resend-{key[-8:]}-{int(delay_s * 1000)}",
+                                                        )
+                                                    except Exception:
+                                                        pass
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.inline_probe",
+                                                    f"[hub-route] http inline ok path={path_norm} key={key}",
+                                                    every_s=5.0,
+                                                )
+                                            except Exception:
+                                                pass
+                                            return
+                                    except Exception:
+                                        pass
 
                                     def _do_http() -> dict[str, Any]:
                                         try:
@@ -2809,14 +3277,50 @@ class BootstrapService:
                                             return {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "err": str(e)}
 
                                     resp = await asyncio.to_thread(_do_http)
-                                    await _route_reply(key, resp)
+                                    try:
+                                        await _route_reply(key, resp)
+                                    except Exception:
+                                        pass
                                     return
+                                # Unknown route message type: for HTTP keys, reply with an error so Root does not time out.
+                                try:
+                                    if is_http_key:
+                                        await _route_reply(
+                                            key,
+                                            {
+                                                "t": "http_resp",
+                                                "status": 502,
+                                                "headers": {},
+                                                "body_b64": "",
+                                                "truncated": False,
+                                                "err": f"unsupported_t:{t}",
+                                            },
+                                        )
+                                except Exception:
+                                    pass
+                                return
                             except Exception as e:
                                 if _route_verbose:
                                     try:
                                         print(f"[hub-route] handler failed key={key}: {type(e).__name__}: {e}")
                                     except Exception:
                                         pass
+                                # Avoid pure timeouts for HTTP keys; surface an error response instead.
+                                try:
+                                    if is_http_key and key:
+                                        await _route_reply(
+                                            key,
+                                            {
+                                                "t": "http_resp",
+                                                "status": 502,
+                                                "headers": {},
+                                                "body_b64": "",
+                                                "truncated": False,
+                                                "err": f"handler_failed:{type(e).__name__}",
+                                            },
+                                        )
+                                except Exception:
+                                    pass
                                 return
 
                         route_sub = await _sub("route.to_hub.*", cb=_route_cb)
