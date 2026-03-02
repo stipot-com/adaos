@@ -308,6 +308,17 @@ export function installWsNatsProxy(server: HttpServer) {
 				return
 			}
 			if (event === 'conn close' && (code === 1000 || code === 1001)) {
+				// Short-lived "clean" closes are still suspicious for hub tunnels (they should be long-lived).
+				// Keep these visible even when verbose logging is off.
+				try {
+					const isHub = typeof (base as any).hub_id === 'string' && Boolean((base as any).hub_id)
+					const hs = Boolean((base as any).handshaked)
+					const up = typeof (base as any).uptime_s === 'number' ? Number((base as any).uptime_s) : null
+					if (isHub && hs && up !== null && up >= 0 && up < 180) {
+						log().warn(base, event)
+						return
+					}
+				} catch {}
 				log().debug(base, event)
 				return
 			}

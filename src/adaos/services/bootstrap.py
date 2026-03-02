@@ -651,31 +651,194 @@ class BootstrapService:
                         _orig_drain = getattr(_ws_tr, "drain", None) if _ws_tr else None
                         _orig_connect = getattr(_ws_tr, "connect", None) if _ws_tr else None
                         _orig_connect_tls = getattr(_ws_tr, "connect_tls", None) if _ws_tr else None
+                        _orig_at_eof = getattr(_ws_tr, "at_eof", None) if _ws_tr else None
                         _orig_process_ping = getattr(getattr(_nats_client, "Client", None), "_process_ping", None)
                         _orig_process_pong = getattr(getattr(_nats_client, "Client", None), "_process_pong", None)
                         patched_any = False
                         # Keep aiohttp WS autoping/autoclose enabled so WS-level PING/PONG works even when the NATS
                         # client is idle (otherwise a proxy WS ping can time out and force-close with 1006).
                         ws_safe_mode = False
-                        if _ws_tr is not None and callable(_orig_rl) and not getattr(_orig_rl, "_adaos_ws_patch", False):
+                        # NATS-over-WS transport implementation used by nats-py.
+                        #
+                        # Why this exists:
+                        # In some Windows environments we've observed aiohttp WS disconnecting with close 1006 and
+                        # `Cannot write to closing transport` under sustained hub->root publishing (browser sees
+                        # `hub_unreachable` / `yjs_sync_timeout`). The `websockets` library is more stable there.
+                        #
+                        # Values:
+                        # - auto (default): prefer websockets on Windows if installed, else aiohttp
+                        # - aiohttp: force aiohttp-based WebSocketTransport (nats-py default)
+                        # - websockets: force websockets-based transport
+                        try:
+                            ws_impl = str(os.getenv("HUB_NATS_WS_IMPL", "auto") or "auto").strip().lower()
+                        except Exception:
+                            ws_impl = "auto"
+                        use_ws_lib = False
+                        websockets_mod = None
+                        if ws_impl in ("websockets", "ws"):
+                            use_ws_lib = True
+                        elif ws_impl in ("aiohttp", "aio"):
+                            use_ws_lib = False
+                        else:
+                            # auto
+                            try:
+                                use_ws_lib = os.name == "nt"
+                            except Exception:
+                                use_ws_lib = False
+                        if use_ws_lib:
+                            try:
+                                import websockets as _websockets  # type: ignore
+
+                                websockets_mod = _websockets
+                            except Exception:
+                                websockets_mod = None
+                                use_ws_lib = False
+                                if ws_impl in ("websockets", "ws"):
+                                    try:
+                                        _rl_log(
+                                            "nats.ws_impl_fallback",
+                                            "[hub-io] HUB_NATS_WS_IMPL=websockets requested but websockets is not installed; using aiohttp transport",
+                                            every_s=3600.0,
+                                        )
+                                    except Exception:
+                                        pass
+                        try:
+                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                impl = "websockets" if (use_ws_lib and websockets_mod is not None) else "aiohttp"
+                                _rl_log(
+                                    "nats.ws_impl",
+                                    f"[hub-io] nats ws impl: {impl} (HUB_NATS_WS_IMPL={ws_impl})",
+                                    every_s=3600.0,
+                                )
+                        except Exception:
+                            pass
+
+                        def _ws_additional_headers(h: Any) -> Any:
+                            # Convert aiohttp/multidict headers into websockets `additional_headers`.
+                            if not h:
+                                return None
+                            try:
+                                items = list(h.items())
+                            except Exception:
+                                try:
+                                    items = list(dict(h).items())
+                                except Exception:
+                                    items = []
+                            out: list[tuple[str, str]] = []
+                            for k, v in items:
+                                try:
+                                    ks = str(k)
+                                except Exception:
+                                    continue
+                                if isinstance(v, (list, tuple)):
+                                    for vv in v:
+                                        try:
+                                            out.append((ks, str(vv)))
+                                        except Exception:
+                                            continue
+                                else:
+                                    try:
+                                        out.append((ks, str(v)))
+                                    except Exception:
+                                        continue
+                            return out or None
+                        # aiohttp "heartbeat" sends WS PING frames and expects WS PONG frames.
+                        # In our production ingress (wss://api.inimatic.com/nats, wss://nats.inimatic.com/nats),
+                        # WS PONG delivery is not reliable (observed intermittent "No PONG received..." closes).
+                        # Therefore we ignore HUB_NATS_WS_HEARTBEAT_S by default to avoid self-inflicted disconnects.
+                        # Set HUB_NATS_WS_HEARTBEAT_FORCE=1 to override.
+                        def _ws_heartbeat_from_env() -> float | None:
+                            raw = None
+                            try:
+                                raw = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
+                                if raw is None:
+                                    raw = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
+                            except Exception:
+                                raw = None
+                            if raw is None:
+                                return None
+                            try:
+                                s = str(raw).strip()
+                            except Exception:
+                                s = ""
+                            if s == "":
+                                return None
+                            try:
+                                v = float(s)
+                            except Exception:
+                                return None
+                            hb = v if v > 0.0 else None
+                            if hb is None:
+                                return None
+                            try:
+                                force = str(os.getenv("HUB_NATS_WS_HEARTBEAT_FORCE", "0") or "").strip() == "1"
+                            except Exception:
+                                force = False
+                            if force:
+                                return hb
+                            try:
+                                _rl_log(
+                                    "nats.ws_heartbeat_ignored",
+                                    f"[hub-io] nats ws heartbeat ignored (HUB_NATS_WS_HEARTBEAT_S={s}); "
+                                    f"WS PONG is unreliable on this ingress. "
+                                    f"Set HUB_NATS_WS_HEARTBEAT_FORCE=1 to enable anyway.",
+                                    every_s=3600.0,
+                                )
+                            except Exception:
+                                pass
+                            return None
+
+                        # Allow updating the WS patch in long-running processes without full restarts.
+                        # Old patches only set `_adaos_ws_patch`; newer ones also set `_adaos_ws_patch_v`.
+                        PATCH_V = 2
+
+                        def _needs_patch(fn: Any | None) -> bool:
+                            try:
+                                return int(getattr(fn, "_adaos_ws_patch_v", 0) or 0) < PATCH_V
+                            except Exception:
+                                return True
+
+                        if _ws_tr is not None and callable(_orig_rl) and _needs_patch(_orig_rl):
                             async def _ws_readline_safe(self):  # type: ignore[no-redef]
                                 # aiohttp surfaces WS control frames (PING/PONG/CLOSE) as WSMessage objects.
                                 # nats-py expects bytes and will crash if we pass through e.g. close codes (int).
                                 # Skip control frames and actively close on CLOSE to avoid half-dead sockets.
                                 while True:
+                                    ws_obj = getattr(self, "_ws", None)
+                                    if ws_obj is None:
+                                        return b""
                                     try:
-                                        data = await self._ws.receive()
+                                        # `aiohttp`: ws.receive() -> WSMessage
+                                        # `websockets`: ws.recv() -> bytes|str
+                                        if callable(getattr(ws_obj, "recv", None)) and not callable(getattr(ws_obj, "receive", None)):
+                                            raw = await ws_obj.recv()
+                                            data = type("WSMsg", (), {})()
+                                            setattr(data, "data", raw)
+                                        else:
+                                            data = await ws_obj.receive()
                                     except Exception as _rx_e:
                                         try:
                                             if os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                                 ws_exc = None
                                                 try:
-                                                    ws_exc = self._ws.exception()
+                                                    exf = getattr(ws_obj, "exception", None)
+                                                    if callable(exf):
+                                                        ws_exc = exf()
                                                 except Exception:
                                                     ws_exc = None
+                                                ws_close_code = None
+                                                ws_close_reason = None
+                                                try:
+                                                    ws_close_code = getattr(ws_obj, "close_code", None)
+                                                except Exception:
+                                                    ws_close_code = None
+                                                try:
+                                                    ws_close_reason = getattr(ws_obj, "close_reason", None)
+                                                except Exception:
+                                                    ws_close_reason = None
                                                 _rl_log(
                                                     "nats.ws_receive_exc",
-                                                    f"[hub-io] nats ws receive exception: err={type(_rx_e).__name__}: {_rx_e} ws_exc={ws_exc}",
+                                                    f"[hub-io] nats ws receive exception: err={type(_rx_e).__name__}: {_rx_e} ws_exc={ws_exc} close_code={ws_close_code} close_reason={ws_close_reason}",
                                                     every_s=1.0,
                                                 )
                                         except Exception:
@@ -749,9 +912,20 @@ class BootstrapService:
                                                         exc = self._ws.exception()
                                                     except Exception:
                                                         exc = None
+                                                    last_kind = None
+                                                    last_subj = None
+                                                    last_len = None
+                                                    try:
+                                                        last_kind = getattr(self, "_adaos_last_tx_kind", None)
+                                                        last_subj = getattr(self, "_adaos_last_tx_subj", None)
+                                                        last_len = getattr(self, "_adaos_last_tx_len", None)
+                                                    except Exception:
+                                                        last_kind = last_kind or None
+                                                        last_subj = last_subj or None
+                                                        last_len = last_len or None
                                                     _rl_log(
                                                         "nats.ws_closed",
-                                                        f"[hub-io] nats ws closed/error: type={t} ws_exc={exc}",
+                                                        f"[hub-io] nats ws closed/error: tag={getattr(self, '_adaos_ws_tag', None)} ws_url={getattr(self, '_adaos_ws_url', None)} type={t} ws_exc={exc} last_tx_kind={last_kind} last_tx_subj={last_subj} last_tx_len={last_len}",
                                                         every_s=1.0,
                                                     )
                                             except Exception:
@@ -873,6 +1047,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_ws_readline_safe, "_adaos_ws_patch", True)
+                                setattr(_ws_readline_safe, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -886,7 +1061,7 @@ class BootstrapService:
                         if (
                             _ws_tr is not None
                             and callable(_orig_write)
-                            and not getattr(_orig_write, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_write)
                         ):
                             def _ws_write_logged(self, payload):  # type: ignore[no-redef]
                                 try:
@@ -942,6 +1117,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_ws_write_logged, "_adaos_ws_patch", True)
+                                setattr(_ws_write_logged, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -954,7 +1130,7 @@ class BootstrapService:
                         if (
                             _ws_tr is not None
                             and callable(_orig_writelines)
-                            and not getattr(_orig_writelines, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_writelines)
                         ):
                             def _ws_writelines_logged(self, payload):  # type: ignore[no-redef]
                                 try:
@@ -1021,6 +1197,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_ws_writelines_logged, "_adaos_ws_patch", True)
+                                setattr(_ws_writelines_logged, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1035,7 +1212,7 @@ class BootstrapService:
                         if (
                             _ws_tr is not None
                             and callable(_orig_drain)
-                            and not getattr(_orig_drain, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_drain)
                         ):
                             async def _ws_drain_logged(self):  # type: ignore[no-redef]
                                 ws = getattr(self, "_ws", None)
@@ -1043,15 +1220,70 @@ class BootstrapService:
                                     return await _orig_drain(self)
                                 while not self._pending.empty():
                                     message = self._pending.get_nowait()
+                                    msg_len = None
+                                    kind = None
+                                    subj = None
+                                    send_kind = None
                                     try:
                                         setattr(self, "_adaos_last_tx_at", time.monotonic())
                                     except Exception:
                                         pass
                                     try:
-                                        await ws.send_bytes(message)
+                                        msg_len = len(message) if hasattr(message, "__len__") else None
+                                    except Exception:
+                                        msg_len = None
+                                    try:
+                                        head = None
+                                        if isinstance(message, (bytes, bytearray)):
+                                            head = bytes(message[:256])
+                                        elif isinstance(message, memoryview):
+                                            head = message[:256].tobytes()
+                                        if isinstance(head, (bytes, bytearray)):
+                                            if head.startswith(b"PUB "):
+                                                kind = "PUB"
+                                            elif head.startswith(b"SUB "):
+                                                kind = "SUB"
+                                            elif head.startswith(b"CONNECT "):
+                                                kind = "CONNECT"
+                                            elif head.startswith(b"PING"):
+                                                kind = "PING"
+                                            elif head.startswith(b"PONG"):
+                                                kind = "PONG"
+                                            if kind in ("PUB", "SUB"):
+                                                line_end = head.find(b"\n")
+                                                if line_end < 0:
+                                                    line_end = len(head)
+                                                parts = head[:line_end].split()
+                                                if len(parts) >= 2:
+                                                    subj = parts[1].decode("utf-8", errors="replace")
+                                    except Exception:
+                                        kind = kind or None
+                                        subj = subj or None
+                                    try:
+                                        setattr(self, "_adaos_last_tx_kind", kind)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        setattr(self, "_adaos_last_tx_subj", subj)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        setattr(self, "_adaos_last_tx_len", msg_len)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        send_fn = getattr(ws, "send_bytes", None)
+                                        if callable(send_fn):
+                                            send_kind = "send_bytes"
+                                        else:
+                                            send_fn = getattr(ws, "send", None)
+                                            send_kind = "send"
+                                        if not callable(send_fn):
+                                            raise RuntimeError("ws: no send method")
+                                        await send_fn(message)
                                     except Exception as _tx_e:
                                         try:
-                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1" or os.getenv("HUB_NATS_TRACE_INPUT", "0") == "1":
                                                 ws_closed = getattr(ws, "closed", None)
                                                 ws_close_code = getattr(ws, "close_code", None)
                                                 ws_close_reason = getattr(ws, "close_reason", None)
@@ -1063,35 +1295,9 @@ class BootstrapService:
                                                 except Exception:
                                                     ws_exc = None
 
-                                                kind = None
-                                                subj = None
-                                                try:
-                                                    bb = bytes(message) if isinstance(message, (bytes, bytearray, memoryview)) else None
-                                                    if bb:
-                                                        if bb.startswith(b"PUB "):
-                                                            kind = "PUB"
-                                                        elif bb.startswith(b"SUB "):
-                                                            kind = "SUB"
-                                                        elif bb.startswith(b"CONNECT "):
-                                                            kind = "CONNECT"
-                                                        elif bb.startswith(b"PING"):
-                                                            kind = "PING"
-                                                        elif bb.startswith(b"PONG"):
-                                                            kind = "PONG"
-                                                        if kind in ("PUB", "SUB"):
-                                                            line_end = bb.find(b"\n")
-                                                            if line_end < 0:
-                                                                line_end = min(len(bb), 256)
-                                                            parts = bb[:line_end].split()
-                                                            if len(parts) >= 2:
-                                                                subj = parts[1].decode("utf-8", errors="replace")
-                                                except Exception:
-                                                    kind = kind or None
-                                                    subj = subj or None
-
                                                 _rl_log(
                                                     "nats.ws_send_exc",
-                                                    f"[hub-io] nats ws send_bytes failed err={type(_tx_e).__name__}: {_tx_e} msg_len={len(message) if hasattr(message,'__len__') else None} kind={kind} subj={subj} ws_closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
+                                                    f"[hub-io] nats ws send failed fn={send_kind} err={type(_tx_e).__name__}: {_tx_e} msg_len={msg_len} kind={kind} subj={subj} tag={getattr(self, '_adaos_ws_tag', None)} ws_url={getattr(self, '_adaos_ws_url', None)} ws_closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
                                                     every_s=1.0,
                                                 )
                                         except Exception:
@@ -1100,6 +1306,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_ws_drain_logged, "_adaos_ws_patch", True)
+                                setattr(_ws_drain_logged, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1113,7 +1320,7 @@ class BootstrapService:
                         # "connection drops despite healthy ping/pong".
                         if (
                             callable(_orig_process_ping)
-                            and not getattr(_orig_process_ping, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_process_ping)
                         ):
                             async def _process_ping_logged(self) -> None:  # type: ignore[no-redef]
                                 try:
@@ -1125,6 +1332,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_process_ping_logged, "_adaos_ws_patch", True)
+                                setattr(_process_ping_logged, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1139,7 +1347,7 @@ class BootstrapService:
                         if (
                             _ws_tr is not None
                             and callable(_orig_connect)
-                            and not getattr(_orig_connect, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_connect)
                         ):
                             async def _ws_connect_safe(self, uri, buffer_size, connect_timeout):  # type: ignore[no-redef]
                                 hb = None
@@ -1147,13 +1355,7 @@ class BootstrapService:
                                     # NOTE: aiohttp's heartbeat sends WS PINGs and expects WS PONGs; if the server/proxy
                                     # doesn't respond correctly this can cause periodic disconnects (~2*heartbeat).
                                     # Keep default OFF; enable explicitly via env.
-                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
-                                    # If explicitly set to empty, treat as "off" (do not fall back to defaults).
-                                    if hb_env is None:
-                                        hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
-                                    if hb_env is not None and hb_env.strip() != "":
-                                        v = float(hb_env)
-                                        hb = v if v > 0.0 else None
+                                    hb = _ws_heartbeat_from_env()
                                 except Exception:
                                     hb = None
                                 headers = self._get_custom_headers()
@@ -1196,19 +1398,82 @@ class BootstrapService:
                                 }
                                 if max_msg_size_kw is not None:
                                     ws_kwargs["max_msg_size"] = int(max_msg_size_kw)
-                                self._ws = await self._client.ws_connect(uri.geturl(), **ws_kwargs)
-                                self._using_tls = False
+                                if use_ws_lib and websockets_mod is not None:
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                            _rl_log(
+                                                "nats.ws_connect_ws",
+                                                f"[hub-io] nats ws_connect(websockets) uri={uri.geturl()} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                                every_s=1.0,
+                                            )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        ws_connect_kwargs: dict[str, Any] = {
+                                            "subprotocols": ["nats"],
+                                            "open_timeout": connect_timeout,
+                                            "ping_interval": None,
+                                            "ping_timeout": None,
+                                            "close_timeout": 2.0,
+                                            "max_size": None,
+                                            "compression": None,
+                                        }
+                                        # websockets changed header kw name across major versions:
+                                        # - legacy: extra_headers
+                                        # - modern: additional_headers
+                                        try:
+                                            self._ws = await websockets_mod.connect(
+                                                uri.geturl(),
+                                                additional_headers=_ws_additional_headers(headers),
+                                                **ws_connect_kwargs,
+                                            )
+                                        except TypeError:
+                                            self._ws = await websockets_mod.connect(
+                                                uri.geturl(),
+                                                extra_headers=_ws_additional_headers(headers),
+                                                **ws_connect_kwargs,
+                                            )
+                                        self._using_tls = False
+                                    except Exception as _ws_e:
+                                        # If websockets is forced, do not silently fall back.
+                                        if ws_impl in ("websockets", "ws"):
+                                            raise
+                                        try:
+                                            _rl_log(
+                                                "nats.ws_connect_ws_fail",
+                                                f"[hub-io] nats ws_connect(websockets) failed err={type(_ws_e).__name__}: {_ws_e}; falling back to aiohttp",
+                                                every_s=1.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                        self._ws = await self._client.ws_connect(uri.geturl(), **ws_kwargs)
+                                        self._using_tls = False
+                                else:
+                                    self._ws = await self._client.ws_connect(uri.geturl(), **ws_kwargs)
+                                    self._using_tls = False
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
                                 except Exception:
                                     pass
                                 try:
-                                    setattr(self, "_adaos_ws_proto", getattr(self._ws, "protocol", None))
+                                    setattr(self, "_adaos_ws_tag", ws_connect_tag)
+                                except Exception:
+                                    pass
+                                try:
+                                    setattr(self, "_adaos_ws_url", uri.geturl())
+                                except Exception:
+                                    pass
+                                try:
+                                    proto = getattr(self._ws, "protocol", None)
+                                    if not proto:
+                                        proto = getattr(self._ws, "subprotocol", None)
+                                    setattr(self, "_adaos_ws_proto", proto)
                                 except Exception:
                                     pass
 
                             try:
                                 setattr(_ws_connect_safe, "_adaos_ws_patch", True)
+                                setattr(_ws_connect_safe, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1221,17 +1486,12 @@ class BootstrapService:
                         if (
                             _ws_tr is not None
                             and callable(_orig_connect_tls)
-                            and not getattr(_orig_connect_tls, "_adaos_ws_patch", False)
+                            and _needs_patch(_orig_connect_tls)
                         ):
                             async def _ws_connect_tls_safe(self, uri, ssl_context, buffer_size, connect_timeout):  # type: ignore[no-redef]
                                 hb = None
                                 try:
-                                    hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_S")
-                                    if hb_env is None:
-                                        hb_env = os.getenv("HUB_NATS_WS_HEARTBEAT_DEFAULT_S")
-                                    if hb_env is not None and hb_env.strip() != "":
-                                        v = float(hb_env)
-                                        hb = v if v > 0.0 else None
+                                    hb = _ws_heartbeat_from_env()
                                 except Exception:
                                     hb = None
                                 # Mirror upstream behavior (refuse upgrading a live non-TLS socket).
@@ -1286,19 +1546,79 @@ class BootstrapService:
                                 }
                                 if max_msg_size_kw is not None:
                                     ws_kwargs["max_msg_size"] = int(max_msg_size_kw)
-                                self._ws = await self._client.ws_connect(target, **ws_kwargs)
-                                self._using_tls = True
+                                if use_ws_lib and websockets_mod is not None:
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1":
+                                            _rl_log(
+                                                "nats.ws_connect_tls_ws",
+                                                f"[hub-io] nats ws_connect_tls(websockets) uri={target} tag={'1' if isinstance(ws_connect_tag,str) and ws_connect_tag else '0'}",
+                                                every_s=1.0,
+                                            )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        ws_connect_kwargs: dict[str, Any] = {
+                                            "ssl": ssl_context,
+                                            "subprotocols": ["nats"],
+                                            "open_timeout": connect_timeout,
+                                            "ping_interval": None,
+                                            "ping_timeout": None,
+                                            "close_timeout": 2.0,
+                                            "max_size": None,
+                                            "compression": None,
+                                        }
+                                        try:
+                                            self._ws = await websockets_mod.connect(
+                                                target,
+                                                additional_headers=_ws_additional_headers(headers),
+                                                **ws_connect_kwargs,
+                                            )
+                                        except TypeError:
+                                            self._ws = await websockets_mod.connect(
+                                                target,
+                                                extra_headers=_ws_additional_headers(headers),
+                                                **ws_connect_kwargs,
+                                            )
+                                        self._using_tls = True
+                                    except Exception as _ws_e:
+                                        if ws_impl in ("websockets", "ws"):
+                                            raise
+                                        try:
+                                            _rl_log(
+                                                "nats.ws_connect_tls_ws_fail",
+                                                f"[hub-io] nats ws_connect_tls(websockets) failed err={type(_ws_e).__name__}: {_ws_e}; falling back to aiohttp",
+                                                every_s=1.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                        self._ws = await self._client.ws_connect(target, **ws_kwargs)
+                                        self._using_tls = True
+                                else:
+                                    self._ws = await self._client.ws_connect(target, **ws_kwargs)
+                                    self._using_tls = True
                                 try:
                                     setattr(self, "_adaos_ws_heartbeat", hb)
                                 except Exception:
                                     pass
                                 try:
-                                    setattr(self, "_adaos_ws_proto", getattr(self._ws, "protocol", None))
+                                    setattr(self, "_adaos_ws_tag", ws_connect_tag)
+                                except Exception:
+                                    pass
+                                try:
+                                    setattr(self, "_adaos_ws_url", target)
+                                except Exception:
+                                    pass
+                                try:
+                                    proto = getattr(self._ws, "protocol", None)
+                                    if not proto:
+                                        proto = getattr(self._ws, "subprotocol", None)
+                                    setattr(self, "_adaos_ws_proto", proto)
                                 except Exception:
                                     pass
 
                             try:
                                 setattr(_ws_connect_tls_safe, "_adaos_ws_patch", True)
+                                setattr(_ws_connect_tls_safe, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1307,9 +1627,45 @@ class BootstrapService:
                                 pass
                         patched_any = True
 
+                        # Patch at_eof() to support websockets transport (it doesn't expose `.closed` like aiohttp).
+                        if (
+                            _ws_tr is not None
+                            and callable(_orig_at_eof)
+                            and _needs_patch(_orig_at_eof)
+                        ):
+                            def _ws_at_eof_safe(self):  # type: ignore[no-redef]
+                                ws_obj = getattr(self, "_ws", None)
+                                if ws_obj is None:
+                                    try:
+                                        return _orig_at_eof(self)
+                                    except Exception:
+                                        return True
+                                closed = getattr(ws_obj, "closed", None)
+                                if closed is not None:
+                                    try:
+                                        return bool(closed)
+                                    except Exception:
+                                        return True
+                                st = getattr(ws_obj, "state", None)
+                                try:
+                                    return str(st).endswith("CLOSED")
+                                except Exception:
+                                    return False
+
+                            try:
+                                setattr(_ws_at_eof_safe, "_adaos_ws_patch", True)
+                                setattr(_ws_at_eof_safe, "_adaos_ws_patch_v", PATCH_V)
+                            except Exception:
+                                pass
+                            try:
+                                setattr(_ws_tr, "at_eof", _ws_at_eof_safe)
+                            except Exception:
+                                pass
+                            patched_any = True
+
                         # nats-py 2.12.0 can crash its _reading_task with InvalidStateError if a late PONG arrives
                         # after the future was cancelled/timed out. Make _process_pong idempotent.
-                        if callable(_orig_process_pong) and not getattr(_orig_process_pong, "_adaos_ws_patch", False):
+                        if callable(_orig_process_pong) and _needs_patch(_orig_process_pong):
                             async def _process_pong_safe(self) -> None:  # type: ignore[no-redef]
                                 # nats-py can leave cancelled/done futures in `self._pongs` (e.g. flush timeout),
                                 # and later crash when a PONG arrives and it tries to set_result().
@@ -1354,6 +1710,7 @@ class BootstrapService:
 
                             try:
                                 setattr(_process_pong_safe, "_adaos_ws_patch", True)
+                                setattr(_process_pong_safe, "_adaos_ws_patch_v", PATCH_V)
                             except Exception:
                                 pass
                             try:
@@ -1536,6 +1893,7 @@ class BootstrapService:
                                         _dedup_push(base)
                                     # Known public endpoint as a fallback (explicitly WS-nats proxy).
                                     _dedup_push("wss://nats.inimatic.com/nats")
+                                    _dedup_push("wss://api.inimatic.com/nats")
                                     # Allow explicit WS alternates via env (comma-separated)
                                     extra = os.getenv("NATS_WS_URL_ALT")
                                     if extra:
@@ -1575,10 +1933,14 @@ class BootstrapService:
 
                             # Prefer the dedicated hostname over the root ingress when both are available.
                             try:
-                                if os.getenv("HUB_NATS_PREFER_DEDICATED", "1") == "1":
+                                pref_ded = os.getenv("HUB_NATS_PREFER_DEDICATED", "1")
+                                preferred = None
+                                if str(pref_ded).strip() == "1":
                                     preferred = "wss://nats.inimatic.com/nats"
-                                    if preferred in candidates and candidates and candidates[0] != preferred:
-                                        candidates = [preferred] + [c for c in candidates if c != preferred]
+                                elif str(pref_ded).strip() == "0":
+                                    preferred = "wss://api.inimatic.com/nats"
+                                if preferred in candidates and candidates and candidates[0] != preferred:
+                                    candidates = [preferred] + [c for c in candidates if c != preferred]
                             except Exception:
                                 pass
 
@@ -1745,6 +2107,26 @@ class BootstrapService:
                                                     tr_pending_q = q.qsize()
                                             except Exception:
                                                 tr_pending_q = None
+                                            ws_tag = None
+                                            try:
+                                                ws_tag = getattr(tr, "_adaos_ws_tag", None) if tr is not None else None
+                                            except Exception:
+                                                ws_tag = None
+                                            if not ws_tag:
+                                                try:
+                                                    ws_tag = ws_connect_tag if isinstance(ws_connect_tag, str) else None
+                                                except Exception:
+                                                    ws_tag = None
+                                            ws_hb = None
+                                            try:
+                                                ws_hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr is not None else None
+                                            except Exception:
+                                                ws_hb = None
+                                            ws_url = None
+                                            try:
+                                                ws_url = getattr(tr, "_adaos_ws_url", None) if tr is not None else None
+                                            except Exception:
+                                                ws_url = None
                                             ws_proto = None
                                             try:
                                                 ws_proto = getattr(tr, "_adaos_ws_proto", None) if tr is not None else None
@@ -1760,9 +2142,20 @@ class BootstrapService:
                                                     ws_proto = getattr(ws, "_response", None).headers.get("Sec-WebSocket-Protocol") if ws is not None and getattr(ws, "_response", None) is not None else None
                                                 except Exception:
                                                     ws_proto = None
+                                            last_tx_kind = None
+                                            last_tx_subj = None
+                                            last_tx_len = None
+                                            try:
+                                                last_tx_kind = getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None
+                                                last_tx_subj = getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None
+                                                last_tx_len = getattr(tr, "_adaos_last_tx_len", None) if tr is not None else None
+                                            except Exception:
+                                                last_tx_kind = last_tx_kind or None
+                                                last_tx_subj = last_tx_subj or None
+                                                last_tx_len = last_tx_len or None
                                             _rl_log(
                                                 "nats.ws_diag",
-                                                f"[hub-io] nats ws diag: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto}",
+                                                f"[hub-io] nats ws diag: tag={ws_tag} server={nats_last_server} ws_hb_s={ws_hb} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len}",
                                                 every_s=1.0,
                                             )
                                         except Exception:
@@ -1782,7 +2175,9 @@ class BootstrapService:
                                             "HUB_NATS_MAX_OUTSTANDING_PINGS",
                                             "HUB_NATS_DISABLE_PING_INTERVAL_TASK",
                                             "HUB_NATS_RX_TIMEOUT_S",
+                                            "HUB_NATS_WS_IMPL",
                                             "HUB_NATS_WS_HEARTBEAT_S",
+                                            "HUB_NATS_WS_HEARTBEAT_FORCE",
                                             "HUB_NATS_WS_MAX_MSG_SIZE",
                                             "HUB_NATS_RAW_KEEPALIVE",
                                             "HUB_NATS_RAW_KEEPALIVE_S",
@@ -2029,7 +2424,7 @@ class BootstrapService:
                                                 ws_exc = None
                                             _rl_log(
                                                 "nats.ws_diag",
-                                                f"[hub-io] nats ws diag: err={type(e).__name__} closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
+                                                f"[hub-io] nats ws diag: tag={ws_connect_tag} server={locals().get('connect_server', None)} err={type(e).__name__} closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
                                                 every_s=2.0,
                                             )
                                     except Exception:
@@ -3508,7 +3903,7 @@ class BootstrapService:
                                             ws_exc = None
                                         _rl_log(
                                             "nats.ws_state",
-                                            f"[hub-io] nats ws state: closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
+                                            f"[hub-io] nats ws state: tag={getattr(tr, '_adaos_ws_tag', None) if tr is not None else None} server={nats_last_server} ws_url={getattr(tr, '_adaos_ws_url', None) if tr is not None else None} closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
                                             every_s=1.0,
                                         )
                                 except Exception:
