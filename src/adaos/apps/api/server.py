@@ -46,6 +46,8 @@ async def lifespan(app: FastAPI):
     from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api, nlu_teacher_api
     from adaos.apps.api import io_webhooks
     from adaos.services.yjs.gateway import router as y_router, start_y_server, stop_y_server
+    from adaos.services.subnet.link_ws import router as subnet_link_router
+    from adaos.services.subnet.runtime import start_subnet_p2p, stop_subnet_p2p
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")
@@ -61,6 +63,8 @@ async def lifespan(app: FastAPI):
     app.include_router(io_webhooks.router)
     # Yjs / events gateways (Stage A1)
     app.include_router(y_router)
+    # Subnet P2P member link (member->hub)
+    app.include_router(subnet_link_router)
 
     # 3.5) сохранить ссылки на контекст/шину в state для внешних компонентов
     try:
@@ -88,6 +92,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await run_boot_sequence(app)
+    try:
+        await start_subnet_p2p(app)
+    except Exception:
+        pass
     # hub: seed self node into directory (base_url + capacity)
     try:
         conf = get_ctx().config
@@ -330,6 +338,10 @@ async def lifespan(app: FastAPI):
         try:
             if staler_task:
                 staler_task.cancel()
+        except Exception:
+            pass
+        try:
+            await stop_subnet_p2p(app)
         except Exception:
             pass
         await shutdown()

@@ -61,6 +61,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	transportState$!: Observable<string>
 	readonly buildId = buildId
 	logoSrc = 'assets/icon/favicon.svg'
+	currentScenario = 'web_desktop'
 	private colorSchemeMedia?: MediaQueryList
 	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
 	private narrowMedia?: MediaQueryList
@@ -74,6 +75,15 @@ export class AppComponent implements OnInit, OnDestroy {
 			const available = !!ev?.detail?.available
 			this.zone.run(() => {
 				this.sidebarAvailable = available
+			})
+		} catch { }
+	}
+	private scenarioChangedHandler = (ev: any) => {
+		try {
+			const scenario = String(ev?.detail?.scenario || '').trim()
+			if (!scenario) return
+			this.zone.run(() => {
+				this.currentScenario = scenario
 			})
 		} catch { }
 	}
@@ -119,6 +129,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
 		try {
 			window.addEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
+		} catch { }
+		try {
+			window.addEventListener('adaos:currentScenario', this.scenarioChangedHandler as any)
 		} catch { }
 		// If we loaded via cache-bust URL, clean it up for nicer sharing/bookmarks.
 		setTimeout(() => this.stripVersionParam(), 0)
@@ -259,6 +272,9 @@ export class AppComponent implements OnInit, OnDestroy {
 			window.removeEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
 		} catch { }
 		try {
+			window.removeEventListener('adaos:currentScenario', this.scenarioChangedHandler as any)
+		} catch { }
+		try {
 			const any: any = this.narrowMedia as any
 			if (typeof any?.removeEventListener === 'function') {
 				this.narrowMedia?.removeEventListener('change', this.narrowListener as any)
@@ -386,7 +402,21 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	get isAuthenticated(): boolean {
-		return Boolean(this.readSessionJwt())
+		return Boolean(this.readSessionJwt() || this.isLocalHubTrusted())
+	}
+
+	get showCloseToDesktop(): boolean {
+		const cur = String(this.currentScenario || '').trim()
+		return !!cur && cur !== 'web_desktop'
+	}
+
+	private isLocalHubTrusted(): boolean {
+		try {
+			const base = this.adaos.getBaseUrl().replace(/\/+$/, '')
+			return base.startsWith('http://127.0.0.1:8777') || base.startsWith('http://localhost:8777')
+		} catch {
+			return false
+		}
 	}
 
 	async onClickHome(): Promise<void> {
@@ -402,6 +432,10 @@ export class AppComponent implements OnInit, OnDestroy {
 			// eslint-disable-next-line no-console
 			console.warn('desktop.scenario.set failed', err)
 		}
+	}
+
+	async onClickCloseToDesktop(): Promise<void> {
+		return this.onClickHome()
 	}
 
 	async onClickYjsReload(): Promise<void> {

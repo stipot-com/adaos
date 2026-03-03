@@ -41,6 +41,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	pageSchema?: PageSchema
 	private areaWidgetCounts = new Map<string, number>()
 	private lastSidebarAvailable?: boolean
+	private lastScenario?: string
 	private stateSub?: Subscription
 	isAuthenticated = false
 	ownerAuthenticated = false
@@ -104,6 +105,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.pageSchema = this.desktopSchema.loadSchema()
 			this.rebuildAreaWidgetCounts()
 			this.emitSidebarAvailability()
+			this.emitScenarioChanged()
 			if (this.isCompact) this.initCollapsedWidgets()
 			this.selectedApproveWebspace =
 				this.selectedApproveWebspace || this.activeWebspace || 'default'
@@ -127,6 +129,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			try {
 				this.lastSidebarAvailable = undefined
 				window.dispatchEvent(new CustomEvent('adaos:sidebarAvailability', { detail: { available: false } }))
+			} catch {}
+			try {
+				this.lastScenario = undefined
+				window.dispatchEvent(new CustomEvent('adaos:currentScenario', { detail: { scenario: 'web_desktop' } }))
 			} catch {}
 		}
 	}
@@ -194,6 +200,19 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		this.lastSidebarAvailable = available
 		try {
 			window.dispatchEvent(new CustomEvent('adaos:sidebarAvailability', { detail: { available } }))
+		} catch {}
+	}
+
+	private emitScenarioChanged(): void {
+		let scenario = 'web_desktop'
+		try {
+			const raw = this.y.toJSON(this.y.getPath('ui/current_scenario'))
+			if (typeof raw === 'string' && raw.trim()) scenario = raw.trim()
+		} catch {}
+		if (this.lastScenario === scenario) return
+		this.lastScenario = scenario
+		try {
+			window.dispatchEvent(new CustomEvent('adaos:currentScenario', { detail: { scenario } }))
 		} catch {}
 	}
 
