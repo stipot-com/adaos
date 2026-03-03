@@ -5,7 +5,7 @@ set -euo pipefail
 SUBMODULE_PATH="src/adaos/integrations/inimatic"
 
 JOIN_CODE=""
-ROLE="member"
+ROLE=""
 INSTALL_SERVICE="auto" # auto|always|never
 SERVE_HOST="127.0.0.1"
 SERVE_PORT="8777"
@@ -49,6 +49,23 @@ EOF
     *) die "Unknown arg: $1 (try --help)" ;;
   esac
 done
+
+if [[ -n "${JOIN_CODE:-}" ]]; then
+  if [[ "${SERVE_PORT:-}" == "8777" ]]; then
+    SERVE_PORT="8778"
+  fi
+  if [[ "${CONTROL_PORT:-}" == "8777" ]]; then
+    CONTROL_PORT="$SERVE_PORT"
+  fi
+fi
+
+if [[ -z "${ROLE:-}" ]]; then
+  if [[ -n "${JOIN_CODE:-}" ]]; then
+    ROLE="member"
+  else
+    ROLE="hub"
+  fi
+fi
 
 # 1) uv
 if ! have uv; then
@@ -131,6 +148,10 @@ token="$(
   uv run python -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("token") or "dev-local-token")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo "dev-local-token"
 )"
+expected_node_id="$(
+  uv run python -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
+    "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo ""
+)"
 
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0
@@ -151,7 +172,7 @@ deadline=$(( $(date +%s) + 120 ))
 ready_json=""
 while [[ $(date +%s) -lt $deadline ]]; do
   if ready_json="$(curl -fsS -H "X-AdaOS-Token: ${token}" "${control_base}/api/node/status" 2>/dev/null)"; then
-    if uv run python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); raise SystemExit(0 if d.get("ready") else 1)' <<<"$ready_json" >/dev/null 2>&1; then
+    if uv run python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); exp=sys.argv[1]; ok=bool(d.get("ready")); nid=str(d.get("node_id") or ""); raise SystemExit(0 if (ok and (not exp or nid==exp)) else 1)' "$expected_node_id" <<<"$ready_json" >/dev/null 2>&1; then
       ok "READY: ${ready_json}"
       break
     fi

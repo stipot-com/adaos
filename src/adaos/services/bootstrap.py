@@ -148,7 +148,22 @@ class BootstrapService:
             pass
 
     async def _member_register_and_heartbeat(self, conf: NodeConfig) -> Optional[asyncio.Task]:
-        ok = await self.heartbeat.register(conf.hub_url or "", conf.token or "", node_id=conf.node_id, subnet_id=conf.subnet_id, hostname=socket.gethostname(), roles=["member"])
+        hub_url = str(conf.hub_url or "").strip()
+        if not hub_url:
+            await bus.emit("net.subnet.register.error", {"status": "hub_url_missing"}, source="lifecycle", actor="system")
+            return None
+        try:
+            ok = await self.heartbeat.register(
+                hub_url,
+                conf.token or "",
+                node_id=conf.node_id,
+                subnet_id=conf.subnet_id,
+                hostname=socket.gethostname(),
+                roles=["member"],
+            )
+        except Exception as exc:
+            await bus.emit("net.subnet.register.error", {"error": str(exc)}, source="lifecycle", actor="system")
+            return None
         if not ok:
             await bus.emit("net.subnet.register.error", {"status": "non-200"}, source="lifecycle", actor="system")
             return None
@@ -158,7 +173,7 @@ class BootstrapService:
             backoff = 1
             while True:
                 try:
-                    ok_hb = await self.heartbeat.heartbeat(conf.hub_url or "", conf.token or "", node_id=conf.node_id)
+                    ok_hb = await self.heartbeat.heartbeat(hub_url, conf.token or "", node_id=conf.node_id)
                     if ok_hb:
                         backoff = 1
                     else:

@@ -1,7 +1,7 @@
 # tools/bootstrap_uv.ps1
 param(
   [string]$JoinCode = "",
-  [string]$Role = "member",
+  [string]$Role = "",
   [ValidateSet("auto", "always", "never")]
   [string]$InstallService = "auto",
   [string]$ServeHost = "127.0.0.1",
@@ -98,6 +98,31 @@ if ($LASTEXITCODE -ne 0) {
 
 $env:ADAOS_REV = $Rev
 
+function Test-TcpPortAvailable {
+  param([Parameter(Mandatory = $true)][int]$Port, [string]$Host = "127.0.0.1")
+  try {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse($Host), $Port)
+    $listener.Start()
+    $listener.Stop()
+    return $true
+  } catch { return $false }
+}
+
+function Ensure-ServePortForJoin {
+  if ([string]::IsNullOrWhiteSpace($JoinCode)) { return }
+  $servePortExplicit = $PSBoundParameters.ContainsKey("ServePort")
+  $controlPortExplicit = $PSBoundParameters.ContainsKey("ControlPort")
+  if (-not $servePortExplicit) {
+    $cands = @(8778, 8779, 8780, 8781, 8782)
+    foreach ($p in $cands) {
+      if (Test-TcpPortAvailable -Port $p -Host $ServeHost) { $ServePort = $p; break }
+    }
+  }
+  if (-not $controlPortExplicit) { $ControlPort = $ServePort }
+}
+
+Ensure-ServePortForJoin
+
 function Get-AdaosNodeYamlField {
   param([Parameter(Mandatory = $true)][string]$FieldName)
   $nodeYaml = Join-Path $env:ADAOS_BASE_DIR "node.yaml"
@@ -114,12 +139,17 @@ function Wait-AdaosReady {
   param([int]$TimeoutSec = 120)
   $token = Get-AdaosNodeYamlField -FieldName "token"
   if (-not $token) { $token = "dev-local-token" }
+  $expectedNodeId = Get-AdaosNodeYamlField -FieldName "node_id"
   $base = "http://$ServeHost`:$ControlPort"
   $url = "$base/api/node/status"
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
     try {
       $resp = Invoke-RestMethod -Method Get -Uri $url -Headers @{ "X-AdaOS-Token" = $token } -TimeoutSec 2
+      if ($resp -and $expectedNodeId -and $resp.node_id -and ($resp.node_id -ne $expectedNodeId)) {
+        Start-Sleep -Seconds 1
+        continue
+      }
       if ($resp -and $resp.ready -eq $true) { return $resp }
     } catch { }
     Start-Sleep -Seconds 2
@@ -136,14 +166,30 @@ if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
   }
 }
 
-if (-not [string]::IsNullOrWhiteSpace($Role)) {
-  $roleNorm = $Role.Trim().ToLower()
-  if ($roleNorm -notin @("hub", "member")) {
-    Write-Warning "Invalid Role '$Role' (expected hub|member). Skipping role set."
+try {
+  $roleNow = Get-AdaosNodeYamlField -FieldName "role"
+  $hubNow = Get-AdaosNodeYamlField -FieldName "hub_url"
+  $subnetNow = Get-AdaosNodeYamlField -FieldName "subnet_id"
+  $nodeNow = Get-AdaosNodeYamlField -FieldName "node_id"
+  if ($roleNow -or $hubNow) {
+    Write-Host ("Local node.yaml: node_id={0} subnet_id={1} role={2} hub_url={3}" -f $nodeNow, $subnetNow, $roleNow, $hubNow)
+  }
+} catch { }
+
+function Resolve-DesiredRole {
+  if (-not [string]::IsNullOrWhiteSpace($Role)) { return $Role.Trim().ToLower() }
+  if (-not [string]::IsNullOrWhiteSpace($JoinCode)) { return "member" }
+  return "hub"
+}
+
+$desiredRole = Resolve-DesiredRole
+if (-not [string]::IsNullOrWhiteSpace($desiredRole)) {
+  if ($desiredRole -notin @("hub", "member")) {
+    Write-Warning "Invalid Role '$desiredRole' (expected hub|member). Skipping role set."
   }
   else {
-    Write-Host "Setting node role: $roleNorm"
-    Invoke-Adaos node role set --role $roleNorm | Out-Null
+    Write-Host "Setting node role: $desiredRole"
+    Invoke-Adaos node role set --role $desiredRole | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Warning "adaos node role set failed (check output above)." }
   }
 }

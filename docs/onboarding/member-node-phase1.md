@@ -42,6 +42,16 @@ powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -JoinCode <CODE>
 bash tools/bootstrap_uv.sh --join-code <CODE> --root-url http://<HUB_HOST>:8777
 ```
 
+## Note: joining on the same machine as the hub
+
+If the hub is already running on `127.0.0.1:8777`, the member node must use a different local API port.
+
+Bootstraps now auto-pick `8778+` when `--join-code`/`-JoinCode` is provided, but you can override explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://127.0.0.1:8777 -ServePort 8778 -ControlPort 8778
+```
+
 ## 3) Verify status
 
 On the member machine:
@@ -66,3 +76,7 @@ Expected (example):
 - Re-running bootstrap without `--join-code` should keep existing `node_id` and config.
 - Join-codes are one-time; reusing the same code fails.
 
+## Default role behavior
+
+- If `--join-code`/`-JoinCode` is provided, bootstrap defaults role to `member`.
+- If no join-code is provided, bootstrap defaults role to `hub`.
