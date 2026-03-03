@@ -3,6 +3,10 @@
 
 $ErrorActionPreference = "Stop"
 $subPath = "src\adaos\integrations\inimatic"
+
+# Ensure we operate from repo root even if invoked from elsewhere.
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+Set-Location $repoRoot
 function Get-PythonCandidates {
     $cands = @()
 
@@ -46,32 +50,39 @@ function Get-PythonCandidates {
 Write-Host "Searching for installed Python..."
 $pyCands = Get-PythonCandidates
 if (-not $pyCands -or $pyCands.Count -eq 0) {
-    Write-Host "No Python found. Install Python 3.11+ and re-run." -ForegroundColor Red
+    Write-Host "No Python found. Install Python 3.11 and re-run." -ForegroundColor Red
     exit 1
 }
 
-$default = $pyCands | Where-Object { $_.Version -ge [version]"3.11" -and $_.Arch -eq "x64" } | Select-Object -First 1
-if (-not $default) { $default = $pyCands | Where-Object { $_.Version -ge [version]"3.11" } | Select-Object -First 1 }
-if (-not $default) { $default = $pyCands | Select-Object -First 1 }
+$pyCands311 = @($pyCands | Where-Object { $_.Version -eq [version]"3.11" })
+if (-not $pyCands311 -or $pyCands311.Count -eq 0) {
+    $found = ($pyCands | ForEach-Object { "$($_.Version) $($_.Arch)" } | Sort-Object -Unique) -join ", "
+    Write-Host "Python 3.11 is required. Found: $found" -ForegroundColor Red
+    Write-Host "Tip (Windows): install Python 3.11 and use: py -3.11" -ForegroundColor Yellow
+    exit 1
+}
+
+$default = $pyCands311 | Where-Object { $_.Arch -eq "x64" } | Select-Object -First 1
+if (-not $default) { $default = $pyCands311 | Select-Object -First 1 }
 
 Write-Host ""
 Write-Host "Available Python:"
-for ($i=0; $i -lt $pyCands.Count; $i++) {
+for ($i=0; $i -lt $pyCands311.Count; $i++) {
     $mark = ""
-    if ($pyCands[$i].Path -eq $default.Path) { $mark = " (default)" }
-    Write-Host ("  [{0}] {1} {2} -> {3}{4}" -f $i, $pyCands[$i].Version, $pyCands[$i].Arch, $pyCands[$i].Path, $mark)
+    if ($pyCands311[$i].Path -eq $default.Path) { $mark = " (default)" }
+    Write-Host ("  [{0}] {1} {2} -> {3}{4}" -f $i, $pyCands311[$i].Version, $pyCands311[$i].Arch, $pyCands311[$i].Path, $mark)
 }
 
 $choice = Read-Host "Pick index for .venv (Enter = default)"
 if ([string]::IsNullOrWhiteSpace($choice)) {
     $chosen = $default
 }
-elseif ($choice -notmatch '^\d+$' -or [int]$choice -ge $pyCands.Count) {
+elseif ($choice -notmatch '^\d+$' -or [int]$choice -ge $pyCands311.Count) {
     Write-Host "Invalid choice. Using default." -ForegroundColor Yellow
     $chosen = $default
 }
 else {
-    $chosen = $pyCands[[int]$choice]
+    $chosen = $pyCands311[[int]$choice]
 }
 Write-Host ("Using Python {0} {1} -> {2}" -f $chosen.Version, $chosen.Arch, $chosen.Path) -ForegroundColor Green
 
@@ -105,13 +116,24 @@ if ($LASTEXITCODE -ne 0) { Write-Host "pip upgrade failed." -ForegroundColor Red
 .\.venv\Scripts\python.exe -m pip install -e .[dev]
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install -e . failed." -ForegroundColor Red; exit 1 }
 
-# .env from example
-if (!(Test-Path ".env") -and (Test-Path ".env.example")) {
-    Copy-Item .env.example .env
+# .env bootstrap
+if (!(Test-Path ".env")) {
+    if (Test-Path ".env.sample") {
+        Copy-Item ".env.sample" ".env"
+        Write-Host ".env created from .env.sample"
+    }
+    elseif (Test-Path ".env.prod.sample") {
+        Copy-Item ".env.prod.sample" ".env"
+        Write-Host ".env created from .env.prod.sample"
+    }
 }
 
 # Default webspace content (scenarios + skills)
 # Keep logic inside `adaos install` so presets stay consistent across platforms.
+$envType = $env:ENV_TYPE
+if ([string]::IsNullOrWhiteSpace($envType)) {
+    $env:ENV_TYPE = "dev"
+}
 $adaosBase = Join-Path $PWD ".adaos"
 New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase

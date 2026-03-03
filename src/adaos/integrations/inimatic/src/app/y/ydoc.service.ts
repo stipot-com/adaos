@@ -211,26 +211,29 @@ export class YDocService {
         }
       }
       const allowLoopback = (() => {
+        // Default: try local hub first (even when the app is opened from a remote origin).
+        // Opt-out:
+        // - URL: ?try_local_hub=0
+        // - localStorage: adaos_try_local_hub=0
+        try {
+          const url = new URL(window.location.href)
+          const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+          if (q === '0' || q === 'false') return false
+          if (q === '1' || q === 'true') return true
+        } catch {}
+        try {
+          const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+          if (v === '0') return false
+          if (v === '1') return true
+        } catch {}
         try {
           const host = String(window.location.hostname || '')
           if (isLoopbackHost(host)) return true
         } catch {}
-        try {
-          const url = new URL(window.location.href)
-          if (url.searchParams.get('try_local_hub') === '1') return true
-        } catch {}
-        try {
-          return (localStorage.getItem('adaos_try_local_hub') || '').trim() === '1'
-        } catch {
-          return false
-        }
+        return true
       })()
 
       const candidates: string[] = []
-      try {
-        const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
-        if (persisted && !isLoopbackUrl(persisted)) candidates.push(persisted)
-      } catch {}
       if (allowLoopback)
         candidates.push(
           'http://127.0.0.1:8777',
@@ -238,8 +241,15 @@ export class YDocService {
           'http://127.0.0.1:8778',
           'http://localhost:8778'
         )
+      try {
+        const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
+        if (persisted) {
+          if (!isLoopbackUrl(persisted) || allowLoopback) candidates.push(persisted)
+        }
+      } catch {}
       if (!candidates.length) return false
       for (const base of candidates) {
+        const loopback = isLoopbackUrl(base)
         const authQuery = (() => {
           // If a persisted base is actually the root-proxy `/hubs/<id>` route,
           // it requires session JWT even for `/api/ping` probes.
@@ -255,12 +265,25 @@ export class YDocService {
             return undefined
           }
         })()
-        const st = await probeHttpStatus(base, 650, undefined, undefined, authQuery)
+        const token = (() => {
+          const globalToken = (globalThis as any)?.__ADAOS_TOKEN__ ?? null
+          if (globalToken) return globalToken
+          try {
+            const v = (localStorage.getItem('adaos_hub_token') || '').trim()
+            return v ? v : null
+          } catch {
+            return null
+          }
+        })()
+        const probeHeaders = loopback
+          ? { 'X-AdaOS-Token': String(token || 'dev-local-token') }
+          : undefined
+        const st = await probeHttpStatus(base, 650, probeHeaders, undefined, authQuery)
         if (st >= 200 && st < 300) {
           this.adaos.setBase(base)
           // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
-          const token = (globalThis as any)?.__ADAOS_TOKEN__ ?? null
-          this.adaos.setAuthAdaosToken(token)
+          // Transparent auth for local runs (MVP): fall back to the default dev token.
+          this.adaos.setAuthAdaosToken(token || 'dev-local-token')
           try {
             localStorage.setItem('adaos_hub_base', base)
           } catch {}
@@ -270,7 +293,7 @@ export class YDocService {
       return false
     }
 
-    // Avoid noisy loopback probes on SmartTV/mobile where 127.0.0.1 is never the hub.
+    // Prefer local hub (http://127.0.0.1:8777) by default; disable with ?try_local_hub=0.
     await tryLocalHub()
 
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
@@ -291,7 +314,9 @@ export class YDocService {
       }
     })()
 
-    const directStatus = isDefinitelyNotAHubBase ? 0 : await probeHttpStatus(directBase, 650)
+    const directStatus = isDefinitelyNotAHubBase
+      ? 0
+      : await probeHttpStatus(directBase, 650, this.adaos.getAuthHeaders())
     if (!(directStatus >= 200 && directStatus < 300)) {
       const switched = useRootProxyIfAvailable()
       if (!switched) {

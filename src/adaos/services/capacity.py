@@ -22,7 +22,12 @@ def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]
 
             base_dir = node_base_dir()
         except Exception:
-            base_dir = Path.home() / ".adaos"
+            try:
+                from adaos.services.settings import Settings
+
+                base_dir = Settings.from_sources().base_dir
+            except Exception:
+                base_dir = Path.home() / ".adaos"
 
     node_path = Path(base_dir) / "node.yaml"
     try:
@@ -101,7 +106,12 @@ def _resolve_base_dir(base_dir: Path | None = None) -> Path:
 
         return node_base_dir()
     except Exception:
-        return Path.home() / ".adaos"
+        try:
+            from adaos.services.settings import Settings
+
+            return Settings.from_sources().base_dir
+        except Exception:
+            return Path.home() / ".adaos"
 
 
 def _load_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]:

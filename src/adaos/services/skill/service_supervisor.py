@@ -666,7 +666,7 @@ print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
         if python.exists():
             return python
 
-        selector = spec.python_selector or "3.10"
+        selector = spec.python_selector or "3.11"
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["py", f"-{selector}", "-m", "venv", str(venv_dir)], check=True)
 

@@ -11,57 +11,32 @@ fail() { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-discover_python() {
-  local found=0
-  if have pyenv; then
-    while read -r v; do
-      [[ -z "$v" || "$v" == system* ]] && continue
-      local p
-      p="$(pyenv which -a python 2>/dev/null | grep "/$v/" | head -n1 || true)"
-      [[ -x "$p" ]] && { echo "$v $p"; found=1; }
-    done < <(pyenv versions --bare 2>/dev/null)
-  fi
-  for x in 3.12 3.11 3.10 3.9; do
-    if have "python$x"; then
-      echo "$x $(command -v python$x)"; found=1
-    fi
-  done
-  if have python3; then
-    local v
-    v="$(python3 -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" || true
-    [[ -n "${v:-}" ]] && echo "$v $(command -v python3)" && found=1
-  fi
-  if [[ $found -eq 0 ]] && have python; then
-    local v
-    v="$(python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" || true
-    [[ -n "${v:-}" ]] && echo "$v $(command -v python)"
-  fi
+py_is_311() {
+  local bin="$1"
+  "$bin" -c 'import sys; raise SystemExit(0 if (sys.version_info[0], sys.version_info[1]) == (3, 11) else 1)' \
+    >/dev/null 2>&1
 }
 
-choose_python() {
-  mapfile -t CANDS < <(discover_python | sort -Vr) || true
-  [[ ${#CANDS[@]} -eq 0 ]] && fail "Python not found. Install Python 3.11+ and re-run."
+choose_python_311() {
+  local cands=()
+  if [[ -n "${ADAOS_PYTHON:-}" ]]; then
+    cands+=("$ADAOS_PYTHON")
+  fi
+  cands+=(python3.11 python3 python)
 
-  log "Available Python:"
-  local i=0
-  for line in "${CANDS[@]}"; do
-    printf "  [%d] %s\n" "$i" "$line"
-    ((i = i + 1))
+  for c in "${cands[@]}"; do
+    have "$c" || continue
+    local p
+    p="$(command -v "$c")"
+    if py_is_311 "$p"; then
+      PY_BIN="$p"
+      PY_VER="3.11"
+      log "Using Python 3.11 -> ${PY_BIN}"
+      return 0
+    fi
   done
 
-  local def_idx=0
-  for idx in "${!CANDS[@]}"; do
-    [[ "${CANDS[$idx]}" =~ ^(3\.11|3\.12) ]] && { def_idx=$idx; break; }
-  done
-
-  read -r -p "Pick index for .venv (Enter = ${def_idx}): " CHOICE
-  [[ -z "${CHOICE:-}" ]] && CHOICE=$def_idx
-  [[ "$CHOICE" =~ ^[0-9]+$ ]] || CHOICE=$def_idx
-
-  local sel="${CANDS[$CHOICE]}"
-  PY_VER="${sel%% *}"
-  PY_BIN="${sel#* }"
-  log "Using Python ${PY_VER} -> ${PY_BIN}"
+  fail "Python 3.11 not found. Install Python 3.11 and re-run (or set ADAOS_PYTHON)."
 }
 
 smart_npm_install() {
@@ -111,8 +86,8 @@ EOF
 
 cd "$(dirname "$0")/.." || fail "cannot cd to repo root"
 
-log "Choosing Python..."
-choose_python
+log "Choosing Python 3.11..."
+choose_python_311
 
 log "Creating venv (.venv)..."
 if [[ -d .venv ]]; then
@@ -124,13 +99,25 @@ if [[ -d .venv ]]; then
 fi
 [[ -d .venv ]] || "$PY_BIN" -m venv .venv
 
-log "Installing Python deps (editable)..."ffront
+log "Installing Python deps (editable)..."
 . .venv/bin/activate
 python -m pip install -U pip >/dev/null
 python -m pip install -e .[dev] || fail "pip install -e .[dev] failed"
 
 log "Bootstrapping .env..."
-[[ -f .env || ! -f .env.example ]] || cp .env.example .env
+if [[ ! -f .env ]]; then
+  if [[ -f .env.sample ]]; then
+    cp .env.sample .env
+    ok ".env created from .env.sample"
+  elif [[ -f .env.prod.sample ]]; then
+    cp .env.prod.sample .env
+    ok ".env created from .env.prod.sample"
+  else
+    warn "No .env found and no .env.sample/.env.prod.sample present"
+  fi
+fi
+
+export ENV_TYPE="${ENV_TYPE:-dev}"
 
 ADAOS_BASE_DIR="$(pwd)/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"

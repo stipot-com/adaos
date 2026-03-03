@@ -62,7 +62,7 @@ def _mgr() -> SkillManager:
 
 def _hub_base_url() -> str:
     conf = load_config()
-    url = getattr(conf, "hub_url", None) or os.getenv("ADAOS_HUB_URL") or "http://127.0.0.1:8778"
+    url = getattr(conf, "hub_url", None) or os.getenv("ADAOS_HUB_URL") or "http://127.0.0.1:8777"
     return str(url).rstrip("/")
 
 

@@ -20,6 +20,11 @@ if ! have uv; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# 1.5) Python 3.11 only (uv-managed)
+log "Ensuring Python 3.11..."
+uv python install 3.11 || die "uv python install 3.11 failed"
+export UV_PYTHON="3.11"
+
 # 2) Python deps
 if [[ -f uv.lock ]]; then
   log "Syncing environment from uv.lock..."
@@ -40,9 +45,16 @@ fi
 ok "Python environment ready"
 
 # 4) .env
-if [[ ! -f .env && -f .env.example ]]; then
-  cp .env.example .env
-  ok ".env created from .env.example"
+if [[ ! -f .env ]]; then
+  if [[ -f .env.sample ]]; then
+    cp .env.sample .env
+    ok ".env created from .env.sample"
+  elif [[ -f .env.prod.sample ]]; then
+    cp .env.prod.sample .env
+    ok ".env created from .env.prod.sample"
+  else
+    warn "No .env found and no .env.sample/.env.prod.sample present"
+  fi
 fi
 
 # 5) Convenience PATH for current shell session
@@ -51,6 +63,7 @@ if [[ -d ".venv/bin" ]]; then
 fi
 
 # 6) Default webspace content (scenarios + skills) via built-in `adaos install`
+export ENV_TYPE="${ENV_TYPE:-dev}"
 ADAOS_BASE_DIR="$PWD/.adaos"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR

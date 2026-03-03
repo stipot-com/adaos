@@ -31,7 +31,7 @@ class RasaNLURuntime:
     trained model into the current process and keeps it cached between calls.
     """
 
-    def __init__(self, workspace: InterpreterWorkspace, *, python_spec: str = "3.10") -> None:
+    def __init__(self, workspace: InterpreterWorkspace, *, python_spec: str = "3.11") -> None:
         self.ws = workspace
         self.python_spec = python_spec
         # Keep layout consistent with RasaTrainer (used for training and

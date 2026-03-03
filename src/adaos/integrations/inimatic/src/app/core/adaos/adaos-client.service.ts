@@ -73,12 +73,20 @@ export class AdaosClient {
 				return null
 			}
 		})()
+		const lsToken = (() => {
+			try {
+				const v = (localStorage.getItem('adaos_hub_token') || '').trim()
+				return v ? v : null
+			} catch {
+				return null
+			}
+		})()
 		this.cfg = {
 			baseUrl:
 				(window as any).__ADAOS_BASE__ ??
 				(lsBase && lsBase.trim() ? lsBase.trim() : null) ??
 				'http://127.0.0.1:8777',
-			token: (window as any).__ADAOS_TOKEN__ ?? null,
+			token: (window as any).__ADAOS_TOKEN__ ?? lsToken ?? null,
 			authKind: 'adaos-token',
 		}
 	}

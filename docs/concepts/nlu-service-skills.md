@@ -5,7 +5,7 @@ General service-skill docs: `docs/concepts/service-skills.md`.
 
 ## Why service skills for NLU?
 
-- Avoid Python/ABI conflicts (e.g. Rasa requires Python <3.11).
+- Avoid Python/ABI conflicts (pin Python per component when needed).
 - Isolate heavy dependencies per component.
 - Uniform lifecycle: install -> start -> health -> restart -> observe.
 
@@ -28,7 +28,7 @@ The hub NLU pipeline uses:
 
 - `runtime.kind: service`
 - `runtime.env.mode: venv`
-- `runtime.env.python: 3.10`
+- `runtime.env.python: 3.11`
 
 The supervisor creates `state/services/rasa_nlu_service_skill/venv` and installs dependencies from:
 - `skill.yaml: dependencies`

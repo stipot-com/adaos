@@ -66,7 +66,7 @@
             },
             "python": {
               "type": "string",
-              "description": "Python selector for per-skill venv creation (for example \"3.10\" for `py -3.10`)."
+              "description": "Python selector for per-skill venv creation (for example \"3.11\" for `py -3.11`)."
             },
             "venv_dir": {
               "type": "string",

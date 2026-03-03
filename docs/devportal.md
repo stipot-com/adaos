@@ -40,7 +40,7 @@ mkdocs serve
 
 ### 2. Стиль кода
 
-- Python 3.10+.
+- Python 3.11.x.
 - Black/flake8 для форматирования.
 - Типизация обязательна (`typing`).
 

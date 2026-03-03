@@ -2,6 +2,10 @@
 $ErrorActionPreference = "Stop"
 $SUBMODULE_PATH = "src/adaos/integrations/inimatic"
 
+# Ensure we operate from repo root even if invoked from elsewhere.
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+Set-Location $repoRoot
+
 function Have($cmd) {
   try { Get-Command $cmd -ErrorAction Stop | Out-Null; return $true }
   catch { return $false }
@@ -13,6 +17,12 @@ if (-not (Have "uv")) {
   Invoke-WebRequest -UseBasicParsing https://astral.sh/uv/install.ps1 | Invoke-Expression
   $env:Path = "$HOME\.local\bin;$env:Path"
 }
+
+# Python 3.11 only (uv-managed)
+Write-Host "Ensuring Python 3.11..."
+uv python install 3.11
+if ($LASTEXITCODE -ne 0) { throw "uv python install 3.11 failed" }
+$env:UV_PYTHON = "3.11"
 
 # 2) Sync Python deps (creates .venv and installs project)
 if (Test-Path "uv.lock") {
@@ -34,9 +44,15 @@ if (Test-Path "uv.lock") {
 }
 
 # 4) .env bootstrap
-if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
-  Copy-Item ".env.example" ".env"
-  Write-Host ".env created from .env.example"
+if (-not (Test-Path ".env")) {
+  if (Test-Path ".env.sample") {
+    Copy-Item ".env.sample" ".env"
+    Write-Host ".env created from .env.sample"
+  }
+  elseif (Test-Path ".env.prod.sample") {
+    Copy-Item ".env.prod.sample" ".env"
+    Write-Host ".env created from .env.prod.sample"
+  }
 }
 
 # 5) Short command: add .venv\Scripts to PATH for current session
@@ -46,6 +62,10 @@ if (Test-Path $venvBin) {
 }
 
 # 6) Default webspace content (scenarios + skills) via built-in `adaos install`
+$envType = $env:ENV_TYPE
+if ([string]::IsNullOrWhiteSpace($envType)) {
+  $env:ENV_TYPE = "dev"
+}
 $adaosBase = Join-Path $PWD ".adaos"
 New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase
