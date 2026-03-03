@@ -5,10 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional
-import requests
 
 from adaos.apps.api.auth import require_token
 from adaos.services.bootstrap import is_ready, switch_role, load_config
+from adaos.services.subnet.link_client import get_member_link_client
 
 router = APIRouter()
 
@@ -17,13 +17,14 @@ class NodeStatus(BaseModel):
     node_id: str
     subnet_id: str
     role: str
-    hub_url: Optional[str] = None
     ready: bool
+    route_mode: Optional[str] = None
+    connected_to_hub: Optional[bool] = None
 
 
 class RoleChangeRequest(BaseModel):
     role: str = Field(..., pattern="^(hub|member)$")
-    hub_url: Optional[str] = None
+    hub_url: Optional[str] = None  # deprecated; ignored
     subnet_id: Optional[str] = None
 
 
@@ -36,12 +37,24 @@ class RoleChangeResponse(BaseModel):
 @router.get("/status", response_model=NodeStatus, dependencies=[Depends(require_token)])
 async def node_status():
     conf = load_config()
+    route_mode = None
+    connected = None
+    try:
+        if conf.role == "hub":
+            route_mode = "hub"
+        elif conf.role == "member":
+            connected = bool(get_member_link_client().is_connected())
+            route_mode = "ws" if connected else "none"
+    except Exception:
+        route_mode = None
+        connected = None
     return NodeStatus(
         node_id=conf.node_id,
         subnet_id=conf.subnet_id,
         role=conf.role,
-        hub_url=conf.hub_url,
         ready=is_ready(),
+        route_mode=route_mode,
+        connected_to_hub=connected,
     )
 
 
@@ -53,6 +66,47 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
     Можно (опционально) передать subnet_id для миграции в другую подсеть.
     """
     new_role = payload.role.lower()
+    # New behavior: hub_url is deprecated and ignored (kept for backward-compatibility only).
+    new_role = new_role.strip()
+    sub_id = payload.subnet_id
+    deprecated_fields: list[str] = []
+    if payload.hub_url:
+        deprecated_fields.append("hub_url")
+
+    conf = await switch_role(req.app, new_role, hub_url=None, subnet_id=sub_id)
+
+    route_mode = None
+    connected = None
+    try:
+        if conf.role == "hub":
+            route_mode = "hub"
+        elif conf.role == "member":
+            connected = bool(get_member_link_client().is_connected())
+            route_mode = "ws" if connected else "none"
+    except Exception:
+        route_mode = None
+        connected = None
+
+    diags = {
+        "requested_role": new_role,
+        "subnet_id_used": sub_id,
+        "now_ready": is_ready(),
+        "route_mode": route_mode,
+        "connected_to_hub": connected,
+        "deprecated_fields": deprecated_fields,
+    }
+    return RoleChangeResponse(
+        ok=True,
+        node=NodeStatus(
+            node_id=conf.node_id,
+            subnet_id=conf.subnet_id,
+            role=conf.role,
+            ready=is_ready(),
+            route_mode=route_mode,
+            connected_to_hub=connected,
+        ),
+        diagnostics=diags,
+    )
     if new_role == "member" and not payload.hub_url:
         raise HTTPException(status_code=400, detail="hub_url is required for role=member")
 

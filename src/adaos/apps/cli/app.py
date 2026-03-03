@@ -16,7 +16,7 @@ from adaos.services.settings import Settings
 from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
-from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev
+from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub
 from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
@@ -176,6 +176,8 @@ app.add_typer(tests_cmd.app, name="tests", help=_("cli.help_test"))
 app.add_typer(runtime.app, name="runtime", help=_("cli.help_runtime"))
 app.add_typer(llm.app, name="llm", help=_("cli.help_llm"))
 app.add_typer(api.app, name="api")
+app.add_typer(node.app, name="node", help="Node onboarding and role management")
+app.add_typer(hub.app, name="hub", help="Hub operations (join-codes)")
 app.add_typer(monitor.app, name="monitor")
 app.add_typer(repo.app, name="repo", help=_("cli.repo.help"))
 app.add_typer(scenario.app, name="scenario", help=_("cli.help_scenario"))

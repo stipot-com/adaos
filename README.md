@@ -32,6 +32,26 @@ uv lock; uv sync
 
 ```
 
+## Add a member node (phase 1)
+
+1) On the hub node (role=hub), generate a short one-time code:
+
+```bash
+adaos hub join-code create
+```
+
+2) On the member node, run bootstrap with that code (no tokens in CLI args):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
+```
+
+3) Verify local readiness:
+
+```bash
+adaos node status --control http://127.0.0.1:8777 --json
+```
+
 ## Обзор SDK
 
 - **Публичные точки входа.** Высокоуровневые фасады доступны через `adaos.sdk.manage` (инструменты управления), `adaos.sdk.data` (датаплейн утилиты) и функцию `adaos.sdk.validate_self` (валидация текущего навыка).
@@ -93,7 +113,7 @@ headers = {"X-AdaOS-Token": "dev-local-token"}
 print(requests.get("http://127.0.0.1:8778/api/node/status", headers=headers).json())
 
 # 2) сменить роль на member или hub (и задать hub_url)
-payload = {"role": "member", "hub_url": "http://127.0.0.1:8777"}
+payload = {"role": "member"}  # hub_url is deprecated/ignored; join-code flow sets hub_url in node.yaml
 print(requests.post("http://127.0.0.1:8778/api/node/role", json=payload, headers=headers).json())
 
 # 3) снова статус — должен быть role=member, ready=true

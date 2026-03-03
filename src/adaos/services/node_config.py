@@ -490,7 +490,13 @@ def set_role(role: str, *, hub_url: str | None = None, subnet_id: str | None = N
     conf.role = role
     if subnet_id:
         conf.subnet_id = subnet_id
-    conf.hub_url = hub_url if role == "member" else None
+    if role == "hub":
+        conf.hub_url = None
+    else:
+        # Backward-compatibility: allow switching to member without passing hub_url.
+        # Join flow (join-code) is expected to set hub_url beforehand.
+        if hub_url is not None:
+            conf.hub_url = hub_url
     save_config(conf, ctx=ctx)
     return conf
 

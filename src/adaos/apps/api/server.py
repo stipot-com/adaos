@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     # 1) инициализируем AgentContext (публикуется через set_ctx внутри bootstrap_app)
 
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
-    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api, nlu_teacher_api
+    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api, nlu_teacher_api, join_api
     from adaos.apps.api import io_webhooks
     from adaos.services.yjs.gateway import router as y_router, start_y_server, stop_y_server
     from adaos.services.subnet.link_ws import router as subnet_link_router
@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     app.include_router(subnet_api.router, prefix="/api")
     app.include_router(nlu_teacher_api.router, prefix="/api")
     app.include_router(node_api.router, prefix="/api/node")
+    app.include_router(join_api.router, prefix="/api")
     app.include_router(observe_api.router, prefix="/api/observe")
     app.include_router(scenarios.router, prefix="/api/scenarios")
     app.include_router(skills.router, prefix="/api/skills")

@@ -21,10 +21,9 @@ def serve(
     """�������� HTTP API (FastAPI)."""
     # 1) Попробуем взять базовый адрес из node.yaml (hub_url).
     #    Если он есть, и host/port не переопределены, используем его.
-    try:
-        conf = load_config()
-    except Exception:
-        conf = None
+    # NOTE: node.yaml `hub_url` is used for member->hub routing, not for local API bind address.
+    # Keep `--host/--port` explicit to avoid accidental binds to hub/public URLs.
+    conf = None
 
     if conf is not None and conf.hub_url:
         if host == "127.0.0.1" and port == 8777:

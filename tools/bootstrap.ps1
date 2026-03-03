@@ -1,6 +1,18 @@
 # tools/bootstrap.ps1
 # Unified bootstrap for Windows PowerShell 5.1+
 
+param(
+    [string]$JoinCode = "",
+    [string]$Role = "member",
+    [ValidateSet("auto", "always", "never")]
+    [string]$InstallService = "auto",
+    [string]$ServeHost = "127.0.0.1",
+    [int]$ServePort = 8777,
+    [int]$ControlPort = 8777,
+    [string]$RootUrl = "https://api.inimatic.com",
+    [string]$Rev = "rev2026"
+)
+
 $ErrorActionPreference = "Stop"
 $subPath = "src\adaos\integrations\inimatic"
 
@@ -142,6 +154,98 @@ Write-Host "Installing default webspace content (adaos install)..."
 & .\.venv\Scripts\adaos.exe install
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "adaos install failed (check output above)."
+}
+
+$env:ADAOS_REV = $Rev
+
+function Get-AdaosNodeYamlField {
+    param(
+        [Parameter(Mandatory = $true)][string]$FieldName
+    )
+    $nodeYaml = Join-Path $env:ADAOS_BASE_DIR "node.yaml"
+    if (!(Test-Path $nodeYaml)) { return $null }
+    try {
+        $py = ".\\.venv\\Scripts\\python.exe"
+        $val = & $py -c "import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding='utf-8')) or {}; v=d.get(sys.argv[2]); print('' if v is None else v)" $nodeYaml $FieldName 2>$null
+        if ([string]::IsNullOrWhiteSpace($val)) { return $null }
+        return ($val.Trim())
+    }
+    catch { return $null }
+}
+
+function Wait-AdaosReady {
+    param(
+        [int]$TimeoutSec = 120
+    )
+    $token = Get-AdaosNodeYamlField -FieldName "token"
+    if (-not $token) { $token = "dev-local-token" }
+    $base = "http://$ServeHost`:$ControlPort"
+    $url = "$base/api/node/status"
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $resp = Invoke-RestMethod -Method Get -Uri $url -Headers @{ "X-AdaOS-Token" = $token } -TimeoutSec 2
+            if ($resp -and $resp.ready -eq $true) { return $resp }
+        }
+        catch { }
+        Start-Sleep -Seconds 2
+    }
+    return $null
+}
+
+if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
+    Write-Host "Joining subnet via join-code..."
+    & .\.venv\Scripts\adaos.exe node join --code $JoinCode --root $RootUrl
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "adaos node join failed (check output above)."
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Role)) {
+    Write-Host "Setting node role: $Role"
+    & .\.venv\Scripts\adaos.exe node role set --role $Role
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "adaos node role set failed (check output above)."
+    }
+}
+
+Write-Host "Starting AdaOS API ($ServeHost:$ServePort) ..."
+$serviceInstalled = $false
+if ($InstallService -ne "never") {
+    try {
+        & .\.venv\Scripts\adaos.exe autostart enable --host $ServeHost --port $ServePort | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $serviceInstalled = $true
+            Write-Host "Autostart installed (adaos autostart enable)."
+        }
+    }
+    catch {
+        Write-Warning "autostart enable failed: $($_.Exception.Message)"
+    }
+}
+
+if ($serviceInstalled) {
+    try { schtasks /Run /TN "AdaOS" | Out-Null } catch { }
+}
+
+if (-not $serviceInstalled -or $InstallService -eq "never") {
+    try {
+        Start-Process -FilePath ".\\.venv\\Scripts\\adaos.exe" -ArgumentList @("api", "serve", "--host", $ServeHost, "--port", "$ServePort") -WindowStyle Hidden | Out-Null
+    }
+    catch {
+        Write-Warning "Failed to start adaos api serve in background. Run in foreground:"
+        Write-Host ("  .\\.venv\\Scripts\\adaos.exe api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
+    }
+}
+
+$st = Wait-AdaosReady -TimeoutSec 120
+if ($st) {
+    Write-Host ("READY: node_id={0} subnet_id={1} role={2} route={3} connected={4}" -f $st.node_id, $st.subnet_id, $st.role, $st.route_mode, $st.connected_to_hub) -ForegroundColor Green
+}
+else {
+    Write-Warning "Node did not become ready in time. Check logs or run:"
+    Write-Host ("  .\\.venv\\Scripts\\adaos.exe node status --control http://{0}:{1}" -f $ServeHost, $ControlPort)
 }
 
 $helpText = @'
