@@ -158,11 +158,11 @@ $env:ADAOS_REV = $Rev
 
 function Test-TcpPortAvailable {
     param(
-        [Parameter(Mandatory = $true)][int]$Port,
-        [string]$Host = "127.0.0.1"
+        [Parameter(Mandatory = $true)][int]$Port
     )
     try {
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse($Host), $Port)
+        # Bind to Any to detect collisions across all local interfaces.
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
         $listener.Start()
         $listener.Stop()
         return $true
@@ -181,7 +181,7 @@ function Ensure-ServePortForJoin {
     if (-not $servePortExplicit) {
         $cands = @(8778, 8779, 8780, 8781, 8782)
         foreach ($p in $cands) {
-            if (Test-TcpPortAvailable -Port $p -Host $ServeHost) { $ServePort = $p; break }
+            if (Test-TcpPortAvailable -Port $p) { $ServePort = $p; break }
         }
     }
     if (-not $controlPortExplicit) {
