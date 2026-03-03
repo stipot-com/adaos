@@ -1453,6 +1453,9 @@ app.post('/v1/bootstrap_token', async (req, res) => {
 // Developer endpoint: fetch recent Root logs (captured from stdout/stderr).
 // Protected by ROOT_TOKEN.
 app.get('/v1/dev/logs', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const token = req.header('X-Root-Token') ?? ''
 	if (!token || token !== ROOT_TOKEN) {
 		return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -1481,6 +1484,9 @@ app.get('/v1/dev/logs', async (req, res) => {
 // Developer endpoint: list/tail log files from a shared directory mounted into the backend container.
 // Protected by ROOT_TOKEN.
 app.get('/v1/dev/log_files', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const token = req.header('X-Root-Token') ?? ''
 	if (!token || token !== ROOT_TOKEN) {
 		return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -1500,6 +1506,9 @@ app.get('/v1/dev/log_files', async (req, res) => {
 })
 
 app.get('/v1/dev/log_tail', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const token = req.header('X-Root-Token') ?? ''
 	if (!token || token !== ROOT_TOKEN) {
 		return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -1865,6 +1874,9 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 // Hub developer endpoints: allow hubs to fetch Root logs without ROOT_TOKEN.
 // NOTE: still unsafe in production; keep behind mTLS and use only for debugging.
 mtlsRouter.get('/hub/dev/logs', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const identity = req.auth
 	if (!identity || identity.type !== 'hub') {
 		return respondError(req, res, 403, 'hub_certificate_required')
@@ -1891,6 +1903,9 @@ mtlsRouter.get('/hub/dev/logs', async (req, res) => {
 })
 
 mtlsRouter.get('/hub/dev/log_files', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const identity = req.auth
 	if (!identity || identity.type !== 'hub') {
 		return respondError(req, res, 403, 'hub_certificate_required')
@@ -1910,6 +1925,9 @@ mtlsRouter.get('/hub/dev/log_files', async (req, res) => {
 })
 
 mtlsRouter.get('/hub/dev/log_tail', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
 	const identity = req.auth
 	if (!identity || identity.type !== 'hub') {
 		return respondError(req, res, 403, 'hub_certificate_required')
