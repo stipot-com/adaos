@@ -29,11 +29,11 @@
 		<p style="opacity: 0.85; margin: 0 0 12px 0; overflow-wrap: anywhere;">
 			{{ 'pair.approve.code' | t }} <strong>{{ pendingApproveCode }}</strong>
 		</p>
-		<div *ngIf="!isAuthenticated" style="margin-top: 12px;">
+		<div *ngIf="!ownerAuthenticated" style="margin-top: 12px;">
 			<p style="opacity: 0.85; margin: 0 0 12px 0;">{{ 'pair.approve.login_prompt' | t }}</p>
 			<app-login (loginSuccess)="onLoginSuccess()"></app-login>
 		</div>
-		<div *ngIf="isAuthenticated">
+		<div *ngIf="ownerAuthenticated">
 			<label style="display:block; font-size: 13px; opacity: 0.8; margin-bottom: 6px;">{{ 'pair.approve.webspace'
 				| t }}</label>
 			<select style="width: 100%; padding: 10px; border-radius: 10px;"

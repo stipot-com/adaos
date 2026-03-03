@@ -200,6 +200,14 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	private getHubStatusRequest(): { url: string; headers?: HttpHeaders } {
+		// Prefer local hub if it is running (transparent local mode).
+		// This also makes the browser show probe requests in Network, which helps debugging.
+		try {
+			const base = this.adaos.getBaseUrl().replace(/\/+$/, '')
+			if (base.startsWith('http://127.0.0.1:8777') || base.startsWith('http://localhost:8777')) {
+				return { url: `${base}/api/ping` }
+			}
+		} catch {}
 		const base = this.pairing.getBaseUrl().replace(/\/+$/, '')
 		const hubId = (() => {
 			try {

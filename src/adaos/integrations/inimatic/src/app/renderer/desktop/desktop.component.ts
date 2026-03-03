@@ -43,6 +43,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	private lastSidebarAvailable?: boolean
 	private stateSub?: Subscription
 	isAuthenticated = false
+	ownerAuthenticated = false
 	needsLogin = false
 	initError = ''
 	needsPairing = false
@@ -71,14 +72,12 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			window.addEventListener('adaos:toggleSidebar', this.onToggleSidebar as any)
 		} catch {}
 		this.pendingApproveCode = this.readPairCodeFromUrl()
-		this.isAuthenticated = this.hasOwnerSession()
-		if (!this.isAuthenticated) {
-			this.needsPairing = !this.pendingApproveCode
-			if (this.needsPairing) this.ensurePairing()
-			return
-		}
+		this.ownerAuthenticated = this.hasOwnerSession()
+		this.isAuthenticated = this.ownerAuthenticated
 		try {
 			await this.y.initFromHub()
+			// Local hub mode: no owner session required, but we still consider the user "authenticated" for the UI.
+			this.isAuthenticated = true
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
 			this.initError = msg
@@ -86,7 +85,11 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				msg.includes('hub_unreachable_no_session') ||
 				msg.includes('session_invalid')
 			) {
-				this.needsLogin = true
+				this.ownerAuthenticated = this.hasOwnerSession()
+				this.isAuthenticated = this.ownerAuthenticated
+				this.needsPairing = !this.ownerAuthenticated && !this.pendingApproveCode
+				if (this.needsPairing) this.ensurePairing()
+				this.needsLogin = !this.needsPairing
 				return
 			}
 			// Do not crash the renderer; show a retry UI instead.

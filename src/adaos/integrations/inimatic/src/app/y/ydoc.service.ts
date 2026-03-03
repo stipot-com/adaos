@@ -199,6 +199,7 @@ export class YDocService {
     // Prefer a local hub on the same device if it is reachable (owner-device scenario),
     // even when the app is loaded from a public origin and a root-proxy session exists.
     const tryLocalHub = async (): Promise<boolean> => {
+      let warnedMixedContent = false
       const isLoopbackHost = (host: string): boolean => {
         const h = String(host || '').toLowerCase()
         return h === 'localhost' || h === '127.0.0.1' || h === '::1'
@@ -250,6 +251,20 @@ export class YDocService {
       if (!candidates.length) return false
       for (const base of candidates) {
         const loopback = isLoopbackUrl(base)
+        if (!warnedMixedContent && loopback) {
+          try {
+            if (window.location.protocol === 'https:' && String(base || '').startsWith('http://')) {
+              warnedMixedContent = true
+              if (isDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  '[YDocService] Local hub probe may be blocked by mixed-content rules (HTTPS page -> HTTP localhost). ' +
+                    'Consider opening the web client over http://localhost or enabling HTTPS/WSS on the hub.'
+                )
+              }
+            }
+          } catch {}
+        }
         const authQuery = (() => {
           // If a persisted base is actually the root-proxy `/hubs/<id>` route,
           // it requires session JWT even for `/api/ping` probes.
@@ -275,10 +290,8 @@ export class YDocService {
             return null
           }
         })()
-        const probeHeaders = loopback
-          ? { 'X-AdaOS-Token': String(token || 'dev-local-token') }
-          : undefined
-        const st = await probeHttpStatus(base, 650, probeHeaders, undefined, authQuery)
+        // Use a simple unauthenticated probe to avoid CORS preflights and mixed-content noise.
+        const st = await probeHttpStatus(base, 650, undefined, undefined, authQuery)
         if (st >= 200 && st < 300) {
           this.adaos.setBase(base)
           // Do not send Bearer JWT to a local hub; prefer X-AdaOS-Token (if provided) or no auth.
@@ -314,9 +327,19 @@ export class YDocService {
       }
     })()
 
+    const directIsLoopback = (() => {
+      try {
+        const u = new URL(directBase)
+        const host = (u.hostname || '').toLowerCase()
+        return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+      } catch {
+        return false
+      }
+    })()
+
     const directStatus = isDefinitelyNotAHubBase
       ? 0
-      : await probeHttpStatus(directBase, 650, this.adaos.getAuthHeaders())
+      : await probeHttpStatus(directBase, 650, directIsLoopback ? undefined : this.adaos.getAuthHeaders())
     if (!(directStatus >= 200 && directStatus < 300)) {
       const switched = useRootProxyIfAvailable()
       if (!switched) {
