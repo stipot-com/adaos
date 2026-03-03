@@ -151,7 +151,15 @@ New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
 $env:ADAOS_BASE_DIR = $adaosBase
 
 Write-Host "Installing default webspace content (adaos install)..."
-& .\.venv\Scripts\adaos.exe install
+function Invoke-Adaos {
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Args
+    )
+    & .\.venv\Scripts\python.exe -m adaos @Args
+}
+
+Invoke-Adaos install
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "adaos install failed (check output above)."
 }
@@ -196,25 +204,32 @@ function Wait-AdaosReady {
 
 if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
     Write-Host "Joining subnet via join-code..."
-    & .\.venv\Scripts\adaos.exe node join --code $JoinCode --root $RootUrl
+    Invoke-Adaos node join --code $JoinCode --root $RootUrl
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "adaos node join failed (check output above)."
+        Write-Error "adaos node join failed (see output above)."
+        exit 1
     }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Role)) {
-    Write-Host "Setting node role: $Role"
-    & .\.venv\Scripts\adaos.exe node role set --role $Role
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "adaos node role set failed (check output above)."
+    $roleNorm = $Role.Trim().ToLower()
+    if ($roleNorm -notin @("hub", "member")) {
+        Write-Warning "Invalid Role '$Role' (expected hub|member). Skipping role set."
+    }
+    else {
+        Write-Host "Setting node role: $roleNorm"
+        Invoke-Adaos node role set --role $roleNorm
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "adaos node role set failed (check output above)."
+        }
     }
 }
 
-Write-Host "Starting AdaOS API ($ServeHost:$ServePort) ..."
+Write-Host ("Starting AdaOS API ({0}:{1}) ..." -f $ServeHost, $ServePort)
 $serviceInstalled = $false
 if ($InstallService -ne "never") {
     try {
-        & .\.venv\Scripts\adaos.exe autostart enable --host $ServeHost --port $ServePort | Out-Null
+        Invoke-Adaos autostart enable --host $ServeHost --port $ServePort | Out-Null
         if ($LASTEXITCODE -eq 0) {
             $serviceInstalled = $true
             Write-Host "Autostart installed (adaos autostart enable)."
@@ -231,11 +246,11 @@ if ($serviceInstalled) {
 
 if (-not $serviceInstalled -or $InstallService -eq "never") {
     try {
-        Start-Process -FilePath ".\\.venv\\Scripts\\adaos.exe" -ArgumentList @("api", "serve", "--host", $ServeHost, "--port", "$ServePort") -WindowStyle Hidden | Out-Null
+        Start-Process -FilePath ".\\.venv\\Scripts\\python.exe" -ArgumentList @("-m", "adaos", "api", "serve", "--host", $ServeHost, "--port", "$ServePort") -WindowStyle Hidden | Out-Null
     }
     catch {
         Write-Warning "Failed to start adaos api serve in background. Run in foreground:"
-        Write-Host ("  .\\.venv\\Scripts\\adaos.exe api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
+        Write-Host ("  .\\.venv\\Scripts\\python.exe -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
     }
 }
 
@@ -245,7 +260,7 @@ if ($st) {
 }
 else {
     Write-Warning "Node did not become ready in time. Check logs or run:"
-    Write-Host ("  .\\.venv\\Scripts\\adaos.exe node status --control http://{0}:{1}" -f $ServeHost, $ControlPort)
+    Write-Host ("  .\\.venv\\Scripts\\python.exe -m adaos node status --control http://{0}:{1}" -f $ServeHost, $ControlPort)
 }
 
 $helpText = @'

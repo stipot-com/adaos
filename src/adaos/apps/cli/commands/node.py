@@ -39,10 +39,16 @@ def node_join(
         "node_id": cfg.node_id,
         "hostname": platform.node(),
     }
+    sess = requests.Session()
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        resp = sess.post(url, json=payload, timeout=10)
     except Exception as exc:
         typer.secho(f"[AdaOS] join failed: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
+        typer.echo(f"url: {url}")
         raise typer.Exit(code=2) from exc
     if resp.status_code != 200:
         try:
@@ -50,6 +56,7 @@ def node_join(
         except Exception:
             body = (resp.text or "").strip()
         typer.secho(f"[AdaOS] join failed: HTTP {resp.status_code}", fg=typer.colors.RED)
+        typer.echo(f"url: {url}")
         if body:
             typer.echo(body)
         raise typer.Exit(code=1)
@@ -97,8 +104,13 @@ def node_status(
     if probe:
         url = control.rstrip("/") + "/api/node/status"
         headers = {"X-AdaOS-Token": cfg.token or "dev-local-token"}
+        sess = requests.Session()
         try:
-            r = requests.get(url, headers=headers, timeout=2.5)
+            sess.trust_env = False
+        except Exception:
+            pass
+        try:
+            r = sess.get(url, headers=headers, timeout=2.5)
             if r.status_code == 200:
                 js = r.json() or {}
                 result["ready"] = bool(js.get("ready"))
