@@ -187,3 +187,42 @@ def consume(
     data["codes"] = codes
     _save(data, ctx)
     return rec
+
+
+def consume_any(
+    *,
+    code: str,
+    ctx: AgentContext | None = None,
+) -> dict[str, Any]:
+    """
+    Consume a join-code without requiring a subnet_id upfront.
+
+    This is useful for Root-mediated join where the member does not yet know
+    which subnet it is joining, and the Root stores `subnet_id` inside the code
+    record.
+    """
+    code_hash = _hash(code)
+    data = _load(ctx)
+    codes = data.get("codes") or {}
+    if not isinstance(codes, dict):
+        raise JoinCodeNotFound("join-code not found")
+
+    rec = codes.get(code_hash)
+    if not isinstance(rec, dict):
+        raise JoinCodeNotFound("join-code not found")
+
+    now = time.time()
+    exp = float(rec.get("expires_at") or 0.0)
+    if exp and exp < now:
+        codes.pop(code_hash, None)
+        data["codes"] = codes
+        _save(data, ctx)
+        raise JoinCodeExpired("join-code expired")
+    if rec.get("consumed_at") is not None:
+        raise JoinCodeConsumed("join-code already consumed")
+
+    rec["consumed_at"] = now
+    codes[code_hash] = rec
+    data["codes"] = codes
+    _save(data, ctx)
+    return rec

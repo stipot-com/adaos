@@ -13,6 +13,7 @@ from adaos.services.join_codes import (
     JoinCodeNotFound,
     create,
     consume,
+    consume_any,
 )
 
 
@@ -48,3 +49,11 @@ def test_join_code_expired() -> None:
     with pytest.raises(JoinCodeExpired):
         consume(code=info.code, subnet_id="subnet-1", ctx=get_ctx())
 
+
+def test_join_code_consume_any_one_time() -> None:
+    info = create(subnet_id="subnet-1", ttl_seconds=60, length=8, meta={"k": "v"}, ctx=get_ctx())
+    rec = consume_any(code=info.code, ctx=get_ctx())
+    assert rec["subnet_id"] == "subnet-1"
+    assert rec["meta"]["k"] == "v"
+    with pytest.raises(JoinCodeConsumed):
+        consume_any(code=info.code, ctx=get_ctx())

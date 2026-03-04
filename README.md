@@ -40,17 +40,19 @@ uv lock; uv sync
 python -m adaos hub join-code create
 ```
 
-2) On the member node, run bootstrap with that code (no tokens in CLI args). `RootUrl` is the join entrypoint (hub in local dev, Root proxy later):
+2) On the member node, run bootstrap with that code (no tokens in CLI args). By default this joins via Root (`https://api.inimatic.com`):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE>
 ```
 
 3) Verify local readiness:
 
 ```bash
-adaos node status --control http://127.0.0.1:8777 --json
+python -m adaos node status --control http://127.0.0.1:8777 --json
 ```
+
+Offline/LAN-only: create a local code on the hub with `python -m adaos hub join-code create --local` and run bootstrap with `-RootUrl http://<HUB_HOST>:8777` (Hub join entrypoint).
 
 ## В ситуации ModuleNotFoundError: No module named 'adaos'
 

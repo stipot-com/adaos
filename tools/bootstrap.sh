@@ -76,7 +76,7 @@ READY.
 
 Next steps:
   1) API:
-     adaos api serve --host 127.0.0.1 --port 8777 --reload
+     python -m adaos api serve --host 127.0.0.1 --port 8777 --reload
   2) Backend (Inimatic):
      cd src/adaos/integrations/inimatic
      npm run start:api-dev
@@ -178,7 +178,7 @@ mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
 
 log "Installing default webspace content (adaos install)..."
-if ! adaos install; then
+if ! python -m adaos install; then
   warn "adaos install failed (check output above)"
 fi
 
@@ -186,14 +186,14 @@ export ADAOS_REV="$REV"
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
-  if ! adaos node join --code "$JOIN_CODE" --root "$ROOT_URL"; then
+  if ! python -m adaos node join --code "$JOIN_CODE" --root "$ROOT_URL"; then
     warn "adaos node join failed (check output above)"
   fi
 fi
 
 if [[ -n "${ROLE:-}" ]]; then
   log "Setting node role: $ROLE"
-  if ! adaos node role set --role "$ROLE"; then
+  if ! python -m adaos node role set --role "$ROLE"; then
     warn "adaos node role set failed (check output above)"
   fi
 fi
@@ -211,7 +211,7 @@ expected_node_id="$(
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0
 if [[ "$INSTALL_SERVICE" != "never" ]]; then
-  if adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
+  if python -m adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
     service_installed=1
     ok "Autostart installed (adaos autostart enable)"
   else
@@ -220,7 +220,7 @@ if [[ "$INSTALL_SERVICE" != "never" ]]; then
 fi
 
 if [[ "$service_installed" != "1" || "$INSTALL_SERVICE" == "never" ]]; then
-  nohup adaos api serve --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1 & disown || true
+  nohup python -m adaos api serve --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1 & disown || true
 fi
 
 log "Waiting for ready=true ..."

@@ -98,6 +98,12 @@ else
 fi
 ok "Python environment ready"
 
+# Prefer invoking AdaOS via venv python -m adaos to avoid console-script wrapper issues.
+ADAOS_PY="$PWD/.venv/bin/python"
+if [[ ! -x "$ADAOS_PY" ]]; then
+  die "Expected venv python at $ADAOS_PY (uv sync should have created .venv)"
+fi
+
 # 4) .env
 if [[ ! -f .env ]]; then
   if [[ -f .env.sample ]]; then
@@ -123,7 +129,7 @@ mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
 
 log "Installing default webspace content (adaos install)..."
-if ! uv run adaos install; then
+if ! "$ADAOS_PY" -m adaos install; then
   warn "adaos install failed (check output above)"
 fi
 
@@ -131,32 +137,32 @@ export ADAOS_REV="$REV"
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
-  if ! uv run adaos node join --code "$JOIN_CODE" --root "$ROOT_URL"; then
+  if ! "$ADAOS_PY" -m adaos node join --code "$JOIN_CODE" --root "$ROOT_URL"; then
     warn "adaos node join failed (check output above)"
   fi
 fi
 
 if [[ -n "${ROLE:-}" ]]; then
   log "Setting node role: $ROLE"
-  if ! uv run adaos node role set --role "$ROLE"; then
+  if ! "$ADAOS_PY" -m adaos node role set --role "$ROLE"; then
     warn "adaos node role set failed (check output above)"
   fi
 fi
 
 control_base="http://${SERVE_HOST}:${CONTROL_PORT}"
 token="$(
-  uv run python -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("token") or "dev-local-token")' \
+  "$ADAOS_PY" -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("token") or "dev-local-token")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo "dev-local-token"
 )"
 expected_node_id="$(
-  uv run python -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
+  "$ADAOS_PY" -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo ""
 )"
 
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0
 if [[ "$INSTALL_SERVICE" != "never" ]]; then
-  if uv run adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
+  if "$ADAOS_PY" -m adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
     service_installed=1
     ok "Autostart installed (adaos autostart enable)"
   else
@@ -164,7 +170,7 @@ if [[ "$INSTALL_SERVICE" != "never" ]]; then
   fi
 fi
 if [[ "$service_installed" != "1" || "$INSTALL_SERVICE" == "never" ]]; then
-  nohup uv run adaos api serve --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1 & disown || true
+  nohup "$ADAOS_PY" -m adaos api serve --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1 & disown || true
 fi
 
 log "Waiting for ready=true ..."
@@ -172,7 +178,7 @@ deadline=$(( $(date +%s) + 120 ))
 ready_json=""
 while [[ $(date +%s) -lt $deadline ]]; do
   if ready_json="$(curl -fsS -H "X-AdaOS-Token: ${token}" "${control_base}/api/node/status" 2>/dev/null)"; then
-    if uv run python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); exp=sys.argv[1]; ok=bool(d.get("ready")); nid=str(d.get("node_id") or ""); raise SystemExit(0 if (ok and (not exp or nid==exp)) else 1)' "$expected_node_id" <<<"$ready_json" >/dev/null 2>&1; then
+    if "$ADAOS_PY" -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); exp=sys.argv[1]; ok=bool(d.get("ready")); nid=str(d.get("node_id") or ""); raise SystemExit(0 if (ok and (not exp or nid==exp)) else 1)' "$expected_node_id" <<<"$ready_json" >/dev/null 2>&1; then
       ok "READY: ${ready_json}"
       break
     fi
@@ -185,7 +191,7 @@ ok "Bootstrap completed."
 echo "Quick checks:"
 echo "  uv --version"
 echo "  uv run python -V"
-echo "  uv run adaos --help"
+echo "  ${ADAOS_PY} -m adaos --help"
 echo
 echo "To run the API:"
-echo "  uv run adaos api serve --host 127.0.0.1 --port 8777 --reload"
+echo "  ${ADAOS_PY} -m adaos api serve --host 127.0.0.1 --port 8777 --reload"

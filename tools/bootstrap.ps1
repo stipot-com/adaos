@@ -347,9 +347,9 @@ Next steps (in separate terminals):
   1) Activate venv:
      .\.venv\Scripts\Activate.ps1
   2) CLI:
-     adaos --help
+     .\.venv\Scripts\python.exe -m adaos --help
   3) API:
-     adaos api serve --host 127.0.0.1 --port 8777 --reload
+     .\.venv\Scripts\python.exe -m adaos api serve --host 127.0.0.1 --port 8777 --reload
   4) Backend (Inimatic):
      cd src\adaos\integrations\inimatic
      npm i

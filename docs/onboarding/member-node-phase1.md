@@ -8,42 +8,70 @@ Goal: add a *member* node to an AdaOS hub using a short one-time join-code (no l
 - `adaos` installed (or run via repo bootstraps)
 - Hub node is running `adaos api serve` and has role `hub`
 
-## 1) On the hub: create a join-code
+## 1) On the hub: create a join-code (Root session)
 
 Run on the hub machine:
 
 ```bash
-adaos hub join-code create
+python -m adaos hub join-code create
 ```
 
-This prints a short code like `ABCD-EFGH` (one-time, TTL).
+This prints a short code like `ABCD-EFGH` (one-time, TTL). The code is stored on **Root** and can be consumed by the member via Root.
+
+Notes:
+
+- Hub must publish a reachable address for members via `ADAOS_SELF_BASE_URL` (or pass `--hub-url`).
+- Hub must have an active Root owner session (run once: `python -m adaos dev root login`).
+
+## 1b) Offline/LAN-only join-code (no Root)
+
+If the subnet has no Internet access / no Root connectivity, create a *local* join-code on the hub:
+
+```bash
+python -m adaos hub join-code create --local
+```
 
 ## 2) On the member: bootstrap + join + autostart
 
-`RootUrl`/`--root-url` is the **join entrypoint** (Hub machine in local dev, or a Root proxy in future). You typically do **not** pass a hub URL manually: `adaos node join` stores the returned URL into `node.yaml`.
+`RootUrl`/`--root-url` is the **join entrypoint**:
+
+- Online mode: Root (default: `https://api.inimatic.com`)
+- Offline mode: Hub URL (the hub node accepts join directly)
 
 For offline/LAN-only setups you can still override the hub address explicitly via `adaos node join --hub-url http://<HUB_LAN_IP>:8777` (advanced).
 
 ### Windows (PowerShell, pip bootstrap)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE>
 ```
 
 ### Linux/macOS (pip bootstrap)
 
 ```bash
-bash tools/bootstrap.sh --join-code <CODE> --root-url http://<HUB_HOST>:8777
+bash tools/bootstrap.sh --join-code <CODE>
 ```
 
 ### Windows/Linux/macOS (uv bootstrap)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
+powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -JoinCode <CODE>
 ```
 
 ```bash
-bash tools/bootstrap_uv.sh --join-code <CODE> --root-url http://<HUB_HOST>:8777
+bash tools/bootstrap_uv.sh --join-code <CODE>
+```
+
+### Offline/LAN member bootstrap (using `--local` join-code)
+
+When using a local hub join-code, you must point join to the hub URL explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
+```
+
+```bash
+bash tools/bootstrap.sh --join-code <CODE> --root-url http://<HUB_HOST>:8777
 ```
 
 ## Note: joining on the same machine as the hub
@@ -61,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -R
 On the member machine:
 
 ```bash
-adaos node status --control http://127.0.0.1:8777 --json
+python -m adaos node status --control http://127.0.0.1:8777 --json
 ```
 
 Expected (example):
@@ -73,7 +101,7 @@ Expected (example):
 ## Where config is stored
 
 - Node configuration: `$ADAOS_BASE_DIR/node.yaml` (default in bootstraps: `<repo>/.adaos/node.yaml`)
-- Hub join-code store: `$ADAOS_BASE_DIR/join_codes.json` (hub side)
+- Join-code store: Root server (Root mode) or `$ADAOS_BASE_DIR/join_codes.json` (hub local mode)
 
 ## Idempotency
 

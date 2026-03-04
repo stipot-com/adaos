@@ -34,7 +34,14 @@ def node_join(
     This stores returned subnet token + hub URL into node.yaml under the active base_dir.
     """
     cfg = load_config()
-    url = root.rstrip("/") + "/api/node/join"
+
+    root_base = root.rstrip("/")
+    candidates = [
+        # Root-mediated join (preferred): Root issues/validates join-code and returns hub rendezvous.
+        root_base + "/v1/subnets/join",
+        # Legacy / offline: join directly against a hub node that holds the join-code locally.
+        root_base + "/api/node/join",
+    ]
     payload = {
         "code": code,
         "node_id": cfg.node_id,
@@ -45,21 +52,64 @@ def node_join(
         sess.trust_env = False
     except Exception:
         pass
-    try:
-        resp = sess.post(url, json=payload, timeout=10)
-    except Exception as exc:
-        typer.secho(f"[AdaOS] join failed: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
-        typer.echo(f"url: {url}")
-        raise typer.Exit(code=2) from exc
-    if resp.status_code != 200:
+
+    def _is_missing_route(resp: requests.Response) -> bool:
+        if resp.status_code not in (404, 405):
+            return False
         try:
-            body = resp.json()
+            js = resp.json()
         except Exception:
-            body = (resp.text or "").strip()
+            txt = (resp.text or "").lower()
+            return "cannot post" in txt or "not found" in txt
+        if isinstance(js, dict):
+            detail = js.get("detail")
+            return detail == "Not Found"
+        return False
+
+    resp = None
+    used_url = None
+    last_body: Any = None
+    for url in candidates:
+        try:
+            r = sess.post(url, json=payload, timeout=10)
+        except Exception as exc:
+            typer.secho(f"[AdaOS] join failed: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
+            typer.echo(f"url: {url}")
+            raise typer.Exit(code=2) from exc
+        if r.status_code == 200:
+            resp = r
+            used_url = url
+            break
+        # Route not available on this server; try next candidate.
+        if _is_missing_route(r):
+            continue
+        resp = r
+        used_url = url
+        try:
+            last_body = r.json()
+        except Exception:
+            last_body = (r.text or "").strip()
+        break
+
+    if resp is None or used_url is None:
+        typer.secho("[AdaOS] join failed: no join endpoint found on root URL", fg=typer.colors.RED)
+        for url in candidates:
+            typer.echo(f"url: {url}")
+        typer.echo("hint: pass --root http://<HUB_HOST>:8777 for direct hub join (offline/local dev), or update Root to a build that supports /v1/subnets/join.")
+        raise typer.Exit(code=1)
+
+    if resp.status_code != 200:
+        if last_body is None:
+            try:
+                last_body = resp.json()
+            except Exception:
+                last_body = (resp.text or "").strip()
         typer.secho(f"[AdaOS] join failed: HTTP {resp.status_code}", fg=typer.colors.RED)
-        typer.echo(f"url: {url}")
-        if body:
-            typer.echo(body)
+        typer.echo(f"url: {used_url}")
+        if last_body:
+            typer.echo(last_body)
+        if resp.status_code == 404 and isinstance(last_body, dict) and last_body.get("detail") == "join-code not found":
+            typer.echo("hint: if the code was created in hub local mode (--local), join against the hub URL: --root http://<HUB_HOST>:8777")
         raise typer.Exit(code=1)
 
     data = resp.json() or {}
@@ -89,6 +139,7 @@ def node_join(
         "role": cfg.role,
         "hub_url": cfg.hub_url,
         "root_url": cfg.root_settings.base_url,
+        "join_url": used_url,
     }
     _print(out, json_output=json_output)
 
