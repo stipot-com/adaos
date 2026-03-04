@@ -56,6 +56,7 @@ function extractToken(req: any): string | null {
 		extractBearer(req) ||
 		(String(req?.query?.token || '') || '').trim() ||
 		(String(req?.query?.session_jwt || '') || '').trim() ||
+		(String(req?.headers?.['x-adaos-token'] || '') || '').trim() ||
 		(String(req?.headers?.['x-session-jwt'] || '') || '').trim() ||
 		null
 	)
@@ -278,6 +279,12 @@ export function installHubRouteProxy(
 				return res.status(403).json({ ok: false, error: 'forbidden' })
 			} else if (ownerId && ownerId !== hubId && verbose) {
 				log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
+			}
+
+			const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
+			if (sessionHubId && sessionHubId !== hubId) {
+				if (verbose) log.warn({ hubId, sessionHubId }, 'http proxy: session hub mismatch; denying')
+				return res.status(403).json({ ok: false, error: 'forbidden' })
 			}
 
 			await ensureBus()
@@ -644,6 +651,15 @@ export function installHubRouteProxy(
 					log.warn({ hubId, ownerId, kind }, 'ws owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
 				}
 
+				const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
+				if (sessionHubId && sessionHubId !== hubId) {
+					if (verbose) log.warn({ hubId, sessionHubId, kind }, 'ws session hub mismatch; closing')
+					try {
+						ws.close(1008, 'forbidden')
+					} catch {}
+					return
+				}
+
 				await ensureBus()
 				sub = await bus.subscribe(toBrowser, async (_subject: string, data: Uint8Array) => {
 					try {
@@ -856,7 +872,7 @@ export function installHubRouteProxy(
 
 			ensureWs()
 
-			const dstPath = kind === 'ws' ? '/ws' : `/yws${room}`
+			const dstPath = kind === 'ws' ? `/ws${room}` : `/yws${room}`
 			const query = u.search || ''
 			if (verbose) log.info({ hubId, kind, dstPath, key }, 'ws upgrade: accepted')
 			if (verbose) {

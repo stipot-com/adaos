@@ -136,8 +136,20 @@ async def subnet_register_status(
 
 class RootJoinCodeCreateRequest(BaseModel):
     subnet_id: str = Field(..., min_length=1, max_length=128)
-    hub_url: str = Field(..., min_length=3, max_length=2048, description="Hub base URL used as rendezvous for members")
-    token: str = Field(..., min_length=1, max_length=2048, description="Subnet token required by the hub")
+    # Deprecated: in Root-proxy routing the hub does not need to expose a public URL and
+    # Root does not need a hub token to route traffic (hub uses its local token).
+    hub_url: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=2048,
+        description="[deprecated] Hub base URL used as rendezvous for members",
+    )
+    token: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        description="[deprecated] Subnet token required by the hub",
+    )
     ttl_minutes: int = Field(15, ge=1, le=60)
     length: int = Field(8, ge=8, le=12)
 
@@ -155,6 +167,11 @@ async def subnet_join_code_create(
     owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
 ) -> RootJoinCodeCreateResponse:
     auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    deprecated_fields: list[str] = []
+    if payload.hub_url:
+        deprecated_fields.append("hub_url")
+    if payload.token:
+        deprecated_fields.append("token")
     info = create_join_code(
         subnet_id=str(payload.subnet_id).strip(),
         ttl_seconds=int(payload.ttl_minutes) * 60,
@@ -162,9 +179,10 @@ async def subnet_join_code_create(
         meta={
             "kind": "subnet.member.join",
             "issued_by": "root",
-            "hub_url": str(payload.hub_url).strip(),
-            "token": str(payload.token).strip(),
             "auth": auth,
+            "deprecated_fields": deprecated_fields,
+            **({"hub_url": str(payload.hub_url).strip()} if payload.hub_url else {}),
+            **({"token": str(payload.token).strip()} if payload.token else {}),
         },
         ctx=get_ctx(),
     )
@@ -211,12 +229,18 @@ async def subnet_join_consume(req: Request, payload: RootSubnetJoinRequest) -> R
     meta = rec.get("meta") or {}
     if not isinstance(meta, dict):
         meta = {}
-    token = str(meta.get("token") or "").strip()
+    root_url = str(req.base_url).rstrip("/")
     hub_url = str(meta.get("hub_url") or "").strip()
+    if not hub_url:
+        hub_url = f"{root_url}/hubs/{subnet_id}"
+
+    # For self-hosted dev Root we may not have a session-JWT signer; return a best-effort token.
+    # In production Root this is a web-session JWT accepted by the Root proxy.
+    token = str(meta.get("token") or "").strip() or f"dev-session:{new_id()}"
+
     if not subnet_id or not token or not hub_url:
         raise HTTPException(status_code=500, detail="invalid join-code record (missing subnet_id/token/hub_url)")
 
-    root_url = str(req.base_url).rstrip("/")
     diags = {
         "subnet_id": subnet_id,
         "node_id_hint": (payload.node_id or "").strip() or None,
@@ -224,6 +248,7 @@ async def subnet_join_consume(req: Request, payload: RootSubnetJoinRequest) -> R
         "code_created_at_utc": _iso_utc(float(rec.get("created_at") or 0.0)) if rec.get("created_at") else None,
         "code_expires_at_utc": _iso_utc(float(rec.get("expires_at") or 0.0)) if rec.get("expires_at") else None,
         "issued_by": meta.get("issued_by") or None,
+        "deprecated_fields": meta.get("deprecated_fields") or [],
         "hub_url": hub_url,
         "root_url": root_url,
         "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

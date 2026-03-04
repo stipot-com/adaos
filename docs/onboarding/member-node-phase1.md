@@ -20,7 +20,7 @@ This prints a short code like `ABCD-EFGH` (one-time, TTL). The code is stored on
 
 Notes:
 
-- Hub must publish a reachable address for members via `ADAOS_SELF_BASE_URL` (or pass `--hub-url`).
+- Root mode does **not** require a public hub URL: members connect via the Root proxy path `/hubs/<subnet_id>/...`.
 - Hub must have an active Root owner session (run once: `python -m adaos dev root login`).
 
 ## 1b) Offline/LAN-only join-code (no Root)

@@ -1642,6 +1642,146 @@ app.post('/v1/subnets/register', async (req, res) => {
 	console.log('register: done, total=%dms', Date.now() - t0)
 })
 
+const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+function normalizeJoinCode(code: string): string {
+	return String(code || '')
+		.trim()
+		.toUpperCase()
+		.replace(/[^A-Z0-9]/g, '')
+}
+
+function formatJoinCode(code: string): string {
+	const norm = normalizeJoinCode(code)
+	if (!norm) return ''
+	const mid = Math.floor(norm.length / 2)
+	if (mid <= 0 || mid >= norm.length) return norm
+	return `${norm.slice(0, mid)}-${norm.slice(mid)}`
+}
+
+function hashJoinCode(code: string): string {
+	return createHash('sha256').update(normalizeJoinCode(code)).digest('hex')
+}
+
+function generateJoinCode(length: number): string {
+	const len = Math.max(8, Math.min(12, Math.floor(Number(length) || 8)))
+	const bytes = randomBytes(len)
+	let raw = ''
+	for (let i = 0; i < len; i++) {
+		raw += JOIN_CODE_ALPHABET[bytes[i] % JOIN_CODE_ALPHABET.length]
+	}
+	return formatJoinCode(raw)
+}
+
+function resolveJoinSessionTtlSeconds(): number {
+	const raw = (process.env['ADAOS_JOIN_SESSION_TTL_SECONDS'] || '').trim()
+	if (raw) {
+		const v = Number.parseInt(raw, 10)
+		if (Number.isFinite(v) && v > 0) return v
+	}
+	// Default: 30 days
+	return 30 * 24 * 60 * 60
+}
+
+const JOIN_SESSION_TTL_SECONDS = resolveJoinSessionTtlSeconds()
+
+// Create a short one-time join-code on Root so member nodes can join without a long-lived token.
+// Root returns a rendezvous URL for the hub via the Root proxy: /hubs/<subnet_id>/...
+app.post('/v1/subnets/join-code', authenticateOwnerBearer, async (req, res) => {
+	try {
+		const subnet_id =
+			typeof req.body?.subnet_id === 'string' ? String(req.body.subnet_id).trim() : ''
+		if (!subnet_id) return res.status(400).json({ ok: false, error: 'subnet_id_required' })
+
+		const ttlMinutesRaw = Number(req.body?.ttl_minutes ?? 15)
+		const ttlMinutes = Number.isFinite(ttlMinutesRaw)
+			? Math.max(1, Math.min(60, Math.floor(ttlMinutesRaw)))
+			: 15
+		const lengthRaw = Number(req.body?.length ?? 8)
+		const length = Number.isFinite(lengthRaw)
+			? Math.max(8, Math.min(12, Math.floor(lengthRaw)))
+			: 8
+
+		const code = generateJoinCode(length)
+		const key = `join_code:${hashJoinCode(code)}`
+		const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000)
+		await redisClient.setEx(
+			key,
+			ttlMinutes * 60,
+			JSON.stringify({
+				subnet_id,
+				issued_by: 'root',
+				created_at_utc: new Date().toISOString(),
+				expires_at_utc: expiresAt.toISOString(),
+			})
+		)
+
+		return res.status(200).json({ ok: true, code, expires_at_utc: expiresAt.toISOString() })
+	} catch (error) {
+		return handleError(req, res, error, { status: 500, code: 'internal_error' })
+	}
+})
+
+// Consume a join-code on Root and return connection parameters for a member node.
+// This returns a Root-proxy hub URL and an opaque session token (stored in Redis) that authorizes
+// subsequent /hubs/<subnet_id>/... requests.
+app.post('/v1/subnets/join', async (req, res) => {
+	try {
+		const code = typeof req.body?.code === 'string' ? String(req.body.code).trim() : ''
+		if (!code) return res.status(422).json({ detail: 'code is required' })
+
+		const joinKey = `join_code:${hashJoinCode(code)}`
+		const raw = await redisClient.get(joinKey)
+		if (!raw) return res.status(404).json({ detail: 'join-code not found' })
+		await redisClient.del(joinKey)
+
+		let rec: any = {}
+		try {
+			rec = JSON.parse(raw)
+		} catch {
+			rec = {}
+		}
+		const subnet_id = typeof rec?.subnet_id === 'string' ? String(rec.subnet_id).trim() : ''
+		if (!subnet_id) return res.status(500).json({ detail: 'invalid join-code record' })
+
+		const sessionToken = randomBytes(32).toString('hex')
+		await redisClient.setEx(
+			`session:jwt:${sessionToken}`,
+			JOIN_SESSION_TTL_SECONDS,
+			JSON.stringify({
+				sid: `join_${uuidv4().replace(/-/g, '')}`,
+				hub_id: subnet_id,
+				subnet_id,
+				stage: 'JOIN_CODE',
+				node_id: typeof req.body?.node_id === 'string' ? String(req.body.node_id).trim() : undefined,
+				hostname: typeof req.body?.hostname === 'string' ? String(req.body.hostname).trim() : undefined,
+				issued_at_utc: new Date().toISOString(),
+				expires_at_utc: new Date(Date.now() + JOIN_SESSION_TTL_SECONDS * 1000).toISOString(),
+			})
+		)
+
+		const host = String(req.get('host') || '').trim()
+		const root_url = `${ROOT_SERVER_PROTO}://${host}`
+		const hub_url = `${root_url}/hubs/${encodeURIComponent(subnet_id)}`
+
+		return res.status(200).json({
+			ok: true,
+			subnet_id,
+			token: sessionToken,
+			root_url,
+			hub_url,
+			diagnostics: {
+				issued_by: rec?.issued_by ?? 'root',
+				code_created_at_utc: rec?.created_at_utc ?? null,
+				code_expires_at_utc: rec?.expires_at_utc ?? null,
+				session_expires_at_utc: new Date(Date.now() + JOIN_SESSION_TTL_SECONDS * 1000).toISOString(),
+			},
+		})
+	} catch (error) {
+		return handleError(req, res, error, { status: 500, code: 'internal_error' })
+	}
+})
+
 app.post('/v1/nodes/register', async (req, res) => {
 	const bootstrapToken = req.header('X-Bootstrap-Token') ?? ''
 	let subnetId: string | undefined

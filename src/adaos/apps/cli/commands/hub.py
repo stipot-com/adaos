@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import requests
@@ -32,7 +31,6 @@ def join_code_create(
     ttl_minutes: int = typer.Option(15, "--ttl-min", min=1, max=60),
     length: int = typer.Option(8, "--length", min=8, max=12),
     root: str | None = typer.Option(None, "--root", help="Root server base URL (default: node.yaml root.base_url)"),
-    hub_url: str | None = typer.Option(None, "--hub-url", help="Hub base URL reachable by members (default: $ADAOS_SELF_BASE_URL)"),
     local: bool = typer.Option(False, "--local", help="Create join-code locally on the hub (offline mode; member must join via hub URL)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
@@ -60,9 +58,6 @@ def join_code_create(
         return
 
     root_base = (root or getattr(getattr(conf, "root_settings", None), "base_url", None) or "https://api.inimatic.com").rstrip("/")
-    effective_hub_url = (hub_url or os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
-    if not effective_hub_url:
-        raise typer.BadParameter("hub_url is required (pass --hub-url or set ADAOS_SELF_BASE_URL)")
 
     # Get Root access token from cached/auto-refreshed owner session.
     try:
@@ -74,8 +69,6 @@ def join_code_create(
     url = root_base + "/v1/subnets/join-code"
     payload = {
         "subnet_id": conf.subnet_id,
-        "hub_url": effective_hub_url,
-        "token": conf.token or "dev-local-token",
         "ttl_minutes": int(ttl_minutes),
         "length": int(length),
     }
@@ -110,7 +103,6 @@ def join_code_create(
         "code": code,
         "subnet_id": conf.subnet_id,
         "root_url": root_base,
-        "hub_url": effective_hub_url,
         "expires_at_utc": expires_at_utc,
     }
     _print(out, json_output=json_output)
