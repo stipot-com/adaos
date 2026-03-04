@@ -1253,7 +1253,11 @@ if (
 		// subscribe to outbound for a single configured bot
 		const botId = process.env['BOT_ID'] || 'main-bot'
 		const { TelegramSender } = await import('./io/telegram/sender.js')
-		const sender = new TelegramSender(process.env['TG_BOT_TOKEN'] || '')
+		const tgToken = process.env['TG_BOT_TOKEN'] || ''
+		if (!tgToken) {
+			console.warn('[io] TG_BOT_TOKEN is not configured; Telegram outbound will fail')
+		}
+		const sender = new TelegramSender(tgToken)
 		console.log(`[io] Subscribing to tg.output.${botId}.>`)
 		await ioBus.subscribe_output(botId, async (subject, data) => {
 			try {
@@ -1262,8 +1266,10 @@ if (
 				console.log(`[io] Outbound received on ${subject}`)
 				await sender.send(payload)
 			} catch (e) {
+				const err = String((e as any)?.message ?? e)
+				console.warn(`[io] Telegram outbound failed on ${subject}: ${err}`)
 				try {
-					await ioBus!.publish_dlq('output', { error: String(e) })
+					await ioBus!.publish_dlq('output', { error: err, subject })
 				} catch { }
 			}
 		})
@@ -1276,8 +1282,10 @@ if (
 				console.log(`[io] Legacy outbound received on ${subject}`)
 				await sender.send(payload)
 			} catch (e) {
+				const err = String((e as any)?.message ?? e)
+				console.warn(`[io] Telegram legacy outbound failed on ${subject}: ${err}`)
 				try {
-					await ioBus!.publish_dlq('output', { error: String(e) })
+					await ioBus!.publish_dlq('output', { error: err, subject })
 				} catch { }
 			}
 		})
@@ -1750,10 +1758,19 @@ app.post('/v1/subnets/join-code', async (req, res) => {
 		}
 		if (!hubIdentity && !owner && haveRootToken) {
 			// Best-effort: ensure subnet exists (registered) before issuing codes.
+			// Do not hard-fail: redis state may be wiped on redeploy while hubs are still online and routable via ws-nats-proxy.
 			try {
 				const existing = await redisClient.hGet('root:subnets', subnet_id)
 				if (!existing) {
-					return res.status(404).json({ ok: false, error: 'hub_not_registered' })
+					await redisClient.hSet(
+						'root:subnets',
+						subnet_id,
+						JSON.stringify({
+							subnet_id,
+							created_at: Date.now(),
+							source: 'root_token_join_code',
+						})
+					)
 				}
 			} catch {
 				// ignore and proceed

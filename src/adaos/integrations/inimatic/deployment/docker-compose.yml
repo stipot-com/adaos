@@ -13,6 +13,8 @@ volumes:
     name: inimatic_nginx_certs
   nats_data:
     name: inimatic_nats_data
+  redis_data:
+    name: inimatic_redis_data
   pg_data:
     name: inimatic_pg_data
 
@@ -70,7 +72,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: ["redis-server", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "yes"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -79,6 +81,8 @@ services:
       retries: 10
       start_period: 5s
     networks: [proxy]
+    volumes:
+      - redis_data:/data
 
   nats:
     image: nats:2.10-alpine
