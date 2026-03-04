@@ -1381,7 +1381,8 @@ app.post('/io/tg/send', async (req, res) => {
 		if (!text)
 			return res.status(400).json({ ok: false, error: 'text_required' })
 
-		let bot_id = explicitBot || process.env['BOT_ID'] || 'adaos_bot'
+		const activeBotId = process.env['BOT_ID'] || 'adaos_bot'
+		let bot_id = explicitBot || activeBotId
 		let chat_id = explicitChat
 		if (!chat_id) {
 			const { tgLinkGet } = await import('./io/pairing/store.js')
@@ -1391,7 +1392,11 @@ app.post('/io/tg/send', async (req, res) => {
 					.status(404)
 					.json({ ok: false, error: 'pairing_not_found', hub_id })
 			chat_id = link.chat_id
-			if (!explicitBot) bot_id = link.bot_id || bot_id
+			if (!explicitBot && link.bot_id && String(link.bot_id) !== String(activeBotId)) {
+				console.warn(
+					`[io] tg pairing bot mismatch for hub_id=${hub_id}: link.bot_id=${String(link.bot_id)} BOT_ID=${String(activeBotId)}; using BOT_ID`
+				)
+			}
 		}
 
 		// Resolve human-friendly alias for prefixing in Telegram outbox
@@ -1716,6 +1721,8 @@ app.post('/v1/subnets/join-code', async (req, res) => {
 		const identity = getClientIdentity(req)
 		const hubIdentity = identity && identity.type === 'hub' ? identity : null
 		const owner = authenticateOwnerBearerInline(req)
+		const rootToken = String(req.header('X-Root-Token') || '').trim()
+		const haveRootToken = Boolean(rootToken && rootToken === ROOT_TOKEN)
 		const subnet_id = (() => {
 			if (hubIdentity) return hubIdentity.subnetId
 			return bodySubnet
@@ -1731,7 +1738,7 @@ app.post('/v1/subnets/join-code', async (req, res) => {
 		}
 
 		// If owner bearer is used, ensure the owner has access to this hub/subnet id.
-		if (!hubIdentity && !owner) {
+		if (!hubIdentity && !owner && !haveRootToken) {
 			return res.status(401).json({ ok: false, error: 'unauthorized' })
 		}
 		if (!hubIdentity && owner) {
@@ -1740,6 +1747,17 @@ app.post('/v1/subnets/join-code', async (req, res) => {
 				return res.status(404).json({ ok: false, error: 'hub_not_registered' })
 			}
 			hub.lastSeen = new Date()
+		}
+		if (!hubIdentity && !owner && haveRootToken) {
+			// Best-effort: ensure subnet exists (registered) before issuing codes.
+			try {
+				const existing = await redisClient.hGet('root:subnets', subnet_id)
+				if (!existing) {
+					return res.status(404).json({ ok: false, error: 'hub_not_registered' })
+				}
+			} catch {
+				// ignore and proceed
+			}
 		}
 
 		const ttlMinutesRaw = Number(req.body?.ttl_minutes ?? 15)
@@ -1764,6 +1782,8 @@ app.post('/v1/subnets/join-code', async (req, res) => {
 					? { method: 'mtls', subnet_id }
 					: owner
 						? { method: 'owner_bearer', owner_id: owner.ownerId }
+						: haveRootToken
+							? { method: 'root_token' }
 						: { method: 'unknown' },
 				created_at_utc: new Date().toISOString(),
 				expires_at_utc: expiresAt.toISOString(),

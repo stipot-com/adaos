@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ssl
 from pathlib import Path
 from typing import Any
@@ -119,39 +120,76 @@ def join_code_create(
         # there is no configured owner profile, surface a clear error instead of asking for root-login.
         state = getattr(conf, "root_state", None)
         profile = state.get("profile") if isinstance(state, dict) else None
+
+        # If Root is behind a TLS terminator/reverse proxy, hub mTLS cannot reach the backend.
+        # Use ROOT_TOKEN (same as `adaos dev root init`) as a non-interactive auth fallback when available.
         if mtls_unauth is not None and not profile:
-            raise typer.BadParameter(
-                f"Root rejected hub mTLS join-code create (HTTP {mtls_unauth.status_code}). "
-                "This Root build likely still requires owner bearer auth or hasn't been updated to accept hub mTLS. "
-                f"Deploy the rev2026 Root backend changes (endpoint {path}), or use `--local` on the hub for offline/LAN-only mode. "
-                f"body={mtls_unauth.payload}"
-            ) from mtls_unauth
-
-        try:
-            auth = RootAuthService(http=RootHttpClient(base_url=root_base, verify=verify))
-            access_token = auth.get_access_token(conf)
-        except RootAuthError as exc:
-            if cert_tuple is None:
+            root_token = (
+                os.getenv("HUB_ROOT_TOKEN")
+                or os.getenv("ADAOS_ROOT_TOKEN")
+                or os.getenv("ROOT_TOKEN")
+                or os.getenv("ADAOS_ROOT_OWNER_TOKEN")
+                or ""
+            ).strip()
+            if root_token:
+                try:
+                    client = RootHttpClient(base_url=root_base, verify=verify)
+                    data = client.request(
+                        "POST",
+                        path,
+                        json=payload,
+                        headers={"X-Root-Token": root_token},
+                        timeout=10.0,
+                    )
+                except RootHttpError as exc:
+                    if exc.status_code in (401, 403):
+                        raise typer.BadParameter(
+                            "Root rejected ROOT_TOKEN for join-code create "
+                            f"(HTTP {exc.status_code}). "
+                            "This Root build likely hasn't been updated to accept X-Root-Token on "
+                            f"{path} yet. Deploy the Root backend changes for rev2026, or use `--local` "
+                            "on the hub for offline/LAN-only mode. "
+                            f"url={url}; body={exc.payload}"
+                        ) from exc
+                    raise typer.BadParameter(
+                        f"Root join-code create failed via ROOT_TOKEN: HTTP {exc.status_code}; url={url}; body={exc.payload}"
+                    ) from exc
+                except Exception as exc:  # pragma: no cover
+                    raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
+            else:
                 raise typer.BadParameter(
-                    f"Root session is not configured: {exc}. Run either: adaos dev root init (hub bootstrap) or adaos dev root login (owner session)."
-                ) from exc
-            raise typer.BadParameter(
-                f"Root session is not configured: {exc}. Hub mTLS request was unauthorized; Root may require an owner session. Run: adaos dev root login"
-            ) from exc
+                    f"Root rejected hub mTLS join-code create (HTTP {mtls_unauth.status_code}). "
+                    "This Root build likely still requires token-based auth (mTLS is not reaching the backend). "
+                    f"Set ROOT_TOKEN in the environment (or .env) and re-run, or use `--local` on the hub. "
+                    f"body={mtls_unauth.payload}"
+                ) from mtls_unauth
 
-        try:
-            client = RootHttpClient(base_url=root_base, verify=verify)
-            data = client.request(
-                "POST",
-                path,
-                json=payload,
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=10.0,
-            )
-        except RootHttpError as exc:
-            raise typer.BadParameter(f"Root join-code create failed: HTTP {exc.status_code}; url={url}; body={exc.payload}") from exc
-        except Exception as exc:  # pragma: no cover
-            raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
+        if data is None:
+            try:
+                auth = RootAuthService(http=RootHttpClient(base_url=root_base, verify=verify))
+                access_token = auth.get_access_token(conf)
+            except RootAuthError as exc:
+                if cert_tuple is None:
+                    raise typer.BadParameter(
+                        f"Root session is not configured: {exc}. Run either: adaos dev root init (hub bootstrap) or adaos dev root login (owner session)."
+                    ) from exc
+                raise typer.BadParameter(
+                    f"Root session is not configured: {exc}. Hub mTLS request was unauthorized; Root may require an owner session. Run: adaos dev root login"
+                ) from exc
+
+            try:
+                client = RootHttpClient(base_url=root_base, verify=verify)
+                data = client.request(
+                    "POST",
+                    path,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10.0,
+                )
+            except RootHttpError as exc:
+                raise typer.BadParameter(f"Root join-code create failed: HTTP {exc.status_code}; url={url}; body={exc.payload}") from exc
+            except Exception as exc:  # pragma: no cover
+                raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
 
     if not isinstance(data, dict):
         raise typer.BadParameter("Root join-code create returned invalid response (expected JSON object)")
