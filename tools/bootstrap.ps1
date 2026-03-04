@@ -113,10 +113,40 @@ if (!(Test-Path ".venv")) {
 }
 
 Write-Host "Installing Python deps (editable)..."
+
+# Best-effort: avoid Windows file-lock issues when pip tries to update console-script wrappers (adaos.exe).
+try {
+    $running = @(Get-Process adaos -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        Write-Warning "Found running 'adaos' process(es). Close/stop them before reinstalling dependencies to avoid WinError 32 (locked adaos.exe)."
+    }
+}
+catch { }
+
+# Best-effort cleanup for interrupted installs (pip can leave '~adaos-*.dist-info' behind).
+try {
+    $sp = Join-Path $PWD ".venv\\Lib\\site-packages"
+    if (Test-Path $sp) {
+        Get-ChildItem -Path $sp -Directory -Filter "~adaos-*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+}
+catch { }
+
 .\.venv\Scripts\python.exe -m pip install -U pip
 if ($LASTEXITCODE -ne 0) { Write-Host "pip upgrade failed." -ForegroundColor Red; exit 1 }
 .\.venv\Scripts\python.exe -m pip install -e .[dev]
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install -e . failed." -ForegroundColor Red; exit 1 }
+
+try {
+    .\.venv\Scripts\python.exe -c "import adaos; print('adaos import ok')" | Out-Null
+}
+catch {
+    Write-Host "AdaOS is not importable from .venv. Try:" -ForegroundColor Yellow
+    Write-Host "  .\\.venv\\Scripts\\python.exe -m pip install -e .[dev]" -ForegroundColor Yellow
+    exit 1
+}
 
 # .env bootstrap
 if (!(Test-Path ".env")) {

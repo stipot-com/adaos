@@ -37,10 +37,10 @@ uv lock; uv sync
 1) On the hub node (role=hub), generate a short one-time code:
 
 ```bash
-adaos hub join-code create
+python -m adaos hub join-code create
 ```
 
-2) On the member node, run bootstrap with that code (no tokens in CLI args):
+2) On the member node, run bootstrap with that code (no tokens in CLI args). `RootUrl` is the join entrypoint (hub in local dev, Root proxy later):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -RootUrl http://<HUB_HOST>:8777
@@ -51,6 +51,18 @@ powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -R
 ```bash
 adaos node status --control http://127.0.0.1:8777 --json
 ```
+
+## В ситуации ModuleNotFoundError: No module named 'adaos'
+
+1) Остановить все запущенные adaos, чтобы не было WinError 32
+Get-Process adaos -ErrorAction SilentlyContinue | Stop-Process -Force
+
+2) Удалить мусор после неудачной установки (часто ~daos-*.dist-info)
+Remove-Item -Recurse -Force .\.venv\Lib\site-packages\~daos-*.dist-info -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\.venv\Lib\site-packages\adaos-*.dist-info -ErrorAction SilentlyContinue
+
+3) Переустановить (пересоздаст adaos.exe)
+.\.venv\Scripts\python.exe -m pip install -e .[dev]
 
 ## Обзор SDK
 
@@ -112,7 +124,7 @@ headers = {"X-AdaOS-Token": "dev-local-token"}
 # 1) проверить статус
 print(requests.get("http://127.0.0.1:8778/api/node/status", headers=headers).json())
 
-# 2) сменить роль на member или hub (и задать hub_url)
+# 2) сменить роль на member или hub
 payload = {"role": "member"}  # hub_url is deprecated/ignored; join-code flow sets hub_url in node.yaml
 print(requests.post("http://127.0.0.1:8778/api/node/role", json=payload, headers=headers).json())
 

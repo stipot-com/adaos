@@ -96,6 +96,13 @@ if ($LASTEXITCODE -ne 0) {
   Write-Warning "adaos install failed (check output above)."
 }
 
+try {
+  .\.venv\Scripts\python.exe -c "import adaos; print('adaos import ok')" | Out-Null
+} catch {
+  Write-Error "AdaOS is not importable from .venv. Try: uv sync (or delete .venv and re-run bootstrap)."
+  exit 1
+}
+
 $env:ADAOS_REV = $Rev
 
 function Test-TcpPortAvailable {

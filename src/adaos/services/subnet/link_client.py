@@ -71,9 +71,12 @@ class MemberLinkClient:
             self._task.cancel()
             try:
                 await self._task
-            except Exception:
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
                 pass
         self._task = None
+        self._connected.clear()
         try:
             if self._remove_ystore_listener:
                 self._remove_ystore_listener()
@@ -160,6 +163,9 @@ class MemberLinkClient:
 
         backoff = 1.0
         while not self._stop.is_set():
+            sender_t: asyncio.Task | None = None
+            receiver_t: asyncio.Task | None = None
+            ping_t: asyncio.Task | None = None
             try:
                 async with websockets.connect(
                     ws_url,
@@ -190,12 +196,21 @@ class MemberLinkClient:
                             msg = await self._out_q.get()
                             try:
                                 await ws.send(json.dumps(msg))
+                            except asyncio.CancelledError:
+                                raise
                             except Exception:
                                 return
 
                     async def _receiver() -> None:
                         while True:
-                            raw = await ws.recv()
+                            try:
+                                raw = await ws.recv()
+                            except asyncio.CancelledError:
+                                raise
+                            except websockets.exceptions.ConnectionClosedOK:
+                                return
+                            except websockets.exceptions.ConnectionClosedError:
+                                return
                             try:
                                 msg = json.loads(raw)
                             except Exception:
@@ -214,16 +229,25 @@ class MemberLinkClient:
                     sender_t = asyncio.create_task(_sender(), name="subnet-link-sender")
                     receiver_t = asyncio.create_task(_receiver(), name="subnet-link-receiver")
                     ping_t = asyncio.create_task(self._ping_loop(ws), name="subnet-link-ping")
-                    done, pending = await asyncio.wait([sender_t, receiver_t, ping_t], return_when=asyncio.FIRST_COMPLETED)
+                    tasks = [sender_t, receiver_t, ping_t]
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     for p in pending:
                         p.cancel()
-                    for d in done:
-                        _ = d
+                    # Ensure task exceptions are retrieved so shutdown doesn't spam logs.
+                    _ = await asyncio.gather(*pending, return_exceptions=True)
+                    _ = await asyncio.gather(*done, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 _log.debug("subnet link connect failed ws=%s err=%s", ws_url, exc)
             finally:
+                for t in (sender_t, receiver_t, ping_t):
+                    if t and not t.done():
+                        t.cancel()
+                try:
+                    await asyncio.gather(*(t for t in (sender_t, receiver_t, ping_t) if t), return_exceptions=True)
+                except Exception:
+                    pass
                 self._connected.clear()
 
             await asyncio.sleep(backoff)

@@ -343,6 +343,9 @@ async def lifespan(app: FastAPI):
             pass
         try:
             await stop_subnet_p2p(app)
+        except asyncio.CancelledError:
+            # Expected during shutdown; don't fail lifespan teardown.
+            pass
         except Exception:
             pass
         await shutdown()

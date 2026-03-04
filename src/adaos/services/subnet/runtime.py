@@ -60,10 +60,12 @@ async def stop_subnet_p2p(app: Any) -> None:
         conf = get_ctx().config
         if conf.role == "member":
             await get_member_link_client().stop()
+    except asyncio.CancelledError:
+        # Expected during app shutdown.
+        pass
     except Exception:
         pass
     try:
         app.state.subnet_p2p = None
     except Exception:
         pass
-

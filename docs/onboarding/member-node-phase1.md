@@ -20,6 +20,10 @@ This prints a short code like `ABCD-EFGH` (one-time, TTL).
 
 ## 2) On the member: bootstrap + join + autostart
 
+`RootUrl`/`--root-url` is the **join entrypoint** (Hub machine in local dev, or a Root proxy in future). You typically do **not** pass a hub URL manually: `adaos node join` stores the returned URL into `node.yaml`.
+
+For offline/LAN-only setups you can still override the hub address explicitly via `adaos node join --hub-url http://<HUB_LAN_IP>:8777` (advanced).
+
 ### Windows (PowerShell, pip bootstrap)
 
 ```powershell
@@ -80,3 +84,12 @@ Expected (example):
 
 - If `--join-code`/`-JoinCode` is provided, bootstrap defaults role to `member`.
 - If no join-code is provided, bootstrap defaults role to `hub`.
+
+## Windows note: prefer `python -m adaos` (or wrapper script)
+
+If `adaos` console-script wrapper is broken (e.g. `ModuleNotFoundError: No module named 'adaos'`), run via:
+
+```powershell
+.\.venv\Scripts\python.exe -m adaos --help
+.\tools\adaos.ps1 hub join-code create
+```

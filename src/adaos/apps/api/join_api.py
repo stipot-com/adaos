@@ -59,6 +59,7 @@ class JoinConsumeResponse(BaseModel):
     ok: bool
     subnet_id: str
     token: str
+    root_url: str
     hub_url: str
     diagnostics: dict[str, Any]
 
@@ -88,14 +89,16 @@ async def join_consume(req: Request, payload: JoinConsumeRequest):
         raise HTTPException(status_code=409, detail="join-code already used") from None
 
     token = conf.token or "dev-local-token"
-    hub_url = str(req.base_url).rstrip("/")
+    root_url = str(req.base_url).rstrip("/")
+    hub_url = root_url
     diags = {
         "subnet_id": conf.subnet_id,
         "hub_node_id": conf.node_id,
         "node_id_hint": (payload.node_id or "").strip() or None,
+        "root_url": root_url,
+        "rendezvous_url": hub_url,
         "code_created_at_utc": _iso_utc(float(rec.get("created_at") or 0.0)) if rec.get("created_at") else None,
         "code_expires_at_utc": _iso_utc(float(rec.get("expires_at") or 0.0)) if rec.get("expires_at") else None,
         "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    return JoinConsumeResponse(ok=True, subnet_id=conf.subnet_id, token=token, hub_url=hub_url, diagnostics=diags)
-
+    return JoinConsumeResponse(ok=True, subnet_id=conf.subnet_id, token=token, root_url=root_url, hub_url=hub_url, diagnostics=diags)

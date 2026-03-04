@@ -25,6 +25,7 @@ def _print(data: Any, *, json_output: bool) -> None:
 def node_join(
     code: str = typer.Option(..., "--code", help="Short one-time join-code"),
     root: str = typer.Option(..., "--root", help="Join endpoint base URL (Hub or Root proxy)"),
+    hub_url: str | None = typer.Option(None, "--hub-url", help="Optional explicit Hub URL override (offline/LAN setups)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """
@@ -64,14 +65,20 @@ def node_join(
     data = resp.json() or {}
     token = str(data.get("token") or "").strip()
     subnet_id = str(data.get("subnet_id") or "").strip()
-    hub_url = str(data.get("hub_url") or root).strip()
-    if not token or not subnet_id or not hub_url:
+    rendezvous_url = str(data.get("hub_url") or root).strip()
+    if hub_url:
+        rendezvous_url = str(hub_url).strip()
+    if not token or not subnet_id or not rendezvous_url:
         typer.secho("[AdaOS] join failed: invalid response from server (missing token/subnet_id/hub_url)", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     cfg.token = token
     cfg.subnet_id = subnet_id
-    cfg.hub_url = hub_url
+    cfg.hub_url = rendezvous_url
+    try:
+        cfg.root_settings.base_url = root.strip()
+    except Exception:
+        pass
     cfg.role = "member"
     save_config(cfg)
 
@@ -81,6 +88,7 @@ def node_join(
         "subnet_id": cfg.subnet_id,
         "role": cfg.role,
         "hub_url": cfg.hub_url,
+        "root_url": cfg.root_settings.base_url,
     }
     _print(out, json_output=json_output)
 
