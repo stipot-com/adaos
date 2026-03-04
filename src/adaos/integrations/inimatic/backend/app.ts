@@ -1685,13 +1685,62 @@ function resolveJoinSessionTtlSeconds(): number {
 
 const JOIN_SESSION_TTL_SECONDS = resolveJoinSessionTtlSeconds()
 
+function authenticateOwnerBearerInline(req: express.Request): OwnerRecord | null {
+	const header = req.header('Authorization') ?? ''
+	const token = header.startsWith('Bearer ')
+		? header.slice('Bearer '.length).trim()
+		: ''
+	if (!token || !accessIndex.has(token)) {
+		return null
+	}
+	const ownerId = accessIndex.get(token)!
+	const owner = owners.get(ownerId)
+	if (!owner) return null
+	if (
+		owner.accessToken !== token ||
+		owner.accessExpiresAt.getTime() <= Date.now()
+	) {
+		return null
+	}
+	return owner
+}
+
 // Create a short one-time join-code on Root so member nodes can join without a long-lived token.
+// Auth: either hub mTLS certificate (preferred) or owner bearer session (dev/browser).
 // Root returns a rendezvous URL for the hub via the Root proxy: /hubs/<subnet_id>/...
-app.post('/v1/subnets/join-code', authenticateOwnerBearer, async (req, res) => {
+app.post('/v1/subnets/join-code', async (req, res) => {
 	try {
-		const subnet_id =
+		const bodySubnet =
 			typeof req.body?.subnet_id === 'string' ? String(req.body.subnet_id).trim() : ''
-		if (!subnet_id) return res.status(400).json({ ok: false, error: 'subnet_id_required' })
+
+		const identity = getClientIdentity(req)
+		const hubIdentity = identity && identity.type === 'hub' ? identity : null
+		const owner = authenticateOwnerBearerInline(req)
+		const subnet_id = (() => {
+			if (hubIdentity) return hubIdentity.subnetId
+			return bodySubnet
+		})()
+
+		if (!subnet_id) {
+			return res.status(400).json({ ok: false, error: 'subnet_id_required' })
+		}
+
+		// If hub mTLS is used, prevent forging cross-subnet codes.
+		if (hubIdentity && bodySubnet && bodySubnet !== hubIdentity.subnetId) {
+			return res.status(403).json({ ok: false, error: 'forbidden' })
+		}
+
+		// If owner bearer is used, ensure the owner has access to this hub/subnet id.
+		if (!hubIdentity && !owner) {
+			return res.status(401).json({ ok: false, error: 'unauthorized' })
+		}
+		if (!hubIdentity && owner) {
+			const hub = owner.hubs.get(subnet_id)
+			if (!hub || hub.revoked) {
+				return res.status(404).json({ ok: false, error: 'hub_not_registered' })
+			}
+			hub.lastSeen = new Date()
+		}
 
 		const ttlMinutesRaw = Number(req.body?.ttl_minutes ?? 15)
 		const ttlMinutes = Number.isFinite(ttlMinutesRaw)
@@ -1711,6 +1760,11 @@ app.post('/v1/subnets/join-code', authenticateOwnerBearer, async (req, res) => {
 			JSON.stringify({
 				subnet_id,
 				issued_by: 'root',
+				auth: hubIdentity
+					? { method: 'mtls', subnet_id }
+					: owner
+						? { method: 'owner_bearer', owner_id: owner.ownerId }
+						: { method: 'unknown' },
 				created_at_utc: new Date().toISOString(),
 				expires_at_utc: expiresAt.toISOString(),
 			})

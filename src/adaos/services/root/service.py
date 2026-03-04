@@ -229,7 +229,7 @@ class RootAuthService:
         state = _root_state(cfg)
         profile = state.get("profile")
         if not profile:
-            raise RootAuthError("root owner profile is not configured; run 'adaos dev root-login'")
+            raise RootAuthError("root owner profile is not configured; run 'adaos dev root login'")
         owner_id = profile["owner_id"]
         refresh_token: str | None = None
         try:
@@ -254,7 +254,7 @@ class RootAuthService:
         state = _root_state(cfg)
         profile = state.get("profile")
         if not profile:
-            raise RootAuthError("root owner profile is not configured; run 'adaos dev root-login'")
+            raise RootAuthError("root owner profile is not configured; run 'adaos dev root login'")
         cached = state.get("access_token_cached")
         if isinstance(cached, str) and cached:
             expiry = _parse_expiry(profile["access_expires_at"])

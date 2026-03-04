@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import ssl
+from pathlib import Path
 from typing import Any
 
-import requests
 import typer
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.join_codes import create as create_join_code
-from adaos.services.root.client import RootHttpClient
+from adaos.services.root.client import RootHttpClient, RootHttpError
 from adaos.services.root.service import RootAuthError, RootAuthService
 
 app = typer.Typer(help="Hub operations.")
@@ -59,39 +60,101 @@ def join_code_create(
 
     root_base = (root or getattr(getattr(conf, "root_settings", None), "base_url", None) or "https://api.inimatic.com").rstrip("/")
 
-    # Get Root access token from cached/auto-refreshed owner session.
-    try:
-        auth = RootAuthService(http=RootHttpClient(base_url=root_base))
-        access_token = auth.get_access_token(conf)
-    except RootAuthError as exc:
-        raise typer.BadParameter(f"Root session is not configured: {exc}. Run: adaos dev root login") from exc
-
-    url = root_base + "/v1/subnets/join-code"
+    path = "/v1/subnets/join-code"
+    url = root_base + path
     payload = {
         "subnet_id": conf.subnet_id,
         "ttl_minutes": int(ttl_minutes),
         "length": int(length),
     }
-    headers = {"Authorization": f"Bearer {access_token}"}
 
-    sess = requests.Session()
+    verify: str | bool | ssl.SSLContext = True
+    cert_tuple: tuple[str, str] | None = None
     try:
-        sess.trust_env = False
+        ca_path = conf.ca_cert_path()
+        cert_path = conf.hub_cert_path()
+        key_path = conf.hub_key_path()
+        if isinstance(ca_path, Path) and ca_path.exists():
+            try:
+                import certifi  # type: ignore
+
+                ctx = ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                ctx = ssl.create_default_context()
+            try:
+                ctx.load_verify_locations(cafile=str(ca_path))
+            except Exception:
+                pass
+            verify = ctx
+        if isinstance(cert_path, Path) and isinstance(key_path, Path) and cert_path.exists() and key_path.exists():
+            cert_tuple = (str(cert_path), str(key_path))
     except Exception:
-        pass
-    try:
-        resp = sess.post(url, json=payload, headers=headers, timeout=10)
-    except Exception as exc:
-        raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
+        verify = True
+        cert_tuple = None
 
-    if resp.status_code != 200:
+    data: Any | None = None
+    mtls_unauth: RootHttpError | None = None
+
+    # Preferred auth: hub mTLS (available right after bootstrap).
+    if cert_tuple is not None:
         try:
-            body = resp.json()
-        except Exception:
-            body = (resp.text or "").strip()
-        raise typer.BadParameter(f"Root join-code create failed: HTTP {resp.status_code}; url={url}; body={body}")
+            client = RootHttpClient(base_url=root_base, verify=verify, cert=cert_tuple)
+            data = client.request("POST", path, json=payload, timeout=10.0)
+        except RootHttpError as exc:
+            # Unauthorized: fall back to owner bearer session (dev/browser workflow).
+            if exc.status_code in (401, 403):
+                mtls_unauth = exc
+            else:
+                if exc.status_code in (404, 405):
+                    raise typer.BadParameter(
+                        f"Root does not support join-code create endpoint yet: {path}. Deploy a newer Root build or use `--local` on the hub."
+                    ) from exc
+                raise typer.BadParameter(f"Root join-code create failed: HTTP {exc.status_code}; url={url}; body={exc.payload}") from exc
+        except Exception as exc:  # pragma: no cover
+            raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
 
-    data = resp.json() or {}
+    # Fallback auth: owner bearer session (developer workflow).
+    if data is None:
+        # Do not force owner session setup for hub join-code. If hub mTLS was rejected and
+        # there is no configured owner profile, surface a clear error instead of asking for root-login.
+        state = getattr(conf, "root_state", None)
+        profile = state.get("profile") if isinstance(state, dict) else None
+        if mtls_unauth is not None and not profile:
+            raise typer.BadParameter(
+                f"Root rejected hub mTLS join-code create (HTTP {mtls_unauth.status_code}). "
+                "This Root build likely still requires owner bearer auth or hasn't been updated to accept hub mTLS. "
+                f"Deploy the rev2026 Root backend changes (endpoint {path}), or use `--local` on the hub for offline/LAN-only mode. "
+                f"body={mtls_unauth.payload}"
+            ) from mtls_unauth
+
+        try:
+            auth = RootAuthService(http=RootHttpClient(base_url=root_base, verify=verify))
+            access_token = auth.get_access_token(conf)
+        except RootAuthError as exc:
+            if cert_tuple is None:
+                raise typer.BadParameter(
+                    f"Root session is not configured: {exc}. Run either: adaos dev root init (hub bootstrap) or adaos dev root login (owner session)."
+                ) from exc
+            raise typer.BadParameter(
+                f"Root session is not configured: {exc}. Hub mTLS request was unauthorized; Root may require an owner session. Run: adaos dev root login"
+            ) from exc
+
+        try:
+            client = RootHttpClient(base_url=root_base, verify=verify)
+            data = client.request(
+                "POST",
+                path,
+                json=payload,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10.0,
+            )
+        except RootHttpError as exc:
+            raise typer.BadParameter(f"Root join-code create failed: HTTP {exc.status_code}; url={url}; body={exc.payload}") from exc
+        except Exception as exc:  # pragma: no cover
+            raise typer.BadParameter(f"Root join-code create failed: {type(exc).__name__}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise typer.BadParameter("Root join-code create returned invalid response (expected JSON object)")
     code = str(data.get("code") or "").strip()
     expires_at_utc = data.get("expires_at_utc")
     if not code:

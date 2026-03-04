@@ -21,7 +21,7 @@ This prints a short code like `ABCD-EFGH` (one-time, TTL). The code is stored on
 Notes:
 
 - Root mode does **not** require a public hub URL: members connect via the Root proxy path `/hubs/<subnet_id>/...`.
-- Hub must have an active Root owner session (run once: `python -m adaos dev root login`).
+- Hub must be bootstrapped on Root (mTLS hub cert/key + Root CA). If missing, run: `python -m adaos dev root init` (requires `ROOT_TOKEN`).
 
 ## 1b) Offline/LAN-only join-code (no Root)
 
