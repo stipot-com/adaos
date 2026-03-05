@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import platform
+from urllib.parse import urlparse, urlunparse
 from typing import Any
 
 import requests
 import typer
 
-from adaos.services.node_config import load_config, save_config, set_role as cfg_set_role
+from adaos.services.node_config import displayable_path, load_config, save_config, set_role as cfg_set_role
 
 app = typer.Typer(help="Node operations (join/status/role).")
 role_app = typer.Typer(help="Manage local node role.")
@@ -19,6 +20,51 @@ def _print(data: Any, *, json_output: bool) -> None:
         typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
     else:
         typer.echo(str(data))
+
+
+def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
+    """
+    Root/hub join endpoints can sit behind TLS-terminating proxies and occasionally return
+    `http://...` rendezvous URLs even when the public entrypoint is `https://...`.
+
+    We persist the rendezvous into node.yaml; ensure scheme matches the public Root URL when safe.
+    """
+    try:
+        hub_u = urlparse(str(rendezvous_url or "").strip())
+        root_u = urlparse(str(root_base or "").strip())
+    except Exception:
+        return rendezvous_url
+
+    # Safe upgrade for typical public deployments (no explicit ports).
+    if (
+        hub_u.scheme == "http"
+        and root_u.scheme == "https"
+        and hub_u.hostname
+        and root_u.hostname
+        and hub_u.hostname.lower() == root_u.hostname.lower()
+        and hub_u.port is None
+        and root_u.port is None
+    ):
+        return urlunparse(hub_u._replace(scheme="https"))
+
+    return rendezvous_url
+
+
+def _ensure_absolute_key_paths(cfg) -> None:
+    """
+    Persist key paths in node.yaml as absolute paths under ADAOS_BASE_DIR.
+
+    This matches hub-style config and avoids ambiguity when `node.yaml` is inspected manually.
+    """
+    try:
+        cfg.root_settings.ca_cert = displayable_path(cfg.ca_cert_path())
+    except Exception:
+        pass
+    try:
+        cfg.subnet_settings.hub.key = displayable_path(cfg.hub_key_path())
+        cfg.subnet_settings.hub.cert = displayable_path(cfg.hub_cert_path())
+    except Exception:
+        pass
 
 
 @app.command("join")
@@ -118,6 +164,7 @@ def node_join(
     rendezvous_url = str(data.get("hub_url") or root).strip()
     if hub_url:
         rendezvous_url = str(hub_url).strip()
+    rendezvous_url = _normalize_rendezvous_url(rendezvous_url=rendezvous_url, root_base=root_base)
     if not token or not subnet_id or not rendezvous_url:
         typer.secho("[AdaOS] join failed: invalid response from server (missing token/subnet_id/hub_url)", fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -130,6 +177,7 @@ def node_join(
     except Exception:
         pass
     cfg.role = "member"
+    _ensure_absolute_key_paths(cfg)
     save_config(cfg)
 
     out = {
