@@ -1606,7 +1606,7 @@ class BootstrapService:
                                         except Exception:
                                             pass
 
-                                await _sub(ctl_alias, cb=_ctl_alias_cb)
+                                await _sub_worker(ctl_alias, cb=_ctl_alias_cb)
                                 if hub_nats_verbose or not hub_nats_quiet:
                                     print(f"[hub-io] NATS subscribe control {ctl_alias}")
                             except Exception:
@@ -1734,7 +1734,9 @@ class BootstrapService:
                         tunnels: dict[str, dict[str, Any]] = {}
                         tunnel_tasks: dict[str, asyncio.Task] = {}
                         pending_chunks: dict[str, dict[str, Any]] = {}
+                        pending_tunnel_events: dict[str, list[dict[str, Any]]] = {}
                         MAX_CHUNK_RAW = 300_000
+                        MAX_PENDING_TUNNEL_EVENTS = 128
 
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
                         _route_diag = _route_verbose or os.getenv("HUB_ROUTE_DIAG", "0") == "1"
@@ -2011,9 +2013,89 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 try:
+                                    pending_tunnel_events.pop(key, None)
+                                except Exception:
+                                    pass
+                                try:
                                     await ws.close()
                                 except Exception:
                                     pass
+
+                        def _queue_pending_tunnel_event(key: str, payload: dict[str, Any]) -> None:
+                            try:
+                                items = pending_tunnel_events.get(key)
+                                if items is None:
+                                    items = []
+                                    pending_tunnel_events[key] = items
+                                if len(items) >= MAX_PENDING_TUNNEL_EVENTS:
+                                    items.pop(0)
+                                items.append(dict(payload))
+                            except Exception:
+                                pass
+
+                        async def _send_tunnel_event(key: str, ws, payload: dict[str, Any]) -> None:
+                            kind = (payload or {}).get("t")
+                            if kind == "frame":
+                                frame_kind = (payload or {}).get("kind")
+                                if frame_kind == "bin":
+                                    b64 = (payload or {}).get("data_b64")
+                                    if isinstance(b64, str) and b64:
+                                        await asyncio.wait_for(
+                                            ws.send(base64.b64decode(b64.encode("ascii"))),
+                                            timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                        )
+                                else:
+                                    txt = (payload or {}).get("data")
+                                    if isinstance(txt, str):
+                                        await asyncio.wait_for(
+                                            ws.send(txt),
+                                            timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                        )
+                                return
+
+                            if kind != "chunk":
+                                return
+
+                            cid = (payload or {}).get("id")
+                            idx = int((payload or {}).get("idx") or 0)
+                            total = int((payload or {}).get("total") or 0)
+                            frame_kind = "text" if (payload or {}).get("kind") == "text" else "bin"
+                            if not isinstance(cid, str) or not cid or total <= 0 or idx < 0 or idx >= total:
+                                return
+                            st = pending_chunks.get(cid)
+                            if not st:
+                                st = {"key": key, "kind": frame_kind, "total": total, "parts": [None] * total}
+                                pending_chunks[cid] = st
+                            if st.get("key") != key or st.get("kind") != frame_kind or int(st.get("total") or 0) != total:
+                                return
+                            parts = st.get("parts")
+                            if not isinstance(parts, list) or len(parts) != total:
+                                st["parts"] = [None] * total
+                                parts = st["parts"]
+                            if frame_kind == "bin":
+                                b64 = (payload or {}).get("data_b64")
+                                if not isinstance(b64, str):
+                                    return
+                                parts[idx] = base64.b64decode(b64.encode("ascii"))
+                            else:
+                                txt = (payload or {}).get("data")
+                                if not isinstance(txt, str):
+                                    return
+                                parts[idx] = txt
+                            if any(p is None for p in parts):
+                                return
+                            pending_chunks.pop(cid, None)
+                            if frame_kind == "bin":
+                                blob = b"".join([p for p in parts if isinstance(p, (bytes, bytearray))])
+                                await asyncio.wait_for(
+                                    ws.send(blob),
+                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                )
+                            else:
+                                await asyncio.wait_for(
+                                    ws.send("".join([p for p in parts if isinstance(p, str)])),
+                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                )
 
                         async def _route_cb(msg) -> None:
                             key = ""
@@ -2222,6 +2304,19 @@ class BootstrapService:
                                         return
                                     tunnels[key] = {"ws": ws, "url": url}
                                     tunnel_tasks[key] = asyncio.create_task(_tunnel_reader(key, ws), name=f"hub-route-{key}")
+                                    pending = pending_tunnel_events.pop(key, None) or []
+                                    for pending_payload in pending:
+                                        try:
+                                            await _send_tunnel_event(key, ws, pending_payload)
+                                        except Exception as e:
+                                            if _route_verbose:
+                                                try:
+                                                    print(
+                                                        f"[hub-route] flush pending failed key={key}: {type(e).__name__}: {e}"
+                                                    )
+                                                except Exception:
+                                                    pass
+                                            break
                                     return
 
                                 if t == "close":
@@ -2243,84 +2338,26 @@ class BootstrapService:
                                     rec = tunnels.get(key)
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
+                                        _queue_pending_tunnel_event(key, data)
                                         return
-                                    kind = (data or {}).get("kind")
-                                    if kind == "bin":
-                                        b64 = (data or {}).get("data_b64")
-                                        if isinstance(b64, str) and b64:
+                                    try:
+                                        await _send_tunnel_event(key, ws, data)
+                                    except Exception as e:
+                                        if _route_verbose:
                                             try:
-                                                await asyncio.wait_for(
-                                                    ws.send(base64.b64decode(b64.encode("ascii"))),
-                                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
-                                                )
-                                            except Exception as e:
-                                                if _route_verbose:
-                                                    try:
-                                                        print(f"[hub-route] ws.send(bin) failed key={key}: {type(e).__name__}: {e}")
-                                                    except Exception:
-                                                        pass
-                                    else:
-                                        txt = (data or {}).get("data")
-                                        if isinstance(txt, str):
-                                            try:
-                                                await asyncio.wait_for(
-                                                    ws.send(txt),
-                                                    timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
-                                                )
-                                            except Exception as e:
-                                                if _route_verbose:
-                                                    try:
-                                                        print(f"[hub-route] ws.send(text) failed key={key}: {type(e).__name__}: {e}")
-                                                    except Exception:
-                                                        pass
+                                                print(f"[hub-route] ws.send(frame) failed key={key}: {type(e).__name__}: {e}")
+                                            except Exception:
+                                                pass
                                     return
                                 
                                 if t == "chunk":
                                     rec = tunnels.get(key)
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
+                                        _queue_pending_tunnel_event(key, data)
                                         return
-                                    cid = (data or {}).get("id")
-                                    idx = int((data or {}).get("idx") or 0)
-                                    total = int((data or {}).get("total") or 0)
-                                    kind = "text" if (data or {}).get("kind") == "text" else "bin"
-                                    if not isinstance(cid, str) or not cid or total <= 0 or idx < 0 or idx >= total:
-                                        return
-                                    st = pending_chunks.get(cid)
-                                    if not st:
-                                        st = {"key": key, "kind": kind, "total": total, "parts": [None] * total}
-                                        pending_chunks[cid] = st
-                                    if st.get("key") != key or st.get("kind") != kind or int(st.get("total") or 0) != total:
-                                        return
-                                    parts = st.get("parts")
-                                    if not isinstance(parts, list) or len(parts) != total:
-                                        st["parts"] = [None] * total
-                                        parts = st["parts"]
-                                    if kind == "bin":
-                                        b64 = (data or {}).get("data_b64")
-                                        if not isinstance(b64, str):
-                                            return
-                                        parts[idx] = base64.b64decode(b64.encode("ascii"))
-                                    else:
-                                        txt = (data or {}).get("data")
-                                        if not isinstance(txt, str):
-                                            return
-                                        parts[idx] = txt
-                                    if any(p is None for p in parts):
-                                        return
-                                    pending_chunks.pop(cid, None)
                                     try:
-                                        if kind == "bin":
-                                            blob = b"".join([p for p in parts if isinstance(p, (bytes, bytearray))])
-                                            await asyncio.wait_for(
-                                                ws.send(blob),
-                                                timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
-                                            )
-                                        else:
-                                            await asyncio.wait_for(
-                                                ws.send("".join([p for p in parts if isinstance(p, str)])),
-                                                timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
-                                            )
+                                        await _send_tunnel_event(key, ws, data)
                                     except Exception as e:
                                         if _route_verbose:
                                             try:
@@ -2490,51 +2527,65 @@ class BootstrapService:
                                                     h2["Content-Type"] = ct
                                             # Do not inherit HTTP(S)_PROXY environment from the host/container:
                                             # local hub calls must stay local, otherwise they can hang on a proxy.
-                                            sess = requests.Session()
-                                            try:
-                                                sess.trust_env = False
-                                            except Exception:
-                                                pass
-                                            last_exc: Exception | None = None
-                                            resp = None
-                                            for base in bases:
-                                                url_try = f"{base}{path}{search}"
+                                            def _do_http_upstream() -> dict[str, Any]:
+                                                sess = requests.Session()
                                                 try:
-                                                    # Root times out fairly quickly while waiting for route.to_browser.* replies.
-                                                    # Keep local proxy attempts short to avoid systematic timeouts.
-                                                    is_probe = path in ("/api/node/status", "/api/ping", "/healthz")
-                                                    timeout = (0.5, 1.2) if is_probe else (1.5, 2.5)
-                                                    resp = sess.request(method, url_try, data=body, headers=h2, timeout=timeout)
-                                                    last_exc = None
-                                                    break
-                                                except Exception as e:
-                                                    last_exc = e
-                                                    if _route_verbose:
+                                                    try:
+                                                        sess.trust_env = False
+                                                    except Exception:
+                                                        pass
+                                                    last_exc: Exception | None = None
+                                                    resp = None
+                                                    for base in bases:
+                                                        url_try = f"{base}{path}{search}"
                                                         try:
-                                                            print(f"[hub-route] http upstream failed url={url_try}: {type(e).__name__}: {e}")
-                                                        except Exception:
-                                                            pass
-                                            if resp is None:
-                                                raise last_exc or RuntimeError("http upstream failed")
-                                            raw = resp.content or b""
-                                            limit = 2 * 1024 * 1024
-                                            truncated = len(raw) > limit
-                                            if truncated:
-                                                raw = raw[:limit]
-                                            out_headers: dict[str, str] = {}
-                                            try:
-                                                cth = resp.headers.get("content-type")
-                                                if cth:
-                                                    out_headers["content-type"] = cth
-                                            except Exception:
-                                                pass
-                                            return {
-                                                "t": "http_resp",
-                                                "status": int(resp.status_code),
-                                                "headers": out_headers,
-                                                "body_b64": base64.b64encode(raw).decode("ascii"),
-                                                "truncated": truncated,
-                                            }
+                                                            # Root times out fairly quickly while waiting for
+                                                            # route.to_browser.* replies. Keep local proxy attempts
+                                                            # short and, critically, run them off the event loop
+                                                            # thread because the local hub HTTP server lives in this
+                                                            # same process.
+                                                            is_probe = path in ("/api/node/status", "/api/ping", "/healthz")
+                                                            timeout = (0.5, 1.2) if is_probe else (1.5, 2.5)
+                                                            resp = sess.request(method, url_try, data=body, headers=h2, timeout=timeout)
+                                                            last_exc = None
+                                                            break
+                                                        except Exception as e:
+                                                            last_exc = e
+                                                            if _route_verbose:
+                                                                try:
+                                                                    print(
+                                                                        f"[hub-route] http upstream failed url={url_try}: {type(e).__name__}: {e}"
+                                                                    )
+                                                                except Exception:
+                                                                    pass
+                                                    if resp is None:
+                                                        raise last_exc or RuntimeError("http upstream failed")
+                                                    raw = resp.content or b""
+                                                    limit = 2 * 1024 * 1024
+                                                    truncated = len(raw) > limit
+                                                    if truncated:
+                                                        raw = raw[:limit]
+                                                    out_headers: dict[str, str] = {}
+                                                    try:
+                                                        cth = resp.headers.get("content-type")
+                                                        if cth:
+                                                            out_headers["content-type"] = cth
+                                                    except Exception:
+                                                        pass
+                                                    return {
+                                                        "t": "http_resp",
+                                                        "status": int(resp.status_code),
+                                                        "headers": out_headers,
+                                                        "body_b64": base64.b64encode(raw).decode("ascii"),
+                                                        "truncated": truncated,
+                                                    }
+                                                finally:
+                                                    try:
+                                                        sess.close()
+                                                    except Exception:
+                                                        pass
+
+                                            return _do_http_upstream()
                                         except Exception as e:
                                             return {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "err": str(e)}
 
@@ -2585,7 +2636,7 @@ class BootstrapService:
                                     pass
                                 return
 
-                        route_sub = await _sub("route.to_hub.*", cb=_route_cb)
+                        route_sub = await _sub_worker("route.to_hub.*", cb=_route_cb)
                         if hub_nats_verbose or not hub_nats_quiet:
                             print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
                     except Exception as e:
@@ -2616,7 +2667,7 @@ class BootstrapService:
                             alt = f"tg.input.{aid}"
                             if hub_nats_verbose or not hub_nats_quiet:
                                 print(f"[hub-io] NATS subscribe (alias) {alt}")
-                            await _sub(alt, cb=cb)
+                            await _sub_worker(alt, cb=cb)
                     except Exception:
                         pass
 
@@ -2660,7 +2711,7 @@ class BootstrapService:
                     # Legacy classic path subscription only when explicitly enabled
                     try:
                         if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
-                            await _sub(subj_legacy, cb=cb_legacy)
+                            await _sub_worker(subj_legacy, cb=cb_legacy)
                             aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
                             aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
                             seen = set([hub_id])
@@ -2671,7 +2722,7 @@ class BootstrapService:
                                 alt_legacy = f"io.tg.in.{aid}.text"
                                 if hub_nats_verbose or not hub_nats_quiet:
                                     print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
-                                await _sub(alt_legacy, cb=cb_legacy)
+                                await _sub_worker(alt_legacy, cb=cb_legacy)
                     except Exception:
                         pass
                     # keep task alive

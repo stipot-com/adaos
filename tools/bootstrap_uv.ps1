@@ -131,6 +131,36 @@ function Ensure-ServePortForJoin {
 
 Ensure-ServePortForJoin
 
+function ConvertTo-PowerShellLiteral {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Start-AdaosApiDetached {
+  param(
+    [Parameter(Mandatory = $true)][string]$BindHost,
+    [Parameter(Mandatory = $true)][int]$BindPort
+  )
+  $pythonExe = (Resolve-Path ".\\.venv\\Scripts\\python.exe").Path
+  $repoDir = (Resolve-Path ".").Path
+  $logDir = Join-Path $env:ADAOS_BASE_DIR "logs"
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  $stdoutLog = Join-Path $logDir ("adaos-api-{0}.out.log" -f $BindPort)
+  $stderrLog = Join-Path $logDir ("adaos-api-{0}.err.log" -f $BindPort)
+  Remove-Item $stdoutLog, $stderrLog -ErrorAction SilentlyContinue
+
+  $env:PYTHONUNBUFFERED = "1"
+  Start-Process `
+    -FilePath $pythonExe `
+    -WorkingDirectory $repoDir `
+    -ArgumentList @("-u", "-m", "adaos", "api", "serve", "--host", $BindHost, "--port", "$BindPort") `
+    -RedirectStandardOutput $stdoutLog `
+    -RedirectStandardError $stderrLog `
+    | Out-Null
+
+  Write-Host ("AdaOS API logs: {0} | {1}" -f $stdoutLog, $stderrLog)
+}
+
 function Get-AdaosNodeYamlField {
   param([Parameter(Mandatory = $true)][string]$FieldName)
   $nodeYaml = Join-Path $env:ADAOS_BASE_DIR "node.yaml"
@@ -218,10 +248,11 @@ if ($serviceInstalled) {
 }
 if (-not $serviceInstalled -or $InstallService -eq "never") {
   try {
-    Start-Process -FilePath ".\\.venv\\Scripts\\python.exe" -ArgumentList @("-m", "adaos", "api", "serve", "--host", $ServeHost, "--port", "$ServePort") -WindowStyle Hidden | Out-Null
+    Start-AdaosApiDetached -BindHost $ServeHost -BindPort $ServePort
+    Write-Host "AdaOS API started as a detached process."
   } catch {
-    Write-Warning "Failed to start adaos api serve. Run:"
-    Write-Host ("  .\\.venv\\Scripts\\python.exe -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
+    Write-Warning "Failed to start adaos api serve as a detached process. Run:"
+    Write-Host ("  .\\.venv\\Scripts\\python.exe -u -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
   }
 }
 

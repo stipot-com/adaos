@@ -221,16 +221,24 @@ class FastAPIWebsocketAdapter:
             return
 
     async def recv(self) -> bytes:
-        msg = await self._ws.receive()
-        msg_type = msg.get("type")
-        if msg_type == "websocket.receive":
-            if msg.get("bytes") is not None:
-                return msg["bytes"]
-            if msg.get("text") is not None:
-                return msg["text"].encode("utf-8")
-        if msg_type == "websocket.disconnect":
-            raise RuntimeError("websocket disconnected")
-        return b""
+        while True:
+            msg = await self._ws.receive()
+            msg_type = msg.get("type")
+            if msg_type == "websocket.receive":
+                if msg.get("bytes") is not None:
+                    data = msg["bytes"]
+                    if data:
+                        return data
+                    continue
+                if msg.get("text") is not None:
+                    data = msg["text"].encode("utf-8")
+                    if data:
+                        return data
+                    continue
+                continue
+            if msg_type == "websocket.disconnect":
+                raise RuntimeError("websocket disconnected")
+            raise RuntimeError(f"unexpected websocket event: {msg_type}")
 
 
 async def _update_device_presence(webspace_id: str, device_id: str) -> None:

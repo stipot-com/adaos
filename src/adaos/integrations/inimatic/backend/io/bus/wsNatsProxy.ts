@@ -145,6 +145,16 @@ export function installWsNatsProxy(server: HttpServer) {
 	// (breaking `flush()` and keepalives). When enabled, the proxy terminates client PINGs by immediately
 	// replying with PONG and not forwarding the PING upstream.
 	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '1') !== '0'
+	const activeHubSockets = new Map<
+		string,
+		Map<
+			string,
+			{
+				ws: any
+				close: (code?: number, reason?: string) => void
+			}
+		>
+	>()
 	let wiretapEveryMs = 1000
 	try {
 		wiretapEveryMs = Math.max(0, Number(process.env['WS_NATS_PROXY_WIRETAP_EVERY_MS'] || '1000'))
@@ -605,6 +615,31 @@ export function installWsNatsProxy(server: HttpServer) {
 					}
 
 					hubIdForLog = hubId
+					try {
+						const peers = activeHubSockets.get(hubId)
+						if (peers?.size) {
+							for (const [peerConnId, peer] of peers.entries()) {
+								if (!peer || peer.ws === ws) continue
+								try {
+									log().warn(
+										{
+											hub_id: hubId,
+											conn: connId,
+											tag: connTag,
+											superseded_conn: peerConnId,
+										},
+										'closing superseded hub ws-nats connection',
+									)
+								} catch {}
+								try {
+									peer.close(1001, 'superseded')
+								} catch {}
+							}
+						}
+						const next = peers || new Map()
+						next.set(connId, { ws, close: closeBoth })
+						activeHubSockets.set(hubId, next)
+					} catch {}
 
 					const u: any = { ...obj }
 					try {
@@ -774,6 +809,15 @@ export function installWsNatsProxy(server: HttpServer) {
 					return ''
 				}
 			})()
+			try {
+				if (hubIdForLog) {
+					const peers = activeHubSockets.get(hubIdForLog)
+					if (peers) {
+						peers.delete(connId)
+						if (peers.size === 0) activeHubSockets.delete(hubIdForLog)
+					}
+				}
+			} catch {}
 			// Extra diagnostics for abnormal closes (1006 = no close frame).
 			if (code === 1006) {
 				try {

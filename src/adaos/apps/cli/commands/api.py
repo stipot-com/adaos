@@ -53,6 +53,8 @@ def serve(
     token: str | None = typer.Option(None, "--token", help="Override X-AdaOS-Token / ADAOS_TOKEN"),
 ):
     """Serve the AdaOS local HTTP API."""
+    from adaos.apps.api.server import app as server_app
+
     conf = None
     try:
         conf = load_config()
@@ -78,10 +80,11 @@ def serve(
         pass
 
     uvicorn.run(
-        "adaos.apps.api.server:app",
+        server_app,
         host=host,
         port=int(port),
         reload=reload,
+        workers=1,
         access_log=False,
     )
 
