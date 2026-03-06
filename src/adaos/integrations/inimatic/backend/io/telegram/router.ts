@@ -10,6 +10,15 @@ type Update = any
 
 let _inited = false
 
+function defaultBindingAlias(hubId: string, existingAliases: string[]): string {
+	const base = String(hubId || '').trim() || 'hub'
+	const names = new Set((existingAliases || []).map((alias) => String(alias || '').trim()).filter(Boolean))
+	if (!names.has(base)) return base
+	let i = 2
+	while (names.has(`${base}-${i}`)) i++
+	return `${base}-${i}`
+}
+
 export async function initTgRouting(): Promise<void> {
 	if (_inited) return
 	await ensureSchema()
@@ -50,7 +59,7 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
 			if (payload.startsWith('bind:')) {
 				const hub = payload.slice('bind:'.length)
 				if (hub) {
-					const alias = 'hub'
+					const alias = String(hub).trim() || 'hub'
 					await upsertBinding(ctx.chat_id, hub, alias, false)
 					try { await sendToTelegram({ chat_id: ctx.chat_id, text: `Linked to ${hub} as ${alias}` }) } catch { }
 					return { status: 200, body: { ok: true, routed: false } }
@@ -64,9 +73,7 @@ export async function onTelegramUpdate(bot_id: string, update: Update): Promise<
 						try { await tgLinkSet(hubId, String(ctx.chat_id), bot_id, String(ctx.chat_id)) } catch { }
 						try {
 							const existing = await listBindings(ctx.chat_id)
-							let alias = 'hub'
-							const names = new Set((existing || []).map(b => String(b.alias)))
-							if (names.has(alias)) { let i = 2; while (names.has(`hub-${i}`)) i++; alias = `hub-${i}` }
+							const alias = defaultBindingAlias(hubId, (existing || []).map((b) => String(b.alias)))
 							const makeDefault = (existing || []).length === 0
 							await upsertBinding(ctx.chat_id, hubId, alias, makeDefault)
 							if (makeDefault) { try { await setSession(ctx.chat_id, hubId, 'manual') } catch { } }

@@ -51,6 +51,41 @@ def _ws_max_size_from_env() -> int | None:
     return v
 
 
+def _ws_proxy_from_env() -> str | bool | None:
+    """
+    Control proxy handling for long-lived NATS-over-WS tunnels.
+
+    `websockets>=15` defaults to `proxy=True`, which may pick up system proxy
+    settings on Windows and route the handshake through HTTP CONNECT. That path
+    has been observed to fail with `InvalidStateError` inside websockets' client
+    parser before the connection is handed to AdaOS.
+
+    Default:
+    - Windows: disable auto-proxy (`None`)
+    - Other OSes: keep library default (`True`)
+
+    Override with `HUB_NATS_WS_PROXY`:
+    - `auto`, `system`, `default`, `1`, `true`, `yes` -> `True`
+    - `none`, `off`, `0`, `false`, `no`, empty`       -> `None`
+    - any other value                                 -> explicit proxy URL
+    """
+    raw = os.getenv("HUB_NATS_WS_PROXY")
+    if raw is None:
+        return None if os.name == "nt" else True
+    try:
+        value = str(raw).strip()
+    except Exception:
+        return None if os.name == "nt" else True
+    if not value:
+        return None
+    normalized = value.lower()
+    if normalized in {"auto", "system", "default", "1", "true", "yes", "on"}:
+        return True
+    if normalized in {"none", "off", "0", "false", "no"}:
+        return None
+    return value
+
+
 def _ws_headers_to_tuples(headers: Optional[Dict[str, List[str]]]) -> Optional[List[Tuple[str, str]]]:
     if not headers:
         return None
@@ -291,6 +326,7 @@ class WebSocketTransportWebsockets:
             "close_timeout": 2.0,
             "max_size": max_size,
             "compression": None,
+            "proxy": _ws_proxy_from_env(),
         }
         if ssl_context is not None:
             ws_kwargs["ssl"] = ssl_context
@@ -309,11 +345,13 @@ class WebSocketTransportWebsockets:
                 else:
                     self._ws = await websockets.connect(target, **ws_kwargs)
             except TypeError:
-                # Older websockets uses `extra_headers=...`.
+                # Older websockets may use `extra_headers=...` and may not support `proxy=...`.
+                retry_kwargs = dict(ws_kwargs)
+                retry_kwargs.pop("proxy", None)
                 if headers:
-                    self._ws = await websockets.connect(target, extra_headers=headers, **ws_kwargs)
+                    self._ws = await websockets.connect(target, extra_headers=headers, **retry_kwargs)
                 else:
-                    self._ws = await websockets.connect(target, **ws_kwargs)
+                    self._ws = await websockets.connect(target, **retry_kwargs)
         except Exception:
             self._ws = None
             raise

@@ -33,6 +33,7 @@ from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->
 from adaos.services.eventbus import LocalEventBus
 from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
+from adaos.services.nats_config import normalize_nats_ws_url, order_nats_ws_candidates
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
 from adaos.services.scheduler import start_scheduler
 from adaos.services.scenario import (
@@ -425,7 +426,7 @@ class BootstrapService:
         # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
         try:
             # Hot-reload friendly: read NATS config from node.yaml on every connect attempt.
-            hub_id = (getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)).subnet_id
+            hub_id = load_config(ctx=self.ctx).subnet_id
             if hub_id:
                 try:
                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
@@ -458,15 +459,20 @@ class BootstrapService:
 
                 def _read_node_nats() -> tuple[str | None, str | None, str | None]:
                     try:
-                        from adaos.services.capacity import _load_node_yaml as _load_node
+                        from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
 
                         nd = _load_node()
                         node_nats = (nd or {}).get("nats") if isinstance(nd, dict) else None
                         if not isinstance(node_nats, dict) or not node_nats:
                             return None, None, None
-                        nurl = str(node_nats.get("ws_url") or "") or None
+                        raw_nurl = str(node_nats.get("ws_url") or "").strip() or None
+                        nurl = normalize_nats_ws_url(raw_nurl, fallback=None)
                         nuser = str(node_nats.get("user") or "") or None
                         npass = str(node_nats.get("pass") or "") or None
+                        if nurl and raw_nurl and nurl != raw_nurl:
+                            node_nats["ws_url"] = nurl
+                            nd["nats"] = node_nats
+                            _save_node(nd)
                         return nurl, nuser, npass
                     except Exception:
                         return None, None, None
@@ -577,17 +583,7 @@ class BootstrapService:
                         return False
                     token = data.get("hub_nats_token")
                     nats_user = data.get("nats_user")
-                    nats_ws_url = data.get("nats_ws_url")
-                    # NATS WS is served via a dedicated hostname. Some deployments historically returned
-                    # `wss://api.inimatic.com/nats` which results in a 400 during WS upgrade.
-                    try:
-                        if isinstance(nats_ws_url, str):
-                            if nats_ws_url.startswith("wss://api.inimatic.com/nats"):
-                                nats_ws_url = "wss://nats.inimatic.com/nats"
-                            elif nats_ws_url == "wss://nats.inimatic.com":
-                                nats_ws_url = "wss://nats.inimatic.com/nats"
-                    except Exception:
-                        pass
+                    nats_ws_url = normalize_nats_ws_url(data.get("nats_ws_url"))
                     if not token or not nats_user or not nats_ws_url:
                         if debug:
                             try:
@@ -817,13 +813,11 @@ class BootstrapService:
                             # Prefer the dedicated hostname over the root ingress when both are available.
                             try:
                                 pref_ded = os.getenv("HUB_NATS_PREFER_DEDICATED", "1")
-                                preferred = None
-                                if str(pref_ded).strip() == "1":
-                                    preferred = "wss://nats.inimatic.com/nats"
-                                elif str(pref_ded).strip() == "0":
-                                    preferred = "wss://api.inimatic.com/nats"
-                                if preferred in candidates and candidates and candidates[0] != preferred:
-                                    candidates = [preferred] + [c for c in candidates if c != preferred]
+                                candidates = order_nats_ws_candidates(
+                                    candidates,
+                                    explicit_url=base,
+                                    prefer_dedicated=pref_ded,
+                                )
                             except Exception:
                                 pass
 
@@ -1443,10 +1437,26 @@ class BootstrapService:
                             # unsubscribing helps nats-py cancel internal `_wait_for_msgs()` tasks and avoids
                             # "Task was destroyed but it is pending!" warnings on reconnect/shutdown.
                             subs: list[Any] = []
+                            sub_workers: list[asyncio.Task] = []
 
                             async def _sub(subject: str, *, cb: Any):
                                 sub = await nc.subscribe(subject, cb=cb)
                                 subs.append(sub)
+                                return sub
+
+                            async def _sub_worker(subject: str, *, cb: Any):
+                                sub = await nc.subscribe(subject)
+                                subs.append(sub)
+
+                                async def _runner() -> None:
+                                    try:
+                                        async for msg in sub.messages:
+                                            await cb(msg)
+                                    except asyncio.CancelledError:
+                                        return
+
+                                task = asyncio.create_task(_runner(), name=f"adaos-nats-sub-{subject}")
+                                sub_workers.append(task)
                                 return sub
 
                             # Outbound bridge: local bus -> root NATS.
@@ -1632,9 +1642,10 @@ class BootstrapService:
                             backoff = min(backoff * 2.0, 30.0)
 
                     async def cb(msg):
+                        msg_subject = str(getattr(msg, "subject", "") or subj)
                         if trace:
                             try:
-                                _rl_log("nats.msg", f"[hub-io] nats recv subject={getattr(msg, 'subject', '')} bytes={len(getattr(msg, 'data', b'') or b'')}", every_s=0.2)
+                                _rl_log("nats.msg", f"[hub-io] nats recv subject={msg_subject} bytes={len(getattr(msg, 'data', b'') or b'')}", every_s=0.2)
                             except Exception:
                                 pass
                         try:
@@ -1700,11 +1711,11 @@ class BootstrapService:
                         except Exception:
                             pass
                         try:
-                            self.ctx.bus.publish(Event(type=subj, payload=data, source="io.nats", ts=time.time()))
+                            self.ctx.bus.publish(Event(type=msg_subject, payload=data, source="io.nats", ts=time.time()))
                         except Exception:
                             pass
 
-                    await _sub(subj, cb=cb)
+                    await _sub_worker(subj, cb=cb)
 
                     # Browser<->Hub routing over NATS (root proxy fallback).
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
@@ -1926,9 +1937,14 @@ class BootstrapService:
                                         pass
 
                         def _hub_key_match(key: str) -> bool:
-                            # key is "<hub_id>--..."
+                            current_hub_id = hub_id
                             try:
-                                return isinstance(key, str) and key.startswith(f"{hub_id}--")
+                                cfg_now = load_config(ctx=self.ctx)
+                                current_hub_id = str(getattr(cfg_now, "subnet_id", "") or current_hub_id)
+                            except Exception:
+                                current_hub_id = hub_id
+                            try:
+                                return isinstance(key, str) and bool(current_hub_id) and key.startswith(f"{current_hub_id}--")
                             except Exception:
                                 return False
 
@@ -2839,6 +2855,19 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 tunnel_tasks.pop(k, None)
+                        except Exception:
+                            pass
+                        try:
+                            for task in list(sub_workers):
+                                try:
+                                    task.cancel()
+                                except Exception:
+                                    pass
+                            if sub_workers:
+                                try:
+                                    await asyncio.wait_for(asyncio.gather(*sub_workers, return_exceptions=True), timeout=1.0)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                         try:

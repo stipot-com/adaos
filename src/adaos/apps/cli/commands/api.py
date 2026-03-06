@@ -5,55 +5,82 @@ from urllib.parse import urlparse
 import typer
 import uvicorn
 
-from adaos.apps.cli.i18n import _
 from adaos.services.node_config import load_config, save_config
 
-app = typer.Typer(help="HTTP API ��� AdaOS")
+app = typer.Typer(help="HTTP API for AdaOS")
+
+
+def _is_local_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _advertise_base(host: str, port: int) -> str:
+    advertised_host = (host or "").strip() or "127.0.0.1"
+    if advertised_host in {"0.0.0.0", "::", "[::]"}:
+        advertised_host = "127.0.0.1"
+    return f"http://{advertised_host}:{int(port)}"
+
+
+def _resolve_bind(conf, host: str, port: int) -> tuple[str, int]:
+    role = str(getattr(conf, "role", "") or "").strip().lower() if conf is not None else ""
+    if role != "hub":
+        return host, int(port)
+    if host != "127.0.0.1" or int(port) != 8777:
+        return host, int(port)
+    hub_url = str(getattr(conf, "hub_url", "") or "").strip()
+    if not _is_local_url(hub_url):
+        return host, int(port)
+    try:
+        parsed = urlparse(hub_url)
+        if parsed.hostname and parsed.port:
+            return parsed.hostname, int(parsed.port)
+    except Exception:
+        pass
+    return host, int(port)
 
 
 @app.command("serve")
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8777, "--port"),
-    reload: bool = typer.Option(False, "--reload", help="��� ࠧࠡ�⪨"),
-    token: str = typer.Option(None, "--token", help="X-AdaOS-Token; ���� ���쬥� �� ADAOS_TOKEN"),
+    reload: bool = typer.Option(False, "--reload", help="Enable uvicorn autoreload"),
+    token: str | None = typer.Option(None, "--token", help="Override X-AdaOS-Token / ADAOS_TOKEN"),
 ):
-    """�������� HTTP API (FastAPI)."""
-    # 1) Попробуем взять базовый адрес из node.yaml (hub_url).
-    #    Если он есть, и host/port не переопределены, используем его.
-    # NOTE: node.yaml `hub_url` is used for member->hub routing, not for local API bind address.
-    # Keep `--host/--port` explicit to avoid accidental binds to hub/public URLs.
+    """Serve the AdaOS local HTTP API."""
     conf = None
+    try:
+        conf = load_config()
+    except Exception:
+        conf = None
 
-    if conf is not None and conf.hub_url:
-        if host == "127.0.0.1" and port == 8777:
-            try:
-                u = urlparse(conf.hub_url)
-                if u.hostname and u.port:
-                    host = u.hostname
-                    port = u.port
-            except Exception:
-                pass
-    elif conf is not None and not conf.hub_url:
-        # Если hub_url не задан, фиксируем его как текущий слушающий адрес.
+    host, port = _resolve_bind(conf, host, port)
+    advertised_base = _advertise_base(host, port)
+
+    if conf is not None and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
         try:
-            conf.hub_url = f"http://{host}:{port}"
-            save_config(conf)
+            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
+                conf.hub_url = advertised_base
+                save_config(conf)
         except Exception:
             pass
 
     if token:
         os.environ["ADAOS_TOKEN"] = token
-    # Advertise this node's base URL for subnet register/heartbeat
     try:
-        os.environ["ADAOS_SELF_BASE_URL"] = f"http://{host}:{port}"
+        os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
     except Exception:
         pass
-    # �窠 �室� FastAPI
+
     uvicorn.run(
         "adaos.apps.api.server:app",
         host=host,
-        port=port,
+        port=int(port),
         reload=reload,
         access_log=False,
     )
@@ -61,4 +88,3 @@ def serve(
 
 if __name__ == "__main__":
     app()
-

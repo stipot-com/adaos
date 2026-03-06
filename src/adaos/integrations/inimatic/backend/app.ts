@@ -1407,16 +1407,24 @@ app.post('/io/tg/send', async (req, res) => {
 			}
 		}
 
+		function displaySubnetAlias(aliasValue: unknown, hubIdValue: unknown): string | undefined {
+			const aliasText = String(aliasValue || '').trim()
+			const hubText = String(hubIdValue || '').trim()
+			if (aliasText && !/^hub(?:-\d+)?$/i.test(aliasText)) return aliasText
+			return hubText || aliasText || undefined
+		}
+
 		// Resolve human-friendly alias for prefixing in Telegram outbox
 		let alias: string | undefined
 		try {
 			const { listBindings } = await import('./db/tg.repo.js')
 			const binds = await listBindings(Number(chat_id))
-			alias = (binds || []).find(
-				(b) => String(b.hub_id) === String(hub_id)
-			)?.alias as any
+			alias = displaySubnetAlias(
+				(binds || []).find((b) => String(b.hub_id) === String(hub_id))?.alias,
+				hub_id,
+			)
 		} catch {
-			/* optional */
+			alias = displaySubnetAlias(undefined, hub_id)
 		}
 
 		if (!ioBus)

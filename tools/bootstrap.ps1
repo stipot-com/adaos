@@ -116,9 +116,14 @@ Write-Host "Installing Python deps (editable)..."
 
 # Best-effort: avoid Windows file-lock issues when pip tries to update console-script wrappers (adaos.exe).
 try {
-    $running = @(Get-Process adaos -ErrorAction SilentlyContinue)
+    $running = @()
+    $running += @(Get-Process adaos -ErrorAction SilentlyContinue)
+    $running += @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        (($_.Name -match '^python(?:w)?\.exe$') -or ($_.Name -match '^py(?:thon)?(?:w)?\.exe$')) -and
+        ($_.CommandLine -match '(?:^|[ "\''])-m[ "\'']+adaos(?:[ "\'']|$)')
+    })
     if ($running.Count -gt 0) {
-        Write-Warning "Found running 'adaos' process(es). Close/stop them before reinstalling dependencies to avoid WinError 32 (locked adaos.exe)."
+        Write-Warning "Found running AdaOS process(es). Close/stop them before reinstalling dependencies to avoid WinError 32 (locked adaos.exe). Prefer running API via .\\.venv\\Scripts\\python.exe -m adaos ..."
     }
 }
 catch { }

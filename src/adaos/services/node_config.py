@@ -20,6 +20,21 @@ def _config_path(ctx: AgentContext | None = None) -> Path:
     return p
 
 
+def _sync_ctx_config(conf: "NodeConfig", ctx: AgentContext | None = None) -> None:
+    target_ctx = ctx
+    if target_ctx is None:
+        try:
+            target_ctx = get_ctx()
+        except Exception:
+            target_ctx = None
+    if target_ctx is None:
+        return
+    try:
+        object.__setattr__(target_ctx, "config", conf)
+    except Exception:
+        pass
+
+
 class RootOwnerProfile(TypedDict):
     owner_id: str
     subject: str | None
@@ -400,6 +415,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     if not path.exists():
         conf = _default_conf()
         save_node(conf, ctx=ctx)
+        _sync_ctx_config(conf, ctx)
         return conf
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
@@ -439,6 +455,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     conf.sync_sections()
     if changed:
         save_node(conf, ctx=ctx)
+    _sync_ctx_config(conf, ctx)
     return conf
 
 
@@ -471,6 +488,7 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
         yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+    _sync_ctx_config(conf, ctx)
 
 
 def ensure_hub(conf: NodeConfig) -> None:

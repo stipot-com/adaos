@@ -36,6 +36,7 @@ from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.services.subnet_alias import display_subnet_alias
 from adaos.domain import Event as DomainEvent
 
 init_ctx()
@@ -190,7 +191,10 @@ async def lifespan(app: FastAPI):
                     node_yaml = _load_node()
                 except Exception:
                     node_yaml = {}
-                alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
+                alias = display_subnet_alias(
+                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    conf.subnet_id,
+                )
                 try:
                     prefixed_text = f"[{alias}]: {text}" if alias else text
                     send_url = f"{api_base.rstrip('/')}/io/tg/send"
@@ -234,6 +238,10 @@ async def lifespan(app: FastAPI):
             async def _staler():
                 directory = get_directory()
                 while True:
+                    try:
+                        directory.on_heartbeat(conf.node_id, get_local_capacity())
+                    except Exception:
+                        pass
                     directory.mark_stale_if_expired(45.0)
                     await _asyncio.sleep(5.0)
 
@@ -293,7 +301,10 @@ async def lifespan(app: FastAPI):
                     node_yaml = _load_node()
                 except Exception:
                     node_yaml = {}
-                alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
+                alias = display_subnet_alias(
+                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    conf.subnet_id,
+                )
                 prefixed_text = f"[{alias}]: {text}" if alias else text
                 # Try routed notify first if router is running.
                 routed = False

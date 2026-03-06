@@ -37,6 +37,69 @@ const ROOT_BASE = (() => {
 		: 'http://127.0.0.1:3030'
 })()
 
+function isLoopbackHost(host: string): boolean {
+	const normalized = String(host || '').trim().toLowerCase()
+	return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
+function isLoopbackUrl(url: string): boolean {
+	try {
+		return isLoopbackHost(new URL(url).hostname)
+	} catch {
+		return false
+	}
+}
+
+function allowLoopbackHub(): boolean {
+	try {
+		const url = new URL(window.location.href)
+		const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+		if (q === '0' || q === 'false') return false
+		if (q === '1' || q === 'true') return true
+	} catch {}
+	try {
+		const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+		if (v === '0') return false
+		if (v === '1') return true
+	} catch {}
+	try {
+		return isLoopbackHost(String(window.location.hostname || ''))
+	} catch {
+		return false
+	}
+}
+
+function allowReservedLocalHub(): boolean {
+	try {
+		const url = new URL(window.location.href)
+		const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+		if (q === '0' || q === 'false') return false
+		if (q === '1' || q === 'true') return true
+	} catch {}
+	try {
+		const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+		if (v === '0') return false
+		if (v === '1') return true
+	} catch {}
+	return true
+}
+
+function isReservedLocalHubUrl(url: string): boolean {
+	try {
+		const parsed = new URL(url)
+		return (
+			isLoopbackHost(parsed.hostname) &&
+			(parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === '8777'
+		)
+	} catch {
+		return false
+	}
+}
+
+function defaultHubBaseUrl(): string {
+	return allowReservedLocalHub() ? 'http://127.0.0.1:8777' : ROOT_BASE
+}
+
 function rootAbs(path: string) {
 	const rel = path.startsWith('/') ? path : `/${path}`
 	return `${ROOT_BASE}${rel}`
@@ -68,7 +131,15 @@ export class AdaosClient {
 	) {
 		const lsBase = (() => {
 			try {
-				return localStorage.getItem('adaos_hub_base')
+				const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
+				if (!persisted) return null
+				if (
+					isLoopbackUrl(persisted) &&
+					!allowLoopbackHub() &&
+					!(allowReservedLocalHub() && isReservedLocalHubUrl(persisted))
+				)
+					return null
+				return persisted
 			} catch {
 				return null
 			}
@@ -85,7 +156,7 @@ export class AdaosClient {
 			baseUrl:
 				(window as any).__ADAOS_BASE__ ??
 				(lsBase && lsBase.trim() ? lsBase.trim() : null) ??
-				'http://127.0.0.1:8777',
+				defaultHubBaseUrl(),
 			token: (window as any).__ADAOS_TOKEN__ ?? lsToken ?? null,
 			authKind: 'adaos-token',
 		}

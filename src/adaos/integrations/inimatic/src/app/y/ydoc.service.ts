@@ -211,9 +211,23 @@ export class YDocService {
           return false
         }
       }
+      const allowReservedLocalHub = (() => {
+        try {
+          const url = new URL(window.location.href)
+          const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+          if (q === '0' || q === 'false') return false
+          if (q === '1' || q === 'true') return true
+        } catch {}
+        try {
+          const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+          if (v === '0') return false
+          if (v === '1') return true
+        } catch {}
+        return true
+      })()
       const allowLoopback = (() => {
-        // Default: try local hub first (even when the app is opened from a remote origin).
-        // Opt-out:
+        // Arbitrary loopback ports are only tried on loopback origins
+        // or when explicitly enabled.
         // - URL: ?try_local_hub=0
         // - localStorage: adaos_try_local_hub=0
         try {
@@ -229,23 +243,31 @@ export class YDocService {
         } catch {}
         try {
           const host = String(window.location.hostname || '')
-          if (isLoopbackHost(host)) return true
+          return isLoopbackHost(host)
         } catch {}
-        return true
+        return false
       })()
 
       const candidates: string[] = []
+      if (allowReservedLocalHub) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
       if (allowLoopback)
         candidates.push(
-          'http://127.0.0.1:8777',
-          'http://localhost:8777',
           'http://127.0.0.1:8778',
           'http://localhost:8778'
         )
       try {
         const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
         if (persisted) {
-          if (!isLoopbackUrl(persisted) || allowLoopback) candidates.push(persisted)
+          const isReservedLocal =
+            (() => {
+              try {
+                const parsed = new URL(persisted)
+                return isLoopbackHost(parsed.hostname) && (parsed.port || '80') === '8777'
+              } catch {
+                return false
+              }
+            })()
+          if (!isLoopbackUrl(persisted) || allowLoopback || (allowReservedLocalHub && isReservedLocal)) candidates.push(persisted)
         }
       } catch {}
       if (!candidates.length) return false
@@ -306,7 +328,8 @@ export class YDocService {
       return false
     }
 
-    // Prefer local hub (http://127.0.0.1:8777) by default; disable with ?try_local_hub=0.
+    // `127.0.0.1:8777` is a reserved transparent local-hub entrypoint for app.inimatic.com.
+    // Other loopback ports remain opt-in / loopback-origin only.
     await tryLocalHub()
 
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),

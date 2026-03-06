@@ -1,12 +1,12 @@
 # Member node onboarding (phase 1)
 
-Goal: add a *member* node to an AdaOS hub using a short one-time join-code (no long-lived tokens in CLI args), then start `adaos api serve` via OS autostart/service when possible.
+Goal: add a *member* node to an AdaOS hub using a short one-time join-code (no long-lived tokens in CLI args), then start `python -m adaos api serve` via OS autostart/service when possible.
 
 ## Prereqs
 
 - Python 3.11
 - `adaos` installed (or run via repo bootstraps)
-- Hub node is running `adaos api serve` and has role `hub`
+- Hub node is running `python -m adaos api serve` (or bootstrap-installed autostart) and has role `hub`
 
 ## 1) On the hub: create a join-code (Root session)
 
@@ -120,4 +120,10 @@ If `adaos` console-script wrapper is broken (e.g. `ModuleNotFoundError: No modul
 ```powershell
 .\.venv\Scripts\python.exe -m adaos --help
 .\tools\adaos.ps1 hub join-code create
+```
+
+For the hub API on Windows, prefer:
+
+```powershell
+.\.venv\Scripts\python.exe -m adaos api serve --host 127.0.0.1 --port 8777
 ```

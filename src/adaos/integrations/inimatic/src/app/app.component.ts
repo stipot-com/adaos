@@ -217,7 +217,8 @@ export class AppComponent implements OnInit, OnDestroy {
 		// This also makes the browser show probe requests in Network, which helps debugging.
 		try {
 			const base = this.adaos.getBaseUrl().replace(/\/+$/, '')
-			if (base.startsWith('http://127.0.0.1:8777') || base.startsWith('http://localhost:8777')) {
+			const host = new URL(base).hostname.toLowerCase()
+			if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
 				return { url: `${base}/api/ping` }
 			}
 		} catch {}
@@ -413,7 +414,8 @@ export class AppComponent implements OnInit, OnDestroy {
 	private isLocalHubTrusted(): boolean {
 		try {
 			const base = this.adaos.getBaseUrl().replace(/\/+$/, '')
-			return base.startsWith('http://127.0.0.1:8777') || base.startsWith('http://localhost:8777')
+			const host = new URL(base).hostname.toLowerCase()
+			return host === '127.0.0.1' || host === 'localhost' || host === '::1'
 		} catch {
 			return false
 		}

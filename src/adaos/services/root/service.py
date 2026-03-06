@@ -42,6 +42,7 @@ from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteScenarioRegistry
 from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.workspace_registry import upsert_workspace_registry_entry
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -2281,6 +2282,16 @@ class RootDeveloperService:
                 shutil.rmtree(backup)
 
         updated_at = (manifest_meta or {}).get("updated_at") or _current_timestamp()
+        try:
+            upsert_workspace_registry_entry(
+                self.ctx.paths.workspace_dir(),
+                kind,
+                target,
+                version=new_version,
+                updated_at=updated_at,
+            )
+        except Exception as exc:
+            raise RootServiceError(f"Failed to update workspace registry metadata for {kind[:-1]} '{name}'") from exc
 
         return ArtifactPublishResult(
             kind=kind.rstrip("s"),

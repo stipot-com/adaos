@@ -20,6 +20,7 @@ from adaos.services.node_config import load_config
 from .rules_loader import load_rules, watch_rules
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
+from adaos.services.subnet_alias import display_subnet_alias
 from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
@@ -173,7 +174,10 @@ class RouterService:
                 except Exception:
                     node_yaml = {}
                 try:
-                    alias = ((node_yaml.get("nats") or {}).get("alias")) or os.getenv("DEFAULT_HUB") or conf.subnet_id
+                    alias = display_subnet_alias(
+                        ((node_yaml.get("nats") or {}).get("alias")) or os.getenv("DEFAULT_HUB"),
+                        conf.subnet_id,
+                    )
                 except Exception:
                     alias = conf.subnet_id
                 prefixed_text = f"[{alias}]: {text}" if alias else text

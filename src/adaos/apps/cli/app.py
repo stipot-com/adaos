@@ -9,6 +9,50 @@ from typing import Optional
 import typer
 from dotenv import load_dotenv, find_dotenv
 
+
+def _preferred_cli_python() -> str:
+    try:
+        for base in Path(__file__).resolve().parents:
+            candidates = [base / ".venv" / "Scripts" / "python.exe", base / ".venv" / "bin" / "python"]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+    except Exception:
+        pass
+
+    argv0 = str(sys.argv[0] or "").strip()
+    if argv0:
+        try:
+            resolved_argv0 = shutil.which(argv0) or argv0
+            script_dir = Path(resolved_argv0).resolve().parent
+            candidates = [script_dir / "python.exe", script_dir / "python"]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+        except Exception:
+            pass
+    return sys.executable
+
+
+def _should_reexec_windows_wrapper(argv0: str | None = None) -> bool:
+    if os.name != "nt":
+        return False
+    if os.getenv("ADAOS_CLI_REEXECED") == "1":
+        return False
+    entry = Path(argv0 or sys.argv[0] or "").name.lower()
+    return entry == "adaos.exe"
+
+
+def _maybe_reexec_windows_wrapper():
+    if not _should_reexec_windows_wrapper():
+        return
+    os.environ["ADAOS_CLI_REEXECED"] = "1"
+    python = _preferred_cli_python()
+    os.execl(python, python, "-m", "adaos", *sys.argv[1:])
+
+
+_maybe_reexec_windows_wrapper()
+
 load_dotenv(find_dotenv())
 
 from adaos.sdk.manage.environment import prepare_environment
