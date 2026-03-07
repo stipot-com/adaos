@@ -133,12 +133,9 @@ export class AdaosClient {
 			try {
 				const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
 				if (!persisted) return null
-				if (
-					isLoopbackUrl(persisted) &&
-					!allowLoopbackHub() &&
-					!(allowReservedLocalHub() && isReservedLocalHubUrl(persisted))
-				)
-					return null
+				// Persisted local hub base is an explicit user/browser choice.
+				// Keep honoring it even on a public origin so non-default local
+				// ports such as 8778 survive reloads.
 				return persisted
 			} catch {
 				return null

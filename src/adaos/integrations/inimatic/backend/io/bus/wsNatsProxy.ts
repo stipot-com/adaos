@@ -140,7 +140,11 @@ export function installWsNatsProxy(server: HttpServer) {
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
-	const traceHttpRoute = (process.env['WS_NATS_PROXY_TRACE_HTTP_ROUTE'] || '0') === '1'
+	const traceHttpRoute =
+		(process.env['WS_NATS_PROXY_TRACE_HTTP_ROUTE'] || '0') === '1' ||
+		(process.env['ROUTE_PROXY_TRACE'] || '0') === '1' ||
+		(process.env['ROUTE_PROXY_HTTP_TRACE'] || '0') === '1' ||
+		(process.env['ROUTE_PROXY_WS_TRACE'] || '0') === '1'
 	// Workaround for flaky upstream PONG delivery: some environments drop NATS PONG after a few client PINGs
 	// (breaking `flush()` and keepalives). When enabled, the proxy terminates client PINGs by immediately
 	// replying with PONG and not forwarding the PING upstream.

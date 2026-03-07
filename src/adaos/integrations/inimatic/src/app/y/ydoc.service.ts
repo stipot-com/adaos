@@ -249,7 +249,13 @@ export class YDocService {
       })()
 
       const candidates: string[] = []
-      if (allowReservedLocalHub) candidates.push('http://127.0.0.1:8777', 'http://localhost:8777')
+      if (allowReservedLocalHub)
+        candidates.push(
+          'http://127.0.0.1:8777',
+          'http://localhost:8777',
+          'http://127.0.0.1:8778',
+          'http://localhost:8778'
+        )
       if (allowLoopback)
         candidates.push(
           'http://127.0.0.1:8778',
@@ -267,7 +273,12 @@ export class YDocService {
                 return false
               }
             })()
-          if (!isLoopbackUrl(persisted) || allowLoopback || (allowReservedLocalHub && isReservedLocal)) candidates.push(persisted)
+          // Persisted hub base is an explicit browser choice. Keep honoring it
+          // even on a public origin so custom local ports (for example 8778)
+          // continue to work after reload.
+          if (!isLoopbackUrl(persisted) || allowLoopback || allowReservedLocalHub || isReservedLocal) {
+            candidates.push(persisted)
+          }
         }
       } catch {}
       if (!candidates.length) return false
@@ -328,8 +339,9 @@ export class YDocService {
       return false
     }
 
-    // `127.0.0.1:8777` is a reserved transparent local-hub entrypoint for app.inimatic.com.
-    // Other loopback ports remain opt-in / loopback-origin only.
+    // `127.0.0.1:8777` remains the primary transparent local-hub entrypoint for
+    // app.inimatic.com. Also probe `8778`, because local dev nodes commonly bind
+    // there and the browser can still reach that hub directly on the same device.
     await tryLocalHub()
 
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
