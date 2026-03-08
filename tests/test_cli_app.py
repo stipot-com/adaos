@@ -40,3 +40,39 @@ def test_preferred_cli_python_resolves_via_path(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_app.shutil, "which", lambda _: os.fspath(scripts / "adaos.exe"))
     monkeypatch.setattr(cli_app.sys, "executable", os.fspath(tmp_path / "fallback.exe"))
     assert cli_app._preferred_cli_python() == os.fspath(python_exe)
+
+
+def test_repo_venv_python_detected(monkeypatch, tmp_path):
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    src = tmp_path / "src" / "adaos" / "apps" / "cli"
+    src.mkdir(parents=True)
+    monkeypatch.setattr(cli_app, "__file__", os.fspath(src / "app.py"))
+    assert cli_app._repo_venv_python() == os.fspath(venv_python)
+
+
+def test_should_reexec_repo_venv_when_current_python_differs(monkeypatch, tmp_path):
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    src = tmp_path / "src" / "adaos" / "apps" / "cli"
+    src.mkdir(parents=True)
+    monkeypatch.setattr(cli_app, "__file__", os.fspath(src / "app.py"))
+    monkeypatch.setattr(cli_app.sys, "executable", os.fspath(tmp_path / "Python311" / "python.exe"))
+    monkeypatch.delenv("ADAOS_CLI_REEXECED", raising=False)
+    monkeypatch.delenv("ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC", raising=False)
+    assert cli_app._should_reexec_repo_venv()
+
+
+def test_should_not_reexec_repo_venv_when_already_using_it(monkeypatch, tmp_path):
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    src = tmp_path / "src" / "adaos" / "apps" / "cli"
+    src.mkdir(parents=True)
+    monkeypatch.setattr(cli_app, "__file__", os.fspath(src / "app.py"))
+    monkeypatch.setattr(cli_app.sys, "executable", os.fspath(venv_python))
+    monkeypatch.delenv("ADAOS_CLI_REEXECED", raising=False)
+    monkeypatch.delenv("ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC", raising=False)
+    assert not cli_app._should_reexec_repo_venv()

@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,22 +206,59 @@ class ServiceSkillSupervisor:
         self._next_health_check_at: dict[str, float] = {}
         self._doctor_cooldown_until: dict[str, float] = {}
         self._doctor_requests_cache: dict[str, list[dict[str, Any]]] = {}
+        self._discover_lock = threading.Lock()
+        self._discover_last_at = 0.0
+        self._manifest_state: dict[str, tuple[int, int, float]] = {}
 
     # ------------------------------------------------------------------ public
-    def ensure_discovered(self) -> None:
+    def ensure_discovered(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and (now - self._discover_last_at) < 5.0:
+            return
         skills_root_raw = self._ctx.paths.skills_dir()
         skills_root = Path(skills_root_raw() if callable(skills_root_raw) else skills_root_raw)
         if not skills_root.exists():
             return
 
-        for skill_dir in skills_root.iterdir():
-            if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
-                continue
-            manifest = _read_skill_manifest(skill_dir)
-            spec = _resolve_service_spec(skill_dir.name, skill_dir, manifest)
-            if not spec:
-                continue
-            self._specs[skill_dir.name] = spec
+        with self._discover_lock:
+            now = time.monotonic()
+            if not force and (now - self._discover_last_at) < 5.0:
+                return
+            next_specs: dict[str, ServiceSpec] = {}
+            next_state: dict[str, tuple[int, int, float]] = {}
+
+            for skill_dir in skills_root.iterdir():
+                if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
+                    continue
+                skill_yaml = skill_dir / "skill.yaml"
+                if skill_yaml.exists():
+                    try:
+                        st = skill_yaml.stat()
+                        state = (int(st.st_mtime_ns), int(st.st_size), float(st.st_ctime_ns))
+                    except Exception:
+                        state = (-1, -1, -1.0)
+                else:
+                    state = (0, 0, 0.0)
+
+                prev_state = self._manifest_state.get(skill_dir.name)
+                prev_spec = self._specs.get(skill_dir.name)
+                if not force and prev_spec is not None and prev_state == state:
+                    next_specs[skill_dir.name] = prev_spec
+                    next_state[skill_dir.name] = state
+                    continue
+
+                manifest = _read_skill_manifest(skill_dir)
+                spec = _resolve_service_spec(skill_dir.name, skill_dir, manifest)
+                if spec:
+                    next_specs[skill_dir.name] = spec
+                next_state[skill_dir.name] = state
+
+            self._specs = next_specs
+            self._manifest_state = next_state
+            self._discover_last_at = now
+
+    async def refresh_discovered(self, *, force: bool = False) -> None:
+        await asyncio.to_thread(self.ensure_discovered, force=force)
 
     def resolve_base_url(self, skill_name: str) -> str | None:
         spec = self._specs.get(skill_name)
@@ -286,7 +324,7 @@ class ServiceSkillSupervisor:
         return payload
 
     async def start(self, name: str) -> None:
-        self.ensure_discovered()
+        await self.refresh_discovered()
         spec = self._specs.get(name)
         if not spec:
             raise KeyError(name)
@@ -322,7 +360,7 @@ class ServiceSkillSupervisor:
         await self.start(name)
 
     async def start_all(self) -> None:
-        self.ensure_discovered()
+        await self.refresh_discovered(force=True)
         for name, spec in list(self._specs.items()):
             try:
                 await self.ensure_started(name, spec, force=False)
@@ -338,7 +376,7 @@ class ServiceSkillSupervisor:
         return list(self._load_issues(name))
 
     async def inject_issue(self, name: str, *, issue_type: str, message: str, details: dict[str, Any] | None = None) -> None:
-        self.ensure_discovered()
+        await self.refresh_discovered()
         spec = self._specs.get(name)
         if not spec:
             raise KeyError(name)
@@ -351,7 +389,7 @@ class ServiceSkillSupervisor:
         return list(self._load_doctor_requests(name))
 
     async def request_doctor(self, name: str, *, reason: str, issue: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        self.ensure_discovered()
+        await self.refresh_discovered()
         spec = self._specs.get(name)
         if not spec:
             raise KeyError(name)
@@ -360,7 +398,7 @@ class ServiceSkillSupervisor:
         return await self._emit_doctor_request(spec, reason=reason, issue=issue)
 
     async def self_heal(self, name: str, *, reason: str, issue: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        self.ensure_discovered()
+        await self.refresh_discovered()
         spec = self._specs.get(name)
         if not spec:
             raise KeyError(name)
@@ -698,7 +736,7 @@ print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
         url = spec.base_url + spec.health_path
         while time.time() < deadline:
             try:
-                code, body = _http_get(url, timeout_ms=spec.health_timeout_ms)
+                code, body = await asyncio.to_thread(_http_get, url, timeout_ms=spec.health_timeout_ms)
                 if 200 <= code < 300:
                     # Best-effort sanity: ensure it's JSON-ish.
                     try:
@@ -716,7 +754,7 @@ print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
             now = time.time()
 
             # Ensure all discovered services are up (unless in crash cooloff).
-            self.ensure_discovered()
+            await self.refresh_discovered()
             for name, spec in list(self._specs.items()):
                 proc = self._procs.get(name)
                 if proc and proc.poll() is None:
@@ -772,7 +810,7 @@ print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
         while True:
             await asyncio.sleep(1.0)
             now = time.time()
-            self.ensure_discovered()
+            await self.refresh_discovered()
 
             for name, spec in list(self._specs.items()):
                 if not spec.self_managed_enabled:
@@ -789,7 +827,9 @@ print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
 
                 ok = False
                 try:
-                    status_code, _ = _http_get(spec.base_url + spec.health_path, timeout_ms=spec.health_timeout_ms)
+                    status_code, _ = await asyncio.to_thread(
+                        _http_get, spec.base_url + spec.health_path, timeout_ms=spec.health_timeout_ms
+                    )
                     ok = 200 <= status_code < 300
                 except Exception:
                     ok = False

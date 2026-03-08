@@ -75,6 +75,33 @@ class LocalEventBus(EventBus):
     def __init__(self) -> None:
         self._subs: DefaultDict[str, List[Handler]] = defaultdict(list)
         self._lock = RLock()
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+
+    def _track_task(self, task: asyncio.Task[Any]) -> None:
+        with self._lock:
+            self._pending_tasks.add(task)
+
+        def _cleanup(done: asyncio.Task[Any]) -> None:
+            with self._lock:
+                self._pending_tasks.discard(done)
+
+        task.add_done_callback(_cleanup)
+
+    async def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        """
+        Wait until all async handlers spawned by ``publish()`` finish.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                pending = [task for task in self._pending_tasks if not task.done()]
+            if not pending:
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.wait(pending, timeout=min(0.1, remaining), return_when=asyncio.FIRST_COMPLETED)
 
     def subscribe(self, type_prefix: str, handler: Handler) -> None:
         with self._lock:
@@ -119,7 +146,8 @@ class LocalEventBus(EventBus):
                         # Если нет текущего цикла, fallback на asyncio.run (CLI/скрипты).
                         asyncio.run(res)
                     else:
-                        loop.create_task(_run_coro_with_timing(res, h, event))
+                        task = loop.create_task(_run_coro_with_timing(res, h, event))
+                        self._track_task(task)
                 else:
                     duration = time.perf_counter() - started
                     if duration >= 0.05:

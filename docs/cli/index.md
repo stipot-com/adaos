@@ -33,6 +33,9 @@ pip install -e ".[dev]"
 # запуск API
 adaos api serve --host 127.0.0.1 --port 8777
 
+# корректная остановка API по hub_url из node.yaml
+adaos api stop
+
 # создание нового навыка
 adaos skills scaffold my-skill
 

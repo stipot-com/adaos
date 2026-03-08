@@ -191,6 +191,33 @@ class BootstrapService:
         if self._booted:
             return
         self._app = app
+        # Unified deep-trace switch for WS/NATS/route debugging.
+        try:
+            if os.getenv("HUB_TRACE", "0") == "1":
+                for k in (
+                    "HUB_NATS_TRACE",
+                    "HUB_NATS_VERBOSE",
+                    "HUB_NATS_WS_TRACE",
+                    "HUB_NATS_WIRETAP",
+                    "HUB_NATS_WS_PATCH_AIOHTTP",
+                    "HUB_ROUTE_TRACE",
+                    "HUB_ROUTE_FRAME_VERBOSE",
+                    "HUB_ROUTE_TX_VERBOSE",
+                    "HUB_ROUTE_DIAG",
+                    "HUB_WS_TRACE",
+                    "HUB_ROOT_LOG_SNAPSHOT",
+                    "HUB_ROOT_LOG_SNAPSHOT_EXTRACT_PRINT",
+                ):
+                    os.environ.setdefault(k, "1")
+                os.environ.setdefault("HUB_NATS_WIRETAP_MAX_BYTES", "200")
+                os.environ.setdefault("HUB_ROOT_LOG_SNAPSHOT_LINES", "2000")
+                os.environ.setdefault("ADAOS_LOOP_LAG_MONITOR", "1")
+                try:
+                    print("[hub-io] HUB_TRACE=1 -> enabling deep WS/NATS/route tracing")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         conf = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
         self._prepare_environment()
         # local adapter over LocalEventBus
@@ -626,13 +653,37 @@ class BootstrapService:
                 # Correlate hub-side NATS WS sessions with root-side ws-nats-proxy logs + optionally snapshot root logs.
                 ws_connect_tag: str | None = None
                 last_root_snapshot_at: float | None = None
+                last_ws_transport: str | None = None
 
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
                     nonlocal nats_last_ok_at
                     nonlocal nats_last_server
+                    nonlocal last_ws_transport
                     backoff = 1.0
                     trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
+                    if trace or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                        try:
+                            import asyncio as _asyncio
+
+                            policy = _asyncio.get_event_loop_policy()
+                            try:
+                                loop = _asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = None
+                            _rl_log(
+                                "loop.info",
+                                f"[hub-io] asyncio loop policy={type(policy).__name__} loop={type(loop).__name__ if loop else None}",
+                                every_s=3600.0,
+                            )
+                            if loop is not None and os.name == "nt" and "Proactor" in type(loop).__name__:
+                                _rl_log(
+                                    "loop.warn",
+                                    "[hub-io] Windows Proactor event loop detected; WS may be flaky. Set ADAOS_WIN_SELECTOR_LOOP=1 to force selector.",
+                                    every_s=3600.0,
+                                )
+                        except Exception:
+                            pass
                     raw_keepalive_task: asyncio.Task | None = None
                     # Best-effort outbox for telegram replies when NATS is flapping.
                     try:
@@ -645,6 +696,7 @@ class BootstrapService:
                         from adaos.services.nats_ws_transport import install_nats_ws_transport_patch
 
                         ws_transport = install_nats_ws_transport_patch(verbose=False)
+                        last_ws_transport = ws_transport
                         if (os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace) and ws_transport:
                             _rl_log(
                                 "nats.ws_transport",
@@ -923,6 +975,143 @@ class BootstrapService:
                                         parts.append(f"{k}={vv}")
                                 return " ".join(parts)
 
+                            def _log_nats_ws_diag(
+                                nc_for_diag: Any,
+                                *,
+                                server: Any | None = None,
+                                rate_key: str = "nats.ws_diag",
+                                every_s: float = 1.0,
+                                source: str | None = None,
+                                task_name: str | None = None,
+                                err: Exception | None = None,
+                            ) -> tuple[Any, Any, Any, Any]:
+                                ws_closed, ws_close_code, ws_close_reason, ws_exc = _ws_state(nc_for_diag)
+                                try:
+                                    tr = getattr(nc_for_diag, "_transport", None)
+                                    ws = getattr(tr, "_ws", None) if tr is not None else None
+                                    last_rx_at = getattr(tr, "_adaos_last_rx_at", None)
+                                    last_rx_ago_s = None
+                                    try:
+                                        if isinstance(last_rx_at, (int, float)):
+                                            last_rx_ago_s = round(time.monotonic() - float(last_rx_at), 3)
+                                    except Exception:
+                                        last_rx_ago_s = None
+                                    last_tx_ago_s = None
+                                    try:
+                                        last_tx_at = getattr(tr, "_adaos_last_tx_at", None)
+                                        if isinstance(last_tx_at, (int, float)):
+                                            last_tx_ago_s = round(time.monotonic() - float(last_tx_at), 3)
+                                    except Exception:
+                                        last_tx_ago_s = None
+                                    tx_connect_ago_s = None
+                                    try:
+                                        tx_connect_at = getattr(tr, "_adaos_tx_connect_at", None) if tr is not None else None
+                                        if isinstance(tx_connect_at, (int, float)):
+                                            tx_connect_ago_s = round(time.monotonic() - float(tx_connect_at), 3)
+                                    except Exception:
+                                        tx_connect_ago_s = None
+                                    rx_info_ago_s = None
+                                    try:
+                                        rx_info_at = getattr(tr, "_adaos_rx_info_at", None) if tr is not None else None
+                                        if isinstance(rx_info_at, (int, float)):
+                                            rx_info_ago_s = round(time.monotonic() - float(rx_info_at), 3)
+                                    except Exception:
+                                        rx_info_ago_s = None
+                                    max_payload = None
+                                    try:
+                                        max_payload = getattr(tr, "_adaos_nats_max_payload", None) if tr is not None else None
+                                    except Exception:
+                                        max_payload = None
+                                    pending_data_size = getattr(nc_for_diag, "_pending_data_size", None)
+                                    pings_outstanding = getattr(nc_for_diag, "_pings_outstanding", None)
+                                    pongs_q = None
+                                    try:
+                                        pongs = getattr(nc_for_diag, "_pongs", None)
+                                        if isinstance(pongs, list):
+                                            pongs_q = len(pongs)
+                                    except Exception:
+                                        pongs_q = None
+                                    tr_pending_q = None
+                                    try:
+                                        q = getattr(tr, "_pending", None) if tr is not None else None
+                                        if q is not None:
+                                            tr_pending_q = q.qsize()
+                                    except Exception:
+                                        tr_pending_q = None
+                                    ws_tag = None
+                                    try:
+                                        ws_tag = getattr(tr, "_adaos_ws_tag", None) if tr is not None else None
+                                    except Exception:
+                                        ws_tag = None
+                                    if not ws_tag:
+                                        try:
+                                            ws_tag = ws_connect_tag if isinstance(ws_connect_tag, str) else None
+                                        except Exception:
+                                            ws_tag = None
+                                    ws_hb = None
+                                    try:
+                                        ws_hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr is not None else None
+                                    except Exception:
+                                        ws_hb = None
+                                    ws_url = None
+                                    try:
+                                        ws_url = getattr(tr, "_adaos_ws_url", None) if tr is not None else None
+                                    except Exception:
+                                        ws_url = None
+                                    ws_proto = None
+                                    try:
+                                        ws_proto = getattr(tr, "_adaos_ws_proto", None) if tr is not None else None
+                                    except Exception:
+                                        ws_proto = None
+                                    if not ws_proto:
+                                        try:
+                                            ws_proto = getattr(ws, "protocol", None) if ws is not None else None
+                                        except Exception:
+                                            ws_proto = None
+                                    if not ws_proto:
+                                        try:
+                                            ws_proto = getattr(ws, "_response", None).headers.get("Sec-WebSocket-Protocol") if ws is not None and getattr(ws, "_response", None) is not None else None
+                                        except Exception:
+                                            ws_proto = None
+                                    last_tx_kind = None
+                                    last_tx_subj = None
+                                    last_tx_len = None
+                                    try:
+                                        last_tx_kind = getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None
+                                        last_tx_subj = getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None
+                                        last_tx_len = getattr(tr, "_adaos_last_tx_len", None) if tr is not None else None
+                                    except Exception:
+                                        last_tx_kind = last_tx_kind or None
+                                        last_tx_subj = last_tx_subj or None
+                                        last_tx_len = last_tx_len or None
+                                    last_recv_err = None
+                                    last_recv_err_ago_s = None
+                                    try:
+                                        last_recv_err = getattr(tr, "_adaos_last_recv_error", None) if tr is not None else None
+                                        last_recv_err_at = getattr(tr, "_adaos_last_recv_error_at", None) if tr is not None else None
+                                        if isinstance(last_recv_err_at, (int, float)):
+                                            last_recv_err_ago_s = round(time.monotonic() - float(last_recv_err_at), 3)
+                                    except Exception:
+                                        last_recv_err = last_recv_err or None
+                                        last_recv_err_ago_s = last_recv_err_ago_s or None
+                                    server0 = server if server is not None else nats_last_server
+                                    extra_parts: list[str] = []
+                                    if source:
+                                        extra_parts.append(f"source={source}")
+                                    if task_name:
+                                        extra_parts.append(f"task={task_name}")
+                                    if err is not None:
+                                        extra_parts.append(f"err={type(err).__name__}: {err}")
+                                    extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
+                                    _rl_log(
+                                        rate_key,
+                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
+                                        every_s=every_s,
+                                    )
+                                except Exception:
+                                    pass
+                                return ws_closed, ws_close_code, ws_close_reason, ws_exc
+
                             async def _on_error_cb(e: Exception, *, nc_for_diag: Any | None = None) -> None:
                                 # Best-effort; keep quiet unless explicitly verbose or useful
                                 is_eof = type(e).__name__ == "UnexpectedEOF" or "unexpected eof" in str(e).lower()
@@ -931,112 +1120,14 @@ class BootstrapService:
                                 # Emit extra transport diagnostics to correlate client-side errors with root-side logs.
                                 if nc_for_diag is not None and (is_eof or os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_TRACE", "0") == "1"):
                                     try:
-                                        ws_closed, ws_close_code, ws_close_reason, ws_exc = _ws_state(nc_for_diag)
-                                        try:
-                                            tr = getattr(nc_for_diag, "_transport", None)
-                                            ws = getattr(tr, "_ws", None) if tr is not None else None
-                                            last_rx_at = getattr(tr, "_adaos_last_rx_at", None)
-                                            last_rx_ago_s = None
-                                            try:
-                                                if isinstance(last_rx_at, (int, float)):
-                                                    last_rx_ago_s = round(time.monotonic() - float(last_rx_at), 3)
-                                            except Exception:
-                                                last_rx_ago_s = None
-                                            last_tx_ago_s = None
-                                            try:
-                                                last_tx_at = getattr(tr, "_adaos_last_tx_at", None)
-                                                if isinstance(last_tx_at, (int, float)):
-                                                    last_tx_ago_s = round(time.monotonic() - float(last_tx_at), 3)
-                                            except Exception:
-                                                last_tx_ago_s = None
-                                            tx_connect_ago_s = None
-                                            try:
-                                                tx_connect_at = getattr(tr, "_adaos_tx_connect_at", None) if tr is not None else None
-                                                if isinstance(tx_connect_at, (int, float)):
-                                                    tx_connect_ago_s = round(time.monotonic() - float(tx_connect_at), 3)
-                                            except Exception:
-                                                tx_connect_ago_s = None
-                                            rx_info_ago_s = None
-                                            try:
-                                                rx_info_at = getattr(tr, "_adaos_rx_info_at", None) if tr is not None else None
-                                                if isinstance(rx_info_at, (int, float)):
-                                                    rx_info_ago_s = round(time.monotonic() - float(rx_info_at), 3)
-                                            except Exception:
-                                                rx_info_ago_s = None
-                                            max_payload = None
-                                            try:
-                                                max_payload = getattr(tr, "_adaos_nats_max_payload", None) if tr is not None else None
-                                            except Exception:
-                                                max_payload = None
-                                            pending_data_size = getattr(nc_for_diag, "_pending_data_size", None)
-                                            pings_outstanding = getattr(nc_for_diag, "_pings_outstanding", None)
-                                            pongs_q = None
-                                            try:
-                                                pongs = getattr(nc_for_diag, "_pongs", None)
-                                                if isinstance(pongs, list):
-                                                    pongs_q = len(pongs)
-                                            except Exception:
-                                                pongs_q = None
-                                            tr_pending_q = None
-                                            try:
-                                                q = getattr(tr, "_pending", None) if tr is not None else None
-                                                if q is not None:
-                                                    tr_pending_q = q.qsize()
-                                            except Exception:
-                                                tr_pending_q = None
-                                            ws_tag = None
-                                            try:
-                                                ws_tag = getattr(tr, "_adaos_ws_tag", None) if tr is not None else None
-                                            except Exception:
-                                                ws_tag = None
-                                            if not ws_tag:
-                                                try:
-                                                    ws_tag = ws_connect_tag if isinstance(ws_connect_tag, str) else None
-                                                except Exception:
-                                                    ws_tag = None
-                                            ws_hb = None
-                                            try:
-                                                ws_hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr is not None else None
-                                            except Exception:
-                                                ws_hb = None
-                                            ws_url = None
-                                            try:
-                                                ws_url = getattr(tr, "_adaos_ws_url", None) if tr is not None else None
-                                            except Exception:
-                                                ws_url = None
-                                            ws_proto = None
-                                            try:
-                                                ws_proto = getattr(tr, "_adaos_ws_proto", None) if tr is not None else None
-                                            except Exception:
-                                                ws_proto = None
-                                            if not ws_proto:
-                                                try:
-                                                    ws_proto = getattr(ws, "protocol", None) if ws is not None else None
-                                                except Exception:
-                                                    ws_proto = None
-                                            if not ws_proto:
-                                                try:
-                                                    ws_proto = getattr(ws, "_response", None).headers.get("Sec-WebSocket-Protocol") if ws is not None and getattr(ws, "_response", None) is not None else None
-                                                except Exception:
-                                                    ws_proto = None
-                                            last_tx_kind = None
-                                            last_tx_subj = None
-                                            last_tx_len = None
-                                            try:
-                                                last_tx_kind = getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None
-                                                last_tx_subj = getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None
-                                                last_tx_len = getattr(tr, "_adaos_last_tx_len", None) if tr is not None else None
-                                            except Exception:
-                                                last_tx_kind = last_tx_kind or None
-                                                last_tx_subj = last_tx_subj or None
-                                                last_tx_len = last_tx_len or None
-                                            _rl_log(
-                                                "nats.ws_diag",
-                                                f"[hub-io] nats ws diag: tag={ws_tag} server={nats_last_server} ws_hb_s={ws_hb} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len}",
-                                                every_s=1.0,
-                                            )
-                                        except Exception:
-                                            pass
+                                        ws_closed, ws_close_code, ws_close_reason, ws_exc = _log_nats_ws_diag(
+                                            nc_for_diag,
+                                            server=nats_last_server,
+                                            rate_key="nats.ws_diag",
+                                            every_s=1.0,
+                                            source="error_cb",
+                                            err=e,
+                                        )
                                         _rl_log(
                                             "nats.ws_eof",
                                             f"[hub-io] nats ws eof: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
@@ -1054,9 +1145,18 @@ class BootstrapService:
                                             "HUB_NATS_RX_TIMEOUT_S",
                                             "HUB_NATS_WS_IMPL",
                                             "HUB_NATS_WS_MAX_MSG_SIZE",
+                                            "HUB_NATS_WS_TRACE",
+                                            "HUB_NATS_WS_PATCH_AIOHTTP",
+                                            "HUB_NATS_WIRETAP",
+                                            "HUB_NATS_WIRETAP_MAX_BYTES",
+                                            "HUB_NATS_TCP_KEEPALIVE",
+                                            "HUB_NATS_TCP_KEEPALIVE_S",
+                                            "HUB_NATS_TCP_KEEPALIVE_INTERVAL_S",
+                                            "HUB_NATS_TCP_KEEPALIVE_PROBES",
                                             "HUB_NATS_RAW_KEEPALIVE",
                                             "HUB_NATS_RAW_KEEPALIVE_S",
                                             "HUB_NATS_CONNECT_TAG_QUERY",
+                                            "HUB_TRACE",
                                             "WS_NATS_PROXY_WS_PING",
                                             "WS_NATS_PROXY_TERMINATE_CLIENT_PING",
                                             "WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE",
@@ -1065,6 +1165,55 @@ class BootstrapService:
                                     )
                                     if _env:
                                         _rl_log("nats.env", f"[hub-io] nats env: {_env}", every_s=30.0)
+                                except Exception:
+                                    pass
+                                try:
+                                    if type(e).__name__ == "SlowConsumerError":
+                                        try:
+                                            sub_sc = getattr(e, "sub", None)
+                                            q_sc = getattr(sub_sc, "_pending_queue", None) if sub_sc is not None else None
+                                            qsize_sc = q_sc.qsize() if q_sc is not None and callable(getattr(q_sc, "qsize", None)) else None
+                                        except Exception:
+                                            qsize_sc = None
+                                        try:
+                                            pending_size_sc = getattr(sub_sc, "_pending_size", None) if sub_sc is not None else None
+                                        except Exception:
+                                            pending_size_sc = None
+                                        try:
+                                            subject_sc = getattr(e, "subject", None)
+                                        except Exception:
+                                            subject_sc = None
+                                        try:
+                                            sid_sc = getattr(e, "sid", None)
+                                        except Exception:
+                                            sid_sc = None
+                                        try:
+                                            self._log.warning(
+                                                "nats slow consumer hub_id=%s server=%s subject=%s sid=%s qsize=%s pending_size=%s",
+                                                hub_id,
+                                                nats_last_server,
+                                                subject_sc,
+                                                sid_sc,
+                                                qsize_sc,
+                                                pending_size_sc,
+                                            )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            _rl_log(
+                                                "nats.slow_consumer",
+                                                f"[hub-io] nats slow consumer subject={subject_sc} sid={sid_sc} qsize={qsize_sc} pending_size={pending_size_sc}",
+                                                every_s=1.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                    self._log.warning(
+                                        "nats error_cb hub_id=%s server=%s type=%s err=%s",
+                                        hub_id,
+                                        nats_last_server,
+                                        type(e).__name__,
+                                        str(e),
+                                    )
                                 except Exception:
                                     pass
                                 try:
@@ -1083,9 +1232,17 @@ class BootstrapService:
                                     pass
 
                             async def _on_disconnected() -> None:
+                                try:
+                                    self._log.warning("nats disconnected hub_id=%s server=%s", hub_id, nats_last_server)
+                                except Exception:
+                                    pass
                                 _emit_down("disconnected", None)
 
                             async def _on_reconnected() -> None:
+                                try:
+                                    self._log.info("nats reconnected hub_id=%s server=%s", hub_id, nats_last_server)
+                                except Exception:
+                                    pass
                                 # Suppress restored chatter in dev if silenced
                                 if os.getenv("SILENCE_NATS_EOF", "0") == "1":
                                     try:
@@ -1201,8 +1358,13 @@ class BootstrapService:
                                         timeout=7.0,
                                     )
                                     try:
+                                        tr = getattr(nc_local, "_transport", None)
+                                        if tr is not None:
+                                            try:
+                                                setattr(tr, "_adaos_nc", nc_local)
+                                            except Exception:
+                                                pass
                                         if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
-                                            tr = getattr(nc_local, "_transport", None)
                                             hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr else None
                                             if hb is not None:
                                                 _rl_log("nats.ws_hb", f"[hub-io] nats ws heartbeat: {hb!s}s", every_s=60.0)
@@ -1438,22 +1600,105 @@ class BootstrapService:
                             # "Task was destroyed but it is pending!" warnings on reconnect/shutdown.
                             subs: list[Any] = []
                             sub_workers: list[asyncio.Task] = []
+                            _route_dispatch_trace = (
+                                os.getenv("HUB_ROUTE_DISPATCH_TRACE", "0") == "1"
+                                or os.getenv("HUB_ROUTE_TRACE", "0") == "1"
+                                or os.getenv("HUB_TRACE", "0") == "1"
+                            )
+
+                            def _route_dispatch_log(msg0: str) -> None:
+                                if not _route_dispatch_trace:
+                                    return
+                                try:
+                                    print(msg0)
+                                except Exception:
+                                    pass
+
+                            def _sub_qsize(sub0: Any) -> int | None:
+                                try:
+                                    q0 = getattr(sub0, "_pending_queue", None)
+                                    if q0 is None:
+                                        return None
+                                    qsize = getattr(q0, "qsize", None)
+                                    if callable(qsize):
+                                        return int(qsize())
+                                except Exception:
+                                    return None
+                                return None
 
                             async def _sub(subject: str, *, cb: Any):
-                                sub = await nc.subscribe(subject, cb=cb)
-                                subs.append(sub)
-                                return sub
-
-                            async def _sub_worker(subject: str, *, cb: Any):
                                 sub = await nc.subscribe(subject)
+                                # `nats-py` queues SUB locally and may not push it to the server until
+                                # some later flush / publish. That breaks Root->Hub routing because
+                                # `route.to_hub.*` must be active before the first proxied request arrives.
+                                fp = getattr(nc, "_flush_pending", None)
+                                if callable(fp):
+                                    try:
+                                        await asyncio.wait_for(fp(force_flush=True), timeout=2.0)
+                                    except TypeError:
+                                        try:
+                                            await asyncio.wait_for(fp(True), timeout=2.0)
+                                        except TypeError:
+                                            await asyncio.wait_for(fp(), timeout=2.0)
+                                else:
+                                    await nc.flush(timeout=2.0)
                                 subs.append(sub)
 
                                 async def _runner() -> None:
                                     try:
                                         async for msg in sub.messages:
-                                            await cb(msg)
+                                            try:
+                                                msg_subject = ""
+                                                msg_bytes = None
+                                                started = None
+                                                if _route_dispatch_trace and (
+                                                    subject == "route.to_hub.*"
+                                                    or subject.startswith("route.to_hub.")
+                                                    or subject.startswith("route.to_browser.")
+                                                ):
+                                                    try:
+                                                        msg_subject = str(getattr(msg, "subject", "") or "")
+                                                    except Exception:
+                                                        msg_subject = ""
+                                                    try:
+                                                        raw0 = bytes(getattr(msg, "data", b"") or b"")
+                                                        msg_bytes = len(raw0)
+                                                    except Exception:
+                                                        msg_bytes = None
+                                                    started = time.monotonic()
+                                                    _route_dispatch_log(
+                                                        f"[hub-route:dispatch] start sub={subject} msg={msg_subject} qsize={_sub_qsize(sub)} bytes={msg_bytes}"
+                                                    )
+                                                await cb(msg)
+                                                if started is not None:
+                                                    took_ms = (time.monotonic() - started) * 1000.0
+                                                    _route_dispatch_log(
+                                                        f"[hub-route:dispatch] done sub={subject} msg={msg_subject} qsize={_sub_qsize(sub)} took_ms={took_ms:.1f}"
+                                                    )
+                                            except asyncio.CancelledError:
+                                                raise
+                                            except Exception as e:
+                                                try:
+                                                    self._log.warning(
+                                                        "nats subscription handler failed subject=%s type=%s err=%s",
+                                                        subject,
+                                                        type(e).__name__,
+                                                        e,
+                                                    )
+                                                except Exception:
+                                                    pass
                                     except asyncio.CancelledError:
                                         return
+                                    except Exception as e:
+                                        try:
+                                            self._log.warning(
+                                                "nats subscription worker stopped subject=%s type=%s err=%s",
+                                                subject,
+                                                type(e).__name__,
+                                                e,
+                                            )
+                                        except Exception:
+                                            pass
 
                                 task = asyncio.create_task(_runner(), name=f"adaos-nats-sub-{subject}")
                                 sub_workers.append(task)
@@ -1568,6 +1813,14 @@ class BootstrapService:
                                     f"[hub-io] nats connected ({connected_server or 'unknown'})",
                                     every_s=2.0,
                                 )
+                            try:
+                                self._log.info(
+                                    "nats bridge connected server=%s hub_id=%s",
+                                    connected_server or "unknown",
+                                    hub_id,
+                                )
+                            except Exception:
+                                pass
                             # First successful connect after failures
                             _emit_up()
                             nats_last_ok_at = time.monotonic()
@@ -1606,7 +1859,7 @@ class BootstrapService:
                                         except Exception:
                                             pass
 
-                                await _sub_worker(ctl_alias, cb=_ctl_alias_cb)
+                                await _sub(ctl_alias, cb=_ctl_alias_cb)
                                 if hub_nats_verbose or not hub_nats_quiet:
                                     print(f"[hub-io] NATS subscribe control {ctl_alias}")
                             except Exception:
@@ -1715,7 +1968,11 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                    await _sub_worker(subj, cb=cb)
+                    await _sub(subj, cb=cb)
+                    try:
+                        self._log.info("nats bridge subscribed subject=%s", subj)
+                    except Exception:
+                        pass
 
                     # Browser<->Hub routing over NATS (root proxy fallback).
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
@@ -1735,6 +1992,7 @@ class BootstrapService:
                         tunnel_tasks: dict[str, asyncio.Task] = {}
                         pending_chunks: dict[str, dict[str, Any]] = {}
                         pending_tunnel_events: dict[str, list[dict[str, Any]]] = {}
+                        pending_tunnel_meta: dict[str, dict[str, Any]] = {}
                         MAX_CHUNK_RAW = 300_000
                         MAX_PENDING_TUNNEL_EVENTS = 128
 
@@ -1742,6 +2000,29 @@ class BootstrapService:
                         _route_diag = _route_verbose or os.getenv("HUB_ROUTE_DIAG", "0") == "1"
                         # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
                         _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
+                        # Trace is an opt-in "everything we know" log for debugging WS routing breaks.
+                        _route_trace = os.getenv("HUB_ROUTE_TRACE", "0") == "1"
+                        _route_http_trace = (
+                            _route_trace
+                            or os.getenv("HUB_ROUTE_HTTP_TRACE", "0") == "1"
+                            or os.getenv("HUB_TRACE", "0") == "1"
+                        )
+                        # Frame logs are extremely noisy; keep them explicitly gated.
+                        _route_frame_verbose = (
+                            os.getenv("HUB_ROUTE_FRAME_VERBOSE", "0") == "1"
+                            or os.getenv("ROUTE_PROXY_FRAME_VERBOSE", "0") == "1"
+                        )
+                        try:
+                            _route_no_upstream_close_after_s = float(
+                                os.getenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S", "0") or "0"
+                            )
+                        except Exception:
+                            _route_no_upstream_close_after_s = 0.0
+
+                        try:
+                            route_run_id = uuid.uuid4().hex[:6]
+                        except Exception:
+                            route_run_id = "route"
                         # In WS-proxied NATS setups, route replies can sit in local buffers and root times out
                         # waiting for `route.to_browser.*`. Keep fast drain enabled by default.
                         _route_force_flush = os.getenv("HUB_ROUTE_FORCE_FLUSH", "1") == "1"
@@ -1796,6 +2077,129 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                        def _route_log(msg: str) -> None:
+                            if not (_route_trace or _route_verbose):
+                                return
+                            try:
+                                print(f"[hub-route:{route_run_id}] {msg}")
+                            except Exception:
+                                pass
+
+                        def _key_tag(key: str) -> str:
+                            try:
+                                if not isinstance(key, str):
+                                    return "?"
+                                return key[-8:] if len(key) > 12 else key
+                            except Exception:
+                                return "?"
+
+                        def _route_payload_summary(payload: dict[str, Any] | None) -> str:
+                            try:
+                                p0 = payload or {}
+                                t0 = str(p0.get("t") or "")
+                                if t0 == "http":
+                                    m0 = str(p0.get("method") or "GET").upper()
+                                    pth0 = str(p0.get("path") or "")
+                                    return f"t=http method={m0} path={pth0}"
+                                if t0 == "http_resp":
+                                    status0 = p0.get("status")
+                                    err0 = p0.get("err")
+                                    truncated0 = p0.get("truncated")
+                                    body0 = p0.get("body_b64")
+                                    body_len0 = len(body0) if isinstance(body0, str) else None
+                                    return f"t=http_resp status={status0} truncated={truncated0} body_b64_len={body_len0} err={err0}"
+                                if t0 == "open":
+                                    pth0 = str(p0.get("path") or "")
+                                    q0 = str(p0.get("query") or "")
+                                    return (
+                                        f"t=open path={pth0} query_len={len(q0)} "
+                                        f"token={_query_has_token(q0)} dev={_query_param(q0, 'dev')} ws={_query_param(q0, 'ws')}"
+                                    )
+                                if t0 in ("frame", "chunk"):
+                                    kind0 = p0.get("kind")
+                                    size0 = None
+                                    data0 = p0.get("data") or p0.get("data_b64")
+                                    try:
+                                        size0 = len(data0) if data0 is not None else None
+                                    except Exception:
+                                        size0 = None
+                                    if t0 == "chunk":
+                                        return (
+                                            f"t=chunk kind={kind0} idx={p0.get('idx')} total={p0.get('total')} size={size0}"
+                                        )
+                                    return f"t=frame kind={kind0} size={size0}"
+                                if t0 == "close":
+                                    return f"t=close err={p0.get('err')}"
+                                return f"t={t0}"
+                            except Exception:
+                                return "t=?"
+
+                        def _query_has_token(query: str) -> bool:
+                            if not isinstance(query, str) or not query:
+                                return False
+                            try:
+                                from urllib.parse import parse_qs
+
+                                raw = query[1:] if query.startswith("?") else query
+                                q = parse_qs(raw, keep_blank_values=True)
+                                return "token" in q
+                            except Exception:
+                                return "token=" in query
+
+                        def _query_param(query: str, key: str) -> str | None:
+                            if not isinstance(query, str) or not query or not key:
+                                return None
+                            try:
+                                from urllib.parse import parse_qs
+
+                                raw = query[1:] if query.startswith("?") else query
+                                q = parse_qs(raw, keep_blank_values=True)
+                                vals = q.get(key)
+                                if isinstance(vals, list) and vals:
+                                    v0 = str(vals[0]).strip()
+                                    return v0 or None
+                                if isinstance(vals, str):
+                                    v0 = str(vals).strip()
+                                    return v0 or None
+                                return None
+                            except Exception:
+                                return None
+
+                        def _mark_pending(key: str) -> None:
+                            try:
+                                st = pending_tunnel_meta.get(key)
+                                now = time.monotonic()
+                                if st is None:
+                                    pending_tunnel_meta[key] = {"first_at": now, "last_at": now, "count": 1}
+                                else:
+                                    st["last_at"] = now
+                                    st["count"] = int(st.get("count") or 0) + 1
+                            except Exception:
+                                pass
+
+                        async def _maybe_force_close_no_upstream(key: str) -> None:
+                            if _route_no_upstream_close_after_s <= 0:
+                                return
+                            try:
+                                st = pending_tunnel_meta.get(key)
+                                if not st:
+                                    return
+                                first_at = float(st.get("first_at") or 0.0)
+                                if first_at <= 0:
+                                    return
+                                age = time.monotonic() - first_at
+                                if age < _route_no_upstream_close_after_s:
+                                    return
+                                # Ask root to close this tunnel so it re-opens with an "open" handshake.
+                                await _route_reply(key, {"t": "close", "err": "no_upstream"})
+                                pending_tunnel_meta.pop(key, None)
+                                if _route_trace:
+                                    _route_log(
+                                        f"[hub-route] forced close key={_key_tag(key)} age_s={age:.2f} reason=no_upstream"
+                                    )
+                            except Exception:
+                                pass
+
                         def _route_nc_diag() -> str:
                             try:
                                 tr = getattr(nc, "_transport", None)
@@ -1833,6 +2237,16 @@ class BootstrapService:
                                 except Exception:
                                     last_rx_ago_s = last_rx_ago_s or None
                                     last_tx_ago_s = last_tx_ago_s or None
+                                last_recv_err = None
+                                last_recv_err_ago_s = None
+                                try:
+                                    last_recv_err = getattr(tr, "_adaos_last_recv_error", None) if tr is not None else None
+                                    last_recv_err_at = getattr(tr, "_adaos_last_recv_error_at", None) if tr is not None else None
+                                    if isinstance(last_recv_err_at, (int, float)):
+                                        last_recv_err_ago_s = round(time.monotonic() - float(last_recv_err_at), 3)
+                                except Exception:
+                                    last_recv_err = last_recv_err or None
+                                    last_recv_err_ago_s = last_recv_err_ago_s or None
 
                                 pending_data_size = getattr(nc, "_pending_data_size", None)
                                 pings_outstanding = getattr(nc, "_pings_outstanding", None)
@@ -1847,27 +2261,74 @@ class BootstrapService:
                                     f"ws_closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} "
                                     f"ws_exc={ws_exc} ws_proto={ws_proto} "
                                     f"last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} "
+                                    f"last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} "
+                                    f"last_recv_err_ago_s={last_recv_err_ago_s} "
                                     f"pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q}"
                                 )
                             except Exception:
                                 return ""
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
+                            reply_subject = f"route.to_browser.{key}"
+                            reply_started = time.monotonic()
+                            t0 = None
+                            try:
+                                t0 = (payload or {}).get("t")
+                            except Exception:
+                                t0 = None
+                            if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
+                                try:
+                                    _route_log(
+                                        f"[hub-route] reply.start key={_key_tag(key)} subj={reply_subject} {_route_payload_summary(payload)}"
+                                    )
+                                except Exception:
+                                    pass
                             try:
                                 try:
                                     await asyncio.wait_for(
                                         nc.publish(
-                                            f"route.to_browser.{key}",
+                                            reply_subject,
                                             _json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                         ),
                                         timeout=max(0.1, float(_route_send_timeout_s)),
                                     )
                                 except asyncio.TimeoutError:
                                     raise RuntimeError("publish timeout")
+                                if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
+                                    try:
+                                        took_ms = (time.monotonic() - reply_started) * 1000.0
+                                        _route_log(
+                                            f"[hub-route] reply.published key={_key_tag(key)} subj={reply_subject} took_ms={took_ms:.1f} {_route_payload_summary(payload)}"
+                                        )
+                                    except Exception:
+                                        pass
                                 # Ensure the reply is actually flushed quickly; otherwise Root may time out
                                 # waiting on `route.to_browser.<key>` (especially over websocket-proxied NATS).
                                 try:
                                     t = (payload or {}).get("t")
+                                    if _route_trace:
+                                        try:
+                                            if t in ("close", "http_resp") or (_route_frame_verbose and t in ("frame", "chunk")):
+                                                status = (payload or {}).get("status")
+                                                kind = (payload or {}).get("kind")
+                                                size = None
+                                                if t == "frame":
+                                                    data = (payload or {}).get("data") or (payload or {}).get("data_b64")
+                                                    try:
+                                                        size = len(data) if data is not None else None
+                                                    except Exception:
+                                                        size = None
+                                                if t == "chunk":
+                                                    data = (payload or {}).get("data") or (payload or {}).get("data_b64")
+                                                    try:
+                                                        size = len(data) if data is not None else None
+                                                    except Exception:
+                                                        size = None
+                                                _route_log(
+                                                    f"[hub-route] tx t={t} key={_key_tag(key)} status={status} kind={kind} size={size}"
+                                                )
+                                        except Exception:
+                                            pass
                                     if _route_force_flush and t in ("http_resp", "close"):
                                         # Fast-drain pending bytes without relying on NATS PING/PONG.
                                         # This avoids `flush()` (which can time out when PONGs are flaky behind WS proxies).
@@ -1920,13 +2381,16 @@ class BootstrapService:
                                                 print(f"[hub-route] tx {t} key={key}")
                                             except Exception:
                                                 pass
+                                        elif _route_http_trace and t in ("http_resp", "close"):
+                                            try:
+                                                _route_log(
+                                                    f"[hub-route] reply.flushed key={_key_tag(key)} subj={reply_subject} flush_ms={flush_took_s * 1000.0:.1f} {_route_payload_summary(payload)}"
+                                                )
+                                            except Exception:
+                                                pass
                                 except Exception:
                                     pass
                             except Exception as e:
-                                try:
-                                    t0 = (payload or {}).get("t")
-                                except Exception:
-                                    t0 = None
                                 # Do not silently drop probe replies: Root will time out and surface `hub_unreachable`.
                                 if t0 in ("http_resp", "close") or _route_verbose:
                                     try:
@@ -1934,6 +2398,13 @@ class BootstrapService:
                                             "hub-route.publish_fail",
                                             f"[hub-route] publish to_browser failed t={t0} key={key}: {type(e).__name__}: {e} {_route_nc_diag()}",
                                             every_s=1.0,
+                                        )
+                                    except Exception:
+                                        pass
+                                if _route_http_trace:
+                                    try:
+                                        _route_log(
+                                            f"[hub-route] reply.fail key={_key_tag(key)} subj={reply_subject} err={type(e).__name__}: {e} {_route_payload_summary(payload)} {_route_nc_diag()}"
                                         )
                                     except Exception:
                                         pass
@@ -1953,6 +2424,16 @@ class BootstrapService:
                         async def _tunnel_reader(key: str, ws) -> None:
                             try:
                                 async for msg in ws:
+                                    if _route_frame_verbose:
+                                        try:
+                                            if isinstance(msg, (bytes, bytearray)):
+                                                _route_log(f"[hub-route] rx upstream frame key={_key_tag(key)} kind=bin size={len(msg)}")
+                                            else:
+                                                _route_log(
+                                                    f"[hub-route] rx upstream frame key={_key_tag(key)} kind=text size={len(str(msg))}"
+                                                )
+                                        except Exception:
+                                            pass
                                     if isinstance(msg, (bytes, bytearray)):
                                         raw = bytes(msg)
                                         if len(raw) > MAX_CHUNK_RAW:
@@ -1992,9 +2473,31 @@ class BootstrapService:
                                                 )
                                         else:
                                             await _route_reply(key, {"t": "frame", "kind": "text", "data": text})
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                if _route_trace:
+                                    try:
+                                        _route_log(
+                                            f"[hub-route] upstream reader error key={_key_tag(key)} err={type(e).__name__}: {e}"
+                                        )
+                                    except Exception:
+                                        pass
                             finally:
+                                if _route_trace:
+                                    try:
+                                        code = getattr(ws, "close_code", None)
+                                        reason = getattr(ws, "close_reason", None)
+                                        exc = None
+                                        try:
+                                            exf = getattr(ws, "exception", None)
+                                            if callable(exf):
+                                                exc = exf()
+                                        except Exception:
+                                            exc = None
+                                        _route_log(
+                                            f"[hub-route] upstream closed key={_key_tag(key)} code={code} reason={reason} exc={exc}"
+                                        )
+                                    except Exception:
+                                        pass
                                 try:
                                     await _route_reply(key, {"t": "close"})
                                 except Exception:
@@ -2099,12 +2602,17 @@ class BootstrapService:
 
                         async def _route_cb(msg) -> None:
                             key = ""
+                            subject = ""
                             is_http_key = False
+                            route_t = "?"
+                            route_outcome = "start"
+                            route_started = time.monotonic()
                             try:
                                 subject = str(getattr(msg, "subject", "") or "")
                                 parts = subject.split(".", 2)
                                 # route.to_hub.<key>
                                 if len(parts) < 3:
+                                    route_outcome = "drop_bad_subject"
                                     if _route_diag:
                                         try:
                                             _rl_log(
@@ -2118,6 +2626,7 @@ class BootstrapService:
                                 key = parts[2]
                                 is_http_key = isinstance(key, str) and "--http--" in key
                                 if not _hub_key_match(key):
+                                    route_outcome = "drop_key_mismatch"
                                     if _route_diag:
                                         try:
                                             _rl_log(
@@ -2136,6 +2645,7 @@ class BootstrapService:
                                 try:
                                     data = _json.loads(raw.decode("utf-8"))
                                 except Exception as e:
+                                    route_outcome = "drop_invalid_json"
                                     if _route_diag:
                                         try:
                                             _rl_log(
@@ -2156,6 +2666,7 @@ class BootstrapService:
                                         pass
                                     return
                                 if not isinstance(data, dict):
+                                    route_outcome = "drop_invalid_payload"
                                     if _route_diag:
                                         try:
                                             _rl_log(
@@ -2175,7 +2686,9 @@ class BootstrapService:
                                         pass
                                     return
                                 t = (data or {}).get("t")
+                                route_t = str(t or "?")
                                 if not isinstance(t, str) or not t:
+                                    route_outcome = "drop_missing_t"
                                     if _route_diag:
                                         try:
                                             _rl_log(
@@ -2194,13 +2707,20 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     return
-                                if _route_verbose:
+                                if _route_http_trace and (is_http_key or t in ("open", "close")):
+                                    try:
+                                        _route_log(
+                                            f"[hub-route] cb.start key={_key_tag(key)} subj={subject} bytes={len(raw)} {_route_payload_summary(data)}"
+                                        )
+                                    except Exception:
+                                        pass
+                                if _route_verbose or _route_trace:
                                     try:
                                         if t == "http":
                                             _m = str((data or {}).get("method") or "GET").upper()
                                             _p = str((data or {}).get("path") or "")
                                             if _p not in ("/api/node/status", "/api/ping", "/healthz"):
-                                                print(f"[hub-route] rx http key={key} {_m} {_p}")
+                                                _route_log(f"[hub-route] rx http key={_key_tag(key)} {_m} {_p}")
                                             else:
                                                 try:
                                                     _rl_log(
@@ -2213,21 +2733,57 @@ class BootstrapService:
                                         elif t == "open":
                                             _p = str((data or {}).get("path") or "")
                                             if _p not in ("/api/node/status", "/api/ping"):
-                                                print(f"[hub-route] rx open key={key} path={_p}")
+                                                _route_log(f"[hub-route] rx open key={_key_tag(key)} path={_p}")
                                         elif t == "close":
-                                            print(f"[hub-route] rx close key={key}")
+                                            _route_log(f"[hub-route] rx close key={_key_tag(key)}")
                                         else:
                                             # Frames are extremely noisy; enable explicitly when debugging.
-                                            if t == "frame" and os.getenv("ROUTE_PROXY_FRAME_VERBOSE", "0") != "1":
+                                            if t == "frame" and not _route_frame_verbose:
                                                 pass
                                             else:
-                                                print(f"[hub-route] rx t={t} key={key}")
+                                                _route_log(f"[hub-route] rx t={t} key={_key_tag(key)}")
                                     except Exception:
                                         pass
 
+                                    if _route_trace:
+                                        try:
+                                            if t == "open":
+                                                _p = str((data or {}).get("path") or "")
+                                                _q = str((data or {}).get("query") or "")
+                                                _dev = _query_param(_q, "dev")
+                                                _wsq = _query_param(_q, "ws")
+                                                _route_log(
+                                                    f"[hub-route] open req key={_key_tag(key)} path={_p} query_len={len(_q)} token={_query_has_token(_q)} dev={_dev} ws={_wsq}"
+                                                )
+                                            elif t == "frame":
+                                                _kind = (data or {}).get("kind")
+                                                _size = None
+                                                _body = (data or {}).get("data") or (data or {}).get("data_b64")
+                                                try:
+                                                    _size = len(_body) if _body is not None else None
+                                                except Exception:
+                                                    _size = None
+                                                if _route_frame_verbose:
+                                                    _route_log(
+                                                        f"[hub-route] frame req key={_key_tag(key)} kind={_kind} size={_size}"
+                                                    )
+                                            elif t == "chunk":
+                                                if _route_frame_verbose:
+                                                    _route_log(
+                                                        f"[hub-route] chunk req key={_key_tag(key)} idx={(data or {}).get('idx')} total={(data or {}).get('total')}"
+                                                    )
+                                            elif t == "close":
+                                                _route_log(f"[hub-route] close req key={_key_tag(key)}")
+                                        except Exception:
+                                            pass
+
                                 if t == "open":
+                                    route_outcome = "open"
                                     # Open a local WS to the hub server and start pumping frames.
                                     if websockets_mod is None:
+                                        route_outcome = "open_no_websockets"
+                                        if _route_trace:
+                                            _route_log(f"[hub-route] open upstream failed key={_key_tag(key)} err=websockets_unavailable")
                                         await _route_reply(key, {"t": "close", "err": "websockets_unavailable"})
                                         return
                                     path = str((data or {}).get("path") or "/ws")
@@ -2270,9 +2826,9 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     url = f"{base_ws}{path}{query}"
-                                    if _route_verbose:
+                                    if _route_verbose or _route_trace:
                                         try:
-                                            print(f"[hub-route] open upstream url={url}")
+                                            _route_log(f"[hub-route] open upstream url={url}")
                                         except Exception:
                                             pass
                                     # Ensure we don't leak multiple opens for same key.
@@ -2295,33 +2851,55 @@ class BootstrapService:
                                             ws_connect_timeout_s = 2.5
                                         if ws_connect_timeout_s < 0.1:
                                             ws_connect_timeout_s = 0.1
+                                        if _route_trace:
+                                            _route_log(
+                                                f"[hub-route] upstream.connect start key={_key_tag(key)} timeout_s={ws_connect_timeout_s}"
+                                            )
+                                        t0 = time.monotonic()
                                         ws = await asyncio.wait_for(
                                             websockets_mod.connect(url, max_size=None),
                                             timeout=ws_connect_timeout_s,
                                         )
+                                        if _route_trace:
+                                            took = time.monotonic() - t0
+                                            proto = getattr(ws, "subprotocol", None) or getattr(ws, "protocol", None)
+                                            remote = getattr(ws, "remote_address", None)
+                                            _route_log(
+                                                f"[hub-route] upstream.connect ok key={_key_tag(key)} took_s={took:.3f} proto={proto} remote={remote}"
+                                            )
                                     except Exception as e:
+                                        route_outcome = f"open_connect_fail:{type(e).__name__}"
+                                        if _route_trace:
+                                            _route_log(
+                                                f"[hub-route] upstream.connect fail key={_key_tag(key)} err={type(e).__name__}: {e}"
+                                            )
                                         await _route_reply(key, {"t": "close", "err": str(e)})
                                         return
+                                    route_outcome = "open_connected"
                                     tunnels[key] = {"ws": ws, "url": url}
+                                    pending_tunnel_meta.pop(key, None)
                                     tunnel_tasks[key] = asyncio.create_task(_tunnel_reader(key, ws), name=f"hub-route-{key}")
                                     pending = pending_tunnel_events.pop(key, None) or []
                                     for pending_payload in pending:
                                         try:
                                             await _send_tunnel_event(key, ws, pending_payload)
                                         except Exception as e:
-                                            if _route_verbose:
+                                            if _route_verbose or _route_trace:
                                                 try:
-                                                    print(
-                                                        f"[hub-route] flush pending failed key={key}: {type(e).__name__}: {e}"
+                                                    _route_log(
+                                                        f"[hub-route] flush pending failed key={_key_tag(key)}: {type(e).__name__}: {e}"
                                                     )
                                                 except Exception:
                                                     pass
                                             break
+                                    route_outcome = "open_ready"
                                     return
 
                                 if t == "close":
+                                    route_outcome = "close_local"
                                     rec = tunnels.pop(key, None)
                                     task = tunnel_tasks.pop(key, None)
+                                    pending_tunnel_meta.pop(key, None)
                                     try:
                                         if task:
                                             task.cancel()
@@ -2332,20 +2910,41 @@ class BootstrapService:
                                             await rec["ws"].close()
                                     except Exception:
                                         pass
+                                    if _route_trace:
+                                        _route_log(f"[hub-route] upstream close req key={_key_tag(key)}")
                                     return
 
                                 if t == "frame":
                                     rec = tunnels.get(key)
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
+                                        route_outcome = "frame_no_upstream"
                                         _queue_pending_tunnel_event(key, data)
+                                        _mark_pending(key)
+                                        await _maybe_force_close_no_upstream(key)
+                                        if _route_trace:
+                                            try:
+                                                st = pending_tunnel_meta.get(key) or {}
+                                                first_at = float(st.get("first_at") or 0.0)
+                                                age_s = time.monotonic() - first_at if first_at > 0 else None
+                                                count = st.get("count")
+                                            except Exception:
+                                                age_s = None
+                                                count = None
+                                            _route_log(
+                                                f"[hub-route] queue frame key={_key_tag(key)} reason=no_upstream age_s={age_s} count={count}"
+                                            )
                                         return
                                     try:
                                         await _send_tunnel_event(key, ws, data)
+                                        route_outcome = "frame_sent"
                                     except Exception as e:
-                                        if _route_verbose:
+                                        route_outcome = f"frame_send_fail:{type(e).__name__}"
+                                        if _route_verbose or _route_trace:
                                             try:
-                                                print(f"[hub-route] ws.send(frame) failed key={key}: {type(e).__name__}: {e}")
+                                                _route_log(
+                                                    f"[hub-route] ws.send(frame) failed key={_key_tag(key)}: {type(e).__name__}: {e}"
+                                                )
                                             except Exception:
                                                 pass
                                     return
@@ -2354,19 +2953,39 @@ class BootstrapService:
                                     rec = tunnels.get(key)
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
+                                        route_outcome = "chunk_no_upstream"
                                         _queue_pending_tunnel_event(key, data)
+                                        _mark_pending(key)
+                                        await _maybe_force_close_no_upstream(key)
+                                        if _route_trace:
+                                            try:
+                                                st = pending_tunnel_meta.get(key) or {}
+                                                first_at = float(st.get("first_at") or 0.0)
+                                                age_s = time.monotonic() - first_at if first_at > 0 else None
+                                                count = st.get("count")
+                                            except Exception:
+                                                age_s = None
+                                                count = None
+                                            _route_log(
+                                                f"[hub-route] queue chunk key={_key_tag(key)} reason=no_upstream age_s={age_s} count={count}"
+                                            )
                                         return
                                     try:
                                         await _send_tunnel_event(key, ws, data)
+                                        route_outcome = "chunk_sent"
                                     except Exception as e:
-                                        if _route_verbose:
+                                        route_outcome = f"chunk_send_fail:{type(e).__name__}"
+                                        if _route_verbose or _route_trace:
                                             try:
-                                                print(f"[hub-route] ws.send(chunked) failed key={key}: {type(e).__name__}: {e}")
+                                                _route_log(
+                                                    f"[hub-route] ws.send(chunked) failed key={_key_tag(key)}: {type(e).__name__}: {e}"
+                                                )
                                             except Exception:
                                                 pass
                                     return
 
                                 if t == "http":
+                                    route_outcome = "http"
                                     method = str((data or {}).get("method") or "GET").upper()
                                     path = str((data or {}).get("path") or "/api/ping")
                                     # Be tolerant: root might send trailing slashes.
@@ -2407,6 +3026,7 @@ class BootstrapService:
                                             }
                                             try:
                                                 await _route_reply(key, resp)
+                                                route_outcome = "http_inline_probe_replied"
                                             except Exception:
                                                 pass
                                             if _route_probe_resend_delays_s:
@@ -2590,13 +3210,23 @@ class BootstrapService:
                                             return {"t": "http_resp", "status": 502, "headers": {}, "body_b64": "", "err": str(e)}
 
                                     resp = await asyncio.to_thread(_do_http)
+                                    route_outcome = f"http_local_done:{resp.get('status')}"
+                                    if _route_http_trace:
+                                        try:
+                                            _route_log(
+                                                f"[hub-route] http.local.done key={_key_tag(key)} status={resp.get('status')} err={resp.get('err')} truncated={resp.get('truncated')}"
+                                            )
+                                        except Exception:
+                                            pass
                                     try:
                                         await _route_reply(key, resp)
+                                        route_outcome = f"http_replied:{resp.get('status')}"
                                     except Exception:
                                         pass
                                     return
                                 # Unknown route message type: for HTTP keys, reply with an error so Root does not time out.
                                 try:
+                                    route_outcome = f"unsupported_t:{t}"
                                     if is_http_key:
                                         await _route_reply(
                                             key,
@@ -2613,6 +3243,7 @@ class BootstrapService:
                                     pass
                                 return
                             except Exception as e:
+                                route_outcome = f"handler_failed:{type(e).__name__}"
                                 if _route_verbose:
                                     try:
                                         print(f"[hub-route] handler failed key={key}: {type(e).__name__}: {e}")
@@ -2634,11 +3265,24 @@ class BootstrapService:
                                         )
                                 except Exception:
                                     pass
+                            finally:
+                                if _route_http_trace and key:
+                                    try:
+                                        took_ms = (time.monotonic() - route_started) * 1000.0
+                                        _route_log(
+                                            f"[hub-route] cb.done key={_key_tag(key)} subj={subject} t={route_t} outcome={route_outcome} took_ms={took_ms:.1f}"
+                                        )
+                                    except Exception:
+                                        pass
                                 return
 
-                        route_sub = await _sub_worker("route.to_hub.*", cb=_route_cb)
+                        route_sub = await _sub("route.to_hub.*", cb=_route_cb)
                         if hub_nats_verbose or not hub_nats_quiet:
                             print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
+                        try:
+                            self._log.info("nats bridge subscribed subject=route.to_hub.*")
+                        except Exception:
+                            pass
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
@@ -2667,7 +3311,11 @@ class BootstrapService:
                             alt = f"tg.input.{aid}"
                             if hub_nats_verbose or not hub_nats_quiet:
                                 print(f"[hub-io] NATS subscribe (alias) {alt}")
-                            await _sub_worker(alt, cb=cb)
+                            await _sub(alt, cb=cb)
+                            try:
+                                self._log.info("nats bridge subscribed subject=%s", alt)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
@@ -2711,7 +3359,7 @@ class BootstrapService:
                     # Legacy classic path subscription only when explicitly enabled
                     try:
                         if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
-                            await _sub_worker(subj_legacy, cb=cb_legacy)
+                            await _sub(subj_legacy, cb=cb_legacy)
                             aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
                             aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
                             seen = set([hub_id])
@@ -2722,7 +3370,11 @@ class BootstrapService:
                                 alt_legacy = f"io.tg.in.{aid}.text"
                                 if hub_nats_verbose or not hub_nats_quiet:
                                     print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
-                                await _sub_worker(alt_legacy, cb=cb_legacy)
+                                await _sub(alt_legacy, cb=cb_legacy)
+                                try:
+                                    self._log.info("nats bridge subscribed subject=%s", alt_legacy)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                     # keep task alive
@@ -2748,6 +3400,8 @@ class BootstrapService:
                             # If any core task terminates unexpectedly, restart the bridge.
                             try:
                                 for _tname in ("_reading_task", "_flusher_task", "_ping_interval_task"):
+                                    if _tname == "_ping_interval_task" and bool(getattr(nc, "_adaos_ping_interval_task_disabled", False)):
+                                        continue
                                     _t = getattr(nc, _tname, None)
                                     if isinstance(_t, asyncio.Task) and _t.done():
                                         _exc = None
@@ -2764,15 +3418,39 @@ class BootstrapService:
                                                     _exc = _le
                                         except Exception:
                                             pass
+                                        try:
+                                            if _exc is None:
+                                                tr = getattr(nc, "_transport", None)
+                                                _le = getattr(tr, "_adaos_last_recv_error", None) if tr is not None else None
+                                                if isinstance(_le, Exception):
+                                                    _exc = _le
+                                        except Exception:
+                                            pass
                                         # If task ended without exception, still restart - it should live forever.
                                         _msg = (
                                             f"[hub-io] nats watchdog: task={_tname} terminated exc={type(_exc).__name__}: {_exc}"
                                             if _exc
                                             else f"[hub-io] nats watchdog: task={_tname} terminated"
                                         )
+                                        try:
+                                            self._log.warning(_msg)
+                                        except Exception:
+                                            pass
                                         _rl_log("nats.watchdog", _msg, every_s=1.0)
-                                        if isinstance(_exc, Exception):
-                                            raise _exc
+                                        try:
+                                            _log_nats_ws_diag(
+                                                nc,
+                                                server=nats_last_server,
+                                                rate_key="nats.ws_diag.watchdog",
+                                                every_s=1.0,
+                                                source="watchdog",
+                                                task_name=_tname,
+                                                err=_exc if isinstance(_exc, Exception) else None,
+                                            )
+                                        except Exception:
+                                            pass
+                                        if _exc is not None:
+                                            raise RuntimeError(_msg) from _exc
                                         raise RuntimeError(_msg)
                             except RuntimeError:
                                 raise
@@ -2828,8 +3506,21 @@ class BootstrapService:
                                     pass
                                 last_err = getattr(nc, "last_error", None)
                                 details = f"{type(last_err).__name__}: {last_err}" if last_err else ""
+                                try:
+                                    self._log.warning(
+                                        "nats bridge closed server=%s hub_id=%s details=%s",
+                                        nats_last_server,
+                                        hub_id,
+                                        details,
+                                    )
+                                except Exception:
+                                    pass
                                 raise RuntimeError(f"nats connection closed{(': ' + details) if details else ''}")
                     finally:
+                        try:
+                            self._log.info("nats bridge finalizing hub_id=%s server=%s", hub_id, nats_last_server)
+                        except Exception:
+                            pass
                         try:
                             if raw_keepalive_task is not None:
                                 try:
@@ -3056,14 +3747,67 @@ class BootstrapService:
                                 if not tag:
                                     return ""
                                 import json as _json
+                                import re as _re
 
                                 obj = _json.loads(body)
                                 lines0 = obj.get("lines", [])
                                 if not isinstance(lines0, list):
                                     return ""
-                                hits = [str(s) for s in lines0 if isinstance(s, str) and tag in s]
+                                tag_s = str(tag)
+                                hub_prefix = tag_s.rsplit("-", 1)[0] if "-" in tag_s else tag_s
+                                tag_hits = [str(s) for s in lines0 if isinstance(s, str) and tag_s in s]
+                                conn_ids: set[str] = set()
+                                for line0 in tag_hits:
+                                    try:
+                                        for m0 in _re.finditer(r'"conn":"([^"]+)"', line0):
+                                            conn_ids.add(str(m0.group(1)))
+                                    except Exception:
+                                        continue
+                                route_prefixes = (
+                                    f"route.to_browser.{hub_prefix}--",
+                                    f"route.to_hub.{hub_prefix}--",
+                                )
+                                extra_keywords = (
+                                    "http proxy failed",
+                                    "ws tunnel:",
+                                    "nats http route",
+                                    "nats route chunk (client->proxy)",
+                                    "nats route upstream write",
+                                    "conn close",
+                                    "upstream close",
+                                    "upstream error",
+                                    "ws close 1006 diag",
+                                    "ws socket close",
+                                    "ws socket error",
+                                    "ws error",
+                                    "ws upstream closed",
+                                    "closing superseded hub ws-nats connection",
+                                )
+                                hits: list[str] = []
+                                for item in lines0:
+                                    if not isinstance(item, str):
+                                        continue
+                                    line = str(item)
+                                    include = tag_s in line
+                                    if not include and conn_ids:
+                                        try:
+                                            include = any(cid and cid in line for cid in conn_ids)
+                                        except Exception:
+                                            include = False
+                                    if not include:
+                                        try:
+                                            include = any(pref in line for pref in route_prefixes)
+                                        except Exception:
+                                            include = False
+                                    if not include:
+                                        try:
+                                            include = any(kw in line for kw in extra_keywords)
+                                        except Exception:
+                                            include = False
+                                    if include:
+                                        hits.append(line)
                                 # Keep this file small and focused.
-                                return "\n".join(hits[-500:])
+                                return "\n".join(hits[-1000:])
                             except Exception:
                                 return ""
 
@@ -3080,6 +3824,21 @@ class BootstrapService:
                                     if ex:
                                         fn2 = out_dir / f"{ts}__{(tag0 or 'no_tag')}__{fname.replace('/', '_')}__extract.log"
                                         fn2.write_text(ex, encoding="utf-8", errors="replace")
+                                        try:
+                                            if os.getenv("HUB_ROOT_LOG_SNAPSHOT_EXTRACT_PRINT", "0") == "1":
+                                                try:
+                                                    tail_n = int(os.getenv("HUB_ROOT_LOG_SNAPSHOT_EXTRACT_TAIL", "40") or "40")
+                                                except Exception:
+                                                    tail_n = 40
+                                                if tail_n < 1:
+                                                    tail_n = 1
+                                                lines = ex.splitlines()
+                                                tail = "\n".join(lines[-tail_n:]) if lines else ""
+                                                if tail:
+                                                    print(f"[hub-io] root log extract tail file={fn2} lines={len(lines)}")
+                                                    print(tail)
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
                                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
@@ -3101,8 +3860,22 @@ class BootstrapService:
                             await _nats_bridge()
                             await asyncio.sleep(3600)
                         except asyncio.CancelledError:
+                            try:
+                                self._log.info("nats supervisor cancelled hub_id=%s server=%s", hub_id, nats_last_server)
+                            except Exception:
+                                pass
                             return
                         except Exception as e:
+                            try:
+                                self._log.warning(
+                                    "nats supervisor error hub_id=%s server=%s type=%s err=%s",
+                                    hub_id,
+                                    nats_last_server,
+                                    type(e).__name__,
+                                    str(e),
+                                )
+                            except Exception:
+                                pass
                             try:
                                 print(f"[hub-io] nats: encountered error: {e}")
                             except Exception:
@@ -3151,14 +3924,45 @@ class BootstrapService:
                             try:
                                 low = str(e).lower()
                                 is_transient = (
-                                    type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError")
+                                    type(e).__name__ in ("UnexpectedEOF", "ClientConnectionResetError", "ConnectionClosedError")
                                     or "unexpected eof" in low
                                     or "connection reset" in low
                                     or "clientconnectionreseterror" in low
                                     or "cannot write to closing transport" in low
+                                    or "connectionclosed" in low
+                                    or "no close frame received or sent" in low
+                                    or "winerror 121" in low
                                 )
                             except Exception:
                                 is_transient = False
+
+                            try:
+                                auto_env = os.getenv("HUB_NATS_WS_AUTO_FALLBACK")
+                                if auto_env is None:
+                                    auto_fallback = os.name == "nt"
+                                else:
+                                    auto_fallback = str(auto_env).strip().lower() not in ("0", "false", "off", "no")
+                                if (
+                                    auto_fallback
+                                    and os.name == "nt"
+                                    and (last_ws_transport or "").lower() == "websockets"
+                                    and is_transient
+                                ):
+                                    if os.getenv("HUB_NATS_WS_IMPL", "").lower() != "aiohttp":
+                                        os.environ["HUB_NATS_WS_IMPL"] = "aiohttp"
+                                        try:
+                                            self._log.warning(
+                                                "nats ws auto-fallback: switching to aiohttp transport after %s",
+                                                type(e).__name__,
+                                            )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            print("[hub-io] nats ws auto-fallback -> aiohttp (HUB_NATS_WS_AUTO_FALLBACK=1)")
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
 
                             try:
                                 q_min_uptime_s = float(os.getenv("HUB_NATS_QUARANTINE_MIN_UPTIME_S", "90") or "90")

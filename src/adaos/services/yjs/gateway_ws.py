@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import threading
+import os
 from typing import TYPE_CHECKING, Dict, Any
 
 if TYPE_CHECKING:
@@ -35,6 +36,27 @@ from adaos.services.agent_context import get_ctx as get_agent_ctx
 router = APIRouter()
 _log = logging.getLogger("adaos.events_ws")
 _ylog = logging.getLogger("adaos.yjs.gateway")
+
+
+def _ws_trace_enabled() -> bool:
+    return os.getenv("HUB_WS_TRACE", "0") == "1"
+
+
+def _ws_client_str(websocket: WebSocket) -> str:
+    try:
+        client = getattr(websocket, "client", None)
+        if client and getattr(client, "host", None) is not None:
+            return f"{client.host}:{client.port}"
+    except Exception:
+        pass
+    try:
+        scope = getattr(websocket, "scope", None) or {}
+        client = scope.get("client")
+        if isinstance(client, (tuple, list)) and len(client) >= 2:
+            return f"{client[0]}:{client[1]}"
+    except Exception:
+        pass
+    return "unknown"
 
 
 class WorkspaceWebsocketServer(WebsocketServer):
@@ -283,6 +305,18 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     webspace_id = (room or params.get("ws")) or "default"
     dev_id = params.get("dev") or "unknown"
 
+    if _ws_trace_enabled():
+        try:
+            token_present = "token" in params
+            _ylog.info(
+                "yws trace open client=%s webspace=%s dev=%s token=%s",
+                _ws_client_str(websocket),
+                webspace_id,
+                dev_id,
+                token_present,
+            )
+        except Exception:
+            pass
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
     await websocket.accept()
     await start_y_server()
@@ -294,6 +328,18 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
         return
     finally:
         _ylog.info("yws connection closed webspace=%s dev=%s", webspace_id, dev_id)
+        if _ws_trace_enabled():
+            try:
+                code = getattr(websocket, "close_code", None)
+                _ylog.info(
+                    "yws trace closed client=%s webspace=%s dev=%s code=%s",
+                    _ws_client_str(websocket),
+                    webspace_id,
+                    dev_id,
+                    code,
+                )
+            except Exception:
+                pass
 
 
 @router.websocket("/yws")
@@ -543,6 +589,18 @@ async def events_ws(websocket: WebSocket):
     signaling (``rtc.offer``, ``rtc.ice``).
     """
     await websocket.accept()
+    if _ws_trace_enabled():
+        try:
+            params: Dict[str, str] = dict(websocket.query_params)
+            token_present = "token" in params
+            _log.info(
+                "ws trace open client=%s token=%s params=%s",
+                _ws_client_str(websocket),
+                token_present,
+                ",".join(sorted(params.keys())) if params else "",
+            )
+        except Exception:
+            pass
 
     device_id: str | None = None
     webspace_id = "default"
@@ -636,3 +694,15 @@ async def events_ws(websocket: WebSocket):
                 device_id = payload.get("device_id") or "dev-unknown"
     finally:
         _ = device_id
+        if _ws_trace_enabled():
+            try:
+                code = getattr(websocket, "close_code", None)
+                _log.info(
+                    "ws trace closed client=%s device=%s webspace=%s code=%s",
+                    _ws_client_str(websocket),
+                    device_id,
+                    webspace_id,
+                    code,
+                )
+            except Exception:
+                pass

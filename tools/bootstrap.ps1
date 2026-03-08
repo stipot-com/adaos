@@ -240,22 +240,21 @@ function Start-AdaosApiDetached {
     )
     $pythonExe = (Resolve-Path ".\.venv\Scripts\python.exe").Path
     $repoDir = (Resolve-Path ".").Path
-    $logDir = Join-Path $env:ADAOS_BASE_DIR "logs"
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    $stdoutLog = Join-Path $logDir ("adaos-api-{0}.out.log" -f $BindPort)
-    $stderrLog = Join-Path $logDir ("adaos-api-{0}.err.log" -f $BindPort)
-    Remove-Item $stdoutLog, $stderrLog -ErrorAction SilentlyContinue
-
-    $env:PYTHONUNBUFFERED = "1"
+    $powershellExe = (Get-Command powershell).Source
+    $command = @"
+Set-Location -LiteralPath $(ConvertTo-PowerShellLiteral -Value $repoDir)
+`$env:PYTHONUNBUFFERED = '1'
+& $(ConvertTo-PowerShellLiteral -Value $pythonExe) -u -m adaos api serve --host $(ConvertTo-PowerShellLiteral -Value $BindHost) --port $BindPort
+if (`$LASTEXITCODE -ne 0) {
+    Write-Host ('AdaOS API exited with code {0}' -f `$LASTEXITCODE) -ForegroundColor Red
+}
+"@
     Start-Process `
-        -FilePath $pythonExe `
+        -FilePath $powershellExe `
         -WorkingDirectory $repoDir `
-        -ArgumentList @("-u", "-m", "adaos", "api", "serve", "--host", $BindHost, "--port", "$BindPort") `
-        -RedirectStandardOutput $stdoutLog `
-        -RedirectStandardError $stderrLog `
+        -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $command) `
         | Out-Null
-
-    Write-Host ("AdaOS API logs: {0} | {1}" -f $stdoutLog, $stderrLog)
+    Write-Host "AdaOS API started in a separate PowerShell window."
 }
 
 function Get-AdaosNodeYamlField {

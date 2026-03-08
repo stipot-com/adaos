@@ -10,7 +10,7 @@ import typer
 from dotenv import load_dotenv, find_dotenv
 
 
-def _preferred_cli_python() -> str:
+def _repo_venv_python() -> str | None:
     try:
         for base in Path(__file__).resolve().parents:
             candidates = [base / ".venv" / "Scripts" / "python.exe", base / ".venv" / "bin" / "python"]
@@ -19,6 +19,13 @@ def _preferred_cli_python() -> str:
                     return str(candidate)
     except Exception:
         pass
+    return None
+
+
+def _preferred_cli_python() -> str:
+    repo_python = _repo_venv_python()
+    if repo_python:
+        return repo_python
 
     argv0 = str(sys.argv[0] or "").strip()
     if argv0:
@@ -34,6 +41,15 @@ def _preferred_cli_python() -> str:
     return sys.executable
 
 
+def _same_executable_path(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+
 def _should_reexec_windows_wrapper(argv0: str | None = None) -> bool:
     if os.name != "nt":
         return False
@@ -43,17 +59,71 @@ def _should_reexec_windows_wrapper(argv0: str | None = None) -> bool:
     return entry == "adaos.exe"
 
 
-def _maybe_reexec_windows_wrapper():
-    if not _should_reexec_windows_wrapper():
-        return
+def _should_reexec_repo_venv() -> bool:
+    if os.getenv("ADAOS_CLI_REEXECED") == "1":
+        return False
+    if os.getenv("ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC") == "1":
+        return False
+    preferred = _repo_venv_python()
+    if not preferred:
+        return False
+    return not _same_executable_path(preferred, sys.executable)
+
+
+def _reexec_preferred_python(reason: str) -> None:
     os.environ["ADAOS_CLI_REEXECED"] = "1"
     python = _preferred_cli_python()
+    try:
+        print(f"[AdaOS] re-exec CLI via {python} ({reason})", file=sys.stderr)
+    except Exception:
+        pass
     os.execl(python, python, "-m", "adaos", *sys.argv[1:])
 
 
+def _maybe_reexec_windows_wrapper():
+    if not _should_reexec_windows_wrapper():
+        return
+    _reexec_preferred_python("adaos.exe wrapper")
+
+
+def _maybe_reexec_repo_venv():
+    if not _should_reexec_repo_venv():
+        return
+    _reexec_preferred_python("repo .venv")
+
+
 _maybe_reexec_windows_wrapper()
+_maybe_reexec_repo_venv()
 
 load_dotenv(find_dotenv())
+
+
+def _maybe_set_windows_selector_loop() -> None:
+    if os.name != "nt":
+        return
+    raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    if raw is not None:
+        val = str(raw).strip().lower()
+        if val in ("0", "false", "off", "no"):
+            return
+    try:
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        try:
+            msg = "Windows selector event loop policy enabled"
+            if raw is None:
+                msg += " (default on Windows; set ADAOS_WIN_SELECTOR_LOOP=0 to disable)"
+            else:
+                msg += " (ADAOS_WIN_SELECTOR_LOOP=1)"
+            print(f"[AdaOS] {msg}", file=sys.stderr)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_maybe_set_windows_selector_loop()
 
 from adaos.sdk.manage.environment import prepare_environment
 from adaos.services.settings import Settings

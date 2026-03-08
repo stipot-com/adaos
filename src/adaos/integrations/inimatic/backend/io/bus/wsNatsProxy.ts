@@ -134,12 +134,52 @@ function extractNatsCmdSubject(head: string, cmd: 'MSG' | 'PUB' | 'SUB'): string
 	}
 }
 
+function extractNatsCmdSubjects(head: string, cmd: 'MSG' | 'PUB' | 'SUB', maxSubjects = 8): string[] {
+	try {
+		const out: string[] = []
+		const seen = new Set<string>()
+		const re = new RegExp(`(?:^|\\n)${cmd} ([^\\s\\r\\n]+)`, 'g')
+		for (;;) {
+			const match = re.exec(head)
+			if (!match) break
+			const subj = String(match[1] || '')
+			if (!subj || seen.has(subj)) continue
+			seen.add(subj)
+			out.push(subj)
+			if (out.length >= maxSubjects) break
+		}
+		return out
+	} catch {
+		return []
+	}
+}
+
+function extractRouteMsgSubjects(head: string, prefix: string, maxSubjects = 8): string[] {
+	try {
+		return extractNatsCmdSubjects(head, 'MSG', maxSubjects).filter((subj) => subj.startsWith(prefix))
+	} catch {
+		return []
+	}
+}
+
+function extractRoutePubSubjects(head: string, prefix: string, maxSubjects = 8): string[] {
+	try {
+		return extractNatsCmdSubjects(head, 'PUB', maxSubjects).filter((subj) => subj.startsWith(prefix))
+	} catch {
+		return []
+	}
+}
+
 export function installWsNatsProxy(server: HttpServer) {
 	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
+	let keepalivePongWarnMs = 2_000
+	try {
+		keepalivePongWarnMs = Math.max(250, Number(process.env['WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS'] || '2000'))
+	} catch {}
 	const traceHttpRoute =
 		(process.env['WS_NATS_PROXY_TRACE_HTTP_ROUTE'] || '0') === '1' ||
 		(process.env['ROUTE_PROXY_TRACE'] || '0') === '1' ||
@@ -148,7 +188,11 @@ export function installWsNatsProxy(server: HttpServer) {
 	// Workaround for flaky upstream PONG delivery: some environments drop NATS PONG after a few client PINGs
 	// (breaking `flush()` and keepalives). When enabled, the proxy terminates client PINGs by immediately
 	// replying with PONG and not forwarding the PING upstream.
-	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '1') !== '0'
+	//
+	// Important: this breaks the normal NATS `flush()` / PING-PONG end-to-end barrier semantics, because the
+	// client can observe a local proxy PONG before the upstream NATS server has actually processed prior PUB/SUB.
+	// Keep this OFF by default and enable only as an explicit workaround.
+	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '0') === '1'
 	const activeHubSockets = new Map<
 		string,
 		Map<
@@ -165,6 +209,12 @@ export function installWsNatsProxy(server: HttpServer) {
 	} catch {}
 	const wsPingEnabled = (process.env['WS_NATS_PROXY_WS_PING'] || '0') === '1'
 	log().info({ path, upstream: { host: upstream.host, port: upstream.port } }, 'install ws->nats proxy')
+	if (terminateClientPing) {
+		log().warn(
+			{ path },
+			'ws-nats-proxy: WS_NATS_PROXY_TERMINATE_CLIENT_PING=1 enabled; this breaks end-to-end NATS flush semantics'
+		)
+	}
 
 	// IMPORTANT: keep this in `noServer` mode.
 	// Attaching via `{ server }` registers a global `server.on('upgrade')` listener inside `ws`,
@@ -243,6 +293,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
+		let keepaliveAwaitingPongSince: number | null = null
 		let lastClientWiretapAt = 0
 		let lastUpstreamWiretapAt = 0
 		let upstreamConnecting = false
@@ -257,9 +308,34 @@ export function installWsNatsProxy(server: HttpServer) {
 			} catch {}
 		}
 
-		function writeUpstream(buf: Buffer, why: string) {
+		function writeUpstream(
+			buf: Buffer,
+			why: string,
+			traceRoute:
+				| {
+						subjects: string[]
+						httpSubjects: string[]
+				  }
+				| undefined = undefined
+		) {
 			if (!buf.length) return
 			if (!upstreamSock || (upstreamSock as any).destroyed) {
+				if (traceRoute?.subjects?.length) {
+					try {
+						log().info(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubIdForLog,
+								len: buf.length,
+								subjects: traceRoute.subjects,
+								httpSubjects: traceRoute.httpSubjects,
+								why,
+							},
+							'nats route upstream write missing'
+						)
+					} catch {}
+				}
 				logSummary('upstream missing while writing', { why })
 				closeBoth(1011, 'upstream_missing')
 				return
@@ -269,12 +345,81 @@ export function installWsNatsProxy(server: HttpServer) {
 			// with repeated `connectUpstream()` calls and makes diagnostics clearer.
 			if (!connected) {
 				upstreamPendingWrites.push(buf)
+				if (traceRoute?.subjects?.length) {
+					try {
+						log().info(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubIdForLog,
+								len: buf.length,
+								subjects: traceRoute.subjects,
+								httpSubjects: traceRoute.httpSubjects,
+								why,
+								queueLen: upstreamPendingWrites.length,
+							},
+							'nats route upstream write queued'
+						)
+					} catch {}
+				}
 				return
 			}
 			try {
+				if (traceRoute?.subjects?.length) {
+					try {
+						log().info(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubIdForLog,
+								len: buf.length,
+								subjects: traceRoute.subjects,
+								httpSubjects: traceRoute.httpSubjects,
+								why,
+								writableLength: upstreamSock.writableLength,
+							},
+							'nats route upstream write start'
+						)
+					} catch {}
+				}
 				const ok = upstreamSock.write(buf)
+				if (traceRoute?.subjects?.length) {
+					try {
+						log().info(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubIdForLog,
+								len: buf.length,
+								subjects: traceRoute.subjects,
+								httpSubjects: traceRoute.httpSubjects,
+								why,
+								ok,
+								writableLength: upstreamSock.writableLength,
+							},
+							'nats route upstream write done'
+						)
+					} catch {}
+				}
 				if (ok === false) logSummary('upstream backpressure', { writableLength: upstreamSock.writableLength, why })
 			} catch (e) {
+				if (traceRoute?.subjects?.length) {
+					try {
+						log().info(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubIdForLog,
+								len: buf.length,
+								subjects: traceRoute.subjects,
+								httpSubjects: traceRoute.httpSubjects,
+								why,
+								err: String(e),
+							},
+							'nats route upstream write failed'
+						)
+					} catch {}
+				}
 				logSummary('upstream write failed', { err: String(e), why })
 				closeBoth(1011, 'upstream_write_failed')
 			}
@@ -401,9 +546,34 @@ export function installWsNatsProxy(server: HttpServer) {
 						return
 					}
 					if (ws.readyState !== 1) return
+					const pingSentAt = Date.now()
 					ws.send(NATS_PING, { binary: true })
 					natsKeepalivesSent += 1
+					keepaliveAwaitingPongSince = pingSentAt
 					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
+					setTimeout(() => {
+						try {
+							if (keepaliveAwaitingPongSince !== pingSentAt) return
+							if (ws.readyState !== 1) return
+							log().warn(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									handshaked,
+									waitMs: Date.now() - pingSentAt,
+									lastClientPongAgo_s: lastClientPongAt ? (Date.now() - lastClientPongAt) / 1000 : null,
+									lastClientPingAgo_s: lastClientPingAt ? (Date.now() - lastClientPingAt) / 1000 : null,
+									lastUpstreamPingAgo_s: lastUpstreamPingAt ? (Date.now() - lastUpstreamPingAt) / 1000 : null,
+									lastUpstreamPongAgo_s: lastUpstreamPongAt ? (Date.now() - lastUpstreamPongAt) / 1000 : null,
+									natsKeepalivesSent,
+									wsReadyState: ws.readyState,
+									wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
+								},
+								'nats keepalive pong missing'
+							)
+						} catch {}
+					}, keepalivePongWarnMs)
 				} catch {}
 			}, 20_000)
 		}
@@ -458,14 +628,26 @@ export function installWsNatsProxy(server: HttpServer) {
 			})
 			sock.on('data', (chunk) => {
 				bytesDown += chunk.length
+				let routeToHubSubjects: string[] = []
+				let httpRouteToHubSubjects: string[] = []
 				if (traceHttpRoute) {
 					try {
-						const head = chunk.subarray(0, Math.min(chunk.length, 2048)).toString('utf8')
-						const subj = extractNatsCmdSubject(head, 'MSG')
-						if (subj && subj.startsWith('route.to_hub.') && subj.includes('--http--')) {
+						const head = chunk.subarray(0, Math.min(chunk.length, 8192)).toString('utf8')
+						routeToHubSubjects = extractRouteMsgSubjects(head, 'route.to_hub.')
+						httpRouteToHubSubjects = routeToHubSubjects.filter((subj) => subj.includes('--http--'))
+						if (routeToHubSubjects.length > 0) {
 							log().info(
-								{ conn: connId, tag: connTag, hub_id: hubIdForLog, len: chunk.length, subj },
-								'nats http route (upstream->proxy)'
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									len: chunk.length,
+									subjects: routeToHubSubjects,
+									httpSubjects: httpRouteToHubSubjects,
+									wsReadyState: ws.readyState,
+									wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
+								},
+								'nats route chunk (upstream->proxy)'
 							)
 						}
 					} catch {}
@@ -539,7 +721,45 @@ export function installWsNatsProxy(server: HttpServer) {
 						closeBoth(1001, 'ws_not_open')
 						return
 					}
+					const routeSendStartedAt = routeToHubSubjects.length > 0 ? Date.now() : 0
+					if (routeToHubSubjects.length > 0) {
+						try {
+							log().info(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									len: chunk.length,
+									subjects: routeToHubSubjects,
+									httpSubjects: httpRouteToHubSubjects,
+									wsReadyState: ws.readyState,
+									wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
+								},
+								'nats route downstream send start'
+							)
+						} catch {}
+					}
 					ws.send(chunk, { binary: true }, (err: any) => {
+						if (routeToHubSubjects.length > 0) {
+							try {
+								const callbackMs = Math.max(0, Date.now() - routeSendStartedAt)
+								log().info(
+									{
+										conn: connId,
+										tag: connTag,
+										hub_id: hubIdForLog,
+										len: chunk.length,
+										subjects: routeToHubSubjects,
+										httpSubjects: httpRouteToHubSubjects,
+										callbackMs,
+										wsReadyState: ws.readyState,
+										wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
+										err: err ? String(err) : undefined,
+									},
+									err ? 'nats route downstream send failed' : 'nats route downstream send done'
+								)
+							} catch {}
+						}
 						if (err) {
 							logSummary('ws send downstream failed', { err: String(err) })
 							closeBoth(1011, 'ws_send_failed')
@@ -719,13 +939,37 @@ export function installWsNatsProxy(server: HttpServer) {
 				}
 				try {
 					bytesUp += buf.length
+					let routeToBrowserSubjects: string[] = []
+					let httpRouteToBrowserSubjects: string[] = []
 					if (traceHttpRoute) {
 						try {
 							const head = buf.subarray(0, Math.min(buf.length, 2048)).toString('utf8')
-							const subj = extractNatsCmdSubject(head, 'PUB')
-							if (subj && subj.startsWith('route.to_browser.') && subj.includes('--http--')) {
+							routeToBrowserSubjects = extractRoutePubSubjects(head, 'route.to_browser.')
+							httpRouteToBrowserSubjects = routeToBrowserSubjects.filter((subj) => subj.includes('--http--'))
+							if (routeToBrowserSubjects.length > 0) {
 								log().info(
-									{ conn: connId, tag: connTag, hub_id: hubIdForLog, len: buf.length, subj },
+									{
+										conn: connId,
+										tag: connTag,
+										hub_id: hubIdForLog,
+										len: buf.length,
+										subjects: routeToBrowserSubjects,
+										httpSubjects: httpRouteToBrowserSubjects,
+										upstreamConnected: connected,
+										upstreamWritableLength: upstreamSock?.writableLength ?? null,
+									},
+									'nats route chunk (client->proxy)'
+								)
+							}
+							if (httpRouteToBrowserSubjects.length > 0) {
+								log().info(
+									{
+										conn: connId,
+										tag: connTag,
+										hub_id: hubIdForLog,
+										len: buf.length,
+										subjects: httpRouteToBrowserSubjects,
+									},
 									'nats http route (client->proxy)'
 								)
 							}
@@ -759,6 +1003,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					if (scanPong.hit) {
 						lastClientPongAt = Date.now()
 						clientSentPong += 1
+						keepaliveAwaitingPongSince = null
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats pong (from client)')
 					}
 					// Track client PINGs too (nats-py sends these as keepalive).
@@ -771,7 +1016,25 @@ export function installWsNatsProxy(server: HttpServer) {
 				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
 				// Forward client PONGs to upstream (do NOT strip). If we strip and our upstream PING detection
 				// ever misses (e.g. boundary split), NATS will close the connection leading to flaky UnexpectedEOFs.
-				writeUpstream(buf, 'client_data')
+				let traceRoute:
+					| {
+							subjects: string[]
+							httpSubjects: string[]
+					  }
+					| undefined
+				try {
+					if (traceHttpRoute) {
+						const head = buf.subarray(0, Math.min(buf.length, 2048)).toString('utf8')
+						const subjects = extractRoutePubSubjects(head, 'route.to_browser.')
+						if (subjects.length > 0) {
+							traceRoute = {
+								subjects,
+								httpSubjects: subjects.filter((subj) => subj.includes('--http--')),
+							}
+						}
+					}
+				} catch {}
+				writeUpstream(buf, 'client_data', traceRoute)
 				return
 			}
 			clientBuf = Buffer.concat([clientBuf, buf])

@@ -8,7 +8,7 @@ try:  # pragma: no cover
 except Exception:
     pass
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,7 +18,27 @@ import asyncio
 import json
 import logging
 import platform, time, os
+import signal
+import sys
 from typing import Any
+
+def _maybe_set_windows_selector_loop() -> None:
+    if os.name != "nt":
+        return
+    raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    if raw is not None:
+        val = str(raw).strip().lower()
+        if val in ("0", "false", "off", "no"):
+            return
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        if os.getenv("HUB_NATS_TRACE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
+            print("[AdaOS] Windows selector event loop policy enabled (api.server)", file=sys.stderr)
+    except Exception:
+        pass
+
+
+_maybe_set_windows_selector_loop()
 
 from adaos.apps.api.auth import require_token
 from adaos.build_info import BUILD_INFO
@@ -36,10 +56,45 @@ from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.services.node_config import save_config
 from adaos.services.subnet_alias import display_subnet_alias
 from adaos.domain import Event as DomainEvent
 
 init_ctx()
+
+_DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
+_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
+
+
+async def _wait_bus_idle(timeout: float) -> bool:
+    try:
+        waiter = getattr(_get_ctx().bus, "wait_for_idle", None)
+        if callable(waiter):
+            return bool(await waiter(timeout=max(0.0, float(timeout))))
+    except Exception:
+        logging.getLogger("adaos.eventbus").debug("wait_for_idle failed", exc_info=True)
+    return True
+
+
+async def _emit_shutdown_event(event_type: str, payload: dict[str, Any], *, drain_timeout: float) -> bool:
+    try:
+        _get_ctx().bus.publish(
+            DomainEvent(
+                type=event_type,
+                payload=payload,
+                source="api",
+                ts=time.time(),
+            )
+        )
+    except Exception:
+        logging.getLogger("adaos.router").warning("failed to publish shutdown event %s", event_type, exc_info=True)
+        return False
+    return await _wait_bus_idle(drain_timeout)
+
+
+async def _request_process_shutdown(delay_sec: float = _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC) -> None:
+    await asyncio.sleep(max(0.0, float(delay_sec)))
+    signal.raise_signal(signal.SIGINT)
 
 
 @asynccontextmanager
@@ -75,6 +130,10 @@ async def lifespan(app: FastAPI):
     try:
         app.state.ctx = _get_ctx()
         app.state.bus = app.state.ctx.bus
+        app.state.shutdown_requested = False
+        app.state.shutdown_reason = "signal"
+        app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
+        app.state.shutdown_stopping_emitted = False
     except Exception:
         pass
 
@@ -94,6 +153,15 @@ async def lifespan(app: FastAPI):
     # Start router early so ui.notify/ui.say from boot sequence are routed.
     try:
         await router_service.start()
+    except Exception:
+        pass
+    try:
+        conf = get_ctx().config
+        advertised_base = str(os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
+        if advertised_base and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
+                conf.hub_url = advertised_base
+                save_config(conf)
     except Exception:
         pass
     await run_boot_sequence(app)
@@ -277,6 +345,20 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        try:
+            conf = get_ctx().config
+            if not getattr(app.state, "shutdown_stopping_emitted", False):
+                await _emit_shutdown_event(
+                    "subnet.stopping",
+                    {
+                        "subnet_id": conf.subnet_id,
+                        "reason": getattr(app.state, "shutdown_reason", "signal"),
+                    },
+                    drain_timeout=float(getattr(app.state, "shutdown_drain_timeout", _DEFAULT_SHUTDOWN_DRAIN_SEC)),
+                )
+                app.state.shutdown_stopping_emitted = True
+        except Exception:
+            pass
         await stop_observer()
         # Stop ypy-websocket background server so it does not keep the process alive.
         try:
@@ -332,18 +414,18 @@ async def lifespan(app: FastAPI):
                             "telegram broadcast (subnet.stopped) failed",
                             extra={"hub_id": conf.subnet_id, "status": r3.status_code},
                         )
-                # Also emit a subnet.stopped event on the local bus so that
-                # skills (e.g. greet_on_boot_skill) can update infra status.
-                try:
-                    ev = DomainEvent(
-                        type="subnet.stopped",
-                        payload={"subnet_id": conf.subnet_id},
-                        source="api",
-                        ts=time.time(),
-                    )
-                    ctx.bus.publish(ev)
-                except Exception:
-                    pass
+        except Exception:
+            pass
+        try:
+            conf = get_ctx().config
+            await _emit_shutdown_event(
+                "subnet.stopped",
+                {
+                    "subnet_id": conf.subnet_id,
+                    "reason": getattr(app.state, "shutdown_reason", "signal"),
+                },
+                drain_timeout=float(getattr(app.state, "shutdown_drain_timeout", _DEFAULT_SHUTDOWN_DRAIN_SEC)),
+            )
         except Exception:
             pass
         try:
@@ -404,6 +486,19 @@ class SetAliasRequest(BaseModel):
     hub_id: str | None = Field(default=None, description="Optional hub/subnet id; ignored on hub, for logging only.")
 
 
+class ShutdownRequest(BaseModel):
+    reason: str = Field(default="cli.stop", min_length=1, max_length=128)
+    drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
+    signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
+
+
+class ShutdownResponse(BaseModel):
+    ok: bool
+    accepted: bool
+    reason: str
+    drain_timeout_sec: float
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -425,6 +520,39 @@ async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
         return {"ok": True, "alias": body.alias}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/shutdown", response_model=ShutdownResponse, dependencies=[Depends(require_token)])
+async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
+    conf = get_ctx().config
+    if getattr(app.state, "shutdown_requested", False):
+        return ShutdownResponse(
+            ok=True,
+            accepted=False,
+            reason=str(getattr(app.state, "shutdown_reason", body.reason)),
+            drain_timeout_sec=float(getattr(app.state, "shutdown_drain_timeout", body.drain_timeout_sec)),
+        )
+
+    app.state.shutdown_requested = True
+    app.state.shutdown_reason = body.reason
+    app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
+    stopping_payload = {
+        "subnet_id": conf.subnet_id,
+        "reason": body.reason,
+    }
+    await _emit_shutdown_event(
+        "subnet.stopping",
+        stopping_payload,
+        drain_timeout=body.drain_timeout_sec,
+    )
+    app.state.shutdown_stopping_emitted = True
+    background.add_task(_request_process_shutdown, body.signal_delay_sec)
+    return ShutdownResponse(
+        ok=True,
+        accepted=True,
+        reason=body.reason,
+        drain_timeout_sec=body.drain_timeout_sec,
+    )
 
 
 @app.get("/api/status", dependencies=[Depends(require_token)])
