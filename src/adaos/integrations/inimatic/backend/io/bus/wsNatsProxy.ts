@@ -294,6 +294,9 @@ export function installWsNatsProxy(server: HttpServer) {
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
 		let keepaliveAwaitingPongSince: number | null = null
+		let lastClientMsgAt: number | null = null
+		let lastClientSocketBytesRead: number | null = null
+		let lastClientSocketBytesWritten: number | null = null
 		let lastClientWiretapAt = 0
 		let lastUpstreamWiretapAt = 0
 		let upstreamConnecting = false
@@ -425,6 +428,37 @@ export function installWsNatsProxy(server: HttpServer) {
 			}
 		}
 
+		function getWsSocketDiag(extra?: Record<string, unknown>) {
+			try {
+				const sock: any = (ws as any)?._socket
+				const socketBytesRead = sock ? Number(sock.bytesRead || 0) : null
+				const socketBytesWritten = sock ? Number(sock.bytesWritten || 0) : null
+				return {
+					socketDestroyed: sock ? Boolean(sock.destroyed) : null,
+					socketHadError: sock ? Boolean(sock.errored) : null,
+					socketBytesRead,
+					socketBytesWritten,
+					socketBytesReadSinceLastClientMsg:
+						socketBytesRead !== null && lastClientSocketBytesRead !== null
+							? socketBytesRead - lastClientSocketBytesRead
+							: null,
+					socketBytesWrittenSinceLastClientMsg:
+						socketBytesWritten !== null && lastClientSocketBytesWritten !== null
+							? socketBytesWritten - lastClientSocketBytesWritten
+							: null,
+					lastClientMsgAgo_s: lastClientMsgAt ? (Date.now() - lastClientMsgAt) / 1000 : null,
+					remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
+					local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
+					...(extra || {}),
+				}
+			} catch {
+				return {
+					lastClientMsgAgo_s: lastClientMsgAt ? (Date.now() - lastClientMsgAt) / 1000 : null,
+					...(extra || {}),
+				}
+			}
+		}
+
 		function logSummary(event: string, extra?: Record<string, unknown>) {
 			const base = {
 				conn: connId,
@@ -448,6 +482,7 @@ export function installWsNatsProxy(server: HttpServer) {
 				wsPingsSent,
 				wsPongsReceived,
 				lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
+				lastClientMsgAgo_s: lastClientMsgAt ? (Date.now() - lastClientMsgAt) / 1000 : null,
 				natsKeepalivesSent,
 				...(extra || {}),
 			}
@@ -494,25 +529,10 @@ export function installWsNatsProxy(server: HttpServer) {
 			const sock: any = (ws as any)?._socket
 			if (sock && !sock.__adaos_ws_diag_attached) {
 				sock.__adaos_ws_diag_attached = true
-				const sockDiag = (extra?: Record<string, unknown>) => {
-					try {
-						return {
-							socketDestroyed: Boolean(sock.destroyed),
-							socketHadError: Boolean(sock.errored),
-							socketBytesRead: Number(sock.bytesRead || 0),
-							socketBytesWritten: Number(sock.bytesWritten || 0),
-							remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
-							local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
-							...(extra || {}),
-						}
-					} catch {
-						return extra || {}
-					}
-				}
-				sock.on('end', () => logSummary('ws socket end', sockDiag()))
-				sock.on('close', (hadErr: any) => logSummary('ws socket close', sockDiag({ hadError: Boolean(hadErr) })))
-				sock.on('timeout', () => logSummary('ws socket timeout', sockDiag()))
-				sock.on('error', (e: any) => logSummary('ws socket error', sockDiag({ err: String(e) })))
+				sock.on('end', () => logSummary('ws socket end', getWsSocketDiag()))
+				sock.on('close', (hadErr: any) => logSummary('ws socket close', getWsSocketDiag({ hadError: Boolean(hadErr) })))
+				sock.on('timeout', () => logSummary('ws socket timeout', getWsSocketDiag()))
+				sock.on('error', (e: any) => logSummary('ws socket error', getWsSocketDiag({ err: String(e) })))
 			}
 		} catch {}
 
@@ -569,6 +589,7 @@ export function installWsNatsProxy(server: HttpServer) {
 									natsKeepalivesSent,
 									wsReadyState: ws.readyState,
 									wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
+									...getWsSocketDiag(),
 								},
 								'nats keepalive pong missing'
 							)
@@ -915,6 +936,12 @@ export function installWsNatsProxy(server: HttpServer) {
 
 		ws.on('message', (data: any) => {
 			let buf = toBuffer(data)
+			try {
+				lastClientMsgAt = Date.now()
+				const sock: any = (ws as any)?._socket
+				lastClientSocketBytesRead = sock ? Number(sock.bytesRead || 0) : null
+				lastClientSocketBytesWritten = sock ? Number(sock.bytesWritten || 0) : null
+			} catch {}
 			if (authInFlight && !handshaked) {
 				// Prevent double CONNECT parsing when the client keeps sending data while auth is in-flight.
 				preHandshakeQueue.push(buf)
@@ -1088,15 +1115,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			// Extra diagnostics for abnormal closes (1006 = no close frame).
 			if (code === 1006) {
 				try {
-					const sock: any = (ws as any)?._socket
-					logSummary('ws close 1006 diag', {
-						socketDestroyed: sock ? Boolean(sock.destroyed) : null,
-						socketHadError: sock ? Boolean(sock.errored) : null,
-						socketBytesRead: sock ? Number(sock.bytesRead || 0) : null,
-						socketBytesWritten: sock ? Number(sock.bytesWritten || 0) : null,
-						remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
-						local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
-					})
+					logSummary('ws close 1006 diag', getWsSocketDiag())
 				} catch {}
 			}
 			logSummary('conn close', { code, reason })
