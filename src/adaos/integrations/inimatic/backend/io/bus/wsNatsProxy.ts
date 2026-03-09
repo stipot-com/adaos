@@ -274,6 +274,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		let handshaked = false
 		let hubIdForLog: string | null = null
 		let authInFlight = false
+		let wsClosed = false
 		let clientBuf = Buffer.alloc(0)
 		let preHandshakeQueue: Buffer[] = []
 		let clientTail = Buffer.alloc(0)
@@ -438,6 +439,15 @@ export function installWsNatsProxy(server: HttpServer) {
 				}
 				logSummary('upstream write failed', { err: String(e), why })
 				closeBoth(1011, 'upstream_write_failed')
+			}
+		}
+
+		function isWsOpen(): boolean {
+			if (wsClosed) return false
+			try {
+				return ws.readyState === 1
+			} catch {
+				return false
 			}
 		}
 
@@ -945,6 +955,12 @@ export function installWsNatsProxy(server: HttpServer) {
 
 		function tryProcessHandshake(): boolean {
 			if (handshaked || authInFlight) return false
+			if (!isWsOpen()) {
+				clientBuf = Buffer.alloc(0)
+				preHandshakeQueue = []
+				logSummary('skip handshake: ws not open', { wsReadyState: ws.readyState })
+				return true
+			}
 			const raw = clientBuf.toString('utf8')
 			const lineEnd = raw.indexOf('\r\n')
 			if (lineEnd <= 0) return false
@@ -1025,6 +1041,17 @@ export function installWsNatsProxy(server: HttpServer) {
 				.then((ok) => {
 					clearTimeout(slowAuthTimer)
 					const verifyMs = Date.now() - authVerifyStartedAt
+					if (!isWsOpen()) {
+						authInFlight = false
+						preHandshakeQueue = []
+						clientBuf = Buffer.alloc(0)
+						logSummary('skip auth result: ws not open', {
+							hub_id: hubId,
+							verifyMs,
+							wsReadyState: ws.readyState,
+						})
+						return
+					}
 					if (!ok) {
 						log().warn(
 							{
@@ -1059,11 +1086,13 @@ export function installWsNatsProxy(server: HttpServer) {
 					hubIdForLog = hubId
 					try {
 						const peers = activeHubSockets.get(hubId)
+						const next = peers ? new Map(peers) : new Map()
 						const supersededConnIds: string[] = []
 						if (peers?.size) {
 							for (const [peerConnId, peer] of peers.entries()) {
 								if (!peer || peer.ws === ws) continue
 								supersededConnIds.push(peerConnId)
+								next.delete(peerConnId)
 								try {
 									log().warn(
 										{
@@ -1080,7 +1109,6 @@ export function installWsNatsProxy(server: HttpServer) {
 								} catch {}
 							}
 						}
-						const next = peers || new Map()
 						next.set(connId, { ws, close: closeBoth })
 						activeHubSockets.set(hubId, next)
 						try {
@@ -1116,39 +1144,22 @@ export function installWsNatsProxy(server: HttpServer) {
 					const rewritten = Buffer.from('CONNECT ' + JSON.stringify(u) + '\r\n', 'utf8')
 
 					connectUpstream()
-					setTimeout(() => {
-						try {
-							const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
-							const queuedBytes = queued.length
-							const totalMs = Date.now() - authVerifyStartedAt
-							try {
-								log().info(
-									{
-										from: rip,
-										conn: connId,
-										tag: connTag,
-										hub_id: hubId,
-										verifyMs,
-										totalMs,
-										rewrittenLen: rewritten.length,
-										restLen: rest.length,
-										queuedBytes,
-										upstreamConnected: connected,
-										upstreamConnecting,
-									},
-									'auth rewrite start'
-								)
-							} catch {}
-							writeUpstream(rewritten, 'connect')
-							// Send any bytes that arrived after CONNECT while auth was in flight.
-							preHandshakeQueue = []
-							const tail = queued.length ? Buffer.concat([rest, queued]) : rest
-							if (tail.length) {
-								writeUpstream(tail, 'connect_tail')
-							}
-							clientBuf = Buffer.alloc(0)
-							handshaked = true
+					try {
+						if (!isWsOpen()) {
 							authInFlight = false
+							preHandshakeQueue = []
+							clientBuf = Buffer.alloc(0)
+							logSummary('skip auth rewrite: ws not open', {
+								hub_id: hubId,
+								verifyMs,
+								wsReadyState: ws.readyState,
+							})
+							return
+						}
+						const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
+						const queuedBytes = queued.length
+						const totalMs = Date.now() - authVerifyStartedAt
+						try {
 							log().info(
 								{
 									from: rip,
@@ -1156,28 +1167,54 @@ export function installWsNatsProxy(server: HttpServer) {
 									tag: connTag,
 									hub_id: hubId,
 									verifyMs,
-									totalMs: Date.now() - authVerifyStartedAt,
-									tailLen: tail.length,
+									totalMs,
+									rewrittenLen: rewritten.length,
+									restLen: rest.length,
 									queuedBytes,
+									upstreamConnected: connected,
+									upstreamConnecting,
 								},
-								'auth ok'
+								'auth rewrite start'
 							)
-						} catch (e) {
-							log().warn(
-								{
-									conn: connId,
-									tag: connTag,
-									hub_id: hubId,
-									verifyMs,
-									totalMs: Date.now() - authVerifyStartedAt,
-									err: String(e),
-								},
-								'write upstream failed'
-							)
-							authInFlight = false
-							closeBoth(1011, 'upstream_write_failed')
+						} catch {}
+						writeUpstream(rewritten, 'connect')
+						// Send any bytes that arrived after CONNECT while auth was in flight.
+						preHandshakeQueue = []
+						const tail = queued.length ? Buffer.concat([rest, queued]) : rest
+						if (tail.length) {
+							writeUpstream(tail, 'connect_tail')
 						}
-					}, 0)
+						clientBuf = Buffer.alloc(0)
+						handshaked = true
+						authInFlight = false
+						log().info(
+							{
+								from: rip,
+								conn: connId,
+								tag: connTag,
+								hub_id: hubId,
+								verifyMs,
+								totalMs: Date.now() - authVerifyStartedAt,
+								tailLen: tail.length,
+								queuedBytes,
+							},
+							'auth ok'
+						)
+					} catch (e) {
+						log().warn(
+							{
+								conn: connId,
+								tag: connTag,
+								hub_id: hubId,
+								verifyMs,
+								totalMs: Date.now() - authVerifyStartedAt,
+								err: String(e),
+							},
+							'write upstream failed'
+						)
+						authInFlight = false
+						closeBoth(1011, 'upstream_write_failed')
+					}
 				})
 				.catch((e) => {
 					clearTimeout(slowAuthTimer)
@@ -1356,11 +1393,13 @@ export function installWsNatsProxy(server: HttpServer) {
 		})
 
 		ws.on('error', (err: any) => {
+			wsClosed = true
 			logSummary('ws error', { err: String(err) })
 			closeBoth()
 		})
 
 		ws.on('close', (code: number, reasonBuf: any) => {
+			wsClosed = true
 			const reason = (() => {
 				try {
 					return typeof reasonBuf === 'string'
