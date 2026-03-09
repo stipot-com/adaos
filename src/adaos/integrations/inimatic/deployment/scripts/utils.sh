@@ -77,6 +77,8 @@ wait_healthy() {
   echo "[fatal] $svc failed to become healthy in time"
   echo "[debug] $svc container id=$id"
   docker inspect --format='[debug] state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}(none){{end}}' "$id" 2>/dev/null || true
+  echo "[debug] last healthcheck entries for $svc"
+  docker inspect --format='{{range .State.Health.Log}}{{printf "[debug] start=%s exit=%d output=%q\n" .Start .ExitCode .Output}}{{end}}' "$id" 2>/dev/null || true
   echo "[debug] last logs (tail=200) for $svc"
   docker logs --tail 200 "$id" 2>/dev/null || true
   if [[ "$svc" == "reverse-proxy" ]]; then

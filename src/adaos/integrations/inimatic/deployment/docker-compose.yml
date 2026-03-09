@@ -256,7 +256,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:3030/readyz >/dev/null || curl -kfsS https://localhost:3030/readyz >/dev/null || exit 1",
+          "if [ \"${ROOT_SERVER_PROTO:-https}\" = \"http\" ]; then curl -fsS --max-time 2 http://localhost:3030/readyz >/dev/null; else curl -kfsS --max-time 2 https://localhost:3030/readyz >/dev/null; fi",
         ]
       interval: 10s
       timeout: 3s
@@ -347,7 +347,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:3030/readyz >/dev/null || curl -kfsS https://localhost:3030/readyz >/dev/null || exit 1",
+          "if [ \"${ROOT_SERVER_PROTO:-https}\" = \"http\" ]; then curl -fsS --max-time 2 http://localhost:3030/readyz >/dev/null; else curl -kfsS --max-time 2 https://localhost:3030/readyz >/dev/null; fi",
         ]
       interval: 10s
       timeout: 3s

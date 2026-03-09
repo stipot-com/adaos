@@ -3028,5 +3028,6 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 server.listen(PORT, HOST, () => {
-	console.log(`AdaOS backhand listening on https://${HOST}:${PORT}`)
+	const proto = USE_HTTP_SERVER ? 'http' : 'https'
+	console.log(`AdaOS backhand listening on ${proto}://${HOST}:${PORT}`)
 })
