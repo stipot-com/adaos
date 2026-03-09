@@ -197,6 +197,9 @@ export function installWsNatsProxy(server: HttpServer) {
 	// client can observe a local proxy PONG before the upstream NATS server has actually processed prior PUB/SUB.
 	// Keep this OFF by default and enable only as an explicit workaround.
 	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '0') === '1'
+	// WARNING: attaching a `readable` listener to the underlying socket switches it into paused mode,
+	// which can interfere with `ws` frame consumption. Keep this diagnostics path opt-in only.
+	const socketReadableDiag = (process.env['WS_NATS_PROXY_SOCKET_READABLE_DIAG'] || '0') === '1'
 	const activeHubSockets = new Map<
 		string,
 		Map<
@@ -635,26 +638,28 @@ export function installWsNatsProxy(server: HttpServer) {
 						}
 					} catch {}
 				})
-				sock.on('readable', () => {
-					try {
-						lastSocketReadableAt = Date.now()
-						socketReadableEvents += 1
-						if (keepaliveAwaitingSocketReadableSince) {
-							log().warn(
-								{
-									conn: connId,
-									tag: connTag,
-									hub_id: hubIdForLog,
-									waitMs: Date.now() - keepaliveAwaitingSocketReadableSince,
-									...getWsSocketDiag(),
-									...getWsReceiverDiag(),
-								},
-								'ws socket readable after keepalive'
-							)
-							keepaliveAwaitingSocketReadableSince = null
-						}
-					} catch {}
-				})
+				if (socketReadableDiag) {
+					sock.on('readable', () => {
+						try {
+							lastSocketReadableAt = Date.now()
+							socketReadableEvents += 1
+							if (keepaliveAwaitingSocketReadableSince) {
+								log().warn(
+									{
+										conn: connId,
+										tag: connTag,
+										hub_id: hubIdForLog,
+										waitMs: Date.now() - keepaliveAwaitingSocketReadableSince,
+										...getWsSocketDiag(),
+										...getWsReceiverDiag(),
+									},
+									'ws socket readable after keepalive'
+								)
+								keepaliveAwaitingSocketReadableSince = null
+							}
+						} catch {}
+					})
+				}
 				sock.on('pause', () => {
 					try {
 						lastSocketPauseAt = Date.now()
@@ -713,7 +718,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					natsKeepalivesSent += 1
 					keepaliveAwaitingPongSince = pingSentAt
 					keepaliveAwaitingSocketDataSince = pingSentAt
-					keepaliveAwaitingSocketReadableSince = pingSentAt
+					if (socketReadableDiag) keepaliveAwaitingSocketReadableSince = pingSentAt
 					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
 					setTimeout(() => {
 						try {
