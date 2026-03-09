@@ -303,6 +303,8 @@ const policy = getPolicy()
 const MAX_ARCHIVE_BYTES = policy.max_archive_mb * 1024 * 1024
 
 const app = express()
+let wsNatsProxyReady = false
+let hubRouteProxyReady = false
 
 const allowedCorsOrigins = new Set<string>()
 const allowedCorsHosts = new Set<string>(['localhost', '127.0.0.1', '[::1]'])
@@ -386,7 +388,7 @@ app.use(express.json({ limit: '2mb' }))
 app.get('/api/ping', (_req, res) => {
 	res.status(200).json({ ok: true, service: 'root', ts: Date.now() })
 })
-app.get('/healthz', (_req, res) => {
+app.get('/livez', (_req, res) => {
 	res.status(200).json({ ok: true })
 })
 
@@ -845,15 +847,34 @@ app.get('/health', (_req, res) => {
 	res.status(200).type('text/plain').send('ok')
 })
 
-app.get('/healthz', (_req, res) => {
-	res.json({
-		ok: true,
+function getReadinessPayload() {
+	const routeProxyEnabled = Boolean(process.env['NATS_URL'])
+	const ready = wsNatsProxyReady && (!routeProxyEnabled || hubRouteProxyReady)
+	return {
+		ok: ready,
+		ready,
 		version: buildInfo.version,
 		build_date: buildInfo.buildDate,
 		commit: buildInfo.commit,
 		time: new Date().toISOString(),
 		mtls: true,
-	})
+		ws_nats_proxy_ready: wsNatsProxyReady,
+		hub_route_proxy_ready: hubRouteProxyReady,
+		hub_route_proxy_enabled: routeProxyEnabled,
+	}
+}
+
+function sendReadiness(res: express.Response): void {
+	const payload = getReadinessPayload()
+	res.status(payload.ready ? 200 : 503).json(payload)
+}
+
+app.get('/healthz', (_req, res) => {
+	sendReadiness(res)
+})
+
+app.get('/readyz', (_req, res) => {
+	sendReadiness(res)
 })
 
 app.get('/v1/health', (_req, res) => {
@@ -1349,7 +1370,9 @@ import('./io/bus/natsAuth.js')
 // Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
 try {
 	installWsNatsProxy(server)
+	wsNatsProxyReady = true
 } catch (e) {
+	wsNatsProxyReady = false
 	console.error('ws nats proxy init failed', e)
 }
 
@@ -1363,11 +1386,14 @@ try {
 			natsUrl: process.env['NATS_URL']!,
 			sessionJwtSecret: WEB_SESSION_JWT_SECRET,
 		})
+		hubRouteProxyReady = true
 		console.log('[route] hub proxy installed')
 	} else {
+		hubRouteProxyReady = false
 		console.warn('[route] NATS_URL missing; hub proxy disabled')
 	}
 } catch (e) {
+	hubRouteProxyReady = false
 	console.error('[route] hub proxy init failed', e)
 }
 

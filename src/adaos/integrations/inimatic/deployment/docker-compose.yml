@@ -256,7 +256,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:3030/healthz >/dev/null || curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1",
+          "curl -fsS http://localhost:3030/readyz >/dev/null || curl -kfsS https://localhost:3030/readyz >/dev/null || exit 1",
         ]
       interval: 10s
       timeout: 3s
@@ -347,7 +347,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:3030/healthz >/dev/null || curl -kfsS https://localhost:3030/healthz >/dev/null || exit 1",
+          "curl -fsS http://localhost:3030/readyz >/dev/null || curl -kfsS https://localhost:3030/readyz >/dev/null || exit 1",
         ]
       interval: 10s
       timeout: 3s

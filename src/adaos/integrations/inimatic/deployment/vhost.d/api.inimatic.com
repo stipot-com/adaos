@@ -20,6 +20,12 @@ location = /healthz {
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
+location = /readyz {
+  access_log off;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
+}
+
 location = /metrics {
   access_log off;
   proxy_pass http://api.inimatic.com;
@@ -95,6 +101,8 @@ location ^~ /nats {
   proxy_read_timeout 3600s;
   proxy_send_timeout 3600s;
   proxy_connect_timeout 10s;
+  proxy_buffering off;
+  proxy_request_buffering off;
 
   # Forward to the backend container (it runs ws-nats-proxy on WS_NATS_PATH=/nats).
   proxy_pass http://api.inimatic.com;
