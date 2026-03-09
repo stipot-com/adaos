@@ -3704,11 +3704,11 @@ class BootstrapService:
                         if not want:
                             return
                         try:
-                            lines = int(os.getenv("HUB_ROOT_LOG_SNAPSHOT_LINES", "250") or "250")
+                            snapshot_lines = int(os.getenv("HUB_ROOT_LOG_SNAPSHOT_LINES", "250") or "250")
                         except Exception:
-                            lines = 250
-                        if lines < 50:
-                            lines = 50
+                            snapshot_lines = 250
+                        if snapshot_lines < 50:
+                            snapshot_lines = 50
 
                         out_dir = Path(".adaos") / "root_log_snapshots"
                         out_dir.mkdir(parents=True, exist_ok=True)
@@ -3717,7 +3717,7 @@ class BootstrapService:
                             import urllib.parse as _up
                             import urllib.request as _ureq
 
-                            qs = _up.urlencode({"file": fname, "lines": str(lines)})
+                            qs = _up.urlencode({"file": fname, "lines": str(snapshot_lines)})
                             url = f"{base}/v1/dev/log_tail?{qs}"
                             hdrs = {}
                             try:
@@ -3771,12 +3771,18 @@ class BootstrapService:
                                     "http proxy failed",
                                     "ws tunnel:",
                                     "nats http route",
+                                    "nats keepalive pong missing",
                                     "nats route chunk (client->proxy)",
                                     "nats route upstream write",
                                     "conn close",
                                     "upstream close",
                                     "upstream error",
                                     "ws close 1006 diag",
+                                    "ws socket data after keepalive",
+                                    "ws socket readable after keepalive",
+                                    "ws socket pause",
+                                    "ws socket resume",
+                                    "ws socket end",
                                     "ws socket close",
                                     "ws socket error",
                                     "ws error",
@@ -3832,10 +3838,10 @@ class BootstrapService:
                                                     tail_n = 40
                                                 if tail_n < 1:
                                                     tail_n = 1
-                                                lines = ex.splitlines()
-                                                tail = "\n".join(lines[-tail_n:]) if lines else ""
+                                                tail_lines = ex.splitlines()
+                                                tail = "\n".join(tail_lines[-tail_n:]) if tail_lines else ""
                                                 if tail:
-                                                    print(f"[hub-io] root log extract tail file={fn2} lines={len(lines)}")
+                                                    print(f"[hub-io] root log extract tail file={fn2} lines={len(tail_lines)}")
                                                     print(tail)
                                         except Exception:
                                             pass

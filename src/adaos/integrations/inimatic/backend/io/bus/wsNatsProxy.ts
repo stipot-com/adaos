@@ -294,9 +294,18 @@ export function installWsNatsProxy(server: HttpServer) {
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
 		let keepaliveAwaitingPongSince: number | null = null
+		let keepaliveAwaitingSocketDataSince: number | null = null
+		let keepaliveAwaitingSocketReadableSince: number | null = null
 		let lastClientMsgAt: number | null = null
 		let lastClientSocketBytesRead: number | null = null
 		let lastClientSocketBytesWritten: number | null = null
+		let lastSocketDataAt: number | null = null
+		let lastSocketReadableAt: number | null = null
+		let lastSocketPauseAt: number | null = null
+		let lastSocketResumeAt: number | null = null
+		let socketDataEvents = 0
+		let socketReadableEvents = 0
+		let socketLastDataLen: number | null = null
 		let lastClientWiretapAt = 0
 		let lastUpstreamWiretapAt = 0
 		let upstreamConnecting = false
@@ -436,6 +445,15 @@ export function installWsNatsProxy(server: HttpServer) {
 				return {
 					socketDestroyed: sock ? Boolean(sock.destroyed) : null,
 					socketHadError: sock ? Boolean(sock.errored) : null,
+					socketIsPaused: sock && typeof sock.isPaused === 'function' ? Boolean(sock.isPaused()) : null,
+					socketReadableFlowing:
+						sock && Object.prototype.hasOwnProperty.call(sock, 'readableFlowing')
+							? ((sock as any).readableFlowing ?? null)
+							: null,
+					socketReadableLength:
+						sock && typeof (sock as any).readableLength !== 'undefined'
+							? Number((sock as any).readableLength || 0)
+							: null,
 					socketBytesRead,
 					socketBytesWritten,
 					socketBytesReadSinceLastClientMsg:
@@ -446,6 +464,13 @@ export function installWsNatsProxy(server: HttpServer) {
 						socketBytesWritten !== null && lastClientSocketBytesWritten !== null
 							? socketBytesWritten - lastClientSocketBytesWritten
 							: null,
+					lastSocketDataAgo_s: lastSocketDataAt ? (Date.now() - lastSocketDataAt) / 1000 : null,
+					lastSocketReadableAgo_s: lastSocketReadableAt ? (Date.now() - lastSocketReadableAt) / 1000 : null,
+					lastSocketPauseAgo_s: lastSocketPauseAt ? (Date.now() - lastSocketPauseAt) / 1000 : null,
+					lastSocketResumeAgo_s: lastSocketResumeAt ? (Date.now() - lastSocketResumeAt) / 1000 : null,
+					socketDataEvents,
+					socketReadableEvents,
+					socketLastDataLen,
 					lastClientMsgAgo_s: lastClientMsgAt ? (Date.now() - lastClientMsgAt) / 1000 : null,
 					remote: sock?.remoteAddress ? String(sock.remoteAddress) + ':' + String(sock.remotePort || '') : null,
 					local: sock?.localAddress ? String(sock.localAddress) + ':' + String(sock.localPort || '') : null,
@@ -456,6 +481,46 @@ export function installWsNatsProxy(server: HttpServer) {
 					lastClientMsgAgo_s: lastClientMsgAt ? (Date.now() - lastClientMsgAt) / 1000 : null,
 					...(extra || {}),
 				}
+			}
+		}
+
+		function getWsReceiverDiag() {
+			try {
+				const receiver: any = (ws as any)?._receiver
+				return {
+					receiverState:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_state') ? Number(receiver._state) : null,
+					receiverOpcode:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_opcode') ? Number(receiver._opcode) : null,
+					receiverBufferedBytes:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_bufferedBytes')
+							? Number(receiver._bufferedBytes || 0)
+							: null,
+					receiverPayloadLength:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_payloadLength')
+							? Number(receiver._payloadLength || 0)
+							: null,
+					receiverFragmented:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_fragmented')
+							? Number(receiver._fragmented || 0)
+							: null,
+					receiverMasked:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_masked') ? Boolean(receiver._masked) : null,
+					receiverCompressed:
+						receiver && Object.prototype.hasOwnProperty.call(receiver, '_compressed')
+							? Boolean(receiver._compressed)
+							: null,
+					receiverNeedDrain:
+						receiver?._writableState && Object.prototype.hasOwnProperty.call(receiver._writableState, 'needDrain')
+							? Boolean(receiver._writableState.needDrain)
+							: null,
+					receiverWritableLength:
+						receiver?._writableState && Object.prototype.hasOwnProperty.call(receiver._writableState, 'length')
+							? Number(receiver._writableState.length || 0)
+							: null,
+				}
+			} catch {
+				return {}
 			}
 		}
 
@@ -529,10 +594,73 @@ export function installWsNatsProxy(server: HttpServer) {
 			const sock: any = (ws as any)?._socket
 			if (sock && !sock.__adaos_ws_diag_attached) {
 				sock.__adaos_ws_diag_attached = true
-				sock.on('end', () => logSummary('ws socket end', getWsSocketDiag()))
-				sock.on('close', (hadErr: any) => logSummary('ws socket close', getWsSocketDiag({ hadError: Boolean(hadErr) })))
-				sock.on('timeout', () => logSummary('ws socket timeout', getWsSocketDiag()))
-				sock.on('error', (e: any) => logSummary('ws socket error', getWsSocketDiag({ err: String(e) })))
+				sock.on('data', (chunk: any) => {
+					try {
+						lastSocketDataAt = Date.now()
+						socketDataEvents += 1
+						const len = Buffer.isBuffer(chunk)
+							? chunk.length
+							: chunk && typeof chunk.length === 'number'
+								? Number(chunk.length)
+								: null
+						socketLastDataLen = len
+						if (keepaliveAwaitingSocketDataSince) {
+							log().warn(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									waitMs: Date.now() - keepaliveAwaitingSocketDataSince,
+									dataLen: len,
+									...getWsSocketDiag(),
+									...getWsReceiverDiag(),
+								},
+								'ws socket data after keepalive'
+							)
+							keepaliveAwaitingSocketDataSince = null
+						}
+					} catch {}
+				})
+				sock.on('readable', () => {
+					try {
+						lastSocketReadableAt = Date.now()
+						socketReadableEvents += 1
+						if (keepaliveAwaitingSocketReadableSince) {
+							log().warn(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									waitMs: Date.now() - keepaliveAwaitingSocketReadableSince,
+									...getWsSocketDiag(),
+									...getWsReceiverDiag(),
+								},
+								'ws socket readable after keepalive'
+							)
+							keepaliveAwaitingSocketReadableSince = null
+						}
+					} catch {}
+				})
+				sock.on('pause', () => {
+					try {
+						lastSocketPauseAt = Date.now()
+						logSummary('ws socket pause', { ...getWsSocketDiag(), ...getWsReceiverDiag() })
+					} catch {}
+				})
+				sock.on('resume', () => {
+					try {
+						lastSocketResumeAt = Date.now()
+						logSummary('ws socket resume', { ...getWsSocketDiag(), ...getWsReceiverDiag() })
+					} catch {}
+				})
+				sock.on('end', () => logSummary('ws socket end', { ...getWsSocketDiag(), ...getWsReceiverDiag() }))
+				sock.on('close', (hadErr: any) =>
+					logSummary('ws socket close', { ...getWsSocketDiag({ hadError: Boolean(hadErr) }), ...getWsReceiverDiag() })
+				)
+				sock.on('timeout', () => logSummary('ws socket timeout', { ...getWsSocketDiag(), ...getWsReceiverDiag() }))
+				sock.on('error', (e: any) =>
+					logSummary('ws socket error', { ...getWsSocketDiag({ err: String(e) }), ...getWsReceiverDiag() })
+				)
 			}
 		} catch {}
 
@@ -570,6 +698,8 @@ export function installWsNatsProxy(server: HttpServer) {
 					ws.send(NATS_PING, { binary: true })
 					natsKeepalivesSent += 1
 					keepaliveAwaitingPongSince = pingSentAt
+					keepaliveAwaitingSocketDataSince = pingSentAt
+					keepaliveAwaitingSocketReadableSince = pingSentAt
 					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
 					setTimeout(() => {
 						try {
@@ -590,6 +720,7 @@ export function installWsNatsProxy(server: HttpServer) {
 									wsReadyState: ws.readyState,
 									wsBufferedAmount: Number((ws as any)?.bufferedAmount || 0),
 									...getWsSocketDiag(),
+									...getWsReceiverDiag(),
 								},
 								'nats keepalive pong missing'
 							)
@@ -862,9 +993,11 @@ export function installWsNatsProxy(server: HttpServer) {
 					hubIdForLog = hubId
 					try {
 						const peers = activeHubSockets.get(hubId)
+						const supersededConnIds: string[] = []
 						if (peers?.size) {
 							for (const [peerConnId, peer] of peers.entries()) {
 								if (!peer || peer.ws === ws) continue
+								supersededConnIds.push(peerConnId)
 								try {
 									log().warn(
 										{
@@ -884,6 +1017,19 @@ export function installWsNatsProxy(server: HttpServer) {
 						const next = peers || new Map()
 						next.set(connId, { ws, close: closeBoth })
 						activeHubSockets.set(hubId, next)
+						try {
+							log().info(
+								{
+									hub_id: hubId,
+									conn: connId,
+									tag: connTag,
+									peerCount: next.size,
+									peers: Array.from(next.keys()),
+									superseded: supersededConnIds,
+								},
+								'hub ws-nats auth ok'
+							)
+						} catch {}
 					} catch {}
 
 					const u: any = { ...obj }
@@ -941,6 +1087,8 @@ export function installWsNatsProxy(server: HttpServer) {
 				const sock: any = (ws as any)?._socket
 				lastClientSocketBytesRead = sock ? Number(sock.bytesRead || 0) : null
 				lastClientSocketBytesWritten = sock ? Number(sock.bytesWritten || 0) : null
+				keepaliveAwaitingSocketDataSince = null
+				keepaliveAwaitingSocketReadableSince = null
 			} catch {}
 			if (authInFlight && !handshaked) {
 				// Prevent double CONNECT parsing when the client keeps sending data while auth is in-flight.
@@ -1031,6 +1179,8 @@ export function installWsNatsProxy(server: HttpServer) {
 						lastClientPongAt = Date.now()
 						clientSentPong += 1
 						keepaliveAwaitingPongSince = null
+						keepaliveAwaitingSocketDataSince = null
+						keepaliveAwaitingSocketReadableSince = null
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats pong (from client)')
 					}
 					// Track client PINGs too (nats-py sends these as keepalive).
@@ -1115,7 +1265,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			// Extra diagnostics for abnormal closes (1006 = no close frame).
 			if (code === 1006) {
 				try {
-					logSummary('ws close 1006 diag', getWsSocketDiag())
+					logSummary('ws close 1006 diag', { ...getWsSocketDiag(), ...getWsReceiverDiag() })
 				} catch {}
 			}
 			logSummary('conn close', { code, reason })
