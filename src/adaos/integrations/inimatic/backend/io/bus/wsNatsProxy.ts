@@ -15,6 +15,10 @@ function log() {
 	_log = pino({ name: 'ws-nats-proxy' })
 	return _log
 }
+const AUTH_VERIFY_PENDING_MS = Math.max(
+	100,
+	Number.parseInt(process.env['WS_NATS_PROXY_AUTH_VERIFY_PENDING_MS'] || '1000', 10) || 1000
+)
 const NATS_PING = Buffer.from('PING\r\n', 'utf8')
 const NATS_PONG = Buffer.from('PONG\r\n', 'utf8')
 const NATS_ERR = Buffer.from('-ERR', 'utf8')
@@ -981,14 +985,76 @@ export function installWsNatsProxy(server: HttpServer) {
 					? userRaw.slice(4)
 					: userRaw
 
-					verifyHubToken(hubId, passRaw)
+			const authVerifyStartedAt = Date.now()
+			const slowAuthTimer = setTimeout(() => {
+				try {
+					log().warn(
+						{
+							from: rip,
+							conn: connId,
+							tag: connTag,
+							hub_id: hubId,
+							user: userRaw,
+							pendingMs: Date.now() - authVerifyStartedAt,
+							restLen: rest.length,
+							preHandshakeQueueLen: preHandshakeQueue.length,
+							wsReadyState: ws.readyState,
+							upstreamConnected: connected,
+							upstreamConnecting,
+						},
+						'auth verify pending'
+					)
+				} catch {}
+			}, AUTH_VERIFY_PENDING_MS)
+			try {
+				log().info(
+					{
+						from: rip,
+						conn: connId,
+						tag: connTag,
+						hub_id: hubId,
+						user: userRaw,
+						restLen: rest.length,
+						preHandshakeQueueLen: preHandshakeQueue.length,
+					},
+					'auth verify start'
+				)
+			} catch {}
+
+			verifyHubToken(hubId, passRaw)
 				.then((ok) => {
+					clearTimeout(slowAuthTimer)
+					const verifyMs = Date.now() - authVerifyStartedAt
 					if (!ok) {
-						log().warn({ from: rip, hub_id: hubId, user: userRaw, pass: mask(passRaw) }, 'auth failed')
+						log().warn(
+							{
+								from: rip,
+								conn: connId,
+								tag: connTag,
+								hub_id: hubId,
+								user: userRaw,
+								pass: mask(passRaw),
+								verifyMs,
+							},
+							'auth failed'
+						)
 						closeBoth(1008, 'auth_failed')
 						authInFlight = false
 						return
 					}
+					try {
+						log().info(
+							{
+								from: rip,
+								conn: connId,
+								tag: connTag,
+								hub_id: hubId,
+								user: userRaw,
+								verifyMs,
+							},
+							'auth verify ok'
+						)
+					} catch {}
 
 					hubIdForLog = hubId
 					try {
@@ -1052,9 +1118,29 @@ export function installWsNatsProxy(server: HttpServer) {
 					connectUpstream()
 					setTimeout(() => {
 						try {
+							const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
+							const queuedBytes = queued.length
+							const totalMs = Date.now() - authVerifyStartedAt
+							try {
+								log().info(
+									{
+										from: rip,
+										conn: connId,
+										tag: connTag,
+										hub_id: hubId,
+										verifyMs,
+										totalMs,
+										rewrittenLen: rewritten.length,
+										restLen: rest.length,
+										queuedBytes,
+										upstreamConnected: connected,
+										upstreamConnecting,
+									},
+									'auth rewrite start'
+								)
+							} catch {}
 							writeUpstream(rewritten, 'connect')
 							// Send any bytes that arrived after CONNECT while auth was in flight.
-							const queued = preHandshakeQueue.length ? Buffer.concat(preHandshakeQueue) : Buffer.alloc(0)
 							preHandshakeQueue = []
 							const tail = queued.length ? Buffer.concat([rest, queued]) : rest
 							if (tail.length) {
@@ -1063,16 +1149,49 @@ export function installWsNatsProxy(server: HttpServer) {
 							clientBuf = Buffer.alloc(0)
 							handshaked = true
 							authInFlight = false
-							if (verbose) log().info({ from: rip, hub_id: hubId }, 'auth ok')
+							log().info(
+								{
+									from: rip,
+									conn: connId,
+									tag: connTag,
+									hub_id: hubId,
+									verifyMs,
+									totalMs: Date.now() - authVerifyStartedAt,
+									tailLen: tail.length,
+									queuedBytes,
+								},
+								'auth ok'
+							)
 						} catch (e) {
-							log().warn({ err: String(e) }, 'write upstream failed')
+							log().warn(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubId,
+									verifyMs,
+									totalMs: Date.now() - authVerifyStartedAt,
+									err: String(e),
+								},
+								'write upstream failed'
+							)
 							authInFlight = false
 							closeBoth(1011, 'upstream_write_failed')
 						}
 					}, 0)
 				})
 				.catch((e) => {
-					log().error({ from: rip, err: String(e) }, 'auth error')
+					clearTimeout(slowAuthTimer)
+					log().error(
+						{
+							from: rip,
+							conn: connId,
+							tag: connTag,
+							hub_id: hubId,
+							tookMs: Date.now() - authVerifyStartedAt,
+							err: String(e),
+						},
+						'auth error'
+					)
 					authInFlight = false
 					closeBoth(1011, 'auth_error')
 				})

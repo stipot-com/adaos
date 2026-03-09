@@ -1,8 +1,39 @@
 import { Pool } from 'pg'
+import pino from 'pino'
 
 export type Binding = { chat_id: bigint, hub_id: string, alias: string, is_default: boolean }
 
 let _pool: Pool | null = null
+const repoLog = pino({ name: 'tg-repo' })
+const VERIFY_TRACE =
+  process.env['TG_REPO_TRACE'] === '1' ||
+  process.env['WS_NATS_PROXY_VERBOSE'] === '1'
+const VERIFY_SLOW_MS = Math.max(
+  50,
+  Number.parseInt(process.env['TG_REPO_VERIFY_SLOW_MS'] || '250', 10) || 250
+)
+const hubTokenCache = new Map<string, string>()
+
+function cacheHubToken(hubId: string, token: string): void {
+  if (!hubId || !token) return
+  hubTokenCache.set(hubId, token)
+  if (hubTokenCache.size > 1024) {
+    const oldestKey = hubTokenCache.keys().next().value as string | undefined
+    if (oldestKey) hubTokenCache.delete(oldestKey)
+  }
+}
+
+function logVerifyResult(
+  fields: Record<string, unknown>,
+  msg: string,
+  forceWarn = false
+): void {
+  if (!VERIFY_TRACE && !forceWarn) return
+  try {
+    if (forceWarn) repoLog.warn(fields, msg)
+    else repoLog.info(fields, msg)
+  } catch {}
+}
 
 export function pg(): Pool {
   if (_pool) return _pool
@@ -103,7 +134,10 @@ export async function upsertBinding(chatId: number, hubId: string, alias: string
 export async function getHubToken(hubId: string): Promise<string | null> {
   const { rows } = await pg().query('select token from hub_nats_tokens where hub_id=$1 limit 1', [hubId])
   const token = (rows[0]?.token as string | undefined) || null
-  if (token) return token
+  if (token) {
+    cacheHubToken(hubId, token)
+    return token
+  }
 
   // Backward-compat: old deployments stored hub tokens in tg_bindings.
   const { rows: oldRows } = await pg().query(
@@ -112,6 +146,7 @@ export async function getHubToken(hubId: string): Promise<string | null> {
   )
   const oldToken = (oldRows[0]?.hub_nats_token as string | undefined) || null
   if (oldToken) {
+    cacheHubToken(hubId, oldToken)
     try {
       await setHubToken(hubId, oldToken)
     } catch {
@@ -128,6 +163,7 @@ export async function setHubToken(hubId: string, token: string): Promise<void> {
      on conflict (hub_id) do update set token=excluded.token, updated_at=now()`,
     [hubId, token]
   )
+  cacheHubToken(hubId, token)
 }
 
 export async function ensureHubToken(hubId: string): Promise<string> {
@@ -140,18 +176,79 @@ export async function ensureHubToken(hubId: string): Promise<string> {
 }
 
 export async function verifyHubToken(hubId: string, token: string): Promise<boolean> {
-  const { rowCount } = await pg().query(
-    'select 1 from hub_nats_tokens where hub_id=$1 and token=$2 limit 1',
-    [hubId, token]
-  )
-  if ((rowCount || 0) > 0) return true
+  const startedAt = Date.now()
+  const cachedToken = hubTokenCache.get(hubId)
+  if (cachedToken && cachedToken === token) {
+    logVerifyResult(
+      {
+        hub_id: hubId,
+        source: 'cache',
+        tookMs: Date.now() - startedAt,
+      },
+      'hub token verify ok'
+    )
+    return true
+  }
 
-  // Backward-compat check (old deployments)
-  const { rowCount: oldCount } = await pg().query(
-    'select 1 from tg_bindings where hub_id=$1 and hub_nats_token=$2 limit 1',
-    [hubId, token]
-  )
-  return (oldCount || 0) > 0
+  try {
+    const primaryStartedAt = Date.now()
+    const { rowCount } = await pg().query(
+      'select 1 from hub_nats_tokens where hub_id=$1 and token=$2 limit 1',
+      [hubId, token]
+    )
+    const primaryMs = Date.now() - primaryStartedAt
+    if ((rowCount || 0) > 0) {
+      cacheHubToken(hubId, token)
+      const tookMs = Date.now() - startedAt
+      logVerifyResult(
+        {
+          hub_id: hubId,
+          source: 'hub_nats_tokens',
+          tookMs,
+          primaryMs,
+        },
+        'hub token verify ok',
+        tookMs >= VERIFY_SLOW_MS
+      )
+      return true
+    }
+
+    // Backward-compat check (old deployments)
+    const fallbackStartedAt = Date.now()
+    const { rowCount: oldCount } = await pg().query(
+      'select 1 from tg_bindings where hub_id=$1 and hub_nats_token=$2 limit 1',
+      [hubId, token]
+    )
+    const fallbackMs = Date.now() - fallbackStartedAt
+    const tookMs = Date.now() - startedAt
+    const ok = (oldCount || 0) > 0
+    if (ok) cacheHubToken(hubId, token)
+    logVerifyResult(
+      {
+        hub_id: hubId,
+        source: ok ? 'tg_bindings' : 'miss',
+        tookMs,
+        primaryMs,
+        fallbackMs,
+      },
+      ok ? 'hub token verify ok' : 'hub token verify miss',
+      tookMs >= VERIFY_SLOW_MS
+    )
+    return ok
+  } catch (error) {
+    const tookMs = Date.now() - startedAt
+    try {
+      repoLog.error(
+        {
+          hub_id: hubId,
+          tookMs,
+          err: String(error),
+        },
+        'hub token verify error'
+      )
+    } catch {}
+    throw error
+  }
 }
 
 export async function setDefault(chatId: number, alias: string): Promise<void> {
