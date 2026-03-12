@@ -32,6 +32,88 @@ class JsonFormatter(logging.Formatter):
         return _json_formatter(record)
 
 
+def _parse_log_level(name: str | None, *, default: int) -> int:
+    if not name:
+        return default
+    try:
+        raw = str(name).strip().upper()
+    except Exception:
+        return default
+    if not raw:
+        return default
+    if raw == "WARN":
+        raw = "WARNING"
+    if raw.isdigit():
+        try:
+            return int(raw)
+        except Exception:
+            return default
+    try:
+        v = getattr(logging, raw)
+    except Exception:
+        return default
+    if isinstance(v, int):
+        return v
+    return default
+
+
+def _parse_hide_rules() -> list[tuple[str, int]]:
+    """
+    Hide chatty loggers without changing global log level.
+
+    Env:
+    - ADAOS_LOG_HIDE: comma-separated rules:
+        * `prefix` -> hide below ADAOS_LOG_HIDE_LEVEL
+        * `prefix=LEVEL` / `prefix:LEVEL` -> hide below LEVEL for that prefix
+    - ADAOS_LOG_HIDE_LEVEL: default level for rules without explicit LEVEL (default: WARNING)
+    """
+    raw = os.getenv("ADAOS_LOG_HIDE", "") or ""
+    try:
+        s = str(raw).strip()
+    except Exception:
+        s = ""
+    if not s:
+        return []
+    default_level = _parse_log_level(os.getenv("ADAOS_LOG_HIDE_LEVEL", "WARNING"), default=logging.WARNING)
+    rules: list[tuple[str, int]] = []
+    for token in s.split(","):
+        try:
+            item = str(token).strip()
+        except Exception:
+            continue
+        if not item:
+            continue
+        sep = "=" if "=" in item else (":" if ":" in item else None)
+        if sep:
+            prefix, lvl = item.split(sep, 1)
+            prefix = prefix.strip()
+            min_level = _parse_log_level(lvl, default=default_level)
+        else:
+            prefix = item.strip()
+            min_level = default_level
+        if not prefix:
+            continue
+        rules.append((prefix, int(min_level)))
+    return rules
+
+
+class PrefixMinLevelFilter(logging.Filter):
+    def __init__(self, rules: list[tuple[str, int]]):
+        super().__init__()
+        self._rules = [(p, int(lvl)) for (p, lvl) in rules if p]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            name = record.name
+            level = record.levelno
+        except Exception:
+            return True
+        for prefix, min_level in self._rules:
+            if name.startswith(prefix):
+                return level >= min_level
+        return True
+
+
 def setup_logging(paths: PathProvider, level: str = "INFO") -> logging.Logger:
     """
     Настройка логов:
@@ -59,6 +141,16 @@ def setup_logging(paths: PathProvider, level: str = "INFO") -> logging.Logger:
     logger.addHandler(stream_h)
     logger.addHandler(file_h)
     logger.propagate = False
+
+    # Optional noise suppression (apply to handlers so it affects all child loggers).
+    try:
+        rules = _parse_hide_rules()
+        if rules:
+            flt = PrefixMinLevelFilter(rules)
+            stream_h.addFilter(flt)
+            file_h.addFilter(flt)
+    except Exception:
+        pass
     # logger.info("logging.initialized", extra={"extra": {"logfile": str(logfile)}})
     return logger
 
@@ -67,10 +159,20 @@ def attach_event_logger(bus: EventBus, logger: Optional[logging.Logger] = None) 
     """
     Подписывает логгер на все события шины.
     """
+    try:
+        if str(os.getenv("ADAOS_LOG_EVENTS", "1") or "1").strip() == "0":
+            return
+    except Exception:
+        pass
     base_logger = logger or logging.getLogger("adaos.events")
+    try:
+        include_payload = str(os.getenv("ADAOS_LOG_EVENTS_PAYLOAD", "1") or "1").strip() != "0"
+    except Exception:
+        include_payload = True
 
     def _handler(ev: Event) -> None:
         iso_time = datetime.fromtimestamp(getattr(ev, "ts", 0), tz=timezone.utc).isoformat() if getattr(ev, "ts", None) else None
+        payload = ev.payload if include_payload else None
         base_logger.info(
             "event",
             extra={
@@ -79,7 +181,7 @@ def attach_event_logger(bus: EventBus, logger: Optional[logging.Logger] = None) 
                     "type": ev.type,
                     "source": ev.source,
                     "ts": ev.ts,
-                    "payload": ev.payload,
+                    "payload": payload,
                 }
             },
         )

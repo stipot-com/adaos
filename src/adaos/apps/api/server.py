@@ -21,6 +21,7 @@ import platform, time, os
 import signal
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 def _maybe_set_windows_selector_loop() -> None:
     if os.name != "nt":
@@ -97,6 +98,59 @@ async def _request_process_shutdown(delay_sec: float = _DEFAULT_SHUTDOWN_SIGNAL_
     signal.raise_signal(signal.SIGINT)
 
 
+def _api_state_dir() -> Path:
+    raw = get_ctx().paths.state_dir()
+    path = raw() if callable(raw) else raw
+    out = Path(path)
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _restart_marker_path_from_base(base_url: str | None) -> Path | None:
+    raw = str(base_url or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    host = str(parsed.hostname or "").strip()
+    port = int(parsed.port or 0)
+    if not host or port <= 0:
+        return None
+    safe_host = host.replace(":", "_").replace("/", "_").replace("\\", "_")
+    root = _api_state_dir() / "api"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"restart-{safe_host}-{port}.json"
+
+
+def _consume_restart_marker(base_url: str | None) -> dict[str, Any] | None:
+    path = _restart_marker_path_from_base(base_url)
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if not isinstance(data, dict):
+        return None
+    try:
+        expires_at = float(data.get("expires_at") or 0.0)
+    except Exception:
+        expires_at = 0.0
+    if expires_at and time.time() > expires_at:
+        return None
+    return data
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1) инициализируем AgentContext (публикуется через set_ctx внутри bootstrap_app)
@@ -134,6 +188,7 @@ async def lifespan(app: FastAPI):
         app.state.shutdown_reason = "signal"
         app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
         app.state.shutdown_stopping_emitted = False
+        app.state.restart_marker = _consume_restart_marker(os.getenv("ADAOS_SELF_BASE_URL"))
     except Exception:
         pass
 
@@ -249,12 +304,13 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     pass
                 # Send greeting via Root
+                startup_notice_key = "subnet.restarted" if getattr(app.state, "restart_marker", None) else "subnet.started"
                 try:
                     from adaos.sdk.data.i18n import _ as _t
 
-                    text = _t("subnet.started")
+                    text = _t(startup_notice_key)
                 except Exception:
-                    text = "subnet.started"
+                    text = startup_notice_key
                 try:
                     node_yaml = _load_node()
                 except Exception:
@@ -289,11 +345,14 @@ async def lifespan(app: FastAPI):
                     st2, body2 = await asyncio.to_thread(_safe_post)
                     if st2 not in (200, 201, 202):
                         logging.getLogger("adaos.router").warning(
-                            "telegram broadcast (subnet.started) failed",
+                            "telegram broadcast (%s) failed",
+                            startup_notice_key,
                             extra={"hub_id": conf.subnet_id, "status": st2, "body": body2},
                         )
                 except Exception:
-                    logging.getLogger("adaos.router").warning("telegram broadcast (subnet.started) exception", exc_info=True)
+                    logging.getLogger("adaos.router").warning(
+                        "telegram broadcast (%s) exception", startup_notice_key, exc_info=True
+                    )
                 tg_enabled = True
     except Exception:
         pass
@@ -367,7 +426,7 @@ async def lifespan(app: FastAPI):
             pass
         # On graceful shutdown, notify Telegram and UI if enabled
         try:
-            if tg_enabled:
+            if tg_enabled and str(getattr(app.state, "shutdown_reason", "signal") or "signal") != "cli.restart":
                 conf = get_ctx().config
                 ctx = _get_ctx()
                 api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")

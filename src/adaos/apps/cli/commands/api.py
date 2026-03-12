@@ -2,6 +2,8 @@
 import atexit
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -95,6 +97,32 @@ def _pidfile_path(host: str, port: int) -> Path:
     root = _state_dir() / "api"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"serve-{safe_host}-{int(port)}.json"
+
+
+def _restart_marker_path(host: str, port: int) -> Path:
+    safe_host = str(host or "127.0.0.1").replace(":", "_").replace("/", "_").replace("\\", "_")
+    root = _state_dir() / "api"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"restart-{safe_host}-{int(port)}.json"
+
+
+def _write_restart_marker(path: Path, *, host: str, port: int, reason: str, ttl_s: float = 180.0) -> None:
+    now = time.time()
+    payload = {
+        "host": str(host or "127.0.0.1"),
+        "port": int(port),
+        "reason": str(reason or "cli.restart"),
+        "created_at": now,
+        "expires_at": now + max(30.0, float(ttl_s)),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clear_restart_marker(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _read_pidfile(path: Path) -> dict | None:
@@ -329,6 +357,55 @@ def _wait_for_server_exit(host: str, port: int, *, timeout: float) -> bool:
     return False
 
 
+def _wait_for_server_start(host: str, port: int, *, timeout: float) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        owner_pid = _find_listening_server_pid(host, port)
+        if owner_pid and owner_pid != os.getpid():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _spawn_detached_server(host: str, port: int, *, token: str | None, reload: bool = False) -> None:
+    args = [
+        sys.executable,
+        "-m",
+        "adaos.apps.cli.commands.api",
+        "serve",
+        "--host",
+        str(host),
+        "--port",
+        str(int(port)),
+    ]
+    if reload:
+        args.append("--reload")
+    if token:
+        args.extend(["--token", str(token)])
+
+    env = os.environ.copy()
+    creationflags = 0
+    popen_kwargs: dict[str, object] = {
+        "args": args,
+        "cwd": os.getcwd(),
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        popen_kwargs["startupinfo"] = startupinfo
+        popen_kwargs["creationflags"] = creationflags
+    else:
+        popen_kwargs["start_new_session"] = True
+    subprocess.Popen(**popen_kwargs)
+
+
 def _request_graceful_shutdown(host: str, port: int, *, token: str | None, reason: str = "cli.stop") -> bool:
     url = f"http://{host}:{int(port)}/api/admin/shutdown"
     headers = {"Content-Type": "application/json"}
@@ -457,6 +534,50 @@ def stop():
             typer.echo(f"Stopped AdaOS API at http://{host}:{port}")
     else:
         typer.echo(f"No AdaOS API server running at http://{host}:{port}")
+
+
+@app.command("restart")
+def restart():
+    """Restart the AdaOS local HTTP API with a single Telegram notification."""
+    try:
+        conf = load_config()
+    except Exception as exc:
+        typer.secho(f"[AdaOS] failed to load node.yaml: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    bind = _resolve_stop_bind(conf)
+    if bind is None:
+        typer.secho(
+            "[AdaOS] node.yaml does not contain a local hub_url with explicit host:port",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+    host, port = bind
+    token = getattr(conf, "token", None) or os.environ.get("ADAOS_TOKEN") or "dev-local-token"
+    marker = _restart_marker_path(host, port)
+    _write_restart_marker(marker, host=host, port=port, reason="cli.restart")
+
+    stopped_gracefully = False
+    try:
+        stopped_gracefully = _request_graceful_shutdown(host, port, token=token, reason="cli.restart")
+        if not stopped_gracefully:
+            _stop_previous_server(host, port)
+            if _find_listening_server_pid(host, port) or _find_matching_server_pids(
+                host, port, protected_pids=_current_process_family_pids()
+            ):
+                raise RuntimeError(f"failed to stop api server at {host}:{port}")
+
+        _spawn_detached_server(host, port, token=token, reload=False)
+        if not _wait_for_server_start(host, port, timeout=20.0):
+            raise RuntimeError(f"api server did not start at {host}:{port}")
+    except Exception as exc:
+        _clear_restart_marker(marker)
+        typer.secho(f"[AdaOS] restart failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    mode = "gracefully" if stopped_gracefully else "after hard stop"
+    typer.echo(f"Restarted AdaOS API {mode} at http://{host}:{port}")
 
 
 if __name__ == "__main__":

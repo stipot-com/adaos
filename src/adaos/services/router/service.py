@@ -38,6 +38,7 @@ class RouterService:
         self._rules: list[dict[str, Any]] = []
         self._subscribed = False
         self._vlog = logging.getLogger("adaos.router.voice_chat")
+        self._tg_reply_via_root_http = str(os.getenv("HUB_TG_REPLY_VIA_ROOT_HTTP") or "").strip() == "1"
 
     def _pick_target_node(self, desired_io: str, this_node: str) -> str:
         node = this_node
@@ -65,39 +66,40 @@ class RouterService:
                 continue
         return False
 
-    def _on_event(self, ev: Event) -> None:
+    async def _on_event(self, ev: Event) -> None:
         payload = ev.payload or {}
         text = (payload or {}).get("text")
         if not isinstance(text, str) or not text:
             return
         meta = payload.get("_meta") if isinstance(payload, dict) else None
         meta = meta if isinstance(meta, dict) else {}
+        is_tg = str(meta.get("io_type") or "").lower() == "telegram"
+        chat_id = meta.get("chat_id") if is_tg else None
+        is_tg_chat = isinstance(chat_id, str) and bool(chat_id.strip())
 
         # If this came from a chat platform (telegram), reply back into that chat via tg.output.*.
         # This path does not depend on route rules and is meant to be "request/response" style.
         try:
-            if str(meta.get("io_type") or "").lower() == "telegram":
-                chat_id = meta.get("chat_id")
-                if isinstance(chat_id, str) and chat_id.strip():
-                    bot_id = meta.get("bot_id")
-                    if not isinstance(bot_id, str) or not bot_id.strip():
-                        bot_id = "main-bot"
-                    hub_id = meta.get("hub_id")
-                    if not isinstance(hub_id, str) or not hub_id.strip():
-                        hub_id = get_ctx().config.subnet_id
-                    out_payload = {
-                        "target": {"bot_id": bot_id, "hub_id": hub_id, "chat_id": chat_id.strip()},
-                        "messages": [{"type": "text", "text": text}],
-                        "options": {"reply_to": meta.get("reply_to")} if meta.get("reply_to") else None,
-                    }
-                    self.bus.publish(
-                        Event(
-                            type=f"tg.output.{bot_id}.chat.{chat_id.strip()}",
-                            source="router",
-                            ts=time.time(),
-                            payload=out_payload,
-                        )
+            if is_tg and is_tg_chat and not self._tg_reply_via_root_http:
+                bot_id = meta.get("bot_id")
+                if not isinstance(bot_id, str) or not bot_id.strip():
+                    bot_id = "main-bot"
+                hub_id = meta.get("hub_id")
+                if not isinstance(hub_id, str) or not hub_id.strip():
+                    hub_id = get_ctx().config.subnet_id
+                out_payload = {
+                    "target": {"bot_id": bot_id, "hub_id": hub_id, "chat_id": chat_id.strip()},
+                    "messages": [{"type": "text", "text": text}],
+                    "options": {"reply_to": meta.get("reply_to")} if meta.get("reply_to") else None,
+                }
+                self.bus.publish(
+                    Event(
+                        type=f"tg.output.{bot_id}.chat.{chat_id.strip()}",
+                        source="router",
+                        ts=time.time(),
+                        payload=out_payload,
                     )
+                )
         except Exception:
             pass
 
@@ -135,6 +137,23 @@ class RouterService:
                         },
                     )
                 )
+            elif is_tg and is_tg_chat and self._tg_reply_via_root_http:
+                # When using Root HTTP replies, ensure we still emit io.out.chat.append even if
+                # the skill didn't provide route_id/route.
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": text,
+                            "ts": time.time(),
+                            "_meta": dict(meta),
+                        },
+                    )
+                )
         except Exception:
             pass
 
@@ -149,7 +168,7 @@ class RouterService:
         did_any = False
 
         # Telegram route (if configured in rules)
-        if self._has_rule_for("telegram"):
+        if self._has_rule_for("telegram") and not is_tg_chat:
             target_node_tg = self._pick_target_node("telegram", this_node)
             try:
                 # Resolve hub_id for target node
@@ -183,7 +202,13 @@ class RouterService:
                 prefixed_text = f"[{alias}]: {text}" if alias else text
                 body = {"hub_id": hub_id, "text": prefixed_text}
                 try:
-                    r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+                    r = await asyncio.to_thread(
+                        requests.post,
+                        url,
+                        json=body,
+                        headers={"Content-Type": "application/json"},
+                        timeout=3.0,
+                    )
                     if not (200 <= int(r.status_code) < 300):
                         logging.getLogger("adaos.router").warning(
                             "router: telegram send failed",
@@ -212,7 +237,7 @@ class RouterService:
                 did_any = True
             else:
                 # Cross-node delivery: resolve base_url and POST
-                base_url = self._resolve_node_base_url(target_node_out, conf.role, conf.hub_url)
+                base_url = await asyncio.to_thread(self._resolve_node_base_url, target_node_out, conf.role, conf.hub_url)
                 if not base_url and conf.role == "hub":
                     try:
                         directory = get_directory()
@@ -240,7 +265,7 @@ class RouterService:
                     headers = {"X-AdaOS-Token": conf.token or "dev-local-token", "Content-Type": "application/json"}
                     body = {"text": text, "origin": {"source": ev.source, "from": this_node}}
                     try:
-                        requests.post(url, json=body, headers=headers, timeout=2.5)
+                        await asyncio.to_thread(requests.post, url, json=body, headers=headers, timeout=2.5)
                         did_any = True
                     except Exception:
                         pass
@@ -543,11 +568,12 @@ class RouterService:
             if not isinstance(text, str) or not text.strip():
                 return
 
-            # Request/response Telegram delivery: if the originating request came from Telegram,
-            # send this chat message back into that chat via Root (/io/tg/send).
-            # This avoids dependency on hub->NATS connectivity for replies.
+            # Optional request/response Telegram delivery via Root HTTP (/io/tg/send).
+            #
+            # Disabled by default because `tg.output.*` is already bridged to Root via NATS (see bootstrap),
+            # and enabling both produces duplicate Telegram messages.
             try:
-                if str((meta or {}).get("io_type") or "").lower() == "telegram":
+                if self._tg_reply_via_root_http and str((meta or {}).get("io_type") or "").lower() == "telegram":
                     chat_id = (meta or {}).get("chat_id")
                     if isinstance(chat_id, str) and chat_id.strip():
                         bot_id = (meta or {}).get("bot_id")
@@ -560,8 +586,16 @@ class RouterService:
                         api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
                         url = f"{api_base.rstrip('/')}/io/tg/send"
                         body = {"hub_id": hub_id, "bot_id": bot_id, "chat_id": chat_id.strip(), "text": text.strip()}
+                        if (meta or {}).get("reply_to"):
+                            body["reply_to"] = (meta or {}).get("reply_to")
                         try:
-                            r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
+                            r = await asyncio.to_thread(
+                                requests.post,
+                                url,
+                                json=body,
+                                headers={"Content-Type": "application/json"},
+                                timeout=3.0,
+                            )
                             if not (200 <= int(r.status_code) < 300):
                                 logging.getLogger("adaos.router").warning(
                                     "router: telegram send failed (chat reply)",

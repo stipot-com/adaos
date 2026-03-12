@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 from nats.errors import ProtocolError
 from nats.protocol.parser import Parser
@@ -41,6 +44,7 @@ class _FakeNC:
 class _FakeWebsocketsWS:
     def __init__(self, frames: list[bytes | str]) -> None:
         self._frames = list(frames)
+        self.sent: list[bytes] = []
         self.closed = False
         self.close_code = None
         self.close_reason = None
@@ -50,6 +54,9 @@ class _FakeWebsocketsWS:
         if not self._frames:
             raise RuntimeError("no more frames")
         return self._frames.pop(0)
+
+    async def send(self, payload: bytes) -> None:
+        self.sent.append(bytes(payload))
 
     async def close(self) -> None:
         self.closed = True
@@ -81,6 +88,24 @@ class _FakeAiohttpWS:
         return None
 
 
+class _FakeAiohttpPingWS:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self._response = SimpleNamespace(headers={})
+        self.pings: list[bytes] = []
+
+    async def ping(self, payload: bytes = b"") -> None:
+        self.pings.append(bytes(payload))
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def exception(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_parser_ping_injected_mid_payload_corrupts_stream() -> None:
     nc = _FakeNC()
@@ -101,12 +126,14 @@ async def test_websockets_transport_consumes_standalone_ping_out_of_band() -> No
     nc = _FakeNC()
     transport = WebSocketTransportWebsockets()
     transport._adaos_nc = nc
-    transport._ws = _FakeWebsocketsWS([b"PING\r\n", b"INFO {}\r\n"])
+    ws = _FakeWebsocketsWS([b"PING\r\n", b"INFO {}\r\n"])
+    transport._ws = ws
 
     data = await transport.readline()
 
-    assert nc.pings == 1
+    assert nc.pings == 0
     assert nc.pongs == 0
+    assert ws.sent == [b"PONG\r\n"]
     assert data == b"INFO {}\r\n"
 
 
@@ -133,6 +160,60 @@ async def test_aiohttp_transport_consumes_standalone_pong_out_of_band() -> None:
         assert data == b"INFO {}\r\n"
     finally:
         await transport._client.close()
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_connect_uses_manual_ws_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("aiohttp")
+
+    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "20")
+    transport = WebSocketTransportAiohttp()
+    recorded: dict[str, object] = {}
+    fake_ws = _FakeAiohttpPingWS()
+
+    async def _fake_ws_connect(url: str, **kwargs):
+        recorded["url"] = url
+        recorded["kwargs"] = dict(kwargs)
+        return fake_ws
+
+    try:
+        monkeypatch.setattr(transport._client, "ws_connect", _fake_ws_connect)
+        await transport.connect_tls(
+            "wss://example.invalid/nats",
+            ssl_context=None,  # type: ignore[arg-type]
+            buffer_size=0,
+            connect_timeout=5,
+        )
+
+        kwargs = recorded["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert "heartbeat" not in kwargs
+        assert transport._adaos_ws_heartbeat_mode == "manual_no_timeout"
+        assert transport._ws_heartbeat_task is not None
+    finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_manual_ws_heartbeat_sends_ping() -> None:
+    pytest.importorskip("aiohttp")
+
+    transport = WebSocketTransportAiohttp()
+    fake_ws = _FakeAiohttpPingWS()
+    try:
+        transport._ws = fake_ws
+        transport._adaos_ws_heartbeat = 0.01
+        transport._adaos_ws_heartbeat_mode = "manual_no_timeout"
+        transport._after_connect()
+
+        await asyncio.sleep(0.035)
+
+        assert fake_ws.pings
+        assert transport._adaos_ws_pings_tx >= 1
+    finally:
+        transport.close()
+        await transport.wait_closed()
 
 
 def test_extract_route_subjects_finds_multiple_msg_subjects() -> None:

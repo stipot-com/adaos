@@ -714,7 +714,26 @@ export function installWsNatsProxy(server: HttpServer) {
 					}
 					if (ws.readyState !== 1) return
 					const pingSentAt = Date.now()
-					ws.send(NATS_PING, { binary: true })
+					ws.send(NATS_PING, { binary: true }, (err?: Error) => {
+						try {
+							if (err) {
+								log().warn({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked, err: String(err) }, 'nats keepalive send failed')
+								return
+							}
+							if (pingTrace) {
+								log().info(
+									{
+										conn: connId,
+										tag: connTag,
+										hub_id: hubIdForLog,
+										handshaked,
+										sendMs: Date.now() - pingSentAt,
+									},
+									'nats ping (keepalive -> client) sent'
+								)
+							}
+						} catch {}
+					})
 					natsKeepalivesSent += 1
 					keepaliveAwaitingPongSince = pingSentAt
 					keepaliveAwaitingSocketDataSince = pingSentAt

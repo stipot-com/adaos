@@ -1038,6 +1038,50 @@ class BootstrapService:
                                             tr_pending_q = q.qsize()
                                     except Exception:
                                         tr_pending_q = None
+                                    tr_pending_hi_q = None
+                                    try:
+                                        q_hi = getattr(tr, "_pending_hi", None) if tr is not None else None
+                                        if q_hi is not None and callable(getattr(q_hi, "qsize", None)):
+                                            tr_pending_hi_q = q_hi.qsize()
+                                    except Exception:
+                                        tr_pending_hi_q = None
+                                    send_lock_locked = None
+                                    try:
+                                        lk = getattr(tr, "_send_lock", None) if tr is not None else None
+                                        if lk is not None and callable(getattr(lk, "locked", None)):
+                                            send_lock_locked = bool(lk.locked())
+                                    except Exception:
+                                        send_lock_locked = None
+                                    ka_pings_rx = None
+                                    ka_last_ping_rx_ago_s = None
+                                    try:
+                                        ka_pings_rx = getattr(tr, "_adaos_pings_rx", None) if tr is not None else None
+                                        ka_last_ping_rx_at = getattr(tr, "_adaos_last_ping_rx_at", None) if tr is not None else None
+                                        if isinstance(ka_last_ping_rx_at, (int, float)):
+                                            ka_last_ping_rx_ago_s = round(time.monotonic() - float(ka_last_ping_rx_at), 3)
+                                    except Exception:
+                                        ka_pings_rx = ka_pings_rx or None
+                                        ka_last_ping_rx_ago_s = ka_last_ping_rx_ago_s or None
+                                    ka_pongs_tx = None
+                                    ka_last_pong_tx_ago_s = None
+                                    ka_last_pong_wait_ms = None
+                                    ka_last_pong_send_ms = None
+                                    try:
+                                        ka_pongs_tx = getattr(tr, "_adaos_pongs_tx", None) if tr is not None else None
+                                        ka_last_pong_tx_at = getattr(tr, "_adaos_last_pong_tx_at", None) if tr is not None else None
+                                        if isinstance(ka_last_pong_tx_at, (int, float)):
+                                            ka_last_pong_tx_ago_s = round(time.monotonic() - float(ka_last_pong_tx_at), 3)
+                                        w_s = getattr(tr, "_adaos_last_pong_tx_wait_s", None) if tr is not None else None
+                                        if isinstance(w_s, (int, float)):
+                                            ka_last_pong_wait_ms = round(float(w_s) * 1000.0, 3)
+                                        s_s = getattr(tr, "_adaos_last_pong_tx_send_s", None) if tr is not None else None
+                                        if isinstance(s_s, (int, float)):
+                                            ka_last_pong_send_ms = round(float(s_s) * 1000.0, 3)
+                                    except Exception:
+                                        ka_pongs_tx = ka_pongs_tx or None
+                                        ka_last_pong_tx_ago_s = ka_last_pong_tx_ago_s or None
+                                        ka_last_pong_wait_ms = ka_last_pong_wait_ms or None
+                                        ka_last_pong_send_ms = ka_last_pong_send_ms or None
                                     ws_tag = None
                                     try:
                                         ws_tag = getattr(tr, "_adaos_ws_tag", None) if tr is not None else None
@@ -1053,6 +1097,21 @@ class BootstrapService:
                                         ws_hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr is not None else None
                                     except Exception:
                                         ws_hb = None
+                                    ws_hb_mode = None
+                                    try:
+                                        ws_hb_mode = getattr(tr, "_adaos_ws_heartbeat_mode", None) if tr is not None else None
+                                    except Exception:
+                                        ws_hb_mode = None
+                                    ws_data_hb = None
+                                    try:
+                                        ws_data_hb = getattr(tr, "_adaos_ws_data_heartbeat", None) if tr is not None else None
+                                    except Exception:
+                                        ws_data_hb = None
+                                    ws_recv_timeout = None
+                                    try:
+                                        ws_recv_timeout = getattr(tr, "_adaos_ws_recv_timeout", None) if tr is not None else None
+                                    except Exception:
+                                        ws_recv_timeout = None
                                     ws_url = None
                                     try:
                                         ws_url = getattr(tr, "_adaos_ws_url", None) if tr is not None else None
@@ -1094,6 +1153,26 @@ class BootstrapService:
                                     except Exception:
                                         last_recv_err = last_recv_err or None
                                         last_recv_err_ago_s = last_recv_err_ago_s or None
+                                    ws_pings_tx = None
+                                    ws_last_ping_tx_ago_s = None
+                                    ws_last_ping_wait_ms = None
+                                    ws_last_ping_send_ms = None
+                                    try:
+                                        ws_pings_tx = getattr(tr, "_adaos_ws_pings_tx", None) if tr is not None else None
+                                        ws_last_ping_tx_at = getattr(tr, "_adaos_last_ws_ping_tx_at", None) if tr is not None else None
+                                        if isinstance(ws_last_ping_tx_at, (int, float)):
+                                            ws_last_ping_tx_ago_s = round(time.monotonic() - float(ws_last_ping_tx_at), 3)
+                                        ws_ping_wait_s = getattr(tr, "_adaos_last_ws_ping_tx_wait_s", None) if tr is not None else None
+                                        if isinstance(ws_ping_wait_s, (int, float)):
+                                            ws_last_ping_wait_ms = round(float(ws_ping_wait_s) * 1000.0, 3)
+                                        ws_ping_send_s = getattr(tr, "_adaos_last_ws_ping_tx_send_s", None) if tr is not None else None
+                                        if isinstance(ws_ping_send_s, (int, float)):
+                                            ws_last_ping_send_ms = round(float(ws_ping_send_s) * 1000.0, 3)
+                                    except Exception:
+                                        ws_pings_tx = ws_pings_tx or None
+                                        ws_last_ping_tx_ago_s = ws_last_ping_tx_ago_s or None
+                                        ws_last_ping_wait_ms = ws_last_ping_wait_ms or None
+                                        ws_last_ping_send_ms = ws_last_ping_send_ms or None
                                     server0 = server if server is not None else nats_last_server
                                     extra_parts: list[str] = []
                                     if source:
@@ -1105,7 +1184,7 @@ class BootstrapService:
                                     extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
                                     _rl_log(
                                         rate_key,
-                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_q={tr_pending_q} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
+                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_hb_mode={ws_hb_mode} ws_data_hb_s={ws_data_hb} ws_recv_timeout_s={ws_recv_timeout} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_hi_q={tr_pending_hi_q} transport_pending_q={tr_pending_q} send_lock={send_lock_locked} ka_pings_rx={ka_pings_rx} ka_last_ping_rx_ago_s={ka_last_ping_rx_ago_s} ka_pongs_tx={ka_pongs_tx} ka_last_pong_tx_ago_s={ka_last_pong_tx_ago_s} ka_last_pong_wait_ms={ka_last_pong_wait_ms} ka_last_pong_send_ms={ka_last_pong_send_ms} ws_pings_tx={ws_pings_tx} ws_last_ping_tx_ago_s={ws_last_ping_tx_ago_s} ws_last_ping_wait_ms={ws_last_ping_wait_ms} ws_last_ping_send_ms={ws_last_ping_send_ms} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
                                         every_s=every_s,
                                     )
                                 except Exception:
@@ -1145,10 +1224,16 @@ class BootstrapService:
                                             "HUB_NATS_RX_TIMEOUT_S",
                                             "HUB_NATS_WS_IMPL",
                                             "HUB_NATS_WS_MAX_MSG_SIZE",
+                                            "HUB_NATS_WS_MAX_QUEUE",
+                                            "HUB_NATS_WS_HEARTBEAT_S",
+                                            "HUB_NATS_WS_DATA_HEARTBEAT_S",
+                                            "HUB_NATS_WS_PROXY",
                                             "HUB_NATS_WS_TRACE",
                                             "HUB_NATS_WS_PATCH_AIOHTTP",
                                             "HUB_NATS_WIRETAP",
                                             "HUB_NATS_WIRETAP_MAX_BYTES",
+                                            "HUB_NATS_WIRETAP_EVERY_N",
+                                            "HUB_NATS_WIRETAP_SKIP",
                                             "HUB_NATS_TCP_KEEPALIVE",
                                             "HUB_NATS_TCP_KEEPALIVE_S",
                                             "HUB_NATS_TCP_KEEPALIVE_INTERVAL_S",
@@ -1366,8 +1451,13 @@ class BootstrapService:
                                                 pass
                                         if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
                                             hb = getattr(tr, "_adaos_ws_heartbeat", None) if tr else None
+                                            hb_mode = getattr(tr, "_adaos_ws_heartbeat_mode", None) if tr else None
                                             if hb is not None:
-                                                _rl_log("nats.ws_hb", f"[hub-io] nats ws heartbeat: {hb!s}s", every_s=60.0)
+                                                _rl_log(
+                                                    "nats.ws_hb",
+                                                    f"[hub-io] nats ws heartbeat: {hb!s}s mode={hb_mode}",
+                                                    every_s=60.0,
+                                                )
                                             if isinstance(ws_connect_tag, str) and ws_connect_tag:
                                                 _rl_log("nats.ws_tag", f"[hub-io] nats ws tag: {ws_connect_tag}", every_s=1.0)
                                             _rl_log(
@@ -3521,10 +3611,38 @@ class BootstrapService:
                             self._log.info("nats bridge finalizing hub_id=%s server=%s", hub_id, nats_last_server)
                         except Exception:
                             pass
+                        def _keep_pending_task(task: asyncio.Task | None) -> None:
+                            # asyncio keeps only weak refs to tasks; if we drop our references before a
+                            # canceled task finishes, Python can emit "Task was destroyed but it is pending!".
+                            try:
+                                if not isinstance(task, asyncio.Task) or task.done():
+                                    return
+                            except Exception:
+                                return
+                            try:
+                                alive = getattr(self, "_nats_pending_cleanup_tasks", None)
+                                if alive is None:
+                                    alive = set()
+                                    setattr(self, "_nats_pending_cleanup_tasks", alive)
+                                alive.add(task)
+
+                                def _drop(done: asyncio.Task) -> None:
+                                    try:
+                                        alive.discard(done)
+                                    except Exception:
+                                        pass
+
+                                task.add_done_callback(_drop)
+                            except Exception:
+                                pass
                         try:
                             if raw_keepalive_task is not None:
                                 try:
                                     raw_keepalive_task.cancel()
+                                except Exception:
+                                    pass
+                                try:
+                                    _keep_pending_task(raw_keepalive_task)
                                 except Exception:
                                     pass
                                 try:
@@ -3605,6 +3723,10 @@ class BootstrapService:
                                     task.cancel()
                                 except Exception:
                                     pass
+                                try:
+                                    _keep_pending_task(task if isinstance(task, asyncio.Task) else None)
+                                except Exception:
+                                    pass
                             if sub_workers:
                                 try:
                                     await asyncio.wait_for(asyncio.gather(*sub_workers, return_exceptions=True), timeout=1.0)
@@ -3641,6 +3763,10 @@ class BootstrapService:
                                         t.cancel()
                                     except Exception:
                                         pass
+                                    try:
+                                        _keep_pending_task(t)
+                                    except Exception:
+                                        pass
                                     wait_tasks.append(t)
                             if wait_tasks:
                                 try:
@@ -3665,7 +3791,13 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                async def _maybe_snapshot_root_logs(*, trace: bool, force: bool = False) -> None:
+                async def _maybe_snapshot_root_logs(
+                    *,
+                    trace: bool,
+                    force: bool = False,
+                    tag_override: str | None = None,
+                    server_override: str | None = None,
+                ) -> None:
                     try:
                         if os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") != "1":
                             return
@@ -3686,7 +3818,7 @@ class BootstrapService:
                         try:
                             from urllib.parse import urlparse as _urlparse
 
-                            u = _urlparse(str(nats_last_server or ""))
+                            u = _urlparse(str(server_override or nats_last_server or ""))
                             host = (u.hostname or "").strip()
                             if host:
                                 # Dev endpoints (like /v1/dev/log_tail) live on the API host, not the NATS host.
@@ -3767,6 +3899,7 @@ class BootstrapService:
                                     f"route.to_browser.{hub_prefix}--",
                                     f"route.to_hub.{hub_prefix}--",
                                 )
+                                include_extra = str(os.getenv("HUB_ROOT_LOG_SNAPSHOT_EXTRACT_EXTRA", "0") or "0").strip() == "1"
                                 extra_keywords = (
                                     "http proxy failed",
                                     "ws tunnel:",
@@ -3805,7 +3938,7 @@ class BootstrapService:
                                             include = any(pref in line for pref in route_prefixes)
                                         except Exception:
                                             include = False
-                                    if not include:
+                                    if include_extra and (not include):
                                         try:
                                             include = any(kw in line for kw in extra_keywords)
                                         except Exception:
@@ -3817,8 +3950,13 @@ class BootstrapService:
                             except Exception:
                                 return ""
 
-                        nonlocal ws_connect_tag
-                        tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
+                        try:
+                            if isinstance(tag_override, str) and tag_override.strip():
+                                tag0 = tag_override.strip()
+                            else:
+                                tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
+                        except Exception:
+                            tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else ""
                         ts = time.strftime("%Y%m%d_%H%M%SZ", time.gmtime())
                         for fname in want:
                             try:
@@ -3886,45 +4024,67 @@ class BootstrapService:
                                 print(f"[hub-io] nats: encountered error: {e}")
                             except Exception:
                                 pass
-                            try:
-                                await _maybe_snapshot_root_logs(trace=trace0, force=True)
-                            except Exception:
-                                pass
                             # Optional delayed snapshot: root-side logs (ECONNRESET/conn close) can be emitted
                             # slightly after the hub notices EOF. A second tail a few seconds later often captures it.
                             try:
-                                # Always include an immediate post-error snapshot (0s) unless the user explicitly
-                                # disables delayed snapshots by setting this to an empty string.
-                                after_env = os.getenv("HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S", "0,3") or "0,3"
+                                # `HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S` accepts a comma list of delays in seconds.
+                                # Set it to empty to disable follow-up snapshots entirely.
+                                after_env = os.getenv("HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S")
+                                if after_env is None:
+                                    after_env = "0,3"
                             except Exception:
                                 after_env = "0,3"
                             delays: list[float] = []
                             try:
-                                for part in str(after_env).split(","):
-                                    p = str(part).strip()
-                                    if not p:
-                                        continue
-                                    try:
-                                        v = float(p)
-                                    except Exception:
-                                        continue
-                                    if v >= 0:
-                                        delays.append(v)
+                                if str(after_env or "").strip():
+                                    for part in str(after_env).split(","):
+                                        p = str(part).strip()
+                                        if not p:
+                                            continue
+                                        try:
+                                            v = float(p)
+                                        except Exception:
+                                            continue
+                                        if v >= 0:
+                                            delays.append(v)
+                                else:
+                                    delays = []
                             except Exception:
                                 delays = []
-                            if delays:
-                                # Keep this bounded so the supervisor can restart promptly.
-                                for after_s in delays[:8]:
-                                    try:
-                                        s = float(after_s)
-                                        if s > 0:
-                                            await asyncio.sleep(min(30.0, max(0.1, s)))
-                                    except Exception:
-                                        pass
-                                    try:
-                                        await _maybe_snapshot_root_logs(trace=trace0, force=True)
-                                    except Exception:
-                                        pass
+                            # Schedule snapshots in the background so reconnect is not delayed by HTTP tailing.
+                            try:
+                                if delays and os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") == "1":
+                                    tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else None
+                                    srv0 = nats_last_server if isinstance(nats_last_server, str) else None
+
+                                    async def _snap_later(delay_s: float) -> None:
+                                        try:
+                                            if delay_s > 0:
+                                                await asyncio.sleep(min(30.0, max(0.1, float(delay_s))))
+                                        except Exception:
+                                            pass
+                                        try:
+                                            await _maybe_snapshot_root_logs(
+                                                trace=trace0,
+                                                force=True,
+                                                tag_override=tag0,
+                                                server_override=srv0,
+                                            )
+                                        except Exception:
+                                            pass
+
+                                    for after_s in delays[:8]:
+                                        try:
+                                            asyncio.create_task(_snap_later(float(after_s)), name="adaos-root-log-snapshot")
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            # No blocking snapshots here: supervisor keeps retrying promptly.
+                            try:
+                                delays = []
+                            except Exception:
+                                pass
 
                             ran_for_s = time.monotonic() - started_at
                             try:

@@ -331,15 +331,11 @@ async def _run_one_aiohttp(
                         next_ping_at = now + float(client_ping_every_s)
                     if pending_ws_pongs and now >= pending_ws_pongs[0]:
                         client_ws_pong_timeouts += 1
-                        errors.append(
-                            f"client WS PONG timeout after PING #{client_ws_pings_tx} (timeouts={client_ws_pong_timeouts})"
-                        )
+                        errors.append(f"client WS PONG timeout after PING #{client_ws_pings_tx} (timeouts={client_ws_pong_timeouts})")
                         break
                     if pending_pongs and now >= pending_pongs[0]:
                         client_pong_timeouts += 1
-                        errors.append(
-                            f"client PONG timeout after PING #{client_pings_tx} (timeouts={client_pong_timeouts})"
-                        )
+                        errors.append(f"client PONG timeout after PING #{client_pings_tx} (timeouts={client_pong_timeouts})")
                         break
                     left = max(deadline - time.monotonic(), 0.1)
                     try:
@@ -663,9 +659,7 @@ async def _run_one_websockets(
             # Time out WS ping tasks.
             if pending_ws_pongs and now >= pending_ws_pongs[0][0]:
                 client_ws_pong_timeouts += 1
-                errors.append(
-                    f"client WS PONG timeout after PING #{client_ws_pings_tx} (timeouts={client_ws_pong_timeouts})"
-                )
+                errors.append(f"client WS PONG timeout after PING #{client_ws_pings_tx} (timeouts={client_ws_pong_timeouts})")
                 break
 
             if next_ping_at is not None and now >= next_ping_at:
@@ -798,7 +792,7 @@ async def _amain() -> int:
         help="WS client library (default: auto; on Windows prefers websockets).",
     )
     ap.add_argument("--tag", default="", help="Connection tag for Root logs (sets X-AdaOS-Nats-Conn + ?adaos_conn=...)")
-    ap.add_argument("--duration", type=float, default=70.0, help="Run duration per URL in seconds (default: 70)")
+    ap.add_argument("--duration", type=float, default=200.0, help="Run duration per URL in seconds (default: 200)")
     ap.add_argument("--ws-ping-every", type=float, default=0.0, help="Send WebSocket PING every N seconds (0=off)")
     ap.add_argument("--ws-pong-timeout", type=float, default=2.0, help="Timeout waiting for WS PONG after WS PING (seconds)")
     ap.add_argument("--client-ping-every", type=float, default=0.0, help="Send NATS protocol PING every N seconds (0=off)")

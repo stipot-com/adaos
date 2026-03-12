@@ -49,7 +49,11 @@ def order_nats_ws_candidates(
             out.append(txt)
 
     explicit = normalize_nats_ws_url(explicit_url, fallback=None)
-    if explicit and explicit in out:
+    # If explicit_url points to one of our known public WS endpoints, don't force it to the front.
+    # These endpoints can have different reliability characteristics depending on the network; we still
+    # want `prefer_dedicated` to win by default.
+    known_public = {"wss://api.inimatic.com/nats", "wss://nats.inimatic.com/nats"}
+    if explicit and explicit in out and explicit not in known_public:
         return [explicit] + [item for item in out if item != explicit]
 
     preferred = None
