@@ -180,9 +180,10 @@ export function installWsNatsProxy(server: HttpServer) {
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
-	let keepalivePongWarnMs = 2_000
+	const keepaliveEnabled = String(process.env['WS_NATS_PROXY_KEEPALIVE_ENABLE'] || '1') === '1'
+	let keepalivePongWarnMs = 5_000
 	try {
-		keepalivePongWarnMs = Math.max(250, Number(process.env['WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS'] || '2000'))
+		keepalivePongWarnMs = Math.max(250, Number(process.env['WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS'] || '5000'))
 	} catch {}
 	const traceHttpRoute =
 		(process.env['WS_NATS_PROXY_TRACE_HTTP_ROUTE'] || '0') === '1' ||
@@ -708,6 +709,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function armNatsKeepalive() {
+			if (!keepaliveEnabled) return
 			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
 			const requireHandshake = String(process.env.WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE || '1') !== '0'
 			let warnedNoHandshake = false
