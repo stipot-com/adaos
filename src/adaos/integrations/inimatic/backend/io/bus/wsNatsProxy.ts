@@ -180,7 +180,7 @@ export function installWsNatsProxy(server: HttpServer) {
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
 	const wiretap = (process.env['WS_NATS_PROXY_WIRETAP'] || '0') === '1'
-	const keepaliveEnabled = String(process.env['WS_NATS_PROXY_KEEPALIVE_ENABLE'] || '1') === '1'
+	const keepaliveEnabled = String(process.env['WS_NATS_PROXY_KEEPALIVE_ENABLE'] || '0') === '1'
 	let keepalivePongWarnMs = 5_000
 	try {
 		keepalivePongWarnMs = Math.max(250, Number(process.env['WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS'] || '5000'))
