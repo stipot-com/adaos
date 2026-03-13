@@ -15,6 +15,9 @@ import uvicorn
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import load_config, save_config
+from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides, merged_runtime_dotenv_env
+
+apply_runtime_dotenv_overrides()
 
 app = typer.Typer(help="HTTP API for AdaOS")
 
@@ -23,14 +26,12 @@ def _uvicorn_loop_mode() -> str:
     if os.name != "nt":
         return "auto"
     raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
-    if raw is not None:
-        val = str(raw).strip().lower()
-        if val in {"0", "false", "off", "no"}:
-            return "auto"
-    # Uvicorn's Windows "asyncio" path hardcodes ProactorEventLoop.
-    # `loop="none"` falls back to asyncio.new_event_loop(), which respects
-    # the process-wide event loop policy we set in the CLI / API server.
-    return "none"
+    if raw is not None and str(raw).strip().lower() in {"1", "true", "on", "yes"}:
+        # Uvicorn's Windows "asyncio" path hardcodes ProactorEventLoop.
+        # `loop="none"` falls back to asyncio.new_event_loop(), which respects
+        # the process-wide event loop policy we set in the CLI / API server.
+        return "none"
+    return "auto"
 
 
 def _is_local_url(url: str | None) -> bool:
@@ -383,7 +384,7 @@ def _spawn_detached_server(host: str, port: int, *, token: str | None, reload: b
     if token:
         args.extend(["--token", str(token)])
 
-    env = os.environ.copy()
+    env = merged_runtime_dotenv_env(os.environ.copy())
     creationflags = 0
     popen_kwargs: dict[str, object] = {
         "args": args,

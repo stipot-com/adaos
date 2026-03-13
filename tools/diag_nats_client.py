@@ -80,6 +80,38 @@ def _transport_diag(tr: Any) -> dict[str, Any]:
     }
 
 
+def _task_diag(task: Any) -> dict[str, Any] | None:
+    if not isinstance(task, asyncio.Task):
+        return None
+    info: dict[str, Any] = {
+        "done": bool(task.done()),
+        "cancelled": bool(task.cancelled()),
+    }
+    try:
+        exc = task.exception() if task.done() and not task.cancelled() else None
+        info["exc"] = f"{type(exc).__name__}: {exc}" if exc is not None else None
+    except Exception as exc:
+        info["exc"] = f"{type(exc).__name__}: {exc}"
+    try:
+        frames = task.get_stack(limit=4)
+        info["stack"] = [
+            f"{frame.f_code.co_filename}:{int(frame.f_lineno)}:{frame.f_code.co_name}" for frame in frames
+        ]
+    except Exception as exc:
+        info["stack"] = [f"{type(exc).__name__}: {exc}"]
+    return info
+
+
+def _apply_loop_policy(mode: str) -> None:
+    if os.name != "nt":
+        return
+    value = str(mode or "auto").strip().lower()
+    if value == "selector":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    elif value == "proactor":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+
 async def _run(args: argparse.Namespace) -> int:
     node = _load_node_yaml(args.node)
     servers, user, password = _nats_config(node)
@@ -153,7 +185,17 @@ async def _run(args: argparse.Namespace) -> int:
         subject = str(args.subject or "").strip()
         if subject:
             await nc.subscribe(subject, cb=_message_cb)
-            await nc.flush()
+            fp = getattr(nc, "_flush_pending", None)
+            if callable(fp):
+                try:
+                    await fp(force_flush=True)
+                except TypeError:
+                    try:
+                        await fp(True)
+                    except TypeError:
+                        await fp()
+            else:
+                await nc.flush()
             print(f"[diag-client] subscribed subject={subject}")
 
         deadline = time.monotonic() + float(args.duration)
@@ -161,11 +203,17 @@ async def _run(args: argparse.Namespace) -> int:
         next_report_at = time.monotonic()
         next_pub_at = time.monotonic() + max(0.1, float(args.publish_every)) if args.publish_every > 0 else None
         payload = str(args.payload or "").encode("utf-8")
+        publish_flush_mode = str(args.publish_flush_mode or "pending").strip().lower()
         while time.monotonic() < deadline:
             now = time.monotonic()
             if next_pub_at is not None and now >= next_pub_at and subject:
                 await nc.publish(subject, payload)
-                await nc.flush()
+                if publish_flush_mode == "flush":
+                    await nc.flush()
+                elif publish_flush_mode == "pending":
+                    fp = getattr(nc, "_flush_pending", None)
+                    if callable(fp):
+                        await fp(force_flush=True)
                 tx_count += 1
                 if args.trace:
                     print(f"[diag-client] tx subject={subject} bytes={len(payload)} n={tx_count}")
@@ -180,6 +228,11 @@ async def _run(args: argparse.Namespace) -> int:
                             "tx_count": tx_count,
                             "errors": list(errors),
                             "diag": _transport_diag(tr),
+                            "tasks": {
+                                "reading_task": _task_diag(getattr(nc, "_reading_task", None)),
+                                "flusher_task": _task_diag(getattr(nc, "_flusher_task", None)),
+                                "ping_interval_task": _task_diag(getattr(nc, "_ping_interval_task", None)),
+                            },
                         },
                         ensure_ascii=False,
                     )
@@ -217,10 +270,23 @@ def main() -> int:
     ap.add_argument("--report-every", type=float, default=5.0, help="Diagnostics interval in seconds")
     ap.add_argument("--subject", default="", help="Optional subject to subscribe/publish")
     ap.add_argument("--publish-every", type=float, default=0.0, help="Publish interval to --subject (0 disables)")
+    ap.add_argument(
+        "--publish-flush-mode",
+        default="pending",
+        choices=["pending", "flush", "none"],
+        help="How to flush after publish: pending=force _flush_pending (hub-like), flush=full nc.flush(), none=do not flush.",
+    )
     ap.add_argument("--payload", default="diag", help="Publish payload")
     ap.add_argument("--trace", action="store_true", help="Verbose RX/TX tracing")
+    ap.add_argument(
+        "--loop-policy",
+        default="auto",
+        choices=["auto", "selector", "proactor"],
+        help="Windows event loop policy override for diagnostics.",
+    )
     args = ap.parse_args()
     try:
+        _apply_loop_policy(str(args.loop_policy or "auto"))
         return int(asyncio.run(_run(args)))
     except KeyboardInterrupt:
         return 130

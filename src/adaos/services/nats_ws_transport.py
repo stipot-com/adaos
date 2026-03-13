@@ -197,6 +197,34 @@ def _ws_recv_timeout_s_from_env() -> float | None:
     return v
 
 
+def _ws_io_poll_s_from_env() -> float:
+    """
+    Max time a WS reader may hold the transport I/O lock while waiting for input.
+
+    Why:
+    - Raw/manual NATS-over-WS traffic is stable, but the hub transport can silently wedge after alternating
+      inbound `MSG` and outbound `PUB` traffic on Windows.
+    - The current transport lets the WS reader and writer operate from different tasks. On affected setups that
+      appears to be enough to stall incoming delivery after a few cycles.
+    - We serialize WS `recv` and `send` calls through one lock and poll `recv` with a short timeout so writers are
+      never blocked behind an indefinitely pending read.
+    """
+    raw = os.getenv("HUB_NATS_WS_IO_POLL_S")
+    if raw is None:
+        return 0.2
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        return 0.2
+    if value <= 0.0:
+        return 0.2
+    if value < 0.01:
+        value = 0.01
+    if value > 1.0:
+        value = 1.0
+    return value
+
+
 def _ws_proxy_from_env() -> str | bool | None:
     """
     Control proxy handling for long-lived NATS-over-WS tunnels.
@@ -543,6 +571,15 @@ class WebSocketTransportWebsockets:
         self._pending_hi: asyncio.Queue = asyncio.Queue()
         self._pending: asyncio.Queue = asyncio.Queue()
         self._send_lock: asyncio.Lock = asyncio.Lock()
+        self._io_poll_s: float = _ws_io_poll_s_from_env()
+        self._pending_event: asyncio.Event = asyncio.Event()
+        self._drain_event: asyncio.Event = asyncio.Event()
+        self._drain_event.set()
+        self._recv_queue: asyncio.Queue = asyncio.Queue()
+        self._io_task: asyncio.Task | None = None
+        self._direct_recv_task: asyncio.Task | None = None
+        self._io_sending: bool = False
+        self._pending_ws_ping: int = 0
         self._close_task: asyncio.Task | None = None
         self._data_heartbeat_task: asyncio.Task | None = None
         self._ws_heartbeat_task: asyncio.Task | None = None
@@ -660,6 +697,8 @@ class WebSocketTransportWebsockets:
             self._pending_hi.put_nowait(payload)
         else:
             self._pending.put_nowait(payload)
+        self._drain_event.clear()
+        self._pending_event.set()
 
     def writelines(self, payload: List[bytes]) -> None:
         for message in payload:
@@ -681,20 +720,28 @@ class WebSocketTransportWebsockets:
             )
         try:
             if kind == "PING":
-                # Reply immediately to Root's keepalive pings. Going through nats-py's flush queue can delay
-                # the `PONG` under load, triggering `nats keepalive pong missing` and sometimes a 1006 close.
                 try:
                     self._adaos_pings_rx += 1
                     self._adaos_last_ping_rx_at = time.monotonic()
                 except Exception:
                     pass
-                await self._send_nats_pong(reason="ping")
+                handler = getattr(nc, "_process_ping", None) if nc is not None else None
+                if callable(handler):
+                    if self._adaos_ws_trace:
+                        self._trace("nats ws direct control dispatch kind=PING handler=nats_client")
+                    await handler()
+                else:
+                    if self._adaos_ws_trace:
+                        self._trace("nats ws direct control dispatch kind=PING handler=raw_pong")
+                    await self._send_nats_pong(reason="ping")
             else:
                 if nc is None:
                     return False
                 handler = getattr(nc, "_process_pong", None)
                 if not callable(handler):
                     return False
+                if self._adaos_ws_trace:
+                    self._trace("nats ws direct control dispatch kind=PONG handler=nats_client")
                 await handler()
         except Exception as e:
             self._adaos_last_recv_error = e
@@ -707,6 +754,31 @@ class WebSocketTransportWebsockets:
         if ws is None:
             return
         payload = b"PONG\r\n"
+        try:
+            io_task = getattr(self, "_io_task", None)
+            current_task = asyncio.current_task()
+        except Exception:
+            io_task = None
+            current_task = None
+        if io_task is not None and current_task is not io_task:
+            self.write(payload)
+            await self.drain()
+            try:
+                self._adaos_pongs_tx += 1
+                self._adaos_last_pong_tx_wait_s = 0.0
+                self._adaos_last_pong_tx_send_s = 0.0
+                self._adaos_last_pong_tx_at = time.monotonic()
+            except Exception:
+                pass
+            try:
+                if self._adaos_ws_trace:
+                    n = int(getattr(self, "_adaos_pongs_tx", 0) or 0)
+                    self._trace(
+                        f"nats ws direct control tx kind=PONG reason={reason} wait_ms=0.0 send_ms=0.0 n={n}"
+                    )
+            except Exception:
+                pass
+            return
         pong_start_at = None
         try:
             pong_start_at = time.monotonic()
@@ -755,18 +827,57 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
 
-    async def readline(self) -> bytes:
+    def _ensure_io_task(self) -> None:
+        try:
+            if self._io_task is not None and not self._io_task.done():
+                return
+            if self._ws is None:
+                return
+            direct_recv_task = getattr(self, "_direct_recv_task", None)
+            if isinstance(direct_recv_task, asyncio.Task) and not direct_recv_task.done():
+                return
+            if getattr(self, "_adaos_nc", None) is None:
+                return
+            while not self._recv_queue.empty():
+                self._recv_queue.get_nowait()
+        except Exception:
+            return
+        try:
+            self._io_task = asyncio.create_task(self._io_loop(self._ws), name="adaos-nats-ws-io")
+        except Exception:
+            self._io_task = None
+
+    async def _direct_readline(self) -> bytes:
+        idle_started_at = time.monotonic()
         while True:
             ws = self._ws
             if ws is None:
                 return b""
             try:
                 recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                direct_recv_task = getattr(self, "_direct_recv_task", None)
+                if not isinstance(direct_recv_task, asyncio.Task) or direct_recv_task.done():
+                    direct_recv_task = asyncio.create_task(ws.recv(), name="adaos-nats-ws-direct-recv")
+                    self._direct_recv_task = direct_recv_task
+                wait_s = None
                 if isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=float(recv_timeout_s))
+                    remaining_s = float(recv_timeout_s) - (time.monotonic() - idle_started_at)
+                    if remaining_s <= 0.0:
+                        raise asyncio.TimeoutError()
+                    wait_s = remaining_s
+                if isinstance(wait_s, (int, float)):
+                    raw = await asyncio.wait_for(asyncio.shield(direct_recv_task), timeout=wait_s)
                 else:
-                    raw = await ws.recv()
+                    raw = await asyncio.shield(direct_recv_task)
             except asyncio.TimeoutError as e:
+                try:
+                    recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                except Exception:
+                    recv_timeout_s = None
+                if not (isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0):
+                    continue
+                if (time.monotonic() - idle_started_at) < float(recv_timeout_s):
+                    continue
                 try:
                     self._adaos_last_recv_error = e
                     self._adaos_last_recv_error_at = time.monotonic()
@@ -786,6 +897,11 @@ class WebSocketTransportWebsockets:
                 self._ws = None
                 return b""
             except Exception as e:
+                try:
+                    if getattr(self, "_direct_recv_task", None) is direct_recv_task:
+                        self._direct_recv_task = None
+                except Exception:
+                    pass
                 try:
                     self._adaos_last_recv_error = e
                     self._adaos_last_recv_error_at = time.monotonic()
@@ -811,12 +927,408 @@ class WebSocketTransportWebsockets:
                     pass
                 self._ws = None
                 if self._adaos_ws_raise_on_recv_err:
-                    raise
+                    raise e
+                return b""
+            try:
+                if getattr(self, "_direct_recv_task", None) is direct_recv_task:
+                    self._direct_recv_task = None
+            except Exception:
+                pass
+            try:
+                self._adaos_last_rx_at = time.monotonic()
+            except Exception:
+                pass
+            idle_started_at = time.monotonic()
+            if isinstance(raw, str):
+                data = raw.encode("utf-8")
+            elif isinstance(raw, (bytes, bytearray, memoryview)):
+                data = bytes(raw)
+            else:
+                data = b""
+            if data and await self._maybe_consume_direct_control_frame(data):
+                continue
+            self._wiretap("rx", data)
+            if self._adaos_route_trace and data:
+                try:
+                    line = _route_rx_trace_line(self._adaos_ws_url, data, getattr(self, "_adaos_nc", None))
+                    if line:
+                        self._trace(line)
+                except Exception:
+                    pass
+            try:
+                if data.startswith(b"INFO "):
+                    self._adaos_rx_info_at = time.monotonic()
+                    line_end = data.find(b"\n")
+                    if line_end < 0:
+                        line_end = len(data)
+                    line = data[:line_end].strip()
+                    if line.endswith(b"\r"):
+                        line = line[:-1]
+                    js0 = line[len(b"INFO ") :].strip()
+                    obj = json.loads(js0.decode("utf-8", errors="replace"))
+                    if isinstance(obj, dict):
+                        mp = obj.get("max_payload", None)
+                        if isinstance(mp, int):
+                            self._adaos_nats_max_payload = mp
+            except Exception:
+                pass
+            return data
+
+    async def _direct_drain(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        while not self._pending_hi.empty() or not self._pending.empty():
+            if not self._pending_hi.empty():
+                message = self._pending_hi.get_nowait()
+            else:
+                message = self._pending.get_nowait()
+            await self._io_send_payload("bytes", message)
+
+    def _pending_empty(self) -> bool:
+        try:
+            return self._pending_ws_ping <= 0 and self._pending_hi.empty() and self._pending.empty()
+        except Exception:
+            return False
+
+    def _dequeue_pending_nowait(self) -> tuple[str, Any] | None:
+        try:
+            if self._pending_ws_ping > 0:
+                self._pending_ws_ping -= 1
+                return ("ws_ping", None)
+        except Exception:
+            pass
+        try:
+            if not self._pending_hi.empty():
+                return ("bytes", self._pending_hi.get_nowait())
+        except Exception:
+            pass
+        try:
+            if not self._pending.empty():
+                return ("bytes", self._pending.get_nowait())
+        except Exception:
+            pass
+        return None
+
+    async def _io_send_payload(self, kind: str, payload: Any) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        self._io_sending = True
+        try:
+            if kind == "ws_ping":
+                ping_started_at = time.monotonic()
+                try:
+                    self._adaos_last_tx_at = ping_started_at
+                    self._adaos_last_tx_kind = "WS.PING"
+                    self._adaos_last_tx_subj = None
+                    self._adaos_last_tx_len = 0
+                except Exception:
+                    pass
+                await ws.ping()
+                ping_done_at = time.monotonic()
+                try:
+                    self._adaos_ws_pings_tx += 1
+                    self._adaos_last_ws_ping_tx_at = ping_started_at
+                    self._adaos_last_ws_ping_tx_wait_s = 0.0
+                    self._adaos_last_ws_ping_tx_send_s = ping_done_at - ping_started_at
+                except Exception:
+                    pass
+                try:
+                    if self._adaos_ws_trace:
+                        n = int(getattr(self, "_adaos_ws_pings_tx", 0) or 0)
+                        sd_ms = round((ping_done_at - ping_started_at) * 1000.0, 3)
+                        self._trace(
+                            f"nats ws heartbeat tx kind=PING mode={self._adaos_ws_heartbeat_mode} wait_ms=0.0 send_ms={sd_ms} n={n}"
+                        )
+                except Exception:
+                    pass
+                return
+
+            if isinstance(payload, memoryview):
+                data = payload.tobytes()
+            elif isinstance(payload, (bytes, bytearray)):
+                data = bytes(payload)
+            else:
+                data = payload
+            try:
+                self._adaos_last_tx_at = time.monotonic()
+            except Exception:
+                pass
+            self._wiretap("tx", data)
+            try:
+                head = data[:256] if isinstance(data, (bytes, bytearray)) else b""
+                kind0 = None
+                subj0 = None
+                if isinstance(head, (bytes, bytearray)):
+                    if head.startswith(b"PUB "):
+                        kind0 = "PUB"
+                    elif head.startswith(b"SUB "):
+                        kind0 = "SUB"
+                    elif head.startswith(b"CONNECT "):
+                        kind0 = "CONNECT"
+                    elif head.startswith(b"PING"):
+                        kind0 = "PING"
+                    elif head.startswith(b"PONG"):
+                        kind0 = "PONG"
+                    if kind0 in ("PUB", "SUB"):
+                        line_end = head.find(b"\n")
+                        if line_end < 0:
+                            line_end = len(head)
+                        parts = head[:line_end].split()
+                        if len(parts) >= 2:
+                            subj0 = parts[1].decode("utf-8", errors="replace")
+                    if kind0 == "CONNECT":
+                        self._adaos_tx_connect_at = time.monotonic()
+                self._adaos_last_tx_kind = kind0
+                self._adaos_last_tx_subj = subj0
+                self._adaos_last_tx_len = len(data) if hasattr(data, "__len__") else None
+            except Exception:
+                pass
+            await ws.send(data)
+            if self._adaos_ws_trace:
+                try:
+                    line = _route_tx_trace_line(
+                        self._adaos_ws_url,
+                        self._adaos_last_tx_subj,
+                        data,
+                        (self._pending_hi, self._pending),
+                    )
+                    if line:
+                        self._trace(line)
+                except Exception:
+                    pass
+        finally:
+            self._io_sending = False
+            if self._pending_empty():
+                self._drain_event.set()
+
+    async def _io_loop(self, ws0: Any) -> None:
+        recv_task: asyncio.Task | None = None
+        wake_task: asyncio.Task | None = None
+        try:
+            recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+            while True:
+                try:
+                    ws1 = self._ws
+                    if ws1 is None or ws1 is not ws0 or self.at_eof():
+                        return
+                except Exception:
+                    return
+
+                if recv_task is not None and recv_task.done():
+                    try:
+                        raw = await recv_task
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        try:
+                            self._adaos_last_recv_error = e
+                            self._adaos_last_recv_error_at = time.monotonic()
+                        except Exception:
+                            pass
+                        try:
+                            await self._recv_queue.put(e)
+                        except Exception:
+                            pass
+                        return
+                    finally:
+                        recv_task = None
+
+                    try:
+                        self._adaos_last_rx_at = time.monotonic()
+                    except Exception:
+                        pass
+                    if isinstance(raw, str):
+                        data = raw.encode("utf-8")
+                    elif isinstance(raw, (bytes, bytearray, memoryview)):
+                        data = bytes(raw)
+                    else:
+                        data = b""
+
+                    if data and await self._maybe_consume_direct_control_frame(data):
+                        recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+                        continue
+
+                    try:
+                        await self._recv_queue.put(data)
+                    except Exception:
+                        return
+                    recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+                    continue
+
+                pending_item = self._dequeue_pending_nowait()
+                if pending_item is not None:
+                    kind, payload = pending_item
+                    try:
+                        await self._io_send_payload(kind, payload)
+                    except Exception as e:
+                        try:
+                            self._adaos_last_recv_error = e
+                            self._adaos_last_recv_error_at = time.monotonic()
+                        except Exception:
+                            pass
+                        try:
+                            await self._recv_queue.put(e)
+                        except Exception:
+                            pass
+                        return
+                    continue
+
+                self._pending_event.clear()
+                wake_task = asyncio.create_task(self._pending_event.wait(), name="adaos-nats-ws-pending")
+                done, pending = await asyncio.wait(
+                    {recv_task, wake_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+
+                if wake_task in done:
+                    wake_task = None
+                    continue
+
+                wake_task = None
+                if recv_task not in done:
+                    continue
+                try:
+                    raw = await recv_task
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    try:
+                        self._adaos_last_recv_error = e
+                        self._adaos_last_recv_error_at = time.monotonic()
+                    except Exception:
+                        pass
+                    try:
+                        await self._recv_queue.put(e)
+                    except Exception:
+                        pass
+                    return
+                finally:
+                    recv_task = None
+
+                try:
+                    self._adaos_last_rx_at = time.monotonic()
+                except Exception:
+                    pass
+                if isinstance(raw, str):
+                    data = raw.encode("utf-8")
+                elif isinstance(raw, (bytes, bytearray, memoryview)):
+                    data = bytes(raw)
+                else:
+                    data = b""
+
+                if data and await self._maybe_consume_direct_control_frame(data):
+                    recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+                    continue
+
+                try:
+                    await self._recv_queue.put(data)
+                except Exception:
+                    return
+                recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+        finally:
+            try:
+                if recv_task is not None and not recv_task.done():
+                    recv_task.cancel()
+            except Exception:
+                pass
+            try:
+                if wake_task is not None and not wake_task.done():
+                    wake_task.cancel()
+            except Exception:
+                pass
+            try:
+                await self._recv_queue.put(None)
+            except Exception:
+                pass
+
+    async def readline(self) -> bytes:
+        self._ensure_io_task()
+        if self._io_task is None:
+            return await self._direct_readline()
+        idle_started_at = time.monotonic()
+        while True:
+            if self._ws is None and self._recv_queue.empty():
+                return b""
+            try:
+                recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                poll_s = float(getattr(self, "_io_poll_s", 0.2) or 0.2)
+                wait_s = poll_s
+                if isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0:
+                    remaining_s = float(recv_timeout_s) - (time.monotonic() - idle_started_at)
+                    if remaining_s <= 0.0:
+                        raise asyncio.TimeoutError()
+                    wait_s = min(wait_s, remaining_s)
+                raw = await asyncio.wait_for(self._recv_queue.get(), timeout=wait_s)
+            except asyncio.TimeoutError as e:
+                try:
+                    recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                except Exception:
+                    recv_timeout_s = None
+                if not (isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0):
+                    continue
+                if (time.monotonic() - idle_started_at) < float(recv_timeout_s):
+                    continue
+                try:
+                    self._adaos_last_recv_error = e
+                    self._adaos_last_recv_error_at = time.monotonic()
+                except Exception:
+                    pass
+                if self._adaos_ws_trace:
+                    try:
+                        self._trace(
+                            f"nats ws recv timeout url={self._adaos_ws_url} timeout_s={getattr(self, '_adaos_ws_recv_timeout', None)}"
+                        )
+                    except Exception:
+                        pass
+                try:
+                    ws = self._ws
+                    if ws is not None:
+                        await ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+                return b""
+            if raw is None:
+                return b""
+            if isinstance(raw, Exception):
+                e = raw
+                try:
+                    self._adaos_last_recv_error = e
+                    self._adaos_last_recv_error_at = time.monotonic()
+                except Exception:
+                    pass
+                if self._adaos_ws_trace:
+                    try:
+                        ws = self._ws
+                        code = getattr(e, "code", None)
+                        reason = getattr(e, "reason", None)
+                        rcvd = getattr(e, "rcvd", None)
+                        sent = getattr(e, "sent", None)
+                        state = getattr(ws, "state", None)
+                        self._trace(
+                            "nats ws recv failed "
+                            f"url={self._adaos_ws_url} err={type(e).__name__}: {e} "
+                            f"code={code} reason={reason} rcvd={rcvd} sent={sent} state={state}"
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+                if self._adaos_ws_raise_on_recv_err:
+                    raise e
                 return b""
             try:
                 self._adaos_last_rx_at = time.monotonic()
             except Exception:
                 pass
+            idle_started_at = time.monotonic()
             if isinstance(raw, str):
                 data = raw.encode("utf-8")
             elif isinstance(raw, (bytes, bytearray, memoryview)):
@@ -854,89 +1366,39 @@ class WebSocketTransportWebsockets:
             return data
 
     async def drain(self) -> None:
-        ws = self._ws
-        if ws is None:
+        self._ensure_io_task()
+        if self._io_task is None:
+            await self._direct_drain()
             return
-        while not self._pending_hi.empty() or not self._pending.empty():
-            if not self._pending_hi.empty():
-                message = self._pending_hi.get_nowait()
-            else:
-                message = self._pending.get_nowait()
-            if isinstance(message, memoryview):
-                payload = message.tobytes()
-            elif isinstance(message, (bytes, bytearray)):
-                payload = bytes(message)
-            else:
-                payload = message
-            try:
-                self._adaos_last_tx_at = time.monotonic()
-            except Exception:
-                pass
-            self._wiretap("tx", payload)
-            # Extract command kind + subject (no payload logging) for later error diagnostics.
-            try:
-                head = payload[:256] if isinstance(payload, (bytes, bytearray)) else b""
-                kind = None
-                subj = None
-                if isinstance(head, (bytes, bytearray)):
-                    if head.startswith(b"PUB "):
-                        kind = "PUB"
-                    elif head.startswith(b"SUB "):
-                        kind = "SUB"
-                    elif head.startswith(b"CONNECT "):
-                        kind = "CONNECT"
-                    elif head.startswith(b"PING"):
-                        kind = "PING"
-                    elif head.startswith(b"PONG"):
-                        kind = "PONG"
-                    if kind in ("PUB", "SUB"):
-                        line_end = head.find(b"\n")
-                        if line_end < 0:
-                            line_end = len(head)
-                        parts = head[:line_end].split()
-                        if len(parts) >= 2:
-                            subj = parts[1].decode("utf-8", errors="replace")
-                    if kind == "CONNECT":
-                        self._adaos_tx_connect_at = time.monotonic()
-                self._adaos_last_tx_kind = kind
-                self._adaos_last_tx_subj = subj
-                try:
-                    self._adaos_last_tx_len = len(payload) if hasattr(payload, "__len__") else None
-                except Exception:
-                    self._adaos_last_tx_len = None
-            except Exception:
-                pass
-            try:
-                async with self._send_lock:
-                    await ws.send(payload)
-            except Exception as e:
-                if self._adaos_ws_trace:
-                    self._trace(f"nats ws send failed url={self._adaos_ws_url} err={type(e).__name__}: {e}")
-                raise
-            if self._adaos_ws_trace:
-                try:
-                    line = _route_tx_trace_line(
-                        self._adaos_ws_url,
-                        self._adaos_last_tx_subj,
-                        payload,
-                        (self._pending_hi, self._pending),
-                    )
-                    if line:
-                        self._trace(line)
-                except Exception:
-                    pass
+        if self._ws is None:
+            return
+        if self._pending_empty() and not self._io_sending:
+            self._drain_event.set()
+            return
+        self._pending_event.set()
+        await self._drain_event.wait()
 
     async def wait_closed(self) -> None:
         try:
             if self._close_task is not None:
-                await self._close_task
-        except Exception:
+                await asyncio.wait_for(self._close_task, timeout=1.0)
+        except BaseException:
+            pass
+        try:
+            if self._io_task is not None:
+                await asyncio.wait_for(self._io_task, timeout=1.0)
+        except BaseException:
+            pass
+        try:
+            if self._direct_recv_task is not None:
+                await asyncio.wait_for(self._direct_recv_task, timeout=1.0)
+        except BaseException:
             pass
         try:
             ws = self._ws
             if ws is not None and callable(getattr(ws, "wait_closed", None)):
-                await ws.wait_closed()
-        except Exception:
+                await asyncio.wait_for(ws.wait_closed(), timeout=1.0)
+        except BaseException:
             pass
         if self._adaos_ws_trace:
             try:
@@ -965,6 +1427,8 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._ws_heartbeat_task = None
+        self._direct_recv_task = None
+        self._io_task = None
         self._ws = None
 
     def close(self) -> None:
@@ -990,6 +1454,20 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._ws_heartbeat_task = None
+        try:
+            if self._io_task is not None and not self._io_task.done():
+                self._io_task.cancel()
+        except Exception:
+            pass
+        try:
+            if self._direct_recv_task is not None and not self._direct_recv_task.done():
+                self._direct_recv_task.cancel()
+        except Exception:
+            pass
+        try:
+            self._recv_queue.put_nowait(None)
+        except Exception:
+            pass
         try:
             self._close_task = asyncio.create_task(ws.close())
         except Exception:
@@ -1086,6 +1564,18 @@ class WebSocketTransportWebsockets:
             pass
         self._ws_heartbeat_task = None
         try:
+            if self._io_task is not None and not self._io_task.done():
+                self._io_task.cancel()
+        except Exception:
+            pass
+        try:
+            if self._direct_recv_task is not None and not self._direct_recv_task.done():
+                self._direct_recv_task.cancel()
+        except Exception:
+            pass
+        self._direct_recv_task = None
+        self._io_task = None
+        try:
             if callable(getattr(self._ws, "close", None)) and not self.at_eof():
                 await self._ws.close()
         except Exception:
@@ -1119,6 +1609,19 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         try:
+            while not self._recv_queue.empty():
+                self._recv_queue.get_nowait()
+        except Exception:
+            pass
+        try:
+            self._pending_event.clear()
+        except Exception:
+            pass
+        if self._pending_empty():
+            self._drain_event.set()
+        else:
+            self._drain_event.clear()
+        try:
             self._adaos_ws_proto = (
                 getattr(self._ws, "subprotocol", None)
                 or getattr(self._ws, "protocol", None)
@@ -1145,6 +1648,7 @@ class WebSocketTransportWebsockets:
                         pass
         except Exception:
             pass
+        self._io_task = None
 
         # Optional NATS-data heartbeat (send PONG) to keep end-to-end hub->root traffic visible.
         if data_heartbeat_s is not None:
@@ -1214,6 +1718,7 @@ class WebSocketTransportAiohttp:
         self._pending_hi: asyncio.Queue = asyncio.Queue()
         self._pending: asyncio.Queue = asyncio.Queue()
         self._send_lock: asyncio.Lock = asyncio.Lock()
+        self._io_poll_s: float = _ws_io_poll_s_from_env()
         self._close_task = asyncio.Future()
         self._data_heartbeat_task: asyncio.Task | None = None
         self._ws_heartbeat_task: asyncio.Task | None = None
@@ -1451,6 +1956,8 @@ class WebSocketTransportAiohttp:
                     self._adaos_last_ping_rx_at = time.monotonic()
                 except Exception:
                     pass
+                if self._adaos_ws_trace:
+                    self._trace("nats ws direct control dispatch kind=PING handler=raw_pong")
                 await self._send_nats_pong(reason="ping")
             else:
                 if nc is None:
@@ -1458,6 +1965,8 @@ class WebSocketTransportAiohttp:
                 handler = getattr(nc, "_process_pong", None)
                 if not callable(handler):
                     return False
+                if self._adaos_ws_trace:
+                    self._trace("nats ws direct control dispatch kind=PONG handler=nats_client")
                 await handler()
         except Exception as e:
             self._adaos_last_recv_error = e
@@ -1517,17 +2026,31 @@ class WebSocketTransportAiohttp:
             pass
 
     async def readline(self) -> bytes:
+        idle_started_at = time.monotonic()
         while True:
             ws = self._ws
             if ws is None:
                 return b""
             try:
                 recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                poll_s = float(getattr(self, "_io_poll_s", 0.2) or 0.2)
+                wait_s = poll_s
                 if isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0:
-                    msg = await asyncio.wait_for(ws.receive(), timeout=float(recv_timeout_s))
-                else:
-                    msg = await ws.receive()
+                    remaining_s = float(recv_timeout_s) - (time.monotonic() - idle_started_at)
+                    if remaining_s <= 0.0:
+                        raise asyncio.TimeoutError()
+                    wait_s = min(wait_s, remaining_s)
+                async with self._send_lock:
+                    msg = await asyncio.wait_for(ws.receive(), timeout=wait_s)
             except asyncio.TimeoutError as e:
+                try:
+                    recv_timeout_s = getattr(self, "_adaos_ws_recv_timeout", None)
+                except Exception:
+                    recv_timeout_s = None
+                if not (isinstance(recv_timeout_s, (int, float)) and float(recv_timeout_s) > 0.0):
+                    continue
+                if (time.monotonic() - idle_started_at) < float(recv_timeout_s):
+                    continue
                 try:
                     self._adaos_last_recv_error = e
                     self._adaos_last_recv_error_at = time.monotonic()
@@ -1580,6 +2103,7 @@ class WebSocketTransportAiohttp:
                 self._adaos_last_rx_at = time.monotonic()
             except Exception:
                 pass
+            idle_started_at = time.monotonic()
 
             if msg.type == self._aiohttp.WSMsgType.TEXT:
                 data = msg.data.encode("utf-8", errors="replace")

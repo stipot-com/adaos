@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 import typer
 from dotenv import load_dotenv, find_dotenv
+from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
 
 
 def _repo_venv_python() -> str | None:
@@ -96,26 +97,25 @@ _maybe_reexec_windows_wrapper()
 _maybe_reexec_repo_venv()
 
 load_dotenv(find_dotenv())
+apply_runtime_dotenv_overrides()
 
 
 def _maybe_set_windows_selector_loop() -> None:
     if os.name != "nt":
         return
     raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    enabled = False
     if raw is not None:
         val = str(raw).strip().lower()
-        if val in ("0", "false", "off", "no"):
-            return
+        enabled = val in ("1", "true", "on", "yes")
+    if not enabled:
+        return
     try:
         import asyncio
 
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         try:
-            msg = "Windows selector event loop policy enabled"
-            if raw is None:
-                msg += " (default on Windows; set ADAOS_WIN_SELECTOR_LOOP=0 to disable)"
-            else:
-                msg += " (ADAOS_WIN_SELECTOR_LOOP=1)"
+            msg = "Windows selector event loop policy enabled (ADAOS_WIN_SELECTOR_LOOP=1)"
             print(f"[AdaOS] {msg}", file=sys.stderr)
         except Exception:
             pass
@@ -130,7 +130,7 @@ from adaos.services.settings import Settings
 from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
-from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub
+from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub, realtime
 from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
@@ -290,6 +290,7 @@ app.add_typer(tests_cmd.app, name="tests", help=_("cli.help_test"))
 app.add_typer(runtime.app, name="runtime", help=_("cli.help_runtime"))
 app.add_typer(llm.app, name="llm", help=_("cli.help_llm"))
 app.add_typer(api.app, name="api")
+app.add_typer(realtime.app, name="realtime", help="Realtime sidecar")
 app.add_typer(node.app, name="node", help="Node onboarding and role management")
 app.add_typer(hub.app, name="hub", help="Hub operations (join-codes)")
 app.add_typer(monitor.app, name="monitor")

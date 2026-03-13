@@ -34,6 +34,12 @@ from adaos.services.eventbus import LocalEventBus
 from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
 from adaos.services.nats_config import normalize_nats_ws_url, order_nats_ws_candidates
+from adaos.services.realtime_sidecar import (
+    realtime_sidecar_diag_path,
+    realtime_sidecar_enabled,
+    realtime_sidecar_log_path,
+    realtime_sidecar_local_url,
+)
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
 from adaos.services.scheduler import start_scheduler
 from adaos.services.scenario import (
@@ -676,40 +682,55 @@ class BootstrapService:
                                 f"[hub-io] asyncio loop policy={type(policy).__name__} loop={type(loop).__name__ if loop else None}",
                                 every_s=3600.0,
                             )
-                            if loop is not None and os.name == "nt" and "Proactor" in type(loop).__name__:
+                            if loop is not None and os.name == "nt" and "Selector" in type(loop).__name__:
                                 _rl_log(
                                     "loop.warn",
-                                    "[hub-io] Windows Proactor event loop detected; WS may be flaky. Set ADAOS_WIN_SELECTOR_LOOP=1 to force selector.",
+                                    "[hub-io] Windows Selector event loop detected; NATS-over-WS may stall on PUB load. Prefer default Proactor loop and only set ADAOS_WIN_SELECTOR_LOOP=1 for targeted diagnostics.",
                                     every_s=3600.0,
                                 )
                         except Exception:
                             pass
                     raw_keepalive_task: asyncio.Task | None = None
+                    try:
+                        realtime_enabled = realtime_sidecar_enabled(
+                            role=str(getattr(self.ctx.config, "role", "") or "").strip().lower()
+                        )
+                    except Exception:
+                        realtime_enabled = False
                     # Best-effort outbox for telegram replies when NATS is flapping.
                     try:
                         if not hasattr(self, "_tg_output_pending"):
                             setattr(self, "_tg_output_pending", deque())
                     except Exception:
                         pass
-                    # NATS WS transport: use `websockets` (avoid aiohttp WS flaps under PUB load).
-                    try:
-                        from adaos.services.nats_ws_transport import install_nats_ws_transport_patch
-
-                        ws_transport = install_nats_ws_transport_patch(verbose=False)
-                        last_ws_transport = ws_transport
-                        if (os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace) and ws_transport:
-                            _rl_log(
-                                "nats.ws_transport",
-                                f"[hub-io] nats ws transport: {ws_transport}",
-                                every_s=3600.0,
-                            )
-                    except Exception as _patch_e:
+                    if realtime_enabled:
+                        last_ws_transport = "sidecar"
                         if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
                             _rl_log(
-                                "nats.ws_transport_patch_err",
-                                f"[hub-io] nats ws transport patch error: {type(_patch_e).__name__}: {_patch_e}",
-                                every_s=5.0,
+                                "nats.ws_transport",
+                                f"[hub-io] nats ws transport: sidecar (internal WS client disabled, local={realtime_sidecar_local_url()})",
+                                every_s=3600.0,
                             )
+                    else:
+                        # NATS WS transport: use `websockets` (avoid aiohttp WS flaps under PUB load).
+                        try:
+                            from adaos.services.nats_ws_transport import install_nats_ws_transport_patch
+
+                            ws_transport = install_nats_ws_transport_patch(verbose=False)
+                            last_ws_transport = ws_transport
+                            if (os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace) and ws_transport:
+                                _rl_log(
+                                    "nats.ws_transport",
+                                    f"[hub-io] nats ws transport: {ws_transport}",
+                                    every_s=3600.0,
+                                )
+                        except Exception as _patch_e:
+                            if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                _rl_log(
+                                    "nats.ws_transport_patch_err",
+                                    f"[hub-io] nats ws transport patch error: {type(_patch_e).__name__}: {_patch_e}",
+                                    every_s=5.0,
+                                )
 
                     def _explain_connect_error(err: Exception) -> str:
                         try:
@@ -872,6 +893,17 @@ class BootstrapService:
                                 )
                             except Exception:
                                 pass
+                            try:
+                                if realtime_enabled:
+                                    remote_candidates = list(candidates)
+                                    candidates = [realtime_sidecar_local_url()]
+                                    _rl_log(
+                                        "nats.sidecar_route",
+                                        f"[hub-io] nats realtime sidecar local={candidates[0]} remote={remote_candidates}",
+                                        every_s=60.0,
+                                    )
+                            except Exception:
+                                pass
 
                             hub_nats_verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                             hub_nats_quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
@@ -974,6 +1006,129 @@ class BootstrapService:
                                             vv = vv[:200] + "…"
                                         parts.append(f"{k}={vv}")
                                 return " ".join(parts)
+
+                            diag_file_state: dict[str, float | None] = {"last_at": None}
+
+                            def _nats_task_snapshot(task: Any, *, stack_limit: int = 6) -> dict[str, Any] | None:
+                                if not isinstance(task, asyncio.Task):
+                                    return None
+                                snap: dict[str, Any] = {
+                                    "done": bool(task.done()),
+                                    "cancelled": bool(task.cancelled()),
+                                }
+                                try:
+                                    exc = task.exception() if task.done() and not task.cancelled() else None
+                                    snap["exc"] = f"{type(exc).__name__}: {exc}" if exc is not None else None
+                                except Exception as exc:
+                                    snap["exc"] = f"{type(exc).__name__}: {exc}"
+                                frames: list[str] = []
+                                try:
+                                    for frame in task.get_stack(limit=max(1, int(stack_limit))):
+                                        try:
+                                            frames.append(
+                                                f"{Path(frame.f_code.co_filename).name}:{int(frame.f_lineno)}:{frame.f_code.co_name}"
+                                            )
+                                        except Exception:
+                                            continue
+                                except Exception as exc:
+                                    frames = [f"{type(exc).__name__}: {exc}"]
+                                snap["stack"] = frames
+                                return snap
+
+                            def _write_nats_ws_diag_file(
+                                nc_for_diag: Any,
+                                *,
+                                server: Any | None = None,
+                                source: str | None = None,
+                                task_name: str | None = None,
+                                err: Exception | None = None,
+                                force: bool = False,
+                            ) -> None:
+                                raw_path = str(os.getenv("HUB_NATS_WS_DIAG_FILE", "") or "").strip()
+                                if not raw_path:
+                                    return
+                                try:
+                                    every_s = float(os.getenv("HUB_NATS_WS_DIAG_EVERY_S", "2") or "2")
+                                except Exception:
+                                    every_s = 2.0
+                                if every_s <= 0.0:
+                                    every_s = 2.0
+                                now_mono = time.monotonic()
+                                last_at = diag_file_state.get("last_at")
+                                if (
+                                    not force
+                                    and source == "periodic"
+                                    and isinstance(last_at, (int, float))
+                                    and (now_mono - float(last_at)) < max(0.5, every_s)
+                                ):
+                                    return
+                                diag_file_state["last_at"] = now_mono
+                                try:
+                                    stack_limit = int(os.getenv("HUB_NATS_WS_DIAG_STACK_LIMIT", "6") or "6")
+                                except Exception:
+                                    stack_limit = 6
+                                try:
+                                    loop = asyncio.get_running_loop()
+                                except RuntimeError:
+                                    loop = None
+                                try:
+                                    policy = asyncio.get_event_loop_policy()
+                                except Exception:
+                                    policy = None
+                                tr = getattr(nc_for_diag, "_transport", None)
+                                ws = getattr(tr, "_ws", None) if tr is not None else None
+
+                                def _ago(attr: str) -> float | None:
+                                    try:
+                                        value = getattr(tr, attr, None) if tr is not None else None
+                                        if isinstance(value, (int, float)):
+                                            return round(now_mono - float(value), 3)
+                                    except Exception:
+                                        return None
+                                    return None
+
+                                connected_attr = getattr(nc_for_diag, "is_connected", None)
+                                closed_attr = getattr(nc_for_diag, "is_closed", None)
+                                snapshot: dict[str, Any] = {
+                                    "ts": round(time.time(), 3),
+                                    "source": source,
+                                    "task_name": task_name,
+                                    "server": server if server is not None else nats_last_server,
+                                    "loop_policy": type(policy).__name__ if policy is not None else None,
+                                    "loop": type(loop).__name__ if loop is not None else None,
+                                    "nc_connected": connected_attr() if callable(connected_attr) else bool(connected_attr),
+                                    "nc_closed": closed_attr() if callable(closed_attr) else bool(closed_attr),
+                                    "transport": type(tr).__name__ if tr is not None else None,
+                                    "ws_url": getattr(tr, "_adaos_ws_url", None) if tr is not None else None,
+                                    "ws_tag": getattr(tr, "_adaos_ws_tag", None) if tr is not None else None,
+                                    "ws_proto": getattr(tr, "_adaos_ws_proto", None) if tr is not None else None,
+                                    "ws_closed": getattr(ws, "closed", None) if ws is not None else None,
+                                    "ws_close_code": getattr(ws, "close_code", None) if ws is not None else None,
+                                    "last_rx_ago_s": _ago("_adaos_last_rx_at"),
+                                    "last_tx_ago_s": _ago("_adaos_last_tx_at"),
+                                    "last_ping_rx_ago_s": _ago("_adaos_last_ping_rx_at"),
+                                    "last_pong_tx_ago_s": _ago("_adaos_last_pong_tx_at"),
+                                    "last_ws_ping_tx_ago_s": _ago("_adaos_last_ws_ping_tx_at"),
+                                    "ka_pings_rx": getattr(tr, "_adaos_pings_rx", None) if tr is not None else None,
+                                    "ka_pongs_tx": getattr(tr, "_adaos_pongs_tx", None) if tr is not None else None,
+                                    "ws_pings_tx": getattr(tr, "_adaos_ws_pings_tx", None) if tr is not None else None,
+                                    "last_tx_kind": getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None,
+                                    "last_tx_subj": getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None,
+                                    "pending_data_size": getattr(nc_for_diag, "_pending_data_size", None),
+                                    "reading_task": _nats_task_snapshot(getattr(nc_for_diag, "_reading_task", None), stack_limit=stack_limit),
+                                    "flusher_task": _nats_task_snapshot(getattr(nc_for_diag, "_flusher_task", None), stack_limit=stack_limit),
+                                    "ping_interval_task": _nats_task_snapshot(getattr(nc_for_diag, "_ping_interval_task", None), stack_limit=stack_limit),
+                                    "err": f"{type(err).__name__}: {err}" if err is not None else None,
+                                }
+                                try:
+                                    path = Path(raw_path)
+                                    if not path.is_absolute():
+                                        path = Path.cwd() / path
+                                    path.parent.mkdir(parents=True, exist_ok=True)
+                                    with path.open("a", encoding="utf-8") as fh:
+                                        fh.write(_json.dumps(snapshot, ensure_ascii=False) + "\n")
+                                except Exception:
+                                    pass
 
                             def _log_nats_ws_diag(
                                 nc_for_diag: Any,
@@ -1212,6 +1367,13 @@ class BootstrapService:
                                             f"[hub-io] nats ws eof: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
                                             every_s=1.0,
                                         )
+                                        _write_nats_ws_diag_file(
+                                            nc_for_diag,
+                                            server=nats_last_server,
+                                            source="error_cb",
+                                            err=e,
+                                            force=True,
+                                        )
                                     except Exception:
                                         pass
                                 # Capture the effective env knobs around NATS-over-WS on errors to make log sharing actionable.
@@ -1343,7 +1505,7 @@ class BootstrapService:
                                 is_ws_candidates = any(isinstance(s, str) and s.startswith("ws") for s in candidates)
                             except Exception:
                                 is_ws_candidates = False
-                            if is_ws_candidates:
+                            if is_ws_candidates or realtime_enabled:
                                 # Always use canonical hub identifier for WS auth: "hub_<hub_id>"
                                 user = f"hub_{hub_id}"
                             hub_id_str = hub_id if isinstance(hub_id, str) else str(hub_id)
@@ -1375,7 +1537,12 @@ class BootstrapService:
                                     # Optionally attach the correlation id as a query param to help root-side
                                     # logs correlate abnormal closes (1006/EOF) to hub attempts.
                                     try:
-                                        if os.getenv("HUB_NATS_CONNECT_TAG_QUERY", "0") == "1" and isinstance(ws_connect_tag, str) and ws_connect_tag:
+                                        if (
+                                            connect_server.startswith("ws")
+                                            and os.getenv("HUB_NATS_CONNECT_TAG_QUERY", "0") == "1"
+                                            and isinstance(ws_connect_tag, str)
+                                            and ws_connect_tag
+                                        ):
                                             from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse, parse_qsl as _parse_qsl, urlencode as _urlencode
                                             u = _urlparse(connect_server)
                                             q = dict(_parse_qsl(u.query, keep_blank_values=True))
@@ -1427,7 +1594,7 @@ class BootstrapService:
                                             name=f"hub-{hub_id_str}",
                                             ws_connection_headers=(
                                                 {"X-AdaOS-Nats-Conn": [ws_connect_tag]}
-                                                if isinstance(ws_connect_tag, str) and ws_connect_tag
+                                                if connect_server.startswith("ws") and isinstance(ws_connect_tag, str) and ws_connect_tag
                                                 else None
                                             ),
                                             allow_reconnect=False,
@@ -3475,6 +3642,14 @@ class BootstrapService:
                             now = time.monotonic()
                             tick_gap = now - last_watchdog_tick_at
                             last_watchdog_tick_at = now
+                            try:
+                                _write_nats_ws_diag_file(
+                                    nc,
+                                    server=nats_last_server,
+                                    source="periodic",
+                                )
+                            except Exception:
+                                pass
                             skip_rx_watchdog = tick_gap > 5.0
                             if skip_rx_watchdog:
                                 # If the event loop was stalled (e.g. a long sync handler), don't treat lack of RX
@@ -4024,6 +4199,43 @@ class BootstrapService:
                                 print(f"[hub-io] nats: encountered error: {e}")
                             except Exception:
                                 pass
+                            try:
+                                local_sidecar_url = realtime_sidecar_local_url()
+                                using_sidecar = bool(
+                                    isinstance(nats_last_server, str)
+                                    and isinstance(local_sidecar_url, str)
+                                    and str(nats_last_server).strip() == str(local_sidecar_url).strip()
+                                )
+                            except Exception:
+                                using_sidecar = False
+                            try:
+                                if using_sidecar:
+                                    async def _print_sidecar_tail() -> None:
+                                        def _tail(path: Path, lines: int) -> tuple[Path, list[str]]:
+                                            try:
+                                                data = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                                            except Exception:
+                                                data = []
+                                            return path, data[-lines:]
+
+                                        try:
+                                            log_path, log_tail = await asyncio.to_thread(_tail, realtime_sidecar_log_path(), 40)
+                                            if log_tail:
+                                                print(f"[hub-io] adaos-realtime log tail file={log_path} lines={len(log_tail)}")
+                                                print("\n".join(log_tail))
+                                        except Exception:
+                                            pass
+                                        try:
+                                            diag_path, diag_tail = await asyncio.to_thread(_tail, realtime_sidecar_diag_path(), 10)
+                                            if diag_tail:
+                                                print(f"[hub-io] adaos-realtime diag tail file={diag_path} lines={len(diag_tail)}")
+                                                print("\n".join(diag_tail))
+                                        except Exception:
+                                            pass
+
+                                    asyncio.create_task(_print_sidecar_tail(), name="adaos-realtime-log-tail")
+                            except Exception:
+                                pass
                             # Optional delayed snapshot: root-side logs (ECONNRESET/conn close) can be emitted
                             # slightly after the hub notices EOF. A second tail a few seconds later often captures it.
                             try:
@@ -4105,7 +4317,7 @@ class BootstrapService:
                             try:
                                 auto_env = os.getenv("HUB_NATS_WS_AUTO_FALLBACK")
                                 if auto_env is None:
-                                    auto_fallback = os.name == "nt"
+                                    auto_fallback = False
                                 else:
                                     auto_fallback = str(auto_env).strip().lower() not in ("0", "false", "off", "no")
                                 if (

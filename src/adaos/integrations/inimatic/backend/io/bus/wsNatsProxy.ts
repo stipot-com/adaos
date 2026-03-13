@@ -197,6 +197,10 @@ export function installWsNatsProxy(server: HttpServer) {
 	// client can observe a local proxy PONG before the upstream NATS server has actually processed prior PUB/SUB.
 	// Keep this OFF by default and enable only as an explicit workaround.
 	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '0') === '1'
+	// The proxy already answers upstream NATS `PING`s itself. Forwarding standalone client `PONG`s upstream as well
+	// creates duplicate `PONG`s on the upstream TCP socket, which is the strongest remaining hypothesis for
+	// upstream-side disconnects after ~40-60s. Strip only standalone `PONG` frames; mixed payloads still pass through.
+	const stripClientPong = String(process.env['WS_NATS_PROXY_STRIP_CLIENT_PONG'] || '1') !== '0'
 	// WARNING: attaching a `readable` listener to the underlying socket switches it into paused mode,
 	// which can interfere with `ws` frame consumption. Keep this diagnostics path opt-in only.
 	const socketReadableDiag = (process.env['WS_NATS_PROXY_SOCKET_READABLE_DIAG'] || '0') === '1'
@@ -297,10 +301,12 @@ export function installWsNatsProxy(server: HttpServer) {
 		let upstreamSock: net.Socket | null = null
 		let wsPingTimer: NodeJS.Timeout | null = null
 		let natsKeepaliveTimer: NodeJS.Timeout | null = null
+		let upstreamNatsPingTimer: NodeJS.Timeout | null = null
 		let wsPingsSent = 0
 		let wsPongsReceived = 0
 		let lastWsPongAt: number | null = null
 		let natsKeepalivesSent = 0
+		let upstreamNatsPingsSent = 0
 		let keepaliveAwaitingPongSince: number | null = null
 		let keepaliveAwaitingSocketDataSince: number | null = null
 		let keepaliveAwaitingSocketReadableSince: number | null = null
@@ -323,6 +329,10 @@ export function installWsNatsProxy(server: HttpServer) {
 			try {
 				ws.close(code || 1000, reason)
 			} catch {}
+			try {
+				if (upstreamNatsPingTimer) clearInterval(upstreamNatsPingTimer)
+			} catch {}
+			upstreamNatsPingTimer = null
 			try {
 				upstreamSock?.destroy()
 			} catch {}
@@ -561,6 +571,7 @@ export function installWsNatsProxy(server: HttpServer) {
 				clientSentPong,
 				clientSentPing,
 				upstreamSentPong,
+				upstreamNatsPingsSent,
 				wsPingsSent,
 				wsPongsReceived,
 				lastWsPongAgo_s: lastWsPongAt ? (Date.now() - lastWsPongAt) / 1000 : null,
@@ -782,6 +793,41 @@ export function installWsNatsProxy(server: HttpServer) {
 			wsPingTimer = null
 		}
 
+		function armUpstreamNatsKeepalive() {
+			try {
+				if (upstreamNatsPingTimer) clearInterval(upstreamNatsPingTimer)
+			} catch {}
+			upstreamNatsPingTimer = null
+			const pingMs = Math.max(
+				5000,
+				Number.parseInt(process.env.WS_NATS_PROXY_UPSTREAM_NATS_PING_MS || '20000', 10) || 20000,
+			)
+			const requireHandshake = String(process.env.WS_NATS_PROXY_UPSTREAM_NATS_PING_REQUIRE_HANDSHAKE || '1') !== '0'
+			upstreamNatsPingTimer = setInterval(() => {
+				try {
+					if (requireHandshake && !handshaked) return
+					const sock = upstreamSock
+					if (!sock || (sock as any).destroyed || !connected) return
+					const ok = sock.write(NATS_PING)
+					upstreamNatsPingsSent += 1
+					if (ok === false) {
+						logSummary('upstream keepalive backpressure', { writableLength: sock.writableLength, upstreamNatsPingsSent })
+					} else if (pingTrace) {
+						log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, upstreamNatsPingsSent }, 'nats ping (proxy -> upstream)')
+					}
+				} catch (e) {
+					logSummary('upstream keepalive write failed', { err: String(e), upstreamNatsPingsSent })
+				}
+			}, pingMs)
+		}
+
+		function disarmUpstreamNatsKeepalive() {
+			try {
+				if (upstreamNatsPingTimer) clearInterval(upstreamNatsPingTimer)
+			} catch {}
+			upstreamNatsPingTimer = null
+		}
+
 		function connectUpstream() {
 			// Never create more than one upstream socket per WS connection.
 			// `connectUpstream()` is called on connect (to forward INFO) and again after auth (to ensure upstream exists).
@@ -963,6 +1009,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			sock.on('close', (hadError) => {
 				upstreamConnecting = false
 				connected = false
+				disarmUpstreamNatsKeepalive()
 				logSummary('upstream close', { hadError: Boolean(hadError) })
 				try {
 					ws_nats_proxy_upstream_close_total.labels(hadError ? '1' : '0').inc()
@@ -972,6 +1019,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			sock.on('error', (err) => {
 				upstreamConnecting = false
 				connected = false
+				disarmUpstreamNatsKeepalive()
 				logSummary('upstream error', { err: String(err) })
 				closeBoth(1011, 'upstream_error')
 			})
@@ -1210,6 +1258,7 @@ export function installWsNatsProxy(server: HttpServer) {
 						}
 						clientBuf = Buffer.alloc(0)
 						handshaked = true
+						armUpstreamNatsKeepalive()
 						authInFlight = false
 						log().info(
 							{
@@ -1370,9 +1419,12 @@ export function installWsNatsProxy(server: HttpServer) {
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (from client)')
 					}
 				} catch {}
-				// The proxy itself responds to upstream `PING`s, so client `PONG`s are not required upstream.
-				// Forward client PONGs to upstream (do NOT strip). If we strip and our upstream PING detection
-				// ever misses (e.g. boundary split), NATS will close the connection leading to flaky UnexpectedEOFs.
+				if (stripClientPong && buf.length === NATS_PONG.length && buf.equals(NATS_PONG)) {
+					if (pingTrace) {
+						log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats pong (client->proxy) stripped upstream')
+					}
+					return
+				}
 				let traceRoute:
 					| {
 							subjects: string[]
@@ -1456,6 +1508,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			} catch {}
 			disarmWsPing()
 			disarmNatsKeepalive()
+			disarmUpstreamNatsKeepalive()
 			try {
 				upstreamSock?.destroy()
 			} catch {}

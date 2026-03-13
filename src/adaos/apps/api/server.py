@@ -8,6 +8,13 @@ try:  # pragma: no cover
 except Exception:
     pass
 
+try:  # pragma: no cover
+    from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
+
+    apply_runtime_dotenv_overrides()
+except Exception:
+    pass
+
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -27,14 +34,16 @@ def _maybe_set_windows_selector_loop() -> None:
     if os.name != "nt":
         return
     raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    enabled = False
     if raw is not None:
         val = str(raw).strip().lower()
-        if val in ("0", "false", "off", "no"):
-            return
+        enabled = val in ("1", "true", "on", "yes")
+    if not enabled:
+        return
     try:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         if os.getenv("HUB_NATS_TRACE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
-            print("[AdaOS] Windows selector event loop policy enabled (api.server)", file=sys.stderr)
+            print("[AdaOS] Windows selector event loop policy enabled (api.server, ADAOS_WIN_SELECTOR_LOOP=1)", file=sys.stderr)
     except Exception:
         pass
 
@@ -52,6 +61,11 @@ from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
+from adaos.services.realtime_sidecar import (
+    realtime_sidecar_enabled,
+    start_realtime_sidecar_subprocess,
+    stop_realtime_sidecar_subprocess,
+)
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
@@ -189,6 +203,7 @@ async def lifespan(app: FastAPI):
         app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
         app.state.shutdown_stopping_emitted = False
         app.state.restart_marker = _consume_restart_marker(os.getenv("ADAOS_SELF_BASE_URL"))
+        app.state.realtime_sidecar_proc = None
     except Exception:
         pass
 
@@ -219,6 +234,13 @@ async def lifespan(app: FastAPI):
                 save_config(conf)
     except Exception:
         pass
+    try:
+        conf = get_ctx().config
+        role = str(getattr(conf, "role", "") or "").strip().lower()
+        if realtime_sidecar_enabled(role=role):
+            app.state.realtime_sidecar_proc = await start_realtime_sidecar_subprocess(role=role)
+    except Exception:
+        logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
     await run_boot_sequence(app)
     try:
         await start_subnet_p2p(app)
@@ -503,6 +525,10 @@ async def lifespan(app: FastAPI):
             pass
         except Exception:
             pass
+        try:
+            await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
+        except Exception:
+            logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
         await shutdown()
 
 

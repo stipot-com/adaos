@@ -9,6 +9,7 @@ from adaos.apps.cli.commands.api import (
     _resolve_bind,
     app,
 )
+from adaos.services.runtime_dotenv import merged_runtime_dotenv_env
 from adaos.services.node_config import NodeConfig
 from typer.testing import CliRunner
 
@@ -174,3 +175,33 @@ def test_api_stop_fails_for_non_local_hub_url(monkeypatch):
 
     assert result.exit_code == 1
     assert "does not contain a local hub_url" in result.stdout
+
+
+def test_merged_runtime_dotenv_env_prefers_repo_ws_runtime_keys(tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text(
+        "\n".join(
+            [
+                "HUB_NATS_WS_IMPL=websockets",
+                "ADAOS_WIN_SELECTOR_LOOP=0",
+                "HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl",
+                "UNRELATED_KEY=from-dotenv",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    merged = merged_runtime_dotenv_env(
+        {
+            "HUB_NATS_WS_IMPL": "aiohttp",
+            "ADAOS_WIN_SELECTOR_LOOP": "1",
+            "UNRELATED_KEY": "from-env",
+        },
+        dotenv_path=dotenv_path,
+    )
+
+    assert merged["HUB_NATS_WS_IMPL"] == "websockets"
+    assert merged["ADAOS_WIN_SELECTOR_LOOP"] == "0"
+    assert merged["HUB_NATS_WS_DIAG_FILE"] == ".adaos/diagnostics/nats_ws_diag.jsonl"
+    assert merged["UNRELATED_KEY"] == "from-env"
