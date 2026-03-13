@@ -284,6 +284,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			return null
 		})()
 		const isRealtimeSidecarConn = typeof connTag === 'string' && connTag.startsWith('rt-')
+		const transparentNatsControl = isRealtimeSidecarConn
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
 		if (verbose) log().info({ conn: connId, from: rip, tag: connTag }, 'conn open')
 		try {
@@ -814,6 +815,12 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function armUpstreamNatsKeepalive() {
+			if (transparentNatsControl) {
+				if (pingTrace || verbose) {
+					log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'upstream keepalive disabled for realtime sidecar')
+				}
+				return
+			}
 			try {
 				if (upstreamNatsPingTimer) clearInterval(upstreamNatsPingTimer)
 			} catch {}
@@ -943,24 +950,26 @@ export function installWsNatsProxy(server: HttpServer) {
 				upstreamTail = scanPing.tail
 				if (scanPing.count > 0) {
 					lastUpstreamPingAt = Date.now()
-					// Be defensive: reply to upstream PINGs ourselves.
-					// Some hubs/proxies may not reliably forward/respond to NATS PING/PONG, which can lead to
-					// the server closing the TCP connection and the hub seeing "UnexpectedEOF".
-					//
-					// Extra PONGs are safe in the NATS protocol and help keep the upstream connection stable.
-					try {
-						for (let i = 0; i < scanPing.count; i += 1) {
-							const ok = sock.write(NATS_PONG)
-							proxySentPong += 1
-							if (ok === false) {
-								logSummary('upstream backpressure on PONG', { writableLength: sock.writableLength })
-								break
+					if (!transparentNatsControl) {
+						// Be defensive: reply to upstream PINGs ourselves.
+						// Some hubs/proxies may not reliably forward/respond to NATS PING/PONG, which can lead to
+						// the server closing the TCP connection and the hub seeing "UnexpectedEOF".
+						//
+						// Extra PONGs are safe in the NATS protocol and help keep the upstream connection stable.
+						try {
+							for (let i = 0; i < scanPing.count; i += 1) {
+								const ok = sock.write(NATS_PONG)
+								proxySentPong += 1
+								if (ok === false) {
+									logSummary('upstream backpressure on PONG', { writableLength: sock.writableLength })
+									break
+								}
 							}
+						} catch (e) {
+							logSummary('upstream PONG write failed', { err: String(e) })
+							closeBoth(1011, 'upstream_pong_failed')
+							return
 						}
-					} catch (e) {
-						logSummary('upstream PONG write failed', { err: String(e) })
-						closeBoth(1011, 'upstream_pong_failed')
-						return
 					}
 				}
 				try {
@@ -1443,7 +1452,7 @@ export function installWsNatsProxy(server: HttpServer) {
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (from client)')
 					}
 				} catch {}
-				if (stripClientPong) {
+				if (stripClientPong && !transparentNatsControl) {
 					const stripped = stripLeadingMarkers(buf, NATS_PONG)
 					if (stripped.count > 0) {
 						if (pingTrace) {
