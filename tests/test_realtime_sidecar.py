@@ -148,6 +148,37 @@ async def test_realtime_sidecar_remote_connect_uses_ws_ping_and_tcp_keepalive(
         await ws.close()
 
 
+@pytest.mark.asyncio
+async def test_realtime_sidecar_remote_connect_does_not_inherit_global_ws_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    recorded: dict[str, object] = {}
+    fake_ws = _FakeRemoteWS()
+
+    async def _fake_connect(*args, **kwargs):
+        recorded["kwargs"] = dict(kwargs)
+        return fake_ws
+
+    import websockets  # type: ignore
+
+    monkeypatch.setattr(websockets, "connect", _fake_connect)
+    monkeypatch.setenv("ADAOS_REALTIME_DIAG_FILE", str(tmp_path / "diag.jsonl"))
+    monkeypatch.setenv("ADAOS_REALTIME_LOG", str(tmp_path / "sidecar.log"))
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_REALTIME_REMOTE_WS_URL", "wss://example.invalid/nats")
+    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "20")
+    monkeypatch.delenv("ADAOS_REALTIME_WS_HEARTBEAT_S", raising=False)
+
+    server = RealtimeSidecarServer(host="127.0.0.1", port=0)
+    ws, _target = await server._connect_remote(session_id="rt-test")
+    try:
+        kwargs = dict(recorded["kwargs"])
+        assert kwargs["ping_interval"] is None
+        assert kwargs["ping_timeout"] is None
+    finally:
+        await ws.close()
+
+
 def test_realtime_cli_applies_loop_policy_before_asyncio_run(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 

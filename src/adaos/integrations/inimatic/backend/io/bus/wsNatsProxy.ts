@@ -1320,6 +1320,10 @@ export function installWsNatsProxy(server: HttpServer) {
 				lastClientSocketBytesWritten = sock ? Number(sock.bytesWritten || 0) : null
 				keepaliveAwaitingSocketDataSince = null
 				keepaliveAwaitingSocketReadableSince = null
+				// Any client data proves liveness; clear pending keepalive wait to avoid false timeouts
+				if (keepaliveAwaitingPongSince !== null) {
+					keepaliveAwaitingPongSince = null
+				}
 			} catch {}
 			if (authInFlight && !handshaked) {
 				// Prevent double CONNECT parsing when the client keeps sending data while auth is in-flight.

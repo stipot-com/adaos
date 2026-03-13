@@ -88,28 +88,28 @@ def realtime_sidecar_diag_path() -> Path:
 
 
 def _realtime_ws_heartbeat_s() -> float | None:
-    raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
-    if raw is not None:
-        try:
-            value = float(str(raw).strip() or "0")
-        except Exception:
-            value = 0.0
-        if value <= 0.0:
-            return None
-        if value < 5.0:
-            value = 5.0
-        return value
-    return _ws_heartbeat_s_from_env()
+	raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
+	if raw is None:
+		return None
+	try:
+		value = float(str(raw).strip() or "0")
+	except Exception:
+		value = 0.0
+	if value <= 0.0:
+		return None
+	if value < 5.0:
+		value = 5.0
+	return value
 
 
 def _realtime_ws_max_queue() -> int | None:
     raw = os.getenv("ADAOS_REALTIME_WS_MAX_QUEUE")
     if raw is None:
-        return _ws_max_queue_from_env()
+        return None
     try:
         value = int(str(raw).strip() or "0")
     except Exception:
-        return _ws_max_queue_from_env()
+        return None
     if value <= 0:
         return None
     return value
@@ -137,10 +137,12 @@ def _realtime_nats_ping_interval_s() -> float | None:
     raw = os.getenv("ADAOS_REALTIME_NATS_PING_S")
     if raw is None:
         raw = os.getenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S")
+    if raw is None:
+        return None
     try:
-        value = float(str(raw or "15").strip() or "15")
+        value = float(str(raw).strip() or "0")
     except Exception:
-        value = 15.0
+        return None
     if value <= 0.0:
         return None
     if value < 5.0:
