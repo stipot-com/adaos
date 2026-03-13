@@ -326,6 +326,8 @@ services:
             WS_NATS_PROXY_WS_PING: ${WS_NATS_PROXY_WS_PING:-0}
             WS_NATS_PROXY_STRIP_CLIENT_PONG: ${WS_NATS_PROXY_STRIP_CLIENT_PONG:-1}
             WS_NATS_PROXY_UPSTREAM_NATS_PING_MS: ${WS_NATS_PROXY_UPSTREAM_NATS_PING_MS:-15000}
+            WS_NATS_PROXY_KEEPALIVE_ENABLE: ${WS_NATS_PROXY_KEEPALIVE_ENABLE:-0}
+            WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS: ${WS_NATS_PROXY_KEEPALIVE_PONG_WARN_MS:-5000}
             GH_APP_PRIVATE_KEY_FILE: /run/inimatic/secrets/github-app.pem
             CA_KEY_PEM_FILE: /run/inimatic/secrets/ca/ca.key
             CA_CERT_PEM_FILE: /run/inimatic/secrets/ca/ca.crt

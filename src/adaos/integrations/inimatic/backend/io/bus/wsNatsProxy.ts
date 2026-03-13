@@ -118,6 +118,17 @@ function stripAll(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
 	return { out: Buffer.concat(parts), count }
 }
 
+function stripLeadingMarkers(buf: Buffer, marker: Buffer): { out: Buffer; count: number } {
+	let offset = 0
+	let count = 0
+	while (offset + marker.length <= buf.length && buf.subarray(offset, offset + marker.length).equals(marker)) {
+		offset += marker.length
+		count += 1
+	}
+	if (count === 0) return { out: buf, count: 0 }
+	return { out: buf.subarray(offset), count }
+}
+
 function extractNatsCmdSubject(head: string, cmd: 'MSG' | 'PUB' | 'SUB'): string | null {
 	try {
 		const needle = `${cmd} `
@@ -198,9 +209,9 @@ export function installWsNatsProxy(server: HttpServer) {
 	// client can observe a local proxy PONG before the upstream NATS server has actually processed prior PUB/SUB.
 	// Keep this OFF by default and enable only as an explicit workaround.
 	const terminateClientPing = String(process.env['WS_NATS_PROXY_TERMINATE_CLIENT_PING'] || '0') === '1'
-	// The proxy already answers upstream NATS `PING`s itself. Forwarding standalone client `PONG`s upstream as well
-	// creates duplicate `PONG`s on the upstream TCP socket, which is the strongest remaining hypothesis for
-	// upstream-side disconnects after ~40-60s. Strip only standalone `PONG` frames; mixed payloads still pass through.
+	// The proxy already answers upstream NATS `PING`s itself. Forwarding client `PONG`s upstream as well creates
+	// duplicate `PONG`s on the upstream TCP socket. Strip leading protocol `PONG` commands before forwarding so
+	// frames like `PONG\r\nPING\r\n` become `PING\r\n` while arbitrary PUB payloads remain untouched.
 	const stripClientPong = String(process.env['WS_NATS_PROXY_STRIP_CLIENT_PONG'] || '1') !== '0'
 	// WARNING: attaching a `readable` listener to the underlying socket switches it into paused mode,
 	// which can interfere with `ws` frame consumption. Keep this diagnostics path opt-in only.
@@ -272,6 +283,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			} catch {}
 			return null
 		})()
+		const isRealtimeSidecarConn = typeof connTag === 'string' && connTag.startsWith('rt-')
 		const rip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || ''
 		if (verbose) log().info({ conn: connId, from: rip, tag: connTag }, 'conn open')
 		try {
@@ -709,6 +721,12 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function armNatsKeepalive() {
+			if (isRealtimeSidecarConn) {
+				if (pingTrace || verbose) {
+					log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats keepalive disabled for realtime sidecar')
+				}
+				return
+			}
 			if (!keepaliveEnabled) return
 			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
 			const requireHandshake = String(process.env.WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE || '1') !== '0'
@@ -1425,11 +1443,24 @@ export function installWsNatsProxy(server: HttpServer) {
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (from client)')
 					}
 				} catch {}
-				if (stripClientPong && buf.length === NATS_PONG.length && buf.equals(NATS_PONG)) {
-					if (pingTrace) {
-						log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats pong (client->proxy) stripped upstream')
+				if (stripClientPong) {
+					const stripped = stripLeadingMarkers(buf, NATS_PONG)
+					if (stripped.count > 0) {
+						if (pingTrace) {
+							log().info(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									count: stripped.count,
+									remainingLen: stripped.out.length,
+								},
+								'nats pong (client->proxy) stripped upstream'
+							)
+						}
+						if (stripped.out.length === 0) return
+						buf = stripped.out
 					}
-					return
 				}
 				let traceRoute:
 					| {
