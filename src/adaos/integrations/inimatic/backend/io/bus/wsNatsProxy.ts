@@ -722,13 +722,11 @@ export function installWsNatsProxy(server: HttpServer) {
 		}
 
 		function armNatsKeepalive() {
-			if (isRealtimeSidecarConn) {
-				if (pingTrace || verbose) {
-					log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats keepalive disabled for realtime sidecar')
-				}
-				return
+			const passiveRealtimeKeepalive = isRealtimeSidecarConn
+			if (!passiveRealtimeKeepalive && !keepaliveEnabled) return
+			if (passiveRealtimeKeepalive && (pingTrace || verbose)) {
+				log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog }, 'nats keepalive passive for realtime sidecar')
 			}
-			if (!keepaliveEnabled) return
 			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
 			const requireHandshake = String(process.env.WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE || '1') !== '0'
 			let warnedNoHandshake = false
@@ -767,10 +765,11 @@ export function installWsNatsProxy(server: HttpServer) {
 						} catch {}
 					})
 					natsKeepalivesSent += 1
+					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
+					if (passiveRealtimeKeepalive) return
 					keepaliveAwaitingPongSince = pingSentAt
 					keepaliveAwaitingSocketDataSince = pingSentAt
 					if (socketReadableDiag) keepaliveAwaitingSocketReadableSince = pingSentAt
-					if (pingTrace) log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked }, 'nats ping (keepalive -> client)')
 					setTimeout(() => {
 						try {
 							if (keepaliveAwaitingPongSince !== pingSentAt) return
