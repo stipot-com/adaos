@@ -129,6 +129,22 @@ function stripLeadingMarkers(buf: Buffer, marker: Buffer): { out: Buffer; count:
 	return { out: buf.subarray(offset), count }
 }
 
+function stripLeadingMarkersLimited(buf: Buffer, marker: Buffer, limit: number): { out: Buffer; count: number } {
+	if (limit <= 0) return { out: buf, count: 0 }
+	let offset = 0
+	let count = 0
+	while (
+		count < limit &&
+		offset + marker.length <= buf.length &&
+		buf.subarray(offset, offset + marker.length).equals(marker)
+	) {
+		offset += marker.length
+		count += 1
+	}
+	if (count === 0) return { out: buf, count: 0 }
+	return { out: buf.subarray(offset), count }
+}
+
 function extractNatsCmdSubject(head: string, cmd: 'MSG' | 'PUB' | 'SUB'): string | null {
 	try {
 		const needle = `${cmd} `
@@ -311,6 +327,7 @@ export function installWsNatsProxy(server: HttpServer) {
 		let clientSentPong = 0
 		let clientSentPing = 0
 		let upstreamSentPong = 0
+		let passiveRealtimePongsExpected = 0
 		const openedAt = Date.now()
 		let upstreamSock: net.Socket | null = null
 		let wsPingTimer: NodeJS.Timeout | null = null
@@ -744,9 +761,13 @@ export function installWsNatsProxy(server: HttpServer) {
 					}
 					if (ws.readyState !== 1) return
 					const pingSentAt = Date.now()
+					if (passiveRealtimeKeepalive) passiveRealtimePongsExpected += 1
 					ws.send(NATS_PING, { binary: true }, (err?: Error) => {
 						try {
 							if (err) {
+								if (passiveRealtimeKeepalive && passiveRealtimePongsExpected > 0) {
+									passiveRealtimePongsExpected -= 1
+								}
 								log().warn({ conn: connId, tag: connTag, hub_id: hubIdForLog, handshaked, err: String(err) }, 'nats keepalive send failed')
 								return
 							}
@@ -1451,6 +1472,27 @@ export function installWsNatsProxy(server: HttpServer) {
 						if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'nats ping (from client)')
 					}
 				} catch {}
+				if (transparentNatsControl && passiveRealtimePongsExpected > 0) {
+					const stripped = stripLeadingMarkersLimited(buf, NATS_PONG, passiveRealtimePongsExpected)
+					if (stripped.count > 0) {
+						passiveRealtimePongsExpected -= stripped.count
+						if (pingTrace || verbose) {
+							log().info(
+								{
+									conn: connId,
+									tag: connTag,
+									hub_id: hubIdForLog,
+									count: stripped.count,
+									remainingExpected: passiveRealtimePongsExpected,
+									remainingLen: stripped.out.length,
+								},
+								'nats pong (proxy passive keepalive reply) swallowed'
+							)
+						}
+						if (stripped.out.length === 0) return
+						buf = stripped.out
+					}
+				}
 				if (stripClientPong && !transparentNatsControl) {
 					const stripped = stripLeadingMarkers(buf, NATS_PONG)
 					if (stripped.count > 0) {

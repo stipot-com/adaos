@@ -3,10 +3,13 @@ client_max_body_size 10m;
 
 # NATS WebSocket passthrough (no mTLS)
 #
-# NOTE: This vhost exists primarily to expose the hub WS-NATS bridge on `/nats` (proxied to the backend
-# ws-nats-proxy). To keep accidental plain HTTP probes (e.g. `/`) from hitting NATS' WS listener and
-# spamming NATS logs with "websocket handshake error: invalid value for header 'Upgrade'", the NATS
-# container's `VIRTUAL_PORT` should point at the HTTP monitoring port (8222), not the WS port (8080).
+# NOTE: This vhost exposes the hub WS-NATS bridge on `/nats` via the backend ws-nats-proxy.
+# The dedicated hostname stays useful for routing/diagnostics, but auth for hub-specific
+# `hub_<id>` / `hub_nats_token` credentials is still implemented in the backend proxy path.
+#
+# To keep accidental plain HTTP probes (e.g. `/`) from hitting NATS' WS listener and spamming NATS logs
+# with "websocket handshake error: invalid value for header 'Upgrade'", the NATS container's
+# `VIRTUAL_PORT` should point at the HTTP monitoring port (8222), not the WS port (8080).
 location ^~ /nats {
 
   proxy_http_version 1.1;
@@ -24,7 +27,7 @@ location ^~ /nats {
   proxy_buffering off;
   proxy_request_buffering off;
 
-  # Forward to the backend ws-nats-proxy so hub tokens work on this host too.
+  # Hub auth currently lives in the backend proxy path.
   proxy_pass http://api.inimatic.com;
 }
 

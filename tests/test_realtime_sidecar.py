@@ -179,6 +179,36 @@ async def test_realtime_sidecar_remote_connect_does_not_inherit_global_ws_heartb
         await ws.close()
 
 
+def test_realtime_sidecar_prefers_api_ingress_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_PREFER_DEDICATED", raising=False)
+    monkeypatch.delenv("ADAOS_REALTIME_PREFER_DEDICATED", raising=False)
+    monkeypatch.delenv("ADAOS_REALTIME_REMOTE_WS_URL", raising=False)
+
+    ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
+
+    assert ordered[:2] == ["wss://api.inimatic.com/nats", "wss://nats.inimatic.com/nats"]
+
+
+def test_realtime_sidecar_does_not_inherit_hub_prefer_dedicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_PREFER_DEDICATED", "1")
+    monkeypatch.delenv("ADAOS_REALTIME_PREFER_DEDICATED", raising=False)
+    monkeypatch.delenv("ADAOS_REALTIME_REMOTE_WS_URL", raising=False)
+
+    ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
+
+    assert ordered[:2] == ["wss://api.inimatic.com/nats", "wss://nats.inimatic.com/nats"]
+
+
+def test_realtime_sidecar_can_explicitly_prefer_dedicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_PREFER_DEDICATED", "0")
+    monkeypatch.setenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
+    monkeypatch.delenv("ADAOS_REALTIME_REMOTE_WS_URL", raising=False)
+
+    ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
+
+    assert ordered[:2] == ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]
+
+
 def test_realtime_cli_applies_loop_policy_before_asyncio_run(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 

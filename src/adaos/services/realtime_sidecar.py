@@ -207,7 +207,16 @@ def resolve_realtime_remote_candidates() -> list[str]:
             normalized = normalize_nats_ws_url(item, fallback=None)
             if isinstance(normalized, str) and normalized.startswith("ws") and normalized not in candidates:
                 candidates.append(normalized)
-    prefer_dedicated = os.getenv("HUB_NATS_PREFER_DEDICATED", "1")
+    # Default to the root ingress (`api.inimatic.com`) for the sidecar.
+    #
+    # Do not inherit `HUB_NATS_PREFER_DEDICATED` here: that knob is used by the hub's direct WS client,
+    # but the sidecar may require a different route. In the current deployment, the dedicated host can
+    # terminate on a direct NATS websocket listener that only understands static server credentials, while
+    # sidecar traffic still needs the backend proxy path for per-hub auth.
+    #
+    # If/when the dedicated host becomes auth-compatible for sidecar traffic, opt in explicitly with
+    # `ADAOS_REALTIME_PREFER_DEDICATED=1`.
+    prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     return order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
 
 
@@ -244,6 +253,7 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     env = merged_runtime_dotenv_env(os.environ.copy())
     env["ADAOS_REALTIME_ENABLE"] = "1"
     env["ADAOS_REALTIME_CHILD"] = "1"
+    env.setdefault("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     log_path = realtime_sidecar_log_path()
     stdout_handle = log_path.open("ab")
     args = [
@@ -266,7 +276,7 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
         stderr=subprocess.STDOUT,
         start_new_session=(os.name != "nt"),
         creationflags=(
-            int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(getattr(subprocess, "DETACHED_PROCESS", 0))
+            int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if os.name == "nt"
             else 0
         ),
