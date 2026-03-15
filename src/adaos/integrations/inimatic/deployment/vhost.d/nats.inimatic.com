@@ -1,11 +1,10 @@
 # vhost.d/nats.inimatic.com
 client_max_body_size 10m;
 
-# NATS WebSocket passthrough (no mTLS)
+# Direct NATS WebSocket passthrough (no mTLS)
 #
-# NOTE: This vhost exposes the hub WS-NATS bridge on `/nats` via the backend ws-nats-proxy.
-# The dedicated hostname stays useful for routing/diagnostics, but auth for hub-specific
-# `hub_<id>` / `hub_nats_token` credentials is still implemented in the backend proxy path.
+# Hub-specific `hub_<id>` / `hub_nats_token` credentials are authorized by NATS
+# itself via `auth_callout`, so `/nats` can terminate directly on the NATS WS listener.
 #
 # To keep accidental plain HTTP probes (e.g. `/`) from hitting NATS' WS listener and spamming NATS logs
 # with "websocket handshake error: invalid value for header 'Upgrade'", the NATS container's
@@ -27,8 +26,7 @@ location ^~ /nats {
   proxy_buffering off;
   proxy_request_buffering off;
 
-  # Hub auth currently lives in the backend proxy path.
-  proxy_pass http://api.inimatic.com;
+  proxy_pass http://nats:8080;
 }
 
 # Let nginx-proxy/acme-companion serve HTTP-01 challenges.

@@ -208,22 +208,14 @@ def resolve_realtime_remote_candidates() -> list[str]:
             normalized = normalize_nats_ws_url(item, fallback=None)
             if isinstance(normalized, str) and normalized.startswith("ws") and normalized not in candidates:
                 candidates.append(normalized)
-    # Default to the root ingress (`api.inimatic.com`) for the sidecar.
-    #
-    # Do not inherit `HUB_NATS_PREFER_DEDICATED` here: that knob is used by the hub's direct WS client,
-    # but the sidecar may require a different route. In the current deployment, the dedicated host can
-    # terminate on a direct NATS websocket listener that only understands static server credentials, while
-    # sidecar traffic still needs the backend proxy path for per-hub auth.
-    #
-    # If/when the dedicated host becomes auth-compatible for sidecar traffic, opt in explicitly with
-    # `ADAOS_REALTIME_PREFER_DEDICATED=1`.
-    prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
+    # Sidecar traffic now uses direct NATS auth_callout, so the dedicated hostname is the preferred
+    # public route. Keep the root ingress as a compatibility fallback unless explicitly disabled.
+    prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
     ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
-    dedicated = "wss://nats.inimatic.com/nats"
-    allow_dedicated_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_DEDICATED_FALLBACK", "0"), default=False)
-    explicit_dedicated = base == dedicated
-    if dedicated in ordered and prefer_dedicated != "1" and not explicit_dedicated and not allow_dedicated_fallback:
-        ordered = [item for item in ordered if item != dedicated]
+    api_ingress = "wss://api.inimatic.com/nats"
+    allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK", "1"), default=True)
+    if api_ingress in ordered and base != api_ingress and not allow_api_fallback:
+        ordered = [item for item in ordered if item != api_ingress]
     return ordered
 
 

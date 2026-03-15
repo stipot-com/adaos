@@ -50,7 +50,7 @@ location ^~ /hubs/ {
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-# --- NATS WebSocket passthrough ---
+# --- Direct NATS WebSocket passthrough ---
 location ^~ /nats {
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
@@ -60,7 +60,7 @@ location ^~ /nats {
   proxy_read_timeout 3600s;
   proxy_send_timeout 3600s;
   proxy_connect_timeout 10s;
-  proxy_pass http://api.inimatic.com;
+  proxy_pass http://nats:8080;
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 

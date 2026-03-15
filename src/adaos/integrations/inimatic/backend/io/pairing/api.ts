@@ -18,6 +18,7 @@ import {
 } from './store.js'
 
 const log = pino({ name: 'pair-api' })
+const PUBLIC_NATS_WS_URL = 'wss://nats.inimatic.com/nats' as const
 
 export function installPairingApi(app: express.Express) {
 	function extractBearer(headerValue: string): string | undefined {
@@ -36,16 +37,7 @@ export function installPairingApi(app: express.Express) {
 	}
 
 	function buildPublicNatsWsUrl(): string {
-		const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-		const baseUrl = new URL(baseHttp)
-		const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-		baseUrl.protocol = wsProto
-		const base = baseUrl.toString().replace(/\/+$/, '')
-
-		const explicit = (process.env['NATS_WS_PUBLIC'] || '').trim()
-		if (explicit) return explicit
-
-		return `${base}/nats`
+		return PUBLIC_NATS_WS_URL
 	}
 
 	app.post('/io/tg/pair/create', async (req, res) => {

@@ -88,7 +88,7 @@ location /hubs/ {
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-# --- NATS-over-WebSocket entrypoint for hubs ---
+# --- Direct NATS-over-WebSocket entrypoint for hubs ---
 location ^~ /nats {
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
@@ -104,8 +104,7 @@ location ^~ /nats {
   proxy_buffering off;
   proxy_request_buffering off;
 
-  # Forward to the backend container (it runs ws-nats-proxy on WS_NATS_PATH=/nats).
-  proxy_pass http://api.inimatic.com;
+  proxy_pass http://nats:8080;
 }
 
 # --- Protected paths require mTLS ---

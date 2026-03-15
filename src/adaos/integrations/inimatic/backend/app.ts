@@ -401,15 +401,10 @@ function withLeadingSlash(value: string, fallback: string): string {
 	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
+const PUBLIC_NATS_WS_URL = 'wss://nats.inimatic.com/nats' as const
+
 function buildNatsWsUrl(): string {
-	const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-	const baseUrl = new URL(baseHttp)
-	const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-	baseUrl.protocol = wsProto
-	const base = baseUrl.toString().replace(/\/+$/, '')
-	const publicOverride = (process.env['NATS_WS_PUBLIC'] || '').trim()
-	if (publicOverride) return publicOverride
-	return `${base}/nats`
+	return PUBLIC_NATS_WS_URL
 }
 
 const EFFECTIVE_SOCKET_PATH = '/socket.io' as const
