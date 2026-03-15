@@ -501,7 +501,7 @@ def dev_login(
                 nats_cfg["alias"] = "hub"
             data_yaml["nats"] = nats_cfg
             _save_node(data_yaml)
-            typer.echo("Saved NATS WS credentials to node.yaml")
+            typer.echo("Saved NATS credentials to node.yaml")
 
             # Ensure route rules exist so RouterService can route ui.notify to telegram.
             try:

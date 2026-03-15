@@ -402,10 +402,10 @@ function withLeadingSlash(value: string, fallback: string): string {
 	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
-const PUBLIC_NATS_WS_URL = 'wss://nats.inimatic.com/nats' as const
+const PUBLIC_HUB_NATS_URL = 'nats://nats.inimatic.com:4222' as const
 
-function buildNatsWsUrl(): string {
-	return PUBLIC_NATS_WS_URL
+function buildHubNatsUrl(): string {
+	return PUBLIC_HUB_NATS_URL
 }
 
 const EFFECTIVE_SOCKET_PATH = '/socket.io' as const
@@ -2129,7 +2129,7 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 	try {
 		const hubId = identity.subnetId
 		const session = await issueHubNatsSession(hubId)
-		const ws_url = buildNatsWsUrl()
+		const ws_url = buildHubNatsUrl()
 		return res.json({
 			ok: true,
 			hub_id: hubId,

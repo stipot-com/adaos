@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from adaos.services.nats_config import normalize_nats_ws_url, order_nats_ws_candidates
+from adaos.services.nats_config import normalize_nats_ws_url, nats_url_uses_websocket, order_nats_ws_candidates
 
 
 def test_normalize_nats_ws_url_adds_default_path() -> None:
@@ -17,6 +17,15 @@ def test_normalize_nats_ws_url_keeps_existing_path() -> None:
 
 def test_normalize_nats_ws_url_can_return_none() -> None:
     assert normalize_nats_ws_url(None, fallback=None) is None
+
+
+def test_normalize_nats_ws_url_keeps_raw_tcp_nats_url() -> None:
+    assert normalize_nats_ws_url("nats://nats.inimatic.com:4222") == "nats://nats.inimatic.com:4222"
+
+
+def test_nats_url_uses_websocket_distinguishes_tcp_from_ws() -> None:
+    assert nats_url_uses_websocket("wss://nats.inimatic.com/nats") is True
+    assert nats_url_uses_websocket("nats://nats.inimatic.com:4222") is False
 
 
 def test_order_nats_ws_candidates_keeps_explicit_first_for_custom_url() -> None:

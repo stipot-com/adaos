@@ -33,7 +33,7 @@ from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->
 from adaos.services.eventbus import LocalEventBus
 from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
-from adaos.services.nats_config import normalize_nats_ws_url, order_nats_ws_candidates
+from adaos.services.nats_config import normalize_nats_ws_url, nats_url_uses_websocket, order_nats_ws_candidates
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_diag_path,
     realtime_sidecar_enabled,
@@ -698,13 +698,17 @@ class BootstrapService:
                         )
                     except Exception:
                         realtime_enabled = False
+                    try:
+                        realtime_remote_candidates = resolve_realtime_remote_candidates() if realtime_enabled else []
+                    except Exception:
+                        realtime_remote_candidates = []
                     # Best-effort outbox for telegram replies when NATS is flapping.
                     try:
                         if not hasattr(self, "_tg_output_pending"):
                             setattr(self, "_tg_output_pending", deque())
                     except Exception:
                         pass
-                    if realtime_enabled:
+                    if realtime_enabled and realtime_remote_candidates:
                         last_ws_transport = "sidecar"
                         if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
                             _rl_log(
@@ -784,6 +788,11 @@ class BootstrapService:
                                     print("[hub-io] NATS disabled: missing nats.ws_url/user/pass in node.yaml")
                                 await asyncio.sleep(2.0)
                                 continue
+                            if nats_url_uses_websocket(nurl):
+                                fetched = await _fetch_nats_credentials()
+                                if fetched:
+                                    await asyncio.sleep(0.1)
+                                    continue
 
                             user = nuser
                             pw = npass
@@ -894,15 +903,17 @@ class BootstrapService:
                                 )
                             except Exception:
                                 pass
+                            remote_candidates: list[str] = []
                             try:
                                 if realtime_enabled:
                                     remote_candidates = resolve_realtime_remote_candidates()
-                                    candidates = [realtime_sidecar_local_url()]
-                                    _rl_log(
-                                        "nats.sidecar_route",
-                                        f"[hub-io] nats realtime sidecar local={candidates[0]} remote={remote_candidates}",
-                                        every_s=60.0,
-                                    )
+                                    if remote_candidates:
+                                        candidates = [realtime_sidecar_local_url()]
+                                        _rl_log(
+                                            "nats.sidecar_route",
+                                            f"[hub-io] nats realtime sidecar local={candidates[0]} remote={remote_candidates}",
+                                            every_s=60.0,
+                                        )
                             except Exception:
                                 pass
 

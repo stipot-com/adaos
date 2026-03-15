@@ -89,6 +89,7 @@ services:
         container_name: nats
         restart: unless-stopped
         networks: [proxy]
+        ports: ['4222:4222']
         expose: ['4222', '8222', '8080']
         environment:
             - VIRTUAL_HOST=nats.inimatic.com

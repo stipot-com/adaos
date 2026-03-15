@@ -16,7 +16,11 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from adaos.services.capacity import _load_node_yaml as _load_node_yaml
-from adaos.services.nats_config import normalize_nats_ws_url, order_nats_ws_candidates
+from adaos.services.nats_config import (
+    normalize_nats_ws_url,
+    nats_url_uses_websocket,
+    order_nats_ws_candidates,
+)
 from adaos.services.nats_ws_transport import (
     _set_tcp_keepalive,
     _ws_heartbeat_s_from_env,
@@ -196,7 +200,11 @@ def resolve_realtime_remote_candidates() -> list[str]:
     except Exception:
         node = {}
     nats_cfg = node.get("nats") if isinstance(node, dict) and isinstance(node.get("nats"), dict) else {}
-    node_url = normalize_nats_ws_url(str((nats_cfg or {}).get("ws_url") or "").strip(), fallback=None)
+    node_url_raw = str((nats_cfg or {}).get("ws_url") or "").strip() or None
+    target_url = explicit_url or node_url_raw
+    if target_url and not nats_url_uses_websocket(target_url):
+        return []
+    node_url = normalize_nats_ws_url(node_url_raw, fallback=None)
     base = normalize_nats_ws_url(explicit_url or node_url, fallback=None)
     candidates: list[str] = []
     for item in [base, "wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]:
@@ -245,6 +253,8 @@ async def wait_realtime_sidecar_ready(*, host: str, port: int, timeout_s: float 
 
 async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subprocess.Popen[Any] | None:
     if not realtime_sidecar_enabled(role=role):
+        return None
+    if not resolve_realtime_remote_candidates():
         return None
     host = realtime_sidecar_host()
     port = realtime_sidecar_port()

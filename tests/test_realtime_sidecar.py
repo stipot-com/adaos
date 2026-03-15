@@ -253,6 +253,19 @@ def test_realtime_sidecar_can_explicitly_prefer_dedicated(monkeypatch: pytest.Mo
     assert ordered == ["wss://nats.inimatic.com/nats"]
 
 
+def test_realtime_sidecar_skips_ws_mode_for_direct_tcp_node_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ADAOS_REALTIME_REMOTE_WS_URL", raising=False)
+    monkeypatch.setattr(
+        realtime_sidecar_mod,
+        "_load_node_yaml",
+        lambda: {"nats": {"ws_url": "nats://nats.inimatic.com:4222"}},
+    )
+
+    ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
+
+    assert ordered == []
+
+
 @pytest.mark.asyncio
 async def test_realtime_sidecar_subprocess_forces_dedicated_direct_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -288,6 +301,23 @@ async def test_realtime_sidecar_subprocess_forces_dedicated_direct_path(
     assert proc is not None
     assert popen_env["ADAOS_REALTIME_PREFER_DEDICATED"] == "1"
     assert popen_env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_realtime_sidecar_subprocess_skips_direct_tcp_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_REALTIME_LOG", str(tmp_path / "sidecar.log"))
+    monkeypatch.setattr(
+        realtime_sidecar_mod,
+        "_load_node_yaml",
+        lambda: {"nats": {"ws_url": "nats://nats.inimatic.com:4222"}},
+    )
+
+    proc = await realtime_sidecar_mod.start_realtime_sidecar_subprocess(role="hub")
+
+    assert proc is None
 
 
 def test_realtime_sidecar_nats_keepalive_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> None:

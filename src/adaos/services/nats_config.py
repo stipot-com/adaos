@@ -3,6 +3,19 @@ from __future__ import annotations
 from urllib.parse import urlparse, urlunparse
 
 
+def nats_url_uses_websocket(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    try:
+        parsed = urlparse(raw if "://" in raw else f"wss://{raw}")
+        scheme = (parsed.scheme or "").lower()
+        return scheme in ("http", "https", "ws", "wss")
+    except Exception:
+        low = raw.lower()
+        return low.startswith(("http://", "https://", "ws://", "wss://")) or "://" not in raw
+
+
 def normalize_nats_ws_url(
     value: str | None,
     *,
