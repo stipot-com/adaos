@@ -3,6 +3,7 @@ import pino from 'pino'
 import { Algorithms, type AuthorizationRequest, type ClaimsData, type Permissions, decode, encodeAuthorizationResponse, encodeUser, fromPublic, fromSeed } from '@nats-io/jwt'
 import { connect, type Msg, type NatsConnection } from 'nats'
 import { verifyHubToken } from '../../db/tg.repo.js'
+import { verifyHubNatsSession } from './hubNatsSession.js'
 
 const log = pino({ name: 'nats-authz' })
 
@@ -13,6 +14,10 @@ const textDecoder = new TextDecoder()
 const textEncoder = new TextEncoder()
 
 let calloutStarted = false
+let calloutReadyPromise: Promise<void> | null = null
+let calloutReadyResolve: (() => void) | null = null
+let calloutReadyReject: ((error: unknown) => void) | null = null
+let calloutReadySettled = false
 
 type AuthzRequest = {
 	user_nkey?: string
@@ -26,6 +31,7 @@ type VerifiedHubCreds = {
 	hubId: string
 	user: string
 	pass: string
+	source: 'session' | 'legacy'
 }
 
 function getPerms(hubId: string): Permissions {
@@ -43,6 +49,26 @@ function maskToken(tok?: string): string | undefined {
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function settleCalloutReadyOk(): void {
+	if (calloutReadySettled) return
+	calloutReadySettled = true
+	try {
+		calloutReadyResolve?.()
+	} catch {}
+	calloutReadyResolve = null
+	calloutReadyReject = null
+}
+
+function settleCalloutReadyError(error: unknown): void {
+	if (calloutReadySettled) return
+	calloutReadySettled = true
+	try {
+		calloutReadyReject?.(error)
+	} catch {}
+	calloutReadyResolve = null
+	calloutReadyReject = null
 }
 
 function pickString(...values: unknown[]): string {
@@ -111,12 +137,16 @@ async function verifyHubCredentials(userRaw: string, passRaw: string): Promise<V
 	if (!user || !pass) {
 		return null
 	}
+	const session = await verifyHubNatsSession(user, pass)
+	if (session) {
+		return { hubId: session.hubId, user: session.user, pass, source: 'session' }
+	}
 	const hubId = user.startsWith('hub_') ? user.slice(4) : user
 	const ok = await verifyHubToken(hubId, pass)
 	if (!ok) {
 		return null
 	}
-	return { hubId, user, pass }
+	return { hubId, user, pass, source: 'legacy' }
 }
 
 async function issueUserJwt(opts: { hubId: string, userNkey: string }): Promise<string> {
@@ -205,7 +235,7 @@ async function handleCalloutMsg(msg: Msg): Promise<void> {
 			hubId: verified.hubId,
 		})
 		msg.respond(textEncoder.encode(response))
-		log.info({ hub_id: verified.hubId, user: verified.user }, 'authz: callout ok')
+		log.info({ hub_id: verified.hubId, user: verified.user, source: verified.source }, 'authz: callout ok')
 	} catch (error) {
 		const err = error instanceof Error ? error : new Error(String(error))
 		log.error({ err: err.message, user_nkey: userNkey, server_id: serverId }, 'authz: callout failed')
@@ -220,6 +250,7 @@ async function handleCalloutMsg(msg: Msg): Promise<void> {
 async function runCalloutLoop(): Promise<void> {
 	const cfg = natsAuthConfig()
 	if (!cfg.user || !cfg.pass || !cfg.issuerSeed || !cfg.issuerPub) {
+		const error = new Error('authz_callout_incomplete_config')
 		log.warn(
 			{
 				have_user: !!cfg.user,
@@ -229,12 +260,14 @@ async function runCalloutLoop(): Promise<void> {
 			},
 			'authz: callout disabled; incomplete config'
 		)
+		settleCalloutReadyError(error)
 		return
 	}
 	try {
 		issuerKeyPair()
 	} catch (error) {
 		log.error({ err: String(error) }, 'authz: invalid issuer config')
+		settleCalloutReadyError(error)
 		return
 	}
 
@@ -252,6 +285,7 @@ async function runCalloutLoop(): Promise<void> {
 			backoffMs = 1_000
 
 			const sub = nc.subscribe(AUTH_CALLOUT_SUBJECT, { queue: AUTH_CALLOUT_QUEUE })
+			settleCalloutReadyOk()
 			for await (const msg of sub) {
 				await handleCalloutMsg(msg)
 			}
@@ -278,7 +312,29 @@ function ensureCalloutStarted(): void {
 		return
 	}
 	calloutStarted = true
+	calloutReadyPromise = new Promise<void>((resolve, reject) => {
+		calloutReadyResolve = resolve
+		calloutReadyReject = reject
+	})
 	void runCalloutLoop()
+}
+
+async function waitForCalloutReady(timeoutMs = 10_000): Promise<void> {
+	ensureCalloutStarted()
+	const pending = calloutReadyPromise ?? Promise.resolve()
+	let timeoutHandle: NodeJS.Timeout | null = null
+	try {
+		await Promise.race([
+			pending,
+			new Promise<void>((_, reject) => {
+				timeoutHandle = setTimeout(() => {
+					reject(new Error(`authz_callout_not_ready_within_${timeoutMs}ms`))
+				}, timeoutMs)
+			}),
+		])
+	} finally {
+		if (timeoutHandle) clearTimeout(timeoutHandle)
+	}
 }
 
 export async function installNatsAuth(app: express.Express) {
@@ -319,5 +375,5 @@ export async function installNatsAuth(app: express.Express) {
 		}
 	})
 
-	ensureCalloutStarted()
+	await waitForCalloutReady()
 }

@@ -4,6 +4,7 @@ import net from 'node:net'
 import pino from 'pino'
 import { WebSocketServer } from 'ws'
 import { verifyHubToken } from '../../db/tg.repo.js'
+import { verifyHubNatsSession } from './hubNatsSession.js'
 import { ws_nats_proxy_conn_close_total, ws_nats_proxy_conn_open_total, ws_nats_proxy_upstream_close_total } from '../telemetry.js'
 
 // Keep logger lazy. This module is imported before `installRootLogCapture()` runs in `app.ts`,
@@ -1168,7 +1169,12 @@ export function installWsNatsProxy(server: HttpServer) {
 				)
 			} catch {}
 
-			verifyHubToken(hubId, passRaw)
+			Promise.resolve()
+				.then(async () => {
+					const session = await verifyHubNatsSession(userRaw, passRaw)
+					if (session) return true
+					return await verifyHubToken(hubId, passRaw)
+				})
 				.then((ok) => {
 					clearTimeout(slowAuthTimer)
 					const verifyMs = Date.now() - authVerifyStartedAt

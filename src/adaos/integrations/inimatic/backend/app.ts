@@ -33,12 +33,13 @@ import {
 import { NatsBus } from './io/bus/nats.js'
 import { installWsNatsProxy } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
-import { ensureSchema as ensureTgSchema, ensureHubToken } from './db/tg.repo.js'
+import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
 import { installRootLogCapture, queryRootLogs } from './dev/logs.js'
 import { listLogFiles, tailLogFile } from './dev/log_files.js'
+import { issueHubNatsSession } from './io/bus/hubNatsSession.js'
 
 type FollowerData = {
 	followerName: string
@@ -1370,9 +1371,14 @@ if (
 }
 installTelegramWebhookRoutes(app, ioBus)
 installPairingApi(app)
-import('./io/bus/natsAuth.js')
-	.then((m) => m.installNatsAuth(app))
-	.catch(() => { })
+try {
+	const natsAuthModule = await import('./io/bus/natsAuth.js')
+	await natsAuthModule.installNatsAuth(app)
+	console.log('[io] nats auth callout installed')
+} catch (e) {
+	console.error('[io] nats auth callout init failed', e)
+	throw e
+}
 
 // Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
 try {
@@ -2121,19 +2127,16 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 		return respondError(req, res, 403, 'hub_certificate_required')
 	}
 	try {
-		if (process.env['PG_URL']) {
-			await ensureTgSchema()
-		}
 		const hubId = identity.subnetId
-		const token = await ensureHubToken(hubId)
+		const session = await issueHubNatsSession(hubId)
 		const ws_url = buildNatsWsUrl()
-		const nats_user = `hub_${hubId}`
 		return res.json({
 			ok: true,
 			hub_id: hubId,
-			hub_nats_token: token,
+			hub_nats_token: session.token,
+			hub_nats_token_expires_at: session.expiresAt,
 			nats_ws_url: ws_url,
-			nats_user,
+			nats_user: session.user,
 		})
 	} catch (error) {
 		return handleError(req, res, error, {
