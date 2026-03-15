@@ -81,7 +81,7 @@ function hasMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { hit: 
 	const combined = tail.length ? Buffer.concat([tail, chunk]) : chunk
 	const hit = combined.indexOf(marker) >= 0
 	const keep = Math.max(marker.length - 1, 0)
-	const nextTail = keep > 0 ? combined.subarray(Math.max(combined.length - keep, 0)) : Buffer.alloc(0)
+	const nextTail = keep > 0 ? Buffer.from(combined.subarray(Math.max(combined.length - keep, 0))) : Buffer.alloc(0)
 	return { hit, tail: nextTail }
 }
 
@@ -98,7 +98,7 @@ function countMarkerWithTail(tail: Buffer, chunk: Buffer, marker: Buffer): { cou
 		idx = at + marker.length
 	}
 	const keep = Math.max(marker.length - 1, 0)
-	const nextTail = keep > 0 ? combined.subarray(Math.max(combined.length - keep, 0)) : Buffer.alloc(0)
+	const nextTail = keep > 0 ? Buffer.from(combined.subarray(Math.max(combined.length - keep, 0))) : Buffer.alloc(0)
 	return { count, tail: nextTail }
 }
 
@@ -735,7 +735,7 @@ export function installWsNatsProxy(server: HttpServer) {
 			}
 			if (!keepaliveEnabled) return
 			if (natsKeepaliveTimer) clearInterval(natsKeepaliveTimer)
-			const requireHandshake = String(process.env.WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE || '1') !== '0'
+			const requireHandshake = String(process.env['WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE'] || '1') !== '0'
 			let warnedNoHandshake = false
 			// Many NATs/firewalls time out idle outbound mappings. WS control frames may be ignored by
 			// intermediaries, so we send a tiny NATS protocol keepalive as *data* to the client.
@@ -832,9 +832,9 @@ export function installWsNatsProxy(server: HttpServer) {
 			upstreamNatsPingTimer = null
 			const pingMs = Math.max(
 				5000,
-				Number.parseInt(process.env.WS_NATS_PROXY_UPSTREAM_NATS_PING_MS || '20000', 10) || 20000,
+				Number.parseInt(process.env['WS_NATS_PROXY_UPSTREAM_NATS_PING_MS'] || '20000', 10) || 20000,
 			)
-			const requireHandshake = String(process.env.WS_NATS_PROXY_UPSTREAM_NATS_PING_REQUIRE_HANDSHAKE || '1') !== '0'
+			const requireHandshake = String(process.env['WS_NATS_PROXY_UPSTREAM_NATS_PING_REQUIRE_HANDSHAKE'] || '1') !== '0'
 			upstreamNatsPingTimer = setInterval(() => {
 				try {
 					if (requireHandshake && !handshaked) return
