@@ -37,7 +37,14 @@ type VerifiedHubCreds = {
 function getPerms(hubId: string): Permissions {
 	return {
 		pub: { allow: ['tg.output.*', 'route.to_browser.*'] },
-		sub: { allow: [`tg.input.${hubId}`, 'route.to_hub.*'] },
+		sub: {
+			allow: [
+				`tg.input.${hubId}`,
+				`io.tg.in.${hubId}.text`,
+				`hub.control.${hubId}.alias`,
+				'route.to_hub.*',
+			],
+		},
 	}
 }
 
