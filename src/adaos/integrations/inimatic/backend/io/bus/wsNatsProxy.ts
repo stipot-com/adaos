@@ -259,6 +259,15 @@ export function installWsNatsProxy(server: HttpServer) {
 			const pathname = new URL(rawUrl, 'https://x').pathname
 			const match = pathname === path || pathname.startsWith(`${path}/`)
 			if (!match) return
+			try {
+				socket.setTimeout?.(0)
+			} catch {}
+			try {
+				socket.setKeepAlive?.(true, 20_000)
+			} catch {}
+			try {
+				socket.setNoDelay?.(true)
+			} catch {}
 			wss.handleUpgrade(req, socket, head, (ws: any) => wss.emit('connection', ws, req))
 		} catch (e) {
 			try {
@@ -289,6 +298,22 @@ export function installWsNatsProxy(server: HttpServer) {
 		if (verbose) log().info({ conn: connId, from: rip, tag: connTag }, 'conn open')
 		try {
 			ws_nats_proxy_conn_open_total.inc()
+		} catch {}
+		try {
+			const wsSock: any = (ws as any)?._socket
+			wsSock?.setTimeout?.(0)
+			wsSock?.setKeepAlive?.(true, 20_000)
+			wsSock?.setNoDelay?.(true)
+			if (isRealtimeSidecarConn && (verbose || pingTrace)) {
+				log().info(
+					{
+						conn: connId,
+						tag: connTag,
+						socketTimeout: typeof wsSock?.timeout === 'number' ? wsSock.timeout : null,
+					},
+					'ws socket timeout disabled for realtime sidecar'
+				)
+			}
 		} catch {}
 
 		let connected = false

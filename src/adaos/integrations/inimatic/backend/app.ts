@@ -4,6 +4,7 @@ import express from 'express'
 import cors, { type CorsOptions } from 'cors'
 import http from 'node:http'
 import https from 'node:https'
+import type { Socket as NetSocket } from 'node:net'
 import path from 'path'
 import type { IncomingMessage } from 'node:http'
 import { fetch } from 'undici'
@@ -450,6 +451,23 @@ server.setTimeout(0)
 server.requestTimeout = 0
 server.headersTimeout = 0
 server.keepAliveTimeout = 75_000
+
+function tuneAcceptedSocket(socket: NetSocket | null | undefined): void {
+	if (!socket) return
+	try {
+		socket.setTimeout(0)
+	} catch {}
+	try {
+		socket.setKeepAlive(true, 20_000)
+	} catch {}
+	try {
+		socket.setNoDelay(true)
+	} catch {}
+}
+
+server.on('connection', (socket) => {
+	tuneAcceptedSocket(socket)
+})
 
 const io = new Server(server, {
 	cors: { origin: '*' },
