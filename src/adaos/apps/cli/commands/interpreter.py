@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import List, Optional
+from urllib.request import Request, urlopen
 
 import typer
+import yaml
 
 from adaos.apps.bootstrap import get_ctx
 from adaos.services.interpreter.workspace import IntentMapping, InterpreterWorkspace
-from adaos.services.interpreter.trainer import RasaTrainer
-from adaos.services.interpreter.registry import sync_from_scenarios_and_skills
-from adaos.services.interpreter.runtime import RasaNLURuntime
+from adaos.services.nlu.data_registry import sync_from_scenarios_and_skills
 
 app = typer.Typer(help="Интерпретатор: конфигурация, датасеты и обучение.")
 intent_app = typer.Typer(help="Работа с интентами интерпретатора.")
@@ -22,6 +23,30 @@ app.add_typer(dataset_app, name="dataset")
 def _workspace() -> InterpreterWorkspace:
     ctx = get_ctx()
     return InterpreterWorkspace(ctx)
+
+
+def _rasa_service_url() -> str:
+    ctx = get_ctx()
+    skills_root = Path(ctx.paths.skills_dir())
+    manifest_path = skills_root / "rasa_nlu_service_skill" / "skill.yaml"
+    if not manifest_path.exists():
+        raise RuntimeError(f"rasa_nlu_service_skill not found at {manifest_path}")
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    service = manifest.get("service") or {}
+    host = service.get("host") or "127.0.0.1"
+    port = int(service.get("port") or 0)
+    if port <= 0:
+        raise RuntimeError("rasa_nlu_service_skill.service.port is missing")
+    return f"http://{host}:{port}"
+
+
+def _http_post_json(url: str, payload: dict, *, timeout_ms: int = 600_000) -> dict:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urlopen(req, timeout=timeout_ms / 1000.0) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+        return json.loads(raw)
 
 
 @app.command("sync-nlu")
@@ -46,9 +71,8 @@ def parse(
     Прогоняет текст через последнюю обученную модель интерпретатора (Rasa)
     и печатает результат распознавания (intent, confidence, slots).
     """
-    ws = _workspace()
-    runtime = RasaNLURuntime(ws)
-    result = runtime.parse(text)
+    base = _rasa_service_url()
+    result = _http_post_json(f"{base}/parse", {"text": text}, timeout_ms=30_000)
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -84,12 +108,19 @@ def train(
         return
 
     if engine == "rasa":
-        trainer = RasaTrainer(ws)
-        meta = trainer.train(note=note)
-        model_path = meta.get("extra", {}).get("model_path")
-        typer.secho(f"Rasa-модель обучена: {meta['trained_at']}", fg=typer.colors.GREEN)
-        if model_path:
-            typer.echo(f"Артефакт: {model_path}")
+        ctx = get_ctx()
+        sync_from_scenarios_and_skills(ctx)
+        project_dir = ws.build_rasa_project()
+        models_dir = Path(ctx.paths.models_dir()) / "interpreter"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        base = _rasa_service_url()
+        resp = _http_post_json(
+            f"{base}/train",
+            {"project_dir": str(project_dir), "out_dir": str(models_dir), "fixed_model_name": "interpreter_latest"},
+            timeout_ms=600_000,
+        )
+        typer.echo(json.dumps(resp, ensure_ascii=False, indent=2))
+        return
     else:
         meta = ws.record_training(note=note or "manual")
         typer.secho(f"Состояние зафиксировано: {meta['trained_at']}", fg=typer.colors.GREEN)

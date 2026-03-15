@@ -39,6 +39,12 @@
 						<span class="dot" [attr.data-status]="hub" aria-hidden="true"></span>
 						<span class="label">{{ ('status.' + hub) | t }}</span>
 					</span>
+					<span class="transport-status" *ngIf="transportState$ | async as ts"
+						[attr.data-transport]="ts"
+						[title]="ts === 'ws' ? ('transport.cloud_relay' | t) : ts === 'connected' ? ('transport.p2p' | t) : ''">
+						<ion-icon *ngIf="ts === 'ws'" name="cloud-outline" class="transport-icon ws"></ion-icon>
+						<ion-icon *ngIf="ts === 'connected'" name="flash-outline" class="transport-icon p2p"></ion-icon>
+					</span>
 					<ion-button
 						*ngIf="isAuthenticated"
 						class="logout-btn"
@@ -52,6 +58,13 @@
 				</div>
 			</ion-title>
 				<ion-buttons slot="end">
+				<ion-button
+					*ngIf="isAuthenticated && showCloseToDesktop"
+					(click)="onClickCloseToDesktop()"
+					aria-label="Close"
+				>
+					<ion-icon name="close-outline"></ion-icon>
+				</ion-button>
 				<ion-button *ngIf="isAuthenticated" (click)="onClickYjsReload()" [attr.aria-label]="'aria.reload' | t">
 					<ion-icon name="refresh-outline"></ion-icon>
 				</ion-button>

@@ -8,15 +8,129 @@ from pathlib import Path
 from typing import Optional
 import typer
 from dotenv import load_dotenv, find_dotenv
+from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
+
+
+def _repo_venv_python() -> str | None:
+    try:
+        for base in Path(__file__).resolve().parents:
+            candidates = [base / ".venv" / "Scripts" / "python.exe", base / ".venv" / "bin" / "python"]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+    except Exception:
+        pass
+    return None
+
+
+def _preferred_cli_python() -> str:
+    repo_python = _repo_venv_python()
+    if repo_python:
+        return repo_python
+
+    argv0 = str(sys.argv[0] or "").strip()
+    if argv0:
+        try:
+            resolved_argv0 = shutil.which(argv0) or argv0
+            script_dir = Path(resolved_argv0).resolve().parent
+            candidates = [script_dir / "python.exe", script_dir / "python"]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+        except Exception:
+            pass
+    return sys.executable
+
+
+def _same_executable_path(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+
+def _should_reexec_windows_wrapper(argv0: str | None = None) -> bool:
+    if os.name != "nt":
+        return False
+    if os.getenv("ADAOS_CLI_REEXECED") == "1":
+        return False
+    entry = Path(argv0 or sys.argv[0] or "").name.lower()
+    return entry == "adaos.exe"
+
+
+def _should_reexec_repo_venv() -> bool:
+    if os.getenv("ADAOS_CLI_REEXECED") == "1":
+        return False
+    if os.getenv("ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC") == "1":
+        return False
+    preferred = _repo_venv_python()
+    if not preferred:
+        return False
+    return not _same_executable_path(preferred, sys.executable)
+
+
+def _reexec_preferred_python(reason: str) -> None:
+    os.environ["ADAOS_CLI_REEXECED"] = "1"
+    python = _preferred_cli_python()
+    try:
+        print(f"[AdaOS] re-exec CLI via {python} ({reason})", file=sys.stderr)
+    except Exception:
+        pass
+    os.execl(python, python, "-m", "adaos", *sys.argv[1:])
+
+
+def _maybe_reexec_windows_wrapper():
+    if not _should_reexec_windows_wrapper():
+        return
+    _reexec_preferred_python("adaos.exe wrapper")
+
+
+def _maybe_reexec_repo_venv():
+    if not _should_reexec_repo_venv():
+        return
+    _reexec_preferred_python("repo .venv")
+
+
+_maybe_reexec_windows_wrapper()
+_maybe_reexec_repo_venv()
 
 load_dotenv(find_dotenv())
+apply_runtime_dotenv_overrides()
+
+
+def _maybe_set_windows_selector_loop() -> None:
+    if os.name != "nt":
+        return
+    raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    enabled = False
+    if raw is not None:
+        val = str(raw).strip().lower()
+        enabled = val in ("1", "true", "on", "yes")
+    if not enabled:
+        return
+    try:
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        try:
+            msg = "Windows selector event loop policy enabled (ADAOS_WIN_SELECTOR_LOOP=1)"
+            print(f"[AdaOS] {msg}", file=sys.stderr)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_maybe_set_windows_selector_loop()
 
 from adaos.sdk.manage.environment import prepare_environment
 from adaos.services.settings import Settings
 from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
-from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev
+from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub, realtime
 from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
@@ -176,6 +290,9 @@ app.add_typer(tests_cmd.app, name="tests", help=_("cli.help_test"))
 app.add_typer(runtime.app, name="runtime", help=_("cli.help_runtime"))
 app.add_typer(llm.app, name="llm", help=_("cli.help_llm"))
 app.add_typer(api.app, name="api")
+app.add_typer(realtime.app, name="realtime", help="Realtime sidecar")
+app.add_typer(node.app, name="node", help="Node onboarding and role management")
+app.add_typer(hub.app, name="hub", help="Hub operations (join-codes)")
 app.add_typer(monitor.app, name="monitor")
 app.add_typer(repo.app, name="repo", help=_("cli.repo.help"))
 app.add_typer(scenario.app, name="scenario", help=_("cli.help_scenario"))

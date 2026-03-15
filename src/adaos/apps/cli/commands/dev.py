@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json, os, traceback
+import functools
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import asdict
@@ -32,6 +33,7 @@ from adaos.services.skill.runtime import (
     run_dev_skill_prep,
 )
 from adaos.services.root.client import RootHttpClient
+from adaos.services.nats_config import normalize_nats_ws_url
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help="Developer utilities for Root and Forge workflows.")
@@ -45,6 +47,7 @@ app.add_typer(scenario_app, name="scenario")
 
 
 def _run_safe(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -224,6 +227,172 @@ def root_login() -> None:
     _echo_login_result(result)
 
 
+@root_app.command("logs")
+@_run_safe
+def root_logs(
+    minutes: int = typer.Option(30, "--minutes", help="How many minutes back to fetch (1..720)."),
+    limit: int = typer.Option(2000, "--limit", help="Max lines to return (1..50000)."),
+    hub_id: str = typer.Option(
+        None,
+        "--hub-id",
+        help="Filter only lines containing this hub/subnet id (default: current subnet). Pass an empty string to disable hub filtering.",
+    ),
+    all_hubs: bool = typer.Option(False, "--all-hubs", help="Disable hub filtering (PowerShell-friendly)."),
+    contains: str = typer.Option(None, "--contains", help="Filter only lines containing this substring."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+    save_dir: str = typer.Option(".adaos/root_logs", "--save-dir", help="Save logs snapshot into this directory."),
+    save: bool = typer.Option(False, "--save", help="Save logs snapshot to a file in --save-dir."),
+) -> None:
+    service = _service()
+    cfg = get_ctx().config
+    # Default hub filter only when option is not provided at all.
+    # Passing `--hub-id ""` disables hub filtering and allows searching across all root logs.
+    if all_hubs:
+        hub_id = ""
+    elif hub_id is None:
+        try:
+            hub_id = cfg.subnet_id
+        except Exception:
+            hub_id = None
+    try:
+        result = service.dev_logs(minutes=minutes, limit=limit, hub_id=hub_id, contains=contains, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list) or not items:
+        typer.echo("No logs returned.")
+        return
+    if save:
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            out_dir = Path(save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            hub_tag = (hub_id if hub_id is not None else "auto") or "all"
+            fname = f"root_logs_{ts}_min{int(minutes)}_hub{hub_tag}.log"
+            out_path = out_dir / fname
+            with out_path.open("w", encoding="utf-8") as f:
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    ts0 = it.get("ts")
+                    stream0 = it.get("stream")
+                    line0 = it.get("line")
+                    try:
+                        ts_s = str(int(ts0)) if isinstance(ts0, (int, float)) else str(ts0 or "")
+                    except Exception:
+                        ts_s = str(ts0 or "")
+                    f.write(f"{ts_s} {stream0}: {line0}\n")
+            typer.echo(f"Saved: {out_path}")
+        except Exception as exc:
+            _print_error(f"failed to save logs: {exc}")
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        ts = it.get("ts")
+        stream = it.get("stream")
+        line = it.get("line")
+        try:
+            ts_s = str(int(ts)) if isinstance(ts, (int, float)) else str(ts or "")
+        except Exception:
+            ts_s = str(ts or "")
+        typer.echo(f"{ts_s} {stream}: {line}")
+
+
+@root_app.command("log-files")
+@_run_safe
+def root_log_files(
+    contains: str = typer.Option(None, "--contains", help="Filter filenames containing this substring."),
+    limit: int = typer.Option(500, "--limit", help="Max files to return (1..5000)."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    service = _service()
+    try:
+        result = service.dev_log_files(contains=contains, limit=limit, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list) or not items:
+        typer.echo("No log files returned.")
+        return
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        rel = it.get("rel") or it.get("name") or ""
+        bytes_ = it.get("bytes")
+        mtime_ms = it.get("mtime_ms")
+        typer.echo(f"{rel} bytes={bytes_} mtime_ms={mtime_ms}")
+
+
+@root_app.command("log-tail")
+@_run_safe
+def root_log_tail(
+    file: str = typer.Option(..., "--file", help="Relative log file path from backend logs dir (see `log-files`)."),
+    lines: int = typer.Option(200, "--lines", help="How many lines from the end (1..50000)."),
+    max_bytes: int = typer.Option(2_000_000, "--max-bytes", help="Max bytes to read from the end."),
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for dev logs. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN environment variables.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+    save_dir: str = typer.Option(".adaos/root_logs", "--save-dir", help="Save log tail into this directory."),
+    save: bool = typer.Option(False, "--save", help="Save log tail to a file in --save-dir."),
+) -> None:
+    service = _service()
+    try:
+        result = service.dev_log_tail(file=file, lines=lines, max_bytes=max_bytes, root_token=token)
+    except RootServiceError as exc:
+        _print_error(str(exc))
+        raise typer.Exit(1)
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    out_lines = result.get("lines") if isinstance(result, dict) else None
+    rel = (result.get("rel") if isinstance(result, dict) else None) or file
+    if not isinstance(out_lines, list) or not out_lines:
+        typer.echo("No log lines returned.")
+        return
+    if save:
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            out_dir = Path(save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            safe_rel = str(rel).replace("/", "_").replace("\\", "_")
+            out_path = out_dir / f"log_tail_{ts}_{safe_rel}.log"
+            with out_path.open("w", encoding="utf-8") as f:
+                for ln in out_lines:
+                    f.write(str(ln) + "\n")
+            typer.echo(f"Saved: {out_path}")
+        except Exception as exc:
+            _print_error(f"failed to save log tail: {exc}")
+    for ln in out_lines:
+        typer.echo(str(ln))
+
+
 def _echo_login_result(result: RootLoginResult) -> None:
     typer.secho(f"Owner {result.owner_id} authenticated.", fg=typer.colors.GREEN)
     if result.subnet_id:
@@ -296,18 +465,20 @@ def dev_login(
     # Always use local canonical hub id for WS user to avoid alias-based mismatches
     local_hub_id = ctx.settings.subnet_id or hub_id_resp
     nats_user = (f"hub_{local_hub_id}" if local_hub_id else None) or data.get("nats_user") or (f"hub_{hub_id_resp}" if hub_id_resp else None)
+    nats_ws_url = normalize_nats_ws_url(data.get("nats_ws_url"), fallback=None)
     if not hub_token:
         try:
             token_data = client.request("POST", "/v1/hub/nats/token")
             if isinstance(token_data, dict):
                 hub_token = token_data.get("hub_nats_token") or hub_token
                 hub_id_resp = token_data.get("hub_id") or hub_id_resp
+                nats_ws_url = normalize_nats_ws_url(token_data.get("nats_ws_url") or nats_ws_url)
                 if not nats_user:
                     nats_user = token_data.get("nats_user") or nats_user
         except Exception:
             pass
-    # Pin to dedicated NATS WS domain regardless of API suggestion
-    nats_ws_url = "wss://nats.inimatic.com"
+    if not nats_ws_url:
+        nats_ws_url = normalize_nats_ws_url(None)
     if hub_id_resp and hub_token and nats_user:
         try:
             from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
@@ -330,7 +501,7 @@ def dev_login(
                 nats_cfg["alias"] = "hub"
             data_yaml["nats"] = nats_cfg
             _save_node(data_yaml)
-            typer.echo("Saved NATS WS credentials to node.yaml")
+            typer.echo("Saved NATS credentials to node.yaml")
 
             # Ensure route rules exist so RouterService can route ui.notify to telegram.
             try:

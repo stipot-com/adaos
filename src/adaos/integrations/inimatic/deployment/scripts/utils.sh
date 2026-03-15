@@ -75,6 +75,18 @@ wait_healthy() {
     sleep 2
   done
   echo "[fatal] $svc failed to become healthy in time"
+  echo "[debug] $svc container id=$id"
+  docker inspect --format='[debug] state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}(none){{end}}' "$id" 2>/dev/null || true
+  echo "[debug] last healthcheck entries for $svc"
+  docker inspect --format='{{range .State.Health.Log}}{{printf "[debug] start=%s exit=%d output=%q\n" .Start .ExitCode .Output}}{{end}}' "$id" 2>/dev/null || true
+  echo "[debug] last logs (tail=200) for $svc"
+  docker logs --tail 200 "$id" 2>/dev/null || true
+  if [[ "$svc" == "reverse-proxy" ]]; then
+    echo "[debug] reverse-proxy nginx -t (inside container)"
+    docker exec "$id" nginx -t 2>&1 || true
+    echo "[debug] reverse-proxy default.conf tail w/ line numbers"
+    docker exec "$id" sh -ec 'if [ -f /etc/nginx/conf.d/default.conf ]; then awk "NR>=1{printf \"%6d: %s\\n\", NR, \$0}" /etc/nginx/conf.d/default.conf | tail -n 200; else echo "missing /etc/nginx/conf.d/default.conf"; fi' 2>/dev/null || true
+  fi
   return 1
 }
 

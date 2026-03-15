@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Literal
+
+import yaml
+
+
+REGISTRY_FILE_NAME = "registry.json"
+REGISTRY_FORMAT_VERSION = 1
+RegistryKind = Literal["skills", "scenarios"]
+
+
+def registry_pattern_set(patterns: Iterable[str]) -> list[str]:
+    merged: list[str] = []
+    if REGISTRY_FILE_NAME not in merged:
+        merged.append(REGISTRY_FILE_NAME)
+    for raw in patterns:
+        try:
+            value = str(raw).strip()
+        except Exception:
+            continue
+        if value and value not in merged:
+            merged.append(value)
+    return merged
+
+
+def workspace_registry_path(workspace_root: Path) -> Path:
+    return Path(workspace_root) / REGISTRY_FILE_NAME
+
+
+def load_workspace_registry(workspace_root: Path, *, fallback_to_scan: bool = True) -> dict[str, Any]:
+    path = workspace_registry_path(workspace_root)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        return _normalize_registry_payload(data)
+    if fallback_to_scan:
+        return rebuild_workspace_registry(workspace_root)
+    return _normalize_registry_payload({})
+
+
+def write_workspace_registry(workspace_root: Path, payload: dict[str, Any]) -> Path:
+    path = workspace_registry_path(workspace_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_registry_payload(payload)
+    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def rebuild_workspace_registry(workspace_root: Path) -> dict[str, Any]:
+    root = Path(workspace_root)
+    payload: dict[str, Any] = {
+        "version": REGISTRY_FORMAT_VERSION,
+        "updated_at": _now_iso(),
+        "skills": [],
+        "scenarios": [],
+    }
+    for kind in ("skills", "scenarios"):
+        entries: list[dict[str, Any]] = []
+        kind_root = root / kind
+        if kind_root.exists():
+            for child in sorted(kind_root.iterdir(), key=lambda item: item.name.lower()):
+                if not child.is_dir():
+                    continue
+                entry = build_registry_entry(kind, child)
+                if entry is not None:
+                    entries.append(entry)
+        payload[kind] = entries
+    return _normalize_registry_payload(payload)
+
+
+def upsert_workspace_registry_entry(
+    workspace_root: Path,
+    kind: RegistryKind,
+    artifact_dir: Path,
+    *,
+    version: str | None = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    payload = load_workspace_registry(workspace_root, fallback_to_scan=True)
+    entry = build_registry_entry(kind, artifact_dir)
+    if entry is None:
+        raise FileNotFoundError(f"cannot build registry entry for {kind[:-1]} at {artifact_dir}")
+    if version:
+        entry["version"] = str(version)
+    if updated_at:
+        entry["updated_at"] = str(updated_at)
+    items = list(payload.get(kind) or [])
+    items = [item for item in items if isinstance(item, dict) and str(item.get("name") or "") != entry["name"]]
+    items.append(entry)
+    payload[kind] = _normalize_entries(kind, items)
+    payload["updated_at"] = entry.get("updated_at") or _now_iso()
+    write_workspace_registry(workspace_root, payload)
+    return entry
+
+
+def list_workspace_registry_entries(
+    workspace_root: Path,
+    *,
+    kind: RegistryKind | None = None,
+    name: str | None = None,
+    fallback_to_scan: bool = True,
+) -> list[dict[str, Any]]:
+    payload = load_workspace_registry(workspace_root, fallback_to_scan=fallback_to_scan)
+    kinds = (kind,) if kind else ("skills", "scenarios")
+    results: list[dict[str, Any]] = []
+    wanted_name = (name or "").strip().lower()
+    for current_kind in kinds:
+        for item in payload.get(current_kind) or []:
+            if not isinstance(item, dict):
+                continue
+            artifact_name = str(item.get("name") or "")
+            if wanted_name and artifact_name.lower() != wanted_name:
+                continue
+            results.append(dict(item))
+    return results
+
+
+def build_registry_entry(kind: RegistryKind, artifact_dir: Path) -> dict[str, Any] | None:
+    directory = Path(artifact_dir)
+    manifest_path, manifest = _load_manifest(directory, kind)
+    if manifest_path is None:
+        return None
+
+    artifact_name = directory.name
+    title = _clean_text(manifest.get("name"))
+    description = _clean_text(manifest.get("description"))
+    entry: dict[str, Any] = {
+        "kind": kind[:-1],
+        "name": artifact_name,
+        "version": _clean_text(manifest.get("version")) or "0.0.0",
+        "updated_at": _clean_text(manifest.get("updated_at")) or _now_iso(),
+        "path": f"{kind}/{artifact_name}",
+        "manifest": f"{kind}/{artifact_name}/{manifest_path.name}",
+    }
+    if title and title != artifact_name:
+        entry["title"] = title
+    if description:
+        entry["description"] = description
+
+    if kind == "skills":
+        manifest_id = _clean_text(manifest.get("id"))
+        if manifest_id and manifest_id != artifact_name:
+            entry["manifest_id"] = manifest_id
+        manifest_entry = _clean_text(manifest.get("entry"))
+        if manifest_entry:
+            entry["entry"] = manifest_entry
+        runtime = manifest.get("runtime")
+        if isinstance(runtime, dict) and runtime:
+            runtime_python = _clean_text(runtime.get("python"))
+            if runtime_python:
+                entry["runtime_python"] = runtime_python
+        tools = manifest.get("tools")
+        if isinstance(tools, list):
+            entry["tools_count"] = len(tools)
+    else:
+        scenario_id = _clean_text(manifest.get("id"))
+        if scenario_id and scenario_id != artifact_name:
+            entry["manifest_id"] = scenario_id
+        trigger = _clean_text(manifest.get("trigger"))
+        if trigger:
+            entry["trigger"] = trigger
+        io_meta = manifest.get("io")
+        if isinstance(io_meta, dict):
+            io_entry: dict[str, Any] = {}
+            for key in ("input", "output"):
+                value = io_meta.get(key)
+                if isinstance(value, list):
+                    io_entry[key] = [str(item) for item in value]
+            if io_entry:
+                entry["io"] = io_entry
+
+    return entry
+
+
+def _normalize_registry_payload(raw: Any) -> dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+    payload: dict[str, Any] = {
+        "version": REGISTRY_FORMAT_VERSION,
+        "updated_at": _clean_text(data.get("updated_at")) or _now_iso(),
+        "skills": _normalize_entries("skills", data.get("skills")),
+        "scenarios": _normalize_entries("scenarios", data.get("scenarios")),
+    }
+    return payload
+
+
+def _normalize_entries(kind: RegistryKind, raw_entries: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_entries, list):
+        return []
+    merged: dict[str, dict[str, Any]] = {}
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            continue
+        name = _clean_text(raw.get("name")) or _clean_text(raw.get("id"))
+        if not name:
+            continue
+        item = dict(raw)
+        item["kind"] = kind[:-1]
+        item["name"] = name
+        merged[name] = item
+    return [merged[key] for key in sorted(merged, key=str.lower)]
+
+
+def _load_manifest(directory: Path, kind: RegistryKind) -> tuple[Path | None, dict[str, Any]]:
+    candidates = ("skill.yaml",) if kind == "skills" else ("scenario.yaml", "scenario.yml", "scenario.json")
+    for candidate in candidates:
+        path = directory / candidate
+        if not path.exists():
+            continue
+        try:
+            if path.suffix.lower() == ".json":
+                data = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            return path, data
+        return path, {}
+    return None, {}
+
+
+def _clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+__all__ = [
+    "REGISTRY_FILE_NAME",
+    "REGISTRY_FORMAT_VERSION",
+    "build_registry_entry",
+    "list_workspace_registry_entries",
+    "load_workspace_registry",
+    "rebuild_workspace_registry",
+    "registry_pattern_set",
+    "upsert_workspace_registry_entry",
+    "workspace_registry_path",
+    "write_workspace_registry",
+]

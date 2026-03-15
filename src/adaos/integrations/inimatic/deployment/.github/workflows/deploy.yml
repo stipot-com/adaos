@@ -34,18 +34,69 @@ jobs:
           fetch-depth: 1
 
       # как у вас: синк инфры на сервер только при push в main
-      - name: Sync infra to server (to home)
+      - name: Sync infra to server (to home, rsync over ssh)
         if: github.event_name == 'push'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          source: "docker/**,scripts/**,vhost/**,vhost.d/**,.env.example,README.md"
-          target: "~/inimatic"
-          overwrite: true
-          timeout: 120s
-          debug: true
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          : "${DEPLOY_HOST:?missing DEPLOY_HOST secret}"
+          : "${DEPLOY_USER:?missing DEPLOY_USER secret}"
+          : "${DEPLOY_KEY:?missing DEPLOY_KEY secret}"
+
+          PORT="${DEPLOY_PORT:-22}"
+          KEY_FILE="$RUNNER_TEMP/deploy_key"
+          echo "$DEPLOY_KEY" >"$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          SSH_OPTS=(
+            -i "$KEY_FILE"
+            -p "$PORT"
+            -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts"
+            -o ConnectTimeout=10
+            -o ServerAliveInterval=10
+            -o ServerAliveCountMax=3
+          )
+
+          # Ensure target dir exists before rsync
+          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p ~/inimatic"
+
+          # Sync only a small allowlist of paths (matches previous scp-action source list)
+          RSYNC_RSH="ssh ${SSH_OPTS[*]}"
+          attempt=1
+          max_attempts=6
+          backoff=2
+          while true; do
+            if rsync -az --delete --prune-empty-dirs \
+              -e "$RSYNC_RSH" \
+              --include='docker/***' \
+              --include='scripts/***' \
+              --include='vhost/***' \
+              --include='vhost.d/***' \
+              --include='.env.example' \
+              --include='README.md' \
+              --exclude='*' \
+              ./ "$DEPLOY_USER@$DEPLOY_HOST:inimatic/"; then
+              echo "[ok] rsync complete"
+              break
+            fi
+
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "[error] rsync failed after $attempt attempts"
+              exit 1
+            fi
+            echo "[warn] rsync attempt $attempt failed; retry in ${backoff}s"
+            sleep "$backoff"
+            attempt=$((attempt+1))
+            backoff=$((backoff*2))
+          done
 
       - name: Debug workspace
         run: |

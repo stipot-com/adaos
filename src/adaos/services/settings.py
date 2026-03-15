@@ -99,19 +99,39 @@ class Settings:
                 return Path("./.adaos").resolve()
 
         def _get_base_dir() -> Path:
-            env_type = os.getenv("ENV_TYPE", "prod")
-            override_base_suffix = os.getenv("ADAOS_BASE_DIR_SUFFIX", "")
+            # IMPORTANT: do not rely on python-dotenv being loaded; respect values from env_file as well.
+            env_type = pick_env("ENV_TYPE", "prod")
+            override_base_suffix = pick_env("ADAOS_BASE_DIR_SUFFIX", "")
             package_dir = Path(__file__).resolve().parent.parent
-            override_base = os.getenv("ADAOS_BASE_DIR")
+            override_base = (pick_env("ADAOS_BASE_DIR", "") or "").strip()
             if override_base:
                 return Path(override_base).expanduser().resolve()
             if is_android():
                 return _android_base_dir()
             if env_type == "dev":
                 return package_dir.parent.parent / f".adaos{override_base_suffix}"
-            return Path(os.getenv("BASE_DIR") or (Path.home() / ".adaos")).resolve()
+            base_dir = (pick_env("BASE_DIR", "") or "").strip()
+            if base_dir:
+                return Path(base_dir).expanduser().resolve()
+            return (Path.home() / ".adaos").resolve()
 
-        env_file_vars = _parse_env_file(env_file) if env_file else {}
+        resolved_env_file = env_file
+        if env_file:
+            try:
+                p = Path(env_file)
+                if not p.is_absolute():
+                    # Best-effort: search for ".env" in parents so callers don't have to load python-dotenv.
+                    name = p.name
+                    cwd = Path.cwd().resolve()
+                    for base in (cwd, *cwd.parents):
+                        cand = base / name
+                        if cand.exists():
+                            resolved_env_file = str(cand)
+                            break
+            except Exception:
+                pass
+
+        env_file_vars = _parse_env_file(resolved_env_file) if resolved_env_file else {}
 
         def pick_env(key: str, default: Optional[str] = None) -> str:
             return os.environ.get(key) or env_file_vars.get(key) or (default or "")

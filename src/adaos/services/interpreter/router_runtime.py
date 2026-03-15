@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Event-driven bridge between AdaOS text events and the interpreter runtime.
 
-Listens for ``nlp.intent.detect`` commands carrying raw user text and emits
+Listens for ``nlp.intent.detect.request`` commands carrying raw user text and emits
 ``nlp.intent.detected`` events that are then consumed by the NLU dispatcher
 (``adaos.services.nlu.dispatcher``) and mapped to scenario/skill actions.
 """
@@ -42,7 +42,7 @@ def _resolve_webspace_id(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-@subscribe("nlp.intent.detect")
+@subscribe("nlp.intent.detect.request")
 async def _on_nlp_intent_detect(evt: Any) -> None:
     """
     Handle generic "detect intent" commands and run them through the

@@ -10,6 +10,7 @@ from typing import List, Optional
 import yaml
 
 from adaos.adapters.git.workspace import SparseWorkspace, wait_for_materialized
+from adaos.services.workspace_registry import registry_pattern_set
 from adaos.domain import SkillId, SkillMeta  # если есть ScenarioId/ScenarioMeta — замени здесь
 from adaos.ports.git import GitClient
 from adaos.ports.paths import PathProvider
@@ -182,7 +183,7 @@ class GitScenarioRepository(ScenarioRepository):
         workspace_root = self.paths.workspace_dir()
         sparse = SparseWorkspace(self.git, workspace_root)
         target = f"scenarios/{name}"
-        sparse.update(add=[target])
+        sparse.update(add=registry_pattern_set([target]))
         # При установке сценария стараемся быть максимально устойчивыми к локальным изменениям
         # в workspace: git pull может упасть, если в других подпапках есть незакоммиченные правки.
         # В таком случае полагаемся на уже имеющееся состояние репозитория; если сценарий не

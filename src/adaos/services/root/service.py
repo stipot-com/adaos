@@ -42,6 +42,7 @@ from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteScenarioRegistry
 from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.workspace_registry import upsert_workspace_registry_entry
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -229,7 +230,7 @@ class RootAuthService:
         state = _root_state(cfg)
         profile = state.get("profile")
         if not profile:
-            raise RootAuthError("root owner profile is not configured; run 'adaos dev root-login'")
+            raise RootAuthError("root owner profile is not configured; run 'adaos dev root login'")
         owner_id = profile["owner_id"]
         refresh_token: str | None = None
         try:
@@ -254,7 +255,7 @@ class RootAuthService:
         state = _root_state(cfg)
         profile = state.get("profile")
         if not profile:
-            raise RootAuthError("root owner profile is not configured; run 'adaos dev root-login'")
+            raise RootAuthError("root owner profile is not configured; run 'adaos dev root login'")
         cached = state.get("access_token_cached")
         if isinstance(cached, str) and cached:
             expiry = _parse_expiry(profile["access_expires_at"])
@@ -796,6 +797,75 @@ class RootDeveloperService:
         except Exception:
             emit(self.ctx.bus, "root.dev.init.error", {"node_id": node_id}, "root.dev")
             raise
+
+    def dev_logs(
+        self,
+        *,
+        minutes: int = 30,
+        limit: int = 2000,
+        hub_id: str | None = None,
+        contains: str | None = None,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_logs(
+            root_token=token,
+            minutes=minutes,
+            limit=limit,
+            hub_id=hub_id,
+            contains=contains,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
+
+    def dev_log_files(
+        self,
+        *,
+        contains: str | None = None,
+        limit: int = 500,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_log_files(
+            root_token=token,
+            contains=contains,
+            limit=limit,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
+
+    def dev_log_tail(
+        self,
+        *,
+        file: str,
+        lines: int = 200,
+        max_bytes: int = 2_000_000,
+        root_token: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._load_config()
+        token = root_token or os.getenv("ROOT_TOKEN") or "dev-root-token"
+        if not token:
+            raise RootServiceError("ROOT_TOKEN is not configured; set ROOT_TOKEN or pass --token")
+        client = self._client(cfg)
+        verify = self._plain_verify(cfg)
+        payload = client.dev_log_tail(
+            root_token=token,
+            file=file,
+            lines=lines,
+            max_bytes=max_bytes,
+            verify=verify,
+        )
+        return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
 
     def login(
         self,
@@ -2212,6 +2282,16 @@ class RootDeveloperService:
                 shutil.rmtree(backup)
 
         updated_at = (manifest_meta or {}).get("updated_at") or _current_timestamp()
+        try:
+            upsert_workspace_registry_entry(
+                self.ctx.paths.workspace_dir(),
+                kind,
+                target,
+                version=new_version,
+                updated_at=updated_at,
+            )
+        except Exception as exc:
+            raise RootServiceError(f"Failed to update workspace registry metadata for {kind[:-1]} '{name}'") from exc
 
         return ArtifactPublishResult(
             kind=kind.rstrip("s"),

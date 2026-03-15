@@ -18,7 +18,7 @@ authors = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
 ]
 
 dependencies = [
@@ -42,10 +42,12 @@ dependencies = [
   "ypy-websocket>=0.12.4",
   "httpx>=0.27.0",
   "nats-py>=2.6.0",
+  "websockets>=11.0",
   "ipykernel",
   "keyring>=24.2.0",
   "cryptography>=42.0.0",
   "psutil>=5.9.0",
+  "aiortc>=1.9.0",
 ]
 
 [project.scripts]

@@ -13,6 +13,7 @@ from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx
 from adaos.skills.runtime_runner import execute_tool
+from adaos.services.subnet.link_manager import get_hub_link_manager
 
 
 router = APIRouter()
@@ -77,16 +78,32 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
         directory = get_directory()
         candidates = directory.find_nodes_with_skill(skill_name, require_online=True)
         # Сначала активные, затем по last_seen убыв.
-        candidates.sort(key=lambda n: (not bool(n.get("active"))), reverse=False)
+        mgr = get_hub_link_manager()
+        candidates.sort(key=lambda n: (not mgr.is_connected(n.get("node_id", "")), not bool(n.get("active"))), reverse=False)
         if not candidates:
             raise HTTPException(
                 status_code=503,
                 detail=f"skill '{skill_name}', tool '{public_tool}' is not available online in the subnet. In dev: {body.dev}. Candidates: {candidates}. Err: {str(e)}",
             )
         target = candidates[0]
-        base_url = target.get("base_url") or directory.get_node_base_url(target.get("node_id", ""))
+        target_node_id = target.get("node_id", "")
+
+        if target_node_id and mgr.is_connected(target_node_id):
+            try:
+                res = await mgr.rpc_tools_call(
+                    target_node_id,
+                    tool=body.tool,
+                    arguments=payload,
+                    timeout=body.timeout,
+                    dev=body.dev,
+                )
+                return {"ok": True, "result": res, "trace_id": trace}
+            except Exception:
+                pass
+
+        base_url = target.get("base_url") or directory.get_node_base_url(target_node_id)
         if not base_url:
-            raise HTTPException(status_code=503, detail="no base_url for target node")
+            raise HTTPException(status_code=503, detail="no base_url or p2p link for target node")
 
         # Проксируем запрос прозрачно
         url = f"{base_url.rstrip('/')}/api/tools/call"

@@ -3,6 +3,7 @@ import { Injectable, ElementRef } from '@angular/core';
 import { AdaosClient } from '../core/adaos/adaos-client.service';
 import { SkillCtx, SkillModule, IOSettings } from './skill-ctx';
 import { renderInto, patch } from './ui-lib';
+import { isDebugEnabled } from '../debug-log';
 
 @Injectable({ providedIn: 'root' })
 export class SkillHostService {
@@ -47,7 +48,7 @@ export class SkillHostService {
 			net: { adaos: this.adaos },
 			bus: { send: (topic, payload) => this.adaos.post('/api/bus/publish', { topic, payload }).subscribe() },
 			state,
-			log: (...a: any[]) => console.log('[skill]', name, ...a),
+			log: (...a: any[]) => { if (isDebugEnabled()) console.log('[skill]', name, ...a); },
 		};
 
 		await mod.mount(ctx);

@@ -61,12 +61,47 @@ ion-header ion-toolbar {
 	background: var(--ion-color-danger);
 }
 
+.transport-status {
+	display: inline-flex;
+	align-items: center;
+	font-size: 16px;
+}
+
+.transport-icon {
+	font-size: 16px;
+}
+
+.transport-icon.ws {
+	color: var(--ion-color-warning);
+	opacity: 0.9;
+}
+
+.transport-icon.p2p {
+	color: var(--ion-color-success);
+	opacity: 0.75;
+}
+
 @media (max-width: 900px) {
 	.hub-status .label {
 		display: none;
 	}
 	.app-title {
-		gap: 8px;
+		gap: 6px;
+	}
+	.build-id {
+		display: none;
+	}
+	.transport-icon {
+		font-size: 14px;
+	}
+}
+
+@media (max-width: 600px) {
+	.app-title {
+		gap: 4px;
+	}
+	.transport-icon {
+		font-size: 13px;
 	}
 }
 

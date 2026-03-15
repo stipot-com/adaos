@@ -18,6 +18,7 @@ import {
 } from './store.js'
 
 const log = pino({ name: 'pair-api' })
+const PUBLIC_HUB_NATS_URL = 'nats://nats.inimatic.com:4222' as const
 
 export function installPairingApi(app: express.Express) {
 	function extractBearer(headerValue: string): string | undefined {
@@ -35,19 +36,8 @@ export function installPairingApi(app: express.Express) {
 		return claims
 	}
 
-	function buildPublicNatsWsUrl(): string {
-		const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-		const baseUrl = new URL(baseHttp)
-		const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-		baseUrl.protocol = wsProto
-		const base = baseUrl.toString().replace(/\/+$/, '')
-
-		const explicit = (process.env['NATS_WS_PUBLIC'] || '').trim()
-		if (explicit) return explicit
-
-		const rawPath = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
-		const wsPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
-		return wsPath === '/' ? base : `${base}${wsPath}`
+	function buildPublicNatsUrl(): string {
+		return PUBLIC_HUB_NATS_URL
 	}
 
 	app.post('/io/tg/pair/create', async (req, res) => {
@@ -63,7 +53,7 @@ export function installPairingApi(app: express.Express) {
 			const rec = await pairCreate(bot, hub, ttl)
 			const deep_link = process.env['BOT_USERNAME'] ? `https://t.me/${process.env['BOT_USERNAME']}?start=${rec.code}` : undefined
 			log.info({ tag: 'PAIR', route: 'create', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] create: issued')
-			const ws_url = buildPublicNatsWsUrl()
+			const ws_url = buildPublicNatsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, deep_link, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {
@@ -85,7 +75,7 @@ export function installPairingApi(app: express.Express) {
 			log.info({ tag: 'PAIR', route: 'create.v1', hub, bot, ttl }, '[PAIR] v1/create: request')
 			const rec = await pairCreate(bot, hub, ttl)
 			log.info({ tag: 'PAIR', route: 'create.v1', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] v1/create: issued')
-			const ws_url = buildPublicNatsWsUrl()
+			const ws_url = buildPublicNatsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {

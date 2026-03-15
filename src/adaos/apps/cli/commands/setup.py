@@ -25,6 +25,7 @@ from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.adapters.git.workspace import SparseWorkspace
 from adaos.services.git.workspace_guard import ensure_clean
+from adaos.services.workspace_registry import registry_pattern_set
 
 
 def _run_safe(func):
@@ -72,7 +73,7 @@ def _sync_workspace_sparse_to_registry(ctx) -> dict:
     scenario_rows = SqliteScenarioRegistry(ctx.sql).list()
     skills = _installed_names(skill_rows)
     scenarios = _installed_names(scenario_rows)
-    desired = [*(f"skills/{n}" for n in skills), *(f"scenarios/{n}" for n in scenarios)]
+    desired = registry_pattern_set([*(f"skills/{n}" for n in skills), *(f"scenarios/{n}" for n in scenarios)])
 
     workspace_root = ctx.paths.workspace_dir()
     sparse = SparseWorkspace(ctx.git, workspace_root)

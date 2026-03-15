@@ -20,6 +20,21 @@ def _config_path(ctx: AgentContext | None = None) -> Path:
     return p
 
 
+def _sync_ctx_config(conf: "NodeConfig", ctx: AgentContext | None = None) -> None:
+    target_ctx = ctx
+    if target_ctx is None:
+        try:
+            target_ctx = get_ctx()
+        except Exception:
+            target_ctx = None
+    if target_ctx is None:
+        return
+    try:
+        object.__setattr__(target_ctx, "config", conf)
+    except Exception:
+        pass
+
+
 class RootOwnerProfile(TypedDict):
     owner_id: str
     subject: str | None
@@ -40,11 +55,18 @@ class RootOwnerSettings:
 
 
 @dataclass
+class RootLlmSettings:
+    # Global kill-switch for NLU Teacher pipeline (teacher_bridge/teacher_runtime/llm_teacher_runtime).
+    allow_nlu_teacher: bool = True
+
+
+@dataclass
 class RootSettings:
     base_url: str = "https://api.inimatic.com"
     # Store relative/default-friendly path; resolve via _expand_path
     ca_cert: str | None = "keys/ca.cert"
     owner: RootOwnerSettings = field(default_factory=RootOwnerSettings)
+    llm: RootLlmSettings = field(default_factory=RootLlmSettings)
 
 
 @dataclass
@@ -287,10 +309,23 @@ def _settings_from_dict(settings_cls: type, payload: Any):
         ca_cert = payload.get("ca_cert") if isinstance(payload, dict) else None
         owner_raw = payload.get("owner") if isinstance(payload, dict) else None
         owner_id = owner_raw.get("owner_id") if isinstance(owner_raw, dict) else None
+        llm_raw = payload.get("llm") if isinstance(payload, dict) else None
+        allow_nlu_teacher = True
+        try:
+            token = llm_raw.get("allow_nlu_teacher") if isinstance(llm_raw, dict) else None
+            if isinstance(token, bool):
+                allow_nlu_teacher = token
+            elif isinstance(token, str) and token.strip():
+                allow_nlu_teacher = token.strip().lower() not in {"0", "false", "no", "off"}
+            elif isinstance(token, int):
+                allow_nlu_teacher = bool(token)
+        except Exception:
+            allow_nlu_teacher = True
         return RootSettings(
             base_url=base_url or "https://api.inimatic.com",
             ca_cert=ca_cert or "keys/ca.cert",
             owner=RootOwnerSettings(owner_id=owner_id),
+            llm=RootLlmSettings(allow_nlu_teacher=allow_nlu_teacher),
         )
     if settings_cls is SubnetSettings:
         hub_raw = payload.get("hub") if isinstance(payload, dict) else None
@@ -380,6 +415,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     if not path.exists():
         conf = _default_conf()
         save_node(conf, ctx=ctx)
+        _sync_ctx_config(conf, ctx)
         return conf
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
@@ -419,6 +455,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     conf.sync_sections()
     if changed:
         save_node(conf, ctx=ctx)
+    _sync_ctx_config(conf, ctx)
     return conf
 
 
@@ -451,6 +488,7 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
         yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+    _sync_ctx_config(conf, ctx)
 
 
 def ensure_hub(conf: NodeConfig) -> None:
@@ -470,7 +508,13 @@ def set_role(role: str, *, hub_url: str | None = None, subnet_id: str | None = N
     conf.role = role
     if subnet_id:
         conf.subnet_id = subnet_id
-    conf.hub_url = hub_url if role == "member" else None
+    if role == "hub":
+        conf.hub_url = None
+    else:
+        # Backward-compatibility: allow switching to member without passing hub_url.
+        # Join flow (join-code) is expected to set hub_url beforehand.
+        if hub_url is not None:
+            conf.hub_url = hub_url
     save_config(conf, ctx=ctx)
     return conf
 

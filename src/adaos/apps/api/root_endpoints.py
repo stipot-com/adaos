@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import hashlib
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,7 +10,15 @@ from pydantic import BaseModel, Field, ValidationError
 
 from adaos.adapters.db import sqlite as sqlite_db
 from adaos.apps.api.auth import require_owner_token
+from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
+from adaos.services.join_codes import (
+    JoinCodeConsumed,
+    JoinCodeExpired,
+    JoinCodeNotFound,
+    consume_any as consume_join_code_any,
+    create as create_join_code,
+)
 from adaos.services.root.service import RootAuthService
 
 router = APIRouter()
@@ -17,6 +26,34 @@ root_router = APIRouter(prefix="/v1/root", tags=["root"])
 subnet_router = APIRouter(prefix="/v1/subnets", tags=["subnets"])
 router.include_router(root_router)
 router.include_router(subnet_router)
+
+
+def _iso_utc(ts: float) -> str:
+    return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _require_root_write_auth(*, authorization: str | None, owner_token: str | None) -> dict[str, Any]:
+    """
+    Root-side write auth (best-effort for dev/self-hosted root).
+
+    Accepted methods:
+    - `X-Owner-Token` (matches `ADAOS_ROOT_OWNER_TOKEN` via require_owner_token)
+    - `Authorization: Bearer ...` (optionally checked against `ADAOS_ROOT_BEARER_TOKEN` if set)
+    """
+    if owner_token:
+        require_owner_token(owner_token)
+        return {"method": "owner_token"}
+
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="Invalid bearer token")
+        expected = os.getenv("ADAOS_ROOT_BEARER_TOKEN") or ""
+        if expected and token != expected:
+            raise HTTPException(status_code=401, detail="Invalid bearer token")
+        return {"method": "bearer", "verified": bool(expected)}
+
+    raise HTTPException(status_code=401, detail="Missing Authorization bearer token or X-Owner-Token")
 
 
 @root_router.post("/register")
@@ -95,3 +132,125 @@ async def subnet_register_status(
     else:
         data = None
     return {"data": data, "event_id": new_id(), "server_time_utc": now_iso}
+
+
+class RootJoinCodeCreateRequest(BaseModel):
+    subnet_id: str = Field(..., min_length=1, max_length=128)
+    # Deprecated: in Root-proxy routing the hub does not need to expose a public URL and
+    # Root does not need a hub token to route traffic (hub uses its local token).
+    hub_url: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=2048,
+        description="[deprecated] Hub base URL used as rendezvous for members",
+    )
+    token: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        description="[deprecated] Subnet token required by the hub",
+    )
+    ttl_minutes: int = Field(15, ge=1, le=60)
+    length: int = Field(8, ge=8, le=12)
+
+
+class RootJoinCodeCreateResponse(BaseModel):
+    ok: bool
+    code: str
+    expires_at_utc: str
+
+
+@subnet_router.post("/join-code", response_model=RootJoinCodeCreateResponse)
+async def subnet_join_code_create(
+    payload: RootJoinCodeCreateRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> RootJoinCodeCreateResponse:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    deprecated_fields: list[str] = []
+    if payload.hub_url:
+        deprecated_fields.append("hub_url")
+    if payload.token:
+        deprecated_fields.append("token")
+    info = create_join_code(
+        subnet_id=str(payload.subnet_id).strip(),
+        ttl_seconds=int(payload.ttl_minutes) * 60,
+        length=int(payload.length),
+        meta={
+            "kind": "subnet.member.join",
+            "issued_by": "root",
+            "auth": auth,
+            "deprecated_fields": deprecated_fields,
+            **({"hub_url": str(payload.hub_url).strip()} if payload.hub_url else {}),
+            **({"token": str(payload.token).strip()} if payload.token else {}),
+        },
+        ctx=get_ctx(),
+    )
+    return RootJoinCodeCreateResponse(ok=True, code=info.code, expires_at_utc=_iso_utc(info.expires_at))
+
+
+class RootSubnetJoinRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=64)
+    node_id: str | None = None
+    hostname: str | None = None
+
+
+class RootSubnetJoinResponse(BaseModel):
+    ok: bool
+    subnet_id: str
+    token: str
+    root_url: str
+    hub_url: str
+    diagnostics: dict[str, Any]
+
+
+@subnet_router.post("/join", response_model=RootSubnetJoinResponse)
+async def subnet_join_consume(req: Request, payload: RootSubnetJoinRequest) -> RootSubnetJoinResponse:
+    """
+    Root-mediated join:
+
+    - member posts a short one-time join-code to Root
+    - Root returns subnet_id + hub rendezvous URL + subnet token
+    """
+    code = str(payload.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="code is required")
+
+    try:
+        rec = consume_join_code_any(code=code, ctx=get_ctx())
+    except JoinCodeNotFound:
+        raise HTTPException(status_code=404, detail="join-code not found") from None
+    except JoinCodeExpired:
+        raise HTTPException(status_code=410, detail="join-code expired") from None
+    except JoinCodeConsumed:
+        raise HTTPException(status_code=409, detail="join-code already used") from None
+
+    subnet_id = str(rec.get("subnet_id") or "").strip()
+    meta = rec.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    root_url = str(req.base_url).rstrip("/")
+    hub_url = str(meta.get("hub_url") or "").strip()
+    if not hub_url:
+        hub_url = f"{root_url}/hubs/{subnet_id}"
+
+    # For self-hosted dev Root we may not have a session-JWT signer; return a best-effort token.
+    # In production Root this is a web-session JWT accepted by the Root proxy.
+    token = str(meta.get("token") or "").strip() or f"dev-session:{new_id()}"
+
+    if not subnet_id or not token or not hub_url:
+        raise HTTPException(status_code=500, detail="invalid join-code record (missing subnet_id/token/hub_url)")
+
+    diags = {
+        "subnet_id": subnet_id,
+        "node_id_hint": (payload.node_id or "").strip() or None,
+        "hostname_hint": (payload.hostname or "").strip() or None,
+        "code_created_at_utc": _iso_utc(float(rec.get("created_at") or 0.0)) if rec.get("created_at") else None,
+        "code_expires_at_utc": _iso_utc(float(rec.get("expires_at") or 0.0)) if rec.get("expires_at") else None,
+        "issued_by": meta.get("issued_by") or None,
+        "deprecated_fields": meta.get("deprecated_fields") or [],
+        "hub_url": hub_url,
+        "root_url": root_url,
+        "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    return RootSubnetJoinResponse(ok=True, subnet_id=subnet_id, token=token, root_url=root_url, hub_url=hub_url, diagnostics=diags)

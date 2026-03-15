@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import typer
 
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
+from adaos.services.workspace_registry import list_workspace_registry_entries, workspace_registry_path
 
 app = typer.Typer(help=_("cli.repo.help"))
+registry_app = typer.Typer(help="Read workspace registry metadata.")
+app.add_typer(registry_app, name="registry")
 
 
 def _resolve_cache(kind: str) -> Path:
@@ -28,6 +33,19 @@ def _run_git(repo: Path, args: list[str]) -> None:
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
         raise RuntimeError(detail)
+
+
+def _normalize_registry_kind(value: str | None) -> Literal["skills", "scenarios"] | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized or normalized == "all":
+        return None
+    if normalized in {"skill", "skills"}:
+        return "skills"
+    if normalized in {"scenario", "scenarios"}:
+        return "scenarios"
+    raise typer.BadParameter("kind must be 'skills' or 'scenarios'")
 
 
 @app.command("reset")
@@ -54,3 +72,52 @@ def reset(
         raise typer.Exit(1)
 
     typer.secho(_("cli.repo.reset.done", path=repo_path), fg=typer.colors.GREEN)
+
+
+@registry_app.command("list")
+def registry_list(
+    kind: str | None = typer.Option(None, "--kind", help="skills | scenarios"),
+    name: str | None = typer.Option(None, "--name", help="Filter by canonical artifact name."),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+    fallback_scan: bool = typer.Option(
+        True,
+        "--fallback-scan/--no-fallback-scan",
+        help="Rebuild from local workspace if registry.json is missing.",
+    ),
+):
+    ctx = get_ctx()
+    workspace_root = Path(ctx.paths.workspace_dir()).expanduser().resolve()
+    registry_path = workspace_registry_path(workspace_root)
+    normalized_kind = _normalize_registry_kind(kind)
+    items = list_workspace_registry_entries(
+        workspace_root,
+        kind=normalized_kind,
+        name=name,
+        fallback_to_scan=fallback_scan,
+    )
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "registry_path": str(registry_path),
+                    "kind": normalized_kind or "all",
+                    "items": items,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    if not items:
+        typer.echo(f"no registry entries found at {registry_path}")
+        return
+
+    for item in items:
+        artifact_kind = str(item.get("kind") or "?")
+        artifact_name = str(item.get("name") or "?")
+        version = str(item.get("version") or "unknown")
+        title = str(item.get("title") or "").strip()
+        suffix = f" ({title})" if title else ""
+        typer.echo(f"{artifact_kind}: {artifact_name} v{version}{suffix}")

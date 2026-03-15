@@ -15,8 +15,12 @@ async def _run_cmd_and_check():
     h = await ctx.proc.start(ProcessSpec(name="cmd", cmd=cmd))
     st1 = await ctx.proc.status(h)
     assert st1 in ("running", "stopped")  # может быстро завершиться
-    await asyncio.sleep(0.1)
-    st2 = await ctx.proc.status(h)
+    st2 = "running"
+    for _ in range(40):  # up to ~2s on slow/loaded CI
+        await asyncio.sleep(0.05)
+        st2 = await ctx.proc.status(h)
+        if st2 in ("stopped", "error"):
+            break
     assert st2 in ("stopped", "error")
 
 
@@ -25,8 +29,12 @@ async def _run_coro_and_check():
     h = await ctx.proc.start(ProcessSpec(name="coro", entrypoint=_sleepy))
     st1 = await ctx.proc.status(h)
     assert st1 in ("running", "stopped")
-    await asyncio.sleep(0.1)
-    st2 = await ctx.proc.status(h)
+    st2 = "running"
+    for _ in range(40):  # up to ~2s on slow/loaded CI
+        await asyncio.sleep(0.05)
+        st2 = await ctx.proc.status(h)
+        if st2 in ("stopped", "error"):
+            break
     assert st2 in ("stopped", "error")
 
 

@@ -4,13 +4,11 @@ import type http from 'http'
 import { createProxyMiddleware } from 'http-proxy-middleware'
 import { parse } from 'node:url'
 
+const ADAOS_PROXY_PATH = '/adaos' as const
 const DEFAULT_BASE = process.env['ADAOS_BASE'] ?? 'http://127.0.0.1:8777'
 const DEFAULT_TOKEN = process.env['ADAOS_TOKEN'] ?? 'dev-local-token'
-const ADAOS_PROXY_ENABLED = process.env['ADAOS_PROXY_ENABLED'] !== '0'
-const ADAOS_PROXY_UPGRADE_PREFIXES = (process.env['ADAOS_PROXY_UPGRADE_PREFIXES'] ?? '/adaos')
-	.split(',')
-	.map((prefix) => prefix.trim())
-	.filter((prefix) => prefix.length > 0)
+const ADAOS_PROXY_ENABLED = true
+const ADAOS_PROXY_UPGRADE_PREFIXES = Object.freeze([ADAOS_PROXY_PATH])
 
 const resolveToken = (req: Request) => (req.header('X-AdaOS-Token') ?? DEFAULT_TOKEN) as string
 const resolveBase = (req: Request) => (req.header('X-AdaOS-Base') ?? DEFAULT_BASE) as string
@@ -25,7 +23,7 @@ export function installAdaosBridge(app: Express, server: http.Server) {
 			target: DEFAULT_BASE,
 			changeOrigin: true,
 			ws: true,
-			pathRewrite: { '^/adaos': '' },
+			pathRewrite: { [`^${ADAOS_PROXY_PATH}`]: '' },
 			router: (req) => resolveBase(req as Request),
 			on: {
 				proxyReq: (proxyReq, req) => {
@@ -34,7 +32,7 @@ export function installAdaosBridge(app: Express, server: http.Server) {
 			},
 		})
 
-		app.use('/adaos', adaosProxy)
+		app.use(ADAOS_PROXY_PATH, adaosProxy)
 		if (ADAOS_PROXY_UPGRADE_PREFIXES.length > 0) {
 			server.on('upgrade', (req, socket, head) => {
 				const pathname = parse(req.url ?? '').pathname ?? ''

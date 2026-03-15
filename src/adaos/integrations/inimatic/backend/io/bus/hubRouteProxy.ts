@@ -1,10 +1,16 @@
-import type { Server as HttpsServer } from 'https'
+import type { Server as HttpServer } from 'node:http'
 import type express from 'express'
 import pino from 'pino'
 import { randomUUID } from 'crypto'
 import { WebSocketServer } from 'ws'
 import { NatsBus } from './nats.js'
 import { verifyWebSessionJwt } from '../../sessionJwt.js'
+import {
+	route_http_proxy_failed_total,
+	route_http_replies_total,
+	route_http_requests_total,
+	route_ws_client_close_total,
+} from '../telemetry.js'
 
 type RedisLike = {
 	get(key: string): Promise<string | null>
@@ -50,6 +56,7 @@ function extractToken(req: any): string | null {
 		extractBearer(req) ||
 		(String(req?.query?.token || '') || '').trim() ||
 		(String(req?.query?.session_jwt || '') || '').trim() ||
+		(String(req?.headers?.['x-adaos-token'] || '') || '').trim() ||
 		(String(req?.headers?.['x-session-jwt'] || '') || '').trim() ||
 		null
 	)
@@ -123,6 +130,67 @@ function maskUrlTokens(rawUrl: string): string {
 	}
 }
 
+function envFlag(name: string, defaultValue = '0'): boolean {
+	try {
+		return String(process.env[name] || defaultValue) === '1'
+	} catch {
+		return defaultValue === '1'
+	}
+}
+
+function routeKeyTag(key?: string | null): string {
+	if (!key) return '?'
+	const s = String(key)
+	return s.length > 12 ? s.slice(-8) : s
+}
+
+function routePayloadMeta(payload: any): Record<string, unknown> {
+	try {
+		const t = String(payload?.t || '')
+		if (t === 'http') {
+			return {
+				t,
+				method: String(payload?.method || 'GET').toUpperCase(),
+				path: String(payload?.path || ''),
+				searchLen: String(payload?.search || '').length,
+			}
+		}
+		if (t === 'open') {
+			return {
+				t,
+				path: String(payload?.path || ''),
+				queryLen: String(payload?.query || '').length,
+			}
+		}
+		if (t === 'frame') {
+			return {
+				t,
+				kind: String(payload?.kind || ''),
+				size:
+					typeof payload?.data === 'string'
+						? payload.data.length
+						: typeof payload?.data_b64 === 'string'
+							? payload.data_b64.length
+							: null,
+			}
+		}
+		if (t === 'chunk') {
+			return {
+				t,
+				kind: String(payload?.kind || ''),
+				idx: Number(payload?.idx || 0),
+				total: Number(payload?.total || 0),
+			}
+		}
+		if (t === 'close') {
+			return { t, err: typeof payload?.err === 'string' ? payload.err.slice(0, 120) : '' }
+		}
+		return t ? { t } : {}
+	} catch {
+		return {}
+	}
+}
+
 async function natsRequest(
 	bus: NatsBus,
 	opts: {
@@ -130,18 +198,52 @@ async function natsRequest(
 		subjectToBrowser: string
 		payload: any
 		timeoutMs: number
+		traceMeta?: Record<string, unknown>
 	}
 ): Promise<any> {
 	return new Promise((resolve, reject) => {
-		const { subjectToHub, subjectToBrowser, payload, timeoutMs } = opts
+		const { subjectToHub, subjectToBrowser, payload, timeoutMs, traceMeta } = opts
 		let done = false
 		let sub: any = null
+		const startedAt = Date.now()
+		const key = String(subjectToHub.split('.').pop() || '')
+		const httpTrace = envFlag('ROUTE_PROXY_HTTP_TRACE') || envFlag('ROUTE_PROXY_TRACE')
+		const traceBase = {
+			key,
+			keyTag: routeKeyTag(key),
+			subjectToHub,
+			subjectToBrowser,
+			timeoutMs,
+			...(traceMeta || {}),
+		}
+		if (httpTrace) {
+			try {
+				log.info(
+					{
+						...traceBase,
+						...routePayloadMeta(payload),
+					},
+					'http route: request start'
+				)
+			} catch {}
+		}
 		const timer = setTimeout(() => {
 			if (done) return
 			done = true
 			try {
 				sub?.unsubscribe?.()
 			} catch {}
+			if (httpTrace) {
+				try {
+					log.warn(
+						{
+							...traceBase,
+							tookMs: Date.now() - startedAt,
+						},
+						'http route: timeout'
+					)
+				} catch {}
+			}
 			reject(new Error(`nats request timeout (waiting ${subjectToBrowser})`))
 		}, timeoutMs)
 
@@ -150,21 +252,47 @@ async function natsRequest(
 				try {
 					const txt = new TextDecoder().decode(data)
 					const msg = JSON.parse(txt)
+					if (httpTrace) {
+						try {
+							log.info(
+								{
+									...traceBase,
+									replySubject: _subject,
+									t: String(msg?.t || ''),
+									status: msg?.status ?? null,
+									tookMs: Date.now() - startedAt,
+								},
+								'http route: reply received'
+							)
+						} catch {}
+					}
 
 					// HTTP proxy expects only `http_resp`. If we get anything else on this subject,
 					// ignore and keep waiting until timeout.
 					if (msg?.t !== 'http_resp') {
-						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
+						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1' || httpTrace) {
 							log.warn(
-								{ subject: subjectToBrowser, t: String(msg?.t || '') },
+								{
+									...traceBase,
+									replySubject: _subject,
+									t: String(msg?.t || ''),
+									tookMs: Date.now() - startedAt,
+								},
 								'http proxy: ignoring unexpected reply'
 							)
 						}
 						return
 					}
 					if (msg?.status == null) {
-						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
-							log.warn({ subject: subjectToBrowser }, 'http proxy: ignoring reply without status')
+						if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1' || httpTrace) {
+							log.warn(
+								{
+									...traceBase,
+									replySubject: _subject,
+									tookMs: Date.now() - startedAt,
+								},
+								'http proxy: ignoring reply without status'
+							)
 						}
 						return
 					}
@@ -175,17 +303,62 @@ async function natsRequest(
 					try {
 						sub?.unsubscribe?.()
 					} catch {}
+					if (httpTrace) {
+						try {
+							log.info(
+								{
+									...traceBase,
+									status: msg?.status ?? null,
+									tookMs: Date.now() - startedAt,
+								},
+								'http route: reply accepted'
+							)
+						} catch {}
+					}
 					resolve(msg)
 				} catch (e) {
 					// Ignore invalid JSON frames on this subject and keep waiting.
-					if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
-						log.warn({ subject: subjectToBrowser, err: String(e) }, 'http proxy: ignoring invalid reply')
+					if ((process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1' || httpTrace) {
+						log.warn(
+							{
+								...traceBase,
+								replySubject: _subject,
+								err: String(e),
+								tookMs: Date.now() - startedAt,
+							},
+							'http proxy: ignoring invalid reply'
+						)
 					}
 				}
 			})
 			.then((s) => {
 				sub = s
-				return bus.publish_subject(subjectToHub, payload)
+				if (httpTrace) {
+					try {
+						log.info(
+							{
+								...traceBase,
+								tookMs: Date.now() - startedAt,
+							},
+							'http route: subscribed'
+						)
+					} catch {}
+				}
+				const publishStartedAt = Date.now()
+				return bus.publish_subject(subjectToHub, payload).then(() => {
+					if (httpTrace) {
+						try {
+							log.info(
+								{
+									...traceBase,
+									publishMs: Date.now() - publishStartedAt,
+									tookMs: Date.now() - startedAt,
+								},
+								'http route: published'
+							)
+						} catch {}
+					}
+				})
 			})
 			.catch((e) => {
 				if (done) return
@@ -194,6 +367,18 @@ async function natsRequest(
 				try {
 					sub?.unsubscribe?.()
 				} catch {}
+				if (httpTrace) {
+					try {
+						log.warn(
+							{
+								...traceBase,
+								err: String(e),
+								tookMs: Date.now() - startedAt,
+							},
+							'http route: setup failed'
+						)
+					} catch {}
+				}
 				reject(e)
 			})
 	})
@@ -201,15 +386,35 @@ async function natsRequest(
 
 export function installHubRouteProxy(
 	app: express.Express,
-	server: HttpsServer,
+	server: HttpServer,
 	opts: ProxyOpts
 ) {
 	const allowCrossHubOwner =
 		opts.allowCrossHubOwner ??
 		(process.env['ALLOW_OWNER_HUB_ANY'] || '1') !== '0'
 	const verbose = (process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1'
+	const httpTrace = envFlag('ROUTE_PROXY_HTTP_TRACE') || envFlag('ROUTE_PROXY_TRACE')
+	const wsTrace = envFlag('ROUTE_PROXY_WS_TRACE') || envFlag('ROUTE_PROXY_TRACE')
 	const bus = new NatsBus(opts.natsUrl)
 	let busReady: Promise<void> | null = null
+
+	// Lightweight unauthenticated reachability probes for the hub-prefixed route.
+	// The browser UI uses these endpoints to decide whether the root-proxy is reachable
+	// before attempting authenticated status probes / websockets.
+	//
+	// IMPORTANT: Do not leak any hub data here; just report that the proxy path is alive.
+	app.get('/hubs/:hubId/api/ping', (req, res) => {
+		const hubId = String(req.params.hubId || '').trim()
+		if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
+		return res.status(200).json({ ok: true, hub_id: hubId, ts: Date.now() })
+	})
+
+	// Some UI components probe `/healthz`. Keep a hub-prefixed variant for consistency.
+	app.get('/hubs/:hubId/healthz', (req, res) => {
+		const hubId = String(req.params.hubId || '').trim()
+		if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
+		return res.status(200).json({ ok: true, hub_id: hubId, ts: Date.now() })
+	})
 
 	function ensureBus(): Promise<void> {
 		if (busReady) return busReady
@@ -227,8 +432,18 @@ export function installHubRouteProxy(
 
 	// ---- HTTP proxy: /hubs/:hubId/api/... -> hub local http://127.0.0.1:8777/api/...
 	app.all('/hubs/:hubId/api/*', async (req, res) => {
+		let hubIdForLog = ''
+		let keyForLog = ''
+		let toHubForLog = ''
+		let toBrowserForLog = ''
+		let pathForLog = ''
+		let methodForLog = ''
+		let kindForLog: string | null = null
+		let timeoutMsForLog: number | null = null
+		const reqStartedAt = Date.now()
 		try {
 			const hubId = String(req.params.hubId || '').trim()
+			hubIdForLog = hubId
 			if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
 
 			const sessionJwt = extractToken(req)
@@ -247,13 +462,29 @@ export function installHubRouteProxy(
 				log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
 			}
 
+			const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
+			if (sessionHubId && sessionHubId !== hubId) {
+				if (verbose) log.warn({ hubId, sessionHubId }, 'http proxy: session hub mismatch; denying')
+				return res.status(403).json({ ok: false, error: 'forbidden' })
+			}
+
 			await ensureBus()
 
 			const url = new URL(`https://x${req.originalUrl}`)
 			const path = stripHubPrefix(url.pathname) // /api/...
+			pathForLog = path
+			methodForLog = String(req.method || 'GET').toUpperCase()
+			const kind = isNoisyPath(path) || path === '/healthz' ? 'probe' : 'app'
+			kindForLog = kind
+			try {
+				route_http_requests_total.labels(kind).inc()
+			} catch {}
 			const key = `${hubId}--http--${randomUUID()}`
 			const toHub = `route.to_hub.${key}`
 			const toBrowser = `route.to_browser.${key}`
+			keyForLog = key
+			toHubForLog = toHub
+			toBrowserForLog = toBrowser
 			if (verbose && !isNoisyPath(path)) {
 				log.info(
 					{
@@ -266,6 +497,22 @@ export function installHubRouteProxy(
 					},
 					'http proxy: send'
 				)
+			}
+			if (httpTrace) {
+				try {
+					log.info(
+						{
+							hubId,
+							key,
+							keyTag: routeKeyTag(key),
+							method: String(req.method || 'GET').toUpperCase(),
+							path,
+							toHub,
+							toBrowser,
+						},
+						'http proxy: request prepared'
+					)
+				} catch {}
 			}
 
 			// We only support JSON-ish bodies for MVP; if express.json parsed it, use it.
@@ -291,14 +538,33 @@ export function installHubRouteProxy(
 				body_b64: bodyB64,
 			}
 
+			const timeoutMs = (() => {
+				// Keep status probes fast: the frontend uses short fetch timeouts (≈1–2s).
+				// NOTE: hub-side proxying can take a bit longer (local HTTP + NATS WS + flush).
+				// Keep this slightly higher to avoid systematic timeouts that look like hub disconnects.
+				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 6500
+				return 15000
+			})()
+			timeoutMsForLog = timeoutMs
+
 			const reply = await natsRequest(bus, {
 				subjectToHub: toHub,
 				subjectToBrowser: toBrowser,
 				payload,
-				timeoutMs: 15000,
+				timeoutMs,
+				traceMeta: {
+					hubId,
+					method: String(req.method || 'GET').toUpperCase(),
+					path,
+					kind,
+				},
 			})
 
 			const status = Number(reply?.status || 502)
+			try {
+				const cls = status >= 200 && status < 300 ? '2xx' : status >= 300 && status < 400 ? '3xx' : status >= 400 && status < 500 ? '4xx' : '5xx'
+				route_http_replies_total.labels(kind, cls).inc()
+			} catch {}
 			const headers = reply?.headers && typeof reply.headers === 'object' ? reply.headers : {}
 			const body = typeof reply?.body_b64 === 'string' ? reply.body_b64 : ''
 			const isTrunc = reply?.truncated === true
@@ -315,6 +581,23 @@ export function installHubRouteProxy(
 					},
 					'http proxy: reply'
 				)
+			}
+			if (httpTrace) {
+				try {
+					log.info(
+						{
+							hubId,
+							key,
+							keyTag: routeKeyTag(key),
+							method: String(req.method || 'GET').toUpperCase(),
+							path,
+							status,
+							err: errMsg ? errMsg.slice(0, 200) : '',
+							tookMs: Date.now() - reqStartedAt,
+						},
+						'http proxy: response sent'
+					)
+				} catch {}
 			}
 			if (errMsg && (process.env['ROUTE_PROXY_VERBOSE'] || '0') === '1') {
 				log.warn(
@@ -347,7 +630,25 @@ export function installHubRouteProxy(
 			const buf = body ? Buffer.from(body, 'base64') : Buffer.from('')
 			return res.status(status).send(buf)
 		} catch (e) {
-			log.warn({ err: String(e), hubId: String(req?.params?.hubId || '') }, 'http proxy failed')
+			try {
+				route_http_proxy_failed_total.labels(String(req?.params?.hubId || '') || 'unknown').inc()
+			} catch {}
+			log.warn(
+				{
+					err: String(e),
+					hubId: hubIdForLog || String(req?.params?.hubId || ''),
+					key: keyForLog || null,
+					keyTag: routeKeyTag(keyForLog || null),
+					method: methodForLog || null,
+					path: pathForLog || null,
+					kind: kindForLog || null,
+					tookMs: Date.now() - reqStartedAt,
+					timeoutMs: timeoutMsForLog,
+					toHub: toHubForLog || null,
+					toBrowser: toBrowserForLog || null,
+				},
+				'http proxy failed'
+			)
 			return res.status(502).json({ ok: false, error: 'hub_unreachable' })
 		}
 	})
@@ -415,18 +716,61 @@ export function installHubRouteProxy(
 			let hubOpenSent = false
 			let clientClosed = false
 			let publishChain = Promise.resolve()
+			let publishSeq = 0
 
 			const EARLY_FRAME_MAX_BYTES = 512 * 1024
 			const EARLY_FRAME_MAX_COUNT = 64
 			const earlyFrames: Array<{ isBinary: boolean; data: Buffer | string }> = []
 			let earlyFrameBytes = 0
 
+			const logWsTrace = (event: string, extra?: Record<string, unknown>) => {
+				if (!wsTrace) return
+				try {
+					log.info(
+						{
+							hubId,
+							kind,
+							dstPath,
+							key,
+							keyTag: routeKeyTag(key),
+							toHub,
+							toBrowser,
+							...(extra || {}),
+						},
+						event
+					)
+				} catch {}
+			}
+
 			const enqueuePublish = (payload: any) => {
+				const seq = ++publishSeq
+				const meta0 = routePayloadMeta(payload)
+				logWsTrace('ws route: publish queued', { seq, ...meta0 })
 				publishChain = publishChain
 					.then(async () => {
+						const startedAt = Date.now()
+						logWsTrace('ws route: publish start', { seq, ...meta0 })
 						await bus.publish_subject(toHub, payload)
+						logWsTrace('ws route: publish done', { seq, publishMs: Date.now() - startedAt, ...meta0 })
 					})
-					.catch(() => {})
+					.catch((e) => {
+						try {
+							log.warn(
+								{
+									hubId,
+									kind,
+									dstPath,
+									key,
+									keyTag: routeKeyTag(key),
+									toHub,
+									err: String(e),
+									seq,
+									...meta0,
+								},
+								'ws route: publish failed'
+							)
+						} catch {}
+					})
 			}
 
 			const forwardClientFrame = (data: any, isBinary: boolean) => {
@@ -505,14 +849,24 @@ export function installHubRouteProxy(
 			>()
 			try {
 				if (verbose) log.info({ hubId, kind, dstPath, key }, 'ws conn: start')
+				logWsTrace('ws route: connection start')
 
 				// Attach handlers immediately; don't let client frames race async auth/NATS setup.
 				ws.on('message', (data: any, isBinary: boolean) => {
 					if (clientClosed) return
 					if (!hubOpenSent) {
 						bufferEarlyFrame(data, isBinary)
+						logWsTrace('ws route: early frame buffered', {
+							isBinary: Boolean(isBinary),
+							size: isBinary ? Buffer.byteLength(Buffer.isBuffer(data) ? data : Buffer.from(data)) : Buffer.byteLength(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'), 'utf8'),
+							earlyFrameCount: earlyFrames.length,
+						})
 						return
 					}
+					logWsTrace('ws route: client frame forward', {
+						isBinary: Boolean(isBinary),
+						size: isBinary ? Buffer.byteLength(Buffer.isBuffer(data) ? data : Buffer.from(data)) : Buffer.byteLength(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'), 'utf8'),
+					})
 					forwardClientFrame(data, isBinary)
 				})
 
@@ -524,7 +878,16 @@ export function installHubRouteProxy(
 					} catch {
 						r = null
 					}
-					log.info({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close')
+					// Closing is expected on navigation / reload. Avoid log spam unless debugging
+					// or the close looks abnormal.
+					if (verbose) {
+						log.info({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close')
+					} else if (![1000, 1001].includes(code)) {
+						log.warn({ hubId, kind, dstPath, key, code, reason: r }, 'ws client close (abnormal)')
+					}
+					try {
+						route_ws_client_close_total.labels(String(kind), String(code)).inc()
+					} catch {}
 					try {
 						pendingChunks.clear()
 						earlyFrames.length = 0
@@ -563,11 +926,26 @@ export function installHubRouteProxy(
 					log.warn({ hubId, ownerId, kind }, 'ws owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
 				}
 
+				const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
+				if (sessionHubId && sessionHubId !== hubId) {
+					if (verbose) log.warn({ hubId, sessionHubId, kind }, 'ws session hub mismatch; closing')
+					try {
+						ws.close(1008, 'forbidden')
+					} catch {}
+					return
+				}
+
 				await ensureBus()
 				sub = await bus.subscribe(toBrowser, async (_subject: string, data: Uint8Array) => {
 					try {
 						const txt = new TextDecoder().decode(data)
 						const msg = JSON.parse(txt)
+						logWsTrace('ws route: reply received', {
+							replySubject: _subject,
+							replyType: String(msg?.t || ''),
+							replyKind: String(msg?.kind || ''),
+							size: data?.byteLength ?? null,
+						})
 						if (msg?.t === 'chunk' && typeof msg.id === 'string') {
 							const id = String(msg.id)
 							const idx = Number(msg.idx || 0)
@@ -618,10 +996,26 @@ export function installHubRouteProxy(
 								ws.close(errMsg ? 1011 : 1000, reason)
 							} catch {}
 						}
-					} catch {
-						// ignore
+					} catch (e) {
+						if (wsTrace) {
+							try {
+								log.warn(
+									{
+										hubId,
+										kind,
+										dstPath,
+										key,
+										keyTag: routeKeyTag(key),
+										toBrowser,
+										err: String(e),
+									},
+									'ws route: reply handling failed'
+								)
+							} catch {}
+						}
 					}
 				})
+				logWsTrace('ws route: subscribed')
 
 				// open
 				// ws.WebSocket.OPEN === 1
@@ -647,6 +1041,7 @@ export function installHubRouteProxy(
 							'ws tunnel: open'
 						)
 					}
+					logWsTrace('ws route: open publish', { query: maskUrlTokens(String(meta?.query || '')) })
 					await bus.publish_subject(toHub, {
 						t: 'open',
 						proto: 'ws',
@@ -655,8 +1050,10 @@ export function installHubRouteProxy(
 						headers: {},
 					})
 					hubOpenSent = true
+					logWsTrace('ws route: open published')
 				} catch (e) {
 					if (verbose) log.warn({ hubId, dstPath, key, err: String(e) }, 'ws open publish failed')
+					logWsTrace('ws route: open publish failed', { err: String(e) })
 					try {
 						ws.close(1011, 'nats_open_failed')
 					} catch {}
@@ -775,7 +1172,7 @@ export function installHubRouteProxy(
 
 			ensureWs()
 
-			const dstPath = kind === 'ws' ? '/ws' : `/yws${room}`
+			const dstPath = kind === 'ws' ? `/ws${room}` : `/yws${room}`
 			const query = u.search || ''
 			if (verbose) log.info({ hubId, kind, dstPath, key }, 'ws upgrade: accepted')
 			if (verbose) {

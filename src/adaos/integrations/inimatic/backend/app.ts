@@ -2,9 +2,11 @@
 import 'dotenv/config'
 import express from 'express'
 import cors, { type CorsOptions } from 'cors'
-import https from 'https'
+import http from 'node:http'
+import https from 'node:https'
+import type { Socket as NetSocket } from 'node:net'
 import path from 'path'
-import type { IncomingMessage } from 'http'
+import type { IncomingMessage } from 'node:http'
 import { fetch } from 'undici'
 import { v4 as uuidv4 } from 'uuid'
 import AdmZip from 'adm-zip'
@@ -32,10 +34,13 @@ import {
 import { NatsBus } from './io/bus/nats.js'
 import { installWsNatsProxy } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
-import { ensureSchema as ensureTgSchema, ensureHubToken } from './db/tg.repo.js'
+import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
 import { buildInfo } from './build-info.js'
 import { installWebAuthnRoutes, storeDeviceCode } from './webauthn.js'
+import { installRootLogCapture, queryRootLogs } from './dev/logs.js'
+import { listLogFiles, tailLogFile } from './dev/log_files.js'
+import { issueHubNatsSession } from './io/bus/hubNatsSession.js'
 
 type FollowerData = {
 	followerName: string
@@ -228,6 +233,17 @@ const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
 const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
 
+// Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
+try {
+	installRootLogCapture({
+		maxLines:
+			Number.parseInt(String(process.env['ROOT_LOG_MAX_LINES'] || ''), 10) ||
+			50_000,
+	})
+} catch {
+	// best-effort
+}
+
 function resolveNodeYamlPath(): string | null {
 	const explicit = (process.env['ADAOS_NODE_YAML_PATH'] || process.env['ADAOS_NODE_YAML'] || '').trim()
 	if (explicit) return explicit
@@ -245,6 +261,12 @@ function resolveNodeYamlPath(): string | null {
 		} catch {}
 	}
 	return null
+}
+
+const ROOT_SERVER_PROTO = (process.env['ROOT_SERVER_PROTO'] || process.env['SERVER_PROTO'] || 'https').toLowerCase()
+const USE_HTTP_SERVER = ROOT_SERVER_PROTO === 'http'
+if (USE_HTTP_SERVER) {
+	console.warn('[root] starting in HTTP mode (ROOT_SERVER_PROTO=http)')
 }
 
 function resolveWebSessionTtlSeconds(): number {
@@ -284,6 +306,8 @@ const policy = getPolicy()
 const MAX_ARCHIVE_BYTES = policy.max_archive_mb * 1024 * 1024
 
 const app = express()
+let wsNatsProxyReady = false
+let hubRouteProxyReady = false
 
 const allowedCorsOrigins = new Set<string>()
 const allowedCorsHosts = new Set<string>(['localhost', '127.0.0.1', '[::1]'])
@@ -362,6 +386,15 @@ app.use((req, _res, next) => {
 })
 app.use(express.json({ limit: '8mb' }))
 
+// Public liveness probe for the Root backend itself.
+// The frontend may hit this before a hub session is established (no hub_id yet).
+app.get('/api/ping', (_req, res) => {
+	res.status(200).json({ ok: true, service: 'root', ts: Date.now() })
+})
+app.get('/livez', (_req, res) => {
+	res.status(200).json({ ok: true })
+})
+
 function withLeadingSlash(value: string, fallback: string): string {
 	const trimmed = value.trim()
 	if (!trimmed) {
@@ -370,46 +403,54 @@ function withLeadingSlash(value: string, fallback: string): string {
 	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
-function buildNatsWsUrl(): string {
-	const baseHttp = (process.env['TG_WEBHOOK_BASE'] || 'https://api.inimatic.com').replace(/\/+$/, '')
-	const baseUrl = new URL(baseHttp)
-	const wsProto = baseUrl.protocol.startsWith('http') ? baseUrl.protocol.replace('http', 'ws') : 'wss:'
-	baseUrl.protocol = wsProto
-	const base = baseUrl.toString().replace(/\/+$/, '')
-	const publicOverride = (process.env['NATS_WS_PUBLIC'] || '').trim()
-	if (publicOverride) return publicOverride
-	// Keep this in sync with the WS->NATS proxy mount (`WS_NATS_PATH`).
-	const wsPath = withLeadingSlash(process.env['WS_NATS_PATH'] || '/nats', '/nats')
-	return wsPath === '/' ? base : `${base}${wsPath}`
+const PUBLIC_HUB_NATS_URL = 'nats://nats.inimatic.com:4222' as const
+
+function buildHubNatsUrl(): string {
+	return PUBLIC_HUB_NATS_URL
 }
 
-const SOCKET_PATH = withLeadingSlash(
-	process.env['SOCKET_PATH'] ?? '/socket.io',
-	'/socket.io'
-)
-if (SOCKET_PATH === '/') {
-	console.warn('[socket.io] SOCKET_PATH="/" would hijack all WS upgrades; forcing "/socket.io"')
-}
-const EFFECTIVE_SOCKET_PATH = SOCKET_PATH === '/' ? '/socket.io' : SOCKET_PATH
-const SOCKET_CHANNEL_NS = withLeadingSlash(
-	process.env['SOCKET_CHANNEL_NS'] ?? '/adaos',
-	'/adaos'
-)
-const SOCKET_CHANNEL_VERSION =
-	(process.env['SOCKET_CHANNEL_VERSION'] ?? 'v1').trim() || 'v1'
-const SOCKET_LEGACY_FALLBACK_ENABLED =
-	(process.env['SOCKET_LEGACY_FALLBACK'] ?? '1') !== '0'
+const EFFECTIVE_SOCKET_PATH = '/socket.io' as const
+const SOCKET_CHANNEL_NS = '/adaos' as const
+const SOCKET_CHANNEL_VERSION = 'v1' as const
+const SOCKET_LEGACY_FALLBACK_ENABLED = false
 
-const server = https.createServer(
-	{
-		key: TLS_KEY_PEM,
-		cert: TLS_CERT_PEM,
-		ca: [CA_CERT_PEM],
-		requestCert: true,
-		rejectUnauthorized: false,
-	},
-	app
-)
+const server = USE_HTTP_SERVER
+	? http.createServer(app)
+	: https.createServer(
+			{
+				key: TLS_KEY_PEM,
+				cert: TLS_CERT_PEM,
+				ca: [CA_CERT_PEM],
+				requestCert: true,
+				rejectUnauthorized: false,
+			},
+			app
+		)
+
+// Keep upgraded WS tunnels out of generic HTTP timeout logic.
+// The `/nats`, `/hubs/*/ws`, and `/hubs/*/yws/*` paths can stay quiet for longer than the default
+// HTTP server thresholds even when the underlying websocket is still healthy.
+server.setTimeout(0)
+server.requestTimeout = 0
+server.headersTimeout = 0
+server.keepAliveTimeout = 75_000
+
+function tuneAcceptedSocket(socket: NetSocket | null | undefined): void {
+	if (!socket) return
+	try {
+		socket.setTimeout(0)
+	} catch {}
+	try {
+		socket.setKeepAlive(true, 20_000)
+	} catch {}
+	try {
+		socket.setNoDelay(true)
+	} catch {}
+}
+
+server.on('connection', (socket) => {
+	tuneAcceptedSocket(socket)
+})
 
 const io = new Server(server, {
 	cors: { origin: '*' },
@@ -828,15 +869,34 @@ app.get('/health', (_req, res) => {
 	res.status(200).type('text/plain').send('ok')
 })
 
-app.get('/healthz', (_req, res) => {
-	res.json({
-		ok: true,
+function getReadinessPayload() {
+	const routeProxyEnabled = Boolean(process.env['NATS_URL'])
+	const ready = wsNatsProxyReady && (!routeProxyEnabled || hubRouteProxyReady)
+	return {
+		ok: ready,
+		ready,
 		version: buildInfo.version,
 		build_date: buildInfo.buildDate,
 		commit: buildInfo.commit,
 		time: new Date().toISOString(),
 		mtls: true,
-	})
+		ws_nats_proxy_ready: wsNatsProxyReady,
+		hub_route_proxy_ready: hubRouteProxyReady,
+		hub_route_proxy_enabled: routeProxyEnabled,
+	}
+}
+
+function sendReadiness(res: express.Response): void {
+	const payload = getReadinessPayload()
+	res.status(payload.ready ? 200 : 503).json(payload)
+}
+
+app.get('/healthz', (_req, res) => {
+	sendReadiness(res)
+})
+
+app.get('/readyz', (_req, res) => {
+	sendReadiness(res)
 })
 
 app.get('/v1/health', (_req, res) => {
@@ -1241,7 +1301,11 @@ if (
 		// subscribe to outbound for a single configured bot
 		const botId = process.env['BOT_ID'] || 'main-bot'
 		const { TelegramSender } = await import('./io/telegram/sender.js')
-		const sender = new TelegramSender(process.env['TG_BOT_TOKEN'] || '')
+		const tgToken = process.env['TG_BOT_TOKEN'] || ''
+		if (!tgToken) {
+			console.warn('[io] TG_BOT_TOKEN is not configured; Telegram outbound will fail')
+		}
+		const sender = new TelegramSender(tgToken)
 		console.log(`[io] Subscribing to tg.output.${botId}.>`)
 		await ioBus.subscribe_output(botId, async (subject, data) => {
 			try {
@@ -1250,8 +1314,10 @@ if (
 				console.log(`[io] Outbound received on ${subject}`)
 				await sender.send(payload)
 			} catch (e) {
+				const err = String((e as any)?.message ?? e)
+				console.warn(`[io] Telegram outbound failed on ${subject}: ${err}`)
 				try {
-					await ioBus!.publish_dlq('output', { error: String(e) })
+					await ioBus!.publish_dlq('output', { error: err, subject })
 				} catch { }
 			}
 		})
@@ -1264,8 +1330,10 @@ if (
 				console.log(`[io] Legacy outbound received on ${subject}`)
 				await sender.send(payload)
 			} catch (e) {
+				const err = String((e as any)?.message ?? e)
+				console.warn(`[io] Telegram legacy outbound failed on ${subject}: ${err}`)
 				try {
-					await ioBus!.publish_dlq('output', { error: String(e) })
+					await ioBus!.publish_dlq('output', { error: err, subject })
 				} catch { }
 			}
 		})
@@ -1322,14 +1390,21 @@ if (
 }
 installTelegramWebhookRoutes(app, ioBus)
 installPairingApi(app)
-import('./io/bus/natsAuth.js')
-	.then((m) => m.installNatsAuth(app))
-	.catch(() => { })
+try {
+	const natsAuthModule = await import('./io/bus/natsAuth.js')
+	await natsAuthModule.installNatsAuth(app)
+	console.log('[io] nats auth callout installed')
+} catch (e) {
+	console.error('[io] nats auth callout init failed', e)
+	throw e
+}
 
 // Install WS->NATS proxy for hubs (accepts NATS WS handshake, rewrites creds)
 try {
 	installWsNatsProxy(server)
+	wsNatsProxyReady = true
 } catch (e) {
+	wsNatsProxyReady = false
 	console.error('ws nats proxy init failed', e)
 }
 
@@ -1343,11 +1418,14 @@ try {
 			natsUrl: process.env['NATS_URL']!,
 			sessionJwtSecret: WEB_SESSION_JWT_SECRET,
 		})
+		hubRouteProxyReady = true
 		console.log('[route] hub proxy installed')
 	} else {
+		hubRouteProxyReady = false
 		console.warn('[route] NATS_URL missing; hub proxy disabled')
 	}
 } catch (e) {
+	hubRouteProxyReady = false
 	console.error('[route] hub proxy init failed', e)
 }
 
@@ -1369,7 +1447,8 @@ app.post('/io/tg/send', async (req, res) => {
 		if (!text)
 			return res.status(400).json({ ok: false, error: 'text_required' })
 
-		let bot_id = explicitBot || process.env['BOT_ID'] || 'adaos_bot'
+		const activeBotId = process.env['BOT_ID'] || 'adaos_bot'
+		let bot_id = explicitBot || activeBotId
 		let chat_id = explicitChat
 		if (!chat_id) {
 			const { tgLinkGet } = await import('./io/pairing/store.js')
@@ -1379,7 +1458,18 @@ app.post('/io/tg/send', async (req, res) => {
 					.status(404)
 					.json({ ok: false, error: 'pairing_not_found', hub_id })
 			chat_id = link.chat_id
-			if (!explicitBot) bot_id = link.bot_id || bot_id
+			if (!explicitBot && link.bot_id && String(link.bot_id) !== String(activeBotId)) {
+				console.warn(
+					`[io] tg pairing bot mismatch for hub_id=${hub_id}: link.bot_id=${String(link.bot_id)} BOT_ID=${String(activeBotId)}; using BOT_ID`
+				)
+			}
+		}
+
+		function displaySubnetAlias(aliasValue: unknown, hubIdValue: unknown): string | undefined {
+			const aliasText = String(aliasValue || '').trim()
+			const hubText = String(hubIdValue || '').trim()
+			if (aliasText && !/^hub(?:-\d+)?$/i.test(aliasText)) return aliasText
+			return hubText || aliasText || undefined
 		}
 
 		// Resolve human-friendly alias for prefixing in Telegram outbox
@@ -1387,11 +1477,12 @@ app.post('/io/tg/send', async (req, res) => {
 		try {
 			const { listBindings } = await import('./db/tg.repo.js')
 			const binds = await listBindings(Number(chat_id))
-			alias = (binds || []).find(
-				(b) => String(b.hub_id) === String(hub_id)
-			)?.alias as any
+			alias = displaySubnetAlias(
+				(binds || []).find((b) => String(b.hub_id) === String(hub_id))?.alias,
+				hub_id,
+			)
 		} catch {
-			/* optional */
+			alias = displaySubnetAlias(undefined, hub_id)
 		}
 
 		if (!ioBus)
@@ -1436,6 +1527,82 @@ app.post('/v1/bootstrap_token', async (req, res) => {
 		one_time_token: oneTimeToken,
 		expires_at: expiresAt.toISOString(),
 	})
+})
+
+// Developer endpoint: fetch recent Root logs (captured from stdout/stderr).
+// Protected by ROOT_TOKEN.
+app.get('/v1/dev/logs', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	const minutesRaw = Number(String(req.query['minutes'] ?? '30'))
+	const minutes = Number.isFinite(minutesRaw)
+		? Math.max(1, Math.min(12 * 60, Math.floor(minutesRaw)))
+		: 30
+	const limitRaw = Number(String(req.query['limit'] ?? '2000'))
+	const limit = Number.isFinite(limitRaw)
+		? Math.max(1, Math.min(50_000, Math.floor(limitRaw)))
+		: 2000
+	const contains =
+		typeof req.query['contains'] === 'string'
+			? String(req.query['contains'])
+			: null
+	const hubId =
+		typeof req.query['hub_id'] === 'string'
+			? String(req.query['hub_id'])
+			: null
+	const sinceMs = Date.now() - minutes * 60 * 1000
+	const items = queryRootLogs({ sinceMs, limit, contains, hubId })
+	return res.json({ ok: true, minutes, limit, since_ms: sinceMs, items })
+})
+
+// Developer endpoint: list/tail log files from a shared directory mounted into the backend container.
+// Protected by ROOT_TOKEN.
+app.get('/v1/dev/log_files', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	try {
+		const contains =
+			typeof req.query['contains'] === 'string'
+				? String(req.query['contains'])
+				: null
+		const limitRaw = Number(String(req.query['limit'] ?? '500'))
+		const limit = Number.isFinite(limitRaw) ? limitRaw : 500
+		const items = await listLogFiles({ contains, limit })
+		return res.json({ ok: true, items })
+	} catch (e: any) {
+		return res.status(500).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+app.get('/v1/dev/log_tail', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const token = req.header('X-Root-Token') ?? ''
+	if (!token || token !== ROOT_TOKEN) {
+		return res.status(401).json({ ok: false, error: 'unauthorized' })
+	}
+	try {
+		const file = typeof req.query['file'] === 'string' ? String(req.query['file']) : ''
+		const linesRaw = Number(String(req.query['lines'] ?? '200'))
+		const lines = Number.isFinite(linesRaw) ? linesRaw : 200
+		const maxBytesRaw = Number(String(req.query['max_bytes'] ?? '2000000'))
+		const maxBytes = Number.isFinite(maxBytesRaw) ? maxBytesRaw : 2_000_000
+		const result = await tailLogFile({ relPath: file, lines, maxBytes })
+		return res.json({ ok: true, ...result })
+	} catch (e: any) {
+		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
+	}
 })
 
 app.post('/v1/subnets/register', async (req, res) => {
@@ -1552,6 +1719,224 @@ app.post('/v1/subnets/register', async (req, res) => {
 		reused,
 	})
 	console.log('register: done, total=%dms', Date.now() - t0)
+})
+
+const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+function normalizeJoinCode(code: string): string {
+	return String(code || '')
+		.trim()
+		.toUpperCase()
+		.replace(/[^A-Z0-9]/g, '')
+}
+
+function formatJoinCode(code: string): string {
+	const norm = normalizeJoinCode(code)
+	if (!norm) return ''
+	const mid = Math.floor(norm.length / 2)
+	if (mid <= 0 || mid >= norm.length) return norm
+	return `${norm.slice(0, mid)}-${norm.slice(mid)}`
+}
+
+function hashJoinCode(code: string): string {
+	return createHash('sha256').update(normalizeJoinCode(code)).digest('hex')
+}
+
+function generateJoinCode(length: number): string {
+	const len = Math.max(8, Math.min(12, Math.floor(Number(length) || 8)))
+	const bytes = randomBytes(len)
+	let raw = ''
+	for (let i = 0; i < len; i++) {
+		raw += JOIN_CODE_ALPHABET[bytes[i] % JOIN_CODE_ALPHABET.length]
+	}
+	return formatJoinCode(raw)
+}
+
+function resolveJoinSessionTtlSeconds(): number {
+	const raw = (process.env['ADAOS_JOIN_SESSION_TTL_SECONDS'] || '').trim()
+	if (raw) {
+		const v = Number.parseInt(raw, 10)
+		if (Number.isFinite(v) && v > 0) return v
+	}
+	// Default: 30 days
+	return 30 * 24 * 60 * 60
+}
+
+const JOIN_SESSION_TTL_SECONDS = resolveJoinSessionTtlSeconds()
+
+function authenticateOwnerBearerInline(req: express.Request): OwnerRecord | null {
+	const header = req.header('Authorization') ?? ''
+	const token = header.startsWith('Bearer ')
+		? header.slice('Bearer '.length).trim()
+		: ''
+	if (!token || !accessIndex.has(token)) {
+		return null
+	}
+	const ownerId = accessIndex.get(token)!
+	const owner = owners.get(ownerId)
+	if (!owner) return null
+	if (
+		owner.accessToken !== token ||
+		owner.accessExpiresAt.getTime() <= Date.now()
+	) {
+		return null
+	}
+	return owner
+}
+
+// Create a short one-time join-code on Root so member nodes can join without a long-lived token.
+// Auth: either hub mTLS certificate (preferred) or owner bearer session (dev/browser).
+// Root returns a rendezvous URL for the hub via the Root proxy: /hubs/<subnet_id>/...
+app.post('/v1/subnets/join-code', async (req, res) => {
+	try {
+		const bodySubnet =
+			typeof req.body?.subnet_id === 'string' ? String(req.body.subnet_id).trim() : ''
+
+		const identity = getClientIdentity(req)
+		const hubIdentity = identity && identity.type === 'hub' ? identity : null
+		const owner = authenticateOwnerBearerInline(req)
+		const rootToken = String(req.header('X-Root-Token') || '').trim()
+		const haveRootToken = Boolean(rootToken && rootToken === ROOT_TOKEN)
+		const subnet_id = (() => {
+			if (hubIdentity) return hubIdentity.subnetId
+			return bodySubnet
+		})()
+
+		if (!subnet_id) {
+			return res.status(400).json({ ok: false, error: 'subnet_id_required' })
+		}
+
+		// If hub mTLS is used, prevent forging cross-subnet codes.
+		if (hubIdentity && bodySubnet && bodySubnet !== hubIdentity.subnetId) {
+			return res.status(403).json({ ok: false, error: 'forbidden' })
+		}
+
+		// If owner bearer is used, ensure the owner has access to this hub/subnet id.
+		if (!hubIdentity && !owner && !haveRootToken) {
+			return res.status(401).json({ ok: false, error: 'unauthorized' })
+		}
+		if (!hubIdentity && owner) {
+			const hub = owner.hubs.get(subnet_id)
+			if (!hub || hub.revoked) {
+				return res.status(404).json({ ok: false, error: 'hub_not_registered' })
+			}
+			hub.lastSeen = new Date()
+		}
+		if (!hubIdentity && !owner && haveRootToken) {
+			// Best-effort: ensure subnet exists (registered) before issuing codes.
+			// Do not hard-fail: redis state may be wiped on redeploy while hubs are still online and routable via ws-nats-proxy.
+			try {
+				const existing = await redisClient.hGet('root:subnets', subnet_id)
+				if (!existing) {
+					await redisClient.hSet(
+						'root:subnets',
+						subnet_id,
+						JSON.stringify({
+							subnet_id,
+							created_at: Date.now(),
+							source: 'root_token_join_code',
+						})
+					)
+				}
+			} catch {
+				// ignore and proceed
+			}
+		}
+
+		const ttlMinutesRaw = Number(req.body?.ttl_minutes ?? 15)
+		const ttlMinutes = Number.isFinite(ttlMinutesRaw)
+			? Math.max(1, Math.min(60, Math.floor(ttlMinutesRaw)))
+			: 15
+		const lengthRaw = Number(req.body?.length ?? 8)
+		const length = Number.isFinite(lengthRaw)
+			? Math.max(8, Math.min(12, Math.floor(lengthRaw)))
+			: 8
+
+		const code = generateJoinCode(length)
+		const key = `join_code:${hashJoinCode(code)}`
+		const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000)
+		await redisClient.setEx(
+			key,
+			ttlMinutes * 60,
+			JSON.stringify({
+				subnet_id,
+				issued_by: 'root',
+				auth: hubIdentity
+					? { method: 'mtls', subnet_id }
+					: owner
+						? { method: 'owner_bearer', owner_id: owner.ownerId }
+						: haveRootToken
+							? { method: 'root_token' }
+						: { method: 'unknown' },
+				created_at_utc: new Date().toISOString(),
+				expires_at_utc: expiresAt.toISOString(),
+			})
+		)
+
+		return res.status(200).json({ ok: true, code, expires_at_utc: expiresAt.toISOString() })
+	} catch (error) {
+		return handleError(req, res, error, { status: 500, code: 'internal_error' })
+	}
+})
+
+// Consume a join-code on Root and return connection parameters for a member node.
+// This returns a Root-proxy hub URL and an opaque session token (stored in Redis) that authorizes
+// subsequent /hubs/<subnet_id>/... requests.
+app.post('/v1/subnets/join', async (req, res) => {
+	try {
+		const code = typeof req.body?.code === 'string' ? String(req.body.code).trim() : ''
+		if (!code) return res.status(422).json({ detail: 'code is required' })
+
+		const joinKey = `join_code:${hashJoinCode(code)}`
+		const raw = await redisClient.get(joinKey)
+		if (!raw) return res.status(404).json({ detail: 'join-code not found' })
+		await redisClient.del(joinKey)
+
+		let rec: any = {}
+		try {
+			rec = JSON.parse(raw)
+		} catch {
+			rec = {}
+		}
+		const subnet_id = typeof rec?.subnet_id === 'string' ? String(rec.subnet_id).trim() : ''
+		if (!subnet_id) return res.status(500).json({ detail: 'invalid join-code record' })
+
+		const sessionToken = randomBytes(32).toString('hex')
+		await redisClient.setEx(
+			`session:jwt:${sessionToken}`,
+			JOIN_SESSION_TTL_SECONDS,
+			JSON.stringify({
+				sid: `join_${uuidv4().replace(/-/g, '')}`,
+				hub_id: subnet_id,
+				subnet_id,
+				stage: 'JOIN_CODE',
+				node_id: typeof req.body?.node_id === 'string' ? String(req.body.node_id).trim() : undefined,
+				hostname: typeof req.body?.hostname === 'string' ? String(req.body.hostname).trim() : undefined,
+				issued_at_utc: new Date().toISOString(),
+				expires_at_utc: new Date(Date.now() + JOIN_SESSION_TTL_SECONDS * 1000).toISOString(),
+			})
+		)
+
+		const host = String(req.get('host') || '').trim()
+		const root_url = `${ROOT_SERVER_PROTO}://${host}`
+		const hub_url = `${root_url}/hubs/${encodeURIComponent(subnet_id)}`
+
+		return res.status(200).json({
+			ok: true,
+			subnet_id,
+			token: sessionToken,
+			root_url,
+			hub_url,
+			diagnostics: {
+				issued_by: rec?.issued_by ?? 'root',
+				code_created_at_utc: rec?.created_at_utc ?? null,
+				code_expires_at_utc: rec?.expires_at_utc ?? null,
+				session_expires_at_utc: new Date(Date.now() + JOIN_SESSION_TTL_SECONDS * 1000).toISOString(),
+			},
+		})
+	} catch (error) {
+		return handleError(req, res, error, { status: 500, code: 'internal_error' })
+	}
 })
 
 app.post('/v1/nodes/register', async (req, res) => {
@@ -1761,25 +2146,96 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 		return respondError(req, res, 403, 'hub_certificate_required')
 	}
 	try {
-		if (process.env['PG_URL']) {
-			await ensureTgSchema()
-		}
 		const hubId = identity.subnetId
-		const token = await ensureHubToken(hubId)
-		const ws_url = buildNatsWsUrl()
-		const nats_user = `hub_${hubId}`
+		const session = await issueHubNatsSession(hubId)
+		const ws_url = buildHubNatsUrl()
 		return res.json({
 			ok: true,
 			hub_id: hubId,
-			hub_nats_token: token,
+			hub_nats_token: session.token,
+			hub_nats_token_expires_at: session.expiresAt,
 			nats_ws_url: ws_url,
-			nats_user,
+			nats_user: session.user,
 		})
 	} catch (error) {
 		return handleError(req, res, error, {
 			status: 500,
 			code: 'internal_error',
 		})
+	}
+})
+
+// Hub developer endpoints: allow hubs to fetch Root logs without ROOT_TOKEN.
+// NOTE: still unsafe in production; keep behind mTLS and use only for debugging.
+mtlsRouter.get('/hub/dev/logs', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	const minutesRaw = Number(String(req.query['minutes'] ?? '30'))
+	const minutes = Number.isFinite(minutesRaw)
+		? Math.max(1, Math.min(12 * 60, Math.floor(minutesRaw)))
+		: 30
+	const limitRaw = Number(String(req.query['limit'] ?? '2000'))
+	const limit = Number.isFinite(limitRaw)
+		? Math.max(1, Math.min(50_000, Math.floor(limitRaw)))
+		: 2000
+	const contains =
+		typeof req.query['contains'] === 'string'
+			? String(req.query['contains'])
+			: null
+	const sinceMs = Date.now() - minutes * 60 * 1000
+	// Default filter to the requesting hub id to reduce accidental leaks.
+	const hubId = typeof req.query['hub_id'] === 'string'
+		? String(req.query['hub_id'])
+		: identity.subnetId
+	const items = queryRootLogs({ sinceMs, limit, contains, hubId })
+	return res.json({ ok: true, minutes, limit, since_ms: sinceMs, items })
+})
+
+mtlsRouter.get('/hub/dev/log_files', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const contains =
+			typeof req.query['contains'] === 'string'
+				? String(req.query['contains'])
+				: null
+		const limitRaw = Number(String(req.query['limit'] ?? '200'))
+		const limit = Number.isFinite(limitRaw) ? limitRaw : 200
+		const items = await listLogFiles({ contains, limit })
+		return res.json({ ok: true, items })
+	} catch (e: any) {
+		return res.status(500).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+mtlsRouter.get('/hub/dev/log_tail', async (req, res) => {
+	if (process.env['DEBUG_ENDPOINTS'] !== 'true') {
+		return res.status(404).json({ ok: false, error: 'debug_endpoints_disabled' })
+	}
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const file = typeof req.query['file'] === 'string' ? String(req.query['file']) : ''
+		const linesRaw = Number(String(req.query['lines'] ?? '200'))
+		const lines = Number.isFinite(linesRaw) ? linesRaw : 200
+		const maxBytesRaw = Number(String(req.query['max_bytes'] ?? '2000000'))
+		const maxBytes = Number.isFinite(maxBytesRaw) ? maxBytesRaw : 2_000_000
+		const result = await tailLogFile({ relPath: file, lines, maxBytes })
+		return res.json({ ok: true, ...result })
+	} catch (e: any) {
+		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
 	}
 })
 
@@ -2568,11 +3024,9 @@ const registerSocketHandlers = (socket: Socket) => {
 
 io.on('connection', registerSocketHandlers)
 
-if (SOCKET_CHANNEL_NS !== '/') {
-	const nsv1 = io.of(SOCKET_CHANNEL_NS)
-	nsv1.use((socket, next) => next())
-	nsv1.on('connection', (socket) => registerSocketHandlers(socket))
-}
+const nsv1 = io.of(SOCKET_CHANNEL_NS)
+nsv1.use((socket, next) => next())
+nsv1.on('connection', (socket) => registerSocketHandlers(socket))
 
 function closeStreams() {
 	for (const sessionId of Object.keys(openedStreams)) {
@@ -2601,5 +3055,6 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 server.listen(PORT, HOST, () => {
-	console.log(`AdaOS backhand listening on https://${HOST}:${PORT}`)
+	const proto = USE_HTTP_SERVER ? 'http' : 'https'
+	console.log(`AdaOS backhand listening on ${proto}://${HOST}:${PORT}`)
 })

@@ -20,11 +20,13 @@ from adaos.services.node_config import load_config
 from .rules_loader import load_rules, watch_rules
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
+from adaos.services.subnet_alias import display_subnet_alias
 from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.skills.runtime_runner import execute_tool
+from adaos.sdk.io.context import io_meta
 
 
 class RouterService:
@@ -36,6 +38,7 @@ class RouterService:
         self._rules: list[dict[str, Any]] = []
         self._subscribed = False
         self._vlog = logging.getLogger("adaos.router.voice_chat")
+        self._tg_reply_via_root_http = str(os.getenv("HUB_TG_REPLY_VIA_ROOT_HTTP") or "").strip() == "1"
 
     def _pick_target_node(self, desired_io: str, this_node: str) -> str:
         node = this_node
@@ -63,11 +66,96 @@ class RouterService:
                 continue
         return False
 
-    def _on_event(self, ev: Event) -> None:
+    async def _on_event(self, ev: Event) -> None:
         payload = ev.payload or {}
         text = (payload or {}).get("text")
         if not isinstance(text, str) or not text:
             return
+        meta = payload.get("_meta") if isinstance(payload, dict) else None
+        meta = meta if isinstance(meta, dict) else {}
+        is_tg = str(meta.get("io_type") or "").lower() == "telegram"
+        chat_id = meta.get("chat_id") if is_tg else None
+        is_tg_chat = isinstance(chat_id, str) and bool(chat_id.strip())
+
+        # If this came from a chat platform (telegram), reply back into that chat via tg.output.*.
+        # This path does not depend on route rules and is meant to be "request/response" style.
+        try:
+            if is_tg and is_tg_chat and not self._tg_reply_via_root_http:
+                bot_id = meta.get("bot_id")
+                if not isinstance(bot_id, str) or not bot_id.strip():
+                    bot_id = "main-bot"
+                hub_id = meta.get("hub_id")
+                if not isinstance(hub_id, str) or not hub_id.strip():
+                    hub_id = get_ctx().config.subnet_id
+                out_payload = {
+                    "target": {"bot_id": bot_id, "hub_id": hub_id, "chat_id": chat_id.strip()},
+                    "messages": [{"type": "text", "text": text}],
+                    "options": {"reply_to": meta.get("reply_to")} if meta.get("reply_to") else None,
+                }
+                self.bus.publish(
+                    Event(
+                        type=f"tg.output.{bot_id}.chat.{chat_id.strip()}",
+                        source="router",
+                        ts=time.time(),
+                        payload=out_payload,
+                    )
+                )
+        except Exception:
+            pass
+
+        # If the notification has an explicit UI route, mirror it into that route.
+        # This keeps skills UI-agnostic: they can emit ui.notify and the router
+        # decides how to deliver the message to chat/TTS.
+        try:
+            route_id = meta.get("route_id") or meta.get("route")
+            if isinstance(route_id, str) and route_id.strip():
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": text,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+                self.bus.publish(
+                    Event(
+                        type="io.out.say",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "text": text,
+                            "ts": time.time(),
+                            "lang": str(meta.get("lang") or "ru-RU"),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+            elif is_tg and is_tg_chat and self._tg_reply_via_root_http:
+                # When using Root HTTP replies, ensure we still emit io.out.chat.append even if
+                # the skill didn't provide route_id/route.
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": text,
+                            "ts": time.time(),
+                            "_meta": dict(meta),
+                        },
+                    )
+                )
+        except Exception:
+            pass
 
         conf = get_ctx().config
         this_node = conf.node_id
@@ -80,7 +168,7 @@ class RouterService:
         did_any = False
 
         # Telegram route (if configured in rules)
-        if self._has_rule_for("telegram"):
+        if self._has_rule_for("telegram") and not is_tg_chat:
             target_node_tg = self._pick_target_node("telegram", this_node)
             try:
                 # Resolve hub_id for target node
@@ -105,14 +193,31 @@ class RouterService:
                 except Exception:
                     node_yaml = {}
                 try:
-                    alias = ((node_yaml.get("nats") or {}).get("alias")) or os.getenv("DEFAULT_HUB") or conf.subnet_id
+                    alias = display_subnet_alias(
+                        ((node_yaml.get("nats") or {}).get("alias")) or os.getenv("DEFAULT_HUB"),
+                        conf.subnet_id,
+                    )
                 except Exception:
                     alias = conf.subnet_id
                 prefixed_text = f"[{alias}]: {text}" if alias else text
                 body = {"hub_id": hub_id, "text": prefixed_text}
                 try:
-                    r = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=3.0)
-                    logging.getLogger("adaos.router").info("router: telegram sent", extra={"hub_id": hub_id, "status": r.status_code})
+                    r = await asyncio.to_thread(
+                        requests.post,
+                        url,
+                        json=body,
+                        headers={"Content-Type": "application/json"},
+                        timeout=3.0,
+                    )
+                    if not (200 <= int(r.status_code) < 300):
+                        logging.getLogger("adaos.router").warning(
+                            "router: telegram send failed",
+                            extra={"hub_id": hub_id, "status": r.status_code, "body": (r.text or "")[:300]},
+                        )
+                    else:
+                        logging.getLogger("adaos.router").info(
+                            "router: telegram sent", extra={"hub_id": hub_id, "status": r.status_code}
+                        )
                 except Exception as pe:
                     logging.getLogger("adaos.router").warning("router: telegram request failed", extra={"hub_id": hub_id, "error": str(pe)})
                     raise
@@ -132,7 +237,7 @@ class RouterService:
                 did_any = True
             else:
                 # Cross-node delivery: resolve base_url and POST
-                base_url = self._resolve_node_base_url(target_node_out, conf.role, conf.hub_url)
+                base_url = await asyncio.to_thread(self._resolve_node_base_url, target_node_out, conf.role, conf.hub_url)
                 if not base_url and conf.role == "hub":
                     try:
                         directory = get_directory()
@@ -160,7 +265,7 @@ class RouterService:
                     headers = {"X-AdaOS-Token": conf.token or "dev-local-token", "Content-Type": "application/json"}
                     body = {"text": text, "origin": {"source": ev.source, "from": this_node}}
                     try:
-                        requests.post(url, json=body, headers=headers, timeout=2.5)
+                        await asyncio.to_thread(requests.post, url, json=body, headers=headers, timeout=2.5)
                         did_any = True
                     except Exception:
                         pass
@@ -230,54 +335,62 @@ class RouterService:
                     return False
                 return False
 
-            def _on_say(ev: Event) -> None:
-                text = ""
-                try:
-                    payload = ev.payload or {}
-                    text = (payload or {}).get("text")
-                    if not isinstance(text, str) or not text:
-                        return
-                    voice = (payload or {}).get("voice")
-                    conf = load_config()
-                    this_node = conf.node_id
-                    target_node = self._pick_target_node("say", this_node)
-                    base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
-                    token = conf.token or "dev-local-token"
-                    if base_url and target_node != this_node:
-                        try:
-                            requests.post(
-                                f"{base_url.rstrip('/')}/api/say",
-                                json={"text": text, "voice": voice},
-                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                                timeout=3.0,
-                            )
-                            return
-                        except Exception:
-                            pass
-                    # local fallback via API if self base_url known, else direct adapter
-                    self_url = os.environ.get("ADAOS_SELF_BASE_URL")
-                    if self_url:
-                        try:
-                            requests.post(
-                                f"{self_url.rstrip('/')}/api/say",
-                                json={"text": text, "voice": voice},
-                                headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
-                                timeout=3.0,
-                            )
-                            return
-                        except Exception:
-                            pass
+            def _say_sync(ev: Event, text: str, voice: Any) -> None:
+                """
+                Execute TTS routing in a worker thread so it never blocks the event loop.
+                This is important because ui.say can be emitted early during boot and any
+                blocking work (subprocess/requests/TTS engines) can stall NATS WS handshakes.
+                """
+                conf = load_config()
+                this_node = conf.node_id
+                target_node = self._pick_target_node("say", this_node)
+                base_url = self._resolve_node_base_url(target_node, conf.role, conf.hub_url)
+                token = conf.token or "dev-local-token"
+                if base_url and target_node != this_node:
                     try:
-                        mode = get_tts_backend()
-                        adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
-                        adapter.say(text)
+                        requests.post(
+                            f"{base_url.rstrip('/')}/api/say",
+                            json={"text": text, "voice": voice},
+                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                            timeout=3.0,
+                        )
+                        return
                     except Exception:
-                        if not _say_via_system(text):
-                            print_text(text, node_id=this_node, origin={"source": ev.source})
+                        pass
+                # local fallback via API if self base_url known, else direct adapter
+                self_url = os.environ.get("ADAOS_SELF_BASE_URL")
+                if self_url:
+                    try:
+                        requests.post(
+                            f"{self_url.rstrip('/')}/api/say",
+                            json={"text": text, "voice": voice},
+                            headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                            timeout=3.0,
+                        )
+                        return
+                    except Exception:
+                        pass
+                try:
+                    mode = get_tts_backend()
+                    adapter = NativeTTS() if mode == "native" else RhasspyTTSAdapter()
+                    adapter.say(text)
+                    return
+                except Exception:
+                    if not _say_via_system(text):
+                        print_text(text, node_id=this_node, origin={"source": ev.source})
+
+            async def _on_say(ev: Event) -> None:
+                payload = ev.payload or {}
+                text = (payload or {}).get("text")
+                if not isinstance(text, str) or not text.strip():
+                    return
+                voice = (payload or {}).get("voice")
+                try:
+                    await asyncio.to_thread(_say_sync, ev, text.strip(), voice)
                 except Exception:
                     try:
                         conf = get_ctx().config
-                        print_text(text if isinstance(text, str) else "", node_id=conf.node_id, origin={"source": ev.source})
+                        print_text(text.strip(), node_id=conf.node_id, origin={"source": ev.source})
                     except Exception:
                         pass
 
@@ -448,9 +561,65 @@ class RouterService:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
                 return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            if isinstance(meta, dict) and meta.get("skip_voice_chat") is True:
+                return
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
+
+            # Optional request/response Telegram delivery via Root HTTP (/io/tg/send).
+            #
+            # Disabled by default because `tg.output.*` is already bridged to Root via NATS (see bootstrap),
+            # and enabling both produces duplicate Telegram messages.
+            try:
+                if self._tg_reply_via_root_http and str((meta or {}).get("io_type") or "").lower() == "telegram":
+                    chat_id = (meta or {}).get("chat_id")
+                    if isinstance(chat_id, str) and chat_id.strip():
+                        bot_id = (meta or {}).get("bot_id")
+                        if not isinstance(bot_id, str) or not bot_id.strip():
+                            bot_id = "main-bot"
+                        hub_id = (meta or {}).get("hub_id")
+                        if not isinstance(hub_id, str) or not hub_id.strip():
+                            hub_id = get_ctx().config.subnet_id
+                        ctx = get_ctx()
+                        api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
+                        url = f"{api_base.rstrip('/')}/io/tg/send"
+                        body = {"hub_id": hub_id, "bot_id": bot_id, "chat_id": chat_id.strip(), "text": text.strip()}
+                        if (meta or {}).get("reply_to"):
+                            body["reply_to"] = (meta or {}).get("reply_to")
+                        try:
+                            r = await asyncio.to_thread(
+                                requests.post,
+                                url,
+                                json=body,
+                                headers={"Content-Type": "application/json"},
+                                timeout=3.0,
+                            )
+                            if not (200 <= int(r.status_code) < 300):
+                                logging.getLogger("adaos.router").warning(
+                                    "router: telegram send failed (chat reply)",
+                                    extra={
+                                        "hub_id": hub_id,
+                                        "chat_id": chat_id.strip(),
+                                        "status": r.status_code,
+                                        "body": (r.text or "")[:300],
+                                    },
+                                )
+                            else:
+                                logging.getLogger("adaos.router").info(
+                                    "router: telegram sent (chat reply)",
+                                    extra={"hub_id": hub_id, "chat_id": chat_id.strip(), "status": r.status_code},
+                                )
+                        except Exception as pe:
+                            logging.getLogger("adaos.router").warning(
+                                "router: telegram request failed (chat reply)",
+                                extra={"hub_id": hub_id, "chat_id": chat_id.strip(), "error": str(pe)},
+                            )
+                        return
+            except Exception:
+                pass
+
             msg = {
                 "id": str(payload.get("id") or _make_id("m")),
                 "from": str(payload.get("from") or "hub"),
@@ -501,12 +670,14 @@ class RouterService:
             prev = ctx.skill_ctx.get()
             try:
                 ctx.skill_ctx.set("voice_chat_skill", skill_dir)
-                return execute_tool(
-                    skill_dir,
-                    module="handlers.main",
-                    attr="handle_text",
-                    payload={"text": text, "_meta": meta},
-                )
+                # Ensure SDK io.out helpers (chat_append/say) include routing meta.
+                with io_meta(meta):
+                    return execute_tool(
+                        skill_dir,
+                        module="handlers.main",
+                        attr="handle_text",
+                        payload={"text": text, "_meta": meta},
+                    )
             finally:
                 if prev is None:
                     try:
@@ -521,19 +692,49 @@ class RouterService:
 
         async def _on_voice_user(ev: Event) -> None:
             payload = ev.payload or {}
-            target_webspaces = await _resolve_webspace_ids(payload)
+            try:
+                target_webspaces = await _resolve_webspace_ids(payload)
+            except Exception:
+                target_webspaces = []
             ws = target_webspaces[0] if target_webspaces else "default"
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
             text = text.strip()
 
-            await _ensure_voice_chat_state(ws)
+            try:
+                self._vlog.debug("voice.chat.user received webspace=%s text=%r", ws, text)
+            except Exception:
+                pass
+            try:
+                logging.getLogger("adaos.router.voice_chat").debug("voice.chat.user -> append+nlp webspace=%s", ws)
+            except Exception:
+                pass
+
+            try:
+                await _ensure_voice_chat_state(ws)
+            except Exception:
+                try:
+                    logging.getLogger("adaos.router").warning("voice.chat.user: failed to ensure voice_chat state", exc_info=True)
+                except Exception:
+                    pass
+                return
 
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
             meta = {**meta, "webspace_id": ws}
             if len(target_webspaces) > 1:
                 meta["webspace_ids"] = list(target_webspaces)
+            # Ensure voice chat history is updated even if io.out.chat.append routing breaks.
+            msg = {
+                "id": _make_id("m"),
+                "from": "user",
+                "text": text,
+                "ts": time.time(),
+            }
+            try:
+                await _append_voice_chat_message(ws, msg)
+            except Exception:
+                pass
             try:
                 self.bus.publish(
                     Event(
@@ -541,25 +742,30 @@ class RouterService:
                         source="router",
                         ts=time.time(),
                         payload={
-                            "id": _make_id("m"),
-                            "from": "user",
-                            "text": text,
-                            "ts": time.time(),
-                            "_meta": meta,
+                            "id": msg["id"],
+                            "from": msg["from"],
+                            "text": msg["text"],
+                            "ts": msg["ts"],
+                            "_meta": {**meta, "route_id": "voice_chat", "skip_voice_chat": True},
                           },
                       )
                   )
             except Exception:
                 pass
             # Fire-and-forget NLU detection so that text commands can be
-            # mapped to scenario/skill actions via Rasa-based interpreter.
+            # mapped to scenario/skill actions via an external interpreter.
             try:
                 self.bus.publish(
                     Event(
-                        type="nlp.intent.detect",
+                        type="nlp.intent.detect.request",
                         source="router.voice",
                         ts=time.time(),
-                        payload={"text": text, "webspace_id": ws},
+                        payload={
+                            "text": text,
+                            "webspace_id": ws,
+                            "request_id": meta.get("message_id") or meta.get("id") or _make_id("nlu"),
+                            "_meta": {**meta, "route_id": "voice_chat"},
+                        },
                     )
                 )
             except Exception:
@@ -568,30 +774,104 @@ class RouterService:
                 await _ensure_tts_state(ws)
             except Exception:
                 pass
+            # NLU pipeline + dispatcher + skills are responsible for producing
+            # responses via io.out.chat.append / io.out.say.
+
+        async def _on_nlp_intent_not_obtained(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            route_id = meta.get("route_id") or meta.get("route")
+            if not isinstance(route_id, str) or not route_id.strip():
+                return
             try:
-                await asyncio.to_thread(_call_voice_chat_tool, text, meta)
-            except Exception as exc:
-                # Do not crash the router on skill/tool failures; surface the error in chat.
-                try:
-                    msg = {
-                        "id": _make_id("err"),
-                        "from": "hub",
-                        "text": f"Ошибка обработки: {exc}",
-                        "ts": time.time(),
-                    }
-                    msg["text"] = f"Ошибка обработки: {exc}"
-                    await _append_voice_chat_message(ws, msg)
-                except Exception:
-                    pass
-                try:
-                    logging.getLogger("adaos.router").warning("voice.chat.user failed", exc_info=True)
-                except Exception:
-                    pass
+                allow_teacher = bool(getattr(getattr(get_ctx().config, "root_settings", None), "llm", None).allow_nlu_teacher)  # type: ignore[attr-defined]
+            except Exception:
+                allow_teacher = True
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                text = ""
+            reason = payload.get("reason")
+            msg_text = "Я пока не понял запрос."
+            if isinstance(reason, str) and reason:
+                msg_text = f"{msg_text} ({reason})"
+            if text:
+                msg_text = f"{msg_text} Вы сказали: «{text}»."
+            if allow_teacher:
+                msg_text = f"{msg_text} Я записал запрос для обучения. Открой «NLU Teacher» в Apps, чтобы посмотреть детали."
+            try:
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router.nlu",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": msg_text,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
+        async def _on_nlp_teacher_candidate_proposed(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            route_id = meta.get("route_id") or meta.get("route")
+            if not isinstance(route_id, str) or not route_id.strip():
+                return
+
+            cand = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+            req_text = cand.get("text") if isinstance(cand.get("text"), str) else ""
+            kind = cand.get("kind") if isinstance(cand.get("kind"), str) else "skill"
+            cdef = cand.get("candidate") if isinstance(cand.get("candidate"), dict) else {}
+            name = cdef.get("name") if isinstance(cdef.get("name"), str) else ""
+            desc = cdef.get("description") if isinstance(cdef.get("description"), str) else ""
+
+            if kind == "regex_rule":
+                label_kind = "правило regex"
+            else:
+                label_kind = "навык" if kind == "skill" else "сценарий"
+            msg = "Я подготовил предложение для обучения NLU."
+            if req_text:
+                msg = f"Вы просили: «{req_text}».\n\nЯ подумал и добавил в план разработки кандидат: {label_kind}."
+            if name:
+                msg += f"\nНазвание: {name}"
+            if desc:
+                msg += f"\nОписание: {desc}"
+            msg += "\n\nОткрой «NLU Teacher» (Apps) — там лог запроса/ответа и список кандидатов."
+
+            try:
+                self.bus.publish(
+                    Event(
+                        type="io.out.chat.append",
+                        source="router.nlu",
+                        ts=time.time(),
+                        payload={
+                            "id": "",
+                            "from": "hub",
+                            "text": msg,
+                            "ts": time.time(),
+                            "_meta": {**meta, "route_id": route_id.strip()},
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
 
         self.bus.subscribe("voice.chat.open", _on_voice_open)
         self.bus.subscribe("voice.chat.user", _on_voice_user)
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
+        self.bus.subscribe("nlp.intent.not_obtained", _on_nlp_intent_not_obtained)
+        self.bus.subscribe("nlp.teacher.candidate.proposed", _on_nlp_teacher_candidate_proposed)
 
         # Watch rules file
         def _reload(rules: list[dict]):

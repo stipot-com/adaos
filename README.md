@@ -32,6 +32,40 @@ uv lock; uv sync
 
 ```
 
+## Add a member node (phase 1)
+
+1) On the hub node (role=hub), generate a short one-time code:
+
+```bash
+python -m adaos hub join-code create
+```
+
+2) On the member node, run bootstrap with that code (no tokens in CLI args). By default this joins via Root (`https://api.inimatic.com`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE>
+```
+
+3) Verify local readiness:
+
+```bash
+python -m adaos node status --control http://127.0.0.1:8777 --json
+```
+
+Offline/LAN-only: create a local code on the hub with `python -m adaos hub join-code create --local` and run bootstrap with `-RootUrl http://<HUB_HOST>:8777` (Hub join entrypoint).
+
+## В ситуации ModuleNotFoundError: No module named 'adaos'
+
+1) Остановить все запущенные adaos, чтобы не было WinError 32
+Get-Process adaos -ErrorAction SilentlyContinue | Stop-Process -Force
+
+2) Удалить мусор после неудачной установки (часто ~daos-*.dist-info)
+Remove-Item -Recurse -Force .\.venv\Lib\site-packages\~daos-*.dist-info -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\.venv\Lib\site-packages\adaos-*.dist-info -ErrorAction SilentlyContinue
+
+3) Переустановить (пересоздаст adaos.exe)
+.\.venv\Scripts\python.exe -m pip install -e .[dev]
+
 ## Обзор SDK
 
 - **Публичные точки входа.** Высокоуровневые фасады доступны через `adaos.sdk.manage` (инструменты управления), `adaos.sdk.data` (датаплейн утилиты) и функцию `adaos.sdk.validate_self` (валидация текущего навыка).
@@ -92,8 +126,8 @@ headers = {"X-AdaOS-Token": "dev-local-token"}
 # 1) проверить статус
 print(requests.get("http://127.0.0.1:8778/api/node/status", headers=headers).json())
 
-# 2) сменить роль на member или hub (и задать hub_url)
-payload = {"role": "member", "hub_url": "http://127.0.0.1:8777"}
+# 2) сменить роль на member или hub
+payload = {"role": "member"}  # hub_url is deprecated/ignored; join-code flow sets hub_url in node.yaml
 print(requests.post("http://127.0.0.1:8778/api/node/role", json=payload, headers=headers).json())
 
 # 3) снова статус — должен быть role=member, ready=true

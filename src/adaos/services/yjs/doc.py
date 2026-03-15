@@ -188,4 +188,24 @@ def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -
     return _run_on_room_thread(room, _apply)
 
 
-__all__ = ["get_ydoc", "async_get_ydoc", "mutate_live_room"]
+def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
+    """
+    Apply a raw Yjs update to the active in-process room (if any).
+    Returns False if the webspace is not currently hosted in-process.
+    """
+    if not update:
+        return False
+    room = _resolve_live_room(webspace_id)
+    if not room:
+        return False
+
+    def _apply() -> None:
+        try:
+            Y.apply_update(room.ydoc, update)
+        except Exception:
+            pass
+
+    return _run_on_room_thread(room, _apply)
+
+
+__all__ = ["get_ydoc", "async_get_ydoc", "mutate_live_room", "apply_update_to_live_room"]

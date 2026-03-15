@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
+import contextlib
+import contextvars
 from pathlib import Path
-from typing import AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Tuple
 
 import anyio
 import y_py as Y
@@ -15,6 +17,66 @@ from adaos.services.agent_context import get_ctx
 from adaos.sdk.core.decorators import subscribe
 
 _log = logging.getLogger("adaos.yjs.ystore")
+
+_SUPPRESS_NOTIFY: contextvars.ContextVar[bool] = contextvars.ContextVar("adaos_ystore_suppress_notify", default=False)
+_GLOBAL_WRITE_LISTENERS: list[Callable[[str, bytes], Any]] = []
+
+
+def add_ystore_write_listener(cb: Callable[[str, bytes], Any]) -> Callable[[], None]:
+    """
+    Register a global listener called on every YStore write:
+      cb(webspace_id: str, update: bytes) -> Any
+
+    Returns a function that removes the listener.
+    """
+    _GLOBAL_WRITE_LISTENERS.append(cb)
+
+    def _remove() -> None:
+        try:
+            _GLOBAL_WRITE_LISTENERS.remove(cb)
+        except ValueError:
+            return
+
+    return _remove
+
+
+@contextlib.asynccontextmanager
+async def suppress_ystore_write_notifications():
+    token = _SUPPRESS_NOTIFY.set(True)
+    try:
+        yield
+    finally:
+        try:
+            _SUPPRESS_NOTIFY.reset(token)
+        except Exception:
+            pass
+
+
+def _notify_write_listeners(webspace_id: str, update: bytes) -> None:
+    if _SUPPRESS_NOTIFY.get():
+        return
+    if not _GLOBAL_WRITE_LISTENERS:
+        return
+    # Best-effort, never block the writer.
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except Exception:
+        loop = None
+    for cb in list(_GLOBAL_WRITE_LISTENERS):
+        try:
+            res = cb(webspace_id, update)
+            if loop is not None:
+                try:
+                    import asyncio
+
+                    if asyncio.iscoroutine(res):
+                        loop.create_task(res)
+                except Exception:
+                    pass
+        except Exception:
+            continue
 
 
 def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> None:
@@ -126,6 +188,10 @@ class AdaosMemoryYStore(BaseYStore):
                     return
 
             self._updates.append((data, metadata, now))
+        try:
+            _notify_write_listeners(self.path, data)
+        except Exception:
+            pass
 
     async def _load_from_disk_if_needed(self) -> None:
         if self._loaded_from_disk:
@@ -225,4 +291,3 @@ async def _on_ystore_backup(payload: dict) -> None:
         await store.backup_to_disk()
     except Exception as exc:  # pragma: no cover - defensive logging
         _log.warning("YStore backup failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-

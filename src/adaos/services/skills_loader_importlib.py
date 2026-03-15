@@ -9,6 +9,7 @@ from typing import Any, Iterable, Optional, Tuple
 from adaos.ports.skills_loader import SkillsLoaderPort
 from adaos.services.agent_context import get_ctx
 from adaos.services.skill.manager import SkillManager
+import yaml
 
 _LOG = logging.getLogger("adaos.services.skills_loader")
 
@@ -65,7 +66,10 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
             src_root = slot_dir / "src"
             if not src_root.exists():
                 continue
-            print("discover_log")
+            # Skip service skills (they are started by ServiceSkillSupervisor).
+            manifest_path = slot_dir / "resolved.manifest.json"
+            if self._is_service_manifest(manifest_path):
+                continue
             for handler in src_root.rglob("handlers/main.py"):
                 handlers.append((handler, skill_name))
         return handlers
@@ -77,6 +81,9 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
                 continue
             if skill_dir.name.startswith((".", "_")):
                 continue
+            # Skip service skills (they are started by ServiceSkillSupervisor).
+            if self._is_service_manifest(skill_dir / "skill.yaml"):
+                continue
             # Skip runtime-bundled skills.
             if skill_dir.name in loaded:
                 continue
@@ -84,6 +91,19 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
             if handler.exists():
                 handlers.append((handler, skill_dir.name))
         return handlers
+
+    @staticmethod
+    def _is_service_manifest(path: Path) -> bool:
+        if not path.exists():
+            return False
+        try:
+            content = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return False
+        runtime = content.get("runtime") or {}
+        if isinstance(runtime, dict) and runtime.get("kind") == "service":
+            return True
+        return False
 
     @staticmethod
     def _resolve_slot(version_dir: Path) -> Optional[Path]:

@@ -97,4 +97,20 @@ def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any
     return data
 
 
-__all__ = ["scenario_root", "read_manifest", "read_content"]
+def invalidate_cache(*, scenario_id: str | None = None, space: str | None = None) -> None:
+    """
+    Invalidate in-memory scenario.json cache. This is required for workflows
+    like desktop.webspace.reload which expect updated UI/NLU definitions to be
+    picked up without restarting the hub process.
+    """
+    keys = list(_CONTENT_CACHE.keys())
+    for key in keys:
+        sid, sp = key
+        if scenario_id is not None and sid != str(scenario_id):
+            continue
+        if space is not None and sp != str(space):
+            continue
+        _CONTENT_CACHE.pop(key, None)
+
+
+__all__ = ["scenario_root", "read_manifest", "read_content", "invalidate_cache"]

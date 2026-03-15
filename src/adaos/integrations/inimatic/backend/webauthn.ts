@@ -101,7 +101,11 @@ export interface WebAuthnService {
 		session_jwt?: string
 		browser_key_id?: string
 		owner_id?: string
-		error?: 'session_not_found' | 'assertion_failed' | 'challenge_invalid'
+		error?:
+			| 'session_not_found'
+			| 'assertion_failed'
+			| 'challenge_invalid'
+			| 'no_credentials_registered'
 	}>
 }
 
@@ -563,7 +567,7 @@ export function createWebAuthnService(deps: WebAuthnDeps): WebAuthnService {
 						if (!recordRaw) {
 							return {
 								ok: false as const,
-								error: 'assertion_failed' as const,
+								error: 'no_credentials_registered' as const,
 							}
 						}
 						try {
@@ -634,6 +638,10 @@ export function createWebAuthnService(deps: WebAuthnDeps): WebAuthnService {
 					claims: {
 						sid,
 						owner_id,
+						// Include hub/subnet hints so the frontend can reliably route to `/hubs/<hub_id>`
+						// even when localStorage is empty or has been cleared.
+						hub_id: session?.hub_id,
+						subnet_id: session?.subnet_id,
 						browser_key_id: credId,
 						stage: 'AUTH',
 					},
@@ -870,7 +878,11 @@ export function installWebAuthnRoutes(
 				challenge
 			)
 			if (!result.ok) {
-				return respondError(req, res, 400, 'invalid_request')
+				console.warn('[webauthn] login.finish rejected', {
+					error: result.error,
+					sid: sid || null,
+				})
+				return respondError(req, res, 400, result.error || 'invalid_request')
 			}
 			res.json({
 				session_jwt: result.session_jwt,

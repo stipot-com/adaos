@@ -32,6 +32,10 @@ require_file /opt/inimatic/secrets /opt/inimatic/secrets "secrets folder missing
 require_file /opt/inimatic/runtime/ssh/forge_ssh_key "forge ssh key missing"
 require_file /opt/inimatic/runtime/ssh/known_hosts "known_hosts missing"
 
+# dev logs sink (used by logtap + /v1/dev/log_tail endpoints)
+mkdir -p /opt/inimatic/runtime/logs || true
+chmod +x /opt/inimatic/scripts/logtap.sh 2>/dev/null || true
+
 # optional Telegram bots: if defined, ensure files exist
 if [[ -n "${TG_BOTS:-}" ]]; then
   IFS=',' read -r -a __bots <<<"$TG_BOTS"
@@ -71,7 +75,7 @@ echo "[deploy] Active slot: $active  ->  Deploying slot: $new"
 bash /opt/inimatic/scripts/ghcr_login_via_app.sh
 
 # 0) ensure reverse-proxy & acme are up-to-date
-docker compose --env-file "$ENVF" -f "$BASE" up -d reverse-proxy acme  nats nats_init
+docker compose --env-file "$ENVF" -f "$BASE" up -d reverse-proxy acme redis postgres nats nats_init logtap
 wait_healthy reverse-proxy || { echo "[deploy] reverse-proxy not healthy"; exit 1; }
 
 # 1) pull new images first

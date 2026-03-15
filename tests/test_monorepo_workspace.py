@@ -62,6 +62,17 @@ def _init_monorepo(tmp_path: Path) -> Path:
         "id: greet_on_boot\nname: Greet on boot\nversion: '1.0.0'\n",
         encoding="utf-8",
     )
+    (remote / "registry.json").write_text(
+        (
+            "{\n"
+            '  "version": 1,\n'
+            '  "updated_at": "2026-03-06T00:00:00+00:00",\n'
+            '  "skills": [{"kind": "skill", "name": "weather_skill", "version": "1.0.0"}],\n'
+            '  "scenarios": [{"kind": "scenario", "name": "greet_on_boot", "version": "1.0.0"}]\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
 
     _run_git(["add", "-A"], cwd=remote)
     _run_git(["commit", "-m", "seed workspace"], cwd=remote)
@@ -115,6 +126,7 @@ def test_skill_reinstall_happy_path(monkeypatch, monorepo, paths):
     meta2 = repo.install("weather_skill")
     assert meta2.id.value == "weather_skill"
     assert (paths.skills_dir() / "weather_skill").exists()
+    assert (paths.workspace_dir() / "registry.json").exists()
     assert _git_status_clean(paths.workspace_dir())
 
 
@@ -130,6 +142,7 @@ def test_scenario_reinstall_happy_path(monkeypatch, monorepo, paths):
     meta2 = repo.install("greet_on_boot")
     assert meta2.id.value == "greet_on_boot"
     assert (paths.scenarios_dir() / "greet_on_boot").exists()
+    assert (paths.workspace_dir() / "registry.json").exists()
     assert _git_status_clean(paths.workspace_dir())
 
 
@@ -171,12 +184,14 @@ def test_sparse_checkout_scope(monkeypatch, monorepo, paths):
     }
     assert skills_present == {"weather_skill"}
     sparse_file = paths.workspace_dir() / ".git" / "info" / "sparse-checkout"
+    assert "registry.json" in sparse_file.read_text(encoding="utf-8")
     assert "skills/weather_skill" in sparse_file.read_text(encoding="utf-8")
     assert "skills/news_skill" not in sparse_file.read_text(encoding="utf-8")
 
     skill_repo.uninstall("weather_skill")
     assert not (paths.skills_dir() / "weather_skill").exists()
     assert "skills/weather_skill" not in sparse_file.read_text(encoding="utf-8")
+    assert "registry.json" in sparse_file.read_text(encoding="utf-8")
     # scenario entry should remain in sparse checkout
     assert "scenarios/greet_on_boot" in sparse_file.read_text(encoding="utf-8")
     assert _git_status_clean(paths.workspace_dir())

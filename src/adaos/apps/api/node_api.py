@@ -1,14 +1,13 @@
-# src/adaos/api/node_api.py
-# TODO Вместо захардкоженного "dev-local-token" можно дернуть требуемый токен из единого места (например, from adaos.seervice.node_config import load_config и взять load_config().token). Главное — чтобы токен, с которым member ходит на hub, совпадал с тем, который hub ожидает.
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, Field
 from typing import Optional
-import requests
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
-from adaos.services.bootstrap import is_ready, switch_role, load_config
+from adaos.services.bootstrap import is_ready, load_config, switch_role
+from adaos.services.subnet.link_client import get_member_link_client
 
 router = APIRouter()
 
@@ -17,13 +16,14 @@ class NodeStatus(BaseModel):
     node_id: str
     subnet_id: str
     role: str
-    hub_url: Optional[str] = None
     ready: bool
+    route_mode: Optional[str] = None
+    connected_to_hub: Optional[bool] = None
 
 
 class RoleChangeRequest(BaseModel):
     role: str = Field(..., pattern="^(hub|member)$")
-    hub_url: Optional[str] = None
+    hub_url: Optional[str] = None  # deprecated; ignored
     subnet_id: Optional[str] = None
 
 
@@ -33,52 +33,56 @@ class RoleChangeResponse(BaseModel):
     diagnostics: dict
 
 
+def _route_info(role: str) -> tuple[str | None, bool | None]:
+    route_mode = None
+    connected = None
+    try:
+        if role == "hub":
+            route_mode = "hub"
+        elif role == "member":
+            connected = bool(get_member_link_client().is_connected())
+            route_mode = "ws" if connected else "none"
+    except Exception:
+        route_mode = None
+        connected = None
+    return route_mode, connected
+
+
 @router.get("/status", response_model=NodeStatus, dependencies=[Depends(require_token)])
 async def node_status():
     conf = load_config()
+    route_mode, connected = _route_info(conf.role)
     return NodeStatus(
         node_id=conf.node_id,
         subnet_id=conf.subnet_id,
         role=conf.role,
-        hub_url=conf.hub_url,
         ready=is_ready(),
+        route_mode=route_mode,
+        connected_to_hub=connected,
     )
 
 
 @router.post("/role", response_model=RoleChangeResponse, dependencies=[Depends(require_token)])
 async def node_change_role(req: Request, payload: RoleChangeRequest):
     """
-    Переключение роли узла на лету.
-    Для role=member обязателен hub_url.
-    Можно (опционально) передать subnet_id для миграции в другую подсеть.
+    Switch local node role.
+
+    Backward-compatibility: `hub_url` is accepted but ignored (deprecated).
     """
-    new_role = payload.role.lower()
-    if new_role == "member" and not payload.hub_url:
-        raise HTTPException(status_code=400, detail="hub_url is required for role=member")
-
-    # если уходим в member и subnet_id не указан — попробуем подтянуть его у хаба
+    new_role = payload.role.lower().strip()
     sub_id = payload.subnet_id
-    if new_role == "member" and not sub_id:
-        try:
-            # используем токен из нашего конфига
-            token = load_config().token
-            r = requests.get(payload.hub_url.rstrip("/") + "/api/node/status", headers={"X-AdaOS-Token": token}, timeout=3)
-            if r.status_code == 200:
-                sub_id = (r.json() or {}).get("subnet_id")
-        except Exception:
-            pass
-        if not sub_id:
-            raise HTTPException(status_code=400, detail="subnet_id is required (could not fetch from hub)")
+    deprecated_fields: list[str] = ["hub_url"] if payload.hub_url else []
 
-    # достаём app из Request
-    app = req.app
+    conf = await switch_role(req.app, new_role, hub_url=None, subnet_id=sub_id)
+    route_mode, connected = _route_info(conf.role)
 
-    conf = await switch_role(app, new_role, hub_url=payload.hub_url, subnet_id=sub_id)
     diags = {
         "requested_role": new_role,
-        "hub_url": payload.hub_url,
         "subnet_id_used": sub_id,
         "now_ready": is_ready(),
+        "route_mode": route_mode,
+        "connected_to_hub": connected,
+        "deprecated_fields": deprecated_fields,
     }
     return RoleChangeResponse(
         ok=True,
@@ -86,8 +90,10 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
             node_id=conf.node_id,
             subnet_id=conf.subnet_id,
             role=conf.role,
-            hub_url=conf.hub_url,
             ready=is_ready(),
+            route_mode=route_mode,
+            connected_to_hub=connected,
         ),
         diagnostics=diags,
     )
+

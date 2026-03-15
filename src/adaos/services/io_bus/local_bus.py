@@ -20,7 +20,9 @@ class LocalIoBus:
         self._core.publish(Event(type=subject, payload=envelope, source="io.local", ts=0.0))
 
     async def subscribe_output(self, bot_id: str, handler: Callable[[str, bytes], Awaitable[None]]) -> Any:
-        prefix = f"tg.output.{bot_id}."
+        # Support wildcard subscription for hubs that can serve multiple bot ids.
+        # - bot_id="*" -> subscribes to all tg.output.* subjects
+        prefix = "tg.output." if bot_id in ("*", "", None) else f"tg.output.{bot_id}."
 
         def _wrap(ev: Event) -> None:
             try:

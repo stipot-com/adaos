@@ -1,6 +1,7 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { Injectable } from '@angular/core'
 import { map } from 'rxjs/operators'
+import { WebRtcTransportService } from './webrtc-transport.service'
 
 export type AdaosEvent = { type: string; [k: string]: any }
 export interface AdaosConfig {
@@ -36,6 +37,69 @@ const ROOT_BASE = (() => {
 		: 'http://127.0.0.1:3030'
 })()
 
+function isLoopbackHost(host: string): boolean {
+	const normalized = String(host || '').trim().toLowerCase()
+	return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
+function isLoopbackUrl(url: string): boolean {
+	try {
+		return isLoopbackHost(new URL(url).hostname)
+	} catch {
+		return false
+	}
+}
+
+function allowLoopbackHub(): boolean {
+	try {
+		const url = new URL(window.location.href)
+		const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+		if (q === '0' || q === 'false') return false
+		if (q === '1' || q === 'true') return true
+	} catch {}
+	try {
+		const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+		if (v === '0') return false
+		if (v === '1') return true
+	} catch {}
+	try {
+		return isLoopbackHost(String(window.location.hostname || ''))
+	} catch {
+		return false
+	}
+}
+
+function allowReservedLocalHub(): boolean {
+	try {
+		const url = new URL(window.location.href)
+		const q = (url.searchParams.get('try_local_hub') || '').trim().toLowerCase()
+		if (q === '0' || q === 'false') return false
+		if (q === '1' || q === 'true') return true
+	} catch {}
+	try {
+		const v = (localStorage.getItem('adaos_try_local_hub') || '').trim()
+		if (v === '0') return false
+		if (v === '1') return true
+	} catch {}
+	return true
+}
+
+function isReservedLocalHubUrl(url: string): boolean {
+	try {
+		const parsed = new URL(url)
+		return (
+			isLoopbackHost(parsed.hostname) &&
+			(parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === '8777'
+		)
+	} catch {
+		return false
+	}
+}
+
+function defaultHubBaseUrl(): string {
+	return allowReservedLocalHub() ? 'http://127.0.0.1:8777' : ROOT_BASE
+}
+
 function rootAbs(path: string) {
 	const rel = path.startsWith('/') ? path : `/${path}`
 	return `${ROOT_BASE}${rel}`
@@ -58,11 +122,29 @@ export class AdaosClient {
 			timeout: any
 		}
 	>()
+	private useWebRtc = false
+	private rtcStateSub: { unsubscribe(): void } | null = null
 
-	constructor(private http: HttpClient) {
+	constructor(
+		private http: HttpClient,
+		public readonly rtc: WebRtcTransportService
+	) {
 		const lsBase = (() => {
 			try {
-				return localStorage.getItem('adaos_hub_base')
+				const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
+				if (!persisted) return null
+				// Persisted local hub base is an explicit user/browser choice.
+				// Keep honoring it even on a public origin so non-default local
+				// ports such as 8778 survive reloads.
+				return persisted
+			} catch {
+				return null
+			}
+		})()
+		const lsToken = (() => {
+			try {
+				const v = (localStorage.getItem('adaos_hub_token') || '').trim()
+				return v ? v : null
 			} catch {
 				return null
 			}
@@ -71,10 +153,43 @@ export class AdaosClient {
 			baseUrl:
 				(window as any).__ADAOS_BASE__ ??
 				(lsBase && lsBase.trim() ? lsBase.trim() : null) ??
-				'http://127.0.0.1:8777',
-			token: (window as any).__ADAOS_TOKEN__ ?? null,
+				defaultHubBaseUrl(),
+			token: (window as any).__ADAOS_TOKEN__ ?? lsToken ?? null,
 			authKind: 'adaos-token',
 		}
+	}
+
+	/**
+	 * Attempt to upgrade the current WS connection to WebRTC DataChannels.
+	 * Returns `true` if WebRTC is active, `false` on failure (WS remains).
+	 */
+	async enableWebRtc(signalingWs: WebSocket): Promise<boolean> {
+		// Wire RTC events-channel messages into the same pending-cmd handler
+		this.rtc.onEventsMessage = (data: string) => {
+			this.onEventsMessage({ data } as MessageEvent)
+		}
+
+		const sendCmd = (kind: string, payload: Record<string, any>) =>
+			this.sendEventsCommand(kind, payload, 8000)
+
+		const ok = await this.rtc.negotiate(signalingWs, sendCmd)
+		this.useWebRtc = ok
+
+		// Clean up previous subscription to avoid memory leaks
+		this.rtcStateSub?.unsubscribe()
+
+		// Listen for WebRTC failure → automatic fallback to WS
+		this.rtcStateSub = this.rtc.state$.subscribe((st) => {
+			if (st === 'failed' && this.useWebRtc) {
+				this.useWebRtc = false
+			}
+		})
+
+		return ok
+	}
+
+	isWebRtcActive(): boolean {
+		return this.useWebRtc && this.rtc.isConnected()
 	}
 
 	getBaseUrl() {
@@ -218,10 +333,10 @@ export class AdaosClient {
 
 	subscribe(topics: string[]) {
 		if (!topics.length) return
+		const msg = JSON.stringify({ type: 'subscribe', topics })
+		if (this.useWebRtc && this.rtc.sendEvents(msg)) return
 		this.ensureEventsSocket()
-			.then((ws) => {
-				ws.send(JSON.stringify({ type: 'subscribe', topics }))
-			})
+			.then((ws) => ws.send(msg))
 			.catch(() => {})
 	}
 
@@ -252,7 +367,14 @@ export class AdaosClient {
 				timeout,
 			})
 		})
-		ws.send(JSON.stringify(envelope))
+		const json = JSON.stringify(envelope)
+		// Signaling commands (rtc.*) must always go through WS even when WebRTC is active.
+		const isSignaling = kind.startsWith('rtc.')
+		if (!isSignaling && this.useWebRtc && this.rtc.sendEvents(json)) {
+			// Sent via WebRTC DataChannel
+		} else {
+			ws.send(json)
+		}
 		return ack
 	}
 

@@ -16,6 +16,15 @@ import { tg_updates_total, enqueue_total, dlq_total } from '../telemetry.js'
 
 const log = pino({ name: 'tg-webhook' })
 
+function defaultBindingAlias(hubId: string, existingAliases: string[]): string {
+	const base = String(hubId || '').trim() || 'hub'
+	const names = new Set((existingAliases || []).map((alias) => String(alias || '').trim()).filter(Boolean))
+	if (!names.has(base)) return base
+	let i = 2
+	while (names.has(`${base}-${i}`)) i++
+	return `${base}-${i}`
+}
+
 export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus | null) {
 	// Internal file proxy: streams Telegram file by file_id (auth via X-AdaOS-Token)
 	app.get('/internal/tg/file', async (req, res) => {
@@ -71,9 +80,7 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 							// Ensure alias binding exists for this chat
 							try {
 								const existing = await listBindings(Number(chat_id))
-								let alias = 'hub'
-								const names = new Set((existing || []).map(b => String(b.alias)))
-								if (names.has(alias)) { let i = 2; while (names.has(`hub-${i}`)) i++; alias = `hub-${i}` }
+								const alias = defaultBindingAlias(hubId, (existing || []).map((b) => String(b.alias)))
 								const makeDefault = (existing || []).length === 0
 								await upsertBinding(Number(chat_id), hubId, alias, makeDefault)
 								try { await ensureHubToken(hubId) } catch { }
@@ -274,6 +281,23 @@ export function installTelegramWebhookRoutes(app: express.Express, bus: NatsBus 
 				if (sessionHub) hub = sessionHub
 			}
 			if (!hub) hub = defaultHub
+
+			// If resolved hub is missing or does not belong to this chat, try auto-selecting
+			// a bound hub for the chat (common case: user has bound a hub, but has no session/default yet).
+			try {
+				const bindings = await listBindings(Number(evt.chat_id))
+				if (bindings?.length) {
+					const allowed = (bindings || []).some(b => String(b.hub_id) === String(hub))
+					if (!hub || !allowed) {
+						if (bindings.length === 1 && bindings[0]?.hub_id) {
+							hub = String(bindings[0].hub_id)
+							try { await setSession(Number(evt.chat_id), hub, 'auto') } catch { }
+							log.info({ hub, chat_id: evt.chat_id }, 'tg webhook: auto-selected bound hub')
+						}
+					}
+				}
+			} catch { }
+
 			// Optional address override: leading @<hub_id|alias> text -> route to that hub and strip the address token
 			try {
 				if (evt.type === 'text') {

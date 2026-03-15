@@ -1,13 +1,15 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
-import { Component, Input, OnDestroy, OnInit } from '@angular/core'
+import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule, ModalController } from '@ionic/angular'
+import { addIcons } from 'ionicons'
 import { Observable } from 'rxjs'
 import { PageSchema, WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
 import { YDocService } from '../../y/ydoc.service'
 import { observeDeep } from '../../y/y-helpers'
+import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { MetricTileWidgetComponent } from '../widgets/metric-tile.widget.component'
 import { SelectorWidgetComponent } from '../widgets/selector.widget.component'
 import { TextInputWidgetComponent } from '../widgets/text-input.widget.component'
@@ -16,6 +18,8 @@ import { TextEditorWidgetComponent } from '../widgets/text-editor.widget.compone
 import { DetailsWidgetComponent } from '../widgets/details.widget.component'
 import { ChatWidgetComponent } from '../widgets/chat.widget.component'
 import { VoiceInputWidgetComponent } from '../widgets/voice-input.widget.component'
+import { PageStateService } from '../../runtime/page-state.service'
+import { contractOutline, expandOutline } from 'ionicons/icons'
 
 @Component({
   selector: 'ada-schema-collection-grid',
@@ -227,20 +231,16 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     CommonModule,
     IonicModule,
     SchemaCollectionGridComponent,
-    MetricTileWidgetComponent,
-    SelectorWidgetComponent,
-    TextInputWidgetComponent,
-    CommandBarWidgetComponent,
-    TextEditorWidgetComponent,
-    DetailsWidgetComponent,
-    ChatWidgetComponent,
-    VoiceInputWidgetComponent,
+    PageWidgetHostComponent,
   ],
   template: `
     <ion-header *ngIf="title">
       <ion-toolbar>
         <ion-title>{{ title }}</ion-title>
         <ion-buttons slot="end">
+          <ion-button *ngIf="showFullscreenButton" (click)="toggleFullscreen()" aria-label="Fullscreen">
+            <ion-icon [name]="isFullscreen ? 'contract-outline' : 'expand-outline'"></ion-icon>
+          </ion-button>
           <ion-button (click)="dismiss()">Close</ion-button>
         </ion-buttons>
       </ion-toolbar>
@@ -254,44 +254,11 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
               *ngIf="widget.type === 'collection.grid'"
               [widget]="widget"
             ></ada-schema-collection-grid>
-            <!-- simple metric-tile based modals (e.g. weather summary) -->
-            <ada-metric-tile-widget
-              *ngIf="widget.type === 'visual.metricTile'"
+            <!-- everything else: use the unified widget host -->
+            <ada-page-widget-host
+              *ngIf="widget.type !== 'collection.grid'"
               [widget]="widget"
-            ></ada-metric-tile-widget>
-            <!-- selector-based widgets, e.g. city picker -->
-            <ada-selector-widget
-              *ngIf="widget.type === 'input.selector'"
-              [widget]="widget"
-            ></ada-selector-widget>
-            <!-- text input widgets (e.g. project name) -->
-            <ada-text-input-widget
-              *ngIf="widget.type === 'input.text'"
-              [widget]="widget"
-            ></ada-text-input-widget>
-            <!-- command bar actions (e.g. Create button) -->
-            <ada-command-bar-widget
-              *ngIf="widget.type === 'input.commandBar'"
-              [widget]="widget"
-            ></ada-command-bar-widget>
-            <!-- text editor widgets (e.g. addendum body) -->
-            <ada-text-editor-widget
-              *ngIf="widget.type === 'item.textEditor'"
-              [widget]="widget"
-            ></ada-text-editor-widget>
-            <!-- simple JSON/details viewer widgets -->
-            <ada-details-widget
-              *ngIf="widget.type === 'item.details'"
-              [widget]="widget"
-            ></ada-details-widget>
-            <ada-chat-widget
-              *ngIf="widget.type === 'ui.chat'"
-              [widget]="widget"
-            ></ada-chat-widget>
-            <ada-voice-input-widget
-              *ngIf="widget.type === 'ui.voiceInput'"
-              [widget]="widget"
-            ></ada-voice-input-widget>
+            ></ada-page-widget-host>
           </ng-container>
         </ng-container>
       </div>
@@ -322,9 +289,64 @@ export class SchemaModalComponent {
   @Input() title?: string
   @Input() schema?: PageSchema
 
-  constructor(private modalCtrl: ModalController) {}
+  private appliedInitialState = false
+  showFullscreenButton = false
+  isFullscreen = false
+
+  constructor(
+    private modalCtrl: ModalController,
+    private pageState: PageStateService,
+  ) {
+    addIcons({
+      'contract-outline': contractOutline,
+      'expand-outline': expandOutline,
+    })
+  }
+
+  ngOnInit(): void {
+    this.showFullscreenButton = this.shouldShowFullscreenButton()
+    this.applyInitialStateIfNeeded()
+  }
+
+  ngOnChanges(_changes: SimpleChanges): void {
+    this.applyInitialStateIfNeeded()
+  }
 
   dismiss(): void {
     this.modalCtrl.dismiss()
+  }
+
+  async toggleFullscreen(): Promise<void> {
+    try {
+      const top: any = await this.modalCtrl.getTop()
+      if (!top) return
+      this.isFullscreen = top.classList.toggle('ada-schema-modal-fullscreen')
+    } catch {
+      // best-effort
+    }
+  }
+
+  private applyInitialStateIfNeeded(): void {
+    if (this.appliedInitialState) return
+    const init = this.schema?.initialState
+    if (!init || typeof init !== 'object') return
+    const snapshot = this.pageState.getSnapshot()
+    const patch: Record<string, any> = {}
+    for (const [k, v] of Object.entries(init)) {
+      if (snapshot[k] === undefined) patch[k] = v
+    }
+    if (Object.keys(patch).length) {
+      this.pageState.patch(patch)
+    }
+    this.appliedInitialState = true
+  }
+
+  private shouldShowFullscreenButton(): boolean {
+    try {
+      // On small screens Ionic modals are already fullscreen.
+      return window.matchMedia('(min-width: 768px)').matches
+    } catch {
+      return false
+    }
   }
 }

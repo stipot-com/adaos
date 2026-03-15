@@ -4,6 +4,7 @@ import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
 import type { AdaModalConfig } from './dsl-types'
+import type { PageSchema } from './page-schema.model'
 
 type ModalConfig = AdaModalConfig
 
@@ -49,6 +50,20 @@ export class PageModalService {
     await this.openSimpleModal(modalCfg)
   }
 
+  async openTransientSchemaModal(opts: { title?: string; schema: PageSchema }): Promise<void> {
+    const { SchemaModalComponent } = await import(
+      '../renderer/modals/schema-modal.component'
+    )
+    const modal = await this.modalCtrl.create({
+      component: SchemaModalComponent,
+      componentProps: {
+        title: opts.title,
+        schema: opts.schema,
+      },
+    })
+    await modal.present()
+  }
+
   private async openSimpleModal(modalCfg: ModalConfig): Promise<void> {
     const data = modalCfg.source ? this.loadSource(modalCfg.source) : undefined
     const modal = await this.modalCtrl.create({
@@ -81,16 +96,9 @@ export class PageModalService {
 
   private async openSchemaModal(modalCfg: ModalConfig): Promise<void> {
     if (!modalCfg.schema) return
-    const { SchemaModalComponent } = await import(
-      '../renderer/modals/schema-modal.component'
-    )
-    const modal = await this.modalCtrl.create({
-      component: SchemaModalComponent,
-      componentProps: {
-        title: modalCfg.title,
-        schema: modalCfg.schema,
-      },
+    await this.openTransientSchemaModal({
+      title: modalCfg.title,
+      schema: modalCfg.schema,
     })
-    await modal.present()
   }
 }

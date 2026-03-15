@@ -1,10 +1,54 @@
 # src/adaos/api/server.py
-from fastapi import FastAPI, Depends, HTTPException
+# NOTE: CLI (`adaos ...`) loads `.env`, but direct `uvicorn adaos.apps.api.server:app` does not.
+# Many subsystems (notably NATS-over-WS tuning) rely on env vars, so best-effort load `.env` here too.
+try:  # pragma: no cover
+    from dotenv import find_dotenv, load_dotenv  # type: ignore
+
+    load_dotenv(find_dotenv(), override=False)
+except Exception:
+    pass
+
+try:  # pragma: no cover
+    from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
+
+    apply_runtime_dotenv_overrides()
+except Exception:
+    pass
+
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from pydantic import BaseModel, Field
+import asyncio
+import json
+import logging
 import platform, time, os
+import signal
+import sys
+from typing import Any
+from urllib.parse import urlparse
+
+def _maybe_set_windows_selector_loop() -> None:
+    if os.name != "nt":
+        return
+    raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
+    enabled = False
+    if raw is not None:
+        val = str(raw).strip().lower()
+        enabled = val in ("1", "true", "on", "yes")
+    if not enabled:
+        return
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        if os.getenv("HUB_NATS_TRACE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
+            print("[AdaOS] Windows selector event loop policy enabled (api.server, ADAOS_WIN_SELECTOR_LOOP=1)", file=sys.stderr)
+    except Exception:
+        pass
+
+
+_maybe_set_windows_selector_loop()
 
 from adaos.apps.api.auth import require_token
 from adaos.build_info import BUILD_INFO
@@ -17,13 +61,108 @@ from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
+from adaos.services.realtime_sidecar import (
+    realtime_sidecar_enabled,
+    start_realtime_sidecar_subprocess,
+    stop_realtime_sidecar_subprocess,
+)
+from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.services.node_config import save_config
+from adaos.services.subnet_alias import display_subnet_alias
 from adaos.domain import Event as DomainEvent
 
 init_ctx()
+
+_DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
+_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
+
+
+async def _wait_bus_idle(timeout: float) -> bool:
+    try:
+        waiter = getattr(_get_ctx().bus, "wait_for_idle", None)
+        if callable(waiter):
+            return bool(await waiter(timeout=max(0.0, float(timeout))))
+    except Exception:
+        logging.getLogger("adaos.eventbus").debug("wait_for_idle failed", exc_info=True)
+    return True
+
+
+async def _emit_shutdown_event(event_type: str, payload: dict[str, Any], *, drain_timeout: float) -> bool:
+    try:
+        _get_ctx().bus.publish(
+            DomainEvent(
+                type=event_type,
+                payload=payload,
+                source="api",
+                ts=time.time(),
+            )
+        )
+    except Exception:
+        logging.getLogger("adaos.router").warning("failed to publish shutdown event %s", event_type, exc_info=True)
+        return False
+    return await _wait_bus_idle(drain_timeout)
+
+
+async def _request_process_shutdown(delay_sec: float = _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC) -> None:
+    await asyncio.sleep(max(0.0, float(delay_sec)))
+    signal.raise_signal(signal.SIGINT)
+
+
+def _api_state_dir() -> Path:
+    raw = get_ctx().paths.state_dir()
+    path = raw() if callable(raw) else raw
+    out = Path(path)
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _restart_marker_path_from_base(base_url: str | None) -> Path | None:
+    raw = str(base_url or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    host = str(parsed.hostname or "").strip()
+    port = int(parsed.port or 0)
+    if not host or port <= 0:
+        return None
+    safe_host = host.replace(":", "_").replace("/", "_").replace("\\", "_")
+    root = _api_state_dir() / "api"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"restart-{safe_host}-{port}.json"
+
+
+def _consume_restart_marker(base_url: str | None) -> dict[str, Any] | None:
+    path = _restart_marker_path_from_base(base_url)
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if not isinstance(data, dict):
+        return None
+    try:
+        expires_at = float(data.get("expires_at") or 0.0)
+    except Exception:
+        expires_at = 0.0
+    if expires_at and time.time() > expires_at:
+        return None
+    return data
 
 
 @asynccontextmanager
@@ -31,14 +170,18 @@ async def lifespan(app: FastAPI):
     # 1) инициализируем AgentContext (публикуется через set_ctx внутри bootstrap_app)
 
     # 2) только теперь импортируем то, что может косвенно дернуть контекст
-    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api
+    from adaos.apps.api import tool_bridge, subnet_api, observe_api, node_api, scenarios, root_endpoints, skills, stt_api, nlu_teacher_api, join_api
     from adaos.apps.api import io_webhooks
     from adaos.services.yjs.gateway import router as y_router, start_y_server, stop_y_server
+    from adaos.services.subnet.link_ws import router as subnet_link_router
+    from adaos.services.subnet.runtime import start_subnet_p2p, stop_subnet_p2p
 
     # 3) монтируем роутеры после bootstrap
     app.include_router(tool_bridge.router, prefix="/api")
     app.include_router(subnet_api.router, prefix="/api")
+    app.include_router(nlu_teacher_api.router, prefix="/api")
     app.include_router(node_api.router, prefix="/api/node")
+    app.include_router(join_api.router, prefix="/api")
     app.include_router(observe_api.router, prefix="/api/observe")
     app.include_router(scenarios.router, prefix="/api/scenarios")
     app.include_router(skills.router, prefix="/api/skills")
@@ -48,11 +191,19 @@ async def lifespan(app: FastAPI):
     app.include_router(io_webhooks.router)
     # Yjs / events gateways (Stage A1)
     app.include_router(y_router)
+    # Subnet P2P member link (member->hub)
+    app.include_router(subnet_link_router)
 
     # 3.5) сохранить ссылки на контекст/шину в state для внешних компонентов
     try:
         app.state.ctx = _get_ctx()
         app.state.bus = app.state.ctx.bus
+        app.state.shutdown_requested = False
+        app.state.shutdown_reason = "signal"
+        app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
+        app.state.shutdown_stopping_emitted = False
+        app.state.restart_marker = _consume_restart_marker(os.getenv("ADAOS_SELF_BASE_URL"))
+        app.state.realtime_sidecar_proc = None
     except Exception:
         pass
 
@@ -74,7 +225,27 @@ async def lifespan(app: FastAPI):
         await router_service.start()
     except Exception:
         pass
+    try:
+        conf = get_ctx().config
+        advertised_base = str(os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
+        if advertised_base and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
+                conf.hub_url = advertised_base
+                save_config(conf)
+    except Exception:
+        pass
+    try:
+        conf = get_ctx().config
+        role = str(getattr(conf, "role", "") or "").strip().lower()
+        if realtime_sidecar_enabled(role=role):
+            app.state.realtime_sidecar_proc = await start_realtime_sidecar_subprocess(role=role)
+    except Exception:
+        logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
     await run_boot_sequence(app)
+    try:
+        await start_subnet_p2p(app)
+    except Exception:
+        pass
     # hub: seed self node into directory (base_url + capacity)
     try:
         conf = get_ctx().config
@@ -104,8 +275,47 @@ async def lifespan(app: FastAPI):
             import requests as _requests
 
             link_url = f"{api_base.rstrip('/')}/io/tg/pair/link"
-            r = _requests.get(link_url, params={"hub_id": conf.subnet_id}, timeout=3.0)
-            if r.status_code == 200 and (r.json() or {}).get("ok"):
+            def _safe_get() -> tuple[int, dict[str, Any] | None, str]:
+                # requests is sync; never run it on the asyncio event loop thread.
+                # Also ignore environment proxy vars (HTTP_PROXY/HTTPS_PROXY), which can otherwise
+                # cause long stalls in urllib3 proxy tunneling on some Windows setups.
+                sess = _requests.Session()
+                try:
+                    try:
+                        sess.trust_env = False
+                    except Exception:
+                        pass
+                    resp = sess.get(link_url, params={"hub_id": conf.subnet_id}, timeout=(1.5, 1.5))
+                    try:
+                        js = resp.json() if resp.status_code == 200 else None
+                    except Exception:
+                        js = None
+                    try:
+                        txt = (resp.text or "")[:300]
+                    except Exception:
+                        txt = ""
+                    return int(resp.status_code or 0), js if isinstance(js, dict) else None, txt
+                finally:
+                    try:
+                        sess.close()
+                    except Exception:
+                        pass
+
+            status, js, body_txt = await asyncio.to_thread(_safe_get)
+            link_ok = False
+            try:
+                link_ok = status == 200 and (js or {}).get("ok")
+            except Exception:
+                link_ok = False
+            if not link_ok:
+                try:
+                    logging.getLogger("adaos.io.telegram").warning(
+                        "telegram binding not found or unreachable",
+                        extra={"hub_id": conf.subnet_id, "url": link_url, "status": status, "body": body_txt},
+                    )
+                except Exception:
+                    pass
+            if link_ok:
                 # install telegram IO into capacity and refresh directory snapshot for this node
                 install_io_in_capacity("telegram", ["text", "lang:ru", "lang:en"], priority=60)
                 try:
@@ -116,26 +326,55 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     pass
                 # Send greeting via Root
+                startup_notice_key = "subnet.restarted" if getattr(app.state, "restart_marker", None) else "subnet.started"
                 try:
                     from adaos.sdk.data.i18n import _ as _t
 
-                    text = _t("subnet.started")
+                    text = _t(startup_notice_key)
                 except Exception:
-                    text = "subnet.started"
+                    text = startup_notice_key
                 try:
                     node_yaml = _load_node()
                 except Exception:
                     node_yaml = {}
-                alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
+                alias = display_subnet_alias(
+                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    conf.subnet_id,
+                )
                 try:
                     prefixed_text = f"[{alias}]: {text}" if alias else text
-                    _requests.post(
-                        f"{api_base.rstrip('/')}/io/tg/send",
-                        json={"hub_id": conf.subnet_id, "text": prefixed_text},
-                        timeout=3.0,
-                    )
+                    send_url = f"{api_base.rstrip('/')}/io/tg/send"
+
+                    def _safe_post() -> tuple[int, str]:
+                        sess = _requests.Session()
+                        try:
+                            try:
+                                sess.trust_env = False
+                            except Exception:
+                                pass
+                            resp = sess.post(send_url, json={"hub_id": conf.subnet_id, "text": prefixed_text}, timeout=(1.5, 1.5))
+                            try:
+                                txt = (resp.text or "")[:300]
+                            except Exception:
+                                txt = ""
+                            return int(resp.status_code or 0), txt
+                        finally:
+                            try:
+                                sess.close()
+                            except Exception:
+                                pass
+
+                    st2, body2 = await asyncio.to_thread(_safe_post)
+                    if st2 not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (%s) failed",
+                            startup_notice_key,
+                            extra={"hub_id": conf.subnet_id, "status": st2, "body": body2},
+                        )
                 except Exception:
-                    pass
+                    logging.getLogger("adaos.router").warning(
+                        "telegram broadcast (%s) exception", startup_notice_key, exc_info=True
+                    )
                 tg_enabled = True
     except Exception:
         pass
@@ -148,6 +387,10 @@ async def lifespan(app: FastAPI):
             async def _staler():
                 directory = get_directory()
                 while True:
+                    try:
+                        directory.on_heartbeat(conf.node_id, get_local_capacity())
+                    except Exception:
+                        pass
                     directory.mark_stale_if_expired(45.0)
                     await _asyncio.sleep(5.0)
 
@@ -183,6 +426,20 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        try:
+            conf = get_ctx().config
+            if not getattr(app.state, "shutdown_stopping_emitted", False):
+                await _emit_shutdown_event(
+                    "subnet.stopping",
+                    {
+                        "subnet_id": conf.subnet_id,
+                        "reason": getattr(app.state, "shutdown_reason", "signal"),
+                    },
+                    drain_timeout=float(getattr(app.state, "shutdown_drain_timeout", _DEFAULT_SHUTDOWN_DRAIN_SEC)),
+                )
+                app.state.shutdown_stopping_emitted = True
+        except Exception:
+            pass
         await stop_observer()
         # Stop ypy-websocket background server so it does not keep the process alive.
         try:
@@ -191,7 +448,7 @@ async def lifespan(app: FastAPI):
             pass
         # On graceful shutdown, notify Telegram and UI if enabled
         try:
-            if tg_enabled:
+            if tg_enabled and str(getattr(app.state, "shutdown_reason", "signal") or "signal") != "cli.restart":
                 conf = get_ctx().config
                 ctx = _get_ctx()
                 api_base = getattr(ctx.settings, "api_base", "https://api.inimatic.com")
@@ -207,7 +464,10 @@ async def lifespan(app: FastAPI):
                     node_yaml = _load_node()
                 except Exception:
                     node_yaml = {}
-                alias = ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None) or conf.subnet_id
+                alias = display_subnet_alias(
+                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    conf.subnet_id,
+                )
                 prefixed_text = f"[{alias}]: {text}" if alias else text
                 # Try routed notify first if router is running.
                 routed = False
@@ -225,23 +485,28 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     routed = False
                 if not routed:
-                    _requests.post(
+                    r3 = _requests.post(
                         f"{api_base.rstrip('/')}/io/tg/send",
                         json={"hub_id": conf.subnet_id, "text": prefixed_text},
                         timeout=2.5,
                     )
-                # Also emit a subnet.stopped event on the local bus so that
-                # skills (e.g. greet_on_boot_skill) can update infra status.
-                try:
-                    ev = DomainEvent(
-                        type="subnet.stopped",
-                        payload={"subnet_id": conf.subnet_id},
-                        source="api",
-                        ts=time.time(),
-                    )
-                    ctx.bus.publish(ev)
-                except Exception:
-                    pass
+                    if r3.status_code not in (200, 201, 202):
+                        logging.getLogger("adaos.router").warning(
+                            "telegram broadcast (subnet.stopped) failed",
+                            extra={"hub_id": conf.subnet_id, "status": r3.status_code},
+                        )
+        except Exception:
+            pass
+        try:
+            conf = get_ctx().config
+            await _emit_shutdown_event(
+                "subnet.stopped",
+                {
+                    "subnet_id": conf.subnet_id,
+                    "reason": getattr(app.state, "shutdown_reason", "signal"),
+                },
+                drain_timeout=float(getattr(app.state, "shutdown_drain_timeout", _DEFAULT_SHUTDOWN_DRAIN_SEC)),
+            )
         except Exception:
             pass
         try:
@@ -253,6 +518,17 @@ async def lifespan(app: FastAPI):
                 staler_task.cancel()
         except Exception:
             pass
+        try:
+            await stop_subnet_p2p(app)
+        except asyncio.CancelledError:
+            # Expected during shutdown; don't fail lifespan teardown.
+            pass
+        except Exception:
+            pass
+        try:
+            await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
+        except Exception:
+            logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
         await shutdown()
 
 
@@ -295,6 +571,19 @@ class SetAliasRequest(BaseModel):
     hub_id: str | None = Field(default=None, description="Optional hub/subnet id; ignored on hub, for logging only.")
 
 
+class ShutdownRequest(BaseModel):
+    reason: str = Field(default="cli.stop", min_length=1, max_length=128)
+    drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
+    signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
+
+
+class ShutdownResponse(BaseModel):
+    ok: bool
+    accepted: bool
+    reason: str
+    drain_timeout_sec: float
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -318,6 +607,39 @@ async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/admin/shutdown", response_model=ShutdownResponse, dependencies=[Depends(require_token)])
+async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
+    conf = get_ctx().config
+    if getattr(app.state, "shutdown_requested", False):
+        return ShutdownResponse(
+            ok=True,
+            accepted=False,
+            reason=str(getattr(app.state, "shutdown_reason", body.reason)),
+            drain_timeout_sec=float(getattr(app.state, "shutdown_drain_timeout", body.drain_timeout_sec)),
+        )
+
+    app.state.shutdown_requested = True
+    app.state.shutdown_reason = body.reason
+    app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
+    stopping_payload = {
+        "subnet_id": conf.subnet_id,
+        "reason": body.reason,
+    }
+    await _emit_shutdown_event(
+        "subnet.stopping",
+        stopping_payload,
+        drain_timeout=body.drain_timeout_sec,
+    )
+    app.state.shutdown_stopping_emitted = True
+    background.add_task(_request_process_shutdown, body.signal_delay_sec)
+    return ShutdownResponse(
+        ok=True,
+        accepted=True,
+        reason=body.reason,
+        drain_timeout_sec=body.drain_timeout_sec,
+    )
+
+
 @app.get("/api/status", dependencies=[Depends(require_token)])
 async def status():
     return {
@@ -330,6 +652,149 @@ async def status():
             "build_date": BUILD_INFO.build_date,
         },
     }
+
+
+@app.get("/api/services", dependencies=[Depends(require_token)])
+async def list_services(check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    names = supervisor.list()
+    return {
+        "ok": True,
+        "services": [supervisor.status(name, check_health=check_health) for name in names],
+    }
+
+
+@app.get("/api/services/{name}", dependencies=[Depends(require_token)])
+async def get_service_status(name: str, check_health: bool = False) -> dict:
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name, check_health=check_health)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "service": status}
+
+
+@app.post("/api/services/{name}/start", dependencies=[Depends(require_token)])
+async def start_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.start(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/stop", dependencies=[Depends(require_token)])
+async def stop_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    # stop is idempotent; 404 only if not configured at all
+    if not supervisor.status(name):
+        raise HTTPException(status_code=404, detail="service not found")
+    await supervisor.stop(name)
+    return {"ok": True}
+
+
+@app.post("/api/services/{name}/restart", dependencies=[Depends(require_token)])
+async def restart_service(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.restart(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+class ServiceIssueRequest(BaseModel):
+    type: str
+    message: str
+    details: dict | None = None
+
+
+@app.get("/api/services/{name}/issues", dependencies=[Depends(require_token)])
+async def get_service_issues(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        issues = supervisor.issues(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "issues": issues}
+
+
+@app.post("/api/services/{name}/issue", dependencies=[Depends(require_token)])
+async def inject_service_issue(name: str, body: ServiceIssueRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        await supervisor.inject_issue(name, issue_type=body.type, message=body.message, details=body.details or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+class ServiceSelfHealRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/self-heal", dependencies=[Depends(require_token)])
+async def service_self_heal(name: str, body: ServiceSelfHealRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.self_heal(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "result": result}
+
+
+@app.get("/api/services/{name}/doctor/requests", dependencies=[Depends(require_token)])
+async def get_service_doctor_requests(name: str) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        items = supervisor.doctor_requests(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "requests": items}
+
+
+class ServiceDoctorRequest(BaseModel):
+    reason: str
+    issue: dict | None = None
+
+
+@app.post("/api/services/{name}/doctor/request", dependencies=[Depends(require_token)])
+async def request_service_doctor(name: str, body: ServiceDoctorRequest) -> dict:
+    supervisor = get_service_supervisor()
+    try:
+        result = await supervisor.request_doctor(name, reason=body.reason, issue=body.issue)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True, "request": result}
+
+
+@app.get("/api/services/{name}/doctor/reports", dependencies=[Depends(require_token)])
+async def get_service_doctor_reports(name: str) -> dict:
+    """
+    Return persisted doctor reports produced by the in-process doctor consumer.
+
+    Reports are stored at: state/services/<skill>/doctor_reports.json
+    """
+    supervisor = get_service_supervisor()
+    status = supervisor.status(name)
+    if not status:
+        raise HTTPException(status_code=404, detail="service not found")
+
+    # Reuse supervisor state dir logic indirectly via ctx paths.
+    ctx = get_ctx()
+    state_raw = ctx.paths.state_dir()
+    state_dir = Path(state_raw() if callable(state_raw) else state_raw)
+    path = state_dir / "services" / name / "doctor_reports.json"
+    if not path.exists():
+        return {"ok": True, "reports": []}
+    try:
+        reports = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(reports, list):
+            reports = []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read doctor reports: {exc}") from exc
+    return {"ok": True, "reports": reports}
 
 
 class YjsReloadRequest(BaseModel):

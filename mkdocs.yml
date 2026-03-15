@@ -138,6 +138,7 @@ nav:
       - "Этапы LLM DevOps": concepts/dev_stages.md
       - "Этапы LLM DevOps - подготовка": concepts/dev_stage_prepare.md
       - "Интерпретация намерений": concepts/nlu.md
+      - "NLU Teacher (LLM)": concepts/nlu-teacher-llm.md
       - "Инициализация устройства": concepts/init_device.md
       - "Управление событиями": concepts/event_mgmnt.md
       - "Управление данными": concepts/data_mgmnt.md

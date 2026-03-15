@@ -1481,6 +1481,12 @@ class SkillManager:
         slot: SkillSlotPaths,
         skill_dir: Path,
     ) -> list[str]:
+        runtime_cfg = manifest.get("runtime") or {}
+        if isinstance(runtime_cfg, Mapping) and runtime_cfg.get("kind") == "service":
+            # Service skills manage dependencies in their own environment
+            # (see ServiceSkillSupervisor). Never install them into the hub venv.
+            return []
+
         requirements_file = skill_dir / "requirements.in"
         dependencies = self._collect_dependencies(manifest)
         python_args: list[str] = []
