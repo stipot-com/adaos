@@ -139,7 +139,7 @@ def _realtime_nats_ping_interval_s() -> float | None:
     if raw is None:
         raw = os.getenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S")
     if raw is None:
-        return 15.0
+        return None
     try:
         value = float(str(raw).strip() or "0")
     except Exception:

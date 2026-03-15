@@ -290,11 +290,11 @@ async def test_realtime_sidecar_subprocess_forces_dedicated_direct_path(
     assert popen_env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] == "0"
 
 
-def test_realtime_sidecar_nats_keepalive_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_realtime_sidecar_nats_keepalive_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_NATS_PING_S", raising=False)
     monkeypatch.delenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S", raising=False)
 
-    assert realtime_sidecar_mod._realtime_nats_ping_interval_s() == 15.0
+    assert realtime_sidecar_mod._realtime_nats_ping_interval_s() is None
 
 
 def test_realtime_cli_applies_loop_policy_before_asyncio_run(monkeypatch: pytest.MonkeyPatch) -> None:
