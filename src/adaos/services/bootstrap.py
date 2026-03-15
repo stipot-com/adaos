@@ -39,6 +39,7 @@ from adaos.services.realtime_sidecar import (
     realtime_sidecar_enabled,
     realtime_sidecar_log_path,
     realtime_sidecar_local_url,
+    resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
 from adaos.services.scheduler import start_scheduler
@@ -895,7 +896,7 @@ class BootstrapService:
                                 pass
                             try:
                                 if realtime_enabled:
-                                    remote_candidates = list(candidates)
+                                    remote_candidates = resolve_realtime_remote_candidates()
                                     candidates = [realtime_sidecar_local_url()]
                                     _rl_log(
                                         "nats.sidecar_route",

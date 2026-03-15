@@ -45,9 +45,7 @@ export function installPairingApi(app: express.Express) {
 		const explicit = (process.env['NATS_WS_PUBLIC'] || '').trim()
 		if (explicit) return explicit
 
-		const rawPath = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
-		const wsPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
-		return wsPath === '/' ? base : `${base}${wsPath}`
+		return `${base}/nats`
 	}
 
 	app.post('/io/tg/pair/create', async (req, res) => {

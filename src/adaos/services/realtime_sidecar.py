@@ -218,7 +218,13 @@ def resolve_realtime_remote_candidates() -> list[str]:
     # If/when the dedicated host becomes auth-compatible for sidecar traffic, opt in explicitly with
     # `ADAOS_REALTIME_PREFER_DEDICATED=1`.
     prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
-    return order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
+    ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
+    dedicated = "wss://nats.inimatic.com/nats"
+    allow_dedicated_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_DEDICATED_FALLBACK", "0"), default=False)
+    explicit_dedicated = base == dedicated
+    if dedicated in ordered and prefer_dedicated != "1" and not explicit_dedicated and not allow_dedicated_fallback:
+        ordered = [item for item in ordered if item != dedicated]
+    return ordered
 
 
 async def _is_port_open(host: str, port: int) -> bool:

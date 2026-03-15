@@ -409,27 +409,13 @@ function buildNatsWsUrl(): string {
 	const base = baseUrl.toString().replace(/\/+$/, '')
 	const publicOverride = (process.env['NATS_WS_PUBLIC'] || '').trim()
 	if (publicOverride) return publicOverride
-	// Keep this in sync with the WS->NATS proxy mount (`WS_NATS_PATH`).
-	const wsPath = withLeadingSlash(process.env['WS_NATS_PATH'] || '/nats', '/nats')
-	return wsPath === '/' ? base : `${base}${wsPath}`
+	return `${base}/nats`
 }
 
-const SOCKET_PATH = withLeadingSlash(
-	process.env['SOCKET_PATH'] ?? '/socket.io',
-	'/socket.io'
-)
-if (SOCKET_PATH === '/') {
-	console.warn('[socket.io] SOCKET_PATH="/" would hijack all WS upgrades; forcing "/socket.io"')
-}
-const EFFECTIVE_SOCKET_PATH = SOCKET_PATH === '/' ? '/socket.io' : SOCKET_PATH
-const SOCKET_CHANNEL_NS = withLeadingSlash(
-	process.env['SOCKET_CHANNEL_NS'] ?? '/adaos',
-	'/adaos'
-)
-const SOCKET_CHANNEL_VERSION =
-	(process.env['SOCKET_CHANNEL_VERSION'] ?? 'v1').trim() || 'v1'
-const SOCKET_LEGACY_FALLBACK_ENABLED =
-	(process.env['SOCKET_LEGACY_FALLBACK'] ?? '1') !== '0'
+const EFFECTIVE_SOCKET_PATH = '/socket.io' as const
+const SOCKET_CHANNEL_NS = '/adaos' as const
+const SOCKET_CHANNEL_VERSION = 'v1' as const
+const SOCKET_LEGACY_FALLBACK_ENABLED = false
 
 const server = USE_HTTP_SERVER
 	? http.createServer(app)
@@ -3021,11 +3007,9 @@ const registerSocketHandlers = (socket: Socket) => {
 
 io.on('connection', registerSocketHandlers)
 
-if (SOCKET_CHANNEL_NS !== '/') {
-	const nsv1 = io.of(SOCKET_CHANNEL_NS)
-	nsv1.use((socket, next) => next())
-	nsv1.on('connection', (socket) => registerSocketHandlers(socket))
-}
+const nsv1 = io.of(SOCKET_CHANNEL_NS)
+nsv1.use((socket, next) => next())
+nsv1.on('connection', (socket) => registerSocketHandlers(socket))
 
 function closeStreams() {
 	for (const sessionId of Object.keys(openedStreams)) {

@@ -186,7 +186,7 @@ function extractRoutePubSubjects(head: string, prefix: string, maxSubjects = 8):
 }
 
 export function installWsNatsProxy(server: HttpServer) {
-	const path = (process.env['WS_NATS_PATH'] || '/nats').trim() || '/nats'
+	const path = '/nats'
 	const upstream = parseNatsUrl(process.env['NATS_URL'] || 'nats://nats:4222')
 	const verbose = (process.env['WS_NATS_PROXY_VERBOSE'] || '0') === '1'
 	const pingTrace = (process.env['WS_NATS_PROXY_PING_TRACE'] || '0') === '1'
