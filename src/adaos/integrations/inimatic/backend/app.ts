@@ -443,6 +443,14 @@ const server = USE_HTTP_SERVER
 			app
 		)
 
+// Keep upgraded WS tunnels out of generic HTTP timeout logic.
+// The `/nats`, `/hubs/*/ws`, and `/hubs/*/yws/*` paths can stay quiet for longer than the default
+// HTTP server thresholds even when the underlying websocket is still healthy.
+server.setTimeout(0)
+server.requestTimeout = 0
+server.headersTimeout = 0
+server.keepAliveTimeout = 75_000
+
 const io = new Server(server, {
 	cors: { origin: '*' },
 	pingTimeout: 10000,
