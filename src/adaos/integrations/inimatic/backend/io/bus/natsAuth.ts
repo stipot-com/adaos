@@ -109,8 +109,12 @@ function readCalloutRequest(
 	}
 }
 
+function resolveInternalNatsServer(): string {
+	return process.env['PRODUCTION'] ? 'nats://nats:4222' : 'nats://localhost:4222'
+}
+
 function natsAuthConfig() {
-	const servers = String(process.env['NATS_URL'] || 'nats://nats:4222').trim() || 'nats://nats:4222'
+	const servers = resolveInternalNatsServer()
 	const user = String(process.env['NATS_USER'] || '').trim()
 	const pass = String(process.env['NATS_PASS'] || '').trim()
 	const issuerSeed = String(process.env['NATS_ISSUER_SEED'] || '').trim()
