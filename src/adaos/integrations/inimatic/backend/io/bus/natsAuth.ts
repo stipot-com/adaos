@@ -8,6 +8,7 @@ const log = pino({ name: 'nats-authz' })
 
 const AUTH_CALLOUT_SUBJECT = '$SYS.REQ.USER.AUTH'
 const AUTH_CALLOUT_QUEUE = 'inimatic-auth-callout'
+const NON_OPERATOR_TARGET_ACCOUNT = '$G'
 const textDecoder = new TextDecoder()
 const textEncoder = new TextEncoder()
 
@@ -87,7 +88,10 @@ async function issueUserJwt(opts: { hubId: string, userNkey: string }): Promise<
 		fromPublic(opts.userNkey),
 		issuer,
 		getPerms(opts.hubId),
-		{ algorithm: Algorithms.v2 }
+		{
+			algorithm: Algorithms.v2,
+			aud: NON_OPERATOR_TARGET_ACCOUNT,
+		}
 	)
 }
 
