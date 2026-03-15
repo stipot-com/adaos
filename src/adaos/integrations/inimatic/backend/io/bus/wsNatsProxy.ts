@@ -709,7 +709,12 @@ export function installWsNatsProxy(server: HttpServer) {
 		} catch {}
 
 		function armWsPing() {
-			if (!wsPingEnabled) return
+			const effectiveWsPing = wsPingEnabled || isRealtimeSidecarConn
+			if (!effectiveWsPing) return
+			const pingMs = isRealtimeSidecarConn ? 20_000 : 25_000
+			if (isRealtimeSidecarConn && (pingTrace || verbose)) {
+				log().info({ conn: connId, tag: connTag, hub_id: hubIdForLog, pingMs }, 'ws ping enabled for realtime sidecar')
+			}
 			if (wsPingTimer) clearInterval(wsPingTimer)
 			wsPingTimer = setInterval(() => {
 				try {
@@ -718,7 +723,7 @@ export function installWsNatsProxy(server: HttpServer) {
 					wsPingsSent += 1
 					if (pingTrace) log().info({ conn: connId, hub_id: hubIdForLog }, 'ws ping (from proxy)')
 				} catch {}
-			}, 25_000)
+			}, pingMs)
 		}
 
 		function armNatsKeepalive() {

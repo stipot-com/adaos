@@ -166,8 +166,38 @@ async def test_realtime_sidecar_remote_connect_does_not_inherit_global_ws_heartb
     monkeypatch.setenv("ADAOS_REALTIME_LOG", str(tmp_path / "sidecar.log"))
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
     monkeypatch.setenv("ADAOS_REALTIME_REMOTE_WS_URL", "wss://example.invalid/nats")
-    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "20")
+    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "37")
     monkeypatch.delenv("ADAOS_REALTIME_WS_HEARTBEAT_S", raising=False)
+
+    server = RealtimeSidecarServer(host="127.0.0.1", port=0)
+    ws, _target = await server._connect_remote(session_id="rt-test")
+    try:
+        kwargs = dict(recorded["kwargs"])
+        assert kwargs["ping_interval"] == 20.0
+        assert kwargs["ping_timeout"] is None
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_realtime_sidecar_remote_connect_allows_disabling_sidecar_ws_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    recorded: dict[str, object] = {}
+    fake_ws = _FakeRemoteWS()
+
+    async def _fake_connect(*args, **kwargs):
+        recorded["kwargs"] = dict(kwargs)
+        return fake_ws
+
+    import websockets  # type: ignore
+
+    monkeypatch.setattr(websockets, "connect", _fake_connect)
+    monkeypatch.setenv("ADAOS_REALTIME_DIAG_FILE", str(tmp_path / "diag.jsonl"))
+    monkeypatch.setenv("ADAOS_REALTIME_LOG", str(tmp_path / "sidecar.log"))
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_REALTIME_REMOTE_WS_URL", "wss://example.invalid/nats")
+    monkeypatch.setenv("ADAOS_REALTIME_WS_HEARTBEAT_S", "0")
 
     server = RealtimeSidecarServer(host="127.0.0.1", port=0)
     ws, _target = await server._connect_remote(session_id="rt-test")
@@ -207,6 +237,13 @@ def test_realtime_sidecar_can_explicitly_prefer_dedicated(monkeypatch: pytest.Mo
     ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
 
     assert ordered[:2] == ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]
+
+
+def test_realtime_sidecar_nats_keepalive_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ADAOS_REALTIME_NATS_PING_S", raising=False)
+    monkeypatch.delenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S", raising=False)
+
+    assert realtime_sidecar_mod._realtime_nats_ping_interval_s() == 15.0
 
 
 def test_realtime_cli_applies_loop_policy_before_asyncio_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -277,7 +314,7 @@ async def test_realtime_sidecar_sends_own_nats_keepalive_and_swallows_pong(
 
 
 @pytest.mark.asyncio
-async def test_realtime_sidecar_forwards_pong_to_local_client_when_client_ping_outstanding(
+async def test_realtime_sidecar_matches_pongs_to_sidecar_and_client_pings_in_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     fake_ws = _FakeRemoteWS()
@@ -298,7 +335,9 @@ async def test_realtime_sidecar_forwards_pong_to_local_client_when_client_ping_o
     await server.start()
     try:
         reader, writer = await asyncio.open_connection(server.listen_host, server.listen_port)
+        await asyncio.sleep(0.05)
         server._stats.sidecar_nats_pings_outstanding = 1
+        server._pending_ping_sources.append("sidecar")
 
         writer.write(b"PING\r\n")
         await writer.drain()
@@ -307,12 +346,19 @@ async def test_realtime_sidecar_forwards_pong_to_local_client_when_client_ping_o
         assert fake_ws.sent == [b"PING\r\n"]
 
         await fake_ws.recv_queue.put(b"PONG\r\n")
+        await asyncio.sleep(0.05)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(reader.read(1), timeout=0.05)
+
+        assert server._stats.sidecar_nats_pings_outstanding == 0
+        assert server._stats.client_nats_pings_outstanding == 1
+
+        await fake_ws.recv_queue.put(b"PONG\r\n")
         data = await asyncio.wait_for(reader.readexactly(len(b"PONG\r\n")), timeout=1.0)
 
         assert data == b"PONG\r\n"
         assert server._stats.local_nats_pings_tx == 1
         assert server._stats.client_nats_pings_outstanding == 0
-        assert server._stats.sidecar_nats_pings_outstanding == 0
         writer.close()
         await writer.wait_closed()
     finally:

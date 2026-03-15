@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,18 +89,18 @@ def realtime_sidecar_diag_path() -> Path:
 
 
 def _realtime_ws_heartbeat_s() -> float | None:
-	raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
-	if raw is None:
-		return None
-	try:
-		value = float(str(raw).strip() or "0")
-	except Exception:
-		value = 0.0
-	if value <= 0.0:
-		return None
-	if value < 5.0:
-		value = 5.0
-	return value
+    raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
+    if raw is None:
+        return 20.0
+    try:
+        value = float(str(raw).strip() or "0")
+    except Exception:
+        value = 0.0
+    if value <= 0.0:
+        return None
+    if value < 5.0:
+        value = 5.0
+    return value
 
 
 def _realtime_ws_max_queue() -> int | None:
@@ -138,7 +139,7 @@ def _realtime_nats_ping_interval_s() -> float | None:
     if raw is None:
         raw = os.getenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S")
     if raw is None:
-        return None
+        return 15.0
     try:
         value = float(str(raw).strip() or "0")
     except Exception:
@@ -342,6 +343,7 @@ class RealtimeSidecarServer:
         self._diag_task: asyncio.Task[Any] | None = None
         self._stopped = asyncio.Event()
         self._stats = _RelayStats()
+        self._pending_ping_sources: deque[str] = deque()
 
     def _log(self, msg: str) -> None:
         try:
@@ -510,6 +512,7 @@ class RealtimeSidecarServer:
             if chunk == NATS_PING:
                 self._stats.local_nats_pings_tx += 1
                 self._stats.client_nats_pings_outstanding += 1
+                self._pending_ping_sources.append("client")
             elif chunk == NATS_PONG:
                 self._stats.local_nats_pongs_tx += 1
             await ws.send(chunk)
@@ -531,11 +534,17 @@ class RealtimeSidecarServer:
                 self._stats.remote_nats_pings_rx += 1
             elif payload == NATS_PONG:
                 self._stats.remote_nats_pongs_rx += 1
-                if self._stats.client_nats_pings_outstanding > 0:
-                    self._stats.client_nats_pings_outstanding -= 1
+                source = self._pending_ping_sources.popleft() if self._pending_ping_sources else None
+                if source == "sidecar":
                     if self._stats.sidecar_nats_pings_outstanding > 0:
                         self._stats.sidecar_nats_pings_outstanding -= 1
-                        self._stats.sidecar_nats_pongs_rx += 1
+                    self._stats.sidecar_nats_pongs_rx += 1
+                    continue
+                if source == "client":
+                    if self._stats.client_nats_pings_outstanding > 0:
+                        self._stats.client_nats_pings_outstanding -= 1
+                elif self._stats.client_nats_pings_outstanding > 0:
+                    self._stats.client_nats_pings_outstanding -= 1
                 elif self._stats.sidecar_nats_pings_outstanding > 0:
                     self._stats.sidecar_nats_pings_outstanding -= 1
                     self._stats.sidecar_nats_pongs_rx += 1
@@ -552,6 +561,7 @@ class RealtimeSidecarServer:
                 return
             if self._stats.sidecar_nats_pings_outstanding > 0:
                 continue
+            self._pending_ping_sources.append("sidecar")
             await ws.send(NATS_PING)
             self._stats.sidecar_nats_pings_tx += 1
             self._stats.sidecar_nats_pings_outstanding += 1
@@ -562,6 +572,7 @@ class RealtimeSidecarServer:
         ws = None
         session_id = f"rt-{uuid.uuid4().hex[:10]}"
         self._stats = _RelayStats(session_id=session_id, local_connected_at=time.monotonic())
+        self._pending_ping_sources = deque()
         try:
             ws, remote_url = await self._connect_remote(session_id=session_id)
             self._stats.remote_url = remote_url
