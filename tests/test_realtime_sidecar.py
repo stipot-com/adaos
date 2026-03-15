@@ -217,7 +217,7 @@ def test_realtime_sidecar_prefers_dedicated_by_default(monkeypatch: pytest.Monke
 
     ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
 
-    assert ordered[:2] == ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]
+    assert ordered == ["wss://nats.inimatic.com/nats"]
 
 
 def test_realtime_sidecar_does_not_inherit_hub_prefer_dedicated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,7 +228,7 @@ def test_realtime_sidecar_does_not_inherit_hub_prefer_dedicated(monkeypatch: pyt
 
     ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
 
-    assert ordered[:2] == ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]
+    assert ordered == ["wss://nats.inimatic.com/nats"]
 
 
 def test_realtime_sidecar_can_disable_api_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,7 +250,44 @@ def test_realtime_sidecar_can_explicitly_prefer_dedicated(monkeypatch: pytest.Mo
 
     ordered = realtime_sidecar_mod.resolve_realtime_remote_candidates()
 
-    assert ordered[:2] == ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]
+    assert ordered == ["wss://nats.inimatic.com/nats"]
+
+
+@pytest.mark.asyncio
+async def test_realtime_sidecar_subprocess_forces_dedicated_direct_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    popen_env: dict[str, str] = {}
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    async def _fake_is_port_open(_host: str, _port: int) -> bool:
+        return False
+
+    async def _fake_wait_ready(*, host: str, port: int, timeout_s: float = 10.0) -> bool:
+        return True
+
+    def _fake_popen(*args, **kwargs):
+        nonlocal popen_env
+        popen_env = dict(kwargs["env"])
+        return _FakeProc()
+
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_REALTIME_LOG", str(tmp_path / "sidecar.log"))
+    monkeypatch.setattr(realtime_sidecar_mod, "_is_port_open", _fake_is_port_open)
+    monkeypatch.setattr(realtime_sidecar_mod, "wait_realtime_sidecar_ready", _fake_wait_ready)
+    monkeypatch.setattr(realtime_sidecar_mod.subprocess, "Popen", _fake_popen)
+
+    proc = await realtime_sidecar_mod.start_realtime_sidecar_subprocess(role="hub")
+
+    assert proc is not None
+    assert popen_env["ADAOS_REALTIME_PREFER_DEDICATED"] == "1"
+    assert popen_env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] == "0"
 
 
 def test_realtime_sidecar_nats_keepalive_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:

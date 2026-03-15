@@ -45,6 +45,44 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function pickString(...values: unknown[]): string {
+	for (const value of values) {
+		const text = String(value ?? '').trim()
+		if (text) return text
+	}
+	return ''
+}
+
+function readCalloutRequest(
+	claims: ClaimsData<AuthorizationRequest>
+): {
+	userNkey: string
+	serverId: string
+	userRaw: string
+	passRaw: string
+} {
+	const req = (claims.nats || {}) as Record<string, any>
+	const connectOpts = (req['connect_opts'] || req['connectOpts'] || {}) as Record<string, any>
+	const clientInfo = (req['client_info'] || req['clientInfo'] || {}) as Record<string, any>
+	return {
+		userNkey: pickString(req['user_nkey'], claims.sub),
+		serverId: pickString(req['server_id']?.id, req['server']?.id, claims.iss),
+		userRaw: pickString(
+			connectOpts['user'],
+			connectOpts['username'],
+			clientInfo['user'],
+			req['user'],
+			req['username']
+		),
+		passRaw: pickString(
+			connectOpts['pass'],
+			connectOpts['password'],
+			req['pass'],
+			req['password']
+		),
+	}
+}
+
 function natsAuthConfig() {
 	const servers = String(process.env['NATS_URL'] || 'nats://nats:4222').trim() || 'nats://nats:4222'
 	const user = String(process.env['NATS_USER'] || '').trim()
@@ -135,15 +173,24 @@ async function handleCalloutMsg(msg: Msg): Promise<void> {
 
 		const token = textDecoder.decode(msg.data)
 		const claims = decode<AuthorizationRequest>(token) as ClaimsData<AuthorizationRequest>
-		const req = claims.nats || {}
-		userNkey = String(req.user_nkey || claims.sub || '').trim()
-		serverId = String(req.server_id?.id || claims.iss || '').trim()
-		const userRaw = String(req.connect_opts?.user || req.client_info?.user || '').trim()
-		const passRaw = String(req.connect_opts?.pass || '').trim()
+		const parsed = readCalloutRequest(claims)
+		userNkey = parsed.userNkey
+		serverId = parsed.serverId
+		const userRaw = parsed.userRaw
+		const passRaw = parsed.passRaw
 
 		if (!userNkey || !serverId) {
 			throw new Error('missing_callout_nkeys')
 		}
+
+		log.info(
+			{
+				user: userRaw || undefined,
+				has_user_nkey: !!userNkey,
+				has_server_id: !!serverId,
+			},
+			'authz: callout request'
+		)
 
 		const verified = await verifyHubCredentials(userRaw, passRaw)
 		if (!verified) {
@@ -182,6 +229,12 @@ async function runCalloutLoop(): Promise<void> {
 			},
 			'authz: callout disabled; incomplete config'
 		)
+		return
+	}
+	try {
+		issuerKeyPair()
+	} catch (error) {
+		log.error({ err: String(error) }, 'authz: invalid issuer config')
 		return
 	}
 

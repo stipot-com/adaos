@@ -209,12 +209,13 @@ def resolve_realtime_remote_candidates() -> list[str]:
             if isinstance(normalized, str) and normalized.startswith("ws") and normalized not in candidates:
                 candidates.append(normalized)
     # Sidecar traffic now uses direct NATS auth_callout, so the dedicated hostname is the preferred
-    # public route. Keep the root ingress as a compatibility fallback unless explicitly disabled.
+    # public route. Keep the root ingress out of the default data path; allow it only as an explicit
+    # compatibility fallback.
     prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
     ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
     api_ingress = "wss://api.inimatic.com/nats"
-    allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK", "1"), default=True)
-    if api_ingress in ordered and base != api_ingress and not allow_api_fallback:
+    allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=False)
+    if api_ingress in ordered and not allow_api_fallback:
         ordered = [item for item in ordered if item != api_ingress]
     return ordered
 
@@ -252,7 +253,8 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     env = merged_runtime_dotenv_env(os.environ.copy())
     env["ADAOS_REALTIME_ENABLE"] = "1"
     env["ADAOS_REALTIME_CHILD"] = "1"
-    env.setdefault("ADAOS_REALTIME_PREFER_DEDICATED", "0")
+    env["ADAOS_REALTIME_PREFER_DEDICATED"] = "1"
+    env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "0"
     log_path = realtime_sidecar_log_path()
     stdout_handle = log_path.open("ab")
     args = [
