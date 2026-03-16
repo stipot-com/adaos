@@ -62,15 +62,41 @@ function Get-PythonCandidates {
 Write-Host "Searching for installed Python..."
 $pyCands = Get-PythonCandidates
 if (-not $pyCands -or $pyCands.Count -eq 0) {
-    Write-Host "No Python found. Install Python 3.11 and re-run." -ForegroundColor Red
+    if (($env:ADAOS_BOOTSTRAP_MODE ?? "").ToLower() -ne "venv") {
+        Write-Warning "No system Python found. Falling back to uv-based bootstrap (no system Python required)."
+        & (Join-Path $PSScriptRoot "bootstrap_uv.ps1") `
+            -JoinCode $JoinCode `
+            -Role $Role `
+            -InstallService $InstallService `
+            -ServeHost $ServeHost `
+            -ServePort $ServePort `
+            -ControlPort $ControlPort `
+            -RootUrl $RootUrl `
+            -Rev $Rev
+        exit $LASTEXITCODE
+    }
+    Write-Host "No Python found. Install Python 3.11 and re-run (or run tools\\bootstrap_uv.ps1)." -ForegroundColor Red
     exit 1
 }
 
 $pyCands311 = @($pyCands | Where-Object { $_.Version -eq [version]"3.11" })
 if (-not $pyCands311 -or $pyCands311.Count -eq 0) {
     $found = ($pyCands | ForEach-Object { "$($_.Version) $($_.Arch)" } | Sort-Object -Unique) -join ", "
+    if (($env:ADAOS_BOOTSTRAP_MODE ?? "").ToLower() -ne "venv") {
+        Write-Warning "Python 3.11 is required. Found: $found. Falling back to uv-managed Python 3.11."
+        & (Join-Path $PSScriptRoot "bootstrap_uv.ps1") `
+            -JoinCode $JoinCode `
+            -Role $Role `
+            -InstallService $InstallService `
+            -ServeHost $ServeHost `
+            -ServePort $ServePort `
+            -ControlPort $ControlPort `
+            -RootUrl $RootUrl `
+            -Rev $Rev
+        exit $LASTEXITCODE
+    }
     Write-Host "Python 3.11 is required. Found: $found" -ForegroundColor Red
-    Write-Host "Tip (Windows): install Python 3.11 and use: py -3.11" -ForegroundColor Yellow
+    Write-Host "Tip (Windows): install Python 3.11 and use: py -3.11 (or run tools\\bootstrap_uv.ps1)" -ForegroundColor Yellow
     exit 1
 }
 
@@ -155,7 +181,11 @@ catch {
 
 # .env bootstrap
 if (!(Test-Path ".env")) {
-    if (Test-Path ".env.sample") {
+    if (Test-Path ".env.example") {
+        Copy-Item ".env.example" ".env"
+        Write-Host ".env created from .env.example"
+    }
+    elseif (Test-Path ".env.sample") {
         Copy-Item ".env.sample" ".env"
         Write-Host ".env created from .env.sample"
     }
@@ -168,12 +198,28 @@ if (!(Test-Path ".env")) {
 # Default webspace content (scenarios + skills)
 # Keep logic inside `adaos install` so presets stay consistent across platforms.
 $envType = $env:ENV_TYPE
-if ([string]::IsNullOrWhiteSpace($envType)) {
-    $env:ENV_TYPE = "dev"
+if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
+    try {
+        $m = Select-String -Path ".env" -Pattern "^\s*ENV_TYPE\s*=" -SimpleMatch:$false | Select-Object -First 1
+        if ($m -and $m.Line) {
+            $v = ($m.Line -split "=", 2)[1].Trim().Trim("'").Trim('"')
+            if (-not [string]::IsNullOrWhiteSpace($v)) { $envType = $v }
+        }
+    }
+    catch { }
 }
-$adaosBase = Join-Path $PWD ".adaos"
-New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
-$env:ADAOS_BASE_DIR = $adaosBase
+if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "dev" }
+$env:ENV_TYPE = $envType
+
+if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
+    if ($envType -eq "dev") {
+        $env:ADAOS_BASE_DIR = (Join-Path $PWD ".adaos")
+    }
+    else {
+        $env:ADAOS_BASE_DIR = (Join-Path $HOME ".adaos")
+    }
+}
+New-Item -ItemType Directory -Force -Path $env:ADAOS_BASE_DIR | Out-Null
 
 Write-Host "Installing default webspace content (adaos install)..."
 function Invoke-Adaos {
@@ -369,6 +415,16 @@ if (-not $serviceInstalled -or $InstallService -eq "never") {
 }
 
 $st = Wait-AdaosReady -TimeoutSec 120
+$deepLink = $null
+try {
+    Write-Host "Generating Telegram pairing link..."
+    $tg = Invoke-Adaos dev telegram 2>$null | Out-String
+    if (-not [string]::IsNullOrWhiteSpace($tg)) {
+        $deepLine = ($tg -split "`r?`n") | Where-Object { $_ -match "^\s*deep_link:\s*" } | Select-Object -First 1
+        if ($deepLine) { $deepLink = ($deepLine -replace "^\s*deep_link:\s*", "").Trim() }
+    }
+}
+catch { }
 if ($st) {
     Write-Host ("READY: node_id={0} subnet_id={1} role={2} route={3} connected={4}" -f $st.node_id, $st.subnet_id, $st.role, $st.route_mode, $st.connected_to_hub) -ForegroundColor Green
 }
@@ -377,26 +433,32 @@ else {
     Write-Host ("  .\\.venv\\Scripts\\python.exe -m adaos node status --control http://{0}:{1}" -f $ServeHost, $ControlPort)
 }
 
-$helpText = @'
-READY.
-
-Next steps (in separate terminals):
-  1) Activate venv:
-     .\.venv\Scripts\Activate.ps1
-  2) CLI:
-     .\.venv\Scripts\python.exe -m adaos --help
-  3) API:
-     .\.venv\Scripts\python.exe -m adaos api serve --host 127.0.0.1 --port 8777 --reload
-  4) Backend (Inimatic):
-     cd src\adaos\integrations\inimatic
-     npm i
-     npm run start:api-dev
-  5) Frontend (Inimatic):
-     cd src\adaos\integrations\inimatic
-     npm run start
-
-Tips:
- - List installed Python: py -0p
- - Switch venv version: delete .venv and re-run bootstrap
-'@
-Write-Host $helpText
+Write-Host ""
+Write-Host "Bootstrap completed."
+Write-Host ""
+Write-Host "Next steps:"
+if ($deepLink) {
+    Write-Host "  1) Telegram: open and confirm pairing:"
+    Write-Host ("     {0}" -f $deepLink)
+}
+else {
+    Write-Host "  1) Telegram pairing:"
+    Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev telegram"
+}
+Write-Host "  2) Owner browser:"
+Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev root login"
+Write-Host "     Then open https://app.inimatic.com/owner-auth and enter the code."
+Write-Host "  3) Start/stop/restart AdaOS API:"
+Write-Host ("     Start (foreground): .\\.venv\\Scripts\\python.exe -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
+Write-Host "     Stop:              .\\.venv\\Scripts\\python.exe -m adaos api stop"
+Write-Host "     Restart:           .\\.venv\\Scripts\\python.exe -m adaos api restart"
+Write-Host "  4) Web UI:"
+Write-Host "     Open https://app.inimatic.com/ and connect to your local node (ports 8777/8778)."
+if ($st -and $st.role -eq "member") {
+    Write-Host "  5) Member → hub connectivity:"
+    Write-Host ("     connected_to_hub={0}" -f $st.connected_to_hub)
+    Write-Host "     Details: .\\.venv\\Scripts\\python.exe -m adaos node status"
+}
+Write-Host ""
+Write-Host "Docs:"
+Write-Host "  https://stipot-com.github.io/adaos/"

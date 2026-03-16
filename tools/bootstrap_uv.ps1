@@ -57,7 +57,11 @@ if (Test-Path "uv.lock") {
 
 # 4) .env bootstrap
 if (-not (Test-Path ".env")) {
-  if (Test-Path ".env.sample") {
+  if (Test-Path ".env.example") {
+    Copy-Item ".env.example" ".env"
+    Write-Host ".env created from .env.example"
+  }
+  elseif (Test-Path ".env.sample") {
     Copy-Item ".env.sample" ".env"
     Write-Host ".env created from .env.sample"
   }
@@ -84,12 +88,26 @@ function Invoke-Adaos {
 
 # 6) Default webspace content (scenarios + skills) via built-in `adaos install`
 $envType = $env:ENV_TYPE
-if ([string]::IsNullOrWhiteSpace($envType)) {
-  $env:ENV_TYPE = "dev"
+if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
+  try {
+    $m = Select-String -Path ".env" -Pattern "^\s*ENV_TYPE\s*=" -SimpleMatch:$false | Select-Object -First 1
+    if ($m -and $m.Line) {
+      $v = ($m.Line -split "=", 2)[1].Trim().Trim("'").Trim('"')
+      if (-not [string]::IsNullOrWhiteSpace($v)) { $envType = $v }
+    }
+  } catch { }
 }
-$adaosBase = Join-Path $PWD ".adaos"
-New-Item -ItemType Directory -Force -Path $adaosBase | Out-Null
-$env:ADAOS_BASE_DIR = $adaosBase
+if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "dev" }
+$env:ENV_TYPE = $envType
+
+if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
+  if ($envType -eq "dev") {
+    $env:ADAOS_BASE_DIR = (Join-Path $PWD ".adaos")
+  } else {
+    $env:ADAOS_BASE_DIR = (Join-Path $HOME ".adaos")
+  }
+}
+New-Item -ItemType Directory -Force -Path $env:ADAOS_BASE_DIR | Out-Null
 Write-Host "Installing default webspace content (adaos install)..."
 Invoke-Adaos install
 if ($LASTEXITCODE -ne 0) {
@@ -256,6 +274,16 @@ if (-not $serviceInstalled -or $InstallService -eq "never") {
 }
 
 $st = Wait-AdaosReady -TimeoutSec 120
+$deepLink = $null
+try {
+  Write-Host "Generating Telegram pairing link..."
+  $tg = Invoke-Adaos dev telegram 2>$null | Out-String
+  if (-not [string]::IsNullOrWhiteSpace($tg)) {
+    $deepLine = ($tg -split "`r?`n") | Where-Object { $_ -match "^\s*deep_link:\s*" } | Select-Object -First 1
+    if ($deepLine) { $deepLink = ($deepLine -replace "^\s*deep_link:\s*", "").Trim() }
+  }
+} catch { }
+
 if ($st) {
   Write-Host ("READY: node_id={0} subnet_id={1} role={2} route={3} connected={4}" -f $st.node_id, $st.subnet_id, $st.role, $st.route_mode, $st.connected_to_hub) -ForegroundColor Green
 } else {
@@ -265,15 +293,29 @@ if ($st) {
 
 Write-Host ""
 Write-Host "Bootstrap completed."
-Write-Host "Quick checks:"
-Write-Host "  uv --version"
-Write-Host "  uv run python -V"
-Write-Host "  .\\.venv\\Scripts\\python.exe -m adaos --help"
 Write-Host ""
-Write-Host "Activate virtual environment"
-Write-Host " ./.venv/Scripts/Activate.ps1"
+Write-Host "Next steps:"
+if ($deepLink) {
+  Write-Host "  1) Telegram: open and confirm pairing:"
+  Write-Host ("     {0}" -f $deepLink)
+} else {
+  Write-Host "  1) Telegram pairing:"
+  Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev telegram"
+}
+Write-Host "  2) Owner browser:"
+Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev root login"
+Write-Host "     Then open https://app.inimatic.com/owner-auth and enter the code."
+Write-Host "  3) Start/stop/restart AdaOS API:"
+Write-Host ("     Start (foreground): .\\.venv\\Scripts\\python.exe -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
+Write-Host "     Stop:              .\\.venv\\Scripts\\python.exe -m adaos api stop"
+Write-Host "     Restart:           .\\.venv\\Scripts\\python.exe -m adaos api restart"
+Write-Host "  4) Web UI:"
+Write-Host "     Open https://app.inimatic.com/ and connect to your local node (ports 8777/8778)."
+if ($st -and $st.role -eq "member") {
+  Write-Host "  5) Member → hub connectivity:"
+  Write-Host ("     connected_to_hub={0}" -f $st.connected_to_hub)
+  Write-Host "     Details: .\\.venv\\Scripts\\python.exe -m adaos node status"
+}
 Write-Host ""
-Write-Host "Re-install base scenarios/skills (idempotent):"
-Write-Host "  .\\.venv\\Scripts\\python.exe -m adaos install"
-Write-Host "To run the API:"
-Write-Host "  .\\.venv\\Scripts\\python.exe -m adaos api serve"
+Write-Host "Docs:"
+Write-Host "  https://stipot-com.github.io/adaos/"

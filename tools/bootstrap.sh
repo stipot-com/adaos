@@ -20,6 +20,103 @@ fail() { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+ORIG_ARGS=("$@")
+
+http_get() {
+  local url="$1"
+  local header="${2:-}"
+  if have curl; then
+    if [[ -n "$header" ]]; then
+      curl -fsS -H "$header" "$url"
+    else
+      curl -fsS "$url"
+    fi
+    return $?
+  fi
+  if have wget; then
+    if [[ -n "$header" ]]; then
+      wget -qO- --header="$header" "$url"
+    else
+      wget -qO- "$url"
+    fi
+    return $?
+  fi
+  return 1
+}
+
+read_env_type_from_file() {
+  local path="$1"
+  [[ -f "$path" ]] || return 0
+  sed -n 's/^[[:space:]]*ENV_TYPE[[:space:]]*=[[:space:]]*//p' "$path" \
+    | head -n 1 \
+    | tr -d '\r' \
+    | tr -d '"' \
+    | tr -d "'" \
+    | xargs \
+    || true
+}
+
+resolve_adaos_base_dir() {
+  if [[ -n "${ADAOS_BASE_DIR:-}" ]]; then
+    printf '%s' "${ADAOS_BASE_DIR}"
+    return 0
+  fi
+  local env_type="${ENV_TYPE:-}"
+  if [[ -z "${env_type:-}" ]]; then
+    env_type="$(read_env_type_from_file ".env" || true)"
+  fi
+  env_type="${env_type:-dev}"
+  if [[ "$env_type" == "dev" ]]; then
+    printf '%s' "$PWD/.adaos"
+    return 0
+  fi
+  printf '%s' "$HOME/.adaos"
+}
+
+fallback_to_uv() {
+  local reason="$1"
+  warn "$reason"
+  warn "Falling back to uv-based bootstrap (no root, no system Python required)..."
+  exec "./tools/bootstrap_uv.sh" "${ORIG_ARGS[@]}"
+}
+
+print_next_steps() {
+  local serve_host="$1"
+  local serve_port="$2"
+  local role="$3"
+  local deep_link="$4"
+  local connected_to_hub="$5"
+
+  echo
+  ok "Bootstrap completed."
+  echo
+  echo "Next steps:"
+  if [[ -n "${deep_link:-}" ]]; then
+    echo "  1) Telegram: open and confirm pairing:"
+    echo "     ${deep_link}"
+  else
+    echo "  1) Telegram pairing:"
+    echo "     python -m adaos dev telegram"
+  fi
+  echo "  2) Owner browser:"
+  echo "     python -m adaos dev root login"
+  echo "     Then open https://app.inimatic.com/owner-auth and enter the code."
+  echo "  3) Start/stop/restart AdaOS API:"
+  echo "     Start (foreground): python -m adaos api serve --host ${serve_host} --port ${serve_port}"
+  echo "     Stop:              python -m adaos api stop"
+  echo "     Restart:           python -m adaos api restart"
+  echo "  4) Web UI:"
+  echo "     Open https://app.inimatic.com/ and connect to your local node (ports 8777/8778)."
+  if [[ "${role:-}" == "member" ]]; then
+    echo "  5) Member → hub connectivity:"
+    echo "     connected_to_hub=${connected_to_hub:-unknown}"
+    echo "     Details: python -m adaos node status"
+  fi
+  echo
+  echo "Docs:"
+  echo "  https://stipot-com.github.io/adaos/"
+}
+
 py_is_311() {
   local bin="$1"
   "$bin" -c 'import sys; raise SystemExit(0 if (sys.version_info[0], sys.version_info[1]) == (3, 11) else 1)' \
@@ -45,7 +142,7 @@ choose_python_311() {
     fi
   done
 
-  fail "Python 3.11 not found. Install Python 3.11 and re-run (or set ADAOS_PYTHON)."
+  return 1
 }
 
 smart_npm_install() {
@@ -141,7 +238,9 @@ if [[ -z "${ROLE:-}" ]]; then
 fi
 
 log "Choosing Python 3.11..."
-choose_python_311
+if ! choose_python_311; then
+  fallback_to_uv "Python 3.11 not found (or not on PATH)."
+fi
 
 log "Creating venv (.venv)..."
 if [[ -d .venv ]]; then
@@ -151,7 +250,16 @@ if [[ -d .venv ]]; then
     rm -rf .venv
   fi
 fi
-[[ -d .venv ]] || "$PY_BIN" -m venv .venv
+if [[ ! -d .venv ]]; then
+  set +e
+  venv_out="$("$PY_BIN" -m venv .venv 2>&1)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    printf '%s\n' "$venv_out" >&2
+    fallback_to_uv "venv creation failed."
+  fi
+fi
 
 log "Installing Python deps (editable)..."
 . .venv/bin/activate
@@ -160,20 +268,26 @@ python -m pip install -e .[dev] || fail "pip install -e .[dev] failed"
 
 log "Bootstrapping .env..."
 if [[ ! -f .env ]]; then
-  if [[ -f .env.sample ]]; then
+  if [[ -f .env.example ]]; then
+    cp .env.example .env
+    ok ".env created from .env.example"
+  elif [[ -f .env.sample ]]; then
     cp .env.sample .env
     ok ".env created from .env.sample"
   elif [[ -f .env.prod.sample ]]; then
     cp .env.prod.sample .env
     ok ".env created from .env.prod.sample"
   else
-    warn "No .env found and no .env.sample/.env.prod.sample present"
+    warn "No .env found and no .env.example/.env.sample/.env.prod.sample present"
   fi
 fi
 
+if [[ -z "${ENV_TYPE:-}" ]]; then
+  ENV_TYPE="$(read_env_type_from_file ".env" || true)"
+fi
 export ENV_TYPE="${ENV_TYPE:-dev}"
 
-ADAOS_BASE_DIR="$(pwd)/.adaos"
+ADAOS_BASE_DIR="$(resolve_adaos_base_dir)"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
 
@@ -226,16 +340,31 @@ fi
 log "Waiting for ready=true ..."
 deadline=$(( $(date +%s) + 120 ))
 ready_json=""
+connected_to_hub=""
 while [[ $(date +%s) -lt $deadline ]]; do
-  if ready_json="$(curl -fsS -H "X-AdaOS-Token: ${token}" "${control_base}/api/node/status" 2>/dev/null)"; then
+  if ready_json="$(http_get "${control_base}/api/node/status" "X-AdaOS-Token: ${token}" 2>/dev/null)"; then
     if python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); exp=sys.argv[1]; ok=bool(d.get("ready")); nid=str(d.get("node_id") or ""); raise SystemExit(0 if (ok and (not exp or nid==exp)) else 1)' "$expected_node_id" <<<"$ready_json" >/dev/null 2>&1; then
       ok "READY: ${ready_json}"
+      connected_to_hub="$(python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("connected_to_hub"); print("" if v is None else str(bool(v)).lower())' <<<"$ready_json" 2>/dev/null || true)"
       break
     fi
   fi
   sleep 2
 done
 
-ok "Bootstrap completed."
+deep_link=""
+log "Generating Telegram pairing link..."
+set +e
+tg_out="$(python -m adaos dev telegram 2>&1)"
+tg_rc=$?
+set -e
+if [[ $tg_rc -eq 0 ]]; then
+  deep_link="$(printf '%s\n' "$tg_out" | sed -n 's/^[[:space:]]*deep_link:[[:space:]]*//p' | head -n 1 | tr -d '\r' || true)"
+fi
+if [[ -z "${deep_link:-}" ]]; then
+  warn "Telegram pairing link not generated automatically. Run: python -m adaos dev telegram"
+fi
+
+print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub"
 printf "\nTo activate venv:\n  source .venv/bin/activate\n\n"
 open_subshell_help
