@@ -2,6 +2,7 @@
 param(
   [string]$JoinCode = "",
   [string]$Role = "",
+  [switch]$NoVoice,
   [ValidateSet("auto", "always", "never")]
   [string]$InstallService = "auto",
   [string]$ServeHost = "127.0.0.1",
@@ -86,6 +87,25 @@ function Invoke-Adaos {
   & .\.venv\Scripts\python.exe -m adaos @Args
 }
 
+function Install-VoiceDeps {
+  if ($NoVoice) { return }
+  Write-Host "Installing voice deps (Rasa)..."
+  try {
+    & .\.venv\Scripts\python.exe -c "import rasa; print(getattr(rasa,'__version__',''))" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "Rasa already installed."
+      return
+    }
+  } catch { }
+  try {
+    & .\.venv\Scripts\python.exe -m pip install "rasa==3.6.20"
+    if ($LASTEXITCODE -ne 0) { throw "pip install rasa failed" }
+    Write-Host "Rasa installed."
+  } catch {
+    Write-Warning "Rasa install failed. Continue without voice NLU (use -NoVoice to skip)."
+  }
+}
+
 # 6) Default webspace content (scenarios + skills) via built-in `adaos install`
 $envType = $env:ENV_TYPE
 if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
@@ -113,6 +133,8 @@ Invoke-Adaos install
 if ($LASTEXITCODE -ne 0) {
   Write-Warning "adaos install failed (check output above)."
 }
+
+Install-VoiceDeps
 
 try {
   .\.venv\Scripts\python.exe -c "import adaos; print('adaos import ok')" | Out-Null

@@ -4,6 +4,7 @@
 param(
     [string]$JoinCode = "",
     [string]$Role = "",
+    [switch]$NoVoice,
     [ValidateSet("auto", "always", "never")]
     [string]$InstallService = "auto",
     [string]$ServeHost = "127.0.0.1",
@@ -62,11 +63,14 @@ function Get-PythonCandidates {
 Write-Host "Searching for installed Python..."
 $pyCands = Get-PythonCandidates
 if (-not $pyCands -or $pyCands.Count -eq 0) {
-    if (($env:ADAOS_BOOTSTRAP_MODE ?? "").ToLower() -ne "venv") {
+    $bootstrapMode = [string]$env:ADAOS_BOOTSTRAP_MODE
+    if ([string]::IsNullOrWhiteSpace($bootstrapMode)) { $bootstrapMode = "" }
+    if ($bootstrapMode.ToLower() -ne "venv") {
         Write-Warning "No system Python found. Falling back to uv-based bootstrap (no system Python required)."
         & (Join-Path $PSScriptRoot "bootstrap_uv.ps1") `
             -JoinCode $JoinCode `
             -Role $Role `
+            -NoVoice:$NoVoice `
             -InstallService $InstallService `
             -ServeHost $ServeHost `
             -ServePort $ServePort `
@@ -82,11 +86,14 @@ if (-not $pyCands -or $pyCands.Count -eq 0) {
 $pyCands311 = @($pyCands | Where-Object { $_.Version -eq [version]"3.11" })
 if (-not $pyCands311 -or $pyCands311.Count -eq 0) {
     $found = ($pyCands | ForEach-Object { "$($_.Version) $($_.Arch)" } | Sort-Object -Unique) -join ", "
-    if (($env:ADAOS_BOOTSTRAP_MODE ?? "").ToLower() -ne "venv") {
+    $bootstrapMode = [string]$env:ADAOS_BOOTSTRAP_MODE
+    if ([string]::IsNullOrWhiteSpace($bootstrapMode)) { $bootstrapMode = "" }
+    if ($bootstrapMode.ToLower() -ne "venv") {
         Write-Warning "Python 3.11 is required. Found: $found. Falling back to uv-managed Python 3.11."
         & (Join-Path $PSScriptRoot "bootstrap_uv.ps1") `
             -JoinCode $JoinCode `
             -Role $Role `
+            -NoVoice:$NoVoice `
             -InstallService $InstallService `
             -ServeHost $ServeHost `
             -ServePort $ServePort `
@@ -230,10 +237,33 @@ function Invoke-Adaos {
     & .\.venv\Scripts\python.exe -m adaos @Args
 }
 
+function Install-VoiceDeps {
+    if ($NoVoice) { return }
+    Write-Host "Installing voice deps (Rasa)..."
+    try {
+        & .\.venv\Scripts\python.exe -c "import rasa; print(getattr(rasa,'__version__',''))" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Rasa already installed."
+            return
+        }
+    }
+    catch { }
+    try {
+        & .\.venv\Scripts\python.exe -m pip install "rasa==3.6.20"
+        if ($LASTEXITCODE -ne 0) { throw "pip install rasa failed" }
+        Write-Host "Rasa installed."
+    }
+    catch {
+        Write-Warning "Rasa install failed. Continue without voice NLU (use -NoVoice to skip)."
+    }
+}
+
 Invoke-Adaos install
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "adaos install failed (check output above)."
 }
+
+Install-VoiceDeps
 
 $env:ADAOS_REV = $Rev
 

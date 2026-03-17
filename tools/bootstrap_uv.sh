@@ -12,6 +12,7 @@ SERVE_PORT="8777"
 CONTROL_PORT="8777"
 ROOT_URL="https://api.inimatic.com"
 REV="rev2026"
+NO_VOICE="0"
 
 log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m[+] %s\033[0m\n' "$*"; }
@@ -125,6 +126,25 @@ print_next_steps() {
   echo "  https://stipot-com.github.io/adaos/"
 }
 
+install_voice_deps() {
+  local py="$1"
+  [[ "${NO_VOICE:-0}" == "1" ]] && return 0
+  log "Installing voice deps (Rasa)..."
+  if "$py" -c "import rasa; print(getattr(rasa, '__version__', ''))" >/dev/null 2>&1; then
+    ok "Rasa already installed"
+    return 0
+  fi
+  set +e
+  "$py" -m pip install "rasa==3.6.20"
+  local rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    warn "Rasa install failed. Continue without voice NLU (use --no_voice to skip)."
+  else
+    ok "Rasa installed"
+  fi
+}
+
 # Repo root
 cd "$(dirname "$0")/.." || die "cannot cd to repo root"
 
@@ -138,6 +158,7 @@ while [[ $# -gt 0 ]]; do
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
     --root-url) ROOT_URL="${2:-}"; shift 2 ;;
     --rev) REV="${2:-}"; shift 2 ;;
+    --no_voice|--no-voice) NO_VOICE="1"; shift ;;
     -h|--help)
       cat <<EOF
 Usage: tools/bootstrap_uv.sh [options]
@@ -149,6 +170,7 @@ Usage: tools/bootstrap_uv.sh [options]
   --control-port PORT
   --root-url URL
   --rev REV
+  --no_voice            Skip voice/NLU deps (Rasa)
 EOF
       exit 0
       ;;
@@ -209,6 +231,8 @@ ADAOS_PY="$PWD/.venv/bin/python"
 if [[ ! -x "$ADAOS_PY" ]]; then
   die "Expected venv python at $ADAOS_PY (uv sync should have created .venv)"
 fi
+
+install_voice_deps "$ADAOS_PY"
 
 # 4) .env
 if [[ ! -f .env ]]; then
