@@ -31,6 +31,7 @@ import {
 	type MessageParams,
 } from './i18n.js'
 import { NatsBus } from './io/bus/nats.js'
+import { buildPublicNatsWsUrl } from './io/bus/publicNatsUrl.js'
 import { installWsNatsProxy } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
 import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
@@ -393,20 +394,6 @@ app.get('/api/ping', (_req, res) => {
 app.get('/livez', (_req, res) => {
 	res.status(200).json({ ok: true })
 })
-
-function withLeadingSlash(value: string, fallback: string): string {
-	const trimmed = value.trim()
-	if (!trimmed) {
-		return fallback
-	}
-	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
-}
-
-const PUBLIC_HUB_NATS_URL = 'nats://nats.inimatic.com:4222' as const
-
-function buildHubNatsUrl(): string {
-	return PUBLIC_HUB_NATS_URL
-}
 
 const EFFECTIVE_SOCKET_PATH = '/socket.io' as const
 const SOCKET_CHANNEL_NS = '/adaos' as const
@@ -2129,7 +2116,7 @@ mtlsRouter.post('/hub/nats/token', async (req, res) => {
 	try {
 		const hubId = identity.subnetId
 		const session = await issueHubNatsSession(hubId)
-		const ws_url = buildHubNatsUrl()
+		const ws_url = buildPublicNatsWsUrl()
 		return res.json({
 			ok: true,
 			hub_id: hubId,

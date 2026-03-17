@@ -1,6 +1,7 @@
 // src\adaos\integrations\inimatic\backend\io\pairing\api.ts
 import express from 'express'
 import pino from 'pino'
+import { buildPublicNatsWsUrl } from '../bus/publicNatsUrl.js'
 import { verifyWebSessionJwt } from '../../sessionJwt.js'
 import {
 	pairConfirm,
@@ -18,7 +19,6 @@ import {
 } from './store.js'
 
 const log = pino({ name: 'pair-api' })
-const PUBLIC_HUB_NATS_URL = 'nats://nats.inimatic.com:4222' as const
 
 export function installPairingApi(app: express.Express) {
 	function extractBearer(headerValue: string): string | undefined {
@@ -36,10 +36,6 @@ export function installPairingApi(app: express.Express) {
 		return claims
 	}
 
-	function buildPublicNatsUrl(): string {
-		return PUBLIC_HUB_NATS_URL
-	}
-
 	app.post('/io/tg/pair/create', async (req, res) => {
 		try {
 			const ttl = Number.parseInt(String((req.query['ttl'] as string) ?? (req.body?.ttl as string) ?? '600'), 10) || 600
@@ -53,7 +49,7 @@ export function installPairingApi(app: express.Express) {
 			const rec = await pairCreate(bot, hub, ttl)
 			const deep_link = process.env['BOT_USERNAME'] ? `https://t.me/${process.env['BOT_USERNAME']}?start=${rec.code}` : undefined
 			log.info({ tag: 'PAIR', route: 'create', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] create: issued')
-			const ws_url = buildPublicNatsUrl()
+			const ws_url = buildPublicNatsWsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, deep_link, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {
@@ -75,7 +71,7 @@ export function installPairingApi(app: express.Express) {
 			log.info({ tag: 'PAIR', route: 'create.v1', hub, bot, ttl }, '[PAIR] v1/create: request')
 			const rec = await pairCreate(bot, hub, ttl)
 			log.info({ tag: 'PAIR', route: 'create.v1', hub: rec.hub_id, code: rec.code, expires_at: rec.expires_at }, '[PAIR] v1/create: issued')
-			const ws_url = buildPublicNatsUrl()
+			const ws_url = buildPublicNatsWsUrl()
 			const nats_user = rec.hub_id ? `hub_${rec.hub_id}` : undefined
 			res.json({ ok: true, pair_code: rec.code, expires_at: rec.expires_at, hub_id: rec.hub_id, nats_ws_url: ws_url, nats_user })
 		} catch (e) {

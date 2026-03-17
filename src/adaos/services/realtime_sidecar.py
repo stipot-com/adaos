@@ -92,10 +92,161 @@ def realtime_sidecar_diag_path() -> Path:
     return path
 
 
+def _host_matches_listener(host: str, other: str | None) -> bool:
+    target = str(host or "").strip().lower()
+    current = str(other or "").strip().lower()
+    if not target:
+        return not current
+    if not current:
+        return False
+    if target == current:
+        return True
+    local_any = {"0.0.0.0", "::", "[::]"}
+    loopbacks = {"127.0.0.1", "::1", "localhost"}
+    if target in loopbacks and (current in loopbacks or current in local_any):
+        return True
+    return False
+
+
+def _cmdline_option_value(cmdline: list[str], option: str) -> str | None:
+    opt = str(option or "").strip().lower()
+    if not opt:
+        return None
+    for idx, part in enumerate(cmdline):
+        item = str(part or "").strip()
+        lower = item.lower()
+        if lower == opt:
+            if idx + 1 < len(cmdline):
+                value = str(cmdline[idx + 1] or "").strip()
+                return value or None
+            return None
+        prefix = f"{opt}="
+        if lower.startswith(prefix):
+            value = item[len(prefix) :].strip()
+            return value or None
+    return None
+
+
+def _process_looks_like_adaos_realtime(proc: Any) -> bool:
+    try:
+        cmdline = [str(part).lower() for part in proc.cmdline()]
+    except Exception:
+        return False
+    joined = " ".join(cmdline)
+    return "adaos" in joined and "realtime" in joined and "serve" in joined
+
+
+def _process_matches_realtime_bind(proc: Any, host: str, port: int) -> bool:
+    try:
+        cmdline = [str(part) for part in proc.cmdline()]
+    except Exception:
+        return False
+    if not _process_looks_like_adaos_realtime(proc):
+        return False
+    raw_port = _cmdline_option_value(cmdline, "--port")
+    try:
+        cmd_port = int(str(raw_port or "").strip() or "7422")
+    except Exception:
+        return False
+    if cmd_port != int(port):
+        return False
+    cmd_host = _cmdline_option_value(cmdline, "--host") or "127.0.0.1"
+    return _host_matches_listener(host, cmd_host)
+
+
+def _find_realtime_listener_pid(host: str, port: int) -> int | None:
+    try:
+        import psutil
+    except Exception:
+        return None
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status != psutil.CONN_LISTEN:
+                continue
+            laddr = getattr(conn, "laddr", None)
+            if not laddr or int(getattr(laddr, "port", 0) or 0) != int(port):
+                continue
+            listener_host = getattr(laddr, "ip", None) or getattr(laddr, "host", None)
+            if not _host_matches_listener(host, listener_host):
+                continue
+            pid = int(conn.pid or 0)
+            if pid > 0:
+                return pid
+    except Exception:
+        return None
+    return None
+
+
+def _terminate_process_tree(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        import psutil
+    except Exception:
+        return False
+    try:
+        proc = psutil.Process(pid)
+    except psutil.Error:
+        return False
+    try:
+        children = proc.children(recursive=True)
+    except psutil.Error:
+        children = []
+    for child in reversed(children):
+        try:
+            child.terminate()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(children, timeout=3.0)
+    for child in children:
+        try:
+            if child.is_running():
+                child.kill()
+        except psutil.Error:
+            pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=5.0)
+    except psutil.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=3.0)
+        except psutil.Error:
+            pass
+    except psutil.Error:
+        pass
+    return True
+
+
+def _replace_existing_realtime_listener(host: str, port: int) -> bool:
+    try:
+        import psutil
+    except Exception:
+        return False
+    pid = _find_realtime_listener_pid(host, port)
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        proc = psutil.Process(pid)
+    except psutil.Error:
+        return False
+    if not _process_matches_realtime_bind(proc, host, port):
+        return False
+    if not _terminate_process_tree(pid):
+        return False
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        owner_pid = _find_realtime_listener_pid(host, port)
+        if not owner_pid or owner_pid == os.getpid():
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def _realtime_ws_heartbeat_s() -> float | None:
     raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
     if raw is None:
-        return 20.0
+        return None
     try:
         value = float(str(raw).strip() or "0")
     except Exception:
@@ -171,11 +322,11 @@ def _ws_socket(ws: Any) -> Any | None:
 def _sidecar_loop_mode() -> str:
     raw = os.getenv("ADAOS_REALTIME_WIN_LOOP")
     if raw is None:
-        return "selector"
+        return "proactor"
     value = str(raw).strip().lower()
     if value in {"selector", "proactor", "auto"}:
         return value
-    return "selector"
+    return "proactor"
 
 
 def apply_realtime_loop_policy() -> None:
@@ -201,9 +352,37 @@ def resolve_realtime_remote_candidates() -> list[str]:
         node = {}
     nats_cfg = node.get("nats") if isinstance(node, dict) and isinstance(node.get("nats"), dict) else {}
     node_url_raw = str((nats_cfg or {}).get("ws_url") or "").strip() or None
+    if explicit_url and nats_url_uses_websocket(explicit_url):
+        base = normalize_nats_ws_url(explicit_url, fallback=None)
+        candidates: list[str] = []
+        for item in [base]:
+            if isinstance(item, str) and item.startswith("ws") and item not in candidates:
+                candidates.append(item)
+        extra = str(os.getenv("ADAOS_REALTIME_REMOTE_WS_ALT", "") or "").strip()
+        if extra:
+            for item in [part.strip() for part in extra.split(",") if part.strip()]:
+                normalized = normalize_nats_ws_url(item, fallback=None)
+                if isinstance(normalized, str) and normalized.startswith("ws") and normalized not in candidates:
+                    candidates.append(normalized)
+        allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=False)
+        if allow_api_fallback:
+            for item in ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]:
+                if item not in candidates:
+                    candidates.append(item)
+        return candidates
     target_url = explicit_url or node_url_raw
     if target_url and not nats_url_uses_websocket(target_url):
-        return []
+        prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
+        allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
+        allow_tcp_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_TCP_FALLBACK"), default=False)
+        ws_candidates = ["wss://nats.inimatic.com/nats"]
+        if allow_api_fallback:
+            ws_candidates.append("wss://api.inimatic.com/nats")
+        ordered = order_nats_ws_candidates(ws_candidates, explicit_url=None, prefer_dedicated=prefer_dedicated)
+        base_tcp = str(target_url).strip()
+        if allow_tcp_fallback and base_tcp.startswith("nats://") and base_tcp not in ordered:
+            ordered.append(base_tcp)
+        return ordered
     node_url = normalize_nats_ws_url(node_url_raw, fallback=None)
     base = normalize_nats_ws_url(explicit_url or node_url, fallback=None)
     candidates: list[str] = []
@@ -222,7 +401,7 @@ def resolve_realtime_remote_candidates() -> list[str]:
     prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
     ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
     api_ingress = "wss://api.inimatic.com/nats"
-    allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=False)
+    allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
     if api_ingress in ordered and not allow_api_fallback:
         ordered = [item for item in ordered if item != api_ingress]
     return ordered
@@ -242,10 +421,28 @@ async def _is_port_open(host: str, port: int) -> bool:
     return True
 
 
+async def probe_realtime_sidecar_ready(*, host: str, port: int, timeout_s: float = 2.0) -> bool:
+    async def _probe() -> bool:
+        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            line = await reader.readline()
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        return bool(line.startswith(b"INFO "))
+
+    try:
+        return bool(await asyncio.wait_for(_probe(), timeout=max(0.1, float(timeout_s))))
+    except Exception:
+        return False
+
+
 async def wait_realtime_sidecar_ready(*, host: str, port: int, timeout_s: float = 10.0) -> bool:
     deadline = time.monotonic() + max(0.5, float(timeout_s))
     while time.monotonic() < deadline:
-        if await _is_port_open(host, port):
+        remaining = deadline - time.monotonic()
+        if await probe_realtime_sidecar_ready(host=host, port=port, timeout_s=min(remaining, 2.5)):
             return True
         await asyncio.sleep(0.1)
     return False
@@ -259,12 +456,18 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     host = realtime_sidecar_host()
     port = realtime_sidecar_port()
     if await _is_port_open(host, port):
+        try:
+            await asyncio.to_thread(_replace_existing_realtime_listener, host, port)
+        except Exception:
+            pass
+    if await _is_port_open(host, port):
         return None
     env = merged_runtime_dotenv_env(os.environ.copy())
     env["ADAOS_REALTIME_ENABLE"] = "1"
     env["ADAOS_REALTIME_CHILD"] = "1"
     env["ADAOS_REALTIME_PREFER_DEDICATED"] = "1"
-    env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "0"
+    env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "1"
+    env.setdefault("ADAOS_REALTIME_WIN_LOOP", "proactor")
     log_path = realtime_sidecar_log_path()
     stdout_handle = log_path.open("ab")
     args = [
@@ -512,71 +715,139 @@ class RealtimeSidecarServer:
                 self._log(f"remote connect failed url={target} err={type(exc).__name__}: {exc}")
         raise RuntimeError(f"realtime remote connect failed: {type(last_exc).__name__}: {last_exc}") from last_exc
 
-    async def _relay_local_to_remote(self, reader: asyncio.StreamReader, ws: Any) -> None:
-        while True:
-            chunk = await reader.read(65536)
-            if not chunk:
-                return
-            self._stats.local_rx_bytes += len(chunk)
-            self._stats.last_local_rx_at = time.monotonic()
-            if chunk == NATS_PING:
-                self._stats.local_nats_pings_tx += 1
-                self._stats.client_nats_pings_outstanding += 1
-                self._pending_ping_sources.append("client")
-            elif chunk == NATS_PONG:
-                self._stats.local_nats_pongs_tx += 1
-            await ws.send(chunk)
-            self._stats.remote_tx_bytes += len(chunk)
-            self._stats.last_remote_tx_at = time.monotonic()
+    async def _relay_local_to_remote(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ws: Any) -> None:
+        send_q: asyncio.Queue[bytes] = asyncio.Queue()
+        send_event = asyncio.Event()
+        recv_q: asyncio.Queue[bytes] = asyncio.Queue()
 
-    async def _relay_remote_to_local(self, ws: Any, writer: asyncio.StreamWriter) -> None:
-        while True:
-            raw = await ws.recv()
-            if isinstance(raw, str):
-                payload = raw.encode("utf-8", errors="replace")
-            else:
-                payload = bytes(raw)
-            if not payload:
-                continue
-            self._stats.remote_rx_bytes += len(payload)
-            self._stats.last_remote_rx_at = time.monotonic()
-            if payload == NATS_PING:
-                self._stats.remote_nats_pings_rx += 1
-            elif payload == NATS_PONG:
-                self._stats.remote_nats_pongs_rx += 1
-                source = self._pending_ping_sources.popleft() if self._pending_ping_sources else None
-                if source == "sidecar":
-                    if self._stats.sidecar_nats_pings_outstanding > 0:
-                        self._stats.sidecar_nats_pings_outstanding -= 1
-                    self._stats.sidecar_nats_pongs_rx += 1
-                    continue
-                if source == "client":
-                    if self._stats.client_nats_pings_outstanding > 0:
-                        self._stats.client_nats_pings_outstanding -= 1
-                elif self._stats.client_nats_pings_outstanding > 0:
-                    self._stats.client_nats_pings_outstanding -= 1
-                elif self._stats.sidecar_nats_pings_outstanding > 0:
-                    self._stats.sidecar_nats_pings_outstanding -= 1
-                    self._stats.sidecar_nats_pongs_rx += 1
-                    continue
-            writer.write(payload)
-            await writer.drain()
-            self._stats.local_tx_bytes += len(payload)
-            self._stats.last_local_tx_at = time.monotonic()
+        async def _queue_remote_payload(payload: bytes) -> None:
+            await send_q.put(payload)
+            send_event.set()
 
-    async def _sidecar_keepalive_loop(self, ws: Any, *, interval_s: float) -> None:
-        while True:
-            await asyncio.sleep(interval_s)
-            if getattr(ws, "closed", False):
-                return
-            if self._stats.sidecar_nats_pings_outstanding > 0:
-                continue
-            self._pending_ping_sources.append("sidecar")
-            await ws.send(NATS_PING)
-            self._stats.sidecar_nats_pings_tx += 1
-            self._stats.sidecar_nats_pings_outstanding += 1
-            self._stats.remote_tx_bytes += len(NATS_PING)
-            self._stats.last_remote_tx_at = time.monotonic()
+        async def _local_reader_loop() -> None:
+            while True:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    return
+                self._stats.local_rx_bytes += len(chunk)
+                self._stats.last_local_rx_at = time.monotonic()
+                if chunk == NATS_PING:
+                    self._stats.local_nats_pings_tx += 1
+                    self._stats.client_nats_pings_outstanding += 1
+                    self._pending_ping_sources.append("client")
+                elif chunk == NATS_PONG:
+                    self._stats.local_nats_pongs_tx += 1
+                await _queue_remote_payload(chunk)
+
+        async def _remote_writer_loop() -> None:
+            recv_task: asyncio.Task[Any] | None = asyncio.create_task(ws.recv(), name="adaos-realtime-ws-recv")
+            wake_task: asyncio.Task[Any] | None = None
+            try:
+                while True:
+                    if recv_task is not None and recv_task.done():
+                        try:
+                            raw = await recv_task
+                        finally:
+                            recv_task = None
+                        if isinstance(raw, str):
+                            payload = raw.encode("utf-8", errors="replace")
+                        else:
+                            payload = bytes(raw)
+                        if not payload:
+                            recv_task = asyncio.create_task(ws.recv(), name="adaos-realtime-ws-recv")
+                            continue
+                        self._stats.remote_rx_bytes += len(payload)
+                        self._stats.last_remote_rx_at = time.monotonic()
+                        if payload == NATS_PING:
+                            self._stats.remote_nats_pings_rx += 1
+                        elif payload == NATS_PONG:
+                            self._stats.remote_nats_pongs_rx += 1
+                            source = self._pending_ping_sources.popleft() if self._pending_ping_sources else None
+                            if source == "sidecar":
+                                if self._stats.sidecar_nats_pings_outstanding > 0:
+                                    self._stats.sidecar_nats_pings_outstanding -= 1
+                                self._stats.sidecar_nats_pongs_rx += 1
+                                recv_task = asyncio.create_task(ws.recv(), name="adaos-realtime-ws-recv")
+                                continue
+                            if source == "client":
+                                if self._stats.client_nats_pings_outstanding > 0:
+                                    self._stats.client_nats_pings_outstanding -= 1
+                            elif self._stats.client_nats_pings_outstanding > 0:
+                                self._stats.client_nats_pings_outstanding -= 1
+                            elif self._stats.sidecar_nats_pings_outstanding > 0:
+                                self._stats.sidecar_nats_pings_outstanding -= 1
+                                self._stats.sidecar_nats_pongs_rx += 1
+                                recv_task = asyncio.create_task(ws.recv(), name="adaos-realtime-ws-recv")
+                                continue
+                        await recv_q.put(payload)
+                        recv_task = asyncio.create_task(ws.recv(), name="adaos-realtime-ws-recv")
+                        continue
+
+                    try:
+                        payload = send_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        payload = None
+                    if payload is not None:
+                        await ws.send(payload)
+                        self._stats.remote_tx_bytes += len(payload)
+                        self._stats.last_remote_tx_at = time.monotonic()
+                        if send_q.empty():
+                            send_event.clear()
+                        continue
+
+                    send_event.clear()
+                    wake_task = asyncio.create_task(send_event.wait(), name="adaos-realtime-ws-send")
+                    done, pending = await asyncio.wait({recv_task, wake_task}, return_when=asyncio.FIRST_COMPLETED)
+                    if wake_task in done:
+                        wake_task = None
+                        continue
+                    if wake_task in pending and not wake_task.done():
+                        wake_task.cancel()
+                    wake_task = None
+                    if recv_task not in done:
+                        continue
+            finally:
+                if recv_task is not None and not recv_task.done():
+                    recv_task.cancel()
+                if wake_task is not None and not wake_task.done():
+                    wake_task.cancel()
+
+        async def _remote_reader_loop() -> None:
+            while True:
+                payload = await recv_q.get()
+                writer.write(payload)
+                await writer.drain()
+                self._stats.local_tx_bytes += len(payload)
+                self._stats.last_local_tx_at = time.monotonic()
+
+        async def _sidecar_keepalive_loop(*, interval_s: float) -> None:
+            while True:
+                await asyncio.sleep(interval_s)
+                if getattr(ws, "closed", False):
+                    return
+                if self._stats.sidecar_nats_pings_outstanding > 0:
+                    continue
+                self._pending_ping_sources.append("sidecar")
+                self._stats.sidecar_nats_pings_tx += 1
+                self._stats.sidecar_nats_pings_outstanding += 1
+                await _queue_remote_payload(NATS_PING)
+
+        interval_s = _realtime_nats_ping_interval_s()
+        self._stats.sidecar_nats_ping_interval_s = interval_s
+        tasks = [
+            asyncio.create_task(_local_reader_loop(), name="adaos-realtime-l2r"),
+            asyncio.create_task(_remote_writer_loop(), name="adaos-realtime-ws-io"),
+            asyncio.create_task(_remote_reader_loop(), name="adaos-realtime-r2l"),
+        ]
+        if interval_s is not None:
+            tasks.append(asyncio.create_task(_sidecar_keepalive_loop(interval_s=interval_s), name="adaos-realtime-ka"))
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise result
 
     async def _bridge_session(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         ws = None
@@ -587,27 +858,8 @@ class RealtimeSidecarServer:
             ws, remote_url = await self._connect_remote(session_id=session_id)
             self._stats.remote_url = remote_url
             self._stats.remote_connected_at = time.monotonic()
-            interval_s = _realtime_nats_ping_interval_s()
-            self._stats.sidecar_nats_ping_interval_s = interval_s
             self._log(f"session open id={session_id} remote={remote_url}")
-            tasks = [
-                asyncio.create_task(self._relay_local_to_remote(reader, ws), name=f"adaos-realtime-l2r-{session_id}"),
-                asyncio.create_task(self._relay_remote_to_local(ws, writer), name=f"adaos-realtime-r2l-{session_id}"),
-            ]
-            if interval_s is not None:
-                tasks.append(
-                    asyncio.create_task(
-                        self._sidecar_keepalive_loop(ws, interval_s=interval_s),
-                        name=f"adaos-realtime-ka-{session_id}",
-                    )
-                )
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                    raise result
+            await self._relay_local_to_remote(reader, writer, ws)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

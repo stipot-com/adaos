@@ -35,10 +35,13 @@ from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
 from adaos.services.nats_config import normalize_nats_ws_url, nats_url_uses_websocket, order_nats_ws_candidates
 from adaos.services.realtime_sidecar import (
+    probe_realtime_sidecar_ready,
     realtime_sidecar_diag_path,
     realtime_sidecar_enabled,
+    realtime_sidecar_host,
     realtime_sidecar_log_path,
     realtime_sidecar_local_url,
+    realtime_sidecar_port,
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
@@ -908,12 +911,52 @@ class BootstrapService:
                                 if realtime_enabled:
                                     remote_candidates = resolve_realtime_remote_candidates()
                                     if remote_candidates:
-                                        candidates = [realtime_sidecar_local_url()]
-                                        _rl_log(
-                                            "nats.sidecar_route",
-                                            f"[hub-io] nats realtime sidecar local={candidates[0]} remote={remote_candidates}",
-                                            every_s=60.0,
+                                        original_candidates = list(candidates)
+                                        local_candidate = realtime_sidecar_local_url()
+                                        local_ready = await probe_realtime_sidecar_ready(
+                                            host=realtime_sidecar_host(),
+                                            port=realtime_sidecar_port(),
+                                            timeout_s=1.5,
                                         )
+                                        fallback_candidates: list[str] = []
+                                        for item in original_candidates:
+                                            try:
+                                                candidate_text = str(item or "").strip()
+                                            except Exception:
+                                                continue
+                                            if not candidate_text or candidate_text == local_candidate:
+                                                continue
+                                            if candidate_text.startswith("ws"):
+                                                continue
+                                            if candidate_text not in fallback_candidates:
+                                                fallback_candidates.append(candidate_text)
+                                        if local_ready:
+                                            candidates = [local_candidate, *fallback_candidates]
+                                            try:
+                                                now_m = time.monotonic()
+                                                available = [
+                                                    s
+                                                    for s in candidates
+                                                    if now_m >= float(nats_server_quarantine_until.get(str(s), 0.0))
+                                                ]
+                                                if available:
+                                                    candidates = available
+                                            except Exception:
+                                                pass
+                                            _rl_log(
+                                                "nats.sidecar_route",
+                                                f"[hub-io] nats realtime sidecar local={local_candidate} remote={remote_candidates}"
+                                                + (f" fallback={fallback_candidates}" if fallback_candidates else ""),
+                                                every_s=60.0,
+                                            )
+                                        else:
+                                            candidates = fallback_candidates or original_candidates
+                                            _rl_log(
+                                                "nats.sidecar_unready",
+                                                f"[hub-io] nats realtime sidecar not ready local={local_candidate}; "
+                                                f"falling back to {fallback_candidates or original_candidates}",
+                                                every_s=15.0,
+                                            )
                             except Exception:
                                 pass
 
