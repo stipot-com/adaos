@@ -13,6 +13,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
+from urllib.parse import urlparse
 
 import nats as _nats
 
@@ -55,6 +56,64 @@ from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscri
 from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.integrations.telegram.sender import TelegramSender
+
+
+def _env_truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _nats_url_needs_public_ws_refresh(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    if not raw or nats_url_uses_websocket(raw):
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    if (parsed.scheme or "").lower() != "nats":
+        return False
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    return host == "api.inimatic.com" or host.endswith(".inimatic.com")
+
+
+def _build_realtime_sidecar_fallback_candidates(
+    candidates: Sequence[str | None],
+    *,
+    local_candidate: str,
+) -> list[str]:
+    allow_tcp_fallback = _env_truthy(os.getenv("ADAOS_REALTIME_ALLOW_TCP_FALLBACK"), default=False)
+    fallback_candidates: list[str] = []
+    for item in candidates:
+        try:
+            candidate_text = str(item or "").strip()
+        except Exception:
+            continue
+        if not candidate_text or candidate_text == local_candidate:
+            continue
+        if candidate_text.startswith("ws"):
+            continue
+        if not allow_tcp_fallback:
+            continue
+        if candidate_text not in fallback_candidates:
+            fallback_candidates.append(candidate_text)
+    return fallback_candidates
+
+
+def _resolve_nats_log_server(
+    *,
+    server: str | None = None,
+    current_attempt: str | None = None,
+    connected_server: str | None = None,
+) -> str | None:
+    for value in (server, current_attempt, connected_server):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
 
 
 class BootstrapService:
@@ -478,6 +537,7 @@ class BootstrapService:
                 # Track flaky NATS WS endpoints and temporarily avoid them after short transient drops.
                 nats_server_quarantine_until: dict[str, float] = {}
                 nats_last_server: str | None = None
+                nats_attempt_server: str | None = None
 
                 def _rl_log(key: str, msg: str, *, every_s: float = 5.0) -> None:
                     """
@@ -668,6 +728,7 @@ class BootstrapService:
                 async def _nats_bridge() -> None:
                     nonlocal reported_down
                     nonlocal nats_last_ok_at
+                    nonlocal nats_attempt_server
                     nonlocal nats_last_server
                     nonlocal last_ws_transport
                     backoff = 1.0
@@ -779,6 +840,7 @@ class BootstrapService:
 
                     while True:
                         try:
+                            nats_attempt_server = None
                             nurl, nuser, npass = _read_node_nats()
                             if not nurl or not nuser or not npass:
                                 fetched = await _fetch_nats_credentials()
@@ -791,7 +853,9 @@ class BootstrapService:
                                     print("[hub-io] NATS disabled: missing nats.ws_url/user/pass in node.yaml")
                                 await asyncio.sleep(2.0)
                                 continue
-                            if nats_url_uses_websocket(nurl):
+                            if nats_url_uses_websocket(nurl) or (
+                                realtime_enabled and _nats_url_needs_public_ws_refresh(nurl)
+                            ):
                                 fetched = await _fetch_nats_credentials()
                                 if fetched:
                                     await asyncio.sleep(0.1)
@@ -918,18 +982,10 @@ class BootstrapService:
                                             port=realtime_sidecar_port(),
                                             timeout_s=1.5,
                                         )
-                                        fallback_candidates: list[str] = []
-                                        for item in original_candidates:
-                                            try:
-                                                candidate_text = str(item or "").strip()
-                                            except Exception:
-                                                continue
-                                            if not candidate_text or candidate_text == local_candidate:
-                                                continue
-                                            if candidate_text.startswith("ws"):
-                                                continue
-                                            if candidate_text not in fallback_candidates:
-                                                fallback_candidates.append(candidate_text)
+                                        fallback_candidates = _build_realtime_sidecar_fallback_candidates(
+                                            original_candidates,
+                                            local_candidate=local_candidate,
+                                        )
                                         if local_ready:
                                             candidates = [local_candidate, *fallback_candidates]
                                             try:
@@ -950,11 +1006,11 @@ class BootstrapService:
                                                 every_s=60.0,
                                             )
                                         else:
-                                            candidates = fallback_candidates or original_candidates
+                                            candidates = list(fallback_candidates)
                                             _rl_log(
                                                 "nats.sidecar_unready",
                                                 f"[hub-io] nats realtime sidecar not ready local={local_candidate}; "
-                                                f"falling back to {fallback_candidates or original_candidates}",
+                                                f"falling back to {fallback_candidates}",
                                                 every_s=15.0,
                                             )
                             except Exception:
@@ -1383,7 +1439,11 @@ class BootstrapService:
                                         ws_last_ping_tx_ago_s = ws_last_ping_tx_ago_s or None
                                         ws_last_ping_wait_ms = ws_last_ping_wait_ms or None
                                         ws_last_ping_send_ms = ws_last_ping_send_ms or None
-                                    server0 = server if server is not None else nats_last_server
+                                    server0 = _resolve_nats_log_server(
+                                        server=server,
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    )
                                     extra_parts: list[str] = []
                                     if source:
                                         extra_parts.append(f"source={source}")
@@ -1411,7 +1471,10 @@ class BootstrapService:
                                     try:
                                         ws_closed, ws_close_code, ws_close_reason, ws_exc = _log_nats_ws_diag(
                                             nc_for_diag,
-                                            server=nats_last_server,
+                                            server=_resolve_nats_log_server(
+                                                current_attempt=nats_attempt_server,
+                                                connected_server=nats_last_server,
+                                            ),
                                             rate_key="nats.ws_diag",
                                             every_s=1.0,
                                             source="error_cb",
@@ -1424,7 +1487,10 @@ class BootstrapService:
                                         )
                                         _write_nats_ws_diag_file(
                                             nc_for_diag,
-                                            server=nats_last_server,
+                                            server=_resolve_nats_log_server(
+                                                current_attempt=nats_attempt_server,
+                                                connected_server=nats_last_server,
+                                            ),
                                             source="error_cb",
                                             err=e,
                                             force=True,
@@ -1512,7 +1578,10 @@ class BootstrapService:
                                     self._log.warning(
                                         "nats error_cb hub_id=%s server=%s type=%s err=%s",
                                         hub_id,
-                                        nats_last_server,
+                                        _resolve_nats_log_server(
+                                            current_attempt=nats_attempt_server,
+                                            connected_server=nats_last_server,
+                                        ),
                                         type(e).__name__,
                                         str(e),
                                     )
@@ -1535,14 +1604,28 @@ class BootstrapService:
 
                             async def _on_disconnected() -> None:
                                 try:
-                                    self._log.warning("nats disconnected hub_id=%s server=%s", hub_id, nats_last_server)
+                                    self._log.warning(
+                                        "nats disconnected hub_id=%s server=%s",
+                                        hub_id,
+                                        _resolve_nats_log_server(
+                                            current_attempt=nats_attempt_server,
+                                            connected_server=nats_last_server,
+                                        ),
+                                    )
                                 except Exception:
                                     pass
                                 _emit_down("disconnected", None)
 
                             async def _on_reconnected() -> None:
                                 try:
-                                    self._log.info("nats reconnected hub_id=%s server=%s", hub_id, nats_last_server)
+                                    self._log.info(
+                                        "nats reconnected hub_id=%s server=%s",
+                                        hub_id,
+                                        _resolve_nats_log_server(
+                                            current_attempt=nats_attempt_server,
+                                            connected_server=nats_last_server,
+                                        ),
+                                    )
                                 except Exception:
                                     pass
                                 # Suppress restored chatter in dev if silenced
@@ -1579,7 +1662,10 @@ class BootstrapService:
                                 # `nats` package does not expose Client at top-level; use nats.aio.client.Client.
                                 nc_local = _nats.aio.client.Client()
                                 async def _on_error_cb_local(e: Exception) -> None:
-                                    await _on_error_cb(e, nc_for_diag=nc_local)
+                                    await _on_error_cb(
+                                        e,
+                                        nc_for_diag=nc_local,
+                                    )
                                 try:
                                     # New correlation id for this connect attempt (sent as WS header).
                                     try:
@@ -1791,6 +1877,7 @@ class BootstrapService:
                             connected_server: str | None = None
                             for srv in [str(s) for s in candidates]:
                                 try:
+                                    nats_attempt_server = srv
                                     if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                         print(f"[hub-io] NATS connect try server={srv}")
                                     elif trace:
@@ -1808,6 +1895,7 @@ class BootstrapService:
                                 raise last_exc or RuntimeError("nats connect failed (no candidates)")
                             try:
                                 nats_last_server = connected_server
+                                nats_attempt_server = None
                             except Exception:
                                 pass
 
@@ -4235,7 +4323,14 @@ class BootstrapService:
                             await asyncio.sleep(3600)
                         except asyncio.CancelledError:
                             try:
-                                self._log.info("nats supervisor cancelled hub_id=%s server=%s", hub_id, nats_last_server)
+                                self._log.info(
+                                    "nats supervisor cancelled hub_id=%s server=%s",
+                                    hub_id,
+                                    _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    ),
+                                )
                             except Exception:
                                 pass
                             return
@@ -4244,7 +4339,10 @@ class BootstrapService:
                                 self._log.warning(
                                     "nats supervisor error hub_id=%s server=%s type=%s err=%s",
                                     hub_id,
-                                    nats_last_server,
+                                    _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    ),
                                     type(e).__name__,
                                     str(e),
                                 )
@@ -4256,10 +4354,14 @@ class BootstrapService:
                                 pass
                             try:
                                 local_sidecar_url = realtime_sidecar_local_url()
+                                error_server = _resolve_nats_log_server(
+                                    current_attempt=nats_attempt_server,
+                                    connected_server=nats_last_server,
+                                )
                                 using_sidecar = bool(
-                                    isinstance(nats_last_server, str)
+                                    isinstance(error_server, str)
                                     and isinstance(local_sidecar_url, str)
-                                    and str(nats_last_server).strip() == str(local_sidecar_url).strip()
+                                    and str(error_server).strip() == str(local_sidecar_url).strip()
                                 )
                             except Exception:
                                 using_sidecar = False
@@ -4322,7 +4424,10 @@ class BootstrapService:
                             try:
                                 if delays and os.getenv("HUB_ROOT_LOG_SNAPSHOT", "0") == "1":
                                     tag0 = ws_connect_tag if isinstance(ws_connect_tag, str) else None
-                                    srv0 = nats_last_server if isinstance(nats_last_server, str) else None
+                                    srv0 = _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    )
 
                                     async def _snap_later(delay_s: float) -> None:
                                         try:

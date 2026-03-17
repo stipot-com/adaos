@@ -88,7 +88,11 @@ location /hubs/ {
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
-# --- Direct NATS-over-WebSocket entrypoint for hubs ---
+# --- Public NATS-over-WebSocket entrypoint for hubs ---
+# Route `/nats` through the backend ws-nats-proxy rather than directly into the
+# NATS websocket listener. The hub realtime sidecar speaks raw NATS over a local
+# TCP socket and relays that stream over websocket. The backend proxy is the
+# component that preserves raw NATS stream semantics for this path.
 location ^~ /nats {
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
@@ -104,7 +108,8 @@ location ^~ /nats {
   proxy_buffering off;
   proxy_request_buffering off;
 
-  proxy_pass http://nats:8080;
+  proxy_pass http://api.inimatic.com;
+  include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
 # --- Protected paths require mTLS ---

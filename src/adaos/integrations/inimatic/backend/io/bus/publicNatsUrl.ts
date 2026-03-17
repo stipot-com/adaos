@@ -1,4 +1,4 @@
-const DEFAULT_PUBLIC_NATS_WS_URL = 'wss://nats.inimatic.com/nats' as const
+const DEFAULT_PUBLIC_NATS_WS_URL = 'wss://api.inimatic.com/nats' as const
 const DEFAULT_PUBLIC_NATS_PATH = '/nats' as const
 
 function withLeadingSlash(value: string | undefined, fallback: string): string {

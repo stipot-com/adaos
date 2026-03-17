@@ -31,6 +31,7 @@ from adaos.services.runtime_dotenv import merged_runtime_dotenv_env
 
 NATS_PING = b"PING\r\n"
 NATS_PONG = b"PONG\r\n"
+_realtime_remote_quarantine_until: dict[str, float] = {}
 
 
 def _truthy(value: Any, *, default: bool = False) -> bool:
@@ -43,6 +44,72 @@ def _truthy(value: Any, *, default: bool = False) -> bool:
     if not text:
         return default
     return text in {"1", "true", "on", "yes"}
+
+
+def _realtime_remote_quarantine_s() -> float:
+    raw = os.getenv("ADAOS_REALTIME_REMOTE_QUARANTINE_S")
+    try:
+        value = float(str(raw or "60").strip() or "60")
+    except Exception:
+        value = 60.0
+    if value < 5.0:
+        value = 5.0
+    return value
+
+
+def _realtime_remote_quarantine_key(url: str) -> str:
+    try:
+        parsed = urlparse(str(url))
+        base = urlunparse(parsed._replace(query="", fragment=""))
+    except Exception:
+        base = str(url or "").strip()
+    normalized = normalize_nats_ws_url(base, fallback=None)
+    return str(normalized or base or "").strip()
+
+
+def _should_quarantine_realtime_remote(details: str) -> bool:
+    text = str(details or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "unexpected eof",
+            "connectionclosederror",
+            "connection closed",
+            "no close frame received or sent",
+            "close code=1006",
+            "code=1006",
+            "connection reset",
+            "winerror 10054",
+        )
+    )
+
+
+def _quarantine_realtime_remote(url: str, *, details: str | None = None) -> None:
+    key = _realtime_remote_quarantine_key(url)
+    if not key:
+        return
+    _realtime_remote_quarantine_until[key] = time.monotonic() + _realtime_remote_quarantine_s()
+
+
+def _available_realtime_remote_candidates() -> list[str]:
+    candidates = resolve_realtime_remote_candidates()
+    if not candidates:
+        return []
+    now_m = time.monotonic()
+    available: list[str] = []
+    quarantined: list[tuple[float, int, str]] = []
+    for index, candidate in enumerate(candidates):
+        until = float(_realtime_remote_quarantine_until.get(_realtime_remote_quarantine_key(candidate), 0.0))
+        if now_m >= until:
+            available.append(candidate)
+            continue
+        quarantined.append((until, index, candidate))
+    if available:
+        return available
+    quarantined.sort(key=lambda item: (item[0], item[1]))
+    return [candidate for _until, _index, candidate in quarantined] or candidates
 
 
 def realtime_sidecar_enabled(*, role: str | None = None, os_name: str | None = None) -> bool:
@@ -246,7 +313,7 @@ def _replace_existing_realtime_listener(host: str, port: int) -> bool:
 def _realtime_ws_heartbeat_s() -> float | None:
     raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
     if raw is None:
-        return None
+        return 20.0
     try:
         value = float(str(raw).strip() or "0")
     except Exception:
@@ -294,7 +361,7 @@ def _realtime_nats_ping_interval_s() -> float | None:
     if raw is None:
         raw = os.getenv("ADAOS_REALTIME_UPSTREAM_NATS_PING_S")
     if raw is None:
-        return None
+        return 15.0
     try:
         value = float(str(raw).strip() or "0")
     except Exception:
@@ -372,7 +439,7 @@ def resolve_realtime_remote_candidates() -> list[str]:
         return candidates
     target_url = explicit_url or node_url_raw
     if target_url and not nats_url_uses_websocket(target_url):
-        prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
+        prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
         allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
         allow_tcp_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_TCP_FALLBACK"), default=False)
         ws_candidates = ["wss://nats.inimatic.com/nats"]
@@ -395,10 +462,10 @@ def resolve_realtime_remote_candidates() -> list[str]:
             normalized = normalize_nats_ws_url(item, fallback=None)
             if isinstance(normalized, str) and normalized.startswith("ws") and normalized not in candidates:
                 candidates.append(normalized)
-    # Sidecar traffic now uses direct NATS auth_callout, so the dedicated hostname is the preferred
-    # public route. Keep the root ingress out of the default data path; allow it only as an explicit
-    # compatibility fallback.
-    prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "1")
+    # For long-lived sidecar sessions, the root ingress is the safer default and the dedicated hostname
+    # remains a fallback. Some environments observe abnormal closes on the dedicated endpoint after tens
+    # of seconds even with keepalives enabled.
+    prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
     api_ingress = "wss://api.inimatic.com/nats"
     allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
@@ -465,7 +532,7 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     env = merged_runtime_dotenv_env(os.environ.copy())
     env["ADAOS_REALTIME_ENABLE"] = "1"
     env["ADAOS_REALTIME_CHILD"] = "1"
-    env["ADAOS_REALTIME_PREFER_DEDICATED"] = "1"
+    env.setdefault("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "1"
     env.setdefault("ADAOS_REALTIME_WIN_LOOP", "proactor")
     log_path = realtime_sidecar_log_path()
@@ -683,7 +750,7 @@ class RealtimeSidecarServer:
         heartbeat_s = _realtime_ws_heartbeat_s()
         max_queue = _realtime_ws_max_queue()
         proxy = _realtime_ws_proxy()
-        for candidate in resolve_realtime_remote_candidates():
+        for candidate in _available_realtime_remote_candidates():
             target = self._tagged_remote_url(candidate, session_id=session_id)
             try:
                 kwargs = {
@@ -851,6 +918,7 @@ class RealtimeSidecarServer:
 
     async def _bridge_session(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         ws = None
+        remote_url: str | None = None
         session_id = f"rt-{uuid.uuid4().hex[:10]}"
         self._stats = _RelayStats(session_id=session_id, local_connected_at=time.monotonic())
         self._pending_ping_sources = deque()
@@ -874,6 +942,12 @@ class RealtimeSidecarServer:
             except Exception:
                 pass
             self._stats.last_error = details
+            if remote_url and _should_quarantine_realtime_remote(details):
+                _quarantine_realtime_remote(remote_url, details=details)
+                self._log(
+                    f"remote quarantined url={_realtime_remote_quarantine_key(remote_url)} "
+                    f"for={_realtime_remote_quarantine_s():.0f}s err={details}"
+                )
             self._log(f"session error id={session_id} err={details}")
         finally:
             if ws is not None:
@@ -896,10 +970,10 @@ class RealtimeSidecarServer:
         if self._active_task is not None and not self._active_task.done():
             self._log("superseding previous local NATS client")
             self._active_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 await self._active_task
         self._active_task = asyncio.create_task(self._bridge_session(reader, writer), name="adaos-realtime-session")
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(BaseException):
             await self._active_task
 
 
