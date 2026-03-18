@@ -118,8 +118,7 @@ def realtime_sidecar_enabled(*, role: str | None = None, os_name: str | None = N
         raw = os.getenv("HUB_REALTIME_ENABLE")
     if raw is not None:
         return _truthy(raw, default=False)
-    name = os_name if os_name is not None else os.name
-    return str(role or "").strip().lower() == "hub" and str(name or "").strip().lower() == "nt"
+    return False
 
 
 def realtime_sidecar_host() -> str:
@@ -313,7 +312,7 @@ def _replace_existing_realtime_listener(host: str, port: int) -> bool:
 def _realtime_ws_heartbeat_s() -> float | None:
     raw = os.getenv("ADAOS_REALTIME_WS_HEARTBEAT_S")
     if raw is None:
-        return 20.0
+        return None
     try:
         value = float(str(raw).strip() or "0")
     except Exception:

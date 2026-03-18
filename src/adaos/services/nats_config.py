@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from urllib.parse import urlparse, urlunparse
 
+PUBLIC_NATS_WS_API = "wss://api.inimatic.com/nats"
+PUBLIC_NATS_WS_DEDICATED = "wss://nats.inimatic.com/nats"
+
 
 def nats_url_uses_websocket(value: str | None) -> bool:
     raw = str(value or "").strip()
@@ -19,7 +22,7 @@ def nats_url_uses_websocket(value: str | None) -> bool:
 def normalize_nats_ws_url(
     value: str | None,
     *,
-    fallback: str | None = "wss://nats.inimatic.com/nats",
+    fallback: str | None = PUBLIC_NATS_WS_API,
     default_path: str = "/nats",
 ) -> str | None:
     raw = str(value or "").strip()
@@ -49,6 +52,19 @@ def normalize_nats_ws_url(
         return raw
 
 
+def public_nats_ws_candidates(
+    *,
+    prefer_dedicated: str | None = "1",
+    allow_dedicated_fallback: bool = True,
+) -> list[str]:
+    pref = str(prefer_dedicated or "").strip()
+    if pref == "1":
+        return [PUBLIC_NATS_WS_DEDICATED, PUBLIC_NATS_WS_API]
+    if allow_dedicated_fallback:
+        return [PUBLIC_NATS_WS_API, PUBLIC_NATS_WS_DEDICATED]
+    return [PUBLIC_NATS_WS_API]
+
+
 def order_nats_ws_candidates(
     candidates: list[str],
     *,
@@ -65,16 +81,16 @@ def order_nats_ws_candidates(
     # If explicit_url points to one of our known public WS endpoints, don't force it to the front.
     # These endpoints can have different reliability characteristics depending on the network; we still
     # want `prefer_dedicated` to win by default.
-    known_public = {"wss://api.inimatic.com/nats", "wss://nats.inimatic.com/nats"}
+    known_public = {PUBLIC_NATS_WS_API, PUBLIC_NATS_WS_DEDICATED}
     if explicit and explicit in out and explicit not in known_public:
         return [explicit] + [item for item in out if item != explicit]
 
     preferred = None
     pref = str(prefer_dedicated or "").strip()
     if pref == "1":
-        preferred = "wss://nats.inimatic.com/nats"
+        preferred = PUBLIC_NATS_WS_DEDICATED
     elif pref == "0":
-        preferred = "wss://api.inimatic.com/nats"
+        preferred = PUBLIC_NATS_WS_API
     if preferred and preferred in out and out and out[0] != preferred:
         return [preferred] + [item for item in out if item != preferred]
     return out

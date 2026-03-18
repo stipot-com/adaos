@@ -138,13 +138,14 @@ def _ws_data_heartbeat_s_from_env() -> float | None:
 
     Control:
     - HUB_NATS_WS_DATA_HEARTBEAT_S:
-        * unset / empty -> disabled (None)
+        * unset         -> enable conservative default (15s)
+        * empty         -> disable
         * <= 0          -> disable
         * > 0           -> enable with that interval (seconds; min 5)
     """
     raw = os.getenv("HUB_NATS_WS_DATA_HEARTBEAT_S")
     if raw is None:
-        return None
+        return 15.0
     try:
         s = str(raw).strip()
     except Exception:
@@ -1492,6 +1493,48 @@ class WebSocketTransportWebsockets:
     def __bool__(self) -> bool:
         return self._ws is not None
 
+    def _start_ws_heartbeat_task(self) -> None:
+        try:
+            if self._ws_heartbeat_task is not None and not self._ws_heartbeat_task.done():
+                self._ws_heartbeat_task.cancel()
+        except Exception:
+            pass
+        self._ws_heartbeat_task = None
+        try:
+            heartbeat_s = getattr(self, "_adaos_ws_heartbeat", None)
+        except Exception:
+            heartbeat_s = None
+        if heartbeat_s is None:
+            return
+        ws0 = self._ws
+
+        async def _ws_heartbeat_loop() -> None:
+            while True:
+                await asyncio.sleep(float(heartbeat_s))
+                try:
+                    ws1 = self._ws
+                    if ws1 is None or ws1 is not ws0 or self.at_eof():
+                        return
+                except Exception:
+                    return
+                try:
+                    self._ensure_io_task()
+                except Exception:
+                    return
+                try:
+                    self._pending_ws_ping += 1
+                    self._drain_event.clear()
+                    self._pending_event.set()
+                except Exception:
+                    return
+
+        try:
+            self._ws_heartbeat_task = asyncio.create_task(
+                _ws_heartbeat_loop(), name="adaos-nats-ws-heartbeat"
+            )
+        except Exception:
+            self._ws_heartbeat_task = None
+
     async def _connect_impl(self, target: str, *, ssl_context: ssl.SSLContext | None, connect_timeout: int) -> None:
         try:
             import websockets  # type: ignore
@@ -1508,7 +1551,7 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         try:
-            self._adaos_ws_heartbeat_mode = "builtin_no_timeout" if heartbeat_s is not None else None
+            self._adaos_ws_heartbeat_mode = "manual_no_timeout" if heartbeat_s is not None else None
         except Exception:
             pass
         try:
@@ -1519,9 +1562,10 @@ class WebSocketTransportWebsockets:
             self._adaos_ws_recv_timeout = recv_timeout_s
         except Exception:
             pass
-        # websockets keepalive: opt-in heartbeat, but never close the socket on missing PONG.
-        # Root's ws-nats-proxy uses NATS protocol keepalives to detect dead tunnels; WS ping timeouts are too aggressive.
-        ping_interval = heartbeat_s
+        # Use the same manual no-timeout heartbeat strategy as the aiohttp transport.
+        # This keeps client->root traffic observable in diagnostics and avoids relying on
+        # the websocket library's internal keepalive task on Windows/Proactor.
+        ping_interval = None
         ping_timeout: float | None = None
         max_queue = _ws_max_queue_from_env()
         ws_kwargs: dict[str, Any] = {
@@ -1546,7 +1590,8 @@ class WebSocketTransportWebsockets:
                     f"url={self._adaos_ws_url} tls={ssl_context is not None} "
                     f"proxy={ws_kwargs.get('proxy')} max_size={max_size} "
                     f"max_queue={max_queue} "
-                    f"heartbeat_s={heartbeat_s} ping_interval={ping_interval} ping_timeout={ping_timeout} recv_timeout_s={recv_timeout_s} "
+                    f"heartbeat_s={heartbeat_s} heartbeat_mode={self._adaos_ws_heartbeat_mode} "
+                    f"ping_interval={ping_interval} ping_timeout={ping_timeout} recv_timeout_s={recv_timeout_s} "
                     f"tag={self._adaos_ws_tag}"
                 )
             except Exception:
@@ -1649,6 +1694,7 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._io_task = None
+        self._start_ws_heartbeat_task()
 
         # Optional NATS-data heartbeat (send PONG) to keep end-to-end hub->root traffic visible.
         if data_heartbeat_s is not None:
