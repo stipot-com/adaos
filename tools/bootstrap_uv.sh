@@ -130,6 +130,16 @@ install_voice_deps() {
   local py="$1"
   [[ "${NO_VOICE:-0}" == "1" ]] && return 0
   log "Installing voice deps (Rasa)..."
+  # Rasa 3.6.x does not support Python 3.11+. Avoid noisy pip failures on servers.
+  local py_ver=""
+  py_ver="$("$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
+  case "$py_ver" in
+    3.11|3.12|3.13)
+      warn "Skipping voice NLU deps: rasa==3.6.20 is not available for Python ${py_ver}."
+      warn "If you need voice NLU, use Python 3.10 or run with --no_voice to silence this step."
+      return 0
+      ;;
+  esac
   if "$py" -c "import rasa; print(getattr(rasa, '__version__', ''))" >/dev/null 2>&1; then
     ok "Rasa already installed"
     return 0
