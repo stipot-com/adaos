@@ -242,6 +242,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
     await run_boot_sequence(app)
+    # Keep node.yaml capacity in sync with optional native deps (vosk/pyttsx3),
+    # so other components can see IO availability without importing native libs.
+    try:
+        from adaos.services.capacity import refresh_native_io_capacity
+
+        refresh_native_io_capacity()
+    except Exception:
+        pass
     try:
         await start_subnet_p2p(app)
     except Exception:

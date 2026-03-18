@@ -34,7 +34,14 @@ from adaos.services.chat_io.nlu_bridge import register_chat_nlu_bridge  # chat->
 from adaos.services.eventbus import LocalEventBus
 from adaos.services.io_bus.http_fallback import HttpFallbackBus
 from adaos.services.io_bus.local_bus import LocalIoBus
-from adaos.services.nats_config import normalize_nats_ws_url, nats_url_uses_websocket, order_nats_ws_candidates
+from adaos.services.nats_config import (
+    PUBLIC_NATS_WS_API,
+    PUBLIC_NATS_WS_DEDICATED,
+    normalize_nats_ws_url,
+    nats_url_uses_websocket,
+    order_nats_ws_candidates,
+    public_nats_ws_candidates,
+)
 from adaos.services.realtime_sidecar import (
     probe_realtime_sidecar_ready,
     realtime_sidecar_diag_path,
@@ -62,6 +69,56 @@ def _env_truthy(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _hub_nats_prefer_dedicated() -> str:
+    raw = os.getenv("HUB_NATS_PREFER_DEDICATED")
+    text = str(raw or "").strip()
+    if text:
+        return text
+    return "0"
+
+
+def _normalize_hub_nats_ws_url(value: str | None) -> str | None:
+    normalized = normalize_nats_ws_url(value, fallback=None)
+    if _hub_nats_prefer_dedicated() == "1":
+        return normalized
+    if normalized == PUBLIC_NATS_WS_DEDICATED:
+        return PUBLIC_NATS_WS_API
+    return normalized
+
+
+def _hub_public_ws_candidates(base_url: str | None) -> list[str]:
+    prefer_dedicated = _hub_nats_prefer_dedicated()
+    normalized_base = _normalize_hub_nats_ws_url(base_url)
+
+    candidates: list[str] = []
+    if normalized_base:
+        candidates.append(normalized_base)
+    for item in public_nats_ws_candidates(
+        prefer_dedicated=prefer_dedicated,
+        allow_dedicated_fallback=prefer_dedicated == "1",
+    ):
+        if item not in candidates:
+            candidates.append(item)
+    return candidates
+
+
+def _hub_route_force_close_no_upstream_s() -> float:
+    raw = os.getenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S")
+    if raw is None:
+        return 1.5
+    try:
+        value = float(str(raw).strip() or "0")
+    except Exception:
+        value = 0.0
+    if value <= 0.0:
+        return 0.0
+    if value < 0.25:
+        value = 0.25
+    if value > 30.0:
+        value = 30.0
+    return value
 
 
 def _nats_url_needs_public_ws_refresh(value: str | None) -> bool:
@@ -563,7 +620,7 @@ class BootstrapService:
                         if not isinstance(node_nats, dict) or not node_nats:
                             return None, None, None
                         raw_nurl = str(node_nats.get("ws_url") or "").strip() or None
-                        nurl = normalize_nats_ws_url(raw_nurl, fallback=None)
+                        nurl = _normalize_hub_nats_ws_url(raw_nurl)
                         nuser = str(node_nats.get("user") or "") or None
                         npass = str(node_nats.get("pass") or "") or None
                         if nurl and raw_nurl and nurl != raw_nurl:
@@ -680,7 +737,7 @@ class BootstrapService:
                         return False
                     token = data.get("hub_nats_token")
                     nats_user = data.get("nats_user")
-                    nats_ws_url = normalize_nats_ws_url(data.get("nats_ws_url"))
+                    nats_ws_url = _normalize_hub_nats_ws_url(data.get("nats_ws_url"))
                     if not token or not nats_user or not nats_ws_url:
                         if debug:
                             try:
@@ -918,11 +975,10 @@ class BootstrapService:
                                     # Prefer WS endpoints only.
                                     # IMPORTANT: Keep this conservative — probing extra mounts/hosts has caused
                                     # "Authentication Timeout" hangs when we accidentally hit non-NATS WS endpoints.
-                                    if base:
-                                        _dedup_push(base)
-                                    # Known public endpoint as a fallback (explicitly WS-nats proxy).
-                                    _dedup_push("wss://nats.inimatic.com/nats")
-                                    _dedup_push("wss://api.inimatic.com/nats")
+                                    # The dedicated public hostname is opt-in only. In this environment it has
+                                    # been closing long-lived hub WS sessions shortly after the first client ping.
+                                    for item in _hub_public_ws_candidates(base):
+                                        _dedup_push(item)
                                     # Allow explicit WS alternates via env (comma-separated)
                                     extra = os.getenv("NATS_WS_URL_ALT")
                                     if extra:
@@ -940,18 +996,11 @@ class BootstrapService:
                                             if it.startswith("nats://"):
                                                 _dedup_push(it)
                             except Exception:
-                                # Fallback: if base present, use it only; otherwise default to WS domain
+                                # Fallback: if base present, use it only; otherwise default to the api ingress.
                                 if base:
                                     _dedup_push(base)
                                 else:
-                                    _dedup_push("wss://nats.inimatic.com")
-
-                            # Keep both `/nats` WS entrypoints:
-                            # - `wss://api.inimatic.com/nats` (root ingress)
-                            # - `wss://nats.inimatic.com/nats` (dedicated hostname)
-                            # Some environments historically observed HTTP 400 on the api-domain upgrade, but
-                            # keeping it as a candidate is safer than hard-filtering it out (it can be the only
-                            # reachable WS endpoint on certain networks).
+                                    _dedup_push(PUBLIC_NATS_WS_API)
                             try:
                                 now_m = time.monotonic()
                                 available = [s for s in candidates if now_m >= float(nats_server_quarantine_until.get(str(s), 0.0))]
@@ -960,9 +1009,10 @@ class BootstrapService:
                             except Exception:
                                 pass
 
-                            # Prefer the dedicated hostname over the root ingress when both are available.
+                            # Prefer the api-domain ingress by default. The dedicated hostname remains opt-in via
+                            # `HUB_NATS_PREFER_DEDICATED=1` for environments where it is known to be healthier.
                             try:
-                                pref_ded = os.getenv("HUB_NATS_PREFER_DEDICATED", "1")
+                                pref_ded = _hub_nats_prefer_dedicated()
                                 candidates = order_nats_ws_candidates(
                                     candidates,
                                     explicit_url=base,
@@ -2393,6 +2443,7 @@ class BootstrapService:
                         pending_chunks: dict[str, dict[str, Any]] = {}
                         pending_tunnel_events: dict[str, list[dict[str, Any]]] = {}
                         pending_tunnel_meta: dict[str, dict[str, Any]] = {}
+                        pending_tunnel_close_tasks: dict[str, asyncio.Task] = {}
                         MAX_CHUNK_RAW = 300_000
                         MAX_PENDING_TUNNEL_EVENTS = 128
 
@@ -2412,12 +2463,7 @@ class BootstrapService:
                             os.getenv("HUB_ROUTE_FRAME_VERBOSE", "0") == "1"
                             or os.getenv("ROUTE_PROXY_FRAME_VERBOSE", "0") == "1"
                         )
-                        try:
-                            _route_no_upstream_close_after_s = float(
-                                os.getenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S", "0") or "0"
-                            )
-                        except Exception:
-                            _route_no_upstream_close_after_s = 0.0
+                        _route_no_upstream_close_after_s = _hub_route_force_close_no_upstream_s()
 
                         try:
                             route_run_id = uuid.uuid4().hex[:6]
@@ -2574,8 +2620,45 @@ class BootstrapService:
                                 else:
                                     st["last_at"] = now
                                     st["count"] = int(st.get("count") or 0) + 1
+                                task = pending_tunnel_close_tasks.get(key)
+                                if (
+                                    _route_no_upstream_close_after_s > 0
+                                    and (task is None or task.done())
+                                ):
+                                    pending_tunnel_close_tasks[key] = asyncio.create_task(
+                                        _pending_tunnel_force_close_task(key),
+                                        name=f"hub-route-pending-close-{_key_tag(key)}",
+                                    )
                             except Exception:
                                 pass
+
+                        def _cancel_pending_tunnel_close(key: str) -> None:
+                            try:
+                                task = pending_tunnel_close_tasks.get(key)
+                                if not task:
+                                    return
+                                if task is asyncio.current_task():
+                                    pending_tunnel_close_tasks.pop(key, None)
+                                    return
+                                pending_tunnel_close_tasks.pop(key, None)
+                                task.cancel()
+                            except Exception:
+                                pass
+
+                        def _clear_pending_tunnel_state(key: str, *, drop_events: bool) -> None:
+                            try:
+                                _cancel_pending_tunnel_close(key)
+                            except Exception:
+                                pass
+                            try:
+                                pending_tunnel_meta.pop(key, None)
+                            except Exception:
+                                pass
+                            if drop_events:
+                                try:
+                                    pending_tunnel_events.pop(key, None)
+                                except Exception:
+                                    pass
 
                         async def _maybe_force_close_no_upstream(key: str) -> None:
                             if _route_no_upstream_close_after_s <= 0:
@@ -2590,15 +2673,38 @@ class BootstrapService:
                                 age = time.monotonic() - first_at
                                 if age < _route_no_upstream_close_after_s:
                                     return
+                                rec = tunnels.get(key)
+                                ws = rec.get("ws") if isinstance(rec, dict) else None
+                                if ws:
+                                    _clear_pending_tunnel_state(key, drop_events=False)
+                                    return
                                 # Ask root to close this tunnel so it re-opens with an "open" handshake.
-                                await _route_reply(key, {"t": "close", "err": "no_upstream"})
-                                pending_tunnel_meta.pop(key, None)
+                                try:
+                                    await _route_reply(key, {"t": "close", "err": "no_upstream"})
+                                finally:
+                                    _clear_pending_tunnel_state(key, drop_events=True)
                                 if _route_trace:
                                     _route_log(
                                         f"[hub-route] forced close key={_key_tag(key)} age_s={age:.2f} reason=no_upstream"
                                     )
                             except Exception:
                                 pass
+
+                        async def _pending_tunnel_force_close_task(key: str) -> None:
+                            try:
+                                await asyncio.sleep(_route_no_upstream_close_after_s)
+                                await _maybe_force_close_no_upstream(key)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                pass
+                            finally:
+                                try:
+                                    task = pending_tunnel_close_tasks.get(key)
+                                    if task is asyncio.current_task():
+                                        pending_tunnel_close_tasks.pop(key, None)
+                                except Exception:
+                                    pass
 
                         def _route_nc_diag() -> str:
                             try:
@@ -2916,7 +3022,7 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 try:
-                                    pending_tunnel_events.pop(key, None)
+                                    _clear_pending_tunnel_state(key, drop_events=True)
                                 except Exception:
                                     pass
                                 try:
@@ -3182,6 +3288,7 @@ class BootstrapService:
                                     # Open a local WS to the hub server and start pumping frames.
                                     if websockets_mod is None:
                                         route_outcome = "open_no_websockets"
+                                        _clear_pending_tunnel_state(key, drop_events=True)
                                         if _route_trace:
                                             _route_log(f"[hub-route] open upstream failed key={_key_tag(key)} err=websockets_unavailable")
                                         await _route_reply(key, {"t": "close", "err": "websockets_unavailable"})
@@ -3269,6 +3376,7 @@ class BootstrapService:
                                             )
                                     except Exception as e:
                                         route_outcome = f"open_connect_fail:{type(e).__name__}"
+                                        _clear_pending_tunnel_state(key, drop_events=True)
                                         if _route_trace:
                                             _route_log(
                                                 f"[hub-route] upstream.connect fail key={_key_tag(key)} err={type(e).__name__}: {e}"
@@ -3277,7 +3385,7 @@ class BootstrapService:
                                         return
                                     route_outcome = "open_connected"
                                     tunnels[key] = {"ws": ws, "url": url}
-                                    pending_tunnel_meta.pop(key, None)
+                                    _clear_pending_tunnel_state(key, drop_events=False)
                                     tunnel_tasks[key] = asyncio.create_task(_tunnel_reader(key, ws), name=f"hub-route-{key}")
                                     pending = pending_tunnel_events.pop(key, None) or []
                                     for pending_payload in pending:
@@ -3299,7 +3407,7 @@ class BootstrapService:
                                     route_outcome = "close_local"
                                     rec = tunnels.pop(key, None)
                                     task = tunnel_tasks.pop(key, None)
-                                    pending_tunnel_meta.pop(key, None)
+                                    _clear_pending_tunnel_state(key, drop_events=True)
                                     try:
                                         if task:
                                             task.cancel()

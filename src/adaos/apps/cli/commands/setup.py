@@ -139,6 +139,15 @@ def install(
         except Exception as exc:
             installed["warnings"].append(f"skill {skill_id}: {exc}")
 
+    # Persist native IO availability (voice/TTS) into node.yaml capacity so the
+    # system can avoid offering non-working IO paths on servers.
+    try:
+        from adaos.services.capacity import refresh_native_io_capacity
+
+        refresh_native_io_capacity()
+    except Exception as exc:
+        installed["warnings"].append(f"capacity refresh: {exc}")
+
     # Ensure the webspace has at least some UI/application seeded.
     try:
         default_scenario = chosen.scenarios[0] if chosen.scenarios else "web_desktop"
