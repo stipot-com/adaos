@@ -69,13 +69,19 @@ class _FakeTransport:
         return None
 
 
-def test_realtime_sidecar_enabled_defaults_to_windows_hub(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_realtime_sidecar_enabled_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_ENABLE", raising=False)
     monkeypatch.delenv("HUB_REALTIME_ENABLE", raising=False)
 
-    assert realtime_sidecar_enabled(role="hub", os_name="nt") is True
+    assert realtime_sidecar_enabled(role="hub", os_name="nt") is False
     assert realtime_sidecar_enabled(role="hub", os_name="posix") is False
     assert realtime_sidecar_enabled(role="root", os_name="nt") is False
+
+
+def test_realtime_sidecar_enabled_respects_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+
+    assert realtime_sidecar_enabled(role="hub", os_name="nt") is True
 
 
 def test_realtime_sidecar_local_url_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,10 +97,10 @@ def test_realtime_sidecar_loop_defaults_to_proactor(monkeypatch: pytest.MonkeyPa
     assert realtime_sidecar_mod._sidecar_loop_mode() == "proactor"
 
 
-def test_realtime_sidecar_ws_heartbeat_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_realtime_sidecar_ws_heartbeat_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_WS_HEARTBEAT_S", raising=False)
 
-    assert realtime_sidecar_mod._realtime_ws_heartbeat_s() == 20.0
+    assert realtime_sidecar_mod._realtime_ws_heartbeat_s() is None
 
 
 @pytest.mark.asyncio
@@ -276,7 +282,7 @@ async def test_realtime_sidecar_remote_connect_does_not_inherit_global_ws_heartb
     ws, _target = await server._connect_remote(session_id="rt-test")
     try:
         kwargs = dict(recorded["kwargs"])
-        assert kwargs["ping_interval"] == 20.0
+        assert kwargs["ping_interval"] is None
         assert kwargs["ping_timeout"] is None
     finally:
         await ws.close()

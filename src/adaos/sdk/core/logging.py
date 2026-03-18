@@ -7,6 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Tuple
+from datetime import datetime, timezone
 
 from ._ctx import require_ctx
 
@@ -14,14 +15,23 @@ __all__ = ["setup_scenario_logger", "JsonFormatter"]
 
 
 def _json_payload(record: logging.LogRecord) -> str:
+    try:
+        ts = float(getattr(record, "created", 0.0) or 0.0)
+    except Exception:
+        ts = 0.0
+    iso = None
+    try:
+        if ts:
+            iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except Exception:
+        iso = None
     base = {
         "level": record.levelname,
         "logger": record.name,
         "msg": record.getMessage(),
+        "time": iso,
+        "ts": ts or None,
     }
-    timestamp = getattr(record, "asctime", None)
-    if timestamp:
-        base["time"] = timestamp
     extra = getattr(record, "extra", None)
     if isinstance(extra, dict):
         base.update(extra)

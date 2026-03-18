@@ -13,11 +13,24 @@ from adaos.ports import EventBus
 
 
 def _json_formatter(record: logging.LogRecord) -> str:
+    # `record.asctime` is only populated when a base Formatter runs `formatTime()`.
+    # Since we generate JSON directly, compute timestamps ourselves.
+    try:
+        ts = float(getattr(record, "created", 0.0) or 0.0)
+    except Exception:
+        ts = 0.0
+    iso = None
+    try:
+        if ts:
+            iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except Exception:
+        iso = None
     base = {
         "level": record.levelname,
         "logger": record.name,
         "msg": record.getMessage(),
-        "time": getattr(record, "asctime", None),
+        "time": iso,
+        "ts": ts or None,
     }
     if hasattr(record, "extra"):
         try:

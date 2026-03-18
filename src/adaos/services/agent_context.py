@@ -18,10 +18,15 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 
 _CTX: ContextVar[Optional[AgentContext]] = ContextVar("adaos_agent_ctx", default=None)
+# ContextVars do not automatically propagate to worker threads (e.g. FastAPI
+# sync dependencies executed via run_in_threadpool). Keep a process-wide fallback.
+_GLOBAL_CTX: Optional["AgentContext"] = None
 
 
 def set_ctx(ctx: AgentContext) -> None:
     """Устанавливает текущий AgentContext (делает доступным через get_ctx)."""
+    global _GLOBAL_CTX
+    _GLOBAL_CTX = ctx
     _CTX.set(ctx)
 
 
@@ -29,12 +34,16 @@ def get_ctx() -> AgentContext:
     """Возвращает текущий AgentContext или бросает ошибку, если не инициализирован."""
     ctx = _CTX.get()
     if ctx is None:
+        ctx = _GLOBAL_CTX
+    if ctx is None:
         raise RuntimeError("AgentContext is not initialized. Call set_ctx(...) during app bootstrap.")
     return ctx
 
 
 def clear_ctx() -> None:
     """Очищает текущий контекст (для тестов/завершения)."""
+    global _GLOBAL_CTX
+    _GLOBAL_CTX = None
     _CTX.set(None)
 
 

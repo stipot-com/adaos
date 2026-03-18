@@ -11,6 +11,7 @@ from adaos.services.nats_ws_transport import (
     WebSocketTransportAiohttp,
     WebSocketTransportWebsockets,
     _extract_route_subjects,
+    _ws_data_heartbeat_s_from_env,
 )
 
 
@@ -61,6 +62,32 @@ class _FakeWebsocketsWS:
     async def close(self) -> None:
         self.closed = True
         self.state = "CLOSED"
+
+
+class _FakeWebsocketsPingWS:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.state = "OPEN"
+        self.pings: list[bytes] = []
+        self.subprotocol = "nats"
+        self.remote_address = ("127.0.0.1", 443)
+        self.local_address = ("127.0.0.1", 12345)
+        self.transport = SimpleNamespace(get_extra_info=lambda name: None)
+
+    async def recv(self) -> bytes | str:
+        await asyncio.Future()
+
+    async def ping(self, payload: bytes = b"") -> None:
+        self.pings.append(bytes(payload))
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state = "CLOSED"
+
+    async def wait_closed(self) -> None:
+        return None
 
 
 class _BlockingWebsocketsWS:
@@ -355,6 +382,105 @@ async def test_aiohttp_transport_manual_ws_heartbeat_sends_ping() -> None:
 
         assert fake_ws.pings
         assert transport._adaos_ws_pings_tx >= 1
+    finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_connect_uses_manual_ws_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("websockets")
+
+    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "20")
+    transport = WebSocketTransportWebsockets()
+    recorded: dict[str, object] = {}
+    fake_ws = _FakeWebsocketsPingWS()
+
+    async def _fake_connect(url: str, **kwargs):
+        recorded["url"] = url
+        recorded["kwargs"] = dict(kwargs)
+        return fake_ws
+
+    import websockets  # type: ignore
+
+    monkeypatch.setattr(websockets, "connect", _fake_connect)
+    try:
+        await transport.connect_tls(
+            "wss://example.invalid/nats",
+            ssl_context=None,  # type: ignore[arg-type]
+            buffer_size=0,
+            connect_timeout=5,
+        )
+
+        kwargs = recorded["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["ping_interval"] is None
+        assert kwargs["ping_timeout"] is None
+        assert transport._adaos_ws_heartbeat_mode == "manual_no_timeout"
+        assert transport._ws_heartbeat_task is not None
+    finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_manual_ws_heartbeat_sends_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = WebSocketTransportWebsockets()
+    fake_ws = _FakeWebsocketsPingWS()
+    try:
+        transport._ws = fake_ws
+        transport._adaos_nc = _FakeNC()
+        transport._adaos_ws_heartbeat = 0.01
+        transport._adaos_ws_heartbeat_mode = "manual_no_timeout"
+        transport._start_ws_heartbeat_task()
+
+        await asyncio.sleep(0.05)
+
+        assert fake_ws.pings
+        assert transport._adaos_ws_pings_tx >= 1
+    finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+def test_ws_data_heartbeat_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_DATA_HEARTBEAT_S", raising=False)
+
+    assert _ws_data_heartbeat_s_from_env() == 15.0
+
+
+def test_ws_data_heartbeat_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_DATA_HEARTBEAT_S", "0")
+
+    assert _ws_data_heartbeat_s_from_env() is None
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_data_heartbeat_sends_pong(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("websockets")
+
+    monkeypatch.delenv("HUB_NATS_WS_HEARTBEAT_S", raising=False)
+    monkeypatch.setenv("HUB_NATS_WS_DATA_HEARTBEAT_S", "5")
+    transport = WebSocketTransportWebsockets()
+    fake_ws = _FakeWebsocketsWS([])
+
+    async def _fake_connect(url: str, **kwargs):
+        return fake_ws
+
+    import websockets  # type: ignore
+
+    monkeypatch.setattr(websockets, "connect", _fake_connect)
+    try:
+        await transport.connect_tls(
+            "wss://example.invalid/nats",
+            ssl_context=None,  # type: ignore[arg-type]
+            buffer_size=0,
+            connect_timeout=5,
+        )
+
+        assert transport._data_heartbeat_task is not None
+        await transport._send_nats_pong(reason="data_hb")
+        assert b"PONG\r\n" in fake_ws.sent
     finally:
         transport.close()
         await transport.wait_closed()

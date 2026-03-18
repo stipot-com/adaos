@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from adaos.services.nats_config import normalize_nats_ws_url, nats_url_uses_websocket, order_nats_ws_candidates
+from adaos.services.nats_config import (
+    normalize_nats_ws_url,
+    nats_url_uses_websocket,
+    order_nats_ws_candidates,
+    public_nats_ws_candidates,
+)
 
 
 def test_normalize_nats_ws_url_adds_default_path() -> None:
@@ -17,6 +22,10 @@ def test_normalize_nats_ws_url_keeps_existing_path() -> None:
 
 def test_normalize_nats_ws_url_can_return_none() -> None:
     assert normalize_nats_ws_url(None, fallback=None) is None
+
+
+def test_normalize_nats_ws_url_defaults_to_api_ingress() -> None:
+    assert normalize_nats_ws_url(None) == "wss://api.inimatic.com/nats"
 
 
 def test_normalize_nats_ws_url_keeps_raw_tcp_nats_url() -> None:
@@ -64,3 +73,9 @@ def test_order_nats_ws_candidates_uses_preference_without_explicit() -> None:
         prefer_dedicated="0",
     )
     assert ordered == ["wss://api.inimatic.com/nats", "wss://nats.inimatic.com/nats"]
+
+
+def test_public_nats_ws_candidates_can_drop_dedicated_fallback() -> None:
+    assert public_nats_ws_candidates(prefer_dedicated="0", allow_dedicated_fallback=False) == [
+        "wss://api.inimatic.com/nats"
+    ]

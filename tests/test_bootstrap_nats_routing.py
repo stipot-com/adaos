@@ -43,3 +43,62 @@ def test_resolve_nats_log_server_prefers_current_attempt() -> None:
         )
         == "nats://127.0.0.1:7422"
     )
+
+
+def test_hub_nats_prefer_dedicated_defaults_to_api_domain(monkeypatch) -> None:
+    monkeypatch.delenv("HUB_NATS_PREFER_DEDICATED", raising=False)
+
+    assert bootstrap_mod._hub_nats_prefer_dedicated() == "0"
+
+
+def test_hub_nats_prefer_dedicated_respects_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv("HUB_NATS_PREFER_DEDICATED", "1")
+
+    assert bootstrap_mod._hub_nats_prefer_dedicated() == "1"
+
+
+def test_normalize_hub_nats_ws_url_rewrites_public_dedicated_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("HUB_NATS_PREFER_DEDICATED", raising=False)
+
+    assert bootstrap_mod._normalize_hub_nats_ws_url("wss://nats.inimatic.com/nats") == "wss://api.inimatic.com/nats"
+
+
+def test_normalize_hub_nats_ws_url_keeps_public_dedicated_on_opt_in(monkeypatch) -> None:
+    monkeypatch.setenv("HUB_NATS_PREFER_DEDICATED", "1")
+
+    assert bootstrap_mod._normalize_hub_nats_ws_url("wss://nats.inimatic.com/nats") == "wss://nats.inimatic.com/nats"
+
+
+def test_hub_public_ws_candidates_default_to_api_only(monkeypatch) -> None:
+    monkeypatch.delenv("HUB_NATS_PREFER_DEDICATED", raising=False)
+
+    assert bootstrap_mod._hub_public_ws_candidates(None) == ["wss://api.inimatic.com/nats"]
+
+
+def test_hub_public_ws_candidates_rewrite_public_dedicated_default(monkeypatch) -> None:
+    monkeypatch.delenv("HUB_NATS_PREFER_DEDICATED", raising=False)
+
+    assert bootstrap_mod._hub_public_ws_candidates("wss://nats.inimatic.com/nats") == [
+        "wss://api.inimatic.com/nats"
+    ]
+
+
+def test_hub_public_ws_candidates_can_opt_in_dedicated(monkeypatch) -> None:
+    monkeypatch.setenv("HUB_NATS_PREFER_DEDICATED", "1")
+
+    assert bootstrap_mod._hub_public_ws_candidates("wss://nats.inimatic.com/nats") == [
+        "wss://nats.inimatic.com/nats",
+        "wss://api.inimatic.com/nats",
+    ]
+
+
+def test_hub_route_force_close_no_upstream_defaults_enabled(monkeypatch) -> None:
+    monkeypatch.delenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S", raising=False)
+
+    assert bootstrap_mod._hub_route_force_close_no_upstream_s() == 1.5
+
+
+def test_hub_route_force_close_no_upstream_can_disable(monkeypatch) -> None:
+    monkeypatch.setenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S", "0")
+
+    assert bootstrap_mod._hub_route_force_close_no_upstream_s() == 0.0
