@@ -4,6 +4,9 @@ set -euo pipefail
 
 SUBMODULE_PATH="src/adaos/integrations/inimatic"
 
+VENV_DIR=".venv"
+VENV_ACTIVATE=".venv/bin/activate"
+
 JOIN_CODE=""
 ROLE=""
 INSTALL_SERVICE="auto" # auto|always|never
@@ -22,6 +25,25 @@ fail() { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 ORIG_ARGS=("$@")
+
+detect_venv_activate() {
+  if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+    VENV_ACTIVATE="${VENV_DIR}/bin/activate"
+    return 0
+  fi
+  if [[ -f "${VENV_DIR}/Scripts/activate" ]]; then
+    # Not expected on Linux/macOS, but helps on Git-Bash style envs.
+    VENV_ACTIVATE="${VENV_DIR}/Scripts/activate"
+    return 0
+  fi
+  return 1
+}
+
+venv_is_usable() {
+  [[ -d "${VENV_DIR}" ]] || return 1
+  detect_venv_activate || return 1
+  return 0
+}
 
 http_get() {
   local url="$1"
@@ -204,9 +226,9 @@ Next steps:
 EOF
 
   if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
-    "$SHELL" --rcfile <(printf 'source .venv/bin/activate\nprintf "%s\n"\n' "$help_text") -i
+    "$SHELL" --rcfile <(printf 'source %s\nprintf "%s\n"\n' "${VENV_ACTIVATE:-.venv/bin/activate}" "$help_text") -i
   else
-    bash --rcfile <(printf 'source .venv/bin/activate\nprintf "%s\n"\n' "$help_text") -i
+    bash --rcfile <(printf 'source %s\nprintf "%s\n"\n' "${VENV_ACTIVATE:-.venv/bin/activate}" "$help_text") -i
   fi
 }
 
@@ -264,17 +286,29 @@ if ! choose_python_311; then
   fallback_to_uv "Python 3.11 not found (or not on PATH)."
 fi
 
+log "Checking Python venv support..."
+if ! "$PY_BIN" -c "import venv, ensurepip" >/dev/null 2>&1; then
+  warn "System Python cannot create venv with pip (missing venv/ensurepip)."
+  warn "If you are on Debian/Ubuntu, try: sudo apt-get install -y python3.11-venv"
+  fallback_to_uv "System Python venv support is missing."
+fi
+
 log "Creating venv (.venv)..."
-if [[ -d .venv ]]; then
-  VENV_VER="$(. .venv/bin/activate >/dev/null 2>&1 && python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")' || true)"
-  if [[ -n "${VENV_VER:-}" && "$VENV_VER" != "$PY_VER" ]]; then
-    warn "Existing .venv is $VENV_VER; recreating for $PY_VER..."
-    rm -rf .venv
+if [[ -d "${VENV_DIR}" ]]; then
+  if ! venv_is_usable; then
+    warn "Existing ${VENV_DIR} looks incomplete (missing activate script); removing..."
+    rm -rf "${VENV_DIR}"
+  else
+    VENV_VER="$(. "$VENV_ACTIVATE" >/dev/null 2>&1 && python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")' || true)"
+    if [[ -n "${VENV_VER:-}" && "$VENV_VER" != "$PY_VER" ]]; then
+      warn "Existing ${VENV_DIR} is $VENV_VER; recreating for $PY_VER..."
+      rm -rf "${VENV_DIR}"
+    fi
   fi
 fi
-if [[ ! -d .venv ]]; then
+if [[ ! -d "${VENV_DIR}" ]]; then
   set +e
-  venv_out="$("$PY_BIN" -m venv .venv 2>&1)"
+  venv_out="$("$PY_BIN" -m venv "${VENV_DIR}" 2>&1)"
   rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
@@ -284,7 +318,24 @@ if [[ ! -d .venv ]]; then
 fi
 
 log "Installing Python deps (editable)..."
-. .venv/bin/activate
+if ! venv_is_usable; then
+  warn "${VENV_DIR} was created but activate script is missing. Trying to recreate venv once..."
+  rm -rf "${VENV_DIR}"
+  set +e
+  venv_out="$("$PY_BIN" -m venv "${VENV_DIR}" 2>&1)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    printf '%s\n' "$venv_out" >&2
+    warn "If you are on Debian/Ubuntu, try: sudo apt-get install -y python3.11-venv"
+    fallback_to_uv "venv recreation failed."
+  fi
+  if ! venv_is_usable; then
+    warn "If you are on Debian/Ubuntu, try: sudo apt-get install -y python3.11-venv"
+    fallback_to_uv "Broken venv layout."
+  fi
+fi
+. "$VENV_ACTIVATE"
 python -m pip install -U pip >/dev/null
 python -m pip install -e .[dev] || fail "pip install -e .[dev] failed"
 install_voice_deps "python"
@@ -389,5 +440,5 @@ if [[ -z "${deep_link:-}" ]]; then
 fi
 
 print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub"
-printf "\nTo activate venv:\n  source .venv/bin/activate\n\n"
+printf "\nTo activate venv:\n  source %s\n\n" "${VENV_ACTIVATE:-.venv/bin/activate}"
 open_subshell_help
