@@ -144,6 +144,7 @@ try {
 }
 
 $env:ADAOS_REV = $Rev
+$env:ADAOS_API_BASE = $RootUrl
 
 function Test-TcpPortAvailable {
   param([Parameter(Mandatory = $true)][int]$Port)
@@ -183,21 +184,12 @@ function Start-AdaosApiDetached {
   )
   $pythonExe = (Resolve-Path ".\\.venv\\Scripts\\python.exe").Path
   $repoDir = (Resolve-Path ".").Path
-  $powershellExe = (Get-Command powershell).Source
-  $command = @"
-Set-Location -LiteralPath $(ConvertTo-PowerShellLiteral -Value $repoDir)
-`$env:PYTHONUNBUFFERED = '1'
-& $(ConvertTo-PowerShellLiteral -Value $pythonExe) -u -m adaos api serve --host $(ConvertTo-PowerShellLiteral -Value $BindHost) --port $BindPort
-if (`$LASTEXITCODE -ne 0) {
-  Write-Host ('AdaOS API exited with code {0}' -f `$LASTEXITCODE) -ForegroundColor Red
-}
-"@
   Start-Process `
-    -FilePath $powershellExe `
+    -FilePath $pythonExe `
     -WorkingDirectory $repoDir `
-    -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $command) `
+    -WindowStyle Hidden `
+    -ArgumentList @("-u", "-m", "adaos", "api", "serve", "--host", $BindHost, "--port", "$BindPort") `
     | Out-Null
-  Write-Host "AdaOS API started in a separate PowerShell window."
 }
 
 function Get-AdaosNodeYamlField {
@@ -232,6 +224,19 @@ function Wait-AdaosReady {
     Start-Sleep -Seconds 2
   }
   return $null
+}
+
+function Show-QrIfAvailable {
+  param([Parameter(Mandatory = $true)][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return }
+  try {
+    $cmd = Get-Command qrencode -ErrorAction SilentlyContinue
+    if (-not $cmd) { return }
+    Write-Host ""
+    Write-Host "     (QR)"
+    & qrencode -t ANSIUTF8 $Text 2>$null
+    Write-Host ""
+  } catch { }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
@@ -271,6 +276,14 @@ if (-not [string]::IsNullOrWhiteSpace($desiredRole)) {
   }
 }
 
+if ($desiredRole -eq "hub") {
+  try {
+    Write-Host "Initializing Root subnet (adaos dev root init)..."
+    Invoke-Adaos dev root init | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Warning "adaos dev root init failed (check output above)." }
+  } catch { Write-Warning "adaos dev root init failed: $($_.Exception.Message)" }
+}
+
 Write-Host ("Starting AdaOS API ({0}:{1}) ..." -f $ServeHost, $ServePort)
 $serviceInstalled = $false
 if ($InstallService -ne "never") {
@@ -297,12 +310,24 @@ if (-not $serviceInstalled -or $InstallService -eq "never") {
 
 $st = Wait-AdaosReady -TimeoutSec 120
 $deepLink = $null
+$tgPairCode = $null
+$ownerAuth = $null
 try {
   Write-Host "Generating Telegram pairing link..."
   $tg = Invoke-Adaos dev telegram 2>$null | Out-String
   if (-not [string]::IsNullOrWhiteSpace($tg)) {
+    $codeLine = ($tg -split "`r?`n") | Where-Object { $_ -match "^\s*pair_code:\s*" } | Select-Object -First 1
+    if ($codeLine) { $tgPairCode = ($codeLine -replace "^\s*pair_code:\s*", "").Trim() }
     $deepLine = ($tg -split "`r?`n") | Where-Object { $_ -match "^\s*deep_link:\s*" } | Select-Object -First 1
     if ($deepLine) { $deepLink = ($deepLine -replace "^\s*deep_link:\s*", "").Trim() }
+  }
+} catch { }
+
+try {
+  Write-Host "Generating Owner browser pairing code..."
+  $ownerJson = Invoke-Adaos dev root login --print-only --json 2>$null | Out-String
+  if (-not [string]::IsNullOrWhiteSpace($ownerJson)) {
+    $ownerAuth = $ownerJson | ConvertFrom-Json
   }
 } catch { }
 
@@ -320,13 +345,25 @@ Write-Host "Next steps:"
 if ($deepLink) {
   Write-Host "  1) Telegram: open and confirm pairing:"
   Write-Host ("     {0}" -f $deepLink)
+  if ($tgPairCode) { Write-Host ("     pair_code: {0}" -f $tgPairCode) }
+  Show-QrIfAvailable -Text $deepLink
 } else {
   Write-Host "  1) Telegram pairing:"
   Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev telegram"
 }
 Write-Host "  2) Owner browser:"
-Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev root login"
-Write-Host "     Then open https://app.inimatic.com/owner-auth and enter the code."
+if ($ownerAuth -and $ownerAuth.verification_uri_complete) {
+  Write-Host ("     Open: {0}" -f $ownerAuth.verification_uri_complete)
+  Write-Host ("     user_code: {0}" -f $ownerAuth.user_code)
+  Show-QrIfAvailable -Text $ownerAuth.verification_uri_complete
+} elseif ($ownerAuth -and $ownerAuth.verification_uri) {
+  Write-Host ("     Open: {0}" -f $ownerAuth.verification_uri)
+  Write-Host ("     user_code: {0}" -f $ownerAuth.user_code)
+  Show-QrIfAvailable -Text $ownerAuth.verification_uri
+} else {
+  Write-Host "     .\\.venv\\Scripts\\python.exe -m adaos dev root login"
+  Write-Host "     Then open https://app.inimatic.com/owner-auth and enter the code."
+}
 Write-Host "  3) Start/stop/restart AdaOS API:"
 Write-Host ("     Start (foreground): .\\.venv\\Scripts\\python.exe -m adaos api serve --host {0} --port {1}" -f $ServeHost, $ServePort)
 Write-Host "     Stop:              .\\.venv\\Scripts\\python.exe -m adaos api stop"
@@ -341,3 +378,7 @@ if ($st -and $st.role -eq "member") {
 Write-Host ""
 Write-Host "Docs:"
 Write-Host "  https://stipot-com.github.io/adaos/"
+if (-not (Get-Command qrencode -ErrorAction SilentlyContinue)) {
+  Write-Host ""
+  Write-Host "Tip: install 'qrencode' to show QR codes in terminal."
+}

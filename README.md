@@ -11,6 +11,7 @@ git clone -b rev2026 https://github.com/stipot-com/adaos.git
 cd adaos
 
 # 1. mac/linux:
+sudo apt-get install -y python3.11-venv
 bash tools/bootstrap.sh
 source ./.venv/bin/activate
 adaos --help
@@ -40,13 +41,13 @@ uv lock; uv sync
 python -m adaos hub join-code create
 ```
 
-2) On the member node, run bootstrap with that code (no tokens in CLI args). By default this joins via Root (`https://api.inimatic.com`):
+1) On the member node, run bootstrap with that code (no tokens in CLI args). By default this joins via Root (`https://api.inimatic.com`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE>
 ```
 
-3) Verify local readiness:
+1) Verify local readiness:
 
 ```bash
 python -m adaos node status --control http://127.0.0.1:8777 --json

@@ -207,7 +207,18 @@ def _echo_init_result(result: RootInitResult) -> None:
 
 
 @root_app.command("login")
-def root_login() -> None:
+def root_login(
+    print_only: bool = typer.Option(
+        False,
+        "--print-only",
+        help="Print device authorization URL+code and exit (no polling).",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="When used with --print-only, output JSON (useful for bootstrap scripts).",
+    ),
+) -> None:
     service = _service()
 
     def on_authorize(auth: DeviceAuthorization) -> None:
@@ -220,6 +231,28 @@ def root_login() -> None:
         typer.echo(f"Polling every {auth.interval} seconds (expires in {auth.expires_in // 60} minutes)…")
 
     try:
+        if print_only:
+            auth = service.device_authorize()
+            if json_output:
+                payload = {
+                    "user_code": auth.user_code,
+                    "verification_uri": auth.verification_uri,
+                    "verification_uri_complete": auth.verification_uri_complete,
+                    "expires_in": auth.expires_in,
+                    "interval": auth.interval,
+                }
+                typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+                raise typer.Exit(0)
+
+            typer.secho("Owner browser pairing:", fg=typer.colors.GREEN)
+            typer.echo(f"  user_code: {auth.user_code}")
+            if auth.verification_uri_complete:
+                typer.echo(f"  verification_uri_complete: {auth.verification_uri_complete}")
+            typer.echo(f"  verification_uri: {auth.verification_uri}")
+            typer.echo(f"  expires_in: {auth.expires_in}")
+            typer.echo(f"  interval: {auth.interval}")
+            raise typer.Exit(0)
+
         result = service.login(on_authorize=on_authorize)
     except RootServiceError as exc:
         _print_error(str(exc))

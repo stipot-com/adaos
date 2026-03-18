@@ -26,6 +26,16 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 ORIG_ARGS=("$@")
 
+show_qr_if_available() {
+  local text="$1"
+  [[ -z "${text:-}" ]] && return 0
+  have qrencode || return 0
+  echo
+  echo "     (QR)"
+  qrencode -t ANSIUTF8 "$text" 2>/dev/null || true
+  echo
+}
+
 detect_venv_activate() {
   if [[ -f "${VENV_DIR}/bin/activate" ]]; then
     VENV_ACTIVATE="${VENV_DIR}/bin/activate"
@@ -109,6 +119,9 @@ print_next_steps() {
   local role="$3"
   local deep_link="$4"
   local connected_to_hub="$5"
+  local tg_pair_code="${6:-}"
+  local owner_url="${7:-}"
+  local owner_code="${8:-}"
 
   echo
   ok "Bootstrap completed."
@@ -117,13 +130,23 @@ print_next_steps() {
   if [[ -n "${deep_link:-}" ]]; then
     echo "  1) Telegram: open and confirm pairing:"
     echo "     ${deep_link}"
+    if [[ -n "${tg_pair_code:-}" ]]; then
+      echo "     pair_code: ${tg_pair_code}"
+    fi
+    show_qr_if_available "${deep_link}"
   else
     echo "  1) Telegram pairing:"
     echo "     python -m adaos dev telegram"
   fi
   echo "  2) Owner browser:"
-  echo "     python -m adaos dev root login"
-  echo "     Then open https://app.inimatic.com/owner-auth and enter the code."
+  if [[ -n "${owner_url:-}" && -n "${owner_code:-}" ]]; then
+    echo "     Open: ${owner_url}"
+    echo "     user_code: ${owner_code}"
+    show_qr_if_available "${owner_url}"
+  else
+    echo "     python -m adaos dev root login"
+    echo "     Then open https://app.inimatic.com/owner-auth and enter the code."
+  fi
   echo "  3) Start/stop/restart AdaOS API:"
   echo "     Start (foreground): python -m adaos api serve --host ${serve_host} --port ${serve_port}"
   echo "     Stop:              python -m adaos api stop"
@@ -138,6 +161,10 @@ print_next_steps() {
   echo
   echo "Docs:"
   echo "  https://stipot-com.github.io/adaos/"
+  if ! have qrencode; then
+    echo
+    echo "Tip: install 'qrencode' to show QR codes in terminal."
+  fi
 }
 
 install_voice_deps() {
@@ -381,6 +408,7 @@ if ! python -m adaos install; then
 fi
 
 export ADAOS_REV="$REV"
+export ADAOS_API_BASE="$ROOT_URL"
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
@@ -393,6 +421,13 @@ if [[ -n "${ROLE:-}" ]]; then
   log "Setting node role: $ROLE"
   if ! python -m adaos node role set --role "$ROLE"; then
     warn "adaos node role set failed (check output above)"
+  fi
+fi
+
+if [[ "${ROLE:-}" == "hub" ]]; then
+  log "Initializing Root subnet (adaos dev root init)..."
+  if ! python -m adaos dev root init; then
+    warn "adaos dev root init failed (check output above)"
   fi
 fi
 
@@ -437,18 +472,32 @@ while [[ $(date +%s) -lt $deadline ]]; do
 done
 
 deep_link=""
+tg_pair_code=""
 log "Generating Telegram pairing link..."
 set +e
 tg_out="$(python -m adaos dev telegram 2>&1)"
 tg_rc=$?
 set -e
 if [[ $tg_rc -eq 0 ]]; then
+  tg_pair_code="$(printf '%s\n' "$tg_out" | sed -n 's/^[[:space:]]*pair_code:[[:space:]]*//p' | head -n 1 | tr -d '\r' || true)"
   deep_link="$(printf '%s\n' "$tg_out" | sed -n 's/^[[:space:]]*deep_link:[[:space:]]*//p' | head -n 1 | tr -d '\r' || true)"
 fi
 if [[ -z "${deep_link:-}" ]]; then
   warn "Telegram pairing link not generated automatically. Run: python -m adaos dev telegram"
 fi
 
-print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub"
+owner_url=""
+owner_code=""
+log "Generating Owner browser pairing code..."
+set +e
+owner_json="$(python -m adaos dev root login --print-only --json 2>/dev/null)"
+owner_rc=$?
+set -e
+if [[ $owner_rc -eq 0 && -n "${owner_json:-}" ]]; then
+  owner_url="$(python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print((d.get("verification_uri_complete") or d.get("verification_uri") or "").strip())' <<<"$owner_json" 2>/dev/null || true)"
+  owner_code="$(python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print((d.get("user_code") or "").strip())' <<<"$owner_json" 2>/dev/null || true)"
+fi
+
+print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub" "$tg_pair_code" "$owner_url" "$owner_code"
 printf "\nTo activate venv:\n  source %s\n\n" "${VENV_ACTIVATE:-.venv/bin/activate}"
 open_subshell_help

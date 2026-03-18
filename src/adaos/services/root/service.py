@@ -867,6 +867,111 @@ class RootDeveloperService:
         )
         return payload if isinstance(payload, dict) else {"ok": False, "payload": payload}
 
+    def _start_device_authorization(
+        self,
+        cfg: NodeConfig,
+        *,
+        client: RootHttpClient,
+        verify_plain: ssl.SSLContext | bool,
+        owner_id_hint: str,
+    ) -> tuple[DeviceAuthorization, ssl.SSLContext | bool, tuple[str, str] | None]:
+        authorize_cert: tuple[str, str] | None = None
+        authorize_verify: ssl.SSLContext | bool = verify_plain
+
+        mtls_material = self._mtls_material_optional(cfg, verify_plain)
+        if mtls_material:
+            cert_path, key_path, mtls_verify = mtls_material
+            authorize_cert = (cert_path, key_path)
+            authorize_verify = mtls_verify
+            try:
+                start = client.device_authorize(
+                    verify=authorize_verify,
+                    cert=authorize_cert,
+                    payload={"owner_id": owner_id_hint},
+                )
+            except RootHttpError as exc:
+                if self._is_certificate_error(exc):
+                    raise RootServiceError(
+                        "Root rejected the hub client certificate; run 'adaos dev root init' to rotate credentials",
+                    ) from exc
+                authorize_cert = None
+                authorize_verify = verify_plain
+                try:
+                    start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
+                except RootHttpError as retry_exc:
+                    try:
+                        fallback = self._maybe_retry_with_mtls(cfg, retry_exc)
+                    except RootServiceError as mtls_exc:
+                        raise mtls_exc from retry_exc
+                    if not fallback:
+                        raise RootServiceError(str(retry_exc)) from retry_exc
+                    authorize_verify, authorize_cert = fallback
+                    try:
+                        start = client.device_authorize(
+                            verify=authorize_verify,
+                            cert=authorize_cert,
+                            payload={"owner_id": owner_id_hint},
+                        )
+                    except RootHttpError as second_exc:
+                        raise RootServiceError(str(second_exc)) from second_exc
+        else:
+            try:
+                start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
+            except RootHttpError as exc:
+                try:
+                    fallback = self._maybe_retry_with_mtls(cfg, exc)
+                except RootServiceError as mtls_exc:
+                    raise mtls_exc from exc
+                if not fallback:
+                    raise RootServiceError(str(exc)) from exc
+                authorize_verify, authorize_cert = fallback
+                try:
+                    start = client.device_authorize(
+                        verify=authorize_verify,
+                        cert=authorize_cert,
+                        payload={"owner_id": owner_id_hint},
+                    )
+                except RootHttpError as retry_exc:
+                    raise RootServiceError(str(retry_exc)) from retry_exc
+
+        device_code = start.get("device_code")
+        user_code = start.get("user_code") or start.get("user_code_short")
+        verification_uri = start.get("verify_uri")
+        verification_complete = start.get("verification_uri_complete")
+        interval = max(int(start.get("interval", 5)), 1)
+        expires_in = int(start.get("expires_in", 600))
+        if not isinstance(device_code, str) or not isinstance(user_code, str) or not isinstance(verification_uri, str):
+            raise RootServiceError("Root did not return device authorization data")
+
+        auth = DeviceAuthorization(
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri=verification_uri,
+            verification_uri_complete=verification_complete if isinstance(verification_complete, str) else None,
+            interval=interval,
+            expires_in=expires_in,
+        )
+        return auth, authorize_verify, authorize_cert
+
+    def device_authorize(self, *, owner_id_hint: str | None = None) -> DeviceAuthorization:
+        """
+        Start a browser/device authorization flow and return the code+URL without polling.
+
+        Intended for bootstrap scripts that want to print a pairing URL / QR and let the user
+        complete the flow later.
+        """
+        cfg = self._load_config()
+        verify_plain = self._plain_verify(cfg)
+        client = self._client(cfg)
+        hint = owner_id_hint or cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
+        auth, _verify, _cert = self._start_device_authorization(
+            cfg,
+            client=client,
+            verify_plain=verify_plain,
+            owner_id_hint=hint,
+        )
+        return auth
+
     def login(
         self,
         *,
@@ -879,78 +984,12 @@ class RootDeveloperService:
         try:
             verify_plain = self._plain_verify(cfg)
             client = self._client(cfg)
-
-            authorize_cert: tuple[str, str] | None = None
-            authorize_verify: ssl.SSLContext | bool = verify_plain
-
-            mtls_material = self._mtls_material_optional(cfg, verify_plain)
-            if mtls_material:
-                cert_path, key_path, mtls_verify = mtls_material
-                authorize_cert = (cert_path, key_path)
-                authorize_verify = mtls_verify
-                owner_id_hint = cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
-                start = client.device_authorize(
-                    verify=authorize_verify,
-                    cert=authorize_cert,
-                    payload={"owner_id": owner_id_hint},
-                )
-                try:
-                    start = client.device_authorize(verify=authorize_verify, cert=authorize_cert, payload={"owner_id": owner_id_hint})
-                except RootHttpError as exc:
-                    if self._is_certificate_error(exc):
-                        raise RootServiceError(
-                            "Root rejected the hub client certificate; run 'adaos dev root init' to rotate credentials",
-                        ) from exc
-                    authorize_cert = None
-                    authorize_verify = verify_plain
-                    try:
-                        start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
-                    except RootHttpError as retry_exc:
-                        try:
-                            fallback = self._maybe_retry_with_mtls(cfg, retry_exc)
-                        except RootServiceError as mtls_exc:
-                            raise mtls_exc from retry_exc
-                        if not fallback:
-                            raise RootServiceError(str(retry_exc)) from retry_exc
-                        authorize_verify, authorize_cert = fallback
-                        try:
-                            start = client.device_authorize(verify=authorize_verify, cert=authorize_cert, payload={"owner_id": owner_id_hint})
-                        except RootHttpError as second_exc:
-                            raise RootServiceError(str(second_exc)) from second_exc
-            else:
-                owner_id_hint = cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
-                try:
-                    start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
-                except RootHttpError as exc:
-                    try:
-                        fallback = self._maybe_retry_with_mtls(cfg, exc)
-                    except RootServiceError as mtls_exc:
-                        raise mtls_exc from exc
-                    if not fallback:
-                        raise RootServiceError(str(exc)) from exc
-                    authorize_verify, authorize_cert = fallback
-                    try:
-                        start = client.device_authorize(verify=authorize_verify, cert=authorize_cert, payload={"owner_id": owner_id_hint})
-                    except RootHttpError as retry_exc:
-                        raise RootServiceError(str(retry_exc)) from retry_exc
-
-            device_code = start.get("device_code")
-            user_code = start.get("user_code") or start.get("user_code_short")
-            verification_uri = start.get("verify_uri")
-            verification_complete = start.get("verification_uri_complete")
-            interval = max(int(start.get("interval", 5)), 1)
-            expires_in = int(start.get("expires_in", 600))
-            print("_log", device_code, user_code, verification_uri)
-            if not isinstance(device_code, str) or not isinstance(user_code, str) or not isinstance(verification_uri, str):
-                raise RootServiceError("Root did not return device authorization data")
-
-            auth = DeviceAuthorization(
-                device_code=device_code,
-                user_code=user_code,
-                verification_uri=verification_uri,
-                verification_uri_complete=verification_complete if isinstance(verification_complete, str) else None,
-                interval=interval,
-                expires_in=expires_in,
+            owner_id_hint = cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
+            auth, authorize_verify, authorize_cert = self._start_device_authorization(
+                cfg,
+                client=client,
+                verify_plain=verify_plain,
+                owner_id_hint=owner_id_hint,
             )
             if on_authorize:
                 on_authorize(auth)
