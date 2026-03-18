@@ -450,6 +450,19 @@ if ($InstallService -ne "never") {
 
 if ($serviceInstalled) {
     try { schtasks /Run /TN "AdaOS" | Out-Null } catch { }
+    try {
+        $as = Invoke-Adaos autostart status --json 2>$null | Out-String
+        if (-not [string]::IsNullOrWhiteSpace($as)) {
+            $asObj = $as | ConvertFrom-Json
+            $active = $asObj.active
+            $listening = $asObj.listening
+            if (($active -ne $true) -or ($listening -eq $false)) {
+                Write-Warning "Autostart is enabled but not active; falling back to detached process."
+                $serviceInstalled = $false
+            }
+        }
+    }
+    catch { }
 }
 
 if (-not $serviceInstalled -or $InstallService -eq "never") {

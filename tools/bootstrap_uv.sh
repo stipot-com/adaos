@@ -346,6 +346,25 @@ if [[ "$INSTALL_SERVICE" != "never" ]]; then
   if "$ADAOS_PY" -m adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
     service_installed=1
     ok "Autostart installed (adaos autostart enable)"
+    # Best-effort start:
+    # - Windows (Git-Bash/MSYS): scheduled task is installed but not started automatically.
+    # - Linux without systemctl (containers/WSL without systemd): enable writes unit but cannot start it.
+    if have schtasks; then
+      schtasks /Run /TN "AdaOS" >/dev/null 2>&1 || true
+    fi
+    # If autostart cannot report "active: true", fall back to background serve.
+    set +e
+    as_json="$("$ADAOS_PY" -m adaos autostart status --json 2>/dev/null)"
+    as_rc=$?
+    set -e
+    if [[ $as_rc -eq 0 && -n "${as_json:-}" ]]; then
+      active="$("$ADAOS_PY" -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("active"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true)"
+      listening="$("$ADAOS_PY" -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("listening"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true)"
+      if [[ "${active:-}" != "true" || "${listening:-}" == "false" ]]; then
+        warn "Autostart is enabled but not active; falling back to background run"
+        service_installed=0
+      fi
+    fi
   else
     warn "autostart enable failed; will fallback to background run"
   fi

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import platform
+import re
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -108,6 +110,49 @@ def _write_wrapper_sh(path: Path, *, argv: Sequence[str], env: Mapping[str, str]
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _tcp_probe(host: str, port: int, *, timeout: float = 0.6) -> bool:
+    host = str(host or "").strip() or "127.0.0.1"
+    try:
+        port_i = int(port)
+    except Exception:
+        return False
+    try:
+        with socket.create_connection((host, port_i), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
+    """
+    Best-effort extract `--host` / `--port` from our generated wrapper scripts.
+
+    - Linux/macOS wrapper is a small bash script with an `exec ... --host X --port Y` line.
+    - Windows wrapper is PowerShell and contains an args array with '--host', 'X', '--port', 'Y'.
+    """
+    try:
+        text = wrapper.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    host = None
+    port = None
+
+    # Common patterns.
+    m_host = re.search(r"(?:^|\\s)--host\\s+([0-9A-Za-z_.:\\[\\]-]+)", text, flags=re.IGNORECASE | re.MULTILINE)
+    if m_host:
+        host = m_host.group(1).strip().strip("'\"")
+    m_port = re.search(r"(?:^|\\s)--port\\s+([0-9]{2,6})", text, flags=re.IGNORECASE | re.MULTILINE)
+    if m_port:
+        try:
+            port = int(m_port.group(1))
+        except Exception:
+            port = None
+
+    if not host or not port:
+        return None
+    return host, port
 
 
 def _windows_task_name() -> str:
@@ -292,7 +337,20 @@ def status(ctx: AgentContext) -> dict:
         name = _windows_task_name()
         proc = _run(["schtasks", "/Query", "/TN", name])
         wrapper = (bin_dir / "adaos-autostart.ps1").resolve()
-        return {"platform": "windows", "enabled": proc.returncode == 0, "task": name, "wrapper": str(wrapper)}
+        host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
+        host, port = host_port or ("127.0.0.1", 8777)
+        listening = _tcp_probe(host, port) if proc.returncode == 0 else False
+        return {
+            "platform": "windows",
+            "enabled": proc.returncode == 0,
+            "active": None,
+            "listening": listening,
+            "host": host,
+            "port": port,
+            "url": f"http://{host}:{int(port)}",
+            "task": name,
+            "wrapper": str(wrapper),
+        }
 
     if _is_linux():
         service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
@@ -304,10 +362,17 @@ def status(ctx: AgentContext) -> dict:
             is_active = _run(["systemctl", "--user", "is-active", _linux_service_name()])
             active = is_active.returncode == 0
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
+        host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
+        host, port = host_port or ("127.0.0.1", 8777)
+        listening = _tcp_probe(host, port) if active else False
         return {
             "platform": "linux",
             "enabled": bool(enabled),
             "active": active,
+            "listening": listening,
+            "host": host,
+            "port": port,
+            "url": f"http://{host}:{int(port)}",
             "service": str(service_path),
             "wrapper": str(wrapper),
         }
@@ -322,10 +387,17 @@ def status(ctx: AgentContext) -> dict:
             probe = _run(["launchctl", "print", f"{domain}/{_macos_label()}"])
             active = probe.returncode == 0
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
+        host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
+        host, port = host_port or ("127.0.0.1", 8777)
+        listening = _tcp_probe(host, port) if active else False
         return {
             "platform": "macos",
             "enabled": bool(enabled),
             "active": active,
+            "listening": listening,
+            "host": host,
+            "port": port,
+            "url": f"http://{host}:{int(port)}",
             "plist": str(plist_path),
             "wrapper": str(wrapper),
         }

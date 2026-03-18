@@ -325,7 +325,13 @@ def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=
     else:
         enabled = s.get("enabled")
         active = s.get("active")
-        typer.echo(f"enabled: {enabled}" + (f", active: {active}" if active is not None else ""))
+        listening = s.get("listening")
+        msg = f"enabled: {enabled}" + (f", active: {active}" if active is not None else "")
+        if listening is not None:
+            msg += f", listening: {listening}"
+        typer.echo(msg)
+        if "url" in s:
+            typer.echo(f"url: {s['url']}")
         if "service" in s:
             typer.echo(f"service: {s['service']}")
         if "task" in s:
