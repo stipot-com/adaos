@@ -1,0 +1,10 @@
+services:
+  mcp-db:
+    build: .
+    container_name: mcp-db
+    volumes:
+      - ./data:/data
+      - ./queries.sql:/app/queries.sql:ro
+    environment:
+      DB_PATH: /data/mcp.db
+    tty: true
