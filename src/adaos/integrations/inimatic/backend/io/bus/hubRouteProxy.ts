@@ -43,6 +43,7 @@ type ProxyOpts = {
 	natsUrl: string
 	sessionJwtSecret?: string
 	allowCrossHubOwner?: boolean
+	rootToken?: string
 }
 
 function extractBearer(req: any): string | null {
@@ -446,26 +447,30 @@ export function installHubRouteProxy(
 			hubIdForLog = hubId
 			if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
 
-			const sessionJwt = extractToken(req)
-			if (!sessionJwt) return res.status(401).json({ ok: false, error: 'unauthorized' })
-			const session = await verifySessionJwt(
-				opts.redis,
-				sessionJwt,
-				opts.sessionJwtSecret
-			)
-			if (!session) return res.status(401).json({ ok: false, error: 'unauthorized' })
-			const ownerId = String(session.owner_id || '')
-			if (!allowCrossHubOwner && ownerId && ownerId !== hubId) {
-				if (verbose) log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; denying')
-				return res.status(403).json({ ok: false, error: 'forbidden' })
-			} else if (ownerId && ownerId !== hubId && verbose) {
-				log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
-			}
+			const rootToken = String(req.headers?.['x-root-token'] || '').trim()
+			const rootBypass = Boolean(opts.rootToken && rootToken && rootToken === opts.rootToken)
+			if (!rootBypass) {
+				const sessionJwt = extractToken(req)
+				if (!sessionJwt) return res.status(401).json({ ok: false, error: 'unauthorized' })
+				const session = await verifySessionJwt(
+					opts.redis,
+					sessionJwt,
+					opts.sessionJwtSecret
+				)
+				if (!session) return res.status(401).json({ ok: false, error: 'unauthorized' })
+				const ownerId = String(session.owner_id || '')
+				if (!allowCrossHubOwner && ownerId && ownerId !== hubId) {
+					if (verbose) log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; denying')
+					return res.status(403).json({ ok: false, error: 'forbidden' })
+				} else if (ownerId && ownerId !== hubId && verbose) {
+					log.warn({ hubId, ownerId }, 'http proxy: owner/hub mismatch; allowing (ALLOW_OWNER_HUB_ANY)')
+				}
 
-			const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
-			if (sessionHubId && sessionHubId !== hubId) {
-				if (verbose) log.warn({ hubId, sessionHubId }, 'http proxy: session hub mismatch; denying')
-				return res.status(403).json({ ok: false, error: 'forbidden' })
+				const sessionHubId = String((session as any).hub_id || (session as any).subnet_id || '').trim()
+				if (sessionHubId && sessionHubId !== hubId) {
+					if (verbose) log.warn({ hubId, sessionHubId }, 'http proxy: session hub mismatch; denying')
+					return res.status(403).json({ ok: false, error: 'forbidden' })
+				}
 			}
 
 			await ensureBus()

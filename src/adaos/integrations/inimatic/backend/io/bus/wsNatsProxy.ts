@@ -31,6 +31,21 @@ type UpstreamOpts = {
 	pass: string
 }
 
+const activeHubSockets = new Map<
+	string,
+	Map<
+		string,
+		{
+			ws: any
+			close: (code?: number, reason?: string) => void
+		}
+	>
+>()
+
+export function listActiveHubIds(): string[] {
+	return Array.from(activeHubSockets.keys()).sort()
+}
+
 function parseNatsUrl(url: string): UpstreamOpts {
 	try {
 		const u = new URL(url)
@@ -217,16 +232,6 @@ export function installWsNatsProxy(server: HttpServer) {
 	// WARNING: attaching a `readable` listener to the underlying socket switches it into paused mode,
 	// which can interfere with `ws` frame consumption. Keep this diagnostics path opt-in only.
 	const socketReadableDiag = (process.env['WS_NATS_PROXY_SOCKET_READABLE_DIAG'] || '0') === '1'
-	const activeHubSockets = new Map<
-		string,
-		Map<
-			string,
-			{
-				ws: any
-				close: (code?: number, reason?: string) => void
-			}
-		>
-	>()
 	let wiretapEveryMs = 1000
 	try {
 		wiretapEveryMs = Math.max(0, Number(process.env['WS_NATS_PROXY_WIRETAP_EVERY_MS'] || '1000'))

@@ -510,5 +510,66 @@ class RootHttpClient:
             )
         )
 
+    def hub_core_update_report(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        return dict(
+            self._request(
+                "POST",
+                "/v1/hub/core_update/report",
+                json=dict(payload),
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=30.0,
+            )
+        )
+
+    def root_dispatch_core_update(
+        self,
+        *,
+        root_token: str,
+        payload: Mapping[str, Any],
+        rollback: bool = False,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        path = "/v1/hubs/core_update/rollback" if rollback else "/v1/hubs/core_update/start"
+        return dict(
+            self._request(
+                "POST",
+                path,
+                json=dict(payload),
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def root_core_update_reports(
+        self,
+        *,
+        root_token: str,
+        hub_id: str | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {}
+        if hub_id:
+            params["hub_id"] = hub_id
+        return dict(
+            self._request(
+                "GET",
+                "/v1/hubs/core_update/reports",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
 
 __all__ = ["RootHttpClient", "RootHttpError"]

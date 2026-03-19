@@ -32,7 +32,7 @@ import {
 } from './i18n.js'
 import { NatsBus } from './io/bus/nats.js'
 import { buildPublicNatsWsUrl } from './io/bus/publicNatsUrl.js'
-import { installWsNatsProxy } from './io/bus/wsNatsProxy.js'
+import { installWsNatsProxy, listActiveHubIds } from './io/bus/wsNatsProxy.js'
 import { installTelegramWebhookRoutes } from './io/telegram/webhook.js'
 import { ensureSchema as ensureTgSchema } from './db/tg.repo.js'
 import { installPairingApi } from './io/pairing/api.js'
@@ -212,6 +212,19 @@ function requireEnv(name: string): string {
 	return value
 }
 
+function rootTokenFromReq(req: express.Request): string {
+	return String(req.header('X-Root-Token') ?? '').trim()
+}
+
+function requireRootToken(req: express.Request, res: express.Response): boolean {
+	const token = rootTokenFromReq(req)
+	if (!token || token !== ROOT_TOKEN) {
+		respondError(req, res, 401, 'unauthorized')
+		return false
+	}
+	return true
+}
+
 const HOST = process.env['HOST'] ?? '0.0.0.0'
 const PORT = Number.parseInt(process.env['PORT'] ?? '3030', 10)
 const ROOT_TOKEN = process.env['ROOT_TOKEN'] ?? 'dev-root-token'
@@ -232,6 +245,7 @@ const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
 // Using the apex domain keeps it valid across app subdomains (app., v1.app., etc).
 const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
+const ROOT_CORE_UPDATE_REPORTS_HASH = 'root:hub_core_update_reports'
 
 // Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
 try {
@@ -1385,6 +1399,7 @@ try {
 			redis: redisClient,
 			natsUrl: process.env['NATS_URL']!,
 			sessionJwtSecret: WEB_SESSION_JWT_SECRET,
+			rootToken: ROOT_TOKEN,
 		})
 		hubRouteProxyReady = true
 		console.log('[route] hub proxy installed')
@@ -1570,6 +1585,111 @@ app.get('/v1/dev/log_tail', async (req, res) => {
 		return res.json({ ok: true, ...result })
 	} catch (e: any) {
 		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+async function dispatchHubCoreUpdate(
+	path: '/api/admin/update/start' | '/api/admin/update/rollback',
+	payload: Record<string, unknown>,
+	hubIds: string[],
+): Promise<Array<Record<string, unknown>>> {
+	const base = `http://127.0.0.1:${PORT}`
+	const uniqueHubIds = Array.from(new Set(hubIds.map((item) => String(item || '').trim()).filter(Boolean)))
+	const results = await Promise.all(
+		uniqueHubIds.map(async (hubId) => {
+			const url = `${base}/hubs/${encodeURIComponent(hubId)}${path}`
+			try {
+				const response = await fetch(url, {
+					method: 'POST',
+					headers: {
+						'content-type': 'application/json',
+						'X-Root-Token': ROOT_TOKEN,
+					},
+					body: JSON.stringify(payload),
+				})
+				let body: unknown = null
+				try {
+					body = await response.json()
+				} catch {
+					body = null
+				}
+				return {
+					hub_id: hubId,
+					ok: response.ok,
+					status: response.status,
+					body,
+				}
+			} catch (error) {
+				return {
+					hub_id: hubId,
+					ok: false,
+					error: String((error as Error)?.message || error),
+				}
+			}
+		}),
+	)
+	return results
+}
+
+app.post('/v1/hubs/core_update/start', async (req, res) => {
+	if (!requireRootToken(req, res)) return
+	const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+	const connectedHubIds = listActiveHubIds()
+	const explicit = Array.isArray((body as any).hub_ids) ? (body as any).hub_ids : []
+	const hubIds = explicit.length ? explicit : connectedHubIds
+	if (!hubIds.length) {
+		return res.json({ ok: true, hub_ids: [], connected_hub_ids: connectedHubIds, results: [] })
+	}
+	const payload = {
+		target_rev: typeof (body as any).target_rev === 'string' ? String((body as any).target_rev) : '',
+		target_version: typeof (body as any).target_version === 'string' ? String((body as any).target_version) : '',
+		reason: typeof (body as any).reason === 'string' ? String((body as any).reason) : 'root.core_update',
+		countdown_sec: Number((body as any).countdown_sec ?? 60),
+		drain_timeout_sec: Number((body as any).drain_timeout_sec ?? 10),
+		signal_delay_sec: Number((body as any).signal_delay_sec ?? 0.25),
+	}
+	const results = await dispatchHubCoreUpdate('/api/admin/update/start', payload, hubIds)
+	return res.json({ ok: true, hub_ids: hubIds, connected_hub_ids: connectedHubIds, results })
+})
+
+app.post('/v1/hubs/core_update/rollback', async (req, res) => {
+	if (!requireRootToken(req, res)) return
+	const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+	const connectedHubIds = listActiveHubIds()
+	const explicit = Array.isArray((body as any).hub_ids) ? (body as any).hub_ids : []
+	const hubIds = explicit.length ? explicit : connectedHubIds
+	if (!hubIds.length) {
+		return res.json({ ok: true, hub_ids: [], connected_hub_ids: connectedHubIds, results: [] })
+	}
+	const payload = {
+		reason: typeof (body as any).reason === 'string' ? String((body as any).reason) : 'root.core_rollback',
+		countdown_sec: Number((body as any).countdown_sec ?? 0),
+		drain_timeout_sec: Number((body as any).drain_timeout_sec ?? 10),
+		signal_delay_sec: Number((body as any).signal_delay_sec ?? 0.25),
+	}
+	const results = await dispatchHubCoreUpdate('/api/admin/update/rollback', payload, hubIds)
+	return res.json({ ok: true, hub_ids: hubIds, connected_hub_ids: connectedHubIds, results })
+})
+
+app.get('/v1/hubs/core_update/reports', async (req, res) => {
+	if (!requireRootToken(req, res)) return
+	const hubId = typeof req.query['hub_id'] === 'string' ? String(req.query['hub_id']).trim() : ''
+	try {
+		if (hubId) {
+			const raw = await redisClient.hGet(ROOT_CORE_UPDATE_REPORTS_HASH, hubId)
+			return res.json({ ok: true, items: raw ? [{ hub_id: hubId, report: JSON.parse(raw) }] : [] })
+		}
+		const rawItems = await redisClient.hGetAll(ROOT_CORE_UPDATE_REPORTS_HASH)
+		const items = Object.entries(rawItems).map(([id, raw]) => {
+			let report: unknown = raw
+			try {
+				report = JSON.parse(raw)
+			} catch {}
+			return { hub_id: id, report }
+		})
+		return res.json({ ok: true, items })
+	} catch (error) {
+		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
 	}
 })
 
@@ -2204,6 +2324,29 @@ mtlsRouter.get('/hub/dev/log_tail', async (req, res) => {
 		return res.json({ ok: true, ...result })
 	} catch (e: any) {
 		return res.status(400).json({ ok: false, error: String(e?.message ?? e) })
+	}
+})
+
+mtlsRouter.post('/hub/core_update/report', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+		const record = {
+			hub_id: identity.subnetId,
+			reported_at: Date.now(),
+			...body,
+		}
+		await redisClient.hSet(
+			ROOT_CORE_UPDATE_REPORTS_HASH,
+			identity.subnetId,
+			JSON.stringify(record),
+		)
+		return res.status(202).json({ ok: true, hub_id: identity.subnetId })
+	} catch (error) {
+		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
 	}
 })
 

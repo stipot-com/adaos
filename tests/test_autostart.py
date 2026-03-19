@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from adaos.apps.autostart_runner import _slot_launch_spec
 from adaos.services.autostart import default_spec
 
 
@@ -31,3 +32,18 @@ def test_default_autostart_spec_uses_runner(tmp_path: Path) -> None:
     assert spec.env["ADAOS_BASE_DIR"] == str(tmp_path)
     assert spec.env["ADAOS_PROFILE"] == "default"
     assert spec.env["ADAOS_TOKEN"] == "t1"
+
+
+def test_slot_launch_spec_formats_placeholders() -> None:
+    argv, command = _slot_launch_spec(
+        {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+        },
+        host="127.0.0.1",
+        port=8777,
+        token="tok",
+    )
+    assert command is None
+    assert argv is not None
+    assert argv[-1] == "8777"

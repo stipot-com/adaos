@@ -9,6 +9,8 @@ from pathlib import Path
 from string import Formatter
 from typing import Any
 
+from adaos.services.core_slots import activate_slot, active_slot, choose_inactive_slot, previous_slot, read_slot_manifest, rollback_to_previous_slot, slot_dir
+
 
 def _base_dir() -> Path:
     raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
@@ -109,18 +111,69 @@ def _format_update_command(template: str, plan: dict[str, Any]) -> str:
     return template.format(**values)
 
 
+def _default_update_command_template() -> str:
+    return (
+        '"{python}" -m adaos.apps.core_update_apply'
+        ' --target-rev "{target_rev}"'
+        ' --target-version "{target_version}"'
+        ' --slot "{target_slot}"'
+        ' --slot-dir "{inactive_slot_dir}"'
+        ' --base-dir "{base_dir}"'
+        ' --repo-root "{repo_root}"'
+    )
+
+
 def configured_update_command(plan: dict[str, Any]) -> str | None:
     cmd = str(os.getenv("ADAOS_CORE_UPDATE_CMD") or "").strip()
     if not cmd:
-        return None
+        cmd = _default_update_command_template()
     try:
         return _format_update_command(cmd, plan)
     except Exception:
         return cmd
 
 
+def _plan_with_slot_context(plan: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(plan)
+    payload["active_slot"] = active_slot() or ""
+    payload["previous_slot"] = previous_slot() or ""
+    payload["target_slot"] = str(plan.get("target_slot") or choose_inactive_slot())
+    payload["inactive_slot"] = payload["target_slot"]
+    payload["inactive_slot_dir"] = str(slot_dir(payload["target_slot"]))
+    if payload["active_slot"]:
+        payload["active_slot_dir"] = str(slot_dir(payload["active_slot"]))
+    else:
+        payload["active_slot_dir"] = ""
+    return payload
+
+
 def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
-    command = configured_update_command(plan)
+    action = str(plan.get("action") or "update").strip().lower()
+    if action == "rollback":
+        restored = rollback_to_previous_slot()
+        if restored:
+            return write_status(
+                {
+                    "state": "rolled_back",
+                    "phase": "rollback",
+                    "message": f"rolled back to slot {restored}",
+                    "restored_slot": restored,
+                    "finished_at": time.time(),
+                    "plan": plan,
+                }
+            )
+        return write_status(
+            {
+                "state": "failed",
+                "phase": "rollback",
+                "message": "no previous slot available for rollback",
+                "finished_at": time.time(),
+                "plan": plan,
+            }
+        )
+
+    slot_plan = _plan_with_slot_context(plan)
+    command = configured_update_command(slot_plan)
     started_at = time.time()
     if not command:
         return write_status(
@@ -130,7 +183,7 @@ def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
                 "message": "ADAOS_CORE_UPDATE_CMD is not configured",
                 "started_at": started_at,
                 "finished_at": time.time(),
-                "plan": plan,
+                "plan": slot_plan,
             }
         )
 
@@ -138,23 +191,41 @@ def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
         {
             "state": "applying",
             "phase": "apply",
-            "message": "running configured core update command",
+            "message": "running core update command",
             "command": command,
             "started_at": started_at,
-            "plan": plan,
+            "plan": slot_plan,
         }
     )
     completed = subprocess.run(command, shell=True, capture_output=True, text=True)
+    target_slot = str(slot_plan.get("target_slot") or "")
+    manifest = read_slot_manifest(target_slot) if target_slot else None
+    manifest_ready = isinstance(manifest, dict) and (
+        isinstance(manifest.get("argv"), list) or str(manifest.get("command") or "").strip()
+    )
+    ok = completed.returncode == 0 and manifest_ready
+    if ok and target_slot:
+        activate_slot(target_slot)
     payload = {
-        "state": "succeeded" if completed.returncode == 0 else "failed",
+        "state": "succeeded" if ok else "failed",
         "phase": "apply",
-        "message": "core update command completed" if completed.returncode == 0 else "core update command failed",
+        "message": (
+            f"core update command completed; activated slot {target_slot}"
+            if ok
+            else (
+                "core update command completed but slot manifest is missing or incomplete"
+                if completed.returncode == 0
+                else "core update command failed"
+            )
+        ),
         "command": command,
         "started_at": started_at,
         "finished_at": time.time(),
         "returncode": int(completed.returncode),
         "stdout": (completed.stdout or "")[-8000:],
         "stderr": (completed.stderr or "")[-8000:],
-        "plan": plan,
+        "target_slot": target_slot,
+        "manifest": manifest,
+        "plan": slot_plan,
     }
     return write_status(payload)

@@ -76,6 +76,7 @@ from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
+from adaos.services.core_slots import slot_status as core_slot_status
 from adaos.services.node_config import save_config
 from adaos.services.runtime_lifecycle import (
     is_draining,
@@ -145,6 +146,7 @@ async def _run_core_update_shutdown(app: FastAPI, *, reason: str, drain_timeout_
 async def _core_update_countdown_worker(
     app: FastAPI,
     *,
+    action: str,
     target_rev: str,
     target_version: str,
     reason: str,
@@ -157,6 +159,7 @@ async def _core_update_countdown_worker(
         {
             "state": "countdown",
             "phase": "countdown",
+            "action": action,
             "target_rev": target_rev,
             "target_version": target_version,
             "reason": reason,
@@ -169,6 +172,7 @@ async def _core_update_countdown_worker(
         await asyncio.sleep(max(0.0, float(countdown_sec)))
         plan = {
             "state": "pending_restart",
+            "action": action,
             "target_rev": target_rev,
             "target_version": target_version,
             "reason": reason,
@@ -180,6 +184,7 @@ async def _core_update_countdown_worker(
             {
                 "state": "restarting",
                 "phase": "shutdown",
+                "action": action,
                 "target_rev": target_rev,
                 "target_version": target_version,
                 "reason": reason,
@@ -197,6 +202,7 @@ async def _core_update_countdown_worker(
             {
                 "state": "cancelled",
                 "phase": "countdown",
+                "action": action,
                 "target_rev": target_rev,
                 "target_version": target_version,
                 "reason": reason,
@@ -714,6 +720,13 @@ class CoreUpdateCancelRequest(BaseModel):
     reason: str = Field(default="user.cancelled", min_length=1, max_length=128)
 
 
+class CoreUpdateRollbackRequest(BaseModel):
+    reason: str = Field(default="core.rollback", min_length=1, max_length=128)
+    countdown_sec: float = Field(default=0.0, ge=0.0, le=3600.0)
+    drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
+    signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -811,6 +824,7 @@ async def admin_update_start(body: CoreUpdateStartRequest):
         {
             "state": "countdown",
             "phase": "countdown",
+            "action": "update",
             "target_rev": str(body.target_rev or ""),
             "target_version": str(body.target_version or ""),
             "reason": body.reason,
@@ -822,6 +836,7 @@ async def admin_update_start(body: CoreUpdateStartRequest):
     task = asyncio.create_task(
         _core_update_countdown_worker(
             app,
+            action="update",
             target_rev=str(body.target_rev or ""),
             target_version=str(body.target_version or ""),
             reason=body.reason,
@@ -856,11 +871,49 @@ async def admin_update_cancel(body: CoreUpdateCancelRequest):
         {
             "state": "cancelled",
             "phase": "countdown",
+            "action": str((read_core_update_status() or {}).get("action") or "update"),
             "message": "core update cancelled by request",
             "reason": body.reason,
         }
     )
     return {"ok": True, "accepted": True, "status": status}
+
+
+@app.post("/api/admin/update/rollback", dependencies=[Depends(require_token)])
+async def admin_update_rollback(body: CoreUpdateRollbackRequest):
+    existing = getattr(app.state, "core_update_task", None)
+    if existing is not None and not existing.done():
+        return {"ok": True, "accepted": False, "status": read_core_update_status()}
+    if getattr(app.state, "shutdown_requested", False):
+        return {"ok": True, "accepted": False, "status": read_core_update_status()}
+
+    clear_core_update_plan()
+    write_core_update_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "action": "rollback",
+            "reason": body.reason,
+            "countdown_sec": float(body.countdown_sec),
+            "started_at": time.time(),
+            "scheduled_for": time.time() + float(body.countdown_sec),
+        }
+    )
+    task = asyncio.create_task(
+        _core_update_countdown_worker(
+            app,
+            action="rollback",
+            target_rev="",
+            target_version="",
+            reason=body.reason,
+            countdown_sec=float(body.countdown_sec),
+            drain_timeout_sec=float(body.drain_timeout_sec),
+            signal_delay_sec=float(body.signal_delay_sec),
+        ),
+        name="core-update-rollback-countdown",
+    )
+    app.state.core_update_task = task
+    return {"ok": True, "accepted": True, "status": read_core_update_status()}
 
 
 @app.get("/api/admin/update/status", dependencies=[Depends(require_token)])
@@ -869,6 +922,7 @@ async def admin_update_status():
         "ok": True,
         "status": read_core_update_status(),
         "plan": read_core_update_plan(),
+        "slots": core_slot_status(),
     }
 
 
