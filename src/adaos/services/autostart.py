@@ -226,7 +226,7 @@ def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dic
                     "[Service]",
                     "Type=simple",
                     f"ExecStart={wrapper}",
-                    "Restart=on-failure",
+                    "Restart=always",
                     "RestartSec=3",
                     "Environment=PYTHONUNBUFFERED=1",
                     "",

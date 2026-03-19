@@ -10,6 +10,7 @@ from typing import Optional
 
 import requests
 import typer
+from requests import RequestException
 
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.apps.cli.i18n import _
@@ -395,22 +396,34 @@ def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
 
 
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
-    response = requests.get(_autostart_admin_base_url() + path, headers=_autostart_admin_headers(token), timeout=15)
-    response.raise_for_status()
-    payload = response.json()
-    return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    try:
+        response = requests.get(_autostart_admin_base_url() + path, headers=_autostart_admin_headers(token), timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    except RequestException as exc:
+        raise RuntimeError(
+            "local AdaOS admin API is unavailable; the service may be restarting or failed to boot. "
+            "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
+        ) from exc
 
 
 def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
-    response = requests.post(
-        _autostart_admin_base_url() + path,
-        headers=_autostart_admin_headers(token),
-        json=body or {},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    try:
+        response = requests.post(
+            _autostart_admin_base_url() + path,
+            headers=_autostart_admin_headers(token),
+            json=body or {},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    except RequestException as exc:
+        raise RuntimeError(
+            "local AdaOS admin API is unavailable; the service may be restarting or failed to boot. "
+            "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
+        ) from exc
 
 
 @autostart_app.command("status")
@@ -477,7 +490,11 @@ def autostart_update_status_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
     token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
 ):
-    payload = _autostart_admin_get("/api/admin/update/status", token=token)
+    try:
+        payload = _autostart_admin_get("/api/admin/update/status", token=token)
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -495,8 +512,8 @@ def autostart_update_status_cmd(
 @autostart_app.command("update-start")
 @_run_safe
 def autostart_update_start_cmd(
-    target_rev: str = typer.Option("", "--target-rev", help="Git branch/tag/ref to install"),
-    target_version: str = typer.Option("", "--target-version", help="Human-readable target version"),
+    target_rev: str = typer.Option("", "--target-rev", help="Git branch/tag/ref to install; defaults to current branch"),
+    target_version: str = typer.Option("", "--target-version", help="Human-readable target version; defaults to current BUILD_INFO.version"),
     countdown_sec: float = typer.Option(60.0, "--countdown-sec", min=0.0),
     drain_timeout_sec: float = typer.Option(10.0, "--drain-timeout-sec", min=0.0, max=30.0),
     signal_delay_sec: float = typer.Option(0.25, "--signal-delay-sec", min=0.0, max=5.0),
@@ -504,18 +521,24 @@ def autostart_update_start_cmd(
     token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
-    payload = _autostart_admin_post(
-        "/api/admin/update/start",
-        token=token,
-        body={
-            "target_rev": target_rev,
-            "target_version": target_version,
-            "countdown_sec": countdown_sec,
-            "drain_timeout_sec": drain_timeout_sec,
-            "signal_delay_sec": signal_delay_sec,
-            "reason": reason,
-        },
-    )
+    resolved_rev = str(target_rev or _repo_git_text("rev-parse", "--abbrev-ref", "HEAD") or "").strip()
+    resolved_version = str(target_version or BUILD_INFO.version or "").strip()
+    try:
+        payload = _autostart_admin_post(
+            "/api/admin/update/start",
+            token=token,
+            body={
+                "target_rev": resolved_rev,
+                "target_version": resolved_version,
+                "countdown_sec": countdown_sec,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+                "reason": reason,
+            },
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -529,7 +552,11 @@ def autostart_update_cancel_cmd(
     token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
-    payload = _autostart_admin_post("/api/admin/update/cancel", token=token, body={"reason": reason})
+    try:
+        payload = _autostart_admin_post("/api/admin/update/cancel", token=token, body={"reason": reason})
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -546,16 +573,20 @@ def autostart_update_rollback_cmd(
     token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
-    payload = _autostart_admin_post(
-        "/api/admin/update/rollback",
-        token=token,
-        body={
-            "countdown_sec": countdown_sec,
-            "drain_timeout_sec": drain_timeout_sec,
-            "signal_delay_sec": signal_delay_sec,
-            "reason": reason,
-        },
-    )
+    try:
+        payload = _autostart_admin_post(
+            "/api/admin/update/rollback",
+            token=token,
+            body={
+                "countdown_sec": countdown_sec,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+                "reason": reason,
+            },
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -575,18 +606,22 @@ def autostart_smoke_update_cmd(
 ):
     resolved_rev = str(target_rev or _repo_git_text("rev-parse", "--abbrev-ref", "HEAD") or "").strip()
     resolved_version = str(target_version or BUILD_INFO.version or "").strip()
-    payload = _autostart_admin_post(
-        "/api/admin/update/start",
-        token=token,
-        body={
-            "target_rev": resolved_rev,
-            "target_version": resolved_version,
-            "countdown_sec": countdown_sec,
-            "drain_timeout_sec": drain_timeout_sec,
-            "signal_delay_sec": signal_delay_sec,
-            "reason": "cli.smoke_update",
-        },
-    )
+    try:
+        payload = _autostart_admin_post(
+            "/api/admin/update/start",
+            token=token,
+            body={
+                "target_rev": resolved_rev,
+                "target_version": resolved_version,
+                "countdown_sec": countdown_sec,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+                "reason": "cli.smoke_update",
+            },
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
