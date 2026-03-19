@@ -131,6 +131,7 @@ from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
 from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub, realtime
+from adaos.apps.cli.commands import git as git_cmd
 from adaos.apps.cli.commands import interpreter
 from adaos.apps.cli.commands import native
 from adaos.apps.cli.commands import rhasspy as rhasspy_cmd
@@ -295,6 +296,7 @@ app.add_typer(node.app, name="node", help="Node onboarding and role management")
 app.add_typer(hub.app, name="hub", help="Hub operations (join-codes)")
 app.add_typer(monitor.app, name="monitor")
 app.add_typer(repo.app, name="repo", help=_("cli.repo.help"))
+app.add_typer(git_cmd.app, name="git", help="Git availability / archive fallback")
 app.add_typer(scenario.app, name="scenario", help=_("cli.help_scenario"))
 app.add_typer(setup_cmd.autostart_app, name="autostart", help="OS autostart management")
 app.add_typer(switch_app, name="switch", help="Переключение профилей интеграций")

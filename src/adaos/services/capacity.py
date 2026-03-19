@@ -230,6 +230,7 @@ def _set_io_state(
     available: bool,
     base_capabilities: List[str] | None = None,
     reason: str | None = None,
+    mode: str | None = None,
     priority: int = 50,
     base_dir: Path | None = None,
 ) -> None:
@@ -241,9 +242,61 @@ def _set_io_state(
     """
     caps = list(base_capabilities or [])
     caps.append("state:available" if available else "state:unavailable")
+    if mode:
+        caps.append(f"mode:{str(mode).strip().lower()}")
     if not available and reason:
         caps.append(f"reason:{_short_reason(reason)}")
     install_io_in_capacity(io_type, caps, priority=priority, base_dir=base_dir)
+
+
+def set_io_state(
+    io_type: str,
+    *,
+    available: bool,
+    base_capabilities: List[str] | None = None,
+    reason: str | None = None,
+    mode: str | None = None,
+    priority: int = 50,
+    base_dir: Path | None = None,
+) -> None:
+    """
+    Public wrapper around `_set_io_state` to persist IO availability into node.yaml capacity.
+
+    Note: this is encoded into the `capabilities` list for now (backward-compatible).
+    """
+    _set_io_state(
+        io_type,
+        available=available,
+        base_capabilities=base_capabilities,
+        reason=reason,
+        mode=mode,
+        priority=priority,
+        base_dir=base_dir,
+    )
+
+
+def get_io_capacity_entry(io_type: str, *, base_dir: Path | None = None) -> dict[str, Any] | None:
+    cap = load_capacity_from_node_yaml(base_dir)
+    io_list = cap.get("io") or []
+    for it in io_list:
+        if isinstance(it, dict) and str(it.get("io_type") or "") == io_type:
+            return it
+    return None
+
+
+def is_io_available(io_type: str, *, base_dir: Path | None = None, default: bool = True) -> bool:
+    it = get_io_capacity_entry(io_type, base_dir=base_dir)
+    if not it:
+        return default
+    caps = [str(x) for x in (it.get("capabilities") or [])]
+    # explicit unavailable/disabled wins
+    if any(c.startswith("state:unavailable") for c in caps):
+        return False
+    if any(c.startswith("mode:disabled") for c in caps):
+        return False
+    if any(c.startswith("state:available") for c in caps):
+        return True
+    return default
 
 
 def refresh_native_io_capacity(*, base_dir: Path | None = None) -> Dict[str, Any]:

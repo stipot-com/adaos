@@ -237,6 +237,9 @@ function Invoke-Adaos {
     & .\.venv\Scripts\python.exe -m adaos @Args
 }
 
+Write-Host "Detecting git availability (adaos git autodetect)..."
+try { Invoke-Adaos git autodetect | Out-Null } catch { }
+
 function Install-VoiceDeps {
     if ($NoVoice) { return }
     Write-Host "Installing voice deps (Rasa)..."

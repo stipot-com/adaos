@@ -11,6 +11,8 @@ import yaml
 
 from adaos.adapters.git.workspace import SparseWorkspace, wait_for_materialized
 from adaos.services.workspace_registry import registry_pattern_set
+from adaos.services.git.availability import get_git_availability
+from adaos.services.git.archive import materialize_subpath_from_github_zip
 from adaos.domain import SkillId, SkillMeta  # если есть ScenarioId/ScenarioMeta — замени здесь
 from adaos.ports.git import GitClient
 from adaos.ports.paths import PathProvider
@@ -130,7 +132,13 @@ class GitScenarioRepository(ScenarioRepository):
     def _ensure_monorepo(self) -> None:
         if os.getenv("ADAOS_TESTING") == "1":
             return
-        self.git.ensure_repo(str(self.paths.workspace_dir()), self.monorepo_url, branch=self.monorepo_branch)
+        if not self.monorepo_url:
+            return
+        av = get_git_availability(base_dir=self.paths.base_dir())
+        if av.enabled and av.git_path:
+            self.git.ensure_repo(str(self.paths.workspace_dir()), self.monorepo_url, branch=self.monorepo_branch)
+            return
+        self.paths.workspace_dir().mkdir(parents=True, exist_ok=True)
 
     def ensure(self) -> None:
         if self.monorepo_url:
@@ -181,24 +189,47 @@ class GitScenarioRepository(ScenarioRepository):
             raise ValueError("invalid scenario name")
 
         workspace_root = self.paths.workspace_dir()
-        sparse = SparseWorkspace(self.git, workspace_root)
         target = f"scenarios/{name}"
-        sparse.update(add=registry_pattern_set([target]))
+
+        av = get_git_availability(base_dir=self.paths.base_dir())
+        used_sparse = False
+        if av.enabled and av.git_path and (workspace_root / ".git").exists():
+            sparse = SparseWorkspace(self.git, workspace_root)
+            sparse.update(add=registry_pattern_set([target]))
+            used_sparse = True
+        else:
+            if not self.monorepo_url:
+                raise RuntimeError("scenarios monorepo is not configured (ADAOS_SCENARIOS_MONOREPO_URL)")
+            b = (branch or self.monorepo_branch or "").strip()
+            if not b:
+                raise RuntimeError("scenarios monorepo branch is not configured (ADAOS_SCENARIOS_MONOREPO_BRANCH)")
+            materialize_subpath_from_github_zip(
+                repo_url=self.monorepo_url,
+                branch=b,
+                dest_root=workspace_root,
+                subpath=target,
+                clean=True,
+            )
         # При установке сценария стараемся быть максимально устойчивыми к локальным изменениям
         # в workspace: git pull может упасть, если в других подпапках есть незакоммиченные правки.
         # В таком случае полагаемся на уже имеющееся состояние репозитория; если сценарий не
         # материализуется, ниже будет явная FileNotFoundError.
-        try:
-            self.git.pull(str(workspace_root))
-        except Exception:
-            pass
+        if used_sparse:
+            try:
+                self.git.pull(str(workspace_root))
+            except Exception:
+                pass
 
         scenario_dir: Path = self.paths.scenarios_dir() / name
         try:
             wait_for_materialized(scenario_dir, files=_MANIFEST_NAMES)
         except FileNotFoundError as exc:  # pragma: no cover - defensive logging
-            sparse.update(remove=[target])
-            self.git.rm_cached(str(workspace_root), target)
+            if used_sparse:
+                try:
+                    sparse.update(remove=[target])
+                    self.git.rm_cached(str(workspace_root), target)
+                except Exception:
+                    pass
             raise FileNotFoundError(f"scenario '{name}' not present after sync") from exc
         return _read_manifest(scenario_dir)
 
@@ -207,10 +238,14 @@ class GitScenarioRepository(ScenarioRepository):
     def uninstall(self, scenario_id: str) -> None:
         self.ensure()
         workspace_root = self.paths.workspace_dir()
-        sparse = SparseWorkspace(self.git, workspace_root)
         target = f"scenarios/{scenario_id}"
-        sparse.update(remove=[target])
-        self.git.rm_cached(str(workspace_root), target)
+        try:
+            if (workspace_root / ".git").exists():
+                sparse = SparseWorkspace(self.git, workspace_root)
+                sparse.update(remove=[target])
+                self.git.rm_cached(str(workspace_root), target)
+        except Exception:
+            pass
 
         p = self.paths.scenarios_dir() / scenario_id
         if not p.exists():

@@ -720,6 +720,14 @@ class SkillManager:
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.caps.require("core", "skills.manage", "git.write", "net.git")
         root = self.ctx.paths.workspace_dir()
+        try:
+            from adaos.services.git.availability import get_git_availability
+
+            av = get_git_availability(base_dir=self.ctx.settings.base_dir)
+            if not av.enabled:
+                raise RuntimeError("Git is disabled/unavailable on this node. Run `adaos git enable` when git is installed.")
+        except ImportError:
+            pass
         if not (root / ".git").exists():
             raise RuntimeError("Skills repo is not initialized. Run `adaos skill sync` once.")
 

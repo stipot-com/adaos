@@ -11,6 +11,8 @@ import yaml
 
 from adaos.adapters.git.workspace import SparseWorkspace, wait_for_materialized
 from adaos.services.workspace_registry import registry_pattern_set
+from adaos.services.git.availability import get_git_availability
+from adaos.services.git.archive import materialize_subpath_from_github_zip
 from adaos.domain import SkillId, SkillMeta
 from adaos.ports.git import GitClient
 from adaos.ports.paths import PathProvider
@@ -102,7 +104,14 @@ class GitSkillRepository(SkillRepository):
     def _ensure_monorepo(self) -> None:
         if os.getenv("ADAOS_TESTING") == "1":
             return
-        self.git.ensure_repo(str(self.paths.workspace_dir()), self.monorepo_url, branch=self.monorepo_branch)
+        if not self.monorepo_url:
+            return
+        av = get_git_availability(base_dir=self.paths.base_dir())
+        if av.enabled and av.git_path:
+            self.git.ensure_repo(str(self.paths.workspace_dir()), self.monorepo_url, branch=self.monorepo_branch)
+            return
+        # No-git mode: keep workspace as plain directory; skills are materialized from archive on demand.
+        self.paths.workspace_dir().mkdir(parents=True, exist_ok=True)
 
     def ensure(self) -> None:
         if self.monorepo_url:
@@ -155,33 +164,60 @@ class GitSkillRepository(SkillRepository):
             raise ValueError("invalid skill name")
 
         workspace_root = self.paths.workspace_dir()
-        sparse = SparseWorkspace(self.git, workspace_root)
         target = f"skills/{name}"
-        sparse.update(add=registry_pattern_set([target]))
+
+        av = get_git_availability(base_dir=self.paths.base_dir())
+        used_sparse = False
+        if av.enabled and av.git_path and (workspace_root / ".git").exists():
+            sparse = SparseWorkspace(self.git, workspace_root)
+            sparse.update(add=registry_pattern_set([target]))
+            used_sparse = True
+        else:
+            if not self.monorepo_url:
+                raise RuntimeError("skills monorepo is not configured (ADAOS_SKILLS_MONOREPO_URL)")
+            b = (branch or self.monorepo_branch or "").strip()
+            if not b:
+                raise RuntimeError("skills monorepo branch is not configured (ADAOS_SKILLS_MONOREPO_BRANCH)")
+            materialize_subpath_from_github_zip(
+                repo_url=self.monorepo_url,
+                branch=b,
+                dest_root=workspace_root,
+                subpath=target,
+                clean=True,
+            )
         # Аналогично сценариям: при установке навыка не падаем, если git pull
         # не может выполниться из‑за локальных незакоммиченных изменений в workspace.
         # Если навык после этого не появится на диске, будет брошена FileNotFoundError ниже.
-        try:
-            self.git.pull(str(workspace_root))
-        except Exception:
-            pass
+        if used_sparse:
+            try:
+                self.git.pull(str(workspace_root))
+            except Exception:
+                pass
 
         skill_dir: Path = self.paths.skills_dir() / name
         try:
             wait_for_materialized(skill_dir, files=_MANIFEST_NAMES)
         except FileNotFoundError as exc:  # pragma: no cover - defensive logging
-            sparse.update(remove=[target])
-            self.git.rm_cached(str(workspace_root), target)
+            if used_sparse:
+                try:
+                    sparse.update(remove=[target])
+                    self.git.rm_cached(str(workspace_root), target)
+                except Exception:
+                    pass
             raise FileNotFoundError(f"skill '{name}' not present after sync") from exc
         return _read_manifest(skill_dir)
 
     def uninstall(self, skill_id: str) -> None:
         self.ensure()
         workspace_root = self.paths.workspace_dir()
-        sparse = SparseWorkspace(self.git, workspace_root)
         target = f"skills/{skill_id}"
-        sparse.update(remove=[target])
-        self.git.rm_cached(str(workspace_root), target)
+        try:
+            if (workspace_root / ".git").exists():
+                sparse = SparseWorkspace(self.git, workspace_root)
+                sparse.update(remove=[target])
+                self.git.rm_cached(str(workspace_root), target)
+        except Exception:
+            pass
 
         p: Path = self.paths.skills_dir() / skill_id
         if not p.exists():

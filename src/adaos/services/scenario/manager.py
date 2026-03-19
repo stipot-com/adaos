@@ -347,6 +347,14 @@ class ScenarioManager:
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.caps.require("core", "scenarios.manage", "git.write", "net.git")
         root = self.ctx.paths.workspace_dir()
+        try:
+            from adaos.services.git.availability import get_git_availability
+
+            av = get_git_availability(base_dir=self.ctx.settings.base_dir)
+            if not av.enabled:
+                raise RuntimeError("Git is disabled/unavailable on this node. Run `adaos git enable` when git is installed.")
+        except ImportError:
+            pass
         if not (Path(root) / ".git").exists():
             raise RuntimeError("Scenarios repo is not initialized. Run `adaos scenario sync` once.")
         sub = name.strip()

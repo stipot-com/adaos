@@ -128,6 +128,8 @@ if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
   }
 }
 New-Item -ItemType Directory -Force -Path $env:ADAOS_BASE_DIR | Out-Null
+Write-Host "Detecting git availability (adaos git autodetect)..."
+try { Invoke-Adaos git autodetect | Out-Null } catch { }
 Write-Host "Installing default webspace content (adaos install)..."
 Invoke-Adaos install
 if ($LASTEXITCODE -ne 0) {

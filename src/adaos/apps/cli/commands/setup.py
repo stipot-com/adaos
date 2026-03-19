@@ -76,6 +76,35 @@ def _sync_workspace_sparse_to_registry(ctx) -> dict:
     desired = registry_pattern_set([*(f"skills/{n}" for n in skills), *(f"scenarios/{n}" for n in scenarios)])
 
     workspace_root = ctx.paths.workspace_dir()
+    try:
+        from adaos.services.git.availability import get_git_availability
+
+        av = get_git_availability(base_dir=ctx.settings.base_dir)
+    except Exception:
+        av = None
+
+    # No-git mode: materialize requested subpaths from archive (GitHub zip fallback).
+    if av is not None and not av.enabled:
+        errors: list[str] = []
+        for n in skills:
+            try:
+                ctx.skills_repo.install(n)
+            except Exception as exc:
+                errors.append(f"skills/{n}: {exc}")
+        for n in scenarios:
+            try:
+                ctx.scenarios_repo.install(n)
+            except Exception as exc:
+                errors.append(f"scenarios/{n}: {exc}")
+        return {
+            "ok": len(errors) == 0,
+            "mode": "archive",
+            "skills": skills,
+            "scenarios": scenarios,
+            "errors": errors,
+            "patterns": desired,
+        }
+
     sparse = SparseWorkspace(ctx.git, workspace_root)
     current = sparse.read_patterns()
     to_remove = [p for p in current if p not in desired]

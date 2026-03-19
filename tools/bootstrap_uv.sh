@@ -301,6 +301,9 @@ ADAOS_BASE_DIR="$(resolve_adaos_base_dir)"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
 
+log "Detecting git availability (adaos git autodetect)..."
+"$ADAOS_PY" -m adaos git autodetect >/dev/null 2>&1 || true
+
 log "Installing default webspace content (adaos install)..."
 if ! "$ADAOS_PY" -m adaos install; then
   warn "adaos install failed (check output above)"
