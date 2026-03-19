@@ -425,13 +425,20 @@ def uninstall_cmd(
 
 
 @_run_safe
-@app.command("push")
+@app.command("push", context_settings={"allow_extra_args": True, "ignore_unknown_options": False})
 def push_command(
+    ctx: typer.Context,
     scenario_name: str = typer.Argument(..., help=_("cli.scenario.push.name_help")),
     message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
     signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
 ):
     """Commit changes inside a scenario directory and push to remote."""
+
+    extra = [str(item) for item in getattr(ctx, "args", []) or []]
+    if extra:
+        if any(part.startswith("-") for part in extra):
+            raise typer.BadParameter(f"unexpected extra arguments: {' '.join(extra)}")
+        message = " ".join([part for part in ([message] if message else []) + extra if str(part).strip()]).strip() or None
 
     if message is None:
         typer.secho(

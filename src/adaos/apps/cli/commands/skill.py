@@ -300,8 +300,9 @@ def reconcile_fs_to_db():
 
 
 @_run_safe
-@app.command("push")
+@app.command("push", context_settings={"allow_extra_args": True, "ignore_unknown_options": False})
 def push_command(
+    ctx: typer.Context,
     skill_name: str = typer.Argument(..., help=_("cli.skill.push.name_help")),
     message: Optional[str] = typer.Option(None, "--message", "-m", help=_("cli.commit_message.help")),
     signoff: bool = typer.Option(False, "--signoff", help=_("cli.option.signoff")),
@@ -310,6 +311,12 @@ def push_command(
     Закоммитить изменения ТОЛЬКО внутри подпапки навыка и выполнить git push.
     Защищён политиками: skills.manage + git.write + net.git.
     """
+    extra = [str(item) for item in getattr(ctx, "args", []) or []]
+    if extra:
+        if any(part.startswith("-") for part in extra):
+            raise typer.BadParameter(f"unexpected extra arguments: {' '.join(extra)}")
+        message = " ".join([part for part in ([message] if message else []) + extra if str(part).strip()]).strip() or None
+
     if message is None:
         typer.secho(
             "Root publishing via 'adaos skill push' has moved to 'adaos dev skill push'.",
