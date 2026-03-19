@@ -2,10 +2,11 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem Minimal bootstrap entrypoint (Windows CMD).
-rem Intended to be served as: https://app.inimatic.com/windows/init.bat
+rem Served as a static asset:
+rem   https://app.inimatic.com/assets/windows/init.bat
 rem It downloads and runs init.ps1 (PowerShell) so users can double-click a single file.
 
-set "URL=https://app.inimatic.com/windows/init.ps1"
+set "URL=https://app.inimatic.com/assets/windows/init.ps1"
 set "TMP=%TEMP%\\adaos_init_%RANDOM%_%RANDOM%.ps1"
 
 echo [*] Downloading %URL%

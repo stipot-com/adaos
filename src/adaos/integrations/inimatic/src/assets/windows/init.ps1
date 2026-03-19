@@ -1,6 +1,6 @@
-# tools/init/windows/init.ps1
 # Minimal "download & bootstrap" entrypoint (Windows PowerShell 5.1+).
-# Intended to be served as: https://app.inimatic.com/windows/init.ps1
+# Served as a static asset:
+#   https://app.inimatic.com/assets/windows/init.ps1
 
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -34,7 +34,6 @@ if (-not (Have "git")) {
   Write-Info "git not found; trying to install (best-effort)..."
   try {
     if (Have "winget") {
-      # May require elevation depending on policy.
       winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements | Out-Null
     }
     elseif (Have "choco") {
@@ -87,3 +86,4 @@ if (-not $haveRev) {
 Write-Info "Running bootstrap..."
 & (Join-Path $Dest "tools\\bootstrap.ps1") @BootstrapArgs
 exit $LASTEXITCODE
+

@@ -33,6 +33,30 @@ uv lock; uv sync
 
 ```
 
+## Установка одной командой (init скрипты)
+
+Если фронтенд хостит init-скрипты, можно “скачал и запустил”.
+
+### Linux
+
+```bash
+curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --join-code CODE
+```
+
+### Windows (PowerShell)
+
+```powershell
+iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1 -JoinCode CODE
+```
+
+### Windows (CMD / .bat)
+
+```bat
+curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -JoinCode CODE
+```
+
+Параметры после `--`/в конце команды прокидываются в `tools/bootstrap.*` (например `--role hub`, `--install-service auto`).
+
 ## Add a member node (phase 1)
 
 1) On the hub node (role=hub), generate a short one-time code:

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Minimal "download & bootstrap" entrypoint (Linux).
-# Intended to be served as: https://app.inimatic.com/linux/init.sh
+# Served as a static asset:
+#   https://app.inimatic.com/assets/linux/init.sh
 set -euo pipefail
 
 REPO_OWNER="${ADAOS_INIT_REPO_OWNER:-stipot-com}"
@@ -37,8 +38,8 @@ Defaults:
   --dest ${DEST_DEFAULT}
 
 Examples:
-  curl -fsSL https://app.inimatic.com/linux/init.sh | bash -s -- --join-code ABCD
-  curl -fsSL https://app.inimatic.com/linux/init.sh | bash -s -- --role hub --install-service auto
+  curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --join-code ABCD
+  curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --role hub --install-service auto
 EOF
 }
 
@@ -136,7 +137,6 @@ else
   tar -xzf "$archive" -C "$tmp"
   top_dir="$(find "$tmp" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -n 1 || true)"
   [[ -n "${top_dir:-}" ]] || die "Failed to locate extracted directory"
-  # Move extracted content into DEST (portable, avoids rsync dependency).
   (cd "$top_dir" && tar -cf - .) | (cd "$REPO_DIR" && tar -xf -)
   ok "Source extracted to: ${REPO_DIR}"
 fi
@@ -157,3 +157,4 @@ fi
 
 log "Running bootstrap..."
 bash tools/bootstrap.sh "${BOOTSTRAP_ARGS[@]}"
+
