@@ -134,10 +134,10 @@ def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
     port = None
 
     # Common patterns.
-    m_host = re.search(r"(?:^|\\s)--host\\s+([0-9A-Za-z_.:\\[\\]-]+)", text, flags=re.IGNORECASE | re.MULTILINE)
+    m_host = re.search(r"(?:^|\s)--host\s+([0-9A-Za-z_.:\[\]-]+)", text, flags=re.IGNORECASE | re.MULTILINE)
     if m_host:
         host = m_host.group(1).strip().strip("'\"")
-    m_port = re.search(r"(?:^|\\s)--port\\s+([0-9]{2,6})", text, flags=re.IGNORECASE | re.MULTILINE)
+    m_port = re.search(r"(?:^|\s)--port\s+([0-9]{2,6})", text, flags=re.IGNORECASE | re.MULTILINE)
     if m_port:
         try:
             port = int(m_port.group(1))
@@ -151,6 +151,36 @@ def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
 
 def _windows_task_name() -> str:
     return "AdaOS"
+
+
+def _parse_windows_task_info(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key:
+            out[key] = value
+    return out
+
+
+def _extract_task_wrapper_from_command(command: str | None) -> str | None:
+    raw = str(command or "").strip()
+    if not raw:
+        return None
+    m = re.search(r'-File\s+"([^"]+)"', raw, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"-File\s+'([^']+)'", raw, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"-File\s+(\S+)", raw, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip().strip("'\"")
+    return None
 
 
 def _linux_service_name() -> str:
@@ -329,22 +359,39 @@ def status(ctx: AgentContext) -> dict:
 
     if _is_windows():
         name = _windows_task_name()
-        proc = _run(["schtasks", "/Query", "/TN", name])
-        wrapper = (bin_dir / "adaos-autostart.ps1").resolve()
+        proc = _run(["schtasks", "/Query", "/TN", name, "/V", "/FO", "LIST"])
+        task_info = _parse_windows_task_info(proc.stdout or "")
+        expected_wrapper = (bin_dir / "adaos-autostart.ps1").resolve()
+        task_to_run = task_info.get("task to run") or ""
+        registered_wrapper_raw = _extract_task_wrapper_from_command(task_to_run)
+        registered_wrapper = Path(registered_wrapper_raw).expanduser().resolve() if registered_wrapper_raw else None
+        wrapper = registered_wrapper or expected_wrapper
+        state_raw = (task_info.get("scheduled task state") or task_info.get("status") or "").strip().lower()
+        enabled = proc.returncode == 0 and state_raw not in {"disabled"}
+        active = proc.returncode == 0 and state_raw in {"running"}
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
         host, port = host_port or ("127.0.0.1", 8777)
-        listening = _tcp_probe(host, port) if proc.returncode == 0 else False
-        return {
+        listening = _tcp_probe(host, port) if enabled else False
+        payload = {
             "platform": "windows",
-            "enabled": proc.returncode == 0,
-            "active": None,
+            "enabled": enabled,
+            "active": active,
             "listening": listening,
             "host": host,
             "port": port,
             "url": f"http://{host}:{int(port)}",
             "task": name,
             "wrapper": str(wrapper),
+            "expected_wrapper": str(expected_wrapper),
         }
+        if task_to_run:
+            payload["task_to_run"] = task_to_run
+        if registered_wrapper is not None:
+            payload["registered_wrapper"] = str(registered_wrapper)
+            payload["wrapper_matches_expected"] = registered_wrapper == expected_wrapper
+        if state_raw:
+            payload["task_state"] = state_raw
+        return payload
 
     if _is_linux():
         service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
