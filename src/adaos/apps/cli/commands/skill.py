@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import traceback
 from dataclasses import asdict
 from pathlib import Path
@@ -188,6 +189,40 @@ def _resolve_skill_path(target: str) -> Path:
     if candidate.exists():
         return candidate
     raise typer.BadParameter(_("cli.skill.push.not_found", name=target))
+
+
+def _list_changed_workspace_skills() -> list[str]:
+    workspace = _workspace_root()
+    proc = subprocess.run(
+        ["git", "-C", str(workspace.parent if workspace.name.lower() == "skills" else workspace), "status", "--porcelain", "--", "skills"],
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "").strip() or "git status failed"
+        raise RuntimeError(message)
+
+    changed: set[str] = set()
+    for raw_line in (proc.stdout or "").splitlines():
+        line = raw_line.rstrip()
+        if len(line) < 4:
+            continue
+        path_text = line[3:].strip()
+        if not path_text:
+            continue
+        candidates = [segment.strip() for segment in path_text.split("->") if segment.strip()]
+        for candidate in candidates:
+            normalized = candidate.replace("\\", "/")
+            if not normalized.startswith("skills/"):
+                continue
+            parts = normalized.split("/")
+            if len(parts) < 2:
+                continue
+            skill_name = (parts[1] or "").strip()
+            if skill_name and skill_name != ".runtime" and skill_name != ".devtime":
+                changed.add(skill_name)
+    return sorted(changed)
 
 
 def _echo_runtime_install(result: RuntimeInstallResult) -> None:
@@ -965,13 +1000,34 @@ def doctor(name: str):
 @_run_safe
 @app.command("migrate")
 def migrate(
-    name: str = typer.Argument(..., help="skill to migrate"),
+    name: Optional[str] = typer.Argument(None, help="skill to migrate"),
     dry_run: bool = typer.Option(False, "--dry-run", help="report without applying changes"),
 ):
     service = SkillUpdateService(get_ctx())
-    try:
-        result = service.request_update(name, dry_run=dry_run)
-    except FileNotFoundError as exc:
-        typer.secho(str(exc), fg=typer.colors.RED)
-        raise typer.Exit(1) from exc
-    typer.echo(f"{name}: {'updated' if result.updated else 'up-to-date'}" + (f" (version {result.version})" if result.version else ""))
+    names: list[str]
+    if name:
+        names = [name]
+    else:
+        try:
+            names = _list_changed_workspace_skills()
+        except Exception as exc:
+            typer.secho(f"failed to detect changed skills: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+        if not names:
+            typer.echo("no changed skills detected")
+            return
+
+    failed = False
+    for skill_name in names:
+        try:
+            result = service.request_update(skill_name, dry_run=dry_run)
+        except FileNotFoundError as exc:
+            failed = True
+            typer.secho(f"{skill_name}: {exc}", fg=typer.colors.RED)
+            continue
+        typer.echo(
+            f"{skill_name}: {'updated' if result.updated else 'up-to-date'}"
+            + (f" (version {result.version})" if result.version else "")
+        )
+    if failed:
+        raise typer.Exit(1)
