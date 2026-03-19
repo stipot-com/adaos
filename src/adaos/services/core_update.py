@@ -114,6 +114,11 @@ def _format_update_command(template: str, plan: dict[str, Any]) -> str:
     values = {
         "target_rev": str(plan.get("target_rev") or ""),
         "target_version": str(plan.get("target_version") or ""),
+        "target_slot": str(plan.get("target_slot") or ""),
+        "inactive_slot": str(plan.get("inactive_slot") or ""),
+        "inactive_slot_dir": str(plan.get("inactive_slot_dir") or ""),
+        "active_slot": str(plan.get("active_slot") or ""),
+        "active_slot_dir": str(plan.get("active_slot_dir") or ""),
         "reason": str(plan.get("reason") or ""),
         "base_dir": str(_base_dir()),
         "python": sys.executable,

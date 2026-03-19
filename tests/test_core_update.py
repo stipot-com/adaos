@@ -39,6 +39,8 @@ def test_core_update_command_uses_builtin_runner_when_not_configured(monkeypatch
     assert cmd is not None
     assert "adaos.apps.core_update_apply" in cmd
     assert "rev2026" in cmd
+    assert '--slot "B"' in cmd
+    assert f'--slot-dir "{tmp_path / "slot-b"}"' in cmd
 
 
 def test_core_update_status_roundtrip(monkeypatch, tmp_path) -> None:
