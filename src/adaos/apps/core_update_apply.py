@@ -157,6 +157,7 @@ def prepare_slot(
                 "ADAOS_BASE_DIR": str(base_dir or ""),
                 "ADAOS_SLOT_REPO_ROOT": str(final_repo_dir),
                 "ADAOS_SHARED_DOTENV_PATH": shared_dotenv,
+                "PYTHONPATH": str(final_repo_dir / "src"),
                 "PYTHONUNBUFFERED": "1",
             },
         }

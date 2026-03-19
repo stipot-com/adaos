@@ -42,6 +42,7 @@ def test_prepare_slot_from_local_repo_includes_shared_dotenv(monkeypatch, tmp_pa
 
     assert manifest["cwd"] == str((slot_root / "repo").resolve())
     assert manifest["env"]["ADAOS_SHARED_DOTENV_PATH"] == str(shared_dotenv)
+    assert manifest["env"]["PYTHONPATH"].endswith(str(Path("repo") / "src"))
     assert any(Path(cmd[0]).name.lower().startswith("git") and len(cmd) >= 2 and cmd[1] == "clone" for cmd in commands)
 
 
