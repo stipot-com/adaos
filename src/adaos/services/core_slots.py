@@ -5,11 +5,20 @@ import os
 from pathlib import Path
 from typing import Any
 
+from adaos.services.agent_context import get_ctx
+
 
 SLOTS = ("A", "B")
 
 
 def _base_dir() -> Path:
+    try:
+        ctx = get_ctx()
+        base = ctx.paths.base_dir()
+        base = base() if callable(base) else base
+        return Path(base).expanduser().resolve()
+    except Exception:
+        pass
     raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()

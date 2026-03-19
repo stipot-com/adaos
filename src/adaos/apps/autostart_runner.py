@@ -12,6 +12,7 @@ import uvicorn
 
 from adaos.apps.bootstrap import init_ctx
 from adaos.apps.cli.commands.api import _advertise_base, _cleanup_pidfile, _pidfile_path, _resolve_bind, _uvicorn_loop_mode, _write_pidfile
+from adaos.services.agent_context import get_ctx
 from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, write_status
 from adaos.services.core_slots import active_slot, active_slot_manifest, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
@@ -36,13 +37,20 @@ def _format_slot_value(template: str, values: dict[str, str]) -> str:
 
 def _slot_launch_spec(manifest: dict[str, object], *, host: str, port: int, token: str | None) -> tuple[list[str] | None, str | None]:
     slot = str(manifest.get("slot") or "").strip().upper()
+    try:
+        ctx = get_ctx()
+        base_dir = ctx.paths.base_dir()
+        base_dir = base_dir() if callable(base_dir) else base_dir
+        base_dir_text = str(Path(base_dir).expanduser().resolve())
+    except Exception:
+        base_dir_text = str(os.getenv("ADAOS_BASE_DIR") or "")
     values = {
         "host": str(host),
         "port": str(port),
         "token": str(token or ""),
         "slot": slot,
         "slot_dir": str(slot_dir(slot)) if slot else "",
-        "base_dir": str(os.getenv("ADAOS_BASE_DIR") or ""),
+        "base_dir": base_dir_text,
         "python": os.sys.executable,
     }
     argv_raw = manifest.get("argv")

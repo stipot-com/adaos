@@ -10,6 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from adaos.apps.bootstrap import init_ctx
 from adaos.services.core_slots import write_slot_manifest
 
 
@@ -107,6 +108,10 @@ def _prepare_slot(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main() -> None:
+    try:
+        init_ctx()
+    except Exception:
+        pass
     args = _parse_args()
     manifest = _prepare_slot(args)
     print(json.dumps({"ok": True, "slot": args.slot, "manifest": manifest}, ensure_ascii=False))

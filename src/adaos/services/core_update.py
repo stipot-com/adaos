@@ -9,10 +9,18 @@ from pathlib import Path
 from string import Formatter
 from typing import Any
 
+from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import activate_slot, active_slot, choose_inactive_slot, previous_slot, read_slot_manifest, rollback_to_previous_slot, slot_dir
 
 
 def _base_dir() -> Path:
+    try:
+        ctx = get_ctx()
+        base = ctx.paths.base_dir()
+        base = base() if callable(base) else base
+        return Path(base).expanduser().resolve()
+    except Exception:
+        pass
     raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
@@ -91,9 +99,15 @@ def write_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _repo_root() -> Path | None:
     try:
-        return Path(__file__).resolve().parents[3]
+        ctx = get_ctx()
+        package = ctx.paths.package_path()
+        package = package() if callable(package) else package
+        return Path(package).resolve().parents[1]
     except Exception:
-        return None
+        try:
+            return Path(__file__).resolve().parents[3]
+        except Exception:
+            return None
 
 
 def _format_update_command(template: str, plan: dict[str, Any]) -> str:
