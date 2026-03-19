@@ -8,20 +8,6 @@ import {
 	IonButtons,
 	IonButton,
 } from '@ionic/angular/standalone'
-import { addIcons } from 'ionicons'
-import {
-	homeOutline,
-	refreshOutline,
-	logOutOutline,
-	menuOutline,
-	closeOutline,
-	chevronDownOutline,
-	chevronUpOutline,
-	folderOpenOutline,
-	micOutline,
-	cloudOutline,
-	flashOutline,
-} from 'ionicons/icons'
 import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
@@ -98,19 +84,6 @@ export class AppComponent implements OnInit, OnDestroy {
 		private rtc: WebRtcTransportService,
 		private toastCtrl: ToastController,
 	) {
-		addIcons({
-			homeOutline,
-			refreshOutline,
-			logOutOutline,
-			menuOutline,
-			closeOutline,
-			chevronDownOutline,
-			chevronUpOutline,
-			folderOpenOutline,
-			micOutline,
-			cloudOutline,
-			flashOutline,
-		})
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
 			!this.plt.platforms().includes('mobileweb')
