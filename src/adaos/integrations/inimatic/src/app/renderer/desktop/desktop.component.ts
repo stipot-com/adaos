@@ -73,6 +73,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			window.addEventListener('adaos:toggleSidebar', this.onToggleSidebar as any)
 		} catch {}
 		this.pendingApproveCode = this.readPairCodeFromUrl()
+		const registrationIntent = this.hasRegistrationIntent()
 		this.ownerAuthenticated = this.hasOwnerSession()
 		this.isAuthenticated = this.ownerAuthenticated
 		try {
@@ -82,6 +83,14 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
 			this.initError = msg
+			if (registrationIntent) {
+				this.ownerAuthenticated = false
+				this.isAuthenticated = false
+				this.needsPairing = false
+				this.needsLogin = true
+				this.initError = ''
+				return
+			}
 			if (
 				msg.includes('hub_unreachable_no_session') ||
 				msg.includes('session_invalid')
@@ -450,6 +459,17 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			)
 		} catch {
 			return ''
+		}
+	}
+
+	private hasRegistrationIntent(): boolean {
+		try {
+			const url = new URL(window.location.href)
+			const mode = (url.searchParams.get('mode') || '').trim().toLowerCase()
+			const code = (url.searchParams.get('user_code') || url.searchParams.get('code') || '').trim()
+			return mode === 'registration' || !!code
+		} catch {
+			return false
 		}
 	}
 
