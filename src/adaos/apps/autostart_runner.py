@@ -11,7 +11,15 @@ from string import Formatter
 import uvicorn
 
 from adaos.apps.bootstrap import init_ctx
-from adaos.apps.cli.commands.api import _advertise_base, _cleanup_pidfile, _pidfile_path, _resolve_bind, _uvicorn_loop_mode, _write_pidfile
+from adaos.apps.cli.commands.api import (
+    _advertise_base,
+    _cleanup_pidfile,
+    _pidfile_path,
+    _resolve_bind,
+    _stop_previous_server,
+    _uvicorn_loop_mode,
+    _write_pidfile,
+)
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, write_status
 from adaos.services.core_slots import active_slot, active_slot_manifest, slot_dir, slot_status
@@ -144,8 +152,8 @@ def main() -> None:
 
     host, port = _resolve_bind(conf, args.host, args.port)
     advertised_base = _advertise_base(host, port)
+    _stop_previous_server(host, port)
     pidfile = _pidfile_path(host, port)
-
     _write_pidfile(pidfile, host=host, port=port, advertised_base=advertised_base)
     atexit.register(_cleanup_pidfile, pidfile)
 

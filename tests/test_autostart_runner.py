@@ -13,6 +13,7 @@ def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> Non
     monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append("write_status"))
     monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
     monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: calls.append("stop_previous"))
 
     def _pidfile(host, port):
         calls.append("pidfile")
@@ -25,5 +26,5 @@ def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> Non
     except SystemExit:
         pass
 
-    assert calls[:2] == ["init_ctx", "write_status"]
+    assert calls[:3] == ["init_ctx", "write_status", "stop_previous"]
     assert "pidfile" in calls
