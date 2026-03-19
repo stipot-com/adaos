@@ -163,6 +163,15 @@ def _plan_with_slot_context(plan: dict[str, Any]) -> dict[str, Any]:
         payload["active_slot_dir"] = str(slot_dir(payload["active_slot"]))
     else:
         payload["active_slot_dir"] = ""
+    if not str(payload.get("target_rev") or "").strip():
+        active_manifest = read_slot_manifest(payload["active_slot"]) if payload["active_slot"] else None
+        resolved_rev = str(
+            (active_manifest or {}).get("target_rev")
+            or os.getenv("ADAOS_REV")
+            or os.getenv("ADAOS_INIT_REV")
+            or ""
+        ).strip()
+        payload["target_rev"] = resolved_rev
     return payload
 
 

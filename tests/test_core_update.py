@@ -78,3 +78,27 @@ def test_execute_pending_update_rolls_back(monkeypatch, tmp_path) -> None:
     result = execute_pending_update({"action": "rollback"})
     assert result["state"] == "rolled_back"
     assert active_slot() == "A"
+
+
+def test_execute_pending_update_inherits_target_rev_from_active_slot(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_slot_manifest("A", {"argv": ["python", "-m", "adaos.apps.autostart_runner"], "target_rev": "rev2026"})
+    activate_slot("A")
+
+    seen: dict[str, str] = {}
+
+    def _fake_run(command: str, shell: bool, capture_output: bool, text: bool):
+        seen["command"] = command
+        write_slot_manifest(
+            "B",
+            {
+                "argv": ["python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+                "target_rev": "rev2026",
+            },
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("adaos.services.core_update.subprocess.run", _fake_run)
+    result = execute_pending_update({"target_version": "0.1.0"})
+    assert result["state"] == "succeeded"
+    assert "rev2026" in seen["command"]
