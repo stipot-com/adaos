@@ -57,11 +57,39 @@ def _clone_repo(repo_url: str, target_rev: str, checkout_dir: Path) -> None:
 
 def _clone_local_repo(source_repo_root: Path, target_rev: str, checkout_dir: Path) -> None:
     git = shutil.which("git")
-    if not git:
-        raise RuntimeError("git is required for core updates but is not installed")
-    _run([git, "clone", str(source_repo_root), str(checkout_dir)])
-    if target_rev:
-        _run([git, "checkout", target_rev], cwd=checkout_dir)
+    git_dir = source_repo_root / ".git"
+    if git and git_dir.exists():
+        try:
+            _run([git, "clone", str(source_repo_root), str(checkout_dir)])
+            if target_rev:
+                _run([git, "checkout", target_rev], cwd=checkout_dir)
+            return
+        except Exception:
+            pass
+    shutil.copytree(
+        source_repo_root,
+        checkout_dir,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(
+            ".adaos",
+            ".venv",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".coverage",
+            "node_modules",
+        ),
+    )
+
+
+def _is_git_repo(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        return (path / ".git").exists()
+    except Exception:
+        return False
 
 
 def prepare_slot(
@@ -88,7 +116,13 @@ def prepare_slot(
     prepared_slot.mkdir(parents=True, exist_ok=True)
     try:
         checkout_tmp = prepared_slot / "repo"
-        if source_repo_dir is not None:
+        source_is_git = _is_git_repo(source_repo_dir)
+        git_available = bool(shutil.which("git"))
+        if source_repo_dir is not None and source_repo_dir.exists() and source_is_git:
+            _clone_local_repo(source_repo_dir, target_rev, checkout_tmp)
+        elif git_available and repo_url:
+            _clone_repo(repo_url, target_rev, checkout_tmp)
+        elif source_repo_dir is not None and source_repo_dir.exists():
             _clone_local_repo(source_repo_dir, target_rev, checkout_tmp)
         else:
             _clone_repo(repo_url, target_rev, checkout_tmp)
