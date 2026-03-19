@@ -71,6 +71,11 @@ from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.services.core_update import clear_plan as clear_core_update_plan
+from adaos.services.core_update import read_plan as read_core_update_plan
+from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import write_plan as write_core_update_plan
+from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.node_config import save_config
 from adaos.services.runtime_lifecycle import (
     is_draining,
@@ -85,6 +90,7 @@ init_ctx()
 
 _DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
 _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
+_DEFAULT_UPDATE_COUNTDOWN_SEC = 60.0
 
 
 async def _wait_bus_idle(timeout: float) -> bool:
@@ -116,6 +122,88 @@ async def _emit_shutdown_event(event_type: str, payload: dict[str, Any], *, drai
 async def _request_process_shutdown(delay_sec: float = _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC) -> None:
     await asyncio.sleep(max(0.0, float(delay_sec)))
     signal.raise_signal(signal.SIGINT)
+
+
+async def _run_core_update_shutdown(app: FastAPI, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> None:
+    conf = get_ctx().config
+    request_drain(reason=reason)
+    app.state.shutdown_requested = True
+    app.state.shutdown_reason = reason
+    app.state.shutdown_drain_timeout = float(drain_timeout_sec)
+    await _emit_shutdown_event(
+        "subnet.stopping",
+        {
+            "subnet_id": conf.subnet_id,
+            "reason": reason,
+        },
+        drain_timeout=drain_timeout_sec,
+    )
+    app.state.shutdown_stopping_emitted = True
+    asyncio.create_task(_request_process_shutdown(signal_delay_sec), name="core-update-shutdown")
+
+
+async def _core_update_countdown_worker(
+    app: FastAPI,
+    *,
+    target_rev: str,
+    target_version: str,
+    reason: str,
+    countdown_sec: float,
+    drain_timeout_sec: float,
+    signal_delay_sec: float,
+) -> None:
+    started_at = time.time()
+    write_core_update_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "target_rev": target_rev,
+            "target_version": target_version,
+            "reason": reason,
+            "countdown_sec": countdown_sec,
+            "started_at": started_at,
+            "scheduled_for": started_at + countdown_sec,
+        }
+    )
+    try:
+        await asyncio.sleep(max(0.0, float(countdown_sec)))
+        plan = {
+            "state": "pending_restart",
+            "target_rev": target_rev,
+            "target_version": target_version,
+            "reason": reason,
+            "created_at": time.time(),
+            "expires_at": time.time() + 1800.0,
+        }
+        write_core_update_plan(plan)
+        write_core_update_status(
+            {
+                "state": "restarting",
+                "phase": "shutdown",
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "message": "countdown completed; pending update written",
+            }
+        )
+        await _run_core_update_shutdown(
+            app,
+            reason=reason,
+            drain_timeout_sec=drain_timeout_sec,
+            signal_delay_sec=signal_delay_sec,
+        )
+    except asyncio.CancelledError:
+        write_core_update_status(
+            {
+                "state": "cancelled",
+                "phase": "countdown",
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "message": "core update cancelled",
+            }
+        )
+        raise
 
 
 def _api_state_dir() -> Path:
@@ -209,6 +297,7 @@ async def lifespan(app: FastAPI):
         app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
         app.state.shutdown_stopping_emitted = False
         reset_runtime_lifecycle()
+        app.state.core_update_task = None
         app.state.restart_marker = _consume_restart_marker(os.getenv("ADAOS_SELF_BASE_URL"))
         app.state.realtime_sidecar_proc = None
     except Exception:
@@ -612,6 +701,19 @@ class DrainResponse(BaseModel):
     drain_timeout_sec: float
 
 
+class CoreUpdateStartRequest(BaseModel):
+    target_rev: str = Field(default="", max_length=128)
+    target_version: str = Field(default="", max_length=128)
+    reason: str = Field(default="core.update", min_length=1, max_length=128)
+    countdown_sec: float = Field(default=_DEFAULT_UPDATE_COUNTDOWN_SEC, ge=0.0, le=3600.0)
+    drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
+    signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
+
+
+class CoreUpdateCancelRequest(BaseModel):
+    reason: str = Field(default="user.cancelled", min_length=1, max_length=128)
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -694,6 +796,80 @@ async def admin_drain(body: DrainRequest):
 @app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
 async def admin_lifecycle():
     return {"ok": True, "lifecycle": runtime_lifecycle_snapshot()}
+
+
+@app.post("/api/admin/update/start", dependencies=[Depends(require_token)])
+async def admin_update_start(body: CoreUpdateStartRequest):
+    existing = getattr(app.state, "core_update_task", None)
+    if existing is not None and not existing.done():
+        return {"ok": True, "accepted": False, "status": read_core_update_status()}
+    if getattr(app.state, "shutdown_requested", False):
+        return {"ok": True, "accepted": False, "status": read_core_update_status()}
+
+    clear_core_update_plan()
+    write_core_update_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "target_rev": str(body.target_rev or ""),
+            "target_version": str(body.target_version or ""),
+            "reason": body.reason,
+            "countdown_sec": float(body.countdown_sec),
+            "started_at": time.time(),
+            "scheduled_for": time.time() + float(body.countdown_sec),
+        }
+    )
+    task = asyncio.create_task(
+        _core_update_countdown_worker(
+            app,
+            target_rev=str(body.target_rev or ""),
+            target_version=str(body.target_version or ""),
+            reason=body.reason,
+            countdown_sec=float(body.countdown_sec),
+            drain_timeout_sec=float(body.drain_timeout_sec),
+            signal_delay_sec=float(body.signal_delay_sec),
+        ),
+        name="core-update-countdown",
+    )
+    app.state.core_update_task = task
+    return {"ok": True, "accepted": True, "status": read_core_update_status()}
+
+
+@app.post("/api/admin/update/cancel", dependencies=[Depends(require_token)])
+async def admin_update_cancel(body: CoreUpdateCancelRequest):
+    task = getattr(app.state, "core_update_task", None)
+    clear_core_update_plan()
+    if task is None or task.done():
+        status = write_core_update_status(
+            {
+                "state": "cancelled",
+                "phase": "countdown",
+                "message": "no pending countdown task",
+                "reason": body.reason,
+            }
+        )
+        return {"ok": True, "accepted": False, "status": status}
+
+    task.cancel()
+    app.state.core_update_task = None
+    status = write_core_update_status(
+        {
+            "state": "cancelled",
+            "phase": "countdown",
+            "message": "core update cancelled by request",
+            "reason": body.reason,
+        }
+    )
+    return {"ok": True, "accepted": True, "status": status}
+
+
+@app.get("/api/admin/update/status", dependencies=[Depends(require_token)])
+async def admin_update_status():
+    return {
+        "ok": True,
+        "status": read_core_update_status(),
+        "plan": read_core_update_plan(),
+    }
 
 
 @app.get("/api/status", dependencies=[Depends(require_token)])
