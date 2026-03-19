@@ -124,6 +124,8 @@ def _bootstrap_core_slot(ctx: AgentContext, *, token: str | None = None) -> None
         str(repo_root),
         "--source-repo-root",
         str(repo_root),
+        "--target-rev",
+        str(os.getenv("ADAOS_REV") or os.getenv("ADAOS_INIT_REV") or "").strip(),
         "--target-version",
         str(BUILD_INFO.version or ""),
     ]

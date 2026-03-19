@@ -62,3 +62,44 @@ def test_default_spec_exports_shared_dotenv(monkeypatch, tmp_path: Path) -> None
 
     spec = autostart.default_spec(_CtxWithPackage(tmp_path / "base"))
     assert spec.env["ADAOS_SHARED_DOTENV_PATH"] == str(dotenv_path.resolve())
+
+
+def test_bootstrap_core_slot_uses_explicit_revision(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    package_dir = repo_root / "src" / "adaos"
+    package_dir.mkdir(parents=True)
+    base_dir = tmp_path / "base"
+
+    class _Paths(_FakePaths):
+        def package_path(self) -> Path:
+            return package_dir
+
+        def repo_root(self) -> Path:
+            return repo_root
+
+    class _CtxWithPackage(_FakeCtx):
+        def __init__(self, base_dir: Path) -> None:
+            self.paths = _Paths(base_dir)
+            self.settings = type("Settings", (), {"profile": "default"})()
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setenv("ADAOS_REV", "rev2026")
+    monkeypatch.setattr(autostart, "active_slot", lambda: None)
+    monkeypatch.setattr(autostart, "read_slot_manifest", lambda slot: None)
+    monkeypatch.setattr(autostart, "activate_slot", lambda slot: None)
+    def _fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr(autostart, "subprocess", type("Subprocess", (), {"run": staticmethod(_fake_run)})())
+
+    autostart._bootstrap_core_slot(_CtxWithPackage(base_dir))
+
+    joined = " ".join(calls[0])
+    assert "--target-rev rev2026" in joined
