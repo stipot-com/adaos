@@ -38,6 +38,9 @@ class PathProvider:
         """Package-level locales shipped with AdaOS (see ``get_ctx().paths``)."""
         return (self.package_dir).resolve()
 
+    def repo_root(self) -> Path:
+        return self.package_path().parents[1].resolve()
+
     def locales_dir(self) -> Path:
         """Package-level locales shipped with AdaOS (see ``get_ctx().paths``)."""
         return (self.package_dir / "locales").resolve()

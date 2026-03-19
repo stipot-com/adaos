@@ -65,6 +65,7 @@ systemctl --user daemon-reload
 systemctl --user restart adaos.service
 # Проверить
 systemctl --user status adaos.service --no-pager
+journalctl --user -u adaos.service -n 120 --no-pager
 curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если требуется)
 # Включить
 adaos autostart enable
@@ -72,6 +73,26 @@ adaos autostart enable
 adaos autostart status
 # Остановить
 adaos autostart disable
+
+
+adaos autostart update-status
+adaos autostart update-start
+adaos autostart update-cancel
+adaos autostart update-rollback
+adaos autostart smoke-update
+
+# Практически на Linux теперь можно так:
+adaos autostart update-status --json
+adaos autostart smoke-update --countdown-sec 5 --json
+adaos autostart update-cancel --json
+adaos autostart update-rollback --json
+
+# Рекомендованный smoke-порядок:
+adaos autostart update-status --json
+adaos autostart smoke-update --countdown-sec 30 --json
+adaos autostart update-cancel --json
+adaos autostart smoke-update --countdown-sec 5 --json
+
 ```
 
 ## Add a member node (phase 1)

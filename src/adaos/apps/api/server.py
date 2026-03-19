@@ -4,14 +4,14 @@
 try:  # pragma: no cover
     from dotenv import find_dotenv, load_dotenv  # type: ignore
 
-    load_dotenv(find_dotenv(), override=False)
+    load_dotenv((os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip() or find_dotenv(), override=False)
 except Exception:
     pass
 
 try:  # pragma: no cover
     from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
 
-    apply_runtime_dotenv_overrides()
+    apply_runtime_dotenv_overrides(dotenv_path=(os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip() or None)
 except Exception:
     pass
 

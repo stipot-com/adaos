@@ -116,6 +116,14 @@ class Settings:
             return (Path.home() / ".adaos").resolve()
 
         resolved_env_file = env_file
+        shared_env_path = (os.environ.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+        if shared_env_path and (env_file is None or env_file == ".env"):
+            try:
+                shared_candidate = Path(shared_env_path).expanduser().resolve()
+                if shared_candidate.exists():
+                    resolved_env_file = str(shared_candidate)
+            except Exception:
+                pass
         if env_file:
             try:
                 p = Path(env_file)

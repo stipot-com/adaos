@@ -32,7 +32,7 @@ def _is_runtime_key(name: str) -> bool:
 def runtime_dotenv_overrides(dotenv_path: str | os.PathLike[str] | None = None) -> dict[str, str]:
     if dotenv_values is None:
         return {}
-    path_value = str(dotenv_path or "").strip()
+    path_value = str(dotenv_path or os.environ.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
     if not path_value:
         try:
             path_value = str(find_dotenv() or "").strip() if callable(find_dotenv) else ""

@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
+from adaos.services.core_slots import active_slot, activate_slot, read_slot_manifest, slot_dir
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,9 +60,84 @@ def default_spec(
         "ADAOS_BASE_DIR": str(base_dir),
         "ADAOS_PROFILE": str(profile),
     }
+    shared_dotenv = _shared_dotenv_path(ctx)
+    if shared_dotenv:
+        env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv)
     if token:
         env["ADAOS_TOKEN"] = token
     return AutostartSpec(name="adaos", argv=argv, env=env)
+
+
+def _repo_root(ctx: AgentContext) -> Path | None:
+    try:
+        repo_root = ctx.paths.repo_root()
+        return repo_root() if callable(repo_root) else repo_root
+    except Exception:
+        try:
+            package = ctx.paths.package_path()
+            package = package() if callable(package) else package
+            return Path(package).resolve().parents[1]
+        except Exception:
+            return None
+
+
+def _shared_dotenv_path(ctx: AgentContext) -> Path | None:
+    raw = str(os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+    if raw:
+        path = Path(raw).expanduser().resolve()
+        return path if path.exists() else None
+    repo_root = _repo_root(ctx)
+    if repo_root is None:
+        return None
+    candidate = (repo_root / ".env").resolve()
+    return candidate if candidate.exists() else None
+
+
+def _slot_manifest_ready(slot: str | None) -> bool:
+    if not slot:
+        return False
+    manifest = read_slot_manifest(slot)
+    if not isinstance(manifest, dict):
+        return False
+    return bool(isinstance(manifest.get("argv"), list) or str(manifest.get("command") or "").strip())
+
+
+def _bootstrap_core_slot(ctx: AgentContext, *, token: str | None = None) -> None:
+    current = active_slot()
+    if _slot_manifest_ready(current):
+        return
+    repo_root = _repo_root(ctx)
+    if repo_root is None or not repo_root.exists():
+        raise RuntimeError("cannot initialize core slot: repo root is not available")
+    slot = current or "A"
+    cmd = [
+        sys.executable,
+        "-m",
+        "adaos.apps.core_update_apply",
+        "--slot",
+        slot,
+        "--slot-dir",
+        str(slot_dir(slot)),
+        "--base-dir",
+        str(ctx.paths.base_dir()),
+        "--repo-root",
+        str(repo_root),
+        "--source-repo-root",
+        str(repo_root),
+        "--target-version",
+        str(BUILD_INFO.version or ""),
+    ]
+    shared_dotenv = _shared_dotenv_path(ctx)
+    if shared_dotenv is not None:
+        cmd.extend(["--shared-dotenv-path", str(shared_dotenv)])
+    completed = subprocess.run(cmd, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "failed to initialize bootstrap core slot\n"
+            f"stdout:\n{(completed.stdout or '')[-4000:]}\n"
+            f"stderr:\n{(completed.stderr or '')[-4000:]}"
+        )
+    activate_slot(slot)
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -192,6 +269,7 @@ def _macos_label() -> str:
 
 
 def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dict:
+    _bootstrap_core_slot(ctx, token=spec.env.get("ADAOS_TOKEN"))
     base_dir = ctx.paths.base_dir()
     bin_dir = (base_dir / "bin").resolve()
     bin_dir.mkdir(parents=True, exist_ok=True)
