@@ -2,6 +2,8 @@
 
 `adaos api serve` starts the local FastAPI hub/member API.
 
+`adaos api serve` remains the developer entrypoint. Production OS autostart uses a separate runner path and should be treated as the long-lived service lifecycle.
+
 `adaos api stop` resolves the active local hub address from `node.yaml` (`hub_url`) and performs a graceful shutdown first.
 
 ## Shutdown flow
@@ -35,3 +37,14 @@ Payload fields:
 - `reason`
 
 These events are intended for in-process skills and scenario runtime components that need to flush state, update UI, or persist telemetry before the node exits.
+
+## Drain mode
+
+`POST /api/admin/drain` marks the node as `draining` without stopping it immediately.
+
+While draining:
+
+- `/health/ready` returns `503`;
+- `/api/node/status` exposes `node_state=draining`;
+- new `/api/tools/call` requests are rejected with `503`;
+- member heartbeats publish `node_state=draining` so the hub can stop selecting that node for routed tool calls.

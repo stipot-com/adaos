@@ -33,12 +33,17 @@ class SubnetRepo:
                   roles_json  TEXT NOT NULL,
                   hostname    TEXT,
                   base_url    TEXT,
+                  node_state  TEXT NOT NULL DEFAULT 'ready',
                   last_seen   REAL,
                   created_at  REAL NOT NULL,
                   updated_at  REAL NOT NULL
                 )
                 """
             )
+            try:
+                con.execute("ALTER TABLE subnet_nodes ADD COLUMN node_state TEXT NOT NULL DEFAULT 'ready'")
+            except Exception:
+                pass
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS subnet_capacity_io (
@@ -92,31 +97,39 @@ class SubnetRepo:
         roles = json.dumps(list(node.get("roles") or []), ensure_ascii=False)
         hostname = node.get("hostname")
         base_url = node.get("base_url")
+        node_state = str(node.get("node_state") or "ready")
         last_seen = float(node.get("last_seen") or 0.0)
         now = _now()
         with self.sql.connect() as con:
             con.execute(
                 """
-                INSERT INTO subnet_nodes(node_id, subnet_id, roles_json, hostname, base_url, last_seen, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO subnet_nodes(node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(node_id) DO UPDATE SET
                   subnet_id=excluded.subnet_id,
                   roles_json=excluded.roles_json,
                   hostname=excluded.hostname,
                   base_url=excluded.base_url,
+                  node_state=excluded.node_state,
                   last_seen=excluded.last_seen,
                   updated_at=excluded.updated_at
                 """,
-                (node_id, subnet_id, roles, hostname, base_url, last_seen, now, now),
+                (node_id, subnet_id, roles, hostname, base_url, node_state, last_seen, now, now),
             )
             con.commit()
 
-    def touch_heartbeat(self, node_id: str, last_seen: float, capacity: Optional[Dict[str, Any]] = None) -> None:
+    def touch_heartbeat(self, node_id: str, last_seen: float, capacity: Optional[Dict[str, Any]] = None, *, node_state: str | None = None) -> None:
         with self.sql.connect() as con:
-            con.execute(
-                "UPDATE subnet_nodes SET last_seen=?, updated_at=? WHERE node_id=?",
-                (float(last_seen), _now(), node_id),
-            )
+            if node_state is not None:
+                con.execute(
+                    "UPDATE subnet_nodes SET last_seen=?, node_state=?, updated_at=? WHERE node_id=?",
+                    (float(last_seen), str(node_state or "ready"), _now(), node_id),
+                )
+            else:
+                con.execute(
+                    "UPDATE subnet_nodes SET last_seen=?, updated_at=? WHERE node_id=?",
+                    (float(last_seen), _now(), node_id),
+                )
             con.commit()
         if capacity:
             self.replace_io_capacity(node_id, capacity.get("io") or [])
@@ -125,7 +138,7 @@ class SubnetRepo:
     def list_nodes(self) -> List[Dict[str, Any]]:
         with self.sql.connect() as con:
             cur = con.execute(
-                "SELECT node_id, subnet_id, roles_json, hostname, base_url, last_seen, created_at, updated_at FROM subnet_nodes"
+                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at FROM subnet_nodes"
             )
             rows = []
             for r in cur.fetchall():
@@ -136,9 +149,10 @@ class SubnetRepo:
                         "roles": json.loads(r[2] or "[]"),
                         "hostname": r[3],
                         "base_url": r[4],
-                        "last_seen": r[5],
-                        "created_at": r[6],
-                        "updated_at": r[7],
+                        "node_state": r[5] or "ready",
+                        "last_seen": r[6],
+                        "created_at": r[7],
+                        "updated_at": r[8],
                     }
                 )
             return rows
@@ -146,7 +160,7 @@ class SubnetRepo:
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         with self.sql.connect() as con:
             cur = con.execute(
-                "SELECT node_id, subnet_id, roles_json, hostname, base_url, last_seen, created_at, updated_at FROM subnet_nodes WHERE node_id=?",
+                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at FROM subnet_nodes WHERE node_id=?",
                 (node_id,),
             )
             r = cur.fetchone()
@@ -158,9 +172,10 @@ class SubnetRepo:
                 "roles": json.loads(r[2] or "[]"),
                 "hostname": r[3],
                 "base_url": r[4],
-                "last_seen": r[5],
-                "created_at": r[6],
-                "updated_at": r[7],
+                "node_state": r[5] or "ready",
+                "last_seen": r[6],
+                "created_at": r[7],
+                "updated_at": r[8],
             }
 
     # -------------------- capacity --------------------
@@ -204,7 +219,7 @@ class SubnetRepo:
 
     def nodes_with_skill(self, name: str) -> List[Dict[str, Any]]:
         q = (
-            "SELECT n.node_id, n.subnet_id, n.roles_json, n.hostname, n.base_url, n.last_seen, s.version, s.active "
+            "SELECT n.node_id, n.subnet_id, n.roles_json, n.hostname, n.base_url, n.node_state, n.last_seen, s.version, s.active "
             "FROM subnet_nodes n JOIN subnet_capacity_skills s ON n.node_id=s.node_id WHERE s.name=?"
         )
         with self.sql.connect() as con:
@@ -218,9 +233,10 @@ class SubnetRepo:
                         "roles": json.loads(r[2] or "[]"),
                         "hostname": r[3],
                         "base_url": r[4],
-                        "last_seen": r[5],
-                        "version": r[6],
-                        "active": bool(r[7]),
+                        "node_state": r[5] or "ready",
+                        "last_seen": r[6],
+                        "version": r[7],
+                        "active": bool(r[8]),
                     }
                 )
             return out

@@ -9,6 +9,7 @@ import requests
 
 from adaos.ports.heartbeat import HeartbeatPort
 from adaos.services.capacity import get_local_capacity
+from adaos.services.runtime_lifecycle import runtime_node_state
 
 
 class RequestsHeartbeat(HeartbeatPort):
@@ -58,6 +59,7 @@ class RequestsHeartbeat(HeartbeatPort):
             "hostname": hostname,
             "roles": list(roles),
             "base_url": base_url,
+            "node_state": runtime_node_state(),
             "capacity": capacity,
         }
         try:
@@ -79,6 +81,7 @@ class RequestsHeartbeat(HeartbeatPort):
         payload: dict = {"node_id": node_id}
         if capacity is not None:
             payload["capacity"] = capacity
+        payload["node_state"] = runtime_node_state()
         try:
             r = await asyncio.to_thread(self._session.post, url, json=payload, headers=headers, timeout=self.timeout)
             return r.status_code == 200
@@ -96,4 +99,3 @@ class RequestsHeartbeat(HeartbeatPort):
             await asyncio.to_thread(self._session.post, url, json=payload, headers=headers, timeout=self.timeout)
         except Exception:
             pass
-

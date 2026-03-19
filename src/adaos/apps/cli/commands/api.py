@@ -165,7 +165,9 @@ def _process_looks_like_adaos_api(proc: psutil.Process) -> bool:
     except Exception:
         return False
     joined = " ".join(cmdline)
-    return "adaos" in joined and "api" in joined and "serve" in joined
+    if "adaos" not in joined:
+        return False
+    return ("api" in joined and "serve" in joined) or "adaos.apps.autostart_runner" in joined
 
 
 def _cmdline_option_value(cmdline: list[str], option: str) -> str | None:

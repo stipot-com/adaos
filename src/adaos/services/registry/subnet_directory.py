@@ -29,6 +29,7 @@ class SubnetDirectory:
             "roles": list(node_info.get("roles") or []),
             "hostname": node_info.get("hostname"),
             "base_url": node_info.get("base_url"),
+            "node_state": str(node_info.get("node_state") or "ready"),
             "last_seen": time.time(),
         }
         self.repo.upsert_node(node)
@@ -38,9 +39,9 @@ class SubnetDirectory:
         self.repo.replace_scenario_capacity(node["node_id"], capacity.get("scenarios") or [])
         self.live[node["node_id"]] = {"online": True, "last_seen": node["last_seen"]}
 
-    def on_heartbeat(self, node_id: str, capacity: Optional[Dict[str, Any]]) -> None:
+    def on_heartbeat(self, node_id: str, capacity: Optional[Dict[str, Any]], *, node_state: str | None = None) -> None:
         ts = time.time()
-        self.repo.touch_heartbeat(node_id, ts, capacity)
+        self.repo.touch_heartbeat(node_id, ts, capacity, node_state=node_state)
         st = self.live.get(node_id) or {}
         st["online"] = True
         st["last_seen"] = ts
@@ -62,7 +63,7 @@ class SubnetDirectory:
         nodes = self.repo.nodes_with_skill(name)
         if require_online:
             nodes = [n for n in nodes if self.is_online(n.get("node_id", ""))]
-        return nodes
+        return [n for n in nodes if str(n.get("node_state") or "ready") == "ready"]
 
     def get_node_base_url(self, node_id: str) -> Optional[str]:
         n = self.repo.get_node(node_id)
@@ -92,6 +93,7 @@ class SubnetDirectory:
                 "roles": list(item.get("roles") or []),
                 "hostname": item.get("hostname"),
                 "base_url": item.get("base_url"),
+                "node_state": str(item.get("node_state") or "ready"),
                 "last_seen": float(item.get("last_seen") or 0.0),
             }
             self.repo.upsert_node(node)

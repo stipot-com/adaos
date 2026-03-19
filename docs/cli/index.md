@@ -66,6 +66,8 @@ adaos autostart enable --host 127.0.0.1 --port 8777
 adaos autostart disable
 ```
 
+`adaos autostart` is the production service path. It now starts a dedicated runner instead of `adaos api serve`, so future core lifecycle logic can evolve there without affecting the developer `api serve` workflow from `src`.
+
 ## Status (progress vs remote)
 
 ```bash

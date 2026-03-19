@@ -8,6 +8,7 @@ from adaos.apps.api.auth import require_token
 from adaos.services.observe import attach_http_trace_headers
 from adaos.services.agent_context import get_ctx, AgentContext
 from adaos.services.eventbus import emit
+from adaos.services.runtime_lifecycle import is_accepting_new_work
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.registry.subnet_directory import get_directory
@@ -37,6 +38,8 @@ class ToolCall(BaseModel):
 
 @router.post("/tools/call", dependencies=[Depends(require_token)])
 async def call_tool(body: ToolCall, request: Request, response: Response, ctx: AgentContext = Depends(get_ctx)):
+    if not is_accepting_new_work():
+        raise HTTPException(status_code=503, detail="node is draining")
     # Разбираем "<skill_name>:<public_tool_name>"
     if ":" not in body.tool:
         raise HTTPException(status_code=400, detail="tool must be in '<skill_name>:<public_tool_name>' format")

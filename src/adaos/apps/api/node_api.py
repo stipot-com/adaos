@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
 from adaos.services.bootstrap import is_ready, load_config, switch_role
+from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
 
 router = APIRouter()
@@ -17,6 +18,8 @@ class NodeStatus(BaseModel):
     subnet_id: str
     role: str
     ready: bool
+    node_state: str = "ready"
+    draining: bool = False
     route_mode: Optional[str] = None
     connected_to_hub: Optional[bool] = None
 
@@ -52,11 +55,14 @@ def _route_info(role: str) -> tuple[str | None, bool | None]:
 async def node_status():
     conf = load_config()
     route_mode, connected = _route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
     return NodeStatus(
         node_id=conf.node_id,
         subnet_id=conf.subnet_id,
         role=conf.role,
-        ready=is_ready(),
+        ready=is_ready() and not bool(lifecycle.get("draining")),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
         route_mode=route_mode,
         connected_to_hub=connected,
     )
@@ -80,6 +86,7 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
         "requested_role": new_role,
         "subnet_id_used": sub_id,
         "now_ready": is_ready(),
+        "node_state": runtime_lifecycle_snapshot().get("node_state", "ready"),
         "route_mode": route_mode,
         "connected_to_hub": connected,
         "deprecated_fields": deprecated_fields,
@@ -91,9 +98,10 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
             subnet_id=conf.subnet_id,
             role=conf.role,
             ready=is_ready(),
+            node_state=str(runtime_lifecycle_snapshot().get("node_state") or "ready"),
+            draining=bool(runtime_lifecycle_snapshot().get("draining")),
             route_mode=route_mode,
             connected_to_hub=connected,
         ),
         diagnostics=diags,
     )
-

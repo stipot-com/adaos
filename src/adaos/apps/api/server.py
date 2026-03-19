@@ -72,6 +72,12 @@ from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
 from adaos.services.node_config import save_config
+from adaos.services.runtime_lifecycle import (
+    is_draining,
+    request_drain,
+    reset_runtime_lifecycle,
+    runtime_lifecycle_snapshot,
+)
 from adaos.services.subnet_alias import display_subnet_alias
 from adaos.domain import Event as DomainEvent
 
@@ -202,6 +208,7 @@ async def lifespan(app: FastAPI):
         app.state.shutdown_reason = "signal"
         app.state.shutdown_drain_timeout = _DEFAULT_SHUTDOWN_DRAIN_SEC
         app.state.shutdown_stopping_emitted = False
+        reset_runtime_lifecycle()
         app.state.restart_marker = _consume_restart_marker(os.getenv("ADAOS_SELF_BASE_URL"))
         app.state.realtime_sidecar_proc = None
     except Exception:
@@ -592,6 +599,19 @@ class ShutdownResponse(BaseModel):
     drain_timeout_sec: float
 
 
+class DrainRequest(BaseModel):
+    reason: str = Field(default="admin.drain", min_length=1, max_length=128)
+    drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
+
+
+class DrainResponse(BaseModel):
+    ok: bool
+    accepted: bool
+    node_state: str
+    reason: str
+    drain_timeout_sec: float
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -618,6 +638,7 @@ async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
 @app.post("/api/admin/shutdown", response_model=ShutdownResponse, dependencies=[Depends(require_token)])
 async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     conf = get_ctx().config
+    request_drain(reason=body.reason)
     if getattr(app.state, "shutdown_requested", False):
         return ShutdownResponse(
             ok=True,
@@ -648,6 +669,33 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     )
 
 
+@app.post("/api/admin/drain", response_model=DrainResponse, dependencies=[Depends(require_token)])
+async def admin_drain(body: DrainRequest):
+    conf = get_ctx().config
+    was_draining = is_draining()
+    lifecycle = request_drain(reason=body.reason)
+    await _emit_shutdown_event(
+        "subnet.draining",
+        {
+            "subnet_id": conf.subnet_id,
+            "reason": body.reason,
+        },
+        drain_timeout=body.drain_timeout_sec,
+    )
+    return DrainResponse(
+        ok=True,
+        accepted=not was_draining,
+        node_state=lifecycle.node_state,
+        reason=lifecycle.reason,
+        drain_timeout_sec=body.drain_timeout_sec,
+    )
+
+
+@app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
+async def admin_lifecycle():
+    return {"ok": True, "lifecycle": runtime_lifecycle_snapshot()}
+
+
 @app.get("/api/status", dependencies=[Depends(require_token)])
 async def status():
     return {
@@ -659,6 +707,7 @@ async def status():
             "version": BUILD_INFO.version,
             "build_date": BUILD_INFO.build_date,
         },
+        "lifecycle": runtime_lifecycle_snapshot(),
     }
 
 
@@ -866,6 +915,6 @@ async def health_live():
 
 @app.get("/health/ready")
 async def health_ready():
-    if not is_ready():
+    if not is_ready() or is_draining():
         raise HTTPException(status_code=503, detail="not ready")
     return {"ok": True, "adaos": {"version": BUILD_INFO.version, "build_date": BUILD_INFO.build_date}}

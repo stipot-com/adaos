@@ -81,6 +81,11 @@ def test_process_matches_bind_defaults_to_loopback_and_8777():
     assert not _process_matches_bind(proc, "127.0.0.1", 8778)
 
 
+def test_process_matches_bind_for_autostart_runner():
+    proc = types.SimpleNamespace(cmdline=lambda: ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8778"])
+    assert _process_matches_bind(proc, "127.0.0.1", 8778)
+
+
 def test_find_matching_server_pids_skips_protected_wrappers(monkeypatch):
     class FakeProc:
         def __init__(self, pid: int, cmdline: list[str]):

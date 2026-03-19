@@ -24,6 +24,7 @@ class RegisterRequest(BaseModel):
     hostname: str | None = None
     roles: list[str] | None = None
     base_url: str | None = None
+    node_state: str | None = None
     capacity: Dict[str, Any] | None = None
 
 
@@ -34,6 +35,7 @@ class RegisterResponse(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     node_id: str
+    node_state: str | None = None
     capacity: Dict[str, Any] | None = None
 
 
@@ -74,6 +76,7 @@ async def register(body: RegisterRequest):
             "hostname": body.hostname,
             "roles": body.roles or [],
             "base_url": body.base_url,
+            "node_state": body.node_state,
             "capacity": body.capacity or {},
         }
     )
@@ -99,7 +102,7 @@ async def heartbeat(body: HeartbeatRequest):
     # Если нода неизвестна — 404 (сохраняем поведение)
     if not directory.repo.get_node(body.node_id):
         raise HTTPException(status_code=404, detail="node not registered")
-    directory.on_heartbeat(body.node_id, body.capacity or None)
+    directory.on_heartbeat(body.node_id, body.capacity or None, node_state=body.node_state)
     return HeartbeatResponse(ok=True, lease_seconds=LEASE_SECONDS_DEFAULT)
 
 
