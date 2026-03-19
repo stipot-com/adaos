@@ -131,7 +131,7 @@ print_next_steps() {
     show_qr_if_available "${owner_url}"
   else
     echo "     ${ADAOS_PY} -m adaos dev root login"
-    echo "     Then open https://app.inimatic.com/owner-auth and enter the code."
+    echo "     Then open https://app.inimatic.com/?mode=registration and enter the code."
   fi
   echo "  3) Start/stop/restart AdaOS API:"
   echo "     Start (foreground): ${ADAOS_PY} -m adaos api serve --host ${serve_host} --port ${serve_port}"

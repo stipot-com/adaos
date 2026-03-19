@@ -1,4 +1,5 @@
 import { Component, EventEmitter, Output } from '@angular/core'
+import { ActivatedRoute } from '@angular/router'
 import { LoginService, type LoginResult } from './login.service'
 import { IonButton, IonInput } from '@ionic/angular/standalone'
 import { FormsModule } from '@angular/forms'
@@ -31,7 +32,25 @@ export class LoginComponent {
 	// Mode toggle
 	mode: 'selection' | 'registration' | 'login' = 'selection'
 
-	constructor(private loginService: LoginService, public i18n: I18nService) {}
+	constructor(
+		private loginService: LoginService,
+		private route: ActivatedRoute,
+		public i18n: I18nService,
+	) {
+		this.route.queryParamMap.subscribe((params) => {
+			const mode = (params.get('mode') || '').trim().toLowerCase()
+			const code = (params.get('user_code') || params.get('code') || '').trim()
+			if (mode === 'registration') {
+				this.mode = 'registration'
+			} else if (mode === 'login') {
+				this.mode = 'login'
+			}
+			if (code) {
+				this.mode = 'registration'
+				this.userCode = code
+			}
+		})
+	}
 
 	switchToRegistration() {
 		this.mode = 'registration'

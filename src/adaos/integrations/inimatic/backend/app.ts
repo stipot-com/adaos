@@ -246,6 +246,7 @@ const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
 const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
 const ROOT_CORE_UPDATE_REPORTS_HASH = 'root:hub_core_update_reports'
+const OWNER_REGISTRATION_URL = `${WEB_ORIGIN.replace(/\/+$/, '')}/?mode=registration`
 
 // Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
 try {
@@ -1062,7 +1063,8 @@ rootRouter.post('/auth/owner/start', (req, res) => {
 	res.json({
 		device_code: deviceCode,
 		user_code: userCode,
-		verify_uri: 'https://api.inimatic.com/device',
+		verify_uri: OWNER_REGISTRATION_URL,
+		verification_uri_complete: `${OWNER_REGISTRATION_URL}&user_code=${encodeURIComponent(userCode)}`,
 		interval: record.interval,
 		expires_in: Math.floor((expiresAt.getTime() - Date.now()) / 1000),
 	})
