@@ -57,6 +57,23 @@ curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.
 
 Параметры после `--`/в конце команды прокидываются в `tools/bootstrap.*` (например `--role hub`, `--install-service auto`).
 
+## Управление сервисом
+
+```bash
+# Перезапустить юнит
+systemctl --user daemon-reload
+systemctl --user restart adaos.service
+# Проверить
+systemctl --user status adaos.service --no-pager
+curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если требуется)
+# Включить
+adaos autostart enable
+# Проверить
+adaos autostart status
+# Остановить
+adaos autostart disable
+```
+
 ## Add a member node (phase 1)
 
 1) On the hub node (role=hub), generate a short one-time code:
