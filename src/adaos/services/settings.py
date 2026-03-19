@@ -208,6 +208,10 @@ class Settings:
     def with_overrides(self, **kw) -> "Settings":
         # перегружать можно ТОЛЬКО безопасные поля (base_dir/profile)
         safe = {k: v for k, v in kw.items() if k in {"base_dir", "profile"} and v is not None}
+        if "base_dir" in safe and safe["base_dir"] is not None:
+            base_dir = safe["base_dir"]
+            if isinstance(base_dir, str):
+                safe["base_dir"] = Path(base_dir).expanduser().resolve()
         return replace(self, **safe)
 
     # Утилита для компонентов путей:

@@ -16,15 +16,22 @@ class PathProvider:
     # --- конструкторы ---
     @classmethod
     def from_settings(cls, settings: Settings) -> "PathProvider":
-        return cls(base=Path(settings.base_dir).expanduser().resolve())
+        return cls(settings)
 
     # совместимость со старым стилем: PathProvider(settings)
     def __init__(self, settings: Settings | str | Path):
-        base = settings.base_dir
-        package_dir: Path = settings.package_dir
-        self.subnet_id = settings.subnet_id
-        object.__setattr__(self, "base", base.expanduser().resolve())
-        object.__setattr__(self, "package_dir", package_dir.expanduser().resolve())
+        if isinstance(settings, Settings):
+            base = settings.base_dir
+            package_dir = settings.package_dir
+            subnet_id = settings.subnet_id or ""
+        else:
+            base = Path(settings)
+            package_dir = Path(__file__).resolve().parents[2]
+            subnet_id = ""
+
+        self.subnet_id = subnet_id
+        object.__setattr__(self, "base", Path(base).expanduser().resolve())
+        object.__setattr__(self, "package_dir", Path(package_dir).expanduser().resolve())
 
     # --- базовые каталоги ---
     def package_path(self) -> Path:
