@@ -25,6 +25,7 @@ from adaos.services.core_update import clear_plan, execute_pending_update, read_
 from adaos.services.core_slots import active_slot, active_slot_manifest, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
 from adaos.services.root.client import RootHttpClient
+from adaos.services.root.core_update_sync import build_core_update_report
 
 
 def _parse_args() -> argparse.Namespace:
@@ -82,16 +83,10 @@ def _upload_update_report(status: dict[str, object], conf) -> None:
             return
         verify: str | bool = str(ca_path) if ca_path.exists() else True
         client = RootHttpClient(base_url=base_url, verify=verify, cert=(str(cert_path), str(key_path)))
-        client.hub_core_update_report(
-            payload={
-                "status": status,
-                "slot_status": slot_status(),
-                "node_id": str(getattr(conf, "node_id", "") or ""),
-                "subnet_id": str(getattr(conf, "subnet_id", "") or ""),
-                "role": str(getattr(conf, "role", "") or ""),
-                "reported_at": time.time(),
-            },
-        )
+        payload = build_core_update_report(conf)
+        payload["status"] = status
+        payload["reported_at"] = time.time()
+        client.hub_core_update_report(payload=payload)
     except Exception:
         return
 

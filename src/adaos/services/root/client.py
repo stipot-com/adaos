@@ -571,5 +571,46 @@ class RootHttpClient:
             )
         )
 
+    def root_core_update_subnets(
+        self,
+        *,
+        root_token: str,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        return dict(
+            self._request(
+                "GET",
+                "/v1/hubs/core_update/subnets",
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def hub_core_update_release(
+        self,
+        *,
+        branch: str | None = None,
+        current_commit: str | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {}
+        if branch:
+            params["branch"] = branch
+        if current_commit:
+            params["current_commit"] = current_commit
+        return dict(
+            self._request(
+                "GET",
+                "/v1/hub/core_update/release",
+                params=params,
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=30.0,
+            )
+        )
+
 
 __all__ = ["RootHttpClient", "RootHttpError"]

@@ -246,6 +246,8 @@ const FORGE_GIT_URL = requireEnv('FORGE_GIT_URL')
 const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
 const ROOT_CORE_UPDATE_REPORTS_HASH = 'root:hub_core_update_reports'
+const ROOT_CORE_UPDATE_RELEASES_HASH = 'root:hub_core_update_releases'
+const ROOT_CORE_UPDATE_SUBNETS_HASH = 'root:hub_core_update_subnets'
 const OWNER_REGISTRATION_URL = `${WEB_ORIGIN.replace(/\/+$/, '')}/?mode=registration`
 const CORE_UPDATE_GITHUB_WEBHOOK_SECRET = (process.env['GITHUB_WEBHOOK_SECRET'] || '').trim()
 const CORE_UPDATE_GITHUB_BRANCH = (process.env['CORE_UPDATE_GITHUB_BRANCH'] || process.env['ADAOS_INIT_REV'] || 'rev2026').trim()
@@ -410,6 +412,39 @@ function verifyGithubSignature(rawBody: Buffer, signatureHeader: string, secret:
 	}
 }
 
+function normalizeCoreUpdateSubnetState(record: Record<string, any>): Record<string, any> {
+	const slotStatus = (record?.slot_status && typeof record.slot_status === 'object' ? record.slot_status : {}) as Record<string, any>
+	const activeSlot = String(slotStatus?.active_slot || '').trim()
+	const slots = (slotStatus?.slots && typeof slotStatus.slots === 'object' ? slotStatus.slots : {}) as Record<string, any>
+	const activeManifest =
+		activeSlot && slots[activeSlot] && typeof slots[activeSlot] === 'object' ? (slots[activeSlot].manifest as Record<string, any> | null) : null
+	const status = (record?.status && typeof record.status === 'object' ? record.status : {}) as Record<string, any>
+	const gitCommit = String(activeManifest?.git_commit || '').trim()
+	const gitBranch = String(activeManifest?.git_branch || '').trim()
+	const targetRev = String(activeManifest?.target_rev || status?.target_rev || '').trim()
+	const currentBranch = gitBranch || targetRev
+	const currentVersion = String(activeManifest?.target_version || status?.target_version || '').trim()
+	return {
+		subnet_id: String(record?.subnet_id || record?.hub_id || '').trim(),
+		node_id: String(record?.node_id || '').trim(),
+		role: String(record?.role || '').trim(),
+		reported_at: Number(record?.reported_at || Date.now()),
+		current_branch: currentBranch,
+		current_commit: gitCommit,
+		current_version: currentVersion,
+		active_slot: activeSlot,
+		previous_slot: String(slotStatus?.previous_slot || '').trim(),
+		last_update_status: String(status?.state || '').trim(),
+		last_update_message: String(status?.message || '').trim(),
+		last_update_requested_rev: String(status?.target_rev || '').trim(),
+		last_update_requested_version: String(status?.target_version || '').trim(),
+		last_update_started_at: Number(status?.started_at || 0) || null,
+		last_update_finished_at: Number(status?.finished_at || 0) || null,
+		last_update_completed_at:
+			String(status?.state || '').trim() === 'succeeded' ? Number(status?.finished_at || record?.reported_at || Date.now()) : null,
+	}
+}
+
 app.post('/v1/github/core_update/callback', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
 	if (!CORE_UPDATE_GITHUB_WEBHOOK_SECRET) {
 		return res.status(404).json({ ok: false, error: 'github_webhook_disabled' })
@@ -454,8 +489,20 @@ app.post('/v1/github/core_update/callback', express.raw({ type: 'application/jso
 		drain_timeout_sec: 10,
 		signal_delay_sec: 0.25,
 	}
+	const releaseRecord = {
+		branch,
+		repo: repoFullName,
+		head_sha: after,
+		head_short_sha: after ? after.slice(0, 12) : '',
+		published_at: Date.now(),
+		countdown_sec: CORE_UPDATE_GITHUB_COUNTDOWN_SEC,
+		reason: payload.reason,
+	}
+	await redisClient.hSet(ROOT_CORE_UPDATE_RELEASES_HASH, branch, JSON.stringify(releaseRecord))
+	const rawSubnetStates = await redisClient.hGetAll(ROOT_CORE_UPDATE_SUBNETS_HASH)
+	const subnet_ids = Object.keys(rawSubnetStates).sort()
 	const results = await dispatchHubCoreUpdate('/api/admin/update/start', payload, connectedHubIds)
-	return res.json({ ok: true, branch, repo: repoFullName, after, hub_ids: connectedHubIds, results })
+	return res.json({ ok: true, branch, repo: repoFullName, after, hub_ids: connectedHubIds, subnet_ids, results, release: releaseRecord })
 })
 
 app.use((req, _res, next) => {
@@ -1758,6 +1805,23 @@ app.get('/v1/hubs/core_update/reports', async (req, res) => {
 	}
 })
 
+app.get('/v1/hubs/core_update/subnets', async (req, res) => {
+	if (!requireRootToken(req, res)) return
+	try {
+		const rawItems = await redisClient.hGetAll(ROOT_CORE_UPDATE_SUBNETS_HASH)
+		const items = Object.entries(rawItems).map(([id, raw]) => {
+			let state: unknown = raw
+			try {
+				state = JSON.parse(raw)
+			} catch {}
+			return { hub_id: id, state }
+		})
+		return res.json({ ok: true, items })
+	} catch (error) {
+		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
+	}
+})
+
 app.post('/v1/subnets/register', async (req, res) => {
 	const t0 = Date.now()
 	console.log('register: start')
@@ -2409,7 +2473,59 @@ mtlsRouter.post('/hub/core_update/report', async (req, res) => {
 			identity.subnetId,
 			JSON.stringify(record),
 		)
+		await redisClient.hSet(
+			ROOT_CORE_UPDATE_SUBNETS_HASH,
+			identity.subnetId,
+			JSON.stringify(normalizeCoreUpdateSubnetState(record)),
+		)
 		return res.status(202).json({ ok: true, hub_id: identity.subnetId })
+	} catch (error) {
+		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
+	}
+})
+
+mtlsRouter.get('/hub/core_update/release', async (req, res) => {
+	const identity = req.auth
+	if (!identity || identity.type !== 'hub') {
+		return respondError(req, res, 403, 'hub_certificate_required')
+	}
+	try {
+		const branch = typeof req.query['branch'] === 'string' ? String(req.query['branch']).trim() : ''
+		const currentCommit = typeof req.query['current_commit'] === 'string' ? String(req.query['current_commit']).trim() : ''
+		const subnetId = identity.subnetId
+		let subnetState: Record<string, any> | null = null
+		const rawSubnetState = await redisClient.hGet(ROOT_CORE_UPDATE_SUBNETS_HASH, subnetId)
+		if (rawSubnetState) {
+			try {
+				subnetState = JSON.parse(rawSubnetState)
+			} catch {
+				subnetState = null
+			}
+		}
+		const effectiveBranch = branch || String(subnetState?.current_branch || '').trim() || CORE_UPDATE_GITHUB_BRANCH
+		let release: Record<string, any> | null = null
+		if (effectiveBranch) {
+			const rawRelease = await redisClient.hGet(ROOT_CORE_UPDATE_RELEASES_HASH, effectiveBranch)
+			if (rawRelease) {
+				try {
+					release = JSON.parse(rawRelease)
+				} catch {
+					release = null
+				}
+			}
+		}
+		const releaseCommit = String(release?.head_sha || '').trim()
+		const subnetCommit = currentCommit || String(subnetState?.current_commit || '').trim()
+		const needsUpdate = Boolean(releaseCommit && releaseCommit !== subnetCommit)
+		return res.json({
+			ok: true,
+			subnet_id: subnetId,
+			branch: effectiveBranch,
+			release,
+			subnet_state: subnetState,
+			needs_update: needsUpdate,
+			reason: needsUpdate ? 'release_commit_mismatch' : 'up_to_date',
+		})
 	} catch (error) {
 		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
 	}

@@ -53,6 +53,7 @@ from adaos.services.realtime_sidecar import (
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.root.core_update_sync import reconcile_hub_core_update
 from adaos.services.scheduler import start_scheduler
 from adaos.services.scenario import (
     webspace_runtime as _scenario_ws_runtime,  # ensure core scenario subscriptions
@@ -2273,6 +2274,32 @@ class BootstrapService:
                                 pass
                             # First successful connect after failures
                             _emit_up()
+                            try:
+                                conf_local = getattr(self.ctx, "config", None)
+                                if getattr(conf_local, "role", None) == "hub":
+                                    async def _reconcile_core_release_after_connect() -> None:
+                                        try:
+                                            result = await asyncio.to_thread(reconcile_hub_core_update, conf_local)
+                                            if isinstance(result, dict) and result.get("needs_update"):
+                                                try:
+                                                    self._log.info(
+                                                        "core update reconcile scheduled hub_id=%s branch=%s release=%s",
+                                                        hub_id,
+                                                        result.get("branch") or "",
+                                                        ((result.get("release") or {}) if isinstance(result.get("release"), dict) else {}).get("head_short_sha")
+                                                        or ((result.get("release") or {}) if isinstance(result.get("release"), dict) else {}).get("head_sha")
+                                                        or "",
+                                                    )
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            try:
+                                                self._log.warning("core update reconcile failed hub_id=%s", hub_id, exc_info=True)
+                                            except Exception:
+                                                pass
+                                    loop.create_task(_reconcile_core_release_after_connect())
+                            except Exception:
+                                pass
                             nats_last_ok_at = time.monotonic()
                             # Baseline for RX watchdog (updated by patched WebSocketTransport.readline()).
                             try:

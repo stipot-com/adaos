@@ -54,6 +54,14 @@ location = /v1/pair/confirm {
   include /etc/nginx/vhost.d/api.inimatic.com_location;
 }
 
+location ^~ /.well-known/acme-challenge/ {
+  auth_basic off;
+  allow all;
+  root /usr/share/nginx/html;
+  try_files $uri =404;
+  default_type "text/plain";
+}
+
 # --- Browser -> Hub proxy over Root (WS + HTTP) ---
 # Important: only set Upgrade/Connection headers for websocket endpoints.
 # Sending `Connection: upgrade` for normal HTTP requests can confuse upstreams and lead to 502/timeouts.
