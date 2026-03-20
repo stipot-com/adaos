@@ -9,6 +9,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any
 
+from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import activate_slot, active_slot, choose_inactive_slot, previous_slot, read_slot_manifest, rollback_to_previous_slot, slot_dir
 
@@ -94,6 +95,17 @@ def write_status(payload: dict[str, Any]) -> dict[str, Any]:
     merged = dict(payload)
     merged.setdefault("updated_at", time.time())
     _write_json(status_path(), merged)
+    try:
+        get_ctx().bus.publish(
+            DomainEvent(
+                type="core.update.status",
+                payload=dict(merged),
+                source="core.update",
+                ts=float(merged.get("updated_at") or time.time()),
+            )
+        )
+    except Exception:
+        pass
     return merged
 
 

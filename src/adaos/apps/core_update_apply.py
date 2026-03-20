@@ -91,6 +91,23 @@ def _is_git_repo(path: Path | None) -> bool:
         return False
 
 
+def _git_text(repo_dir: Path, *args: str) -> str:
+    git = shutil.which("git")
+    if not git or not _is_git_repo(repo_dir):
+        return ""
+    try:
+        completed = subprocess.run(
+            [git, "-C", str(repo_dir), *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return (completed.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 def prepare_slot(
     *,
     slot: str,
@@ -134,6 +151,10 @@ def prepare_slot(
         final_repo_dir = slot_dir / "repo"
         final_venv_dir = slot_dir / "venv"
         final_py = _venv_python(final_venv_dir)
+        git_commit = _git_text(checkout_tmp, "rev-parse", "HEAD")
+        git_short_commit = _git_text(checkout_tmp, "rev-parse", "--short", "HEAD")
+        git_branch = _git_text(checkout_tmp, "rev-parse", "--abbrev-ref", "HEAD")
+        git_subject = _git_text(checkout_tmp, "show", "-s", "--format=%s", "HEAD")
         manifest = {
             "slot": slot_name,
             "created_at": time.time(),
@@ -142,6 +163,10 @@ def prepare_slot(
             "repo_url": repo_url,
             "repo_dir": str(final_repo_dir),
             "venv_dir": str(final_venv_dir),
+            "git_commit": git_commit,
+            "git_short_commit": git_short_commit,
+            "git_branch": git_branch,
+            "git_subject": git_subject,
             "cwd": str(final_repo_dir),
             "argv": [
                 str(final_py),

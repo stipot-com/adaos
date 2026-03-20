@@ -49,6 +49,23 @@ def test_core_update_status_roundtrip(monkeypatch, tmp_path) -> None:
     assert read_status()["state"] == "countdown"
 
 
+def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    published: list[object] = []
+
+    class _Bus:
+        def publish(self, evt) -> None:
+            published.append(evt)
+
+    class _Ctx:
+        bus = _Bus()
+
+    monkeypatch.setattr("adaos.services.core_update.get_ctx", lambda: _Ctx())
+    write_status({"state": "countdown", "message": "scheduled"})
+    assert published
+    assert getattr(published[0], "type", "") == "core.update.status"
+
+
 def test_execute_pending_update_activates_target_slot(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
 

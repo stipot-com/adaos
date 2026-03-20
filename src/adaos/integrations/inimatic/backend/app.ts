@@ -14,7 +14,7 @@ import { Server, Socket } from 'socket.io'
 import { createClient } from 'redis'
 import fs from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
-import { randomBytes, createHash } from 'node:crypto'
+import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import type { PeerCertificate, TLSSocket } from 'node:tls'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -247,6 +247,11 @@ const WEB_RP_ID = process.env['WEB_RP_ID'] ?? 'inimatic.com'
 const WEB_ORIGIN = process.env['WEB_ORIGIN'] ?? 'https://app.inimatic.com'
 const ROOT_CORE_UPDATE_REPORTS_HASH = 'root:hub_core_update_reports'
 const OWNER_REGISTRATION_URL = `${WEB_ORIGIN.replace(/\/+$/, '')}/?mode=registration`
+const CORE_UPDATE_GITHUB_WEBHOOK_SECRET = (process.env['GITHUB_WEBHOOK_SECRET'] || '').trim()
+const CORE_UPDATE_GITHUB_BRANCH = (process.env['CORE_UPDATE_GITHUB_BRANCH'] || process.env['ADAOS_INIT_REV'] || 'rev2026').trim()
+const CORE_UPDATE_GITHUB_REPO = (process.env['CORE_UPDATE_GITHUB_REPO'] || 'stipot-com/adaos').trim().toLowerCase()
+const CORE_UPDATE_GITHUB_COUNTDOWN_SEC =
+	Number.parseFloat(process.env['CORE_UPDATE_GITHUB_COUNTDOWN_SEC'] || '60') || 60
 
 // Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
 try {
@@ -394,6 +399,64 @@ const corsOptions: CorsOptions = {
 }
 
 app.use(cors(corsOptions))
+
+function verifyGithubSignature(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
+	if (!secret || !signatureHeader) return false
+	const expected = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`
+	try {
+		return timingSafeEqual(Buffer.from(expected), Buffer.from(signatureHeader))
+	} catch {
+		return false
+	}
+}
+
+app.post('/v1/github/core_update/callback', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
+	if (!CORE_UPDATE_GITHUB_WEBHOOK_SECRET) {
+		return res.status(404).json({ ok: false, error: 'github_webhook_disabled' })
+	}
+	const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from([])
+	const signature = String(req.header('X-Hub-Signature-256') || '').trim()
+	if (!verifyGithubSignature(rawBody, signature, CORE_UPDATE_GITHUB_WEBHOOK_SECRET)) {
+		return res.status(401).json({ ok: false, error: 'invalid_signature' })
+	}
+	const eventName = String(req.header('X-GitHub-Event') || '').trim().toLowerCase()
+	if (eventName === 'ping') {
+		return res.json({ ok: true, event: 'ping' })
+	}
+	if (eventName !== 'push') {
+		return res.json({ ok: true, ignored: true, reason: 'unsupported_event', event: eventName })
+	}
+	let body: any = {}
+	try {
+		body = JSON.parse(rawBody.toString('utf8') || '{}')
+	} catch {
+		return res.status(400).json({ ok: false, error: 'invalid_json' })
+	}
+	const ref = String(body?.ref || '').trim()
+	const branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
+	const repoFullName = String(body?.repository?.full_name || '').trim().toLowerCase()
+	if (CORE_UPDATE_GITHUB_REPO && repoFullName && repoFullName !== CORE_UPDATE_GITHUB_REPO) {
+		return res.json({ ok: true, ignored: true, reason: 'repo_mismatch', repo: repoFullName })
+	}
+	if (!branch || branch !== CORE_UPDATE_GITHUB_BRANCH) {
+		return res.json({ ok: true, ignored: true, reason: 'branch_mismatch', branch })
+	}
+	const connectedHubIds = listActiveHubIds()
+	if (!connectedHubIds.length) {
+		return res.json({ ok: true, branch, repo: repoFullName, hub_ids: [], results: [] })
+	}
+	const after = String(body?.after || '').trim()
+	const payload = {
+		target_rev: branch,
+		target_version: after ? after.slice(0, 12) : '',
+		reason: `github.push:${branch}${after ? `:${after.slice(0, 12)}` : ''}`,
+		countdown_sec: CORE_UPDATE_GITHUB_COUNTDOWN_SEC,
+		drain_timeout_sec: 10,
+		signal_delay_sec: 0.25,
+	}
+	const results = await dispatchHubCoreUpdate('/api/admin/update/start', payload, connectedHubIds)
+	return res.json({ ok: true, branch, repo: repoFullName, after, hub_ids: connectedHubIds, results })
+})
 
 app.use((req, _res, next) => {
 	req.locale = resolveLocale(req)

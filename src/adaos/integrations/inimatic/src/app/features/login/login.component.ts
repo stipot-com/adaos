@@ -52,6 +52,17 @@ export class LoginComponent {
 		})
 	}
 
+	private clearAuthIntentFromUrl(): void {
+		try {
+			const url = new URL(window.location.href)
+			url.searchParams.delete('mode')
+			url.searchParams.delete('user_code')
+			url.searchParams.delete('code')
+			const next = `${url.pathname}${url.search}${url.hash}`
+			window.history.replaceState({}, '', next)
+		} catch {}
+	}
+
 	switchToRegistration() {
 		this.mode = 'registration'
 		this.registrationErrorKey = ''
@@ -87,6 +98,7 @@ export class LoginComponent {
 		this.loginService.register(this.userCode).subscribe({
 			next: (result) => {
 				this.registrationLoading = false
+				this.clearAuthIntentFromUrl()
 				this.loginSuccess.emit(result)
 			},
 			error: (err) => {
@@ -119,6 +131,7 @@ export class LoginComponent {
 		this.loginService.login().subscribe({
 			next: (result) => {
 				this.loginLoading = false
+				this.clearAuthIntentFromUrl()
 				this.loginSuccess.emit(result)
 			},
 			error: (err) => {
