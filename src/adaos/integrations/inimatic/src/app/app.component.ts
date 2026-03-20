@@ -22,6 +22,7 @@ import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
 import { HttpErrorResponse } from '@angular/common/http'
+import { observeDeep } from './y/y-helpers'
 
 @Component({
 	selector: 'app-root',
@@ -55,6 +56,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	isNarrow = false
 	private sessionInvalidated = false
 	private transportSub?: Subscription
+	private scenarioDocDispose?: () => void
 	sidebarAvailable = false
 	private sidebarAvailabilityHandler = (ev: any) => {
 		try {
@@ -106,6 +108,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		try {
 			window.addEventListener('adaos:currentScenario', this.scenarioChangedHandler as any)
 		} catch { }
+		this.bindScenarioState()
 		// If we loaded via cache-bust URL, clean it up for nicer sharing/bookmarks.
 		setTimeout(() => this.stripVersionParam(), 0)
 
@@ -241,6 +244,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	ngOnDestroy(): void {
 		this.transportSub?.unsubscribe()
+		this.scenarioDocDispose?.()
+		this.scenarioDocDispose = undefined
 		this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener)
 		try {
 			window.removeEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
@@ -284,6 +289,30 @@ export class AppComponent implements OnInit, OnDestroy {
 		} catch {
 			this.isNarrow = false
 		}
+	}
+
+	private bindScenarioState(): void {
+		this.scenarioDocDispose?.()
+		this.syncCurrentScenarioFromDoc()
+		try {
+			const uiNode = this.ydoc.getPath('ui')
+			this.scenarioDocDispose = observeDeep(uiNode, () => this.syncCurrentScenarioFromDoc())
+		} catch {
+			this.scenarioDocDispose = undefined
+		}
+	}
+
+	private syncCurrentScenarioFromDoc(): void {
+		let scenario = 'web_desktop'
+		try {
+			const raw = this.ydoc.toJSON(this.ydoc.getPath('ui/current_scenario'))
+			if (typeof raw === 'string' && raw.trim()) {
+				scenario = raw.trim()
+			}
+		} catch { }
+		this.zone.run(() => {
+			this.currentScenario = scenario
+		})
 	}
 
 	toggleSidebar(): void {

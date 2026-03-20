@@ -28,11 +28,15 @@
 							(click)="onClickHome()"
 							aria-label="Home"
 						>
+							<img class="brand-logo" [src]="logoSrc" alt="" aria-hidden="true" />
 							<span class="wordmark">INIMATIC</span>
 						</ion-button>
 					</ng-container>
 					<ng-template #wordmarkPlain>
-						<span class="wordmark">INIMATIC</span>
+						<span class="brand-mark">
+							<img class="brand-logo" [src]="logoSrc" alt="" aria-hidden="true" />
+							<span class="wordmark">INIMATIC</span>
+						</span>
 					</ng-template>
 					<span class="build-id" *ngIf="buildId">{{ buildId }}</span>
 					<span class="hub-status" *ngIf="hubStatus$ | async as hub">
