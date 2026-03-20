@@ -66,6 +66,7 @@ from adaos.services.realtime_sidecar import (
     start_realtime_sidecar_subprocess,
     stop_realtime_sidecar_subprocess,
 )
+from adaos.services.reliability import ReadinessStatus, set_integration_readiness
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
@@ -425,6 +426,15 @@ async def lifespan(app: FastAPI):
                 link_ok = False
             if not link_ok:
                 try:
+                    set_integration_readiness(
+                        "telegram",
+                        status=ReadinessStatus.DEGRADED,
+                        summary="telegram binding not found or root link probe failed",
+                        details={"hub_id": conf.subnet_id, "url": link_url, "status": status, "body": body_txt},
+                    )
+                except Exception:
+                    pass
+                try:
                     logging.getLogger("adaos.io.telegram").warning(
                         "telegram binding not found or unreachable",
                         extra={"hub_id": conf.subnet_id, "url": link_url, "status": status, "body": body_txt},
@@ -482,17 +492,55 @@ async def lifespan(app: FastAPI):
 
                     st2, body2 = await asyncio.to_thread(_safe_post)
                     if st2 not in (200, 201, 202):
+                        try:
+                            set_integration_readiness(
+                                "telegram",
+                                status=ReadinessStatus.DEGRADED,
+                                summary="telegram binding exists, but startup send failed",
+                                details={"hub_id": conf.subnet_id, "url": send_url, "status": st2, "body": body2},
+                            )
+                        except Exception:
+                            pass
                         logging.getLogger("adaos.router").warning(
                             "telegram broadcast (%s) failed",
                             startup_notice_key,
                             extra={"hub_id": conf.subnet_id, "status": st2, "body": body2},
                         )
+                    else:
+                        try:
+                            set_integration_readiness(
+                                "telegram",
+                                status=ReadinessStatus.READY,
+                                summary="telegram binding and startup send validated",
+                                details={"hub_id": conf.subnet_id, "url": send_url, "status": st2},
+                            )
+                        except Exception:
+                            pass
                 except Exception:
+                    try:
+                        set_integration_readiness(
+                            "telegram",
+                            status=ReadinessStatus.DEGRADED,
+                            summary="telegram binding exists, but startup send raised an exception",
+                            details={"hub_id": conf.subnet_id, "url": send_url},
+                        )
+                    except Exception:
+                        pass
                     logging.getLogger("adaos.router").warning(
                         "telegram broadcast (%s) exception", startup_notice_key, exc_info=True
                     )
                 tg_enabled = True
     except Exception:
+        try:
+            if tg_enabled:
+                set_integration_readiness(
+                    "telegram",
+                    status=ReadinessStatus.DEGRADED,
+                    summary="telegram startup probe aborted by an unexpected exception",
+                    details={},
+                )
+        except Exception:
+            pass
         pass
     # Start directory staler on hub to mark nodes offline after TTL
     try:

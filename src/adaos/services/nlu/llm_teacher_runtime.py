@@ -15,6 +15,7 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
+from adaos.services.reliability import ReadinessStatus, set_integration_readiness
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.root.client import RootHttpClient
 from adaos.services.yjs.doc import async_get_ydoc
@@ -541,7 +542,30 @@ async def _llm_call(messages: list[dict[str, str]]) -> dict[str, Any]:
     ctx = get_ctx()
     http = RootHttpClient.from_settings(ctx.settings)
     body = {"model": _MODEL, "messages": messages, "max_tokens": _MAX_TOKENS, "temperature": 0.2}
-    return await asyncio.to_thread(http.request, "POST", "/v1/llm/response", json=body, timeout=_TIMEOUT_S)
+    try:
+        result = await asyncio.to_thread(http.request, "POST", "/v1/llm/response", json=body, timeout=_TIMEOUT_S)
+    except Exception as exc:
+        try:
+            set_integration_readiness(
+                "llm",
+                status=ReadinessStatus.DEGRADED,
+                summary="root LLM proxy request failed",
+                details={"error": f"{type(exc).__name__}: {exc}"},
+            )
+        except Exception:
+            pass
+        raise
+
+    try:
+        set_integration_readiness(
+            "llm",
+            status=ReadinessStatus.READY,
+            summary="root LLM proxy request succeeded",
+            details={"model": _MODEL},
+        )
+    except Exception:
+        pass
+    return result
 
 
 async def _append_llm_log(webspace_id: str, entry: dict[str, Any]) -> None:

@@ -22,6 +22,54 @@ def _print(data: Any, *, json_output: bool) -> None:
         typer.echo(str(data))
 
 
+def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
+    url = control.rstrip("/") + path
+    headers = {"X-AdaOS-Token": token or "dev-local-token"}
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        response = sess.get(url, headers=headers, timeout=timeout)
+    except Exception:
+        return None, None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = (response.text or "").strip()
+    return response.status_code, payload
+
+
+def _print_reliability_summary(payload: dict[str, Any]) -> None:
+    node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    tree = runtime.get("readiness_tree") if isinstance(runtime.get("readiness_tree"), dict) else {}
+    matrix = runtime.get("degraded_matrix") if isinstance(runtime.get("degraded_matrix"), dict) else {}
+    integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
+
+    typer.echo(
+        f"node={node.get('node_id') or '?'} role={node.get('role') or '?'} "
+        f"ready={bool(node.get('ready'))} state={node.get('node_state') or '?'}"
+    )
+    for name in ("hub_local_core", "root_control", "route", "sync", "media"):
+        item = tree.get(name) if isinstance(tree.get(name), dict) else {}
+        typer.echo(f"{name}: {item.get('status') or 'unknown'}")
+    for name in ("telegram", "github", "llm"):
+        item = integration.get(name) if isinstance(integration.get(name), dict) else {}
+        typer.echo(f"integration.{name}: {item.get('status') or 'unknown'}")
+    for name in (
+        "new_root_backed_member_admission",
+        "root_routed_browser_proxy",
+        "telegram_action_completion",
+        "github_action_completion",
+        "llm_action_completion",
+        "core_update_coordination_via_root",
+    ):
+        item = matrix.get(name) if isinstance(matrix.get(name), dict) else {}
+        typer.echo(f"{name}: {'allowed' if item.get('allowed') else 'blocked'}")
+
+
 def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
     """
     Root/hub join endpoints can sit behind TLS-terminating proxies and occasionally return
@@ -209,23 +257,34 @@ def node_status(
         "connected_to_hub": None,
     }
     if probe:
-        url = control.rstrip("/") + "/api/node/status"
-        headers = {"X-AdaOS-Token": cfg.token or "dev-local-token"}
-        sess = requests.Session()
-        try:
-            sess.trust_env = False
-        except Exception:
-            pass
-        try:
-            r = sess.get(url, headers=headers, timeout=2.5)
-            if r.status_code == 200:
-                js = r.json() or {}
-                result["ready"] = bool(js.get("ready"))
-                result["route_mode"] = js.get("route_mode")
-                result["connected_to_hub"] = js.get("connected_to_hub")
-        except Exception:
-            pass
+        status_code, payload = _control_get_json(control=control, path="/api/node/status", token=cfg.token or "dev-local-token")
+        if status_code == 200 and isinstance(payload, dict):
+            result["ready"] = bool(payload.get("ready"))
+            result["route_mode"] = payload.get("route_mode")
+            result["connected_to_hub"] = payload.get("connected_to_hub")
     _print(result, json_output=json_output)
+
+
+@app.command("reliability")
+def node_reliability(
+    control: str = typer.Option("http://127.0.0.1:8777", "--control", help="Local control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    cfg = load_config()
+    status_code, payload = _control_get_json(control=control, path="/api/node/reliability", token=cfg.token or "dev-local-token")
+    if status_code is None:
+        typer.secho("[AdaOS] reliability probe failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] reliability probe failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+
+    if json_output:
+        _print(payload, json_output=True)
+    else:
+        _print_reliability_summary(payload)
 
 
 @role_app.command("set")

@@ -147,6 +147,19 @@ HUB_ROOT_FLOW_SPECS: tuple[FlowSpec, ...] = (
         notes="Drives update orchestration and hub report persistence.",
     ),
     FlowSpec(
+        flow_id="hub_root.integration.llm",
+        channel_type=ChannelType.COMMAND,
+        message_types=(MessageTaxonomy.REQUEST, MessageTaxonomy.RESPONSE, MessageTaxonomy.STATE_REPORT),
+        delivery_class=DeliveryClass.NICE_TO_REPLAY,
+        authority=Authority.ROOT,
+        ordered=False,
+        durable=False,
+        replayable=True,
+        current_paths=("root_http:/v1/llm/models", "root_http:/v1/llm/response"),
+        description="Root-backed LLM model discovery and completion requests.",
+        notes="Interactive LLM completions depend on root reachability but do not require durable transport replay.",
+    ),
+    FlowSpec(
         flow_id="hub_member.sync.yjs",
         channel_type=ChannelType.SYNC,
         message_types=(MessageTaxonomy.SYNC_UPDATE,),
@@ -381,6 +394,23 @@ def _is_ready(node: dict[str, Any]) -> bool:
 def _derived_integration_node(name: str, root_control: dict[str, Any], observed_signal: dict[str, Any]) -> dict[str, Any]:
     sig_status = str(observed_signal.get("status") or ReadinessStatus.UNKNOWN.value)
     if sig_status != ReadinessStatus.UNKNOWN.value:
+        if (
+            sig_status == ReadinessStatus.READY.value
+            and str(root_control.get("status") or "") != ReadinessStatus.READY.value
+        ):
+            node = dict(observed_signal)
+            node["status"] = ReadinessStatus.DEGRADED.value
+            node["summary"] = f"{name} integration probe last succeeded, but root authority is currently unavailable"
+            details = dict(observed_signal.get("details") or {})
+            details.update(
+                {
+                    "derived_from": "root_control",
+                    "cause": "root_control_not_ready",
+                    "last_observed_status": sig_status,
+                }
+            )
+            node["details"] = details
+            return node
         return observed_signal
     if str(root_control.get("status") or "") == ReadinessStatus.READY.value:
         return _node(

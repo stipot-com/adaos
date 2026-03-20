@@ -43,10 +43,12 @@ from adaos.services.nats_config import (
     public_nats_ws_candidates,
 )
 from adaos.services.reliability import (
+    ReadinessStatus,
     mark_root_control_down,
     mark_root_control_up,
     mark_route_degraded,
     mark_route_ready,
+    set_integration_readiness,
 )
 from adaos.services.realtime_sidecar import (
     probe_realtime_sidecar_ready,
@@ -2334,6 +2336,25 @@ class BootstrapService:
                                     async def _reconcile_core_release_after_connect() -> None:
                                         try:
                                             result = await asyncio.to_thread(reconcile_hub_core_update, conf_local)
+                                            if isinstance(result, dict) and result.get("ok"):
+                                                release = result.get("release") if isinstance(result.get("release"), dict) else {}
+                                                set_integration_readiness(
+                                                    "github",
+                                                    status=ReadinessStatus.READY,
+                                                    summary="core update release probe succeeded through root",
+                                                    details={
+                                                        "needs_update": bool(result.get("needs_update")),
+                                                        "branch": str(release.get("branch") or result.get("branch") or ""),
+                                                        "head_sha": str(release.get("head_sha") or ""),
+                                                    },
+                                                )
+                                            else:
+                                                set_integration_readiness(
+                                                    "github",
+                                                    status=ReadinessStatus.DEGRADED,
+                                                    summary="core update release probe returned an unexpected response",
+                                                    details={"result_type": type(result).__name__},
+                                                )
                                             if isinstance(result, dict) and result.get("needs_update"):
                                                 try:
                                                     self._log.info(
@@ -2347,6 +2368,15 @@ class BootstrapService:
                                                 except Exception:
                                                     pass
                                         except Exception:
+                                            try:
+                                                set_integration_readiness(
+                                                    "github",
+                                                    status=ReadinessStatus.DEGRADED,
+                                                    summary="core update reconcile failed",
+                                                    details={"error": traceback.format_exc(limit=1).strip()},
+                                                )
+                                            except Exception:
+                                                pass
                                             try:
                                                 self._log.warning("core update reconcile failed hub_id=%s", hub_id, exc_info=True)
                                             except Exception:

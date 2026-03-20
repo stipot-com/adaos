@@ -7,9 +7,11 @@ import types
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    mark_root_control_down,
     mark_root_control_up,
     mark_route_ready,
     reliability_snapshot,
@@ -100,6 +102,46 @@ def test_hub_reliability_snapshot_enables_route_and_integration_capabilities_whe
     assert snapshot["runtime"]["degraded_matrix"]["telegram_action_completion"]["allowed"] is True
 
 
+def test_hub_reliability_marks_root_backed_integration_as_stale_when_root_control_is_lost() -> None:
+    _reset_state()
+    mark_root_control_up(details={"server": "wss://api.inimatic.com/nats"})
+    set_integration_readiness(
+        "telegram",
+        status=ReadinessStatus.READY,
+        summary="telegram delivery probe ok",
+        observed=True,
+    )
+
+    ready_snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+    assert ready_snapshot["runtime"]["readiness_tree"]["integration"]["telegram"]["status"] == "ready"
+
+    mark_root_control_down(details={"kind": "disconnected"})
+    stale_snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+
+    assert any(item["flow_id"] == "hub_root.integration.llm" for item in stale_snapshot["model"]["flow_inventory"])
+    assert stale_snapshot["runtime"]["readiness_tree"]["root_control"]["status"] == "down"
+    assert stale_snapshot["runtime"]["readiness_tree"]["integration"]["telegram"]["status"] == "degraded"
+    assert stale_snapshot["runtime"]["degraded_matrix"]["telegram_action_completion"]["allowed"] is False
+
+
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:
     _reset_state()
 
@@ -167,3 +209,47 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     assert payload["model"]["authority_boundaries"]["sidecar"]["must_not_own"]
     assert payload["runtime"]["readiness_tree"]["root_control"]["status"] == "ready"
     assert payload["runtime"]["degraded_matrix"]["root_routed_browser_proxy"]["allowed"] is True
+
+
+def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token"))
+    monkeypatch.setattr(
+        node_cli,
+        "_control_get_json",
+        lambda **kwargs: (
+            200,
+            {
+                "node": {"node_id": "node-1", "role": "hub", "ready": True, "node_state": "ready"},
+                "runtime": {
+                    "readiness_tree": {
+                        "hub_local_core": {"status": "ready"},
+                        "root_control": {"status": "ready"},
+                        "route": {"status": "degraded"},
+                        "sync": {"status": "ready"},
+                        "media": {"status": "unknown"},
+                        "integration": {
+                            "telegram": {"status": "ready"},
+                            "github": {"status": "degraded"},
+                            "llm": {"status": "unknown"},
+                        },
+                    },
+                    "degraded_matrix": {
+                        "new_root_backed_member_admission": {"allowed": True},
+                        "root_routed_browser_proxy": {"allowed": False},
+                        "telegram_action_completion": {"allowed": True},
+                        "github_action_completion": {"allowed": False},
+                        "llm_action_completion": {"allowed": False},
+                        "core_update_coordination_via_root": {"allowed": True},
+                    },
+                },
+            },
+        ),
+    )
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert "root_control: ready" in result.output
+    assert "integration.telegram: ready" in result.output
+    assert "root_routed_browser_proxy: blocked" in result.output
