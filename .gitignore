@@ -11,6 +11,7 @@ coverage.xml
 /.adaos/
 /.adaos_*/
 .adaos_1
+!.adaos/
 .adaos/logs/
 .adaos/root_logs/
 .adaos/models/
@@ -24,7 +25,11 @@ coverage.xml
 .adaos/keys/
 .adaos/dev/
 .adaos/cache/
-.adaos/workspace
+!.adaos/workspace/
+.adaos/workspace/*
+!.adaos/workspace/skills/
+!.adaos/workspace/skills/infrastate_skill/
+!.adaos/workspace/skills/infrastate_skill/**
 .adaos/workspace/skills/**/.skill_env.json
 src/adaos/integrations/inimatic/backend/ssl/adaos_root
 src/adaos/integrations/inimatic/backend/ssl/adaos_root.pub
@@ -34,3 +39,7 @@ src/adaos/integrations/inimatic/backend/node_modules/
 src/adaos/integrations/inimatic/backend/dist/
 ystore.db
 ystore.db-journal
+.adaos/diagnostics
+.gitignore
+.adaos/root_log_snapshots/.adaos/join_codes.json
+.adaos/join_codes.json

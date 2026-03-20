@@ -17,6 +17,7 @@ DEFAULT_PRESET = InstallPreset(
         "prompt_engineer_scenario",
     ),
     skills=(
+        "infrastate_skill",
         "weather_skill",
         "web_desktop_skill",
         "prompt_engineer_skill",

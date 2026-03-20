@@ -114,10 +114,13 @@ export class PageActionService {
       }
       return ack
     } catch (err) {
+      if (await this.recoverKnownHostAction(target, body)) {
+        return
+      }
       try {
         const t = await this.toast.create({
-          message: 'Host action failed',
-          duration: 1500,
+          message: this.describeHostError(err),
+          duration: 2200,
         })
         await t.present()
       } catch {
@@ -159,5 +162,33 @@ export class PageActionService {
   private readByPath(source: any, path: string): any {
     if (!source || !path) return undefined
     return path.split('.').reduce((acc, key) => (acc != null ? (acc as any)[key] : undefined), source)
+  }
+
+  private async recoverKnownHostAction(target: string, body: any): Promise<boolean> {
+    if (target !== 'infrastate.action') return false
+    const actionId = String(body?.id || '').trim()
+    if (actionId !== 'start_update') return false
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+      const response = await this.adaos.get<any>('/api/admin/update/status').toPromise()
+      const status = response?.status ?? response ?? {}
+      const state = String(status?.state || '').trim().toLowerCase()
+      const reason = String(status?.reason || '').trim().toLowerCase()
+      if (
+        reason === 'infrastate.start_update' ||
+        ['countdown', 'draining', 'stopping', 'restarting', 'applying', 'validated'].includes(state)
+      ) {
+        return true
+      }
+    } catch {
+      return false
+    }
+    return false
+  }
+
+  private describeHostError(err: any): string {
+    const raw = String(err?.message || err || '').trim()
+    if (!raw) return 'Host action failed'
+    return `Host action failed: ${raw}`
   }
 }
