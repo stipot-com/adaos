@@ -5,9 +5,12 @@ import atexit
 import os
 import subprocess
 import time
+from http import HTTPStatus
 from pathlib import Path
 from string import Formatter
+from typing import Any
 
+import requests
 import uvicorn
 
 from adaos.apps.bootstrap import init_ctx
@@ -22,7 +25,7 @@ from adaos.apps.cli.commands.api import (
 )
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, write_status
-from adaos.services.core_slots import active_slot, active_slot_manifest, slot_dir, slot_status
+from adaos.services.core_slots import active_slot, active_slot_manifest, rollback_to_previous_slot, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root.core_update_sync import build_core_update_report
@@ -91,7 +94,58 @@ def _upload_update_report(status: dict[str, object], conf) -> None:
         return
 
 
-def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: int) -> None:
+def _update_validation_timeout_sec() -> float:
+    try:
+        return max(1.0, float(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_TIMEOUT_SEC") or "20"))
+    except Exception:
+        return 20.0
+
+
+def _validation_headers(token: str | None) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-AdaOS-Token"] = str(token)
+    return headers
+
+
+def _required_update_checks(base_url: str) -> list[tuple[str, bool]]:
+    return [
+        (f"{base_url}/api/ping", False),
+        (f"{base_url}/api/status", True),
+        (f"{base_url}/api/admin/update/status", True),
+    ]
+
+
+def _probe_update_runtime(*, host: str, port: int, token: str | None, timeout_sec: float) -> tuple[bool, str]:
+    base_url = f"http://{host}:{int(port)}"
+    deadline = time.time() + max(1.0, timeout_sec)
+    last_error = "runtime validation did not start"
+    headers = _validation_headers(token)
+    while time.time() < deadline:
+        for url, need_token in _required_update_checks(base_url):
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers if need_token else {"Accept": "application/json"},
+                    timeout=1.5,
+                )
+                if response.status_code != HTTPStatus.OK:
+                    last_error = f"{url} returned {response.status_code}"
+                    break
+                payload = response.json()
+                if not isinstance(payload, dict) or payload.get("ok") is False:
+                    last_error = f"{url} returned invalid payload"
+                    break
+            except Exception as exc:
+                last_error = f"{url} probe failed: {exc}"
+                break
+        else:
+            return True, "ok"
+        time.sleep(0.5)
+    return False, last_error
+
+
+def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: int, validate: bool = False) -> None:
     slot = active_slot()
     if not slot:
         return
@@ -122,6 +176,48 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         env["ADAOS_TOKEN"] = str(args.token)
     cwd_raw = str(manifest.get("cwd") or "").strip()
     cwd = Path(cwd_raw).expanduser().resolve() if cwd_raw else None
+    if validate:
+        started_at = time.time()
+        proc = subprocess.Popen(argv or command or [], shell=bool(command), env=env, cwd=str(cwd) if cwd else None)
+        ok, details = _probe_update_runtime(
+            host=host,
+            port=port,
+            token=args.token,
+            timeout_sec=_update_validation_timeout_sec(),
+        )
+        if ok:
+            write_status(
+                {
+                    "state": "validated",
+                    "phase": "validate",
+                    "message": f"slot {slot} passed post-switch validation",
+                    "target_slot": slot,
+                    "manifest": manifest,
+                    "validated_at": time.time(),
+                }
+            )
+            raise SystemExit(int(proc.wait()))
+        proc.terminate()
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            proc.kill()
+        restored = rollback_to_previous_slot()
+        payload: dict[str, Any] = {
+            "state": "failed",
+            "phase": "validate",
+            "message": f"slot {slot} failed post-switch validation",
+            "validation_error": details,
+            "target_slot": slot,
+            "manifest": manifest,
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "restored_slot": restored or "",
+        }
+        if restored:
+            payload["rollback"] = {"ok": True, "slot": restored}
+        write_status(payload)
+        raise SystemExit(1)
     completed = subprocess.run(argv or command or [], shell=bool(command), env=env, cwd=str(cwd) if cwd else None)
     raise SystemExit(int(completed.returncode))
 
@@ -130,6 +226,7 @@ def main() -> None:
     args = _parse_args()
     init_ctx()
     plan = read_plan()
+    pending_update_succeeded = False
     conf = None
     try:
         conf = load_config()
@@ -142,6 +239,7 @@ def main() -> None:
             _upload_update_report(result, conf)
         if str(result.get("state") or "") != "succeeded":
             raise SystemExit(int(result.get("returncode") or 1) or 1)
+        pending_update_succeeded = True
     else:
         write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
 
@@ -165,7 +263,7 @@ def main() -> None:
     os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
     os.environ["ADAOS_AUTOSTART_MODE"] = "1"
 
-    _launch_active_slot_if_needed(args, host=host, port=port)
+    _launch_active_slot_if_needed(args, host=host, port=port, validate=pending_update_succeeded)
 
     from adaos.apps.api.server import app as server_app
 

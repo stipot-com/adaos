@@ -1,8 +1,26 @@
 from __future__ import annotations
 
+import sys
 import types
 
 from typer.testing import CliRunner
+
+if "y_py" not in sys.modules:
+    sys.modules["y_py"] = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        encode_state_vector=lambda *args, **kwargs: b"",
+        encode_state_as_update=lambda *args, **kwargs: b"",
+        apply_update=lambda *args, **kwargs: None,
+    )
+if "ypy_websocket.ystore" not in sys.modules:
+    ystore_module = types.ModuleType("ypy_websocket.ystore")
+    ystore_module.BaseYStore = type("BaseYStore", (), {})
+    ystore_module.YDocNotFound = type("YDocNotFound", (Exception,), {})
+    sys.modules["ypy_websocket.ystore"] = ystore_module
+if "ypy_websocket" not in sys.modules:
+    pkg = types.ModuleType("ypy_websocket")
+    pkg.ystore = sys.modules["ypy_websocket.ystore"]
+    sys.modules["ypy_websocket"] = pkg
 
 from adaos.apps.cli.commands.setup import autostart_app
 from adaos.apps.cli.commands import setup as setup_cmd
@@ -42,6 +60,38 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
     assert "state: idle" in result.output
     assert "target rev: rev2026" in result.output
     assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
+
+
+def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {"state": "idle", "message": "boot"},
+            "slots": {
+                "active_slot": "B",
+                "previous_slot": "A",
+                "slots": {
+                    "A": {"manifest": {}},
+                    "B": {"manifest": {}},
+                },
+            },
+            "active_manifest": {
+                "target_version": "0.1.0",
+                "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
+                "git_branch": "rev2026",
+                "git_subject": "feat: add git webhook",
+            },
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "active slot: B | 0.1.0 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 

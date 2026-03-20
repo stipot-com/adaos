@@ -19,7 +19,9 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         root = Path(skills_root() if callable(skills_root) else skills_root)
         self._sync_runtime_from_workspace_if_debug(root)
         loaded: set[str] = set()
+        loaded_projection_manifests: set[Path] = set()
         for handler, skill_name in self._discover_runtime_handlers(root):
+            self._load_skill_data_projections(handler, loaded_projection_manifests)
             self._load_handler(handler)
             if skill_name:
                 loaded.add(skill_name)
@@ -30,6 +32,7 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         # Dev/fast-path: load handlers straight from the workspace tree when a
         # skill does not have an installed runtime bundle under .runtime.
         for handler, skill_name in self._discover_workspace_handlers(root, loaded):
+            self._load_skill_data_projections(handler, loaded_projection_manifests)
             self._load_handler(handler)
             if skill_name:
                 loaded.add(skill_name)
@@ -44,6 +47,42 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         assert spec and spec.loader
         spec.loader.exec_module(module)  # type: ignore[attr-defined]
         _LOG.info("imported skill handler module=%s path=%s", mod_name, handler)
+
+    def _load_skill_data_projections(self, handler: Path, loaded: set[Path]) -> None:
+        manifest_path = self._find_skill_manifest(handler)
+        if manifest_path is None:
+            return
+        try:
+            resolved = manifest_path.resolve()
+        except OSError:
+            resolved = manifest_path
+        if resolved in loaded:
+            return
+        loaded.add(resolved)
+        try:
+            payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            _LOG.debug("failed to read skill manifest for projections path=%s", manifest_path, exc_info=True)
+            return
+        if not isinstance(payload, dict):
+            return
+        entries = payload.get("data_projections") or []
+        if not isinstance(entries, list) or not entries:
+            return
+        try:
+            get_ctx().projections.load_entries(entries)
+            _LOG.info("loaded skill data_projections path=%s entries=%d", manifest_path, len(entries))
+        except Exception:
+            _LOG.debug("failed to load skill data_projections path=%s", manifest_path, exc_info=True)
+
+    @staticmethod
+    def _find_skill_manifest(handler: Path) -> Optional[Path]:
+        for parent in handler.parents:
+            for name in ("skill.yaml", "resolved.manifest.json"):
+                candidate = parent / name
+                if candidate.exists():
+                    return candidate
+        return None
 
     def _discover_runtime_handlers(self, root: Path) -> Iterable[Tuple[Path, Optional[str]]]:
         runtime_root = root / ".runtime"

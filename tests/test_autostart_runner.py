@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import types
+
 from adaos.apps import autostart_runner
 
 
@@ -28,3 +30,91 @@ def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> Non
 
     assert calls[:3] == ["init_ctx", "write_status", "stop_previous"]
     assert "pidfile" in calls
+
+
+def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"], "env": {}, "cwd": ""},
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.wait_called = False
+
+        def wait(self, timeout=None):
+            self.wait_called = True
+            return 0
+
+        def terminate(self):
+            raise AssertionError("terminate should not be called on validation success")
+
+        def kill(self):
+            raise AssertionError("kill should not be called on validation success")
+
+    proc = _Proc()
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, "ok"))
+    captured: list[dict] = []
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert proc.wait_called is True
+    assert captured[-1]["state"] == "validated"
+    assert captured[-1]["phase"] == "validate"
+
+
+def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"], "env": {}, "cwd": ""},
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    proc = _Proc()
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (False, "http://127.0.0.1:8777/api/admin/update/status returned 500"))
+    monkeypatch.setattr(autostart_runner, "rollback_to_previous_slot", lambda: "A")
+    captured: list[dict] = []
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert proc.terminated is True
+    assert captured[-1]["phase"] == "validate"
+    assert captured[-1]["restored_slot"] == "A"
+    assert captured[-1]["rollback"]["ok"] is True

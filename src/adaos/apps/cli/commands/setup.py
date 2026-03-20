@@ -500,6 +500,7 @@ def autostart_update_status_cmd(
         return
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
+    active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
     active_slot = str(slots.get("active_slot") or "")
     previous_slot = str(slots.get("previous_slot") or "")
     slot_map = slots.get("slots") if isinstance(slots.get("slots"), dict) else {}
@@ -509,9 +510,13 @@ def autostart_update_status_cmd(
             return {}
         slot_meta = slot_map.get(slot_id)
         if not isinstance(slot_meta, dict):
-            return {}
+            return dict(active_manifest_payload) if slot_id == active_slot and active_manifest_payload else {}
         manifest = slot_meta.get("manifest")
-        return manifest if isinstance(manifest, dict) else {}
+        if isinstance(manifest, dict) and manifest:
+            return manifest
+        if slot_id == active_slot and active_manifest_payload:
+            return dict(active_manifest_payload)
+        return {}
 
     def _format_slot_line(slot_id: str) -> str:
         manifest = _slot_manifest(slot_id)
@@ -519,6 +524,9 @@ def autostart_update_status_cmd(
             return "--"
         version = str(manifest.get("target_version") or "").strip()
         short_commit = str(manifest.get("git_short_commit") or "").strip()
+        if not short_commit:
+            full_commit = str(manifest.get("git_commit") or "").strip()
+            short_commit = full_commit[:8] if full_commit else ""
         branch = str(manifest.get("git_branch") or manifest.get("target_rev") or "").strip()
         parts = [slot_id]
         if version:
