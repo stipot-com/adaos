@@ -28,8 +28,8 @@ skills/.runtime/<name>/<version>/
     previous                      # optional previous healthy slot
     meta.json                     # version metadata (tests etc.)
 data/
-    db/
-    files/
+    db/                           # persistent structured skill state
+    files/                        # physical file artifacts/blobs
 ```
 
 The module also provides a thin result object :class:`SkillSlotPaths` with
@@ -64,10 +64,24 @@ class SkillSlotPaths:
     logs_dir: Path
     tmp_dir: Path
     resolved_manifest: Path
+    data_root: Path
+    files_dir: Path
 
     @property
     def skill_env_path(self) -> Path:
+        return self.data_root / "db" / "skill_env.json"
+
+    @property
+    def skill_memory_path(self) -> Path:
+        return self.skill_env_path
+
+    @property
+    def legacy_skill_env_path(self) -> Path:
         return self.runtime_dir / ".skill_env.json"
+
+    @property
+    def legacy_skill_memory_path(self) -> Path:
+        return self.runtime_dir / ".skill_memory.json"
 
 
 class SkillRuntimeEnvironment:
@@ -101,6 +115,18 @@ class SkillRuntimeEnvironment:
 
     def data_root(self) -> Path:
         return self._data_root
+
+    def files_dir(self) -> Path:
+        return self._data_root / "files"
+
+    def db_dir(self) -> Path:
+        return self._data_root / "db"
+
+    def skill_env_store_path(self) -> Path:
+        return self.db_dir() / "skill_env.json"
+
+    def skill_memory_store_path(self) -> Path:
+        return self.skill_env_store_path()
 
     def active_marker(self, version: str) -> Path:
         return self.version_root(version) / "active"
@@ -244,6 +270,8 @@ class SkillRuntimeEnvironment:
             logs_dir=slot_root / "runtime" / "logs",
             tmp_dir=slot_root / "runtime" / "tmp",
             resolved_manifest=slot_root / "resolved.manifest.json",
+            data_root=self._data_root,
+            files_dir=self.files_dir(),
         )
 
     def read_active_slot(self, version: str) -> str:

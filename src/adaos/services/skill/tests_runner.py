@@ -47,6 +47,7 @@ def run_tests(
         env_template.update({k: str(v) for k, v in extra_env.items()})
     if skill_env_path:
         env_template["ADAOS_SKILL_ENV_PATH"] = str(skill_env_path)
+        env_template["ADAOS_SKILL_MEMORY_PATH"] = str(skill_env_path)
 
     # стабильные переменные для тестов
     if skill_name:

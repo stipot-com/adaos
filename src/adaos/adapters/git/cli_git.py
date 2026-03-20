@@ -91,6 +91,8 @@ class CliGitClient(GitClient):
                 "state/",
                 "cache/",
                 "logs/",
+                "skills/**/.skill_env.json",
+                "scenarios/**/.skill_env.json",
             ],
         )
 

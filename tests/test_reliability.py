@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    assess_transport_diagnostics,
     mark_root_control_down,
     mark_root_control_up,
     mark_route_ready,
@@ -197,6 +198,82 @@ def test_hub_reliability_marks_root_channel_unstable_after_reconnect_incident_wi
     assert diag["recent_non_ready_transitions_5m"] == 1
     assert diag["stability"]["state"] in {"unstable", "flapping"}
     assert any(item["status"] == "reconnect" for item in diag["recent_history"])
+
+
+def test_assess_transport_diagnostics_marks_unstable_on_reader_termination_and_tag_change() -> None:
+    now_ts = 1_774_017_180.0
+    assessment = assess_transport_diagnostics(
+        [
+            {
+                "ts": now_ts - 12.0,
+                "source": "periodic",
+                "ws_tag": "tag-a",
+                "nc_connected": True,
+                "reading_task": {"done": False},
+                "err": None,
+            },
+            {
+                "ts": now_ts - 3.0,
+                "source": "periodic",
+                "ws_tag": "tag-a",
+                "nc_connected": True,
+                "reading_task": {"done": True},
+                "err": None,
+            },
+            {
+                "ts": now_ts - 1.0,
+                "source": "periodic",
+                "ws_tag": "tag-b",
+                "nc_connected": True,
+                "reading_task": {"done": False},
+                "err": None,
+            },
+        ],
+        now_ts=now_ts,
+    )
+
+    assert assessment["state"] in {"unstable", "flapping", "down"}
+    assert assessment["recent_tag_changes_5m"] == 1
+    assert assessment["recent_incidents_5m"] >= 1
+    assert "reading_task_terminated" in assessment["last_incident_reasons"]
+
+
+def test_assess_transport_diagnostics_marks_flapping_on_repeated_error_callbacks() -> None:
+    now_ts = 1_774_017_300.0
+    assessment = assess_transport_diagnostics(
+        [
+            {
+                "ts": now_ts - 240.0,
+                "source": "error_cb",
+                "ws_tag": "tag-a",
+                "nc_connected": True,
+                "reading_task": {"done": False},
+                "err": "UnexpectedEOF: nats: unexpected EOF",
+            },
+            {
+                "ts": now_ts - 120.0,
+                "source": "error_cb",
+                "ws_tag": "tag-b",
+                "nc_connected": True,
+                "reading_task": {"done": False},
+                "err": "UnexpectedEOF: nats: unexpected EOF",
+            },
+            {
+                "ts": now_ts - 5.0,
+                "source": "periodic",
+                "ws_tag": "tag-c",
+                "nc_connected": True,
+                "reading_task": {"done": True},
+                "err": None,
+            },
+        ],
+        now_ts=now_ts,
+    )
+
+    assert assessment["state"] in {"flapping", "down"}
+    assert assessment["recent_error_records_5m"] >= 1
+    assert assessment["recent_tag_changes_15m"] >= 2
+    assert assessment["recent_hard_incidents_5m"] >= 1
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:

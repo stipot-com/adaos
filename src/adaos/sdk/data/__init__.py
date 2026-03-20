@@ -36,6 +36,8 @@ __all__ = [
     "_",
     "skill_memory_get",
     "skill_memory_set",
+    "skill_env_get",
+    "skill_env_set",
     "get_tts_backend",
     "get_stt_backend",
     "get_audio_out_backend",
@@ -71,6 +73,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "write": ("adaos.sdk.data.secrets", "write"),
     "skill_memory_get": ("adaos.sdk.data.skill_memory", "get"),
     "skill_memory_set": ("adaos.sdk.data.skill_memory", "set"),
+    "skill_env_get": ("adaos.sdk.data.skill_env", "get_env"),
+    "skill_env_set": ("adaos.sdk.data.skill_env", "set_env"),
 }
 
 
@@ -80,4 +84,3 @@ def __getattr__(name: str):
         raise AttributeError(name)
     mod, attr = target
     return getattr(import_module(mod), attr)
-

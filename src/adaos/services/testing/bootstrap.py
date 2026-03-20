@@ -118,8 +118,18 @@ class TestContextHandle:
 
     ctx: AgentContext
     previous: AgentContext | None
+    previous_skill_env: str | None
+    previous_skill_memory: str | None
 
     def teardown(self) -> None:
+        if self.previous_skill_env is None:
+            os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
+        else:
+            os.environ["ADAOS_SKILL_ENV_PATH"] = self.previous_skill_env
+        if self.previous_skill_memory is None:
+            os.environ.pop("ADAOS_SKILL_MEMORY_PATH", None)
+        else:
+            os.environ["ADAOS_SKILL_MEMORY_PATH"] = self.previous_skill_memory
         if self.previous is None:
             clear_ctx()
         else:
@@ -295,8 +305,20 @@ def bootstrap_test_ctx(
         previous = get_ctx()
     except RuntimeError:
         previous = None
+    previous_skill_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+    previous_skill_memory = os.environ.get("ADAOS_SKILL_MEMORY_PATH")
 
     set_ctx(ctx)
     ctx.skill_ctx.set(skill_name, skill_slot_dir)
+    env_root = skill_slot_dir.parents[2] / "data" / "db"
+    env_file = env_root / "skill_env.json"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["ADAOS_SKILL_ENV_PATH"] = str(env_file)
+    os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(env_file)
 
-    return TestContextHandle(ctx=ctx, previous=previous)
+    return TestContextHandle(
+        ctx=ctx,
+        previous=previous,
+        previous_skill_env=previous_skill_env,
+        previous_skill_memory=previous_skill_memory,
+    )

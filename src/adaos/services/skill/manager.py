@@ -33,10 +33,15 @@ from adaos.services.crypto.secrets_service import SecretsService
 from adaos.services.skill.secrets_backend import SkillSecretsBackend
 from adaos.services.skill.resolver import SkillPathResolver
 from adaos.services.capacity import install_skill_in_capacity, uninstall_skill_from_capacity
-from adaos.services.yjs.webspace import default_webspace_id
 import ast
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
+
+
+def _default_webspace_id() -> str:
+    from adaos.services.yjs.webspace import default_webspace_id
+
+    return default_webspace_id()
 
 
 @dataclass(slots=True)
@@ -943,7 +948,7 @@ class SkillManager:
             target = self.activate_dev_runtime(name, version=version, slot=slot)
         else:
             target = self.activate_runtime(name, version=version, slot=slot)
-        bus_webspace = webspace_id or default_webspace_id()
+        bus_webspace = webspace_id or _default_webspace_id()
         if self.bus:
             payload: Dict[str, Any] = {"skill_name": name, "space": space, "webspace_id": bus_webspace}
             emit(self.bus, "skills.activated", payload, "skill.mgr")
@@ -958,7 +963,7 @@ class SkillManager:
             target = self.dev_rollback_runtime(name)
         else:
             target = self.rollback_runtime(name)
-        bus_webspace = webspace_id or default_webspace_id()
+        bus_webspace = webspace_id or _default_webspace_id()
         if self.bus:
             payload: Dict[str, Any] = {"skill_name": name, "space": space, "webspace_id": bus_webspace}
             emit(self.bus, "skills.rolledback", payload, "skill.mgr")
@@ -1197,10 +1202,12 @@ class SkillManager:
         runtime_info = data.get("runtime", {})
         extra_paths = [Path(p) for p in runtime_info.get("python_paths", []) if p]
         skill_env_path = Path(runtime_info.get("skill_env") or slot.skill_env_path)
+        skill_memory_path = Path(runtime_info.get("skill_memory") or skill_env_path)
 
         ctx = self.ctx
         previous = ctx.skill_ctx.get()
         prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+        prev_memory = os.environ.get("ADAOS_SKILL_MEMORY_PATH")
         prev_secrets = ctx.secrets
         ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
         execution_timeout = timeout or tool_spec.get("timeout_seconds")
@@ -1219,6 +1226,7 @@ class SkillManager:
             if not ctx.skill_ctx.set(name, skill_dir):
                 raise RuntimeError(f"failed to establish context for skill '{name}'")
             os.environ["ADAOS_SKILL_ENV_PATH"] = str(skill_env_path)
+            os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(skill_memory_path)
 
             if execution_timeout:
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -1244,6 +1252,10 @@ class SkillManager:
                 os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
             else:
                 os.environ["ADAOS_SKILL_ENV_PATH"] = prev_env
+            if prev_memory is None:
+                os.environ.pop("ADAOS_SKILL_MEMORY_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_MEMORY_PATH"] = prev_memory
 
         self._persist_skill_env(env, slot)
         return result
@@ -1314,10 +1326,12 @@ class SkillManager:
         runtime_info = data.get("runtime", {})
         extra_paths = [Path(p) for p in runtime_info.get("python_paths", []) if p]
         skill_env_path = Path(runtime_info.get("skill_env") or slot.skill_env_path)
+        skill_memory_path = Path(runtime_info.get("skill_memory") or skill_env_path)
 
         ctx = self.ctx
         previous = ctx.skill_ctx.get()
         prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+        prev_memory = os.environ.get("ADAOS_SKILL_MEMORY_PATH")
         prev_secrets = ctx.secrets
         ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
         execution_timeout = timeout or tool_spec.get("timeout_seconds")
@@ -1339,6 +1353,7 @@ class SkillManager:
             pass
         try:
             os.environ["ADAOS_SKILL_ENV_PATH"] = str(skill_env_path)
+            os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(skill_memory_path)
             result = _call_tool()
         finally:
             if previous is None:
@@ -1349,6 +1364,10 @@ class SkillManager:
                 os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
             else:
                 os.environ["ADAOS_SKILL_ENV_PATH"] = prev_env
+            if prev_memory is None:
+                os.environ.pop("ADAOS_SKILL_MEMORY_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_MEMORY_PATH"] = prev_memory
 
         self._persist_skill_env(env, slot)
         return result
@@ -1629,26 +1648,64 @@ class SkillManager:
                 combined.append(f"{value['name']}{version or ''}")
         return combined
 
+    def _read_json_object(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def _deep_merge_json(self, base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in overlay.items():
+            existing = merged.get(key)
+            if isinstance(existing, dict) and isinstance(value, Mapping):
+                merged[key] = self._deep_merge_json(existing, value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _write_json_object(self, path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
     def _sync_skill_env(self, *, env: SkillRuntimeEnvironment, skill_dir: Path, slot: SkillSlotPaths) -> None:
-        store_path = env.data_root() / "files" / ".skill_env.json"
-        candidates = [store_path, skill_dir / ".skill_env.json"]
-        target = slot.skill_env_path
+        store_path = env.skill_env_store_path()
+        staged_skill_root = slot.src_dir / "skills" / slot.skill_name
+        merged: dict[str, Any] = {}
+        found = False
+        candidates = [
+            skill_dir / ".skill_env.json",
+            skill_dir / ".skill_memory.json",
+            staged_skill_root / ".skill_env.json",
+            staged_skill_root / ".skill_memory.json",
+            slot.legacy_skill_memory_path,
+            slot.legacy_skill_env_path,
+            env.files_dir() / ".skill_env.json",
+            store_path,
+        ]
         for candidate in candidates:
-            if candidate.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(candidate, target)
-                if candidate is not store_path:
-                    store_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(candidate, store_path)
-                break
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            payload = self._read_json_object(candidate)
+            if not payload:
+                continue
+            merged = self._deep_merge_json(merged, payload)
+            found = True
+        if found:
+            self._write_json_object(store_path, merged)
 
     def _persist_skill_env(self, env: SkillRuntimeEnvironment, slot: SkillSlotPaths) -> None:
         source = slot.skill_env_path
         if not source.exists():
             return
-        store = env.data_root() / "files"
-        store.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, store / ".skill_env.json")
+        target = env.skill_env_store_path()
+        if source.resolve() == target.resolve():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
     def _latest_prepared_version(self, env: SkillRuntimeEnvironment) -> Optional[str]:
         latest_version: Optional[str] = None
@@ -1755,6 +1812,7 @@ class SkillManager:
                 "tests": str(slot.tests_dir),
                 "python_paths": list(python_paths),
                 "skill_env": str(slot.skill_env_path),
+                "skill_memory": str(slot.skill_memory_path),
             },
             "tools": tools,
             "default_tool": default_tool,
@@ -2028,15 +2086,16 @@ class SkillManager:
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = logs_dir / "tests.dev.log"
 
-        # skill_env: ./ .skill_env.json приоритетно, иначе — из манифеста (если задан)
+        # Canonical runtime store lives under .runtime/<skill>/data/files/.skill_env.json.
+        # A local .skill_env.json in the skill sources is treated as a template/seed only.
         skill_env_path: Path | None = None
-        local_env = skill_dir / ".skill_env.json"
-        if local_env.exists():
-            skill_env_path = local_env
+        skill_env_raw = runtime_info.get("skill_env")
+        if skill_env_raw:
+            skill_env_path = Path(skill_env_raw)
         else:
-            skill_env_raw = runtime_info.get("skill_env")
-            if skill_env_raw:
-                skill_env_path = Path(skill_env_raw)
+            local_env = skill_dir / ".skill_env.json"
+            if local_env.exists():
+                skill_env_path = local_env
 
         # Запускаем тесты: источник — каталог навыка; pytest сам найдёт tests/**/*.py
         return run_tests(

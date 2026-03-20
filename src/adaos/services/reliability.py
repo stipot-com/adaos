@@ -623,6 +623,188 @@ def channel_diagnostics_snapshot() -> dict[str, Any]:
         return diagnostics
 
 
+def _transport_task_done(record: dict[str, Any], key: str) -> bool:
+    task = record.get(key)
+    return isinstance(task, dict) and bool(task.get("done"))
+
+
+def _transport_diag_incident_reasons(record: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not isinstance(record, dict):
+        return reasons
+    source = str(record.get("source") or "").strip().lower()
+    if source and source not in {"periodic"}:
+        reasons.append(f"source:{source}")
+    if record.get("err"):
+        reasons.append("error")
+    if record.get("nc_connected") is False or record.get("nc_closed") is True:
+        reasons.append("transport_disconnected")
+    ws_closed = record.get("ws_closed")
+    ws_close_code = record.get("ws_close_code")
+    if ws_closed is True or ws_close_code not in {None, "", 1000, "1000"}:
+        reasons.append("ws_closed")
+    if _transport_task_done(record, "reading_task"):
+        reasons.append("reading_task_terminated")
+    if _transport_task_done(record, "flusher_task"):
+        reasons.append("flusher_task_terminated")
+    if _transport_task_done(record, "ping_interval_task"):
+        reasons.append("ping_interval_task_terminated")
+    # If the reader is gone while the client still claims to be connected,
+    # treat this as a stale-but-broken session snapshot.
+    if (
+        "reading_task_terminated" in reasons
+        and record.get("nc_connected") is True
+        and "transport_disconnected" not in reasons
+    ):
+        reasons.append("connected_without_reader")
+    return reasons
+
+
+def assess_transport_diagnostics(
+    records: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    recent_5m_threshold = now - 300.0
+    recent_15m_threshold = now - 900.0
+    recent_records_5m = 0
+    recent_records_15m = 0
+    recent_incidents_5m = 0
+    recent_incidents_15m = 0
+    recent_hard_incidents_5m = 0
+    recent_hard_incidents_15m = 0
+    recent_error_records_5m = 0
+    recent_error_records_15m = 0
+    recent_tags_5m: set[str] = set()
+    recent_tags_15m: set[str] = set()
+    recent_incident_samples: list[dict[str, Any]] = []
+    last_incident_at: float | None = None
+    last_incident_reasons: list[str] = []
+    last_incident_summary = ""
+
+    hard_incident_markers = {
+        "error",
+        "transport_disconnected",
+        "ws_closed",
+        "reading_task_terminated",
+        "flusher_task_terminated",
+        "ping_interval_task_terminated",
+        "connected_without_reader",
+        "source:error_cb",
+        "source:watchdog",
+        "source:eof",
+        "source:disconnected",
+    }
+
+    for item in records or ():
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = float(item.get("ts") or 0.0)
+        except Exception:
+            ts = 0.0
+        if ts <= 0.0 or ts < recent_15m_threshold:
+            continue
+        recent_records_15m += 1
+        if ts >= recent_5m_threshold:
+            recent_records_5m += 1
+
+        tag = str(item.get("ws_tag") or "").strip()
+        if tag:
+            recent_tags_15m.add(tag)
+            if ts >= recent_5m_threshold:
+                recent_tags_5m.add(tag)
+
+        reasons = _transport_diag_incident_reasons(item)
+        if not reasons:
+            continue
+
+        is_hard = any(marker in hard_incident_markers for marker in reasons)
+        recent_incidents_15m += 1
+        if ts >= recent_5m_threshold:
+            recent_incidents_5m += 1
+        if item.get("err"):
+            recent_error_records_15m += 1
+            if ts >= recent_5m_threshold:
+                recent_error_records_5m += 1
+        if is_hard:
+            recent_hard_incidents_15m += 1
+            if ts >= recent_5m_threshold:
+                recent_hard_incidents_5m += 1
+
+        recent_incident_samples.append(
+            {
+                "ts": ts,
+                "source": item.get("source"),
+                "ws_tag": tag or None,
+                "reasons": reasons,
+                "err": item.get("err"),
+            }
+        )
+        if last_incident_at is None or ts >= last_incident_at:
+            last_incident_at = ts
+            last_incident_reasons = list(reasons)
+            last_incident_summary = str(item.get("err") or item.get("source") or "").strip()
+
+    recent_tag_changes_5m = max(0, len(recent_tags_5m) - 1)
+    recent_tag_changes_15m = max(0, len(recent_tags_15m) - 1)
+    last_incident_ago_s = _round_age(now, last_incident_at)
+    state = "unknown"
+    reason = "no recent transport diagnostics records"
+
+    latest_is_hard = bool(last_incident_reasons) and any(
+        marker in hard_incident_markers for marker in last_incident_reasons
+    )
+    if recent_records_15m > 0:
+        state = "stable"
+        reason = "recent transport diagnostics show no incident markers"
+    if latest_is_hard and isinstance(last_incident_ago_s, (int, float)) and last_incident_ago_s <= 30.0:
+        state = "down"
+        reason = "latest transport diagnostics show a fresh disconnect/reader failure"
+    elif (
+        recent_hard_incidents_5m >= 2
+        or recent_incidents_5m >= 3
+        or recent_tag_changes_5m >= 2
+        or recent_hard_incidents_15m >= 3
+        or recent_tag_changes_15m >= 3
+    ):
+        state = "flapping"
+        reason = "multiple recent transport incidents or reconnects detected"
+    elif (
+        recent_hard_incidents_5m >= 1
+        or recent_incidents_5m >= 1
+        or recent_tag_changes_5m >= 1
+        or recent_hard_incidents_15m >= 2
+        or recent_tag_changes_15m >= 2
+        or recent_incidents_15m >= 2
+    ):
+        state = "unstable"
+        reason = "recent transport incident or reconnect detected"
+
+    return {
+        "state": state,
+        "reason": reason,
+        "recent_records_5m": recent_records_5m,
+        "recent_records_15m": recent_records_15m,
+        "recent_incidents_5m": recent_incidents_5m,
+        "recent_incidents_15m": recent_incidents_15m,
+        "recent_hard_incidents_5m": recent_hard_incidents_5m,
+        "recent_hard_incidents_15m": recent_hard_incidents_15m,
+        "recent_ws_tags_5m": sorted(recent_tags_5m),
+        "recent_ws_tags_15m": sorted(recent_tags_15m),
+        "recent_tag_changes_5m": recent_tag_changes_5m,
+        "recent_tag_changes_15m": recent_tag_changes_15m,
+        "recent_error_records_5m": recent_error_records_5m,
+        "recent_error_records_15m": recent_error_records_15m,
+        "last_incident_at": last_incident_at,
+        "last_incident_ago_s": last_incident_ago_s,
+        "last_incident_reasons": list(last_incident_reasons),
+        "last_incident_summary": last_incident_summary,
+        "recent_incident_samples": recent_incident_samples[-6:],
+    }
+
+
 def _node(
     status: ReadinessStatus,
     summary: str,
