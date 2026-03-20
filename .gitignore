@@ -28,8 +28,17 @@ coverage.xml
 !.adaos/workspace/
 .adaos/workspace/*
 !.adaos/workspace/skills/
+!.adaos/workspace/scenarios/
 !.adaos/workspace/skills/infrastate_skill/
 !.adaos/workspace/skills/infrastate_skill/**
+!.adaos/workspace/skills/web_desktop_skill/
+!.adaos/workspace/skills/web_desktop_skill/**
+!.adaos/workspace/skills/prompt_engineer_skill/
+!.adaos/workspace/skills/prompt_engineer_skill/**
+!.adaos/workspace/scenarios/web_desktop/
+!.adaos/workspace/scenarios/web_desktop/**
+!.adaos/workspace/scenarios/prompt_engineer_scenario/
+!.adaos/workspace/scenarios/prompt_engineer_scenario/**
 .adaos/workspace/skills/**/.skill_env.json
 src/adaos/integrations/inimatic/backend/ssl/adaos_root
 src/adaos/integrations/inimatic/backend/ssl/adaos_root.pub

@@ -244,6 +244,18 @@ class WebspaceScenarioRuntime:
         base = paths.dev_skills_dir() if space == "dev" else paths.skills_dir()
         path = Path(base) / skill_name / "webui.json"
         if not path.exists():
+            try:
+                repo_root_attr = getattr(paths, "repo_root", None)
+                repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+                if repo_root:
+                    fallback = (
+                        Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills" / skill_name / "webui.json"
+                    )
+                    if fallback.exists():
+                        path = fallback
+            except Exception:
+                pass
+        if not path.exists():
             _log.debug("webui.json missing for %s (%s)", skill_name, space)
             return {}
         try:
@@ -468,7 +480,6 @@ class WebspaceScenarioRuntime:
                     "id": app_id,
                     "title": title,
                     "icon": "apps-outline",
-                    "launchModal": "scenario_switcher",
                     "scenario_id": sid,
                 }
             )

@@ -17,6 +17,7 @@ _LOG = logging.getLogger("adaos.services.skills_loader")
 class ImportlibSkillsLoader(SkillsLoaderPort):
     async def import_all_handlers(self, skills_root: Any) -> None:
         root = Path(skills_root() if callable(skills_root) else skills_root)
+        self._sync_runtime_from_repo_workspace_if_missing(root)
         self._sync_runtime_from_workspace_if_debug(root)
         loaded: set[str] = set()
         loaded_projection_manifests: set[Path] = set()
@@ -39,6 +40,17 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
                 _LOG.info("imported workspace skill handler skill=%s path=%s", skill_name, handler)
             else:
                 _LOG.info("imported workspace skill handler path=%s", handler)
+
+        # Repo-bundled workspace skills are a final fallback for builtin skills
+        # when the node-local workspace tree does not contain the sources.
+        for handler, skill_name in self._discover_repo_workspace_handlers(root, loaded):
+            self._load_skill_data_projections(handler, loaded_projection_manifests)
+            self._load_handler(handler)
+            if skill_name:
+                loaded.add(skill_name)
+                _LOG.info("imported repo workspace skill handler skill=%s path=%s", skill_name, handler)
+            else:
+                _LOG.info("imported repo workspace skill handler path=%s", handler)
 
     def _load_handler(self, handler: Path) -> None:
         mod_name = "adaos_skill_" + handler.parent.as_posix().replace("/", "_")
@@ -114,6 +126,8 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
         return handlers
 
     def _discover_workspace_handlers(self, root: Path, loaded: set[str]) -> Iterable[Tuple[Path, Optional[str]]]:
+        if not root.exists():
+            return []
         handlers: list[Tuple[Path, Optional[str]]] = []
         for skill_dir in root.iterdir():
             if not skill_dir.is_dir():
@@ -125,6 +139,36 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
                 continue
             # Skip runtime-bundled skills.
             if skill_dir.name in loaded:
+                continue
+            handler = skill_dir / "handlers" / "main.py"
+            if handler.exists():
+                handlers.append((handler, skill_dir.name))
+        return handlers
+
+    def _discover_repo_workspace_handlers(self, root: Path, loaded: set[str]) -> Iterable[Tuple[Path, Optional[str]]]:
+        repo_root = self._repo_workspace_skills_root()
+        if repo_root is None or not repo_root.exists():
+            return []
+
+        try:
+            ctx = get_ctx()
+            ws_root = ctx.paths.skills_workspace_dir()
+            ws_root = Path(ws_root() if callable(ws_root) else ws_root)
+        except Exception:
+            ws_root = root
+
+        handlers: list[Tuple[Path, Optional[str]]] = []
+        for skill_dir in repo_root.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            if skill_dir.name.startswith((".", "_")):
+                continue
+            if skill_dir.name in loaded:
+                continue
+            # A real node-local workspace copy takes precedence over repo fallback.
+            if (ws_root / skill_dir.name).exists():
+                continue
+            if self._is_service_manifest(skill_dir / "skill.yaml"):
                 continue
             handler = skill_dir / "handlers" / "main.py"
             if handler.exists():
@@ -200,18 +244,7 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
             return
         if not ws_root.exists():
             return
-
-        from adaos.adapters.db import SqliteSkillRegistry  # pylint: disable=import-outside-toplevel
-
-        mgr = SkillManager(
-            repo=ctx.skills_repo,
-            registry=SqliteSkillRegistry(ctx.sql),
-            git=ctx.git,
-            paths=ctx.paths,
-            bus=getattr(ctx, "bus", None),
-            caps=ctx.caps,
-            settings=ctx.settings,
-        )
+        mgr = self._build_skill_manager(ctx)
 
         for entry in ws_root.iterdir():
             if not entry.is_dir() or entry.name.startswith((".", "_")):
@@ -239,3 +272,76 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
                     len(files),
                     len(tools),
                 )
+
+    def _sync_runtime_from_repo_workspace_if_missing(self, runtime_root: Path) -> None:
+        repo_ws_root = self._repo_workspace_skills_root()
+        if repo_ws_root is None or not repo_ws_root.exists():
+            return
+
+        try:
+            ctx = get_ctx()
+            ws_root = ctx.paths.skills_workspace_dir()
+            ws_root = Path(ws_root() if callable(ws_root) else ws_root)
+        except Exception:
+            return
+
+        runtime_state_root = runtime_root / ".runtime"
+        if not runtime_state_root.exists():
+            return
+
+        mgr = self._build_skill_manager(ctx)
+        for runtime_skill_root in runtime_state_root.iterdir():
+            if not runtime_skill_root.is_dir():
+                continue
+            name = runtime_skill_root.name
+            if name.startswith((".", "_")):
+                continue
+            if (ws_root / name).exists():
+                continue
+            if not (repo_ws_root / name).exists():
+                continue
+            try:
+                result = mgr.runtime_update(name, space="workspace")
+            except Exception as exc:
+                _LOG.debug("repo workspace runtime_update failed for %s: %s", name, exc)
+                continue
+            if not result.get("ok"):
+                continue
+            files = result.get("files") or []
+            tools = result.get("tools_added") or []
+            if files or tools:
+                _LOG.info(
+                    "runtime_update applied from repo workspace for skill '%s' (files=%d, tools_added=%d)",
+                    name,
+                    len(files),
+                    len(tools),
+                )
+
+    @staticmethod
+    def _repo_workspace_skills_root() -> Optional[Path]:
+        try:
+            ctx = get_ctx()
+            repo_root_attr = getattr(ctx.paths, "repo_root", None)
+            repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+            if not repo_root:
+                return None
+            candidate = Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills"
+            if candidate.exists():
+                return candidate
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _build_skill_manager(ctx: Any) -> SkillManager:
+        from adaos.adapters.db import SqliteSkillRegistry  # pylint: disable=import-outside-toplevel
+
+        return SkillManager(
+            repo=ctx.skills_repo,
+            registry=SqliteSkillRegistry(ctx.sql),
+            git=ctx.git,
+            paths=ctx.paths,
+            bus=getattr(ctx, "bus", None),
+            caps=ctx.caps,
+            settings=ctx.settings,
+        )

@@ -26,6 +26,27 @@ def _scenario_root_for_space(scenario_id: str, space: str) -> Path:
     return base / scenario_id
 
 
+def _repo_workspace_scenario_root(scenario_id: str) -> Path | None:
+    try:
+        ctx = get_ctx()
+        repo_root_attr = getattr(ctx.paths, "repo_root", None)
+        repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+        if not repo_root:
+            return None
+        return Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "scenarios" / scenario_id
+    except Exception:
+        return None
+
+
+def _candidate_roots(scenario_id: str, space: str) -> tuple[Path, ...]:
+    primary = _scenario_root_for_space(scenario_id, space)
+    fallback = _repo_workspace_scenario_root(scenario_id)
+    roots = [primary]
+    if fallback is not None and fallback != primary:
+        roots.append(fallback)
+    return tuple(roots)
+
+
 def scenario_root(scenario_id: str) -> Path:
     """
     Resolve the filesystem root for a scenario in the main workspace,
@@ -54,15 +75,15 @@ def read_manifest(scenario_id: str, *, space: str = "workspace") -> Dict[str, An
 
     When ``space="dev"`` the loader looks under ``dev_scenarios_dir``.
     """
-    root = scenario_root_for_space(scenario_id, space)
-    path = root / "scenario.yaml"
-    if not path.exists():
-        return {}
-    raw = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(raw) or {}
-    if not isinstance(data, dict):
-        return {}
-    return data
+    for root in _candidate_roots(scenario_id, space):
+        path = root / "scenario.yaml"
+        if not path.exists():
+            continue
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any]:
@@ -76,25 +97,26 @@ def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any
     if cached is not None:
         return cached
 
-    root = scenario_root_for_space(scenario_id, space)
-    path = root / "scenario.json"
-    if not path.exists():
-        _log.debug("scenario '%s' has no scenario.json at %s", scenario_id, path)
-        _CONTENT_CACHE[key] = {}
-        return {}
-    _log.debug("reading scenario '%s' content from %s", scenario_id, path)
-    try:
-        # Accept UTF-8 with BOM produced by some Windows/PowerShell editors.
-        raw = path.read_text(encoding="utf-8-sig")
-        data = json.loads(raw)
-    except Exception:
-        _CONTENT_CACHE[key] = {}
-        return {}
-    if not isinstance(data, dict):
-        _CONTENT_CACHE[key] = {}
-        return {}
-    _CONTENT_CACHE[key] = data
-    return data
+    for root in _candidate_roots(scenario_id, space):
+        path = root / "scenario.json"
+        if not path.exists():
+            continue
+        _log.debug("reading scenario '%s' content from %s", scenario_id, path)
+        try:
+            # Accept UTF-8 with BOM produced by some Windows/PowerShell editors.
+            raw = path.read_text(encoding="utf-8-sig")
+            data = json.loads(raw)
+        except Exception:
+            _CONTENT_CACHE[key] = {}
+            return {}
+        if not isinstance(data, dict):
+            _CONTENT_CACHE[key] = {}
+            return {}
+        _CONTENT_CACHE[key] = data
+        return data
+    _log.debug("scenario '%s' has no scenario.json in any candidate roots", scenario_id)
+    _CONTENT_CACHE[key] = {}
+    return {}
 
 
 def invalidate_cache(*, scenario_id: str | None = None, space: str | None = None) -> None:

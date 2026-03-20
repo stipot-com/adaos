@@ -234,6 +234,7 @@ class SkillManager:
         name: str,
         *,
         space: str = "workspace",
+        path: Path | None = None,
     ) -> Dict[str, Any]:
         """
         Synchronise an existing runtime slot with latest sources and tool
@@ -251,20 +252,31 @@ class SkillManager:
 
         # Resolve skill directory and runtime environment depending on space.
         if space_normalized == "dev":
-            root = ctx.paths.dev_skills_dir()
-            root = root() if callable(root) else root
-            skill_dir = Path(root) / name
+            skill_dir, source_kind = self._resolve_runtime_update_source(
+                name,
+                space=space_normalized,
+                path=path,
+            )
             status = self.dev_runtime_status(name)
             env = self._runtime_env_dev(name)
         else:
-            root = ctx.paths.skills_workspace_dir()
-            root = root() if callable(root) else root
-            skill_dir = Path(root) / name
+            skill_dir, source_kind = self._resolve_runtime_update_source(
+                name,
+                space=space_normalized,
+                path=path,
+            )
             status = self.runtime_status(name)
             env = self._runtime_env(name)
 
         if not skill_dir.exists():
-            return {"ok": False, "reason": "skill_dir_missing", "skill": name, "space": space_normalized}
+            return {
+                "ok": False,
+                "reason": "skill_dir_missing",
+                "skill": name,
+                "space": space_normalized,
+                "source": source_kind,
+                "source_path": str(skill_dir),
+            }
 
         version = status.get("version")
         active_slot = status.get("active_slot")
@@ -294,7 +306,11 @@ class SkillManager:
             }
 
         # 1) Sync source files (py/json/yaml/md) from workspace/DEV into runtime slot.
-        changed_files = self._runtime_sync_sources(skill_dir, runtime_skill_root)
+        changed_files = self._runtime_sync_sources(
+            skill_dir,
+            runtime_skill_root,
+            force=(source_kind == "repo_workspace"),
+        )
 
         # 2) Sync tool declarations into resolved.manifest.json from skill.yaml.
         manifest_path = Path(resolved_manifest)
@@ -318,6 +334,8 @@ class SkillManager:
             "space": space_normalized,
             "version": version,
             "slot": active_slot,
+            "source": source_kind,
+            "source_path": str(skill_dir),
             "files": changed_files,
             "tools_added": tools_added,
         }
@@ -354,7 +372,46 @@ class SkillManager:
 
         return payload
 
-    def _runtime_sync_sources(self, source_root: Path, runtime_root: Path) -> list[str]:
+    def _resolve_runtime_update_source(
+        self,
+        name: str,
+        *,
+        space: str,
+        path: Path | None = None,
+    ) -> tuple[Path, str]:
+        if path is not None:
+            return Path(path).resolve(), "explicit"
+
+        if space == "dev":
+            root = self.ctx.paths.dev_skills_dir()
+            root = root() if callable(root) else root
+            return (Path(root) / name).resolve(), "dev"
+
+        root = self.ctx.paths.skills_workspace_dir()
+        root = root() if callable(root) else root
+        workspace_skill = (Path(root) / name).resolve()
+        if workspace_skill.exists():
+            return workspace_skill, "workspace"
+
+        repo_skill = self._repo_workspace_skill_dir(name)
+        if repo_skill is not None:
+            return repo_skill, "repo_workspace"
+        return workspace_skill, "workspace"
+
+    def _repo_workspace_skill_dir(self, name: str) -> Path | None:
+        try:
+            repo_root_attr = getattr(self.ctx.paths, "repo_root", None)
+            repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+            if not repo_root:
+                return None
+            candidate = Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills" / name
+            if candidate.exists():
+                return candidate
+        except Exception:
+            return None
+        return None
+
+    def _runtime_sync_sources(self, source_root: Path, runtime_root: Path, *, force: bool = False) -> list[str]:
         """
         Copy changed source files from ``source_root`` into ``runtime_root``.
 
@@ -378,7 +435,7 @@ class SkillManager:
             rel = src.relative_to(source_root)
             dst = runtime_root / rel
             try:
-                if dst.exists():
+                if dst.exists() and not force:
                     src_mtime = src.stat().st_mtime
                     dst_mtime = dst.stat().st_mtime
                     if src_mtime <= dst_mtime:
