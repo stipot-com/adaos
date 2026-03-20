@@ -164,6 +164,8 @@ async def _core_update_countdown_worker(
             "target_version": target_version,
             "reason": reason,
             "countdown_sec": countdown_sec,
+            "drain_timeout_sec": drain_timeout_sec,
+            "signal_delay_sec": signal_delay_sec,
             "started_at": started_at,
             "scheduled_for": started_at + countdown_sec,
         }
@@ -188,6 +190,8 @@ async def _core_update_countdown_worker(
                 "target_rev": target_rev,
                 "target_version": target_version,
                 "reason": reason,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
                 "message": "countdown completed; pending update written",
             }
         )
@@ -206,6 +210,8 @@ async def _core_update_countdown_worker(
                 "target_rev": target_rev,
                 "target_version": target_version,
                 "reason": reason,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
                 "message": "core update cancelled",
             }
         )
@@ -829,6 +835,8 @@ async def admin_update_start(body: CoreUpdateStartRequest):
             "target_version": str(body.target_version or ""),
             "reason": body.reason,
             "countdown_sec": float(body.countdown_sec),
+            "drain_timeout_sec": float(body.drain_timeout_sec),
+            "signal_delay_sec": float(body.signal_delay_sec),
             "started_at": time.time(),
             "scheduled_for": time.time() + float(body.countdown_sec),
         }
@@ -874,6 +882,8 @@ async def admin_update_cancel(body: CoreUpdateCancelRequest):
             "action": str((read_core_update_status() or {}).get("action") or "update"),
             "message": "core update cancelled by request",
             "reason": body.reason,
+            "drain_timeout_sec": float((read_core_update_status() or {}).get("drain_timeout_sec") or _DEFAULT_SHUTDOWN_DRAIN_SEC),
+            "signal_delay_sec": float((read_core_update_status() or {}).get("signal_delay_sec") or _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC),
         }
     )
     return {"ok": True, "accepted": True, "status": status}
@@ -895,6 +905,8 @@ async def admin_update_rollback(body: CoreUpdateRollbackRequest):
             "action": "rollback",
             "reason": body.reason,
             "countdown_sec": float(body.countdown_sec),
+            "drain_timeout_sec": float(body.drain_timeout_sec),
+            "signal_delay_sec": float(body.signal_delay_sec),
             "started_at": time.time(),
             "scheduled_for": time.time() + float(body.countdown_sec),
         }

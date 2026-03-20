@@ -575,7 +575,10 @@ async def process_events_command(
         await _ack()
         return None
 
-    # Default ack for unknown commands
+    # Default behaviour for declarative host actions: publish unknown command
+    # kinds to the local bus so skills can subscribe to their own UI events.
+    if isinstance(kind, str) and kind.strip():
+        _publish_bus(kind, payload)
     await _ack()
     return None
 
