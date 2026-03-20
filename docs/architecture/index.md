@@ -49,6 +49,15 @@ digraph Layers {
 }
 ```
 
+## Realtime Reliability
+
+- [Channel Semantics](channel-semantics.md)
+- [Authority And Degraded Mode](authority-and-degraded-mode.md)
+- [Hub-Root Protocol](hub-root-protocol.md)
+- [Transport Ownership](transport-ownership.md)
+- [Realtime Reliability Roadmap](realtime-reliability-roadmap.md)
+- [AdaOS Realtime Sidecar](adaos-realtime-sidecar.md)
+
 ---
 
 ## AgentContext

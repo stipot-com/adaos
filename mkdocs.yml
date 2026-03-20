@@ -112,6 +112,12 @@ nav:
       - "Слои": architecture/layers.md
       - "AgentContext": architecture/context.md
       - "Безопасность": architecture/security.md
+      - "Channel Semantics": architecture/channel-semantics.md
+      - "Authority And Degraded Mode": architecture/authority-and-degraded-mode.md
+      - "Hub-Root Protocol": architecture/hub-root-protocol.md
+      - "Transport Ownership": architecture/transport-ownership.md
+      - "Realtime Reliability Roadmap": architecture/realtime-reliability-roadmap.md
+      - "Realtime Sidecar": architecture/adaos-realtime-sidecar.md
   - "CLI":
       - "Обзор": cli/index.md
       - "Интерпретатор": cli/interpreter.md

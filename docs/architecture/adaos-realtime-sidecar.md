@@ -3,6 +3,15 @@
 ## Goal
 
 Move fragile realtime transport ownership out of the main hub process.
+This document is intentionally narrower than the overall reliability model.
+It describes an ownership boundary, not the full semantics of delivery, replay, idempotency, or degraded mode.
+
+Read this together with:
+
+- [Channel Semantics](channel-semantics.md)
+- [Authority And Degraded Mode](authority-and-degraded-mode.md)
+- [Hub-Root Protocol](hub-root-protocol.md)
+- [Transport Ownership](transport-ownership.md)
 
 For the first rollout, `adaos-realtime` owns the remote hub↔root WebSocket and exposes a local `nats://127.0.0.1:<port>` endpoint to the hub. The existing hub NATS bridge stays in place and connects to the local sidecar instead of the remote `wss://.../nats` endpoint.
 
@@ -36,6 +45,16 @@ The WS failures observed on Windows are transport-loop failures, not hub domain-
 - smaller failure surface
 - simpler diagnostics
 - a direct path to moving WebRTC and Yjs data-plane later
+
+What this split does not solve by itself:
+
+- durable outbox/inbox
+- replay cursor semantics
+- idempotent command handling
+- authority boundaries
+- degraded-mode policy
+
+Those remain protocol and system responsibilities.
 
 ## Rollout
 
