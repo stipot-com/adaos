@@ -76,7 +76,7 @@ from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
-from adaos.services.core_slots import slot_status as core_slot_status
+from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
 from adaos.services.node_config import save_config
 from adaos.services.runtime_lifecycle import (
     is_draining,
