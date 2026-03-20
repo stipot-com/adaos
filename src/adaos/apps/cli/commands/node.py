@@ -46,6 +46,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     tree = runtime.get("readiness_tree") if isinstance(runtime.get("readiness_tree"), dict) else {}
     matrix = runtime.get("degraded_matrix") if isinstance(runtime.get("degraded_matrix"), dict) else {}
+    channel_diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
 
     typer.echo(
@@ -58,6 +59,15 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     for name in ("telegram", "github", "llm"):
         item = integration.get(name) if isinstance(integration.get(name), dict) else {}
         typer.echo(f"integration.{name}: {item.get('status') or 'unknown'}")
+    for name in ("root_control", "route"):
+        item = channel_diagnostics.get(name) if isinstance(channel_diagnostics.get(name), dict) else {}
+        stability = item.get("stability") if isinstance(item.get("stability"), dict) else {}
+        if item:
+            typer.echo(
+                f"diag.{name}: {stability.get('state') or 'unknown'} "
+                f"score={stability.get('score') if stability.get('score') is not None else '?'} "
+                f"recent_non_ready_5m={item.get('recent_non_ready_transitions_5m') or 0}"
+            )
     for name in (
         "new_root_backed_member_admission",
         "root_routed_browser_proxy",

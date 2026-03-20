@@ -45,6 +45,7 @@ from adaos.services.nats_config import (
 from adaos.services.reliability import (
     ReadinessStatus,
     mark_root_control_down,
+    note_root_control_reconnect,
     mark_root_control_up,
     mark_route_degraded,
     mark_route_ready,
@@ -799,6 +800,7 @@ class BootstrapService:
 
                 # Correlate hub-side NATS WS sessions with root-side ws-nats-proxy logs + optionally snapshot root logs.
                 ws_connect_tag: str | None = None
+                established_ws_tag: str | None = None
                 last_root_snapshot_at: float | None = None
                 last_ws_transport: str | None = None
 
@@ -1164,6 +1166,7 @@ class BootstrapService:
                                                     current_attempt=nats_attempt_server,
                                                     connected_server=nats_last_server,
                                                 ),
+                                                "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                             },
                                         )
                                     except Exception:
@@ -2322,9 +2325,43 @@ class BootstrapService:
                             except Exception:
                                 pass
                             try:
+                                if (
+                                    isinstance(established_ws_tag, str)
+                                    and established_ws_tag
+                                    and isinstance(ws_connect_tag, str)
+                                    and ws_connect_tag
+                                    and ws_connect_tag != established_ws_tag
+                                ):
+                                    reconnect_payload = {
+                                        "ts": time.time(),
+                                        "server": connected_server or "unknown",
+                                        "previous_ws_tag": established_ws_tag,
+                                        "ws_tag": ws_connect_tag,
+                                    }
+                                    try:
+                                        note_root_control_reconnect(
+                                            summary="hub-root websocket session tag changed after reconnect",
+                                            details=reconnect_payload,
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        self.ctx.bus.publish(
+                                            Event(type="subnet.nats.reconnect", payload=reconnect_payload, source="io.nats")
+                                        )
+                                    except Exception:
+                                        pass
+                                established_ws_tag = ws_connect_tag if isinstance(ws_connect_tag, str) and ws_connect_tag else established_ws_tag
+                            except Exception:
+                                pass
+                            try:
                                 mark_root_control_up(
                                     summary="hub-root control session established",
-                                    details={"server": connected_server or "unknown", "phase": "initial_connect"},
+                                    details={
+                                        "server": connected_server or "unknown",
+                                        "phase": "initial_connect",
+                                        "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
+                                    },
                                 )
                             except Exception:
                                 pass

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -267,9 +268,14 @@ class RuntimeSignal:
 
 _LOCK = threading.RLock()
 _INTEGRATION_NAMES = ("telegram", "github", "llm")
+_CHANNEL_NAMES = ("root_control", "route")
+_CHANNEL_HISTORY_LIMIT = 128
 _ROOT_CONTROL = RuntimeSignal()
 _ROUTE = RuntimeSignal()
 _INTEGRATIONS: dict[str, RuntimeSignal] = {name: RuntimeSignal() for name in _INTEGRATION_NAMES}
+_CHANNEL_HISTORY: dict[str, deque[dict[str, Any]]] = {
+    name: deque(maxlen=_CHANNEL_HISTORY_LIMIT) for name in _CHANNEL_NAMES
+}
 
 
 def _set_signal(
@@ -287,16 +293,61 @@ def _set_signal(
     signal.details = dict(details or {})
 
 
+def _record_channel_transition(
+    channel: str,
+    *,
+    previous_status: ReadinessStatus,
+    status: ReadinessStatus,
+    summary: str,
+    details: dict[str, Any] | None,
+) -> None:
+    if previous_status == status:
+        return
+    history = _CHANNEL_HISTORY.setdefault(str(channel), deque(maxlen=_CHANNEL_HISTORY_LIMIT))
+    history.append(
+        {
+            "ts": time.time(),
+            "previous_status": previous_status.value,
+            "status": status.value,
+            "summary": str(summary or ""),
+            "details": dict(details or {}),
+        }
+    )
+
+
+def _record_channel_incident(
+    channel: str,
+    *,
+    status: str,
+    summary: str,
+    details: dict[str, Any] | None,
+    previous_status: str | None = None,
+) -> None:
+    history = _CHANNEL_HISTORY.setdefault(str(channel), deque(maxlen=_CHANNEL_HISTORY_LIMIT))
+    history.append(
+        {
+            "ts": time.time(),
+            "previous_status": str(previous_status or ""),
+            "status": str(status or ""),
+            "summary": str(summary or ""),
+            "details": dict(details or {}),
+        }
+    )
+
+
 def reset_reliability_runtime_state() -> None:
     with _LOCK:
         _set_signal(_ROOT_CONTROL, status=ReadinessStatus.UNKNOWN)
         _set_signal(_ROUTE, status=ReadinessStatus.UNKNOWN)
         for name in _INTEGRATION_NAMES:
             _set_signal(_INTEGRATIONS[name], status=ReadinessStatus.UNKNOWN)
+        for name in _CHANNEL_NAMES:
+            _CHANNEL_HISTORY.setdefault(name, deque(maxlen=_CHANNEL_HISTORY_LIMIT)).clear()
 
 
 def mark_root_control_up(*, summary: str = "hub-root control session established", details: dict[str, Any] | None = None) -> None:
     with _LOCK:
+        previous_status = _ROOT_CONTROL.status
         _set_signal(
             _ROOT_CONTROL,
             status=ReadinessStatus.READY,
@@ -304,10 +355,18 @@ def mark_root_control_up(*, summary: str = "hub-root control session established
             observed=True,
             details=details,
         )
+        _record_channel_transition(
+            "root_control",
+            previous_status=previous_status,
+            status=ReadinessStatus.READY,
+            summary=summary,
+            details=details,
+        )
 
 
 def mark_root_control_down(*, summary: str = "hub-root control session unavailable", details: dict[str, Any] | None = None) -> None:
     with _LOCK:
+        previous_status = _ROOT_CONTROL.status
         _set_signal(
             _ROOT_CONTROL,
             status=ReadinessStatus.DOWN,
@@ -315,7 +374,15 @@ def mark_root_control_down(*, summary: str = "hub-root control session unavailab
             observed=True,
             details=details,
         )
+        _record_channel_transition(
+            "root_control",
+            previous_status=previous_status,
+            status=ReadinessStatus.DOWN,
+            summary=summary,
+            details=details,
+        )
         if _ROUTE.status == ReadinessStatus.READY:
+            route_previous_status = _ROUTE.status
             _set_signal(
                 _ROUTE,
                 status=ReadinessStatus.DEGRADED,
@@ -323,10 +390,18 @@ def mark_root_control_down(*, summary: str = "hub-root control session unavailab
                 observed=True,
                 details={"cause": "root_control_down"},
             )
+            _record_channel_transition(
+                "route",
+                previous_status=route_previous_status,
+                status=ReadinessStatus.DEGRADED,
+                summary="route path lost authority while root control is down",
+                details={"cause": "root_control_down"},
+            )
 
 
 def mark_route_ready(*, summary: str = "hub route relay subscription installed", details: dict[str, Any] | None = None) -> None:
     with _LOCK:
+        previous_status = _ROUTE.status
         _set_signal(
             _ROUTE,
             status=ReadinessStatus.READY,
@@ -334,15 +409,45 @@ def mark_route_ready(*, summary: str = "hub route relay subscription installed",
             observed=True,
             details=details,
         )
+        _record_channel_transition(
+            "route",
+            previous_status=previous_status,
+            status=ReadinessStatus.READY,
+            summary=summary,
+            details=details,
+        )
 
 
 def mark_route_degraded(*, summary: str = "hub route relay degraded", details: dict[str, Any] | None = None) -> None:
     with _LOCK:
+        previous_status = _ROUTE.status
         _set_signal(
             _ROUTE,
             status=ReadinessStatus.DEGRADED,
             summary=summary,
             observed=True,
+            details=details,
+        )
+        _record_channel_transition(
+            "route",
+            previous_status=previous_status,
+            status=ReadinessStatus.DEGRADED,
+            summary=summary,
+            details=details,
+        )
+
+
+def note_root_control_reconnect(
+    *,
+    summary: str = "hub-root transport session was re-established",
+    details: dict[str, Any] | None = None,
+) -> None:
+    with _LOCK:
+        _record_channel_incident(
+            "root_control",
+            previous_status=_ROOT_CONTROL.status.value,
+            status="reconnect",
+            summary=summary,
             details=details,
         )
 
@@ -372,6 +477,152 @@ def runtime_signal_snapshot() -> dict[str, Any]:
         }
 
 
+def _history_count(entries: list[dict[str, Any]], *, within_s: float, now_ts: float, ready: bool | None = None) -> int:
+    total = 0
+    threshold = now_ts - max(0.0, float(within_s))
+    for item in entries:
+        try:
+            ts = float(item.get("ts") or 0.0)
+        except Exception:
+            ts = 0.0
+        if ts < threshold:
+            continue
+        status = str(item.get("status") or "")
+        if ready is None:
+            total += 1
+        elif ready and status == ReadinessStatus.READY.value:
+            total += 1
+        elif ready is False and status != ReadinessStatus.READY.value:
+            total += 1
+    return total
+
+
+def _last_transition_at(entries: list[dict[str, Any]], *, ready: bool | None = None) -> float | None:
+    for item in reversed(entries):
+        status = str(item.get("status") or "")
+        if ready is None:
+            return float(item.get("ts") or 0.0) or None
+        if ready and status == ReadinessStatus.READY.value:
+            return float(item.get("ts") or 0.0) or None
+        if ready is False and status != ReadinessStatus.READY.value:
+            return float(item.get("ts") or 0.0) or None
+    return None
+
+
+def _round_age(now_ts: float, ts: float | None) -> float | None:
+    if not isinstance(ts, (int, float)) or float(ts) <= 0.0:
+        return None
+    return round(max(0.0, now_ts - float(ts)), 3)
+
+
+def _channel_stability_assessment(
+    *,
+    status: str,
+    non_ready_5m: int,
+    non_ready_15m: int,
+    transitions_5m: int,
+) -> dict[str, Any]:
+    score = 100
+    if status == ReadinessStatus.DOWN.value:
+        score -= 45
+    elif status == ReadinessStatus.DEGRADED.value:
+        score -= 25
+    elif status not in {ReadinessStatus.READY.value, ReadinessStatus.UNKNOWN.value}:
+        score -= 10
+
+    score -= min(30, non_ready_5m * 15)
+    score -= min(15, non_ready_15m * 5)
+    score -= min(10, max(0, transitions_5m - 1) * 2)
+    score = max(0, min(100, score))
+
+    if status == ReadinessStatus.DOWN.value:
+        state = "down"
+        reason = "channel is currently down"
+    elif non_ready_5m >= 2 or transitions_5m >= 4:
+        state = "flapping"
+        reason = f"{non_ready_5m} non-ready transitions in the last 5 minutes"
+    elif status == ReadinessStatus.DEGRADED.value:
+        state = "degraded"
+        reason = "channel is currently degraded"
+    elif non_ready_5m >= 1:
+        state = "unstable"
+        reason = f"{non_ready_5m} non-ready incidents in the last 5 minutes"
+    elif non_ready_15m >= 3:
+        state = "unstable"
+        reason = f"{non_ready_15m} non-ready transitions in the last 15 minutes"
+    elif status == ReadinessStatus.READY.value:
+        state = "stable"
+        reason = "channel is ready and no recent flap threshold is exceeded"
+    else:
+        state = "unknown"
+        reason = "channel has not been observed enough yet"
+
+    return {"state": state, "score": score, "reason": reason}
+
+
+def channel_diagnostics_snapshot() -> dict[str, Any]:
+    now_ts = time.time()
+    with _LOCK:
+        signals = {
+            "root_control": _ROOT_CONTROL,
+            "route": _ROUTE,
+        }
+        diagnostics: dict[str, Any] = {}
+        for name, signal in signals.items():
+            history_entries = list(_CHANNEL_HISTORY.get(name) or [])
+            current_status = signal.status.value
+            last_ready_at = _last_transition_at(history_entries, ready=True)
+            if last_ready_at is None and current_status == ReadinessStatus.READY.value:
+                last_ready_at = signal.updated_at or None
+            last_non_ready_at = _last_transition_at(history_entries, ready=False)
+            if last_non_ready_at is None and current_status not in {
+                ReadinessStatus.READY.value,
+                ReadinessStatus.UNKNOWN.value,
+                ReadinessStatus.NOT_APPLICABLE.value,
+            }:
+                last_non_ready_at = signal.updated_at or None
+            last_transition_at = _last_transition_at(history_entries, ready=None) or signal.updated_at or None
+            non_ready_5m = _history_count(history_entries, within_s=300.0, now_ts=now_ts, ready=False)
+            non_ready_15m = _history_count(history_entries, within_s=900.0, now_ts=now_ts, ready=False)
+            ready_5m = _history_count(history_entries, within_s=300.0, now_ts=now_ts, ready=True)
+            transitions_5m = _history_count(history_entries, within_s=300.0, now_ts=now_ts, ready=None)
+            stability = _channel_stability_assessment(
+                status=current_status,
+                non_ready_5m=non_ready_5m,
+                non_ready_15m=non_ready_15m,
+                transitions_5m=transitions_5m,
+            )
+            diagnostics[name] = {
+                "status": current_status,
+                "summary": signal.summary,
+                "updated_at": signal.updated_at or None,
+                "status_age_s": _round_age(now_ts, signal.updated_at or None),
+                "last_transition_at": last_transition_at,
+                "last_transition_ago_s": _round_age(now_ts, last_transition_at),
+                "last_ready_at": last_ready_at,
+                "last_ready_ago_s": _round_age(now_ts, last_ready_at),
+                "last_non_ready_at": last_non_ready_at,
+                "last_non_ready_ago_s": _round_age(now_ts, last_non_ready_at),
+                "recent_non_ready_transitions_5m": non_ready_5m,
+                "recent_non_ready_transitions_15m": non_ready_15m,
+                "recent_ready_transitions_5m": ready_5m,
+                "recent_transitions_5m": transitions_5m,
+                "total_non_ready_transitions": sum(
+                    1 for item in history_entries if str(item.get("status") or "") != ReadinessStatus.READY.value
+                ),
+                "total_ready_transitions": sum(
+                    1 for item in history_entries if str(item.get("status") or "") == ReadinessStatus.READY.value
+                ),
+                "stable_for_s": _round_age(now_ts, last_ready_at) if current_status == ReadinessStatus.READY.value else None,
+                "non_ready_for_s": _round_age(now_ts, last_non_ready_at)
+                if current_status not in {ReadinessStatus.READY.value, ReadinessStatus.UNKNOWN.value, ReadinessStatus.NOT_APPLICABLE.value}
+                else None,
+                "stability": stability,
+                "recent_history": history_entries[-8:],
+            }
+        return diagnostics
+
+
 def _node(
     status: ReadinessStatus,
     summary: str,
@@ -385,6 +636,37 @@ def _node(
         "observed": observed,
         "details": dict(details or {}),
     }
+
+
+def _apply_incident_degradation(
+    node: dict[str, Any],
+    *,
+    channel_name: str,
+    diagnostics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    current_status = str(node.get("status") or "")
+    if current_status != ReadinessStatus.READY.value:
+        return node
+    diag = diagnostics if isinstance(diagnostics, dict) else {}
+    stability = diag.get("stability") if isinstance(diag.get("stability"), dict) else {}
+    stability_state = str(stability.get("state") or "")
+    if stability_state not in {"unstable", "flapping"}:
+        return node
+    degraded = dict(node)
+    degraded["status"] = ReadinessStatus.DEGRADED.value
+    degraded["summary"] = f"{channel_name} is degraded due to recent transport incidents"
+    details = dict(node.get("details") or {})
+    details.update(
+        {
+            "derived_from": "channel_incidents",
+            "incident_state": stability_state,
+            "incident_reason": str(stability.get("reason") or ""),
+            "recent_non_ready_transitions_5m": diag.get("recent_non_ready_transitions_5m"),
+            "recent_transitions_5m": diag.get("recent_transitions_5m"),
+        }
+    )
+    degraded["details"] = details
+    return degraded
 
 
 def _is_ready(node: dict[str, Any]) -> bool:
@@ -434,8 +716,10 @@ def build_readiness_tree(
     node_state: str,
     draining: bool,
     connected_to_hub: bool | None,
+    channel_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     signals = runtime_signal_snapshot()
+    diagnostics = channel_diagnostics if isinstance(channel_diagnostics, dict) else channel_diagnostics_snapshot()
     role_norm = str(role or "").strip().lower()
 
     local_core = _node(
@@ -446,7 +730,11 @@ def build_readiness_tree(
     )
 
     if role_norm == "hub":
-        root_control = signals["root_control"]
+        root_control = _apply_incident_degradation(
+            signals["root_control"],
+            channel_name="hub-root control",
+            diagnostics=diagnostics.get("root_control"),
+        )
         route_signal = signals["route"]
         route_status = str(route_signal.get("status") or ReadinessStatus.UNKNOWN.value)
         if route_status == ReadinessStatus.UNKNOWN.value:
@@ -465,7 +753,21 @@ def build_readiness_tree(
                     details={"derived_from": "root_control"},
                 )
         else:
-            route = route_signal
+            route = _apply_incident_degradation(
+                route_signal,
+                channel_name="root relay route",
+                diagnostics=diagnostics.get("route"),
+            )
+            if (
+                str(route.get("status") or "") == ReadinessStatus.READY.value
+                and str(root_control.get("status") or "") == ReadinessStatus.DEGRADED.value
+            ):
+                route = _node(
+                    ReadinessStatus.DEGRADED,
+                    "root relay route is degraded because hub-root control is degraded by recent incidents",
+                    observed=True,
+                    details={"derived_from": "root_control_incidents"},
+                )
 
         sync = _node(
             ReadinessStatus.READY if local_ready else ReadinessStatus.DOWN,
@@ -658,12 +960,14 @@ def reliability_snapshot(
     route_mode: str | None,
     connected_to_hub: bool | None,
 ) -> dict[str, Any]:
+    channel_diagnostics = channel_diagnostics_snapshot()
     readiness_tree = build_readiness_tree(
         role=role,
         local_ready=local_ready,
         node_state=node_state,
         draining=draining,
         connected_to_hub=connected_to_hub,
+        channel_diagnostics=channel_diagnostics,
     )
     degraded_matrix = build_degraded_matrix(role=role, readiness_tree=readiness_tree)
     return {
@@ -683,5 +987,6 @@ def reliability_snapshot(
             "signals": runtime_signal_snapshot(),
             "readiness_tree": readiness_tree,
             "degraded_matrix": degraded_matrix,
+            "channel_diagnostics": channel_diagnostics,
         },
     }

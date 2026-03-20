@@ -14,6 +14,7 @@ from adaos.services.reliability import (
     mark_root_control_down,
     mark_root_control_up,
     mark_route_ready,
+    note_root_control_reconnect,
     reliability_snapshot,
     reset_reliability_runtime_state,
     set_integration_readiness,
@@ -75,6 +76,7 @@ def test_hub_reliability_snapshot_enables_route_and_integration_capabilities_whe
     assert tree["root_control"]["status"] == "ready"
     assert tree["route"]["status"] == "ready"
     assert tree["integration"]["telegram"]["status"] == "degraded"
+    assert snapshot["runtime"]["channel_diagnostics"]["root_control"]["stability"]["state"] == "stable"
 
     matrix = snapshot["runtime"]["degraded_matrix"]
     assert matrix["root_routed_browser_proxy"]["allowed"] is True
@@ -140,6 +142,61 @@ def test_hub_reliability_marks_root_backed_integration_as_stale_when_root_contro
     assert stale_snapshot["runtime"]["readiness_tree"]["root_control"]["status"] == "down"
     assert stale_snapshot["runtime"]["readiness_tree"]["integration"]["telegram"]["status"] == "degraded"
     assert stale_snapshot["runtime"]["degraded_matrix"]["telegram_action_completion"]["allowed"] is False
+    assert stale_snapshot["runtime"]["channel_diagnostics"]["root_control"]["stability"]["state"] == "down"
+
+
+def test_hub_reliability_marks_flapping_root_channel_when_it_repeatedly_disconnects() -> None:
+    _reset_state()
+    mark_root_control_up(details={"server": "wss://api.inimatic.com/nats"})
+    mark_route_ready(details={"subject": "route.to_hub.*"})
+    mark_root_control_down(details={"kind": "disconnected"})
+    mark_root_control_up(details={"server": "wss://api.inimatic.com/nats"})
+    mark_root_control_down(details={"kind": "disconnected"})
+    mark_root_control_up(details={"server": "wss://api.inimatic.com/nats"})
+
+    snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+
+    assert snapshot["runtime"]["readiness_tree"]["root_control"]["status"] == "degraded"
+    assert snapshot["runtime"]["readiness_tree"]["route"]["status"] == "degraded"
+    diag = snapshot["runtime"]["channel_diagnostics"]["root_control"]
+    assert diag["recent_non_ready_transitions_5m"] == 2
+    assert diag["recent_transitions_5m"] >= 5
+    assert diag["stability"]["state"] == "flapping"
+    assert isinstance(diag["recent_history"], list) and len(diag["recent_history"]) >= 5
+
+
+def test_hub_reliability_marks_root_channel_unstable_after_reconnect_incident_without_explicit_down() -> None:
+    _reset_state()
+    mark_root_control_up(details={"server": "wss://api.inimatic.com/nats", "ws_tag": "tag-a"})
+    note_root_control_reconnect(
+        details={"server": "wss://api.inimatic.com/nats", "previous_ws_tag": "tag-a", "ws_tag": "tag-b"}
+    )
+
+    snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+
+    diag = snapshot["runtime"]["channel_diagnostics"]["root_control"]
+    assert snapshot["runtime"]["readiness_tree"]["root_control"]["status"] == "degraded"
+    assert diag["recent_non_ready_transitions_5m"] == 1
+    assert diag["stability"]["state"] in {"unstable", "flapping"}
+    assert any(item["status"] == "reconnect" for item in diag["recent_history"])
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:
@@ -234,6 +291,10 @@ def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
                             "llm": {"status": "unknown"},
                         },
                     },
+                    "channel_diagnostics": {
+                        "root_control": {"stability": {"state": "flapping", "score": 62}, "recent_non_ready_transitions_5m": 2},
+                        "route": {"stability": {"state": "degraded", "score": 71}, "recent_non_ready_transitions_5m": 1},
+                    },
                     "degraded_matrix": {
                         "new_root_backed_member_admission": {"allowed": True},
                         "root_routed_browser_proxy": {"allowed": False},
@@ -252,4 +313,5 @@ def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "root_control: ready" in result.output
     assert "integration.telegram: ready" in result.output
+    assert "diag.root_control: flapping score=62 recent_non_ready_5m=2" in result.output
     assert "root_routed_browser_proxy: blocked" in result.output
