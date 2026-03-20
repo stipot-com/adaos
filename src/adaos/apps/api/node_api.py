@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
 from adaos.services.bootstrap import is_ready, load_config, switch_role
+from adaos.services.reliability import reliability_snapshot
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
 
@@ -61,6 +62,24 @@ async def node_status():
         subnet_id=conf.subnet_id,
         role=conf.role,
         ready=is_ready() and not bool(lifecycle.get("draining")),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
+        route_mode=route_mode,
+        connected_to_hub=connected,
+    )
+
+
+@router.get("/reliability", dependencies=[Depends(require_token)])
+async def node_reliability() -> dict[str, Any]:
+    conf = load_config()
+    route_mode, connected = _route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
+    local_ready = is_ready()
+    return reliability_snapshot(
+        node_id=conf.node_id,
+        subnet_id=conf.subnet_id,
+        role=conf.role,
+        local_ready=local_ready,
         node_state=str(lifecycle.get("node_state") or "ready"),
         draining=bool(lifecycle.get("draining")),
         route_mode=route_mode,

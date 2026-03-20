@@ -42,6 +42,12 @@ from adaos.services.nats_config import (
     order_nats_ws_candidates,
     public_nats_ws_candidates,
 )
+from adaos.services.reliability import (
+    mark_root_control_down,
+    mark_root_control_up,
+    mark_route_degraded,
+    mark_route_ready,
+)
 from adaos.services.realtime_sidecar import (
     probe_realtime_sidecar_ready,
     realtime_sidecar_diag_path,
@@ -1116,6 +1122,24 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
+                                    try:
+                                        mark_root_control_down(
+                                            summary=f"hub-root control session down ({kind})",
+                                            details={
+                                                "kind": kind,
+                                                "error": str(err) if err else None,
+                                                "server": _resolve_nats_log_server(
+                                                    current_attempt=nats_attempt_server,
+                                                    connected_server=nats_last_server,
+                                                ),
+                                            },
+                                        )
+                                        mark_route_degraded(
+                                            summary="hub route relay degraded because root control is down",
+                                            details={"cause": kind},
+                                        )
+                                    except Exception:
+                                        pass
                                     reported_down = True
 
                             def _emit_up() -> None:
@@ -1128,6 +1152,18 @@ class BootstrapService:
                                             pass
                                     try:
                                         self.ctx.bus.publish(Event(type="subnet.nats.up", payload={"ts": time.time()}, source="io.nats"))
+                                    except Exception:
+                                        pass
+                                    try:
+                                        mark_root_control_up(
+                                            summary="hub-root control session established",
+                                            details={
+                                                "server": _resolve_nats_log_server(
+                                                    current_attempt=nats_attempt_server,
+                                                    connected_server=nats_last_server,
+                                                ),
+                                            },
+                                        )
                                     except Exception:
                                         pass
                                     reported_down = False
@@ -2280,6 +2316,13 @@ class BootstrapService:
                                     "nats bridge connected server=%s hub_id=%s",
                                     connected_server or "unknown",
                                     hub_id,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                mark_root_control_up(
+                                    summary="hub-root control session established",
+                                    details={"server": connected_server or "unknown", "phase": "initial_connect"},
                                 )
                             except Exception:
                                 pass
@@ -3829,6 +3872,13 @@ class BootstrapService:
                             self._log.info("nats bridge subscribed subject=route.to_hub.*")
                         except Exception:
                             pass
+                        try:
+                            mark_route_ready(
+                                summary="hub route relay subscription installed",
+                                details={"subject": "route.to_hub.*"},
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
@@ -3842,6 +3892,13 @@ class BootstrapService:
                                     pass
                             else:
                                 print(f"[hub-io] NATS route proxy disabled: {type(e).__name__}: {e}")
+                        except Exception:
+                            pass
+                        try:
+                            mark_route_degraded(
+                                summary=f"hub route relay initialization failed ({type(e).__name__})",
+                                details={"error": str(e)},
+                            )
                         except Exception:
                             pass
 
