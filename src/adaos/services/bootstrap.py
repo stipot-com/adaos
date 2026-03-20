@@ -371,6 +371,17 @@ class BootstrapService:
         except Exception:
             self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
+        try:
+            from adaos.services.core_update import read_status as _read_core_update_status
+
+            await bus.emit(
+                "core.update.status",
+                _read_core_update_status(),
+                source="lifecycle",
+                actor="system",
+            )
+        except Exception:
+            self._log.debug("failed to emit initial core.update.status", exc_info=True)
         await bus.emit("sys.bus.ready", {}, source="lifecycle", actor="system")
         # Start in-process scheduler after the bus is ready.
         try:
