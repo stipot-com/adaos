@@ -16,8 +16,23 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
         "_autostart_admin_get",
         lambda path, token=None: {
             "ok": True,
-            "status": {"state": "idle", "message": "boot"},
-            "slots": {"active_slot": "A", "previous_slot": "B"},
+            "status": {"state": "idle", "message": "boot", "target_rev": "rev2026"},
+            "slots": {
+                "active_slot": "A",
+                "previous_slot": "B",
+                "slots": {
+                    "A": {
+                        "manifest": {
+                            "target_version": "0.1.0",
+                            "git_short_commit": "8e2f6e75",
+                            "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
+                            "git_branch": "rev2026",
+                            "git_subject": "feat: add git webhook",
+                        }
+                    },
+                    "B": {"manifest": {"target_version": "0.1.0", "git_short_commit": "4a525775", "git_branch": "rev2026"}},
+                },
+            },
         },
     )
 
@@ -25,7 +40,9 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
-    assert "active slot: A" in result.output
+    assert "target rev: rev2026" in result.output
+    assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 
 def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:

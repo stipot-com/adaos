@@ -500,13 +500,51 @@ def autostart_update_status_cmd(
         return
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
+    active_slot = str(slots.get("active_slot") or "")
+    previous_slot = str(slots.get("previous_slot") or "")
+    slot_map = slots.get("slots") if isinstance(slots.get("slots"), dict) else {}
+
+    def _slot_manifest(slot_id: str) -> dict:
+        if not slot_id:
+            return {}
+        slot_meta = slot_map.get(slot_id)
+        if not isinstance(slot_meta, dict):
+            return {}
+        manifest = slot_meta.get("manifest")
+        return manifest if isinstance(manifest, dict) else {}
+
+    def _format_slot_line(slot_id: str) -> str:
+        manifest = _slot_manifest(slot_id)
+        if not slot_id:
+            return "--"
+        version = str(manifest.get("target_version") or "").strip()
+        short_commit = str(manifest.get("git_short_commit") or "").strip()
+        branch = str(manifest.get("git_branch") or manifest.get("target_rev") or "").strip()
+        parts = [slot_id]
+        if version:
+            parts.append(version)
+        if short_commit:
+            parts.append(short_commit)
+        if branch:
+            parts.append(branch)
+        return " | ".join(parts)
+
     typer.echo(f"state: {status.get('state') or 'unknown'}")
     if status.get("phase"):
         typer.echo(f"phase: {status.get('phase')}")
     if status.get("message"):
         typer.echo(f"message: {status.get('message')}")
-    typer.echo(f"active slot: {slots.get('active_slot') or '—'}")
-    typer.echo(f"previous slot: {slots.get('previous_slot') or '—'}")
+    if status.get("target_rev"):
+        typer.echo(f"target rev: {status.get('target_rev')}")
+    if status.get("target_version"):
+        typer.echo(f"target version: {status.get('target_version')}")
+    typer.echo(f"active slot: {_format_slot_line(active_slot)}")
+    typer.echo(f"previous slot: {_format_slot_line(previous_slot)}")
+    active_manifest = _slot_manifest(active_slot)
+    if active_manifest.get("git_commit"):
+        typer.echo(f"active commit: {active_manifest.get('git_commit')}")
+    if active_manifest.get("git_subject"):
+        typer.echo(f"active subject: {active_manifest.get('git_subject')}")
 
 
 @autostart_app.command("update-start")

@@ -923,6 +923,7 @@ async def admin_update_status():
         "status": read_core_update_status(),
         "plan": read_core_update_plan(),
         "slots": core_slot_status(),
+        "active_manifest": active_slot_manifest(),
     }
 
 
