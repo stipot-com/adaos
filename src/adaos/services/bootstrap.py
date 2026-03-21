@@ -40,6 +40,7 @@ from adaos.services.nats_config import (
     normalize_nats_ws_url,
     nats_url_uses_websocket,
     order_nats_ws_candidates,
+    public_nats_tcp_candidates,
     public_nats_ws_candidates,
 )
 from adaos.services.reliability import (
@@ -49,6 +50,8 @@ from adaos.services.reliability import (
     mark_root_control_up,
     mark_route_degraded,
     mark_route_ready,
+    note_route_incident,
+    observe_route_e2e,
     set_integration_readiness,
 )
 from adaos.services.realtime_sidecar import (
@@ -106,6 +109,21 @@ def _hub_public_ws_candidates(base_url: str | None) -> list[str]:
     if normalized_base:
         candidates.append(normalized_base)
     for item in public_nats_ws_candidates(
+        prefer_dedicated=prefer_dedicated,
+        allow_dedicated_fallback=prefer_dedicated == "1",
+    ):
+        if item not in candidates:
+            candidates.append(item)
+    return candidates
+
+
+def _hub_public_tcp_candidates(base_url: str | None) -> list[str]:
+    prefer_dedicated = _hub_nats_prefer_dedicated()
+    candidates: list[str] = []
+    base = str(base_url or "").strip()
+    if base:
+        candidates.append(base)
+    for item in public_nats_tcp_candidates(
         prefer_dedicated=prefer_dedicated,
         allow_dedicated_fallback=prefer_dedicated == "1",
     ):
@@ -640,7 +658,11 @@ class BootstrapService:
                         node_nats = (nd or {}).get("nats") if isinstance(nd, dict) else None
                         if not isinstance(node_nats, dict) or not node_nats:
                             return None, None, None
+                        # Allow explicit override for experiments (e.g. switching from WS to TCP).
+                        override = str(os.getenv("HUB_NATS_URL_OVERRIDE", "") or "").strip() or None
                         raw_nurl = str(node_nats.get("ws_url") or "").strip() or None
+                        if override:
+                            raw_nurl = override
                         nurl = _normalize_hub_nats_ws_url(raw_nurl)
                         nuser = str(node_nats.get("user") or "") or None
                         npass = str(node_nats.get("pass") or "") or None
@@ -777,7 +799,14 @@ class BootstrapService:
                         n = y.get("nats") or {}
                         if not isinstance(n, dict):
                             n = {}
-                        n["ws_url"] = str(nats_ws_url)
+                        # Experimental switch: allow running hub-root over native NATS TCP.
+                        # WARNING: public `nats://` is not encrypted. Use only for controlled testing
+                        # unless you have TLS-enabled NATS endpoints.
+                        transport = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
+                        if transport in {"tcp", "nats"}:
+                            n["ws_url"] = str(_hub_public_tcp_candidates(None)[0])
+                        else:
+                            n["ws_url"] = str(nats_ws_url)
                         n["user"] = str(nats_user)
                         n["pass"] = str(token)
                         y["nats"] = n
@@ -1008,14 +1037,17 @@ class BootstrapService:
                                             if it.startswith("ws"):
                                                 _dedup_push(it)
                                 else:
-                                    # TCP mode: only nats:// endpoints
+                                    # TCP mode: prefer nats:// endpoints.
                                     if base:
                                         _dedup_push(base)
+                                    else:
+                                        for item in _hub_public_tcp_candidates(base):
+                                            _dedup_push(item)
                                     # Optional TCP alternates via env (comma-separated)
                                     extra = os.getenv("NATS_TCP_URL_ALT")
                                     if extra:
                                         for it in [x.strip() for x in extra.split(",") if x.strip()]:
-                                            if it.startswith("nats://"):
+                                            if it.startswith("nats://") or it.startswith("tls://"):
                                                 _dedup_push(it)
                             except Exception:
                                 # Fallback: if base present, use it only; otherwise default to the api ingress.
@@ -1035,11 +1067,12 @@ class BootstrapService:
                             # `HUB_NATS_PREFER_DEDICATED=1` for environments where it is known to be healthier.
                             try:
                                 pref_ded = _hub_nats_prefer_dedicated()
-                                candidates = order_nats_ws_candidates(
-                                    candidates,
-                                    explicit_url=base,
-                                    prefer_dedicated=pref_ded,
-                                )
+                                if candidates and str(candidates[0]).startswith(("ws://", "wss://")):
+                                    candidates = order_nats_ws_candidates(
+                                        candidates,
+                                        explicit_url=base,
+                                        prefer_dedicated=pref_ded,
+                                    )
                             except Exception:
                                 pass
                             remote_candidates: list[str] = []
@@ -1303,11 +1336,14 @@ class BootstrapService:
 
                                 connected_attr = getattr(nc_for_diag, "is_connected", None)
                                 closed_attr = getattr(nc_for_diag, "is_closed", None)
+                                connect_url = server if server is not None else nats_last_server
                                 snapshot: dict[str, Any] = {
                                     "ts": round(time.time(), 3),
                                     "source": source,
                                     "task_name": task_name,
-                                    "server": server if server is not None else nats_last_server,
+                                    "server": connect_url,
+                                    "connect_url": connect_url,
+                                    "conn_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                     "loop_policy": type(policy).__name__ if policy is not None else None,
                                     "loop": type(loop).__name__ if loop is not None else None,
                                     "nc_connected": connected_attr() if callable(connected_attr) else bool(connected_attr),
@@ -3261,6 +3297,9 @@ class BootstrapService:
                             route_t = "?"
                             route_outcome = "start"
                             route_started = time.monotonic()
+                            http_method = ""
+                            http_path = ""
+                            http_kind = ""
                             try:
                                 subject = str(getattr(msg, "subject", "") or "")
                                 parts = subject.split(".", 2)
@@ -3361,6 +3400,25 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     return
+                                if t == "http":
+                                    try:
+                                        http_method = str((data or {}).get("method") or "GET").upper()
+                                        http_path = str((data or {}).get("path") or "")
+                                        http_kind = (
+                                            "probe"
+                                            if http_path in ("/api/node/status", "/api/ping", "/healthz")
+                                            else "app"
+                                        )
+                                        observe_route_e2e(
+                                            details={
+                                                f"last_http_{http_kind}_rx_at": time.time(),
+                                                "last_http_rx_path": http_path,
+                                                "last_http_rx_method": http_method,
+                                                "last_http_rx_key_tag": _key_tag(key),
+                                            }
+                                        )
+                                    except Exception:
+                                        pass
                                 if _route_http_trace and (is_http_key or t in ("open", "close")):
                                     try:
                                         _route_log(
@@ -3371,8 +3429,8 @@ class BootstrapService:
                                 if _route_verbose or _route_trace:
                                     try:
                                         if t == "http":
-                                            _m = str((data or {}).get("method") or "GET").upper()
-                                            _p = str((data or {}).get("path") or "")
+                                            _m = http_method or "GET"
+                                            _p = http_path or ""
                                             if _p not in ("/api/node/status", "/api/ping", "/healthz"):
                                                 _route_log(f"[hub-route] rx http key={_key_tag(key)} {_m} {_p}")
                                             else:
@@ -3922,9 +3980,66 @@ class BootstrapService:
                                 except Exception:
                                     pass
                             finally:
+                                took_ms = (time.monotonic() - route_started) * 1000.0
+                                if http_path:
+                                    try:
+                                        observe_route_e2e(
+                                            details={
+                                                f"last_http_{http_kind or 'app'}_reply_at": time.time(),
+                                                "last_http_reply_path": http_path,
+                                                "last_http_reply_method": http_method or "",
+                                                "last_http_reply_took_ms": round(took_ms, 1),
+                                                "last_http_reply_outcome": route_outcome,
+                                                "last_http_reply_key_tag": _key_tag(key),
+                                            }
+                                        )
+                                    except Exception:
+                                        pass
+
+                                    # Detect "late replies" relative to the Root route proxy timeouts.
+                                    # This is an end-to-end signal: Root likely already timed out waiting.
+                                    try:
+                                        expected_timeout_ms = 15000
+                                        if http_path in ("/api/node/status", "/api/ping", "/healthz"):
+                                            expected_timeout_ms = 6500
+                                        elif http_path == "/api/tools/call":
+                                            expected_timeout_ms = 60000
+                                        # Give a small buffer to avoid false positives around the edge.
+                                        if (
+                                            http_kind == "app"
+                                            and expected_timeout_ms > 0
+                                            and took_ms >= float(expected_timeout_ms) * 0.98
+                                        ):
+                                            note_route_incident(
+                                                status="late_reply",
+                                                summary="hub route reply exceeded root proxy timeout",
+                                                details={
+                                                    "path": http_path,
+                                                    "method": http_method or "",
+                                                    "took_ms": round(took_ms, 1),
+                                                    "expected_timeout_ms": int(expected_timeout_ms),
+                                                    "key_tag": _key_tag(key),
+                                                    "outcome": route_outcome,
+                                                },
+                                            )
+                                            observe_route_e2e(
+                                                details={
+                                                    "last_http_app_late_reply_at": time.time(),
+                                                    "last_http_app_late_reply_details": {
+                                                        "path": http_path,
+                                                        "method": http_method or "",
+                                                        "took_ms": round(took_ms, 1),
+                                                        "expected_timeout_ms": int(expected_timeout_ms),
+                                                        "key_tag": _key_tag(key),
+                                                        "outcome": route_outcome,
+                                                    },
+                                                }
+                                            )
+                                    except Exception:
+                                        pass
+
                                 if _route_http_trace and key:
                                     try:
-                                        took_ms = (time.monotonic() - route_started) * 1000.0
                                         _route_log(
                                             f"[hub-route] cb.done key={_key_tag(key)} subj={subject} t={route_t} outcome={route_outcome} took_ms={took_ms:.1f}"
                                         )

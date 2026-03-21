@@ -4,6 +4,8 @@ from urllib.parse import urlparse, urlunparse
 
 PUBLIC_NATS_WS_API = "wss://api.inimatic.com/nats"
 PUBLIC_NATS_WS_DEDICATED = "wss://nats.inimatic.com/nats"
+PUBLIC_NATS_TCP_API = "nats://api.inimatic.com:4222"
+PUBLIC_NATS_TCP_DEDICATED = "nats://nats.inimatic.com:4222"
 
 
 def nats_url_uses_websocket(value: str | None) -> bool:
@@ -63,6 +65,19 @@ def public_nats_ws_candidates(
     if allow_dedicated_fallback:
         return [PUBLIC_NATS_WS_API, PUBLIC_NATS_WS_DEDICATED]
     return [PUBLIC_NATS_WS_API]
+
+
+def public_nats_tcp_candidates(
+    *,
+    prefer_dedicated: str | None = "1",
+    allow_dedicated_fallback: bool = True,
+) -> list[str]:
+    pref = str(prefer_dedicated or "").strip()
+    if pref == "1":
+        return [PUBLIC_NATS_TCP_DEDICATED, PUBLIC_NATS_TCP_API]
+    if allow_dedicated_fallback:
+        return [PUBLIC_NATS_TCP_API, PUBLIC_NATS_TCP_DEDICATED]
+    return [PUBLIC_NATS_TCP_API]
 
 
 def order_nats_ws_candidates(

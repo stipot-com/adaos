@@ -452,6 +452,35 @@ def note_root_control_reconnect(
         )
 
 
+def note_route_incident(*, status: str, summary: str, details: dict[str, Any] | None = None) -> None:
+    """Record a user-visible incident for the root relay route.
+
+    Example: late reply for an app request, publish errors, repeated timeouts.
+    """
+    st = str(status or "").strip() or "incident"
+    with _LOCK:
+        _record_channel_incident(
+            "route",
+            previous_status=_ROUTE.status.value,
+            status=st,
+            summary=str(summary or ""),
+            details=details,
+        )
+
+
+def observe_route_e2e(*, details: dict[str, Any]) -> None:
+    """Update route E2E observations without emitting a readiness transition."""
+    if not isinstance(details, dict) or not details:
+        return
+    with _LOCK:
+        try:
+            _ROUTE.details.update(dict(details))
+        except Exception:
+            _ROUTE.details = dict(details)
+        _ROUTE.updated_at = time.time()
+        _ROUTE.observed = True
+
+
 def set_integration_readiness(
     name: str,
     *,
@@ -710,7 +739,7 @@ def assess_transport_diagnostics(
         if ts >= recent_5m_threshold:
             recent_records_5m += 1
 
-        tag = str(item.get("ws_tag") or "").strip()
+        tag = str(item.get("ws_tag") or item.get("conn_tag") or "").strip()
         if tag:
             recent_tags_15m.add(tag)
             if ts >= recent_5m_threshold:

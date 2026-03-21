@@ -544,10 +544,19 @@ export function installHubRouteProxy(
 			}
 
 			const timeoutMs = (() => {
+				// Allow caller to override route timeout (bounded) for long-running operations.
+				// This is especially useful for /api/tools/call where LLM/tool execution can exceed 15s.
+				try {
+					const raw = String((req.headers as any)?.['x-adaos-timeout-ms'] || '').trim()
+					const parsed = raw ? Number.parseInt(raw, 10) : NaN
+					if (Number.isFinite(parsed) && parsed >= 1000 && parsed <= 180000) return parsed
+				} catch {}
+
 				// Keep status probes fast: the frontend uses short fetch timeouts (≈1–2s).
 				// NOTE: hub-side proxying can take a bit longer (local HTTP + NATS WS + flush).
 				// Keep this slightly higher to avoid systematic timeouts that look like hub disconnects.
 				if (path === '/api/node/status' || path === '/api/ping' || path === '/healthz') return 6500
+				if (path === '/api/tools/call') return 60000
 				return 15000
 			})()
 			timeoutMsForLog = timeoutMs
