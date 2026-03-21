@@ -1154,19 +1154,21 @@ async def yjs_reload(body: YjsReloadRequest) -> dict:
     """
     Soft reload of Yjs state for a given webspace.
 
-    For now this is implemented by recomputing the effective UI model via
-    WebspaceScenarioRuntime for the target webspace. It does not drop the
-    underlying YStore data; web clients can choose to clear their local
-    cache if needed.
+    This follows the same event path as the browser-side YJS reload action so
+    that reseeding, runtime rebuild, and post-reload restoration happen in the
+    same order.
     """
     webspace_id = body.webspace_id or "default"
     try:
-        # Ensure webspace exists and has YDoc/YStore backing files.
-        # Detailed rebuild of ui/application and catalog is handled by
-        # WebspaceScenarioRuntime on events (scenarios.synced, skills.activated,
-        # desktop.webspace.reload, desktop.scenario.set). Here we only trigger
-        # low-level Yjs bootstrap so that clients can reconnect safely.
-        await ensure_webspace_ready(webspace_id)
+        get_ctx().bus.publish(
+            DomainEvent(
+                type="desktop.webspace.reload",
+                payload={"webspace_id": webspace_id},
+                source="api.yjs_reload",
+                ts=time.time(),
+            )
+        )
+        await _wait_bus_idle(5.0)
     except Exception as exc:  # pragma: no cover - defensive guard
         raise HTTPException(status_code=500, detail=f"yjs_reload failed: {exc}") from exc
     return {

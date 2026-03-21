@@ -202,3 +202,52 @@ def test_skills_loader_imports_repo_workspace_handler_when_workspace_missing(tmp
     asyncio.run(loader.import_all_handlers(fake_ctx.paths.skills_dir()))
 
     assert loaded == [repo_skill / "handlers" / "main.py"]
+
+
+def test_webspace_reload_emits_reloaded_event_after_rebuild(monkeypatch) -> None:
+    import asyncio
+
+    emitted: list[tuple[str, dict[str, object], str]] = []
+
+    class _Bus:
+        def publish(self, _event) -> None:
+            return None
+
+    fake_ctx = SimpleNamespace(bus=_Bus())
+
+    async def _fake_seed(_webspace_id: str, _scenario_id: str, *, dev: bool | None = None) -> None:
+        return None
+
+    async def _fake_sync_listing() -> None:
+        return None
+
+    async def _fake_rebuild(self, webspace_id: str):
+        assert webspace_id == "default"
+        return SimpleNamespace()
+
+    monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "emit",
+        lambda bus, topic, payload, source: emitted.append((topic, dict(payload), source)),
+    )
+
+    monkeypatch.setitem(sys.modules, "adaos.services.yjs.gateway", types.SimpleNamespace(y_server=SimpleNamespace(rooms={})))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        types.SimpleNamespace(reset_ystore_for_webspace=lambda _webspace_id: None),
+    )
+
+    asyncio.run(webspace_runtime_module._on_webspace_reload({"webspace_id": "default", "scenario_id": "web_desktop"}))
+
+    assert emitted == [
+        (
+            "desktop.webspace.reloaded",
+            {"webspace_id": "default", "scenario_id": "web_desktop"},
+            "scenario.webspace_runtime",
+        )
+    ]

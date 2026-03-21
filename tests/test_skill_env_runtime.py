@@ -108,3 +108,23 @@ def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:
             ctx.skill_ctx.clear()
         else:
             ctx.skill_ctx.set(previous.name, previous.path)
+
+
+def test_skill_env_workspace_context_uses_runtime_store_without_prepared_runtime(monkeypatch) -> None:
+    ctx = get_ctx()
+    skills_root = Path(ctx.paths.skills_dir())
+    skill_dir = skills_root / "workspace_only_skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.delenv("ADAOS_SKILL_ENV_PATH", raising=False)
+    monkeypatch.delenv("ADAOS_SKILL_MEMORY_PATH", raising=False)
+
+    previous = ctx.skill_ctx.get()
+    assert ctx.skill_ctx.set("workspace_only_skill", skill_dir)
+    try:
+        assert skill_env_path() == skills_root / ".runtime" / "workspace_only_skill" / "data" / "db" / "skill_env.json"
+    finally:
+        if previous is None:
+            ctx.skill_ctx.clear()
+        else:
+            ctx.skill_ctx.set(previous.name, previous.path)

@@ -52,6 +52,14 @@ def _init_monorepo(root: Path, *, tracked_skill_env: bool) -> Path:
     if tracked_skill_env:
         (skill_dir / ".skill_env.json").write_text('{"mode":"remote-v1"}\n', encoding="utf-8")
 
+    desktop_skill_dir = remote / "skills" / "web_desktop_skill"
+    desktop_skill_dir.mkdir(parents=True, exist_ok=True)
+    (desktop_skill_dir / "skill.yaml").write_text(
+        "id: web_desktop_skill\nname: Web Desktop\nversion: '1.0.0'\n",
+        encoding="utf-8",
+    )
+    (desktop_skill_dir / ".skill_env.json").write_text('{"mode":"desktop-remote-v1"}\n', encoding="utf-8")
+
     _run_git(["add", "-A"], cwd=remote)
     _run_git(["commit", "-m", "seed infrastate"], cwd=remote)
     return remote
@@ -122,3 +130,23 @@ def test_request_update_preserves_modified_tracked_skill_env(monkeypatch, tmp_pa
     assert result.version == "1.0.2"
     assert local_env.read_text(encoding="utf-8") == '{"mode":"local-custom"}\n'
     assert "version: '1.0.2'" in (skill_dir / "skill.yaml").read_text(encoding="utf-8")
+
+
+def test_request_update_preserves_unrelated_skill_env_overlay(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    remote = _init_monorepo(tmp_path / "case-unrelated", tracked_skill_env=True)
+    service, paths, repo = _make_service(tmp_path / "case-unrelated-node", remote)
+
+    repo.install("infrastate_skill")
+    repo.install("web_desktop_skill")
+
+    unrelated_env = paths.skills_dir() / "web_desktop_skill" / ".skill_env.json"
+    unrelated_env.write_text('{"mode":"desktop-local-custom"}\n', encoding="utf-8")
+
+    _update_remote_skill(remote, version="1.0.3", skill_env='{"mode":"remote-v3"}\n')
+
+    result = service.request_update("infrastate_skill")
+
+    assert result.updated is True
+    assert result.version == "1.0.3"
+    assert unrelated_env.read_text(encoding="utf-8") == '{"mode":"desktop-local-custom"}\n'

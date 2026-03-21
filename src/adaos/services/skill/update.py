@@ -26,6 +26,36 @@ class _OverlayBackup:
     backup: Path
 
 
+def _iter_overlay_paths(*, repo_root: Path, skill_path: Path) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        paths.append(path)
+
+    for name in _LOCAL_OVERLAY_FILES:
+        _add(skill_path / name)
+
+    for base_name in ("skills", "scenarios"):
+        base = repo_root / base_name
+        if not base.exists() or not base.is_dir():
+            continue
+        for name in _LOCAL_OVERLAY_FILES:
+            for path in base.rglob(name):
+                if ".runtime" in path.parts:
+                    continue
+                _add(path)
+
+    return paths
+
+
 def _git_path_is_tracked(repo_root: Path, relpath: Path) -> bool:
     proc = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "--error-unmatch", "--", relpath.as_posix()],
@@ -62,11 +92,14 @@ def _preserve_skill_overlays(*, repo_root: Path, skill_path: Path):
     with tempfile.TemporaryDirectory(prefix="adaos-skill-update-") as tmp_dir:
         tmp_root = Path(tmp_dir)
         preserved: list[_OverlayBackup] = []
-        for name in _LOCAL_OVERLAY_FILES:
-            path = skill_path / name
+        for path in _iter_overlay_paths(repo_root=repo_root, skill_path=skill_path):
             if not path.exists() or not path.is_file():
                 continue
-            backup = tmp_root / name
+            try:
+                rel = path.relative_to(repo_root)
+            except Exception:
+                rel = Path(path.name)
+            backup = tmp_root / rel
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, backup)
             relpath = path.relative_to(repo_root)

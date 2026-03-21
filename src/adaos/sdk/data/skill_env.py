@@ -77,14 +77,36 @@ def _runtime_env_path_from_ctx() -> Path | None:
     if not current_name:
         return None
 
-    for attr_name in ("skills_dir", "dev_skills_dir"):
+    def _resolve_root(attr_name: str) -> Path | None:
         attr = getattr(ctx.paths, attr_name, None)
         if attr is None:
-            continue
+            return None
         root = Path(attr() if callable(attr) else attr)
-        runtime_root = root / ".runtime" / current_name
-        if runtime_root.exists():
-            return runtime_root / "data" / "db" / "skill_env.json"
+        return root
+
+    def _is_under(path: Path, root: Path | None) -> bool:
+        if root is None:
+            return False
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except Exception:
+            return False
+
+    dev_root = _resolve_root("dev_skills_dir")
+    if _is_under(current_dir, dev_root):
+        return dev_root / ".runtime" / current_name / "data" / "db" / "skill_env.json"  # type: ignore[operator]
+
+    workspace_root = _resolve_root("skills_dir")
+    if _is_under(current_dir, workspace_root):
+        return workspace_root / ".runtime" / current_name / "data" / "db" / "skill_env.json"  # type: ignore[operator]
+
+    # Repo-workspace and other source fallbacks should still persist state into
+    # the local runtime store, not back into the git-tracked source tree.
+    if workspace_root is not None:
+        return workspace_root / ".runtime" / current_name / "data" / "db" / "skill_env.json"
+    if dev_root is not None:
+        return dev_root / ".runtime" / current_name / "data" / "db" / "skill_env.json"
     return None
 
 

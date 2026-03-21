@@ -21,6 +21,7 @@ from adaos.services.workspaces import index as workspace_index
 from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.seed import SEED
+from adaos.services.eventbus import emit
 from adaos.sdk.core.decorators import subscribe
 from .workflow_runtime import ScenarioWorkflowRuntime
 
@@ -1078,6 +1079,15 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
         ctx = get_ctx()
         runtime = WebspaceScenarioRuntime(ctx)
         await runtime.rebuild_webspace_async(webspace_id)
+        emit(
+            ctx.bus,
+            "desktop.webspace.reloaded",
+            {
+                "webspace_id": webspace_id,
+                "scenario_id": scenario_id,
+            },
+            "scenario.webspace_runtime",
+        )
     except Exception:
         _log.warning(
             "failed to rebuild webspace after reload webspace=%s scenario=%s",
