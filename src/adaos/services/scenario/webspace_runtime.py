@@ -20,6 +20,7 @@ from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
 from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
+from adaos.services.yjs.seed import SEED
 from adaos.sdk.core.decorators import subscribe
 from .workflow_runtime import ScenarioWorkflowRuntime
 
@@ -173,6 +174,37 @@ def _merge_installed_with_auto(installed: Dict[str, Any], *, auto_apps: set[str]
             widgets.append(widget_id)
 
     return {"apps": apps, "widgets": widgets}
+
+
+def _built_in_scenario_content(scenario_id: str) -> Dict[str, Any]:
+    if str(scenario_id or "").strip() != "web_desktop":
+        return {}
+    try:
+        app = json.loads(json.dumps(((SEED.get("ui") or {}).get("application") or {})))
+        data = json.loads(json.dumps((SEED.get("data") or {})))
+    except Exception:
+        return {}
+    catalog = data.get("catalog") if isinstance(data, dict) else {}
+    if not isinstance(catalog, dict):
+        catalog = {}
+    return {
+        "id": "web_desktop",
+        "ui": {"application": app if isinstance(app, dict) else {}},
+        "registry": {},
+        "catalog": catalog,
+        "data": data if isinstance(data, dict) else {},
+    }
+
+
+def _load_scenario_switch_content(scenario_id: str, *, space: str) -> Dict[str, Any]:
+    content = scenarios_loader.read_content(scenario_id, space=space)
+    if isinstance(content, dict) and content:
+        return content
+    fallback = _built_in_scenario_content(scenario_id)
+    if fallback:
+        _log.info("desktop.scenario.set: using built-in fallback content for scenario=%s", scenario_id)
+        return fallback
+    return {}
 
 
 class WebspaceScenarioRuntime:
@@ -1096,7 +1128,7 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
             except Exception:
                 space = "workspace"
 
-            content = scenarios_loader.read_content(scenario_id, space=space)
+            content = _load_scenario_switch_content(scenario_id, space=space)
             if not isinstance(content, dict) or not content:
                 _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
                 return

@@ -18,6 +18,7 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket"] = types.SimpleNamespace(ystore=ystore_mod)
     sys.modules["ypy_websocket.ystore"] = ystore_mod
 
+from adaos.services.scenario import webspace_runtime as webspace_runtime_module
 from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
 
 
@@ -99,6 +100,16 @@ def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path
 
     assert payload["apps"][0]["scenario_id"] == "prompt_engineer_scenario"
     assert "prompt_ide_modal" in payload["registry"]["modals"]
+
+
+def test_webspace_runtime_switch_content_falls_back_to_builtin_web_desktop(monkeypatch) -> None:
+    monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda _scenario_id, space="workspace": {})
+
+    payload = webspace_runtime_module._load_scenario_switch_content("web_desktop", space="workspace")
+
+    assert payload["id"] == "web_desktop"
+    assert payload["ui"]["application"]["desktop"]["pageSchema"]["id"] == "desktop"
+    assert isinstance(payload["catalog"], dict)
 
 
 def test_skill_manager_runtime_update_falls_back_to_repo_workspace(tmp_path: Path, monkeypatch) -> None:
