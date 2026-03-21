@@ -97,6 +97,19 @@ ion-header ion-toolbar {
 	opacity: 0.75;
 }
 
+.subnet-id {
+	display: inline-flex;
+	align-items: center;
+	font-size: 11px;
+	letter-spacing: 0.02em;
+	opacity: 0.75;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 @media (max-width: 900px) {
 	.hub-status .label {
 		display: none;
@@ -110,6 +123,9 @@ ion-header ion-toolbar {
 	.transport-icon {
 		font-size: 14px;
 	}
+	.subnet-id {
+		max-width: 160px;
+	}
 }
 
 @media (max-width: 600px) {
@@ -118,6 +134,9 @@ ion-header ion-toolbar {
 	}
 	.transport-icon {
 		font-size: 13px;
+	}
+	.subnet-id {
+		max-width: 120px;
 	}
 }
 

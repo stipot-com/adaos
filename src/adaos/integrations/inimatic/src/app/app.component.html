@@ -49,6 +49,7 @@
 						<ion-icon *ngIf="ts === 'ws'" name="cloud-outline" class="transport-icon ws"></ion-icon>
 						<ion-icon *ngIf="ts === 'connected'" name="flash-outline" class="transport-icon p2p"></ion-icon>
 					</span>
+					<span class="subnet-id" *ngIf="subnetId as sid" [title]="'subnet_id: ' + sid">{{ sid }}</span>
 					<ion-button
 						*ngIf="isAuthenticated"
 						class="logout-btn"

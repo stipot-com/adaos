@@ -226,6 +226,27 @@ export class AppComponent implements OnInit, OnDestroy {
 		}
 	}
 
+	private decodeJwtPayload(token: string): any | null {
+		try {
+			const parts = token.split('.')
+			if (parts.length < 2) return null
+			const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+			const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+			const json = atob(padded)
+			return JSON.parse(json)
+		} catch {
+			return null
+		}
+	}
+
+	get subnetId(): string | null {
+		const jwt = this.readSessionJwt()
+		if (!jwt || !jwt.includes('.')) return null
+		const payload = this.decodeJwtPayload(jwt)
+		const raw = payload?.subnet_id
+		return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+	}
+
 	private invalidateOwnerSessionAndReload(): void {
 		const keys = [
 			'adaos_web_session_jwt',
