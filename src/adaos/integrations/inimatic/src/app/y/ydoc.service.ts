@@ -19,9 +19,29 @@ export class YDocService {
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
   private readonly yjsPersistKey = 'adaos_yjs_persist'
+  private readonly p2pKey = 'adaos_p2p'
 
   constructor(private adaos: AdaosClient) {
     this.deviceId = this.ensureDeviceId()
+  }
+
+  private isP2pEnabled(): boolean {
+    try {
+      const url = new URL(window.location.href)
+      const q = url.searchParams.get('p2p')
+      if (q === '1' || q === 'true') return true
+      if (q === '0' || q === 'false') return false
+      const w = url.searchParams.get('webrtc')
+      if (w === '1' || w === 'true') return true
+      if (w === '0' || w === 'false') return false
+    } catch {}
+
+    try {
+      const v = (localStorage.getItem(this.p2pKey) || '').trim()
+      if (v === '1') return true
+      if (v === '0') return false
+    } catch {}
+    return true
   }
 
   private isPersistenceEnabled(): boolean {
@@ -468,7 +488,7 @@ export class YDocService {
     // 2) Attempt WebRTC upgrade when using root-proxy (hub behind NAT)
     const isRemoteProxy = baseHttp.includes('/hubs/')
     let webRtcActive = false
-    if (isRemoteProxy) {
+    if (isRemoteProxy && this.isP2pEnabled()) {
       try {
         const ws = this.adaos.getEventsSocket()
         if (ws) {
@@ -477,6 +497,9 @@ export class YDocService {
       } catch {
         // WebRTC negotiation failed — continue with WS
       }
+    } else if (isRemoteProxy && isDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.info('[YDocService] P2P/WebRTC disabled (set ?p2p=1 to re-enable)')
     }
 
     // 3) Connect Yjs via DataChannel (WebRTC) or y-websocket (WS fallback)
