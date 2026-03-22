@@ -398,6 +398,18 @@ export function installHubRouteProxy(
 	const wsTrace = envFlag('ROUTE_PROXY_WS_TRACE') || envFlag('ROUTE_PROXY_TRACE')
 	const bus = new NatsBus(opts.natsUrl)
 	let busReady: Promise<void> | null = null
+	try {
+		log.info(
+			{
+				nats: opts.natsUrl,
+				routeSubjects: {
+					http: 'route.v2.to_hub.<hubId>.<key> / route.v2.to_browser.<hubId>.<key>',
+					ws: 'route.v2.to_hub.<hubId>.<key> / route.v2.to_browser.<hubId>.<key>',
+				},
+			},
+			'route proxy enabled (v2 subjects)'
+		)
+	} catch {}
 
 	// Lightweight unauthenticated reachability probes for the hub-prefixed route.
 	// The browser UI uses these endpoints to decide whether the root-proxy is reachable
@@ -485,8 +497,9 @@ export function installHubRouteProxy(
 				route_http_requests_total.labels(kind).inc()
 			} catch {}
 			const key = `${hubId}--http--${randomUUID()}`
-			const toHub = `route.to_hub.${key}`
-			const toBrowser = `route.to_browser.${key}`
+			// v2 subjects include hubId as its own token, so NATS permissions can isolate per-hub traffic.
+			const toHub = `route.v2.to_hub.${hubId}.${key}`
+			const toBrowser = `route.v2.to_browser.${hubId}.${key}`
 			keyForLog = key
 			toHubForLog = toHub
 			toBrowserForLog = toBrowser
@@ -723,8 +736,9 @@ export function installHubRouteProxy(
 			const sessionJwt = String(meta?.sessionJwt || '')
 			const kind = String(meta?.kind || '')
 			const key = typeof meta?.key === 'string' && meta.key ? String(meta.key) : `${hubId}--${randomUUID().replace(/-/g, '')}`
-			const toHub = `route.to_hub.${key}`
-			const toBrowser = `route.to_browser.${key}`
+			// v2 subjects include hubId as its own token, so NATS permissions can isolate per-hub traffic.
+			const toHub = `route.v2.to_hub.${hubId}.${key}`
+			const toBrowser = `route.v2.to_browser.${hubId}.${key}`
 
 			let sub: any = null
 			let hubOpenSent = false

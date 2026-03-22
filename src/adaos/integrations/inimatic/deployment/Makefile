@@ -1,5 +1,5 @@
 PROJECT_DIR := $(abspath ..)
-COMPOSE_FILE := $(PROJECT_DIR)/deployment/docker-compose.yaml
+COMPOSE_FILE := $(PROJECT_DIR)/deployment/docker-compose.yml
 ENV_FILE := $(PROJECT_DIR)/deployment/.env
 PROFILE ?= dev
 COMPOSE := docker compose --project-directory $(PROJECT_DIR) --env-file $(ENV_FILE) -f $(COMPOSE_FILE) --profile $(PROFILE)

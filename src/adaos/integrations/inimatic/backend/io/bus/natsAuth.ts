@@ -35,14 +35,24 @@ type VerifiedHubCreds = {
 }
 
 function getPerms(hubId: string): Permissions {
+	const allowLegacyRouteV1 = String(process.env['ALLOW_LEGACY_ROUTE_V1'] || '0') === '1'
 	return {
-		pub: { allow: ['tg.output.>', 'route.to_browser.*'] },
+		pub: {
+			allow: [
+				'tg.output.>',
+				// v2 route subjects are isolated per hub.
+				`route.v2.to_browser.${hubId}.>`,
+				...(allowLegacyRouteV1 ? ['route.to_browser.*'] : []),
+			],
+		},
 		sub: {
 			allow: [
 				`tg.input.${hubId}`,
 				`io.tg.in.${hubId}.text`,
 				`hub.control.${hubId}.alias`,
-				'route.to_hub.*',
+				// v2 route subjects are isolated per hub.
+				`route.v2.to_hub.${hubId}.>`,
+				...(allowLegacyRouteV1 ? ['route.to_hub.*'] : []),
 			],
 		},
 	}

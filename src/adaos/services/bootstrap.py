@@ -2628,6 +2628,10 @@ class BootstrapService:
                         pending_tunnel_events: dict[str, list[dict[str, Any]]] = {}
                         pending_tunnel_meta: dict[str, dict[str, Any]] = {}
                         pending_tunnel_close_tasks: dict[str, asyncio.Task] = {}
+                        # Map route key -> reply subject so we can support both legacy v1 and v2 subjects.
+                        # v1:  route.to_browser.<key>
+                        # v2:  route.v2.to_browser.<hubId>.<key>
+                        reply_subjects: dict[str, str] = {}
                         MAX_CHUNK_RAW = 300_000
                         MAX_PENDING_TUNNEL_EVENTS = 128
 
@@ -2838,6 +2842,10 @@ class BootstrapService:
                                 pending_tunnel_meta.pop(key, None)
                             except Exception:
                                 pass
+                            try:
+                                reply_subjects.pop(key, None)
+                            except Exception:
+                                pass
                             if drop_events:
                                 try:
                                     pending_tunnel_events.pop(key, None)
@@ -2959,7 +2967,13 @@ class BootstrapService:
                                 return ""
 
                         async def _route_reply(key: str, payload: dict[str, Any]) -> None:
-                            reply_subject = f"route.to_browser.{key}"
+                            reply_subject = ""
+                            try:
+                                reply_subject = str(reply_subjects.get(key) or "")
+                            except Exception:
+                                reply_subject = ""
+                            if not reply_subject:
+                                reply_subject = f"route.to_browser.{key}"
                             reply_started = time.monotonic()
                             t0 = None
                             try:
@@ -3302,21 +3316,65 @@ class BootstrapService:
                             http_kind = ""
                             try:
                                 subject = str(getattr(msg, "subject", "") or "")
-                                parts = subject.split(".", 2)
-                                # route.to_hub.<key>
-                                if len(parts) < 3:
-                                    route_outcome = "drop_bad_subject"
-                                    if _route_diag:
+                                # Legacy v1: route.to_hub.<key>
+                                # v2: route.v2.to_hub.<hubId>.<key>
+                                parts = subject.split(".")
+                                if subject.startswith("route.v2.to_hub."):
+                                    if len(parts) < 5:
+                                        route_outcome = "drop_bad_subject"
+                                        if _route_diag:
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.drop_subject",
+                                                    f"[hub-route] drop: bad subject={subject!s}",
+                                                    every_s=2.0,
+                                                )
+                                            except Exception:
+                                                pass
+                                        return
+                                    subj_hub_id = str(parts[3] or "")
+                                    if subj_hub_id and subj_hub_id != hub_id:
+                                        route_outcome = "drop_hub_mismatch"
+                                        if _route_diag:
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.drop_hub",
+                                                    f"[hub-route] drop: hub mismatch subject={subject!s} hub={subj_hub_id!s} local={hub_id!s}",
+                                                    every_s=2.0,
+                                                )
+                                            except Exception:
+                                                pass
+                                        return
+                                    key = str(parts[4] or "")
+                                    if key:
                                         try:
-                                            _rl_log(
-                                                "hub-route.drop_subject",
-                                                f"[hub-route] drop: bad subject={subject!s}",
-                                                every_s=2.0,
-                                            )
+                                            reply_subjects[key] = f"route.v2.to_browser.{hub_id}.{key}"
                                         except Exception:
                                             pass
+                                else:
+                                    # route.to_hub.<key>
+                                    if len(parts) < 3:
+                                        route_outcome = "drop_bad_subject"
+                                        if _route_diag:
+                                            try:
+                                                _rl_log(
+                                                    "hub-route.drop_subject",
+                                                    f"[hub-route] drop: bad subject={subject!s}",
+                                                    every_s=2.0,
+                                                )
+                                            except Exception:
+                                                pass
+                                        return
+                                    key = str(parts[2] or "")
+                                    if key:
+                                        try:
+                                            reply_subjects[key] = f"route.to_browser.{key}"
+                                        except Exception:
+                                            pass
+
+                                if not key:
+                                    route_outcome = "drop_bad_subject"
                                     return
-                                key = parts[2]
                                 is_http_key = isinstance(key, str) and "--http--" in key
                                 if not _hub_key_match(key):
                                     route_outcome = "drop_key_mismatch"
@@ -4048,6 +4106,12 @@ class BootstrapService:
                                 return
 
                         route_sub = await _sub("route.to_hub.*", cb=_route_cb)
+                        route_sub_v2 = None
+                        try:
+                            # v2: route.v2.to_hub.<hubId>.<key>
+                            route_sub_v2 = await _sub(f"route.v2.to_hub.{hub_id}.*", cb=_route_cb)
+                        except Exception:
+                            route_sub_v2 = None
                         if hub_nats_verbose or not hub_nats_quiet:
                             print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
                         try:
@@ -4057,7 +4121,12 @@ class BootstrapService:
                         try:
                             mark_route_ready(
                                 summary="hub route relay subscription installed",
-                                details={"subject": "route.to_hub.*"},
+                                details={
+                                    "subjects": [
+                                        "route.to_hub.*",
+                                        f"route.v2.to_hub.{hub_id}.*",
+                                    ]
+                                },
                             )
                         except Exception:
                             pass
