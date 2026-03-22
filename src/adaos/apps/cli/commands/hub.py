@@ -9,6 +9,7 @@ from typing import Any
 import typer
 
 from adaos.services.agent_context import get_ctx
+from adaos.apps.cli.active_control import probe_control_api, resolve_control_base_url, resolve_control_token
 from adaos.services.join_codes import create as create_join_code
 from adaos.services.root.client import RootHttpClient, RootHttpError
 from adaos.services.root.service import RootAuthError, RootAuthService
@@ -31,16 +32,8 @@ def _print(data: Any, *, json_output: bool) -> None:
 
 
 def _local_api_base() -> str:
-    # Prefer ctx.paths when available; fall back to localhost:8777.
-    try:
-        ctx = get_ctx()
-        base = getattr(ctx, "settings", None)
-        api_base = getattr(base, "api_base", None) if base is not None else None
-        if api_base:
-            return str(api_base).rstrip("/")
-    except Exception:
-        pass
-    return "http://127.0.0.1:8777"
+    # Backward-compatible helper used by legacy code; prefer env-configured active server.
+    return resolve_control_base_url()
 
 
 @root_link_app.command("status")
@@ -50,10 +43,10 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     """
     import requests
 
-    ctx = get_ctx()
-    base = _local_api_base()
+    base = resolve_control_base_url()
+    token = resolve_control_token()
     url = base + "/api/node/reliability"
-    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    headers = {"X-AdaOS-Token": token}
     r = requests.get(url, headers=headers, timeout=5.0)
     r.raise_for_status()
     data = r.json()
@@ -78,10 +71,10 @@ def hub_root_watch(
     """
     import requests, time as _time
 
-    ctx = get_ctx()
-    base = _local_api_base()
+    base = resolve_control_base_url()
+    token = resolve_control_token()
     url = base + "/api/node/reliability"
-    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    headers = {"X-AdaOS-Token": token}
     while True:
         try:
             r = requests.get(url, headers=headers, timeout=5.0)
@@ -114,10 +107,10 @@ def hub_root_reconnect(
     """
     import requests
 
-    ctx = get_ctx()
-    base = _local_api_base()
+    base = resolve_control_base_url()
+    token = resolve_control_token()
     url = base + "/api/node/hub-root/reconnect"
-    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    headers = {"X-AdaOS-Token": token}
     payload = {"transport": transport, "url_override": url_override}
     r = requests.post(url, headers=headers, json=payload, timeout=8.0)
     r.raise_for_status()

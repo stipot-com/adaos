@@ -1,7 +1,93 @@
-# src/adaos/api/server.py
+# src/adaos/apps/api/server.py
 # NOTE: CLI (`adaos ...`) loads `.env`, but direct `uvicorn adaos.apps.api.server:app` does not.
 # Many subsystems (notably NATS-over-WS tuning) rely on env vars, so best-effort load `.env` here too.
+import os
+from pathlib import Path
+
+
+def _parse_dotenv(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return data
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        if not k:
+            continue
+        data[k] = v.strip().strip('"').strip("'")
+    return data
+
+
+def _search_dotenv_in_parents(start: Path, *, name: str = ".env") -> Path | None:
+    try:
+        start = start.expanduser().resolve()
+    except Exception:
+        return None
+    for base in (start, *start.parents):
+        cand = base / name
+        try:
+            if cand.exists():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_dotenv_path() -> Path | None:
+    raw = str(os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+    if raw:
+        try:
+            p = Path(raw).expanduser().resolve()
+            if p.exists():
+                return p
+        except Exception:
+            pass
+
+    # Core-slot runtime sets cwd to the slot repo dir; search parents (covers `~/adaos/.adaos/state/core_slots/...` -> `~/adaos/.env`).
+    try:
+        cwd = Path.cwd()
+    except Exception:
+        cwd = None
+    if cwd is not None:
+        found = _search_dotenv_in_parents(cwd)
+        if found is not None:
+            return found
+
+    # Best-effort: search relative to code location as well.
+    try:
+        here = Path(__file__).resolve()
+        found = _search_dotenv_in_parents(here.parent)
+        if found is not None:
+            return found
+    except Exception:
+        pass
+    return None
+
+
+def _maybe_load_dotenv() -> None:
+    path = _resolve_dotenv_path()
+    if path is None:
+        return
+    try:  # pragma: no cover
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv(str(path), override=False)
+        return
+    except Exception:
+        pass
+    # Fallback when python-dotenv is absent: still honor values from `.env` without overwriting existing vars.
+    for k, v in _parse_dotenv(path).items():
+        os.environ.setdefault(str(k), str(v))
+
+
+_maybe_load_dotenv()
 try:  # pragma: no cover
+    # Keep old behavior for compatibility, but `_maybe_load_dotenv()` above already resolved the desired `.env`.
     from dotenv import find_dotenv, load_dotenv  # type: ignore
 
     load_dotenv((os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip() or find_dotenv(), override=False)
@@ -18,13 +104,12 @@ except Exception:
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 import asyncio
 import json
 import logging
-import platform, time, os
+import platform, time
 import signal
 import sys
 from typing import Any

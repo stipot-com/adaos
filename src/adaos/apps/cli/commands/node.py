@@ -252,11 +252,14 @@ def node_join(
 
 @app.command("status")
 def node_status(
-    control: str = typer.Option("http://127.0.0.1:8777", "--control", help="Local control API base URL"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
     probe: bool = typer.Option(True, "--probe/--no-probe", help="Probe local control API for readiness"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
     cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
     result: dict[str, Any] = {
         "node_id": cfg.node_id,
         "subnet_id": cfg.subnet_id,
@@ -267,7 +270,11 @@ def node_status(
         "connected_to_hub": None,
     }
     if probe:
-        status_code, payload = _control_get_json(control=control, path="/api/node/status", token=cfg.token or "dev-local-token")
+        status_code, payload = _control_get_json(
+            control=control0,
+            path="/api/node/status",
+            token=resolve_control_token(explicit=cfg.token),
+        )
         if status_code == 200 and isinstance(payload, dict):
             result["ready"] = bool(payload.get("ready"))
             result["route_mode"] = payload.get("route_mode")
@@ -277,11 +284,18 @@ def node_status(
 
 @app.command("reliability")
 def node_reliability(
-    control: str = typer.Option("http://127.0.0.1:8777", "--control", help="Local control API base URL"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
     cfg = load_config()
-    status_code, payload = _control_get_json(control=control, path="/api/node/reliability", token=cfg.token or "dev-local-token")
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path="/api/node/reliability",
+        token=resolve_control_token(explicit=cfg.token),
+    )
     if status_code is None:
         typer.secho("[AdaOS] reliability probe failed: local control API is unreachable", fg=typer.colors.RED)
         raise typer.Exit(code=2)
