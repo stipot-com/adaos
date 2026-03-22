@@ -16,6 +16,7 @@ import uvicorn
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import load_config, save_config
 from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides, merged_runtime_dotenv_env
+from adaos.apps.cli.active_control import resolve_control_token
 
 apply_runtime_dotenv_overrides()
 
@@ -515,7 +516,7 @@ def stop():
         stopped_gracefully = _request_graceful_shutdown(
             host,
             port,
-            token=getattr(conf, "token", None) or os.environ.get("ADAOS_TOKEN") or "dev-local-token",
+            token=getattr(conf, "token", None) or resolve_control_token(),
         )
 
     if not stopped_gracefully:
@@ -557,7 +558,7 @@ def restart():
         raise typer.Exit(code=1)
 
     host, port = bind
-    token = getattr(conf, "token", None) or os.environ.get("ADAOS_TOKEN") or "dev-local-token"
+    token = getattr(conf, "token", None) or resolve_control_token()
     marker = _restart_marker_path(host, port)
     _write_restart_marker(marker, host=host, port=port, reason="cli.restart")
 

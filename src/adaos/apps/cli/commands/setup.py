@@ -14,6 +14,7 @@ from requests import RequestException
 
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.apps.cli.i18n import _
+from adaos.apps.cli.active_control import resolve_control_base_url
 from adaos.apps.cli.commands.api import _resolve_stop_bind
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import get_ctx
@@ -382,7 +383,7 @@ def _autostart_admin_base_url() -> str:
     if bind is not None:
         host, port = bind
         return f"http://{host}:{int(port)}"
-    return "http://127.0.0.1:8777"
+    return resolve_control_base_url()
 
 
 def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:

@@ -13,6 +13,7 @@ import typer
 import requests
 
 from adaos.sdk.data.i18n import _
+from adaos.apps.cli.active_control import probe_control_api, resolve_control_base_url, resolve_control_token
 from adaos.apps.cli.git_status import (
     compute_path_status,
     ensure_remote,
@@ -62,15 +63,23 @@ def _mgr() -> SkillManager:
 
 
 def _hub_base_url() -> str:
-    conf = load_config()
-    url = getattr(conf, "hub_url", None) or os.getenv("ADAOS_HUB_URL") or "http://127.0.0.1:8777"
-    return str(url).rstrip("/")
+    # Unified control-plane resolver (env > role-aware node.yaml > localhost fallback).
+    return resolve_control_base_url()
+
+
+def _hub_api_ready(*, timeout_s: float = 2.0) -> bool:
+    base = _hub_base_url()
+    token = str(_hub_headers().get("X-AdaOS-Token") or "")
+    code, payload = probe_control_api(base_url=base, token=token, timeout_s=timeout_s)
+    if code is None:
+        return False
+    if int(code) != 200:
+        return False
+    return isinstance(payload, dict)
 
 
 def _hub_headers() -> dict[str, str]:
-    conf = load_config()
-    token = getattr(conf, "token", None) or os.getenv("ADAOS_TOKEN") or "dev-local-token"
-    return {"X-AdaOS-Token": str(token)}
+    return {"X-AdaOS-Token": str(resolve_control_token())}
 
 
 def _hub_get(path: str, *, params: dict | None = None) -> dict:
@@ -241,11 +250,48 @@ def _echo_runtime_install(result: RuntimeInstallResult) -> None:
 def list_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
     show_fs: bool = typer.Option(False, "--fs", help=_("cli.option.fs")),
+    local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
     """
     Список установленных навыков из реестра.
     JSON-формат: {"skills": [{"name": "...", "version": "..."}, ...]}
     """
+    if not local and _hub_api_ready():
+        data = _hub_get("/api/skills/list", params={"fs": bool(show_fs)})
+        items = data.get("items") or []
+        if json_output:
+            payload = {
+                "skills": [
+                    {
+                        "name": (r.get("name") or r.get("id") or r.get("repr") or ""),
+                        "version": (r.get("active_version") or r.get("version") or "unknown"),
+                    }
+                    for r in items
+                    if isinstance(r, dict)
+                ]
+            }
+            typer.echo(json.dumps(payload, ensure_ascii=False))
+            return
+        if not items:
+            typer.echo(_("skill.list.empty"))
+        else:
+            for r in items:
+                if not isinstance(r, dict):
+                    continue
+                name = (r.get("name") or r.get("id") or r.get("repr") or "").strip()
+                ver = (r.get("active_version") or r.get("version") or "unknown")
+                if name:
+                    typer.echo(_("cli.skill.list.item", name=name, version=ver))
+        if show_fs and isinstance(data.get("fs"), dict):
+            fs = data.get("fs") or {}
+            missing = fs.get("missing") or []
+            extra = fs.get("extra") or []
+            if missing:
+                typer.echo(_("cli.skill.fs_missing", items=", ".join(sorted(str(x) for x in missing))))
+            if extra:
+                typer.echo(_("cli.skill.fs_extra", items=", ".join(sorted(str(x) for x in extra))))
+        return
+
     mgr = _mgr()
     rows = mgr.list_installed()  # SkillRecord[]
 
@@ -300,7 +346,14 @@ def sync():
 def uninstall(
     name: str,
     safe: bool = typer.Option(False, "--safe", help=_("cli.skill.uninstall.option.safe")),
+    local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
+    if not local and _hub_api_ready():
+        # Server-side uninstall is always the correct behavior for AB core slots.
+        # API currently does not expose `safe`; keep it for backward-compat but ignore in remote mode.
+        _hub_post("/api/skills/uninstall", body={"name": name})
+        typer.echo(_("cli.skill.uninstall.done", name=name))
+        return
     mgr = _mgr()
     mgr.uninstall(name, safe=safe)
     typer.echo(_("cli.skill.uninstall.done", name=name))
@@ -424,7 +477,79 @@ def cmd_install(
     slot: Optional[str] = typer.Option(None, "--slot", help=_("cli.skill.install.option.slot")),
     silent: bool = typer.Option(False, "--silent", help=_("cli.skill.install.option.silent")),
     safe: bool = typer.Option(False, "--safe", help=_("cli.skill.install.option.safe")),
+    local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
+    if not local and _hub_api_ready(timeout_s=3.0):
+        # API-first: install/prepare/activate via the running hub server (works even if repo root is stale vs active slot).
+        try:
+            installed = _hub_post(
+                "/api/skills/install",
+                body={
+                    "name": name,
+                    "pin": None,
+                    "perform_validation": False,
+                    "strict": False if safe else True,
+                    "probe_tools": False,
+                },
+            )
+        except Exception as exc:
+            typer.secho(f"install failed (hub api): {exc}", fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+
+        skill_id = (
+            ((installed.get("skill") or {}).get("id") if isinstance(installed, dict) else None)
+            or str(name)
+        )
+
+        try:
+            prep = _hub_post(
+                "/api/skills/runtime/prepare",
+                body={"name": skill_id, "run_tests": bool(test), "slot": (slot or None)},
+            )
+        except Exception as exc:
+            typer.secho(f"runtime preparation failed (hub api): {exc}", fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+
+        try:
+            activated = _hub_post(
+                "/api/skills/runtime/activate",
+                body={
+                    "name": skill_id,
+                    "slot": prep.get("slot") if isinstance(prep, dict) else None,
+                    "version": prep.get("version") if isinstance(prep, dict) else None,
+                    "auto_prepare": True,
+                    "webspace_id": default_webspace_id(),
+                },
+            )
+        except Exception as exc:
+            typer.secho(f"activation failed (hub api): {exc}", fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+
+        slot_out = (activated.get("slot") if isinstance(activated, dict) else None) or (prep.get("slot") if isinstance(prep, dict) else None) or "?"
+        typer.secho(f"skill {skill_id} now active on slot {slot_out}", fg=typer.colors.GREEN)
+
+        if silent:
+            return
+        try:
+            setup_result = _hub_post("/api/skills/runtime/setup", body={"name": skill_id})
+        except Exception as exc:
+            typer.secho(_("cli.skill.install.setup_failed", error=str(exc)), fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+        if isinstance(setup_result, dict):
+            if setup_result.get("ok") is False:
+                detail = setup_result.get("error") or setup_result.get("message") or ""
+                typer.secho(
+                    _("cli.skill.install.setup_report_failed", detail=str(detail)),
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+            detail = setup_result.get("message") or setup_result.get("detail")
+            if detail:
+                typer.echo(_("cli.skill.install.setup_success_with_detail", detail=str(detail)))
+                return
+        typer.echo(_("cli.skill.install.setup_success"))
+        return
+
     mgr = _mgr()
     try:
         result = mgr.install(name, validate=False, safe=safe)
@@ -643,23 +768,17 @@ def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), vers
     # skills.activated отработал в его процессе и web_desktop_skill
     # сразу обновил каталог без перезапуска, не трогая ещё раз runtime.
     try:
-        ctx = get_ctx()
-        conf = getattr(ctx, "config", None)
-        base = None
-        if conf is not None and getattr(conf, "hub_url", None):
-            base = conf.hub_url
-        if not base:
-            base = os.getenv("ADAOS_SELF_BASE_URL") or os.getenv("ADAOS_BASE") or os.getenv("ADAOS_API_BASE") or "http://127.0.0.1:8777"
-        url = str(base).rstrip("/") + "/api/skills/runtime/notify-activated"
+        url = resolve_control_base_url().rstrip("/") + "/api/skills/runtime/notify-activated"
         payload = {
             "name": name,
             "space": "default",
             "webspace_id": default_webspace_id(),
         }
         headers = {}
-        token = os.getenv("ADAOS_TOKEN")
-        if token:
-            headers["X-AdaOS-Token"] = token
+        try:
+            headers["X-AdaOS-Token"] = resolve_control_token()
+        except Exception:
+            pass
         # Таймаут маленький и любые ошибки игнорируем, чтобы CLI
         # оставался работоспособен, даже когда API ещё не поднят.
         try:
@@ -1002,7 +1121,29 @@ def doctor(name: str):
 def migrate(
     name: Optional[str] = typer.Argument(None, help="skill to migrate"),
     dry_run: bool = typer.Option(False, "--dry-run", help="report without applying changes"),
+    local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
+    if not local and _hub_api_ready(timeout_s=3.0):
+        if dry_run:
+            typer.secho("dry-run is not supported in hub api mode; ignoring", fg=typer.colors.YELLOW)
+        if name:
+            # "migrate <name>" in API-first mode maps to a best-effort refresh+install on the running server.
+            _hub_post("/api/skills/sync")
+            _hub_post(
+                "/api/skills/install",
+                body={
+                    "name": name,
+                    "pin": None,
+                    "perform_validation": False,
+                    "strict": True,
+                    "probe_tools": False,
+                },
+            )
+            typer.echo(f"{name}: updated")
+            return
+        _hub_post("/api/skills/sync")
+        typer.echo("skills synced")
+        return
     service = SkillUpdateService(get_ctx())
     names: list[str]
     if name:

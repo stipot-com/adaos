@@ -9,6 +9,7 @@ import requests
 import typer
 
 from adaos.services.node_config import displayable_path, load_config, save_config, set_role as cfg_set_role
+from adaos.apps.cli.active_control import resolve_control_token
 
 app = typer.Typer(help="Node operations (join/status/role).")
 role_app = typer.Typer(help="Manage local node role.")
@@ -24,7 +25,7 @@ def _print(data: Any, *, json_output: bool) -> None:
 
 def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
     url = control.rstrip("/") + path
-    headers = {"X-AdaOS-Token": token or "dev-local-token"}
+    headers = {"X-AdaOS-Token": token or resolve_control_token()}
     sess = requests.Session()
     try:
         sess.trust_env = False
