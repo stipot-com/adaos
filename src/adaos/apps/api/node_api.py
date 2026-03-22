@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
-from adaos.services.bootstrap import is_ready, load_config, switch_role
+from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
 from adaos.services.reliability import reliability_snapshot
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
@@ -35,6 +35,11 @@ class RoleChangeResponse(BaseModel):
     ok: bool
     node: NodeStatus
     diagnostics: dict
+
+
+class HubRootReconnectRequest(BaseModel):
+    transport: Optional[str] = Field(None, pattern="^(ws|tcp|nats)?$")
+    url_override: Optional[str] = None
 
 
 def _route_info(role: str) -> tuple[str | None, bool | None]:
@@ -85,6 +90,11 @@ async def node_reliability() -> dict[str, Any]:
         route_mode=route_mode,
         connected_to_hub=connected,
     )
+
+
+@router.post("/hub-root/reconnect", dependencies=[Depends(require_token)])
+async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]:
+    return await request_hub_root_reconnect(transport=payload.transport, url_override=payload.url_override)
 
 
 @router.post("/role", response_model=RoleChangeResponse, dependencies=[Depends(require_token)])

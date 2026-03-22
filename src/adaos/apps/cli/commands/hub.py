@@ -16,6 +16,8 @@ from adaos.services.root.service import RootAuthError, RootAuthService
 app = typer.Typer(help="Hub operations.")
 join_code_app = typer.Typer(help="Join-code management.")
 app.add_typer(join_code_app, name="join-code")
+root_link_app = typer.Typer(help="Hub-root link diagnostics and control.")
+app.add_typer(root_link_app, name="root")
 
 
 def _print(data: Any, *, json_output: bool) -> None:
@@ -26,6 +28,100 @@ def _print(data: Any, *, json_output: bool) -> None:
             typer.echo(str(data["code"]))
         else:
             typer.echo(str(data))
+
+
+def _local_api_base() -> str:
+    # Prefer ctx.paths when available; fall back to localhost:8777.
+    try:
+        ctx = get_ctx()
+        base = getattr(ctx, "settings", None)
+        api_base = getattr(base, "api_base", None) if base is not None else None
+        if api_base:
+            return str(api_base).rstrip("/")
+    except Exception:
+        pass
+    return "http://127.0.0.1:8777"
+
+
+@root_link_app.command("status")
+def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON output")) -> None:
+    """
+    Print current hub-root health snapshot (derived from /api/node/reliability).
+    """
+    import requests
+
+    ctx = get_ctx()
+    base = _local_api_base()
+    url = base + "/api/node/reliability"
+    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    r = requests.get(url, headers=headers, timeout=5.0)
+    r.raise_for_status()
+    data = r.json()
+    if json_output:
+        _print(data, json_output=True)
+        return
+    tree = (data or {}).get("readiness_tree") or {}
+    root = tree.get("root_control") or {}
+    route = tree.get("route") or {}
+    typer.echo(
+        f"root_control={root.get('status')}/{root.get('summary')} | "
+        f"route={route.get('status')}/{route.get('summary')}"
+    )
+
+
+@root_link_app.command("watch")
+def hub_root_watch(
+    interval_s: float = typer.Option(1.0, "--interval", min=0.2),
+) -> None:
+    """
+    Continuously poll /api/node/reliability and print hub-root link state.
+    """
+    import requests, time as _time
+
+    ctx = get_ctx()
+    base = _local_api_base()
+    url = base + "/api/node/reliability"
+    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    while True:
+        try:
+            r = requests.get(url, headers=headers, timeout=5.0)
+            r.raise_for_status()
+            data = r.json()
+            tree = (data or {}).get("readiness_tree") or {}
+            root = tree.get("root_control") or {}
+            route = tree.get("route") or {}
+            ts = _time.strftime("%H:%M:%S")
+            typer.echo(
+                f"{ts} root_control={root.get('status')} route={route.get('status')} "
+                f"root={root.get('details', {})} route_details={route.get('details', {})}"
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            ts = _time.strftime("%H:%M:%S")
+            typer.echo(f"{ts} error: {type(e).__name__}: {e}")
+        _time.sleep(float(interval_s))
+
+
+@root_link_app.command("reconnect")
+def hub_root_reconnect(
+    transport: str | None = typer.Option(None, "--transport", help="ws|tcp"),
+    url_override: str | None = typer.Option(None, "--url-override", help="Override NATS server URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """
+    Request hub-root reconnect and optionally update transport overrides on-the-fly.
+    """
+    import requests
+
+    ctx = get_ctx()
+    base = _local_api_base()
+    url = base + "/api/node/hub-root/reconnect"
+    headers = {"X-AdaOS-Token": str(ctx.config.token or "dev-local-token")}
+    payload = {"transport": transport, "url_override": url_override}
+    r = requests.post(url, headers=headers, json=payload, timeout=8.0)
+    r.raise_for_status()
+    _print(r.json(), json_output=json_output)
 
 
 @join_code_app.command("create")

@@ -220,9 +220,46 @@ class BootstrapService:
         self._app: Any = None
         self._io_bus: Any = None
         self._log = logging.getLogger("adaos.hub-io")
+        # Current hub-root NATS client (when connected). Used for forced reconnects without full process restart.
+        self._hub_root_nc: Any = None
 
     def is_ready(self) -> bool:
         return self._ready.is_set()
+
+    async def request_hub_root_reconnect(
+        self,
+        *,
+        transport: str | None = None,
+        url_override: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Force hub-root transport reconnect.
+
+        This is a debugging/ops hook: update env-like overrides and proactively close the current
+        NATS connection so the supervisor reconnects using new settings.
+        """
+        tr = str(transport or "").strip().lower() or None
+        override = str(url_override or "").strip() or None
+        if tr is not None:
+            os.environ["HUB_NATS_TRANSPORT"] = tr
+        if override is not None:
+            os.environ["HUB_NATS_URL_OVERRIDE"] = override
+        elif url_override is not None:
+            # Explicit empty override clears it.
+            os.environ.pop("HUB_NATS_URL_OVERRIDE", None)
+        # Trigger reconnect by closing the active connection if present.
+        nc = getattr(self, "_hub_root_nc", None)
+        if nc is not None:
+            try:
+                close = getattr(nc, "close", None)
+                if callable(close):
+                    await close()
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "requested": {"transport": tr, "url_override": override},
+        }
 
     def _prepare_environment(self) -> None:
         """
@@ -2035,6 +2072,11 @@ class BootstrapService:
                             try:
                                 nats_last_server = connected_server
                                 nats_attempt_server = None
+                            except Exception:
+                                pass
+                            try:
+                                # Expose for external forced reconnect requests (debug/ops).
+                                self._hub_root_nc = nc
                             except Exception:
                                 pass
 
@@ -4105,7 +4147,14 @@ class BootstrapService:
                                         pass
                                 return
 
-                        route_sub = await _sub("route.to_hub.*", cb=_route_cb)
+                        route_sub = None
+                        try:
+                            # Legacy v1 subject. Disabled by default because it cannot be isolated by hub id,
+                            # so it allows cross-hub route traffic and can cause hard-to-debug flaps.
+                            if os.getenv("HUB_ROUTE_V1", "0") == "1":
+                                route_sub = await _sub("route.to_hub.*", cb=_route_cb)
+                        except Exception:
+                            route_sub = None
                         route_sub_v2 = None
                         try:
                             # v2: route.v2.to_hub.<hubId>.<key>
@@ -4113,9 +4162,13 @@ class BootstrapService:
                         except Exception:
                             route_sub_v2 = None
                         if hub_nats_verbose or not hub_nats_quiet:
-                            print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy)")
+                            if route_sub is not None:
+                                print("[hub-io] NATS subscribe route.to_hub.* (hub route proxy, legacy v1)")
+                            print(f"[hub-io] NATS subscribe route.v2.to_hub.{hub_id}.* (hub route proxy)")
                         try:
-                            self._log.info("nats bridge subscribed subject=route.to_hub.*")
+                            if route_sub is not None:
+                                self._log.info("nats bridge subscribed subject=route.to_hub.* (legacy v1)")
+                            self._log.info("nats bridge subscribed subject=route.v2.to_hub.%s.*", hub_id)
                         except Exception:
                             pass
                         try:
@@ -4123,8 +4176,12 @@ class BootstrapService:
                                 summary="hub route relay subscription installed",
                                 details={
                                     "subjects": [
-                                        "route.to_hub.*",
                                         f"route.v2.to_hub.{hub_id}.*",
+                                        *(
+                                            ["route.to_hub.*"]
+                                            if route_sub is not None
+                                            else []
+                                        ),
                                     ]
                                 },
                             )
@@ -4427,6 +4484,11 @@ class BootstrapService:
                         try:
                             if getattr(self, "_tg_output_nats_nc", None) is nc:
                                 setattr(self, "_tg_output_nats_nc", None)
+                        except Exception:
+                            pass
+                        try:
+                            if getattr(self, "_hub_root_nc", None) is nc:
+                                setattr(self, "_hub_root_nc", None)
                         except Exception:
                             pass
                         async def _force_close_ws_transport() -> None:
@@ -5059,6 +5121,10 @@ def _svc() -> BootstrapService:
 
 def is_ready() -> bool:
     return _svc().is_ready()
+
+
+async def request_hub_root_reconnect(*, transport: str | None = None, url_override: str | None = None) -> dict[str, Any]:
+    return await _svc().request_hub_root_reconnect(transport=transport, url_override=url_override)
 
 
 async def run_boot_sequence(app: Any) -> None:
