@@ -517,22 +517,50 @@ export class YDocService {
       })
     }
 
-    await Promise.race([
-      new Promise<void>((resolve) => {
-      if (!this.provider) { resolve(); return }
-      if (this.provider.synced) { resolve(); return }
-      const handler = (synced: boolean) => {
-        if (synced) {
-          this.provider?.off('sync', handler as any)
-          resolve()
+    // Do not fail app startup on a slow/unstable WS path. The provider will keep reconnecting in the background.
+    // We still wait a bit for "first sync" to provide fast feedback, but treat timeout as degraded mode.
+    const firstSyncOrTimeout = await Promise.race([
+      new Promise<boolean>((resolve) => {
+        if (!this.provider) { resolve(true); return }
+        if (this.provider.synced) { resolve(true); return }
+        const handler = (synced: boolean) => {
+          if (synced) {
+            this.provider?.off('sync', handler as any)
+            resolve(true)
+          }
         }
-      }
-      this.provider.on('sync', handler as any)
+        this.provider.on('sync', handler as any)
       }),
-      new Promise<void>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('yjs_sync_timeout')), 9000),
-      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 9000)),
     ])
+    if (!firstSyncOrTimeout) {
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.warn('[YDocService] yws sync timeout; continuing and waiting for reconnect')
+      }
+    }
+
+    // If the WS is disconnected for a long time and the session JWT has expired, force a clean re-login.
+    // Without this, y-websocket will keep retrying with an invalid token forever and the UI will "never recover".
+    try {
+      const p: any = this.provider as any
+      if (p && typeof p.on === 'function') {
+        p.on('status', (ev: any) => {
+          try {
+            const st = String(ev?.status || '')
+            if (st !== 'disconnected') return
+            const jwt = (localStorage.getItem(this.sessionJwtKey) || '').trim()
+            if (!jwt) return
+            if (!jwt.includes('.')) return
+            if (!this.isJwtValid(jwt)) {
+              this.invalidateWebSession()
+              // Reload to trigger the login flow.
+              window.location.reload()
+            }
+          } catch {}
+        })
+      }
+    } catch {}
 
   }
 

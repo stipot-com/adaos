@@ -730,7 +730,7 @@ export function installHubRouteProxy(
 			} catch {}
 		}
 
-		wss.on('connection', async (ws: any, req: any, meta: any) => {
+	wss.on('connection', async (ws: any, req: any, meta: any) => {
 			const hubId = String(meta?.hubId || '')
 			const dstPath = String(meta?.dstPath || '/ws')
 			const sessionJwt = String(meta?.sessionJwt || '')
@@ -745,6 +745,60 @@ export function installHubRouteProxy(
 			let clientClosed = false
 			let publishChain = Promise.resolve()
 			let publishSeq = 0
+
+			// Keep browser<->root WS alive across intermediaries that aggressively time out idle connections.
+			// This is separate from the hub-root control plane keepalive (NATS); it protects `/hubs/:id/(ws|yws)`
+			// user sessions when the UI is idle (no Yjs traffic, no events).
+			const wsPingS = (() => {
+				try {
+					const raw = String(process.env['ROUTE_WS_PING_S'] || '').trim()
+					const val = raw ? Number.parseFloat(raw) : NaN
+					if (Number.isFinite(val) && val > 1) return val
+				} catch {}
+				return 25
+			})()
+			const wsPongTimeoutS = (() => {
+				try {
+					const raw = String(process.env['ROUTE_WS_PONG_TIMEOUT_S'] || '').trim()
+					const val = raw ? Number.parseFloat(raw) : NaN
+					if (Number.isFinite(val) && val > 1) return val
+				} catch {}
+				return Math.max(60, wsPingS * 3)
+			})()
+			let wsPingTimer: any = null
+			let lastPongAt = Date.now()
+			const disarmWsPing = () => {
+				try {
+					if (wsPingTimer) clearInterval(wsPingTimer)
+				} catch {}
+				wsPingTimer = null
+			}
+			const armWsPing = () => {
+				disarmWsPing()
+				if (!wsPingS || wsPingS <= 0) return
+				wsPingTimer = setInterval(() => {
+					try {
+						if (clientClosed) return
+						// ws.WebSocket.OPEN === 1
+						if (ws.readyState !== 1) return
+						const ageMs = Date.now() - lastPongAt
+						if (wsPongTimeoutS > 0 && ageMs > wsPongTimeoutS * 1000) {
+							// Hard drop; client will reconnect with a fresh session.
+							try {
+								ws.terminate?.()
+							} catch {}
+							return
+						}
+						ws.ping?.()
+					} catch {}
+				}, Math.max(1000, Math.floor(wsPingS * 1000)))
+			}
+			try {
+				ws.on('pong', () => {
+					lastPongAt = Date.now()
+				})
+			} catch {}
+			armWsPing()
 
 			const EARLY_FRAME_MAX_BYTES = 512 * 1024
 			const EARLY_FRAME_MAX_COUNT = 64
@@ -900,6 +954,7 @@ export function installHubRouteProxy(
 
 				ws.once('close', (code: number, reason: Buffer) => {
 					clientClosed = true
+					disarmWsPing()
 					let r: string | null = null
 					try {
 						r = reason ? reason.toString('utf8') : ''
