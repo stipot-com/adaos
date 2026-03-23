@@ -13,6 +13,7 @@ from typing import Mapping, Sequence
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
 from adaos.services.core_slots import active_slot, activate_slot, read_slot_manifest, slot_dir
+from adaos.services.node_config import load_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +64,22 @@ def default_spec(
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv:
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv)
-    if token:
-        env["ADAOS_TOKEN"] = token
+    resolved_token = str(token or _default_control_token() or "").strip()
+    if resolved_token:
+        env["ADAOS_TOKEN"] = resolved_token
     return AutostartSpec(name="adaos", argv=argv, env=env)
+
+
+def _default_control_token() -> str | None:
+    raw = str(os.getenv("ADAOS_TOKEN") or os.getenv("ADAOS_HUB_TOKEN") or os.getenv("HUB_TOKEN") or "").strip()
+    if raw:
+        return raw
+    try:
+        conf = load_config()
+    except Exception:
+        conf = None
+    token = str(getattr(conf, "token", "") or "").strip() if conf is not None else ""
+    return token or None
 
 
 def _repo_root(ctx: AgentContext) -> Path | None:

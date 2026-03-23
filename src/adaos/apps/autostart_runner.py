@@ -41,6 +41,12 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolved_token(raw_token: str | None = None) -> str | None:
     token = str(raw_token or os.getenv("ADAOS_TOKEN") or "").strip()
+    if not token:
+        try:
+            conf = load_config()
+        except Exception:
+            conf = None
+        token = str(getattr(conf, "token", "") or "").strip() if conf is not None else ""
     return token or None
 
 
@@ -140,7 +146,14 @@ def _validation_log_paths(slot: str | None) -> tuple[Path, Path]:
     )
 
 
-def _probe_update_runtime(*, host: str, port: int, token: str | None, timeout_sec: float) -> tuple[bool, dict[str, Any]]:
+def _probe_update_runtime(
+    *,
+    host: str,
+    port: int,
+    token: str | None,
+    timeout_sec: float,
+    expected_slot: str | None = None,
+) -> tuple[bool, dict[str, Any]]:
     base_url = f"http://{host}:{int(port)}"
     deadline = time.time() + max(1.0, timeout_sec)
     last_error = "runtime validation did not start"
@@ -178,6 +191,21 @@ def _probe_update_runtime(*, host: str, port: int, token: str | None, timeout_se
                     check["error"] = last_error
                     attempt["checks"].append(check)
                     break
+                if expected_slot and url.endswith("/api/admin/update/status"):
+                    slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
+                    active_manifest = (
+                        payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
+                    )
+                    active_slot_name = str(slots.get("active_slot") or active_manifest.get("slot") or "").strip().upper()
+                    check["active_slot"] = active_slot_name
+                    if active_slot_name and active_slot_name != str(expected_slot).strip().upper():
+                        last_error = (
+                            f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
+                        )
+                        check["ok"] = False
+                        check["error"] = last_error
+                        attempt["checks"].append(check)
+                        break
                 check["ok"] = True
                 check["payload_keys"] = sorted(str(key) for key in payload.keys())
                 attempt["checks"].append(check)
@@ -261,6 +289,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                 port=port,
                 token=resolved_token,
                 timeout_sec=_update_validation_timeout_sec(),
+                expected_slot=slot,
             )
             if ok:
                 write_status(
