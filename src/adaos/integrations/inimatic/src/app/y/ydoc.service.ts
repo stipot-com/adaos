@@ -429,10 +429,17 @@ export class YDocService {
       return false
     }
 
-    // `127.0.0.1:8777` remains the primary transparent local-hub entrypoint for
-    // app.inimatic.com. Also probe `8778`, because local dev nodes commonly bind
-    // there and the browser can still reach that hub directly on the same device.
-    await tryLocalHub()
+    const hasBoundSession = useRootProxyIfAvailable()
+
+    // Only probe transparent local hubs during the pre-login / pre-binding stage.
+    // Once the browser is already bound to a subnet, go directly to the root-proxy
+    // hub route and avoid localhost probing delays on every reconnect/reload.
+    if (!hasBoundSession) {
+      // `127.0.0.1:8777` remains the primary transparent local-hub entrypoint for
+      // app.inimatic.com. Also probe `8778`, because local dev nodes commonly bind
+      // there and the browser can still reach that hub directly on the same device.
+      await tryLocalHub()
+    }
 
     // Prefer direct hub base, but if it is down (e.g. 127.0.0.1:8777 not responding),
     // automatically fall back to the root proxy route over NATS.

@@ -101,6 +101,43 @@ function defaultHubBaseUrl(): string {
 	return allowReservedLocalHub() ? 'http://127.0.0.1:8777' : ROOT_BASE
 }
 
+function decodeStoredJwtPayload(token: string): any | null {
+	try {
+		const parts = token.split('.')
+		if (parts.length < 2) return null
+		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+		const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+		return JSON.parse(atob(padded))
+	} catch {
+		return null
+	}
+}
+
+function getStoredBoundSubnetSession(): {
+	baseUrl: string
+	sessionJwt: string
+} | null {
+	try {
+		const sessionJwt = (localStorage.getItem('adaos_web_session_jwt') || '').trim()
+		if (!sessionJwt || !sessionJwt.includes('.')) return null
+		const payload = decodeStoredJwtPayload(sessionJwt)
+		const exp = typeof payload?.exp === 'number' ? payload.exp : undefined
+		if (!exp) return null
+		const now = Math.floor(Date.now() / 1000)
+		if (exp <= now + 15) return null
+		const hubId =
+			(localStorage.getItem('adaos_hub_id') || '').trim() ||
+			String(payload?.hub_id || payload?.subnet_id || payload?.owner_id || '').trim()
+		if (!hubId) return null
+		return {
+			baseUrl: `https://api.inimatic.com/hubs/${hubId}`,
+			sessionJwt,
+		}
+	} catch {
+		return null
+	}
+}
+
 function rootAbs(path: string) {
 	const rel = path.startsWith('/') ? path : `/${path}`
 	return `${ROOT_BASE}${rel}`
@@ -129,6 +166,13 @@ export class AdaosClient {
 		public readonly rtc: WebRtcTransportService,
 		private channels: HubMemberChannelsService,
 	) {
+		const boundSubnet = (() => {
+			try {
+				return getStoredBoundSubnetSession()
+			} catch {
+				return null
+			}
+		})()
 		const lsBase = (() => {
 			try {
 				const persisted = (localStorage.getItem('adaos_hub_base') || '').trim()
@@ -152,10 +196,15 @@ export class AdaosClient {
 		this.cfg = {
 			baseUrl:
 				(window as any).__ADAOS_BASE__ ??
+				boundSubnet?.baseUrl ??
 				(lsBase && lsBase.trim() ? lsBase.trim() : null) ??
 				defaultHubBaseUrl(),
-			token: (window as any).__ADAOS_TOKEN__ ?? lsToken ?? null,
-			authKind: 'adaos-token',
+			token:
+				(window as any).__ADAOS_TOKEN__ ??
+				boundSubnet?.sessionJwt ??
+				lsToken ??
+				null,
+			authKind: boundSubnet?.sessionJwt ? 'bearer' : 'adaos-token',
 		}
 	}
 
