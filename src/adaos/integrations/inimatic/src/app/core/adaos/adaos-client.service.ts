@@ -209,10 +209,22 @@ export class AdaosClient {
 	}
 
 	/**
-	 * Attempt to upgrade the current WS connection to WebRTC DataChannels.
-	 * Returns `true` if WebRTC is active, `false` on failure (WS remains).
+	 * Ensure member transport is ready for app-level command/sync flows.
+	 * The WS control path is always established; direct paths are negotiated
+	 * only when explicitly allowed.
 	 */
-	async enableWebRtc(signalingWs: WebSocket): Promise<boolean> {
+	async prepareMemberTransport({
+		topics = [],
+		allowDirect = false,
+	}: {
+		topics?: string[]
+		allowDirect?: boolean
+	} = {}): Promise<{ ws: WebSocket; direct: boolean }> {
+		const ws = await this.connect(topics)
+		if (!allowDirect) {
+			return { ws, direct: false }
+		}
+
 		// Wire RTC events-channel messages into the same pending-cmd handler
 		this.rtc.onEventsMessage = (data: string) => {
 			this.onEventsMessage({ data } as MessageEvent)
@@ -221,8 +233,8 @@ export class AdaosClient {
 		const sendCmd = (kind: string, payload: Record<string, any>) =>
 			this.sendEventsCommand(kind, payload, 8000)
 
-		const ok = await this.rtc.negotiate(signalingWs, sendCmd)
-		return ok
+		const ok = await this.channels.negotiateDirectPaths(ws, sendCmd)
+		return { ws, direct: ok }
 	}
 
 	isWebRtcActive(): boolean {

@@ -567,10 +567,10 @@ export class YDocService {
     let webRtcActive = false
     if (isRemoteProxy && this.isP2pEnabled()) {
       try {
-        const ws = this.adaos.getEventsSocket()
-        if (ws) {
-          webRtcActive = await this.adaos.enableWebRtc(ws)
-        }
+        const prepared = await this.adaos.prepareMemberTransport({
+          allowDirect: true,
+        })
+        webRtcActive = prepared.direct
       } catch {
         // WebRTC negotiation failed — continue with WS
       }

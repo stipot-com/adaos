@@ -86,6 +86,18 @@ export class HubMemberChannelsService {
 		})
 	}
 
+	async negotiateDirectPaths(
+		signalingWs: WebSocket,
+		sendCommand: (
+			kind: string,
+			payload: Record<string, any>,
+		) => Promise<any>,
+	): Promise<boolean> {
+		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
+		this.publishSnapshot()
+		return ok
+	}
+
 	initRuntime(): void {
 		if (!this.runtimeInitialized) {
 			this.runtimeInitialized = true
