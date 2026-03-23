@@ -23,6 +23,50 @@ def _run_git(args: list[str], cwd: Optional[StrOrPath] = None) -> str:
     return p.stdout.strip()
 
 
+def _safe_git(dir: StrOrPath, args: list[str]) -> Optional[str]:
+    try:
+        return _run_git(args, cwd=dir).strip()
+    except Exception:
+        return None
+
+
+def _format_divergence_hint(dir: StrOrPath) -> Optional[str]:
+    """
+    Best-effort explanation for non-fast-forward pulls.
+    Returns None if we can't compute a helpful hint.
+    """
+    branch = _safe_git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])
+    upstream = _safe_git(dir, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if not branch or not upstream:
+        return None
+    counts = _safe_git(dir, ["rev-list", "--left-right", "--count", f"HEAD...{upstream}"])
+    ahead = behind = None
+    if counts:
+        parts = counts.replace("\t", " ").split()
+        if len(parts) >= 2:
+            try:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+            except Exception:
+                ahead = behind = None
+    repo_path = str(Path(dir))
+    lines: list[str] = [
+        "Non fast-forward pull detected.",
+        f"repo: {repo_path}",
+        f"branch: {branch}",
+        f"upstream: {upstream}",
+    ]
+    if ahead is not None and behind is not None:
+        lines.append(f"ahead/behind: {ahead}/{behind}")
+    lines += [
+        "To resolve, choose ONE of:",
+        f"  - Rebase (keeps linear history): git -C \"{repo_path}\" pull --rebase --autostash",
+        f"  - Merge: git -C \"{repo_path}\" pull --no-rebase",
+        f"  - Discard local commits (DANGEROUS): git -C \"{repo_path}\" reset --hard {upstream}",
+    ]
+    return "\n".join(lines)
+
+
 def _append_exclude(dir: str, lines: list[str]) -> None:
     p = Path(dir) / ".git" / "info" / "exclude"
     existing = set()
@@ -97,7 +141,16 @@ class CliGitClient(GitClient):
         )
 
     def pull(self, dir: StrOrPath) -> None:
-        _run_git(["pull", "--ff-only"], cwd=dir)
+        try:
+            _run_git(["pull", "--ff-only"], cwd=dir)
+        except GitError as exc:
+            msg = str(exc)
+            lowered = msg.lower()
+            if "not possible to fast-forward" in lowered or "diverging branches" in lowered or "non-fast-forward" in lowered:
+                hint = _format_divergence_hint(dir)
+                if hint:
+                    raise GitError(f"{msg}\n\n{hint}") from exc
+            raise
 
     def fetch(self, dir: StrOrPath, remote: str = "origin", branch: Optional[str] = None, depth: Optional[int] = None) -> None:
         args = ["fetch", "--prune", remote]

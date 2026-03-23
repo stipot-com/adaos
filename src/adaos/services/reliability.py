@@ -87,6 +87,36 @@ class FlowSpec:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticChannelSpec:
+    channel_id: str
+    title: str
+    channel_type: ChannelType
+    message_types: tuple[MessageTaxonomy, ...]
+    authority: Authority
+    candidate_paths: tuple[str, ...]
+    failover_order: tuple[str, ...]
+    freeze_after_switch_s: int
+    duplicate_suppression: str
+    description: str
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "channel_id": self.channel_id,
+            "title": self.title,
+            "channel_type": self.channel_type.value,
+            "message_types": [item.value for item in self.message_types],
+            "authority": self.authority.value,
+            "candidate_paths": list(self.candidate_paths),
+            "failover_order": list(self.failover_order),
+            "freeze_after_switch_s": int(self.freeze_after_switch_s),
+            "duplicate_suppression": self.duplicate_suppression,
+            "description": self.description,
+            "notes": self.notes,
+        }
+
+
 HUB_ROOT_FLOW_SPECS: tuple[FlowSpec, ...] = (
     FlowSpec(
         flow_id="hub_root.control.lifecycle",
@@ -191,6 +221,88 @@ HUB_ROOT_FLOW_SPECS: tuple[FlowSpec, ...] = (
         current_paths=("ws", "webrtc_data", "root_route_proxy"),
         description="Awareness and ephemeral session hints for member/browser clients.",
         notes="Explicitly ephemeral. Never escalated into a durable control bus.",
+    ),
+)
+
+
+HUB_MEMBER_CHANNEL_SPECS: tuple[SemanticChannelSpec, ...] = (
+    SemanticChannelSpec(
+        channel_id="hub_member.command",
+        title="CommandChannel",
+        channel_type=ChannelType.COMMAND,
+        message_types=(MessageTaxonomy.COMMAND, MessageTaxonomy.REQUEST, MessageTaxonomy.RESPONSE),
+        authority=Authority.HUB,
+        candidate_paths=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        failover_order=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        freeze_after_switch_s=10,
+        duplicate_suppression="command_id scoped to one active path",
+        description="Imperative browser/member commands into hub runtime.",
+        notes="WebRTC events is preferred when active. Root relay is an explicit fallback, not a parallel authority path.",
+    ),
+    SemanticChannelSpec(
+        channel_id="hub_member.event",
+        title="EventChannel",
+        channel_type=ChannelType.EVENT,
+        message_types=(MessageTaxonomy.EVENT,),
+        authority=Authority.HUB,
+        candidate_paths=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        failover_order=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        freeze_after_switch_s=10,
+        duplicate_suppression="one active fanout path; duplicate event ids ignored when present",
+        description="Hub-to-member/browser event fanout for UI and session events.",
+        notes="Shares transport with command channel today, but remains a separate semantic channel.",
+    ),
+    SemanticChannelSpec(
+        channel_id="hub_member.sync",
+        title="SyncChannel",
+        channel_type=ChannelType.SYNC,
+        message_types=(MessageTaxonomy.SYNC_UPDATE,),
+        authority=Authority.HUB,
+        candidate_paths=("webrtc_data:yjs", "yws", "root_route_proxy", "member_link_ws"),
+        failover_order=("webrtc_data:yjs", "yws", "root_route_proxy", "member_link_ws"),
+        freeze_after_switch_s=15,
+        duplicate_suppression="single active provider per doc; no multipath sync authority",
+        description="Transport-independent Yjs sync channel.",
+        notes="WebRTC Yjs datachannel is preferred; websocket and root relay remain bounded fallback paths.",
+    ),
+    SemanticChannelSpec(
+        channel_id="hub_member.presence",
+        title="PresenceChannel",
+        channel_type=ChannelType.PRESENCE,
+        message_types=(MessageTaxonomy.PRESENCE,),
+        authority=Authority.MEMBER_BROWSER,
+        candidate_paths=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        failover_order=("webrtc_data:events", "ws", "root_route_proxy", "member_link_ws"),
+        freeze_after_switch_s=5,
+        duplicate_suppression="drop allowed; no durable dedupe window",
+        description="Ephemeral awareness and session-hint channel.",
+        notes="Explicitly best-effort and non-durable, even when carried over a durable transport.",
+    ),
+    SemanticChannelSpec(
+        channel_id="hub_member.route",
+        title="RouteChannel",
+        channel_type=ChannelType.ROUTE,
+        message_types=(MessageTaxonomy.ROUTE_FRAME,),
+        authority=Authority.SHARED,
+        candidate_paths=("root_route_proxy",),
+        failover_order=("root_route_proxy",),
+        freeze_after_switch_s=0,
+        duplicate_suppression="stream-scoped; one relay authority path",
+        description="Relay path for browser traffic when root sits between browser and hub.",
+        notes="Only active when browser traffic is explicitly relayed through root route proxy.",
+    ),
+    SemanticChannelSpec(
+        channel_id="hub_member.media",
+        title="MediaChannel",
+        channel_type=ChannelType.MEDIA,
+        message_types=(MessageTaxonomy.MEDIA_FRAME,),
+        authority=Authority.SHARED,
+        candidate_paths=("webrtc_media", "root_media_relay"),
+        failover_order=("webrtc_media", "root_media_relay"),
+        freeze_after_switch_s=3,
+        duplicate_suppression="none; latency-first media semantics",
+        description="Latency-sensitive media plane.",
+        notes="Phase 4 only exposes explicit non-ownership and current lack of media runtime selection.",
     ),
 )
 
@@ -526,6 +638,7 @@ def _new_protocol_runtime() -> dict[str, Any]:
 
 
 _HUB_ROOT_PROTOCOL_RUNTIME: dict[str, Any] = _new_protocol_runtime()
+_HUB_MEMBER_CHANNEL_RUNTIME: dict[str, dict[str, Any]] = {}
 
 
 def _copy_dict(value: Any) -> dict[str, Any]:
@@ -2180,6 +2293,321 @@ def channel_overview_snapshot(
     }
 
 
+def hub_member_semantic_channel_model_snapshot() -> dict[str, Any]:
+    return {
+        "channels": [item.to_dict() for item in HUB_MEMBER_CHANNEL_SPECS],
+        "design_rules": {
+            "single_active_authority_path": True,
+            "freeze_before_preferred_switch": True,
+            "transport_names_are_not_semantics": True,
+        },
+    }
+
+
+def _new_hub_member_channel_state(spec: SemanticChannelSpec) -> dict[str, Any]:
+    return {
+        "channel_id": spec.channel_id,
+        "active_path": None,
+        "preferred_path": None,
+        "last_switch_at": 0.0,
+        "switch_total": 0,
+        "previous_path": None,
+    }
+
+
+def _hub_member_transport_evidence_snapshot(
+    *,
+    role: str,
+    route_mode: str | None,
+    connected_to_hub: bool | None,
+    hub_root_protocol: dict[str, Any],
+) -> dict[str, Any]:
+    role_norm = str(role or "").strip().lower()
+    evidence: dict[str, dict[str, Any]] = {
+        "webrtc_data:events": {"available": False, "source": "webrtc.peer"},
+        "webrtc_data:yjs": {"available": False, "source": "webrtc.peer"},
+        "ws": {"available": False, "source": "gateway_ws"},
+        "yws": {"available": False, "source": "gateway_ws"},
+        "root_route_proxy": {"available": False, "source": "hub_root.route"},
+        "member_link_ws": {
+            "available": False,
+            "source": "subnet.link_client",
+            "route_mode": route_mode,
+            "connected_to_hub": connected_to_hub,
+        },
+        "webrtc_media": {"available": False, "source": "webrtc.peer"},
+        "root_media_relay": {"available": False, "source": "root.media"},
+    }
+
+    if role_norm == "hub":
+        try:
+            from adaos.services.yjs.gateway_ws import gateway_transport_snapshot
+
+            gateway = gateway_transport_snapshot()
+        except Exception:
+            gateway = {}
+        transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+        ws_entry = transports.get("ws") if isinstance(transports.get("ws"), dict) else {}
+        yws_entry = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+        evidence["ws"].update(
+            {
+                "available": int(ws_entry.get("active_connections") or 0) > 0,
+                "active_connections": int(ws_entry.get("active_connections") or 0),
+                "last_open_ago_s": ws_entry.get("last_open_ago_s"),
+            }
+        )
+        evidence["yws"].update(
+            {
+                "available": int(yws_entry.get("active_connections") or 0) > 0,
+                "active_connections": int(yws_entry.get("active_connections") or 0),
+                "last_open_ago_s": yws_entry.get("last_open_ago_s"),
+            }
+        )
+
+        try:
+            from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+            webrtc = webrtc_peer_snapshot()
+        except Exception:
+            webrtc = {}
+        evidence["webrtc_data:events"].update(
+            {
+                "available": int(webrtc.get("open_events_channels") or 0) > 0,
+                "peer_total": int(webrtc.get("peer_total") or 0),
+                "open_channels": int(webrtc.get("open_events_channels") or 0),
+            }
+        )
+        evidence["webrtc_data:yjs"].update(
+            {
+                "available": int(webrtc.get("open_yjs_channels") or 0) > 0,
+                "peer_total": int(webrtc.get("peer_total") or 0),
+                "open_channels": int(webrtc.get("open_yjs_channels") or 0),
+            }
+        )
+
+        route_runtime = hub_root_protocol.get("route_runtime") if isinstance(hub_root_protocol.get("route_runtime"), dict) else {}
+        route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+        route_control = route_flows.get("control") if isinstance(route_flows.get("control"), dict) else {}
+        route_frame = route_flows.get("frame") if isinstance(route_flows.get("frame"), dict) else {}
+        route_available = (
+            int(route_runtime.get("active_tunnels") or 0) > 0
+            or int(route_runtime.get("pending_tunnels") or 0) > 0
+            or str(route_control.get("state") or "") in {"active", "pressure", "degraded"}
+            or str(route_frame.get("state") or "") in {"active", "pressure", "degraded"}
+        )
+        evidence["root_route_proxy"].update(
+            {
+                "available": bool(route_available),
+                "active_tunnels": int(route_runtime.get("active_tunnels") or 0),
+                "pending_tunnels": int(route_runtime.get("pending_tunnels") or 0),
+                "control_state": str(route_control.get("state") or ""),
+                "frame_state": str(route_frame.get("state") or ""),
+            }
+        )
+    else:
+        member_available = bool(connected_to_hub is True or str(route_mode or "").strip().lower() == "ws")
+        evidence["member_link_ws"]["available"] = member_available
+
+    return evidence
+
+
+def _semantic_channel_status(
+    *,
+    spec: SemanticChannelSpec,
+    role_norm: str,
+    active_path: str | None,
+    preferred_path: str | None,
+    freeze_remaining_s: float,
+) -> tuple[str, str, str]:
+    if spec.channel_id == "hub_member.media":
+        return (
+            "unknown",
+            "not_configured",
+            "media semantic channel is declared but not yet wired into runtime ownership",
+        )
+    if role_norm != "hub" and spec.channel_id == "hub_member.route":
+        return (
+            "not_applicable",
+            "not_applicable",
+            "route relay semantics are evaluated on the hub/root runtime",
+        )
+    if not active_path:
+        if spec.channel_id == "hub_member.route":
+            return ("down", "unavailable", "root route relay is not currently active")
+        return ("down", "unavailable", "no candidate path is currently active")
+    if freeze_remaining_s > 0.0:
+        return (
+            "ready",
+            "freeze_hold",
+            f"holding {active_path} during freeze window before switching to {preferred_path or active_path}",
+        )
+    if active_path == "root_route_proxy":
+        return ("ready", "relay_fallback", "root relay path is the active authority path")
+    if active_path == "member_link_ws":
+        return ("ready", "member_link", "member link websocket is the active authority path")
+    if active_path.startswith("webrtc_data:"):
+        return ("ready", "direct_p2p", "direct WebRTC datachannel is the active authority path")
+    if active_path in {"ws", "yws"}:
+        return ("ready", "direct_ws", "direct websocket is the active authority path")
+    if active_path.startswith("webrtc_media"):
+        return ("ready", "direct_media", "direct media path is active")
+    return ("ready", "active", f"{active_path} is the active authority path")
+
+
+def hub_member_semantic_channels_snapshot(
+    *,
+    role: str,
+    route_mode: str | None,
+    connected_to_hub: bool | None,
+    hub_root_protocol: dict[str, Any],
+    now_ts: float | None = None,
+    transport_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    role_norm = str(role or "").strip().lower()
+    evidence = (
+        transport_evidence
+        if isinstance(transport_evidence, dict)
+        else _hub_member_transport_evidence_snapshot(
+            role=role_norm,
+            route_mode=route_mode,
+            connected_to_hub=connected_to_hub,
+            hub_root_protocol=hub_root_protocol,
+        )
+    )
+
+    channels: dict[str, dict[str, Any]] = {}
+    assessment_state = "nominal"
+    assessment_reasons: list[str] = []
+
+    with _LOCK:
+        for spec in HUB_MEMBER_CHANNEL_SPECS:
+            runtime_entry = _HUB_MEMBER_CHANNEL_RUNTIME.setdefault(
+                spec.channel_id,
+                _new_hub_member_channel_state(spec),
+            )
+            available_paths = [
+                path
+                for path in spec.candidate_paths
+                if isinstance(evidence.get(path), dict) and bool(evidence.get(path, {}).get("available"))
+            ]
+            preferred_path = next((path for path in spec.failover_order if path in available_paths), None)
+            current_path = str(runtime_entry.get("active_path") or "").strip() or None
+            freeze_remaining_s = 0.0
+            active_path = preferred_path
+            selection = "preferred"
+            last_switch_at = float(runtime_entry.get("last_switch_at") or 0.0)
+            if (
+                current_path
+                and current_path in available_paths
+                and preferred_path
+                and current_path != preferred_path
+                and int(spec.freeze_after_switch_s) > 0
+            ):
+                elapsed = max(0.0, now - last_switch_at)
+                if elapsed < float(spec.freeze_after_switch_s):
+                    active_path = current_path
+                    freeze_remaining_s = round(float(spec.freeze_after_switch_s) - elapsed, 3)
+                    selection = "freeze_hold"
+            if active_path != current_path:
+                runtime_entry["previous_path"] = current_path
+                runtime_entry["active_path"] = active_path
+                runtime_entry["preferred_path"] = preferred_path
+                runtime_entry["last_switch_at"] = now
+                runtime_entry["switch_total"] = int(runtime_entry.get("switch_total") or 0) + 1
+                current_path = active_path
+            else:
+                runtime_entry["preferred_path"] = preferred_path
+            status, state, reason = _semantic_channel_status(
+                spec=spec,
+                role_norm=role_norm,
+                active_path=current_path,
+                preferred_path=preferred_path,
+                freeze_remaining_s=freeze_remaining_s,
+            )
+            last_switch_ago_s = _round_age(now, runtime_entry.get("last_switch_at"))
+            candidate_state = {
+                path: {
+                    "available": bool((evidence.get(path) or {}).get("available")),
+                    **(
+                        {
+                            key: value
+                            for key, value in (evidence.get(path) or {}).items()
+                            if key != "available"
+                        }
+                        if isinstance(evidence.get(path), dict)
+                        else {}
+                    ),
+                }
+                for path in spec.candidate_paths
+            }
+            entry = {
+                "channel_id": spec.channel_id,
+                "title": spec.title,
+                "channel_type": spec.channel_type.value,
+                "authority": spec.authority.value,
+                "status": status,
+                "state": state,
+                "reason": reason,
+                "candidate_paths": list(spec.candidate_paths),
+                "available_paths": available_paths,
+                "preferred_path": preferred_path,
+                "active_path": current_path,
+                "selection": selection,
+                "freeze_after_switch_s": int(spec.freeze_after_switch_s),
+                "freeze_remaining_s": freeze_remaining_s if freeze_remaining_s > 0.0 else 0.0,
+                "last_switch_ago_s": last_switch_ago_s,
+                "switch_total": int(runtime_entry.get("switch_total") or 0),
+                "duplicate_suppression": spec.duplicate_suppression,
+                "candidate_state": candidate_state,
+            }
+            channels[spec.channel_id] = entry
+
+    command_channel = channels.get("hub_member.command") if isinstance(channels.get("hub_member.command"), dict) else {}
+    sync_channel = channels.get("hub_member.sync") if isinstance(channels.get("hub_member.sync"), dict) else {}
+    if str(command_channel.get("status") or "") != "ready":
+        assessment_state = "degraded"
+        assessment_reasons.append("command_path_unavailable")
+    if str(sync_channel.get("status") or "") != "ready":
+        assessment_state = "degraded"
+        assessment_reasons.append("sync_path_unavailable")
+    if assessment_state == "nominal":
+        primary_ids = (
+            "hub_member.command",
+            "hub_member.event",
+            "hub_member.sync",
+            "hub_member.presence",
+        )
+        primary_channels = [
+            channels.get(channel_id)
+            for channel_id in primary_ids
+            if isinstance(channels.get(channel_id), dict)
+        ]
+        active_paths = {
+            str(item.get("active_path") or "")
+            for item in primary_channels
+            if isinstance(item, dict) and str(item.get("active_path") or "").strip()
+        }
+        if any(str(item.get("state") or "") == "freeze_hold" for item in primary_channels if isinstance(item, dict)):
+            assessment_state = "transitioning"
+            assessment_reasons.append("freeze_hold_active")
+        elif any(path in {"root_route_proxy", "member_link_ws"} for path in active_paths):
+            assessment_state = "fallback"
+            assessment_reasons.append("fallback_path_active")
+    if not assessment_reasons:
+        assessment_reasons.append("single_active_authority_paths")
+
+    return {
+        "assessment": {
+            "state": assessment_state,
+            "reason": "; ".join(assessment_reasons),
+        },
+        "channels": channels,
+        "transport_evidence": evidence,
+        "updated_at": now,
+    }
+
+
 def hub_root_protocol_model_snapshot() -> dict[str, Any]:
     return {
         "traffic_classes": {
@@ -2618,6 +3046,7 @@ def reliability_model_snapshot() -> dict[str, Any]:
         "authorities": [item.value for item in Authority],
         "authority_boundaries": AUTHORITY_BOUNDARIES,
         "flow_inventory": [item.to_dict() for item in HUB_ROOT_FLOW_SPECS],
+        "hub_member_channels": hub_member_semantic_channel_model_snapshot(),
         "hub_root_protocol": hub_root_protocol_model_snapshot(),
     }
 
@@ -2814,6 +3243,12 @@ def reliability_snapshot(
         transport_strategy=transport_strategy,
     )
     hub_root_protocol = hub_root_protocol_snapshot()
+    hub_member_channels = hub_member_semantic_channels_snapshot(
+        role=role,
+        route_mode=route_mode,
+        connected_to_hub=connected_to_hub,
+        hub_root_protocol=hub_root_protocol,
+    )
     sidecar_runtime = sidecar_runtime_snapshot(
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
@@ -2840,6 +3275,7 @@ def reliability_snapshot(
             "channel_overview": channel_overview,
             "hub_root_transport_strategy": transport_strategy,
             "hub_root_protocol": hub_root_protocol,
+            "hub_member_channels": hub_member_channels,
             "sidecar_runtime": sidecar_runtime,
         },
     }

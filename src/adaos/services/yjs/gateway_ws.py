@@ -36,6 +36,88 @@ from adaos.services.agent_context import get_ctx as get_agent_ctx
 router = APIRouter()
 _log = logging.getLogger("adaos.events_ws")
 _ylog = logging.getLogger("adaos.yjs.gateway")
+_TRANSPORT_LOCK = threading.RLock()
+_TRANSPORT_STATE: dict[str, dict[str, Any]] = {
+    "ws": {
+        "active_connections": 0,
+        "open_total": 0,
+        "close_total": 0,
+        "last_open_at": 0.0,
+        "last_close_at": 0.0,
+    },
+    "yws": {
+        "active_connections": 0,
+        "open_total": 0,
+        "close_total": 0,
+        "last_open_at": 0.0,
+        "last_close_at": 0.0,
+    },
+}
+
+
+def _transport_mark_open(name: str) -> None:
+    key = str(name or "").strip().lower()
+    if not key:
+        return
+    now = time.time()
+    with _TRANSPORT_LOCK:
+        entry = _TRANSPORT_STATE.setdefault(
+            key,
+            {
+                "active_connections": 0,
+                "open_total": 0,
+                "close_total": 0,
+                "last_open_at": 0.0,
+                "last_close_at": 0.0,
+            },
+        )
+        entry["active_connections"] = int(entry.get("active_connections") or 0) + 1
+        entry["open_total"] = int(entry.get("open_total") or 0) + 1
+        entry["last_open_at"] = now
+
+
+def _transport_mark_close(name: str) -> None:
+    key = str(name or "").strip().lower()
+    if not key:
+        return
+    now = time.time()
+    with _TRANSPORT_LOCK:
+        entry = _TRANSPORT_STATE.setdefault(
+            key,
+            {
+                "active_connections": 0,
+                "open_total": 0,
+                "close_total": 0,
+                "last_open_at": 0.0,
+                "last_close_at": 0.0,
+            },
+        )
+        active = int(entry.get("active_connections") or 0) - 1
+        entry["active_connections"] = max(0, active)
+        entry["close_total"] = int(entry.get("close_total") or 0) + 1
+        entry["last_close_at"] = now
+
+
+def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    with _TRANSPORT_LOCK:
+        state = json.loads(json.dumps(_TRANSPORT_STATE))
+    for entry in state.values():
+        if not isinstance(entry, dict):
+            continue
+        last_open_at = entry.get("last_open_at")
+        last_close_at = entry.get("last_close_at")
+        entry["last_open_ago_s"] = (
+            round(max(0.0, now - float(last_open_at)), 3)
+            if isinstance(last_open_at, (int, float)) and float(last_open_at) > 0.0
+            else None
+        )
+        entry["last_close_ago_s"] = (
+            round(max(0.0, now - float(last_close_at)), 3)
+            if isinstance(last_close_at, (int, float)) and float(last_close_at) > 0.0
+            else None
+        )
+    return {"transports": state, "updated_at": now}
 
 
 def _ws_trace_enabled() -> bool:
@@ -319,6 +401,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
             pass
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
     await websocket.accept()
+    _transport_mark_open("yws")
     await start_y_server()
 
     adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=webspace_id)
@@ -327,6 +410,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     except RuntimeError:
         return
     finally:
+        _transport_mark_close("yws")
         _ylog.info("yws connection closed webspace=%s dev=%s", webspace_id, dev_id)
         if _ws_trace_enabled():
             try:
@@ -616,6 +700,7 @@ async def events_ws(websocket: WebSocket):
     signaling (``rtc.offer``, ``rtc.ice``).
     """
     await websocket.accept()
+    _transport_mark_open("ws")
     if _ws_trace_enabled():
         try:
             params: Dict[str, str] = dict(websocket.query_params)
@@ -720,6 +805,7 @@ async def events_ws(websocket: WebSocket):
             if kind == "device.register":
                 device_id = payload.get("device_id") or "dev-unknown"
     finally:
+        _transport_mark_close("ws")
         _ = device_id
         if _ws_trace_enabled():
             try:

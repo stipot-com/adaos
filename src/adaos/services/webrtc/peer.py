@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 try:
@@ -59,6 +60,8 @@ class HubPeer:
         self._yjs_adapter: DataChannelYjsAdapter | None = None
         self._yjs_task: asyncio.Task[None] | None = None
         self._local_desc_task: asyncio.Task[None] | None = None
+        self._events_channel: Any | None = None
+        self._yjs_channel: Any | None = None
 
         # Browser creates the DataChannels – hub receives them here.
         @self.pc.on("datachannel")
@@ -93,6 +96,7 @@ class HubPeer:
         """Bridge *events* DataChannel to the same command processing as ``/ws``."""
         from adaos.services.yjs.gateway_ws import process_events_command
 
+        self._events_channel = channel
         state = {"webspace_id": self.webspace_id}
 
         async def _send(msg: dict[str, Any]) -> None:
@@ -132,6 +136,7 @@ class HubPeer:
 
     def _setup_yjs_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Bridge *yjs* DataChannel to ``ypy-websocket``."""
+        self._yjs_channel = channel
         self._yjs_adapter = DataChannelYjsAdapter(channel, self.webspace_id)
         self._yjs_task = asyncio.ensure_future(
             self._yjs_adapter.serve(),
@@ -190,6 +195,8 @@ class HubPeer:
                 self._local_desc_task.cancel()
         except Exception:
             pass
+        self._events_channel = None
+        self._yjs_channel = None
         try:
             await self.pc.close()
         except Exception:
@@ -238,3 +245,49 @@ async def handle_remote_ice(device_id: str, candidate: dict[str, Any] | None) ->
         _log.debug("rtc.ice for unknown device=%s (ignored)", device_id)
         return
     await peer.add_ice_candidate(candidate or {})
+
+
+def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    peers: list[dict[str, Any]] = []
+    connection_states: dict[str, int] = {}
+    open_events_channels = 0
+    open_yjs_channels = 0
+    for device_id, peer in list(_peers.items()):
+        try:
+            state = str(getattr(peer.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
+        except Exception:
+            state = "unknown"
+        connection_states[state] = int(connection_states.get(state) or 0) + 1
+
+        try:
+            events_state = str(getattr(getattr(peer, "_events_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
+        except Exception:
+            events_state = "missing"
+        try:
+            yjs_state = str(getattr(getattr(peer, "_yjs_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
+        except Exception:
+            yjs_state = "missing"
+        if events_state == "open":
+            open_events_channels += 1
+        if yjs_state == "open":
+            open_yjs_channels += 1
+        peers.append(
+            {
+                "device_id": device_id,
+                "webspace_id": str(getattr(peer, "webspace_id", "") or ""),
+                "connection_state": state,
+                "events_channel_state": events_state,
+                "yjs_channel_state": yjs_state,
+            }
+        )
+    return {
+        "peer_total": len(peers),
+        "connected_peers": int(connection_states.get("connected") or 0),
+        "connecting_peers": int(connection_states.get("connecting") or 0),
+        "open_events_channels": open_events_channels,
+        "open_yjs_channels": open_yjs_channels,
+        "connection_states": connection_states,
+        "peers": peers,
+        "updated_at": now,
+    }

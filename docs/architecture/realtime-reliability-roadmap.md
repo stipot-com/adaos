@@ -182,6 +182,12 @@ Move transport ownership where it reduces blast radius, without moving protocol 
 
 ## Phase 4: Hub-member semantic channels
 
+### Status
+
+Checkpoint reached.
+Runtime now exposes explicit hub-member semantic channels (`command`, `event`, `sync`, `presence`, `route`, `media`) with one selected active path per channel, live transport evidence from `/ws`, `/yws`, WebRTC datachannels, and root relay runtime, plus explicit failover order, freeze windows, and duplicate-suppression notes.
+This is intentionally a semantic-path checkpoint, not a full transport rewrite: adapters still exist in current code paths, but operators can now see which path is authoritative for each logical channel.
+
 ### Focus
 
 Build abstraction from logical channel semantics, not from transport names.

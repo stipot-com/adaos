@@ -51,6 +51,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     channel_overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
     strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
     protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
+    hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
@@ -147,6 +148,23 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"control_auth={control_authority.get('state') or '-'} "
             f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
+        )
+    if hub_member:
+        assessment = hub_member.get("assessment") if isinstance(hub_member.get("assessment"), dict) else {}
+        channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}
+        command = channels.get("hub_member.command") if isinstance(channels.get("hub_member.command"), dict) else {}
+        event = channels.get("hub_member.event") if isinstance(channels.get("hub_member.event"), dict) else {}
+        sync = channels.get("hub_member.sync") if isinstance(channels.get("hub_member.sync"), dict) else {}
+        presence = channels.get("hub_member.presence") if isinstance(channels.get("hub_member.presence"), dict) else {}
+        route_channel = channels.get("hub_member.route") if isinstance(channels.get("hub_member.route"), dict) else {}
+        typer.echo(
+            "hub_member: "
+            f"state={assessment.get('state') or 'unknown'} "
+            f"cmd={command.get('active_path') or '-'}:{command.get('state') or '-'} "
+            f"evt={event.get('active_path') or '-'}:{event.get('state') or '-'} "
+            f"sync={sync.get('active_path') or '-'}:{sync.get('state') or '-'} "
+            f"presence={presence.get('active_path') or '-'}:{presence.get('state') or '-'} "
+            f"route={route_channel.get('active_path') or '-'}:{route_channel.get('state') or '-'}"
         )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}

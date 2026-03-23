@@ -81,6 +81,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
     strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
     protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
+    hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     protocol_assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
@@ -114,6 +115,9 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         ),
         {},
     )
+    hub_member_channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}
+    member_command = hub_member_channels.get("hub_member.command") if isinstance(hub_member_channels.get("hub_member.command"), dict) else {}
+    member_sync = hub_member_channels.get("hub_member.sync") if isinstance(hub_member_channels.get("hub_member.sync"), dict) else {}
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -136,6 +140,8 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"control_auth={control_authority.get('state') or '-'} "
         f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
         f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} | "
+        f"member_cmd={member_command.get('active_path') or '-'}:{member_command.get('state') or '-'} "
+        f"member_sync={member_sync.get('active_path') or '-'}:{member_sync.get('state') or '-'} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
@@ -169,6 +175,7 @@ def hub_root_watch(
             diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
             strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
             protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
+            hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
             sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
             strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
             protocol_assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
@@ -202,6 +209,9 @@ def hub_root_watch(
                 ),
                 {},
             )
+            hub_member_channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}
+            member_command = hub_member_channels.get("hub_member.command") if isinstance(hub_member_channels.get("hub_member.command"), dict) else {}
+            member_sync = hub_member_channels.get("hub_member.sync") if isinstance(hub_member_channels.get("hub_member.sync"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -223,6 +233,8 @@ def hub_root_watch(
                 f"control_auth={control_authority.get('state') or '-'} "
                 f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
                 f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} "
+                f"member_cmd={member_command.get('active_path') or '-'}:{member_command.get('state') or '-'} "
+                f"member_sync={member_sync.get('active_path') or '-'}:{member_sync.get('state') or '-'} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
