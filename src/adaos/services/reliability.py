@@ -866,6 +866,92 @@ def _history_count(entries: list[dict[str, Any]], *, within_s: float, now_ts: fl
     return total
 
 
+def _classify_channel_incident(channel: str, entry: dict[str, Any]) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    status = str(entry.get("status") or "").strip().lower()
+    summary = str(entry.get("summary") or "").strip().lower()
+    details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+
+    if channel == "root_control":
+        if status == "reconnect":
+            return "reconnect"
+        kind = str(details.get("kind") or "").strip().lower()
+        if kind:
+            return f"transport_{kind}"
+        if status in {ReadinessStatus.DOWN.value, ReadinessStatus.DEGRADED.value}:
+            return f"state_{status}"
+        if "transport" in summary or "session" in summary:
+            return "transport_incident"
+        return None
+
+    if channel == "route":
+        if status in {
+            "late_reply",
+            "publish_fail",
+            "no_upstream",
+            "forced_close_no_upstream",
+        }:
+            return status
+        route_t = str(details.get("t") or "").strip().lower()
+        if route_t in {"frame", "chunk", "http", "open", "close"}:
+            return f"{route_t}_incident"
+        if status in {ReadinessStatus.DOWN.value, ReadinessStatus.DEGRADED.value}:
+            cause = str(details.get("cause") or "").strip().lower()
+            if cause:
+                return f"derived_{cause}"
+            return f"state_{status}"
+        return status or None
+
+    return status or None
+
+
+def _incident_class_counts(
+    channel: str,
+    entries: list[dict[str, Any]],
+    *,
+    within_s: float,
+    now_ts: float,
+) -> dict[str, int]:
+    threshold = now_ts - max(0.0, float(within_s))
+    counts: dict[str, int] = {}
+    for item in entries:
+        try:
+            ts = float(item.get("ts") or 0.0)
+        except Exception:
+            ts = 0.0
+        if ts < threshold:
+            continue
+        cls = _classify_channel_incident(channel, item)
+        if not cls:
+            continue
+        counts[cls] = int(counts.get(cls) or 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _recent_incident_samples(
+    channel: str,
+    entries: list[dict[str, Any]],
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for item in entries:
+        cls = _classify_channel_incident(channel, item)
+        if not cls:
+            continue
+        samples.append(
+            {
+                "ts": item.get("ts"),
+                "status": item.get("status"),
+                "class": cls,
+                "summary": item.get("summary"),
+                "details": item.get("details") if isinstance(item.get("details"), dict) else {},
+            }
+        )
+    return samples[-max(1, int(limit)) :]
+
+
 def _last_transition_at(entries: list[dict[str, Any]], *, ready: bool | None = None) -> float | None:
     for item in reversed(entries):
         status = str(item.get("status") or "")
@@ -955,6 +1041,10 @@ def channel_diagnostics_snapshot() -> dict[str, Any]:
             non_ready_15m = _history_count(history_entries, within_s=900.0, now_ts=now_ts, ready=False)
             ready_5m = _history_count(history_entries, within_s=300.0, now_ts=now_ts, ready=True)
             transitions_5m = _history_count(history_entries, within_s=300.0, now_ts=now_ts, ready=None)
+            incident_classes_5m = _incident_class_counts(name, history_entries, within_s=300.0, now_ts=now_ts)
+            incident_classes_15m = _incident_class_counts(name, history_entries, within_s=900.0, now_ts=now_ts)
+            recent_incident_samples = _recent_incident_samples(name, history_entries, limit=6)
+            last_incident_class = recent_incident_samples[-1]["class"] if recent_incident_samples else None
             stability = _channel_stability_assessment(
                 status=current_status,
                 non_ready_5m=non_ready_5m,
@@ -976,6 +1066,9 @@ def channel_diagnostics_snapshot() -> dict[str, Any]:
                 "recent_non_ready_transitions_15m": non_ready_15m,
                 "recent_ready_transitions_5m": ready_5m,
                 "recent_transitions_5m": transitions_5m,
+                "incident_classes_5m": incident_classes_5m,
+                "incident_classes_15m": incident_classes_15m,
+                "last_incident_class": last_incident_class,
                 "total_non_ready_transitions": sum(
                     1 for item in history_entries if str(item.get("status") or "") != ReadinessStatus.READY.value
                 ),
@@ -987,6 +1080,7 @@ def channel_diagnostics_snapshot() -> dict[str, Any]:
                 if current_status not in {ReadinessStatus.READY.value, ReadinessStatus.UNKNOWN.value, ReadinessStatus.NOT_APPLICABLE.value}
                 else None,
                 "stability": stability,
+                "recent_incident_samples": recent_incident_samples,
                 "recent_history": history_entries[-8:],
             }
         return diagnostics

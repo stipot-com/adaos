@@ -72,9 +72,9 @@ Completed.
 
 ### Status
 
-Partially completed.
-The model exists and is visible in diagnostics.
-The next step is to bind it to stricter incident inventory and protocol guarantees.
+Completed for observability scope.
+The model is visible in diagnostics, route/session incidents are now classified separately from root-control incidents, and transport/sidecar provenance is exposed in the runtime snapshot.
+The next step is protocol hardening, not more ad-hoc diagnostics.
 
 ### Focus
 

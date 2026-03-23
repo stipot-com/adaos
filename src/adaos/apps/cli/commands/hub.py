@@ -55,18 +55,23 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         return
     runtime = (data or {}).get("runtime") if isinstance((data or {}).get("runtime"), dict) else {}
     overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+    diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
     strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     root = overview.get("hub_root") if isinstance(overview.get("hub_root"), dict) else {}
     route = overview.get("hub_root_browser") if isinstance(overview.get("hub_root_browser"), dict) else {}
+    root_diag = diagnostics.get("root_control") if isinstance(diagnostics.get("root_control"), dict) else {}
+    route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
         f"transport={strategy.get('effective_transport') or '-'} "
         f"state={strategy_assessment.get('state') or 'unknown'} "
         f"server={strategy.get('selected_server') or '-'} | "
-        f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} "
+        f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} | "
+        f"root_incident={root_diag.get('last_incident_class') or '-'} "
+        f"route_incident={route_diag.get('last_incident_class') or '-'} "
         f"last={strategy.get('last_event') or '-'}"
     )
 
@@ -91,17 +96,22 @@ def hub_root_watch(
             data = r.json()
             runtime = (data or {}).get("runtime") if isinstance((data or {}).get("runtime"), dict) else {}
             overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+            diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
             strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
             sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
             strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
             root = overview.get("hub_root") if isinstance(overview.get("hub_root"), dict) else {}
             route = overview.get("hub_root_browser") if isinstance(overview.get("hub_root_browser"), dict) else {}
+            root_diag = diagnostics.get("root_control") if isinstance(diagnostics.get("root_control"), dict) else {}
+            route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
                 f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} "
                 f"transport={strategy.get('effective_transport') or '-'} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} "
+                f"root_incident={root_diag.get('last_incident_class') or '-'} "
+                f"route_incident={route_diag.get('last_incident_class') or '-'} "
                 f"state={strategy_assessment.get('state') or 'unknown'} "
                 f"last={strategy.get('last_event') or '-'}"
             )

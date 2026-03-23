@@ -94,10 +94,14 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         item = channel_diagnostics.get(name) if isinstance(channel_diagnostics.get(name), dict) else {}
         stability = item.get("stability") if isinstance(item.get("stability"), dict) else {}
         if item:
+            incident_classes = item.get("incident_classes_5m") if isinstance(item.get("incident_classes_5m"), dict) else {}
+            top_incident = next(iter(incident_classes.keys()), None)
             typer.echo(
                 f"diag.{name}: {stability.get('state') or 'unknown'} "
                 f"score={stability.get('score') if stability.get('score') is not None else '?'} "
-                f"recent_non_ready_5m={item.get('recent_non_ready_transitions_5m') or 0}"
+                f"recent_non_ready_5m={item.get('recent_non_ready_transitions_5m') or 0} "
+                f"last_class={item.get('last_incident_class') or '-'} "
+                f"top_5m={top_incident or '-'}"
             )
     for name in (
         "new_root_backed_member_admission",
