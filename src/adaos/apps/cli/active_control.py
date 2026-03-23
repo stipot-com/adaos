@@ -19,11 +19,16 @@ def _is_local_url(url: str | None) -> bool:
 
 
 def _pick_env_url() -> str | None:
-    # Prefer explicit control base variables, then hub URL. Avoid `ADAOS_API_BASE` by default: it is Root API base
+    # Prefer explicit control base variables. Avoid `ADAOS_API_BASE` by default: it is Root API base
     # in prod and would make CLI call the wrong server.
-    for key in ("ADAOS_CONTROL_URL", "ADAOS_CONTROL_BASE", "ADAOS_SELF_BASE_URL", "ADAOS_HUB_URL"):
+    for key in ("ADAOS_CONTROL_URL", "ADAOS_CONTROL_BASE"):
         raw = str(os.getenv(key, "") or "").strip()
         if raw:
+            return raw.rstrip("/")
+    # Next: accept self-advertised URLs, but only when they point to local host.
+    for key in ("ADAOS_SELF_BASE_URL", "ADAOS_HUB_URL"):
+        raw = str(os.getenv(key, "") or "").strip()
+        if raw and _is_local_url(raw):
             return raw.rstrip("/")
     # Backward-compat: accept legacy ADAOS_BASE/ADAOS_API_BASE only for local URLs.
     for key in ("ADAOS_BASE", "ADAOS_API_BASE"):
@@ -52,7 +57,7 @@ def resolve_control_base_url(
     Precedence:
     1) explicit (if provided)
     2) hub_url (if provided)
-    3) env (ADAOS_CONTROL_URL / ADAOS_CONTROL_BASE / ADAOS_SELF_BASE_URL / ADAOS_HUB_URL, plus legacy local-only ADAOS_BASE/ADAOS_API_BASE)
+    3) env (ADAOS_CONTROL_URL / ADAOS_CONTROL_BASE, plus local-only ADAOS_SELF_BASE_URL / ADAOS_HUB_URL / ADAOS_BASE / ADAOS_API_BASE)
     4) localhost fallback
     """
     if explicit is not None:
@@ -63,10 +68,10 @@ def resolve_control_base_url(
         txt = str(hub_url or "").strip()
         if txt:
             return txt.rstrip("/")
-    env_url = _pick_env_url()
-    if env_url:
-        return env_url
-    # node.yaml fallback (role-aware).
+
+    # If node.yaml is available, prefer it over local env "self" URLs.
+    # This is critical for AB core-slots: repo root may be stale, but runtime updates node.yaml,
+    # including the *actual* listening host:port (for example 8779).
     try:
         from adaos.services.node_config import load_config
 
@@ -79,6 +84,10 @@ def resolve_control_base_url(
             return cfg_url.rstrip("/")
     except Exception:
         pass
+
+    env_url = _pick_env_url()
+    if env_url:
+        return env_url
     return "http://127.0.0.1:8777"
 
 

@@ -95,6 +95,14 @@ adaos autostart smoke-update --countdown-sec 30 --json
 adaos autostart update-cancel --json
 adaos autostart smoke-update --countdown-sec 5 --json
 
+
+adaos node reliability
+adaos node status
+adaos node status --probe
+adaos hub root watch
+adaos hub root reconnect
+adaos hub root reconnect --transport ws|tcp
+
 ```
 
 ## Add a member node (phase 1)

@@ -1889,7 +1889,19 @@ class BootstrapService:
                                     # Root/proxy already sends server PINGs, so the hub still generates outbound
                                     # traffic by replying with PONGs even if the client ping interval is conservative.
                                     try:
-                                        ping_interval_default = "3600" if connect_server.startswith("ws") else "3600"
+                                        # Defaults:
+                                        # - WS: keep the client ping interval conservative (root/proxy already produces traffic).
+                                        # - TCP: use a small ping interval so we can detect half-open links faster and avoid
+                                        #   long stalls on Windows (often observed as WinError 121 in the reader task).
+                                        is_ws = bool(connect_server.startswith("ws"))
+                                        if is_ws:
+                                            ping_interval_default = "3600"
+                                        else:
+                                            try:
+                                                is_windows = (os.name == "nt")
+                                            except Exception:
+                                                is_windows = False
+                                            ping_interval_default = "15" if is_windows else "60"
                                         ping_interval = int(
                                             os.getenv("HUB_NATS_PING_INTERVAL_S", ping_interval_default)
                                             or ping_interval_default
@@ -1900,9 +1912,19 @@ class BootstrapService:
                                     except Exception:
                                         ping_interval = 3600
                                     try:
-                                        max_outstanding_pings = int(os.getenv("HUB_NATS_MAX_OUTSTANDING_PINGS", "10") or "10")
+                                        max_out_default = "10" if is_ws else "2"
+                                        max_outstanding_pings = int(os.getenv("HUB_NATS_MAX_OUTSTANDING_PINGS", max_out_default) or max_out_default)
                                     except Exception:
-                                        max_outstanding_pings = 10
+                                        max_outstanding_pings = 10 if is_ws else 2
+                                    try:
+                                        if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
+                                            _rl_log(
+                                                "nats.keepalive",
+                                                f"[hub-io] nats keepalive ping_interval={ping_interval}s max_outstanding_pings={max_outstanding_pings}",
+                                                every_s=60.0,
+                                            )
+                                    except Exception:
+                                        pass
                                     await asyncio.wait_for(
                                         nc_local.connect(
                                             servers=[connect_server],
@@ -2917,6 +2939,17 @@ class BootstrapService:
                                     await _route_reply(key, {"t": "close", "err": "no_upstream"})
                                 finally:
                                     _clear_pending_tunnel_state(key, drop_events=True)
+                                try:
+                                    note_route_incident(
+                                        status="forced_close_no_upstream",
+                                        summary="hub route forced close due to missing upstream",
+                                        details={
+                                            "key_tag": _key_tag(key),
+                                            "age_s": round(float(age), 3),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
                                 if _route_trace:
                                     _route_log(
                                         f"[hub-route] forced close key={_key_tag(key)} age_s={age:.2f} reason=no_upstream"
@@ -3015,7 +3048,8 @@ class BootstrapService:
                             except Exception:
                                 reply_subject = ""
                             if not reply_subject:
-                                reply_subject = f"route.to_browser.{key}"
+                                # Prefer v2 subjects by default; legacy v1 is opt-in and explicitly recorded in reply_subjects.
+                                reply_subject = f"route.v2.to_browser.{hub_id}.{key}"
                             reply_started = time.monotonic()
                             t0 = None
                             try:
@@ -3144,6 +3178,20 @@ class BootstrapService:
                                             "hub-route.publish_fail",
                                             f"[hub-route] publish to_browser failed t={t0} key={key}: {type(e).__name__}: {e} {_route_nc_diag()}",
                                             every_s=1.0,
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        note_route_incident(
+                                            status="publish_fail",
+                                            summary="hub route reply publish failed",
+                                            details={
+                                                "t": t0,
+                                                "key_tag": _key_tag(key),
+                                                "reply_subject": reply_subject,
+                                                "err_type": type(e).__name__,
+                                                "err": str(e),
+                                            },
                                         )
                                     except Exception:
                                         pass
@@ -3735,6 +3783,19 @@ class BootstrapService:
                                         route_outcome = "frame_no_upstream"
                                         _queue_pending_tunnel_event(key, data)
                                         _mark_pending(key)
+                                        try:
+                                            st = pending_tunnel_meta.get(key) or {}
+                                            count = int(st.get("count") or 0)
+                                            if count <= 1:
+                                                first_at = float(st.get("first_at") or 0.0)
+                                                age_s = round(time.monotonic() - first_at, 3) if first_at > 0 else None
+                                                note_route_incident(
+                                                    status="no_upstream",
+                                                    summary="hub route frame arrived while upstream is not connected",
+                                                    details={"key_tag": _key_tag(key), "age_s": age_s, "t": "frame"},
+                                                )
+                                        except Exception:
+                                            pass
                                         await _maybe_force_close_no_upstream(key)
                                         if _route_trace:
                                             try:
@@ -3770,6 +3831,19 @@ class BootstrapService:
                                         route_outcome = "chunk_no_upstream"
                                         _queue_pending_tunnel_event(key, data)
                                         _mark_pending(key)
+                                        try:
+                                            st = pending_tunnel_meta.get(key) or {}
+                                            count = int(st.get("count") or 0)
+                                            if count <= 1:
+                                                first_at = float(st.get("first_at") or 0.0)
+                                                age_s = round(time.monotonic() - first_at, 3) if first_at > 0 else None
+                                                note_route_incident(
+                                                    status="no_upstream",
+                                                    summary="hub route chunk arrived while upstream is not connected",
+                                                    details={"key_tag": _key_tag(key), "age_s": age_s, "t": "chunk"},
+                                                )
+                                        except Exception:
+                                            pass
                                         await _maybe_force_close_no_upstream(key)
                                         if _route_trace:
                                             try:
@@ -4368,6 +4442,13 @@ class BootstrapService:
                                             )
                                         except Exception:
                                             pass
+                                        # This failure mode can happen without the NATS client's disconnected_cb firing
+                                        # (for example, when `_reading_task` dies first). Emit a one-time DOWN signal so
+                                        # readiness/stability reflect the incident immediately.
+                                        try:
+                                            _emit_down(kind=f"watchdog.{_tname}", err=_exc if isinstance(_exc, Exception) else None)
+                                        except Exception:
+                                            pass
                                         if _exc is not None:
                                             raise RuntimeError(_msg) from _exc
                                         raise RuntimeError(_msg)
@@ -4732,6 +4813,9 @@ class BootstrapService:
                                 route_prefixes = (
                                     f"route.to_browser.{hub_prefix}--",
                                     f"route.to_hub.{hub_prefix}--",
+                                    # v2 subjects include hubId as a separate token: route.v2.to_browser.<hubId>.<key>
+                                    f"route.v2.to_browser.{hub_prefix}.{hub_prefix}--",
+                                    f"route.v2.to_hub.{hub_prefix}.{hub_prefix}--",
                                 )
                                 include_extra = str(os.getenv("HUB_ROOT_LOG_SNAPSHOT_EXTRACT_EXTRA", "0") or "0").strip() == "1"
                                 extra_keywords = (
@@ -4813,7 +4897,36 @@ class BootstrapService:
                                                 tail_lines = ex.splitlines()
                                                 tail = "\n".join(tail_lines[-tail_n:]) if tail_lines else ""
                                                 if tail:
-                                                    print(f"[hub-io] root log extract tail file={fn2} lines={len(tail_lines)}")
+                                                    # Include best-effort recency hint: extracted tails can be old if
+                                                    # the upstream service has been quiet (e.g. only a few errors in nats.log).
+                                                    try:
+                                                        from datetime import datetime, timezone
+
+                                                        newest_ts = None
+                                                        for raw in reversed(tail_lines):
+                                                            try:
+                                                                token = (str(raw).strip().split(" ", 1)[0] or "").strip()
+                                                                if not token:
+                                                                    continue
+                                                                if token.endswith("Z"):
+                                                                    token = token[:-1] + "+00:00"
+                                                                dt = datetime.fromisoformat(token)
+                                                                if dt.tzinfo is None:
+                                                                    dt = dt.replace(tzinfo=timezone.utc)
+                                                                newest_ts = dt.timestamp()
+                                                                break
+                                                            except Exception:
+                                                                continue
+                                                        age_s = None
+                                                        if isinstance(newest_ts, (int, float)) and newest_ts > 0:
+                                                            age_s = round(max(0.0, time.time() - float(newest_ts)), 3)
+                                                    except Exception:
+                                                        newest_ts = None
+                                                        age_s = None
+                                                    print(
+                                                        f"[hub-io] root log extract tail file={fn2} lines={len(tail_lines)}"
+                                                        + (f" newest_age_s={age_s}" if age_s is not None else "")
+                                                    )
                                                     print(tail)
                                         except Exception:
                                             pass
