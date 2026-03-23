@@ -481,6 +481,9 @@ def _new_protocol_runtime() -> dict[str, Any]:
                 "name": "telegram",
                 "size": 0,
                 "max_size": None,
+                "durable_store": False,
+                "persist_path": "",
+                "persisted_size": 0,
                 "drained_total": 0,
                 "dropped_total": 0,
                 "publish_ok": 0,
@@ -499,6 +502,9 @@ def _new_protocol_runtime() -> dict[str, Any]:
                 "name": "llm",
                 "size": 0,
                 "max_size": None,
+                "durable_store": False,
+                "persist_path": "",
+                "persisted_size": 0,
                 "drained_total": 0,
                 "dropped_total": 0,
                 "publish_ok": 0,
@@ -1072,6 +1078,9 @@ def observe_hub_root_integration_outbox(
     *,
     size: int | None = None,
     max_size: int | None = None,
+    durable_store: bool | None = None,
+    persist_path: str | None = None,
+    persisted_size: int | None = None,
     drained: int | None = None,
     dropped: int | None = None,
     publish_ok: int | None = None,
@@ -1096,6 +1105,9 @@ def observe_hub_root_integration_outbox(
                 "name": key,
                 "size": 0,
                 "max_size": None,
+                "durable_store": False,
+                "persist_path": "",
+                "persisted_size": 0,
                 "drained_total": 0,
                 "dropped_total": 0,
                 "publish_ok": 0,
@@ -1115,6 +1127,12 @@ def observe_hub_root_integration_outbox(
             entry["size"] = max(0, int(size))
         if max_size is not None:
             entry["max_size"] = max(0, int(max_size))
+        if durable_store is not None:
+            entry["durable_store"] = bool(durable_store)
+        if persist_path is not None:
+            entry["persist_path"] = str(persist_path).strip()
+        if persisted_size is not None:
+            entry["persisted_size"] = max(0, int(persisted_size))
         if drained is not None:
             entry["drained_total"] = int(entry.get("drained_total") or 0) + max(0, int(drained))
         if dropped is not None:
@@ -2196,6 +2214,7 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
                 "flow_id": "hub_root.integration.telegram",
                 "operation_key_pattern": "tgop:<hub_id>:<bot_id>:<chat_id>:<digest>",
                 "delivery_class": "must_not_lose",
+                "hub_durable_outbox": True,
                 "dedupe_scope": "root_redis_ttl_window",
                 "ttl_s": 600,
             }
@@ -2210,6 +2229,82 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
                 "conflict_rule": "request_fingerprint_must_match",
             }
         ],
+    }
+
+
+def _hub_root_hardening_coverage_snapshot(protocol: dict[str, Any]) -> dict[str, Any]:
+    model = hub_root_protocol_model_snapshot()
+    tracked_streams = {
+        str(item.get("flow_id") or ""): item
+        for item in (model.get("tracked_streams") or [])
+        if isinstance(item, dict) and str(item.get("flow_id") or "").strip()
+    }
+    tracked_operation_keys = {
+        str(item.get("flow_id") or ""): item
+        for item in (model.get("tracked_operation_keys") or [])
+        if isinstance(item, dict) and str(item.get("flow_id") or "").strip()
+    }
+    tracked_request_keys = {
+        str(item.get("flow_id") or ""): item
+        for item in (model.get("tracked_request_keys") or [])
+        if isinstance(item, dict) and str(item.get("flow_id") or "").strip()
+    }
+    route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
+    route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+    outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+    tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
+
+    items: list[dict[str, Any]] = []
+    covered = 0
+    total = 0
+    for spec in HUB_ROOT_FLOW_SPECS:
+        flow_id = str(spec.flow_id or "")
+        if not flow_id.startswith("hub_root."):
+            continue
+        total += 1
+        mechanisms: list[str] = []
+        if flow_id in tracked_streams:
+            mechanisms.append("cursor_ack_stream")
+        if flow_id in tracked_operation_keys:
+            mechanisms.append("operation_key")
+            if bool(tracked_operation_keys[flow_id].get("hub_durable_outbox")) or bool(tg_outbox.get("durable_store")):
+                mechanisms.append("durable_hub_outbox")
+        if flow_id in tracked_request_keys:
+            mechanisms.append("request_id_cache")
+        if flow_id == "hub_root.route.control" and isinstance(route_flows.get("control"), dict):
+            mechanisms.append("route_flow_runtime")
+        if flow_id == "hub_root.route.frame" and isinstance(route_flows.get("frame"), dict):
+            mechanisms.append("route_flow_runtime")
+
+        required: list[str] = []
+        if flow_id in {"hub_root.control.lifecycle", "hub_root.integration.github_core_update"}:
+            required = ["cursor_ack_stream"]
+        elif flow_id == "hub_root.integration.telegram":
+            required = ["operation_key", "durable_hub_outbox"]
+        elif flow_id == "hub_root.integration.llm":
+            required = ["request_id_cache"]
+        elif flow_id in {"hub_root.route.control", "hub_root.route.frame"}:
+            required = ["route_flow_runtime"]
+
+        covered_flow = all(req in mechanisms for req in required) if required else bool(mechanisms)
+        if covered_flow:
+            covered += 1
+        items.append(
+            {
+                "flow_id": flow_id,
+                "delivery_class": spec.delivery_class.value,
+                "required": required,
+                "mechanisms": mechanisms,
+                "covered": covered_flow,
+            }
+        )
+
+    state = "complete" if total > 0 and covered >= total else "partial"
+    return {
+        "state": state,
+        "covered_flows": covered,
+        "total_flows": total,
+        "flows": items,
     }
 
 
@@ -2328,10 +2423,14 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
 
     telegram_size = int(telegram.get("size") or 0)
     telegram_max = telegram.get("max_size")
+    telegram_durable = bool(telegram.get("durable_store"))
     if telegram_size > 0:
         if state == "nominal":
             state = "pressure"
         reasons.append("integration_buffering")
+        if not telegram_durable:
+            state = "degraded"
+            reasons.append("integration_outbox_not_durable")
     if isinstance(telegram_max, int) and telegram_max > 0 and telegram_size >= telegram_max:
         if state == "nominal":
             state = "pressure"
@@ -2505,6 +2604,7 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             pending_acks += 1
     runtime["pending_ack_streams"] = pending_acks
     runtime["updated_ago_s"] = _round_age(now, runtime.get("updated_at"))
+    runtime["hardening_coverage"] = _hub_root_hardening_coverage_snapshot(runtime)
     runtime["control_authority"] = _hub_root_control_authority_snapshot(runtime)
     runtime["assessment"] = _hub_root_protocol_assessment(runtime)
     return runtime

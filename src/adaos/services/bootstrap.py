@@ -76,6 +76,7 @@ from adaos.services.realtime_sidecar import (
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.hub_root_outbox_store import load_outbox_items, outbox_store_path, save_outbox_items
 from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
 from adaos.services.scheduler import start_scheduler
@@ -1095,9 +1096,13 @@ class BootstrapService:
                     # Best-effort outbox for telegram replies when NATS is flapping.
                     try:
                         if not hasattr(self, "_tg_output_pending"):
-                            setattr(self, "_tg_output_pending", deque())
+                            setattr(self, "_tg_output_pending", load_outbox_items("telegram"))
+                        setattr(self, "_tg_output_persist_path", outbox_store_path("telegram"))
                     except Exception:
-                        pass
+                        try:
+                            setattr(self, "_tg_output_pending", deque())
+                        except Exception:
+                            pass
                     if realtime_enabled and realtime_remote_candidates:
                         last_ws_transport = "sidecar"
                         if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or trace:
@@ -2687,6 +2692,11 @@ class BootstrapService:
                                 except Exception:
                                     size0 = 0
                                 try:
+                                    persist_path0 = getattr(self, "_tg_output_persist_path", None)
+                                    persist_path0 = str(persist_path0) if persist_path0 else ""
+                                except Exception:
+                                    persist_path0 = ""
+                                try:
                                     max_outbox0 = int(os.getenv("HUB_TG_OUTBOX_MAX", "200") or "200")
                                 except Exception:
                                     max_outbox0 = 200
@@ -2695,6 +2705,9 @@ class BootstrapService:
                                         "telegram",
                                         size=size0,
                                         max_size=max_outbox0,
+                                        durable_store=True,
+                                        persist_path=persist_path0,
+                                        persisted_size=size0,
                                         drained=drained,
                                         dropped=dropped,
                                         publish_ok=publish_ok,
@@ -2705,6 +2718,18 @@ class BootstrapService:
                                     )
                                 except Exception:
                                     pass
+
+                            def _persist_tg_outbox() -> None:
+                                try:
+                                    q0 = getattr(self, "_tg_output_pending", None)
+                                    if q0 is None:
+                                        return
+                                    save_outbox_items("telegram", q0)
+                                except Exception:
+                                    try:
+                                        _report_tg_outbox(last_error="persist_failed")
+                                    except Exception:
+                                        pass
 
                             def _tg_subject_protocol(subj0: str, payload0: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
                                 try:
@@ -2786,6 +2811,7 @@ class BootstrapService:
                                                 q.popleft()
                                             except Exception:
                                                 pass
+                                            _persist_tg_outbox()
                                             drained += 1
                                             try:
                                                 observe_hub_root_protocol_publish(
@@ -2863,6 +2889,7 @@ class BootstrapService:
                                                             last_op = dropped_op
                                                         dropped += 1
                                                     q.append((subj, data, protocol_meta))
+                                                    _persist_tg_outbox()
                                                 except Exception:
                                                     return
                                                 try:

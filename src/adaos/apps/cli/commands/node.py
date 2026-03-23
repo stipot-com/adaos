@@ -87,6 +87,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         )
     if protocol:
         assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
+        coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}
         classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
         control_cls = classes.get("control") if isinstance(classes.get("control"), dict) else {}
         route_cls = classes.get("route") if isinstance(classes.get("route"), dict) else {}
@@ -124,9 +125,12 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"route_ctrl={route_control_flow.get('state') or '-'} "
             f"route_frame={route_frame_flow.get('state') or '-'} "
             f"tg_outbox={tg_outbox.get('size') or 0} "
+            f"tg_durable={'yes' if tg_outbox.get('durable_store') else 'no'} "
+            f"tg_persisted={tg_outbox.get('persisted_size') or 0} "
             f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
             f"llm_mode={llm_outbox.get('idempotency_mode') or '-'} "
             f"llm_cache={llm_outbox.get('cache_hit_total') or 0}/{llm_outbox.get('cache_miss_total') or 0} "
+            f"coverage={coverage.get('covered_flows') or 0}/{coverage.get('total_flows') or 0} "
             f"pending_acks={protocol.get('pending_ack_streams') or 0} "
             f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
             f"control_auth={control_authority.get('state') or '-'} "

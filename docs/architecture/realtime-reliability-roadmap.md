@@ -110,7 +110,7 @@ Strengthen the most critical control plane first.
 
 ### Status
 
-Checkpoint reached.
+Completed for the current `hub_root.*` flow inventory.
 Runtime now exposes explicit hub-root traffic classes with per-class pending budgets, live subscription/backpressure metrics, route runtime pressure, and integration outbox state.
 Route runtime now also separates `hub_root.route.control` and `hub_root.route.frame` semantics with distinct counters and state (`active` / `pressure` / `degraded`), so operators can tell whether the route layer is failing on tunnel lifecycle or on frame delivery.
 The critical control-plane state report `hub_root.control.lifecycle` is now also explicit: hub reports carry stable `stream_id/message_id/cursor`, hub persists pending ack state locally, and root rejects stale or duplicate lifecycle reports by cursor/message id.
@@ -118,9 +118,10 @@ The critical control-plane state report `hub_root.control.lifecycle` is now also
 Runtime now surfaces this as explicit `control_authority` state (`fresh` / `aging` / `stale` / `missing`), so operators can inspect control-plane freshness directly instead of parsing assessment reasons.
 The first concrete Class A stream is now explicit for `hub_root.integration.github_core_update`: hub reports carry stable `stream_id/message_id/cursor`, the hub persists pending ack state locally, and root rejects stale or duplicate state reports by cursor/message id.
 The selected retryable integration flow `hub_root.integration.telegram` now carries an explicit `operation_key`, and root suppresses duplicate Telegram sends inside a bounded Redis TTL window instead of relying on text-only heuristics.
+The hub-side Telegram outbox is now also persisted locally, so pending `must_not_lose` Telegram operations survive a hub restart and continue draining after reconnect instead of existing only in memory.
 The selected retryable integration flow `hub_root.integration.llm` now carries an explicit `request_id`, and root suppresses duplicate LLM retries by serving a bounded cached response when the same logical request is replayed with the same request fingerprint.
 Root-side report provenance is now queryable for the explicit control/core-update streams, including root receive time and ack result, so operators can verify protocol state without direct Redis inspection.
-Generalized Class A durability, inbox dedupe, and cursor-based replay are still pending for the remaining integration and control flows beyond lifecycle/core-update.
+Runtime now also exposes `hardening_coverage`, and for the current `hub_root.*` flow inventory the protocol layer reports complete coverage (`6/6`) across cursor/ack streams, route semantics, idempotency keys, request keys, and durable Telegram outbox handling.
 
 ### Work items
 
