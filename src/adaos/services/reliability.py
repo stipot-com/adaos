@@ -2096,6 +2096,7 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
                 "message_type": "state_report",
                 "ack_required": True,
                 "dedupe_scope": "cursor_and_message_id",
+                "heartbeat_expected_s": 15,
             },
             {
                 "flow_id": "hub_root.integration.github_core_update",
@@ -2178,14 +2179,15 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(entry, dict):
             continue
         pending = entry.get("pending")
-        if not isinstance(pending, dict):
-            continue
-        pending_age_s = pending.get("age_s")
+        pending_age_s = pending.get("age_s") if isinstance(pending, dict) else None
         traffic = str(entry.get("traffic_class") or "integration").strip().lower()
         cls = traffic_classes.get(traffic) if isinstance(traffic_classes.get(traffic), dict) else {}
         policy = cls.get("policy") if isinstance(cls.get("policy"), dict) else {}
         stale_after_s = int(policy.get("stale_authority_after_s") or 0)
         flow_id = str(entry.get("flow_id") or stream_id).strip()
+        ack_total = int(entry.get("ack_total") or 0)
+        last_issue_ago_s = entry.get("last_issue_ago_s")
+        last_ack_ago_s = entry.get("last_ack_ago_s")
         if isinstance(pending_age_s, (int, float)) and stale_after_s > 0 and float(pending_age_s) >= float(stale_after_s):
             state = "degraded"
             reasons.append(f"pending_ack_stale:{flow_id}")
@@ -2193,6 +2195,17 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
             if state == "nominal":
                 state = "pressure"
             reasons.append(f"pending_ack:{flow_id}")
+        elif flow_id == "hub_root.control.lifecycle" and stale_after_s > 0:
+            if ack_total <= 0 and isinstance(last_issue_ago_s, (int, float)) and float(last_issue_ago_s) >= float(stale_after_s):
+                state = "degraded"
+                reasons.append(f"ack_missing:{flow_id}")
+            elif isinstance(last_ack_ago_s, (int, float)) and float(last_ack_ago_s) >= float(stale_after_s):
+                state = "degraded"
+                reasons.append(f"stale_authority:{flow_id}")
+            elif isinstance(last_ack_ago_s, (int, float)) and float(last_ack_ago_s) >= max(5.0, float(stale_after_s) / 2.0):
+                if state == "nominal":
+                    state = "pressure"
+                reasons.append(f"aging_authority:{flow_id}")
 
     if not reasons:
         reasons.append("no_active_protocol_pressure")

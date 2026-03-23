@@ -493,6 +493,22 @@ class BootstrapService:
             except Exception:
                 self._log.debug("control lifecycle report failed trigger=%s", trigger, exc_info=True)
 
+        try:
+            _control_lifecycle_heartbeat_s = float(
+                os.getenv("HUB_CONTROL_LIFECYCLE_HEARTBEAT_S", "15") or "15"
+            )
+        except Exception:
+            _control_lifecycle_heartbeat_s = 15.0
+        if _control_lifecycle_heartbeat_s < 5.0:
+            _control_lifecycle_heartbeat_s = 5.0
+
+        async def _control_lifecycle_heartbeat() -> None:
+            if getattr(conf, "role", None) != "hub":
+                return
+            while True:
+                await asyncio.sleep(_control_lifecycle_heartbeat_s)
+                await _report_control_lifecycle("heartbeat")
+
         self._prepare_environment()
         # local adapter over LocalEventBus
         core_bus = self.ctx.bus if isinstance(self.ctx.bus, LocalEventBus) else LocalEventBus()
@@ -699,6 +715,12 @@ class BootstrapService:
             self._booted = True
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
             await _report_control_lifecycle("sys.ready")
+            self._boot_tasks.append(
+                asyncio.create_task(
+                    _control_lifecycle_heartbeat(),
+                    name="adaos-control-lifecycle-heartbeat",
+                )
+            )
         else:
             task = await self._member_register_and_heartbeat(conf)
             if task:

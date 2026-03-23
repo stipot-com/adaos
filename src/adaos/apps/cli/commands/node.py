@@ -123,6 +123,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"llm_cache={llm_outbox.get('cache_hit_total') or 0}/{llm_outbox.get('cache_miss_total') or 0} "
             f"pending_acks={protocol.get('pending_ack_streams') or 0} "
             f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
+            f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
         )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
