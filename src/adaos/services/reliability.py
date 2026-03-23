@@ -460,6 +460,8 @@ def _new_protocol_runtime() -> dict[str, Any]:
                 "publish_ok": 0,
                 "publish_fail": 0,
                 "connected": None,
+                "idempotency_mode": "operation_key",
+                "last_operation_key": "",
                 "last_error": "",
                 "last_error_at": 0.0,
                 "updated_at": 0.0,
@@ -970,6 +972,7 @@ def observe_hub_root_integration_outbox(
     publish_ok: int | None = None,
     publish_fail: int | None = None,
     connected: bool | None = None,
+    operation_key: str | None = None,
     last_error: str | None = None,
 ) -> None:
     key = str(name or "").strip().lower()
@@ -989,6 +992,8 @@ def observe_hub_root_integration_outbox(
                 "publish_ok": 0,
                 "publish_fail": 0,
                 "connected": None,
+                "idempotency_mode": "operation_key",
+                "last_operation_key": "",
                 "last_error": "",
                 "last_error_at": 0.0,
                 "updated_at": 0.0,
@@ -1008,6 +1013,8 @@ def observe_hub_root_integration_outbox(
             entry["publish_fail"] = int(entry.get("publish_fail") or 0) + max(0, int(publish_fail))
         if connected is not None:
             entry["connected"] = bool(connected)
+        if operation_key:
+            entry["last_operation_key"] = str(operation_key).strip()
         if last_error:
             entry["last_error"] = str(last_error).strip()
             entry["last_error_at"] = now
@@ -2053,6 +2060,15 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
                 "message_type": "state_report",
                 "ack_required": True,
                 "dedupe_scope": "cursor_and_message_id",
+            }
+        ],
+        "tracked_operation_keys": [
+            {
+                "flow_id": "hub_root.integration.telegram",
+                "operation_key_pattern": "tgop:<hub_id>:<bot_id>:<chat_id>:<digest>",
+                "delivery_class": "must_not_lose",
+                "dedupe_scope": "root_redis_ttl_window",
+                "ttl_s": 600,
             }
         ],
     }

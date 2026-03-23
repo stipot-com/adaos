@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json as _json
 import logging
 import os
@@ -2563,6 +2564,7 @@ class BootstrapService:
                                 dropped: int = 0,
                                 publish_ok: int = 0,
                                 publish_fail: int = 0,
+                                operation_key: str | None = None,
                                 last_error: str | None = None,
                             ) -> None:
                                 try:
@@ -2584,10 +2586,67 @@ class BootstrapService:
                                         publish_ok=publish_ok,
                                         publish_fail=publish_fail,
                                         connected=bool(getattr(self, "_tg_output_nats_nc", None)),
+                                        operation_key=operation_key,
                                         last_error=last_error,
                                     )
                                 except Exception:
                                     pass
+
+                            def _tg_subject_protocol(subj0: str, payload0: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+                                try:
+                                    payload_dict = dict(payload0 or {}) if isinstance(payload0, dict) else {}
+                                except Exception:
+                                    payload_dict = {}
+                                existing = payload_dict.get("_protocol")
+                                if isinstance(existing, dict) and str(existing.get("operation_key") or "").strip():
+                                    return payload_dict, existing
+                                parts = str(subj0 or "").split(".")
+                                bot_id = ""
+                                chat_id = ""
+                                if len(parts) >= 5 and parts[0] == "tg" and parts[1] == "output":
+                                    bot_id = str(parts[2] or "").strip()
+                                    if str(parts[3] or "").strip() == "chat":
+                                        chat_id = ".".join(parts[4:]).strip()
+                                target = payload_dict.get("target") if isinstance(payload_dict.get("target"), dict) else {}
+                                bot_id = str(target.get("bot_id") or bot_id or "main-bot").strip() or "main-bot"
+                                chat_id = str(target.get("chat_id") or chat_id).strip()
+                                hub_ref = str(target.get("hub_id") or hub_id or "").strip() or "unknown_hub"
+                                normalized = dict(payload_dict)
+                                normalized.pop("_protocol", None)
+                                try:
+                                    raw = _json.dumps(
+                                        {"subject": subj0, "payload": normalized},
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    )
+                                except Exception:
+                                    raw = _json.dumps({"subject": subj0, "repr": repr(normalized)}, ensure_ascii=False)
+                                digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                                protocol = {
+                                    "flow_id": "hub_root.integration.telegram",
+                                    "message_type": "command",
+                                    "delivery_class": "must_not_lose",
+                                    "stream_id": f"hub-integration:telegram:{hub_ref}:{bot_id}:{chat_id or 'unknown_chat'}",
+                                    "message_id": f"tgmsg:{digest[:24]}",
+                                    "operation_key": f"tgop:{hub_ref}:{bot_id}:{chat_id or 'unknown_chat'}:{digest[:24]}",
+                                    "authority_epoch": f"hub:{hub_ref}",
+                                    "issued_at": time.time(),
+                                    "ttl_ms": 600_000,
+                                }
+                                payload_dict["_protocol"] = protocol
+                                return payload_dict, protocol
+
+                            def _split_tg_outbox_item(item: Any) -> tuple[str, bytes, dict[str, Any] | None]:
+                                if isinstance(item, tuple):
+                                    if len(item) >= 3:
+                                        subj0 = str(item[0] or "")
+                                        data0 = bytes(item[1] or b"")
+                                        meta0 = item[2] if isinstance(item[2], dict) else None
+                                        return subj0, data0, meta0
+                                    if len(item) == 2:
+                                        return str(item[0] or ""), bytes(item[1] or b""), None
+                                return "", b"", None
 
                             # Drain outbox (replay replies produced while NATS was down/flapping).
                             try:
@@ -2601,7 +2660,7 @@ class BootstrapService:
                                         max_drain = 200
                                     while q and (max_drain <= 0 or drained < max_drain):
                                         try:
-                                            subj0, data0 = q[0]
+                                            subj0, data0, meta0 = _split_tg_outbox_item(q[0])
                                         except Exception:
                                             break
                                         try:
@@ -2623,6 +2682,13 @@ class BootstrapService:
                                                 )
                                             except Exception:
                                                 pass
+                                            try:
+                                                _report_tg_outbox(
+                                                    drained=1,
+                                                    operation_key=str((meta0 or {}).get("operation_key") or "").strip() or None,
+                                                )
+                                            except Exception:
+                                                pass
                                         except Exception:
                                             try:
                                                 observe_hub_root_protocol_publish(
@@ -2637,7 +2703,8 @@ class BootstrapService:
                                             break
                                     if drained and (hub_nats_verbose or trace):
                                         _rl_log("nats.outbox", f"[hub-io] tg outbox drained={drained}", every_s=1.0)
-                                    _report_tg_outbox(drained=drained)
+                                    if not drained:
+                                        _report_tg_outbox()
                                 else:
                                     _report_tg_outbox()
                             except Exception:
@@ -2655,8 +2722,10 @@ class BootstrapService:
                                             if not isinstance(subj, str) or not subj.startswith("tg.output."):
                                                 return
                                             try:
-                                                data = _json.dumps(ev.payload or {}, ensure_ascii=False).encode("utf-8")
+                                                payload_dict, protocol_meta = _tg_subject_protocol(subj, ev.payload or {})
+                                                data = _json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
                                             except Exception:
+                                                protocol_meta = None
                                                 data = b"{}"
                                             max_outbox = 200
                                             try:
@@ -2666,19 +2735,24 @@ class BootstrapService:
 
                                             def _queue() -> None:
                                                 dropped = 0
+                                                last_op = str((protocol_meta or {}).get("operation_key") or "").strip() or None
                                                 try:
                                                     q = getattr(self, "_tg_output_pending", None)
                                                     if q is None:
                                                         q = deque()
                                                         setattr(self, "_tg_output_pending", q)
                                                     while max_outbox > 0 and len(q) >= max_outbox:
-                                                        q.popleft()
+                                                        dropped_item = q.popleft()
+                                                        _, _, dropped_meta = _split_tg_outbox_item(dropped_item)
+                                                        dropped_op = str((dropped_meta or {}).get("operation_key") or "").strip() or None
+                                                        if dropped_op and not last_op:
+                                                            last_op = dropped_op
                                                         dropped += 1
-                                                    q.append((subj, data))
+                                                    q.append((subj, data, protocol_meta))
                                                 except Exception:
                                                     return
                                                 try:
-                                                    _report_tg_outbox(dropped=dropped)
+                                                    _report_tg_outbox(dropped=dropped, operation_key=last_op)
                                                 except Exception:
                                                     pass
 
@@ -2703,7 +2777,10 @@ class BootstrapService:
                                                     except Exception:
                                                         pass
                                                     try:
-                                                        _report_tg_outbox(publish_ok=1)
+                                                        _report_tg_outbox(
+                                                            publish_ok=1,
+                                                            operation_key=str((protocol_meta or {}).get("operation_key") or "").strip() or None,
+                                                        )
                                                     except Exception:
                                                         pass
                                                 except Exception:
@@ -2714,6 +2791,14 @@ class BootstrapService:
                                                             traffic_class="integration",
                                                             payload_bytes=len(data),
                                                             error="publish_failed",
+                                                        )
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        _report_tg_outbox(
+                                                            publish_fail=1,
+                                                            operation_key=str((protocol_meta or {}).get("operation_key") or "").strip() or None,
+                                                            last_error="publish_failed",
                                                         )
                                                     except Exception:
                                                         pass

@@ -109,6 +109,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"route_subs={route_cls.get('active_subscriptions') or 0} "
             f"route_backlog={route_runtime.get('pending_events') or 0} "
             f"tg_outbox={tg_outbox.get('size') or 0} "
+            f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
             f"pending_acks={protocol.get('pending_ack_streams') or 0} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
         )

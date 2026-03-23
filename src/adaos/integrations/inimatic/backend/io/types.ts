@@ -21,5 +21,6 @@ export type ChatOutputEvent = {
   target: { bot_id: string; hub_id: string; chat_id: string }
   messages: ChatOutputMessage[]
   options?: { replace_last?: boolean; reply_to?: number }
+  _protocol?: Record<string, any>
 }
 

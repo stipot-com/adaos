@@ -32,6 +32,26 @@ function limiter(chat_id: string): TokenBucket {
 	return b
 }
 
+function dedupeTtlSec(): number {
+	const raw = Number.parseInt(String(process.env['TG_OUTBOUND_DEDUPE_TTL_S'] || '600'), 10)
+	return Number.isFinite(raw) && raw > 0 ? raw : 600
+}
+
+function operationKey(out: ChatOutputEvent): string {
+	const protocol = (out as any)?._protocol
+	const explicit =
+		protocol && typeof protocol === 'object' && typeof protocol['operation_key'] === 'string'
+			? String(protocol['operation_key']).trim()
+			: ''
+	if (explicit) return explicit
+	const payload = JSON.stringify({
+		target: out.target,
+		messages: out.messages,
+		options: out.options ?? null,
+	})
+	return `fallback:${out.target.chat_id}:${hashText(payload)}`
+}
+
 function fileFromPathSync(filePath: string, mime = 'application/octet-stream'): File {
 	const data = fs.readFileSync(filePath)
 	return new File([data], path.basename(filePath), { type: mime })
@@ -64,22 +84,37 @@ export class TelegramSender {
 	constructor(private botToken: string) { }
 
 	async send(out: ChatOutputEvent): Promise<void> {
-		for (const m of out.messages) {
-			await this.sendOne(out, m)
+		const chat_id = out.target.chat_id
+		const opKey = operationKey(out)
+		for (const [index, m] of out.messages.entries()) {
+			const redisKey = `tg:outbound:op:${opKey}:${index}`
+			let reserved = false
+			try {
+				const accepted = await redis.set(
+					redisKey,
+					JSON.stringify({ chat_id, ts: Date.now(), index }),
+					'EX',
+					dedupeTtlSec(),
+					'NX',
+				)
+				if (accepted !== 'OK') {
+					log.info({ chat_id, operation_key: opKey, index }, 'telegram duplicate suppressed')
+					continue
+				}
+				reserved = true
+				await this.sendOne(out, m)
+			} catch (error) {
+				if (reserved) {
+					try { await redis.del(redisKey) } catch { }
+				}
+				throw error
+			}
 		}
 	}
 
 	private async sendOne(out: ChatOutputEvent, m: ChatOutputMessage) {
 		const chat_id = out.target.chat_id
 		const base = `https://api.telegram.org/bot${this.botToken}`
-
-		// simple outbound idempotency for text
-		if (m.type === 'text' && m.text) {
-			const key = `out:${chat_id}:${hashText(m.text)}`
-			const seen = await redis.get(key)
-			if (seen) return
-			await redis.set(key, '1', 'EX', 60)
-		}
 
 		// rate limit per chat
 		if (!(await limiter(chat_id).allow())) {
