@@ -23,6 +23,10 @@ The project must not start with sidecar or transport adapters as if they alone s
 - runtime reliability model is represented in code and exposed through `GET /api/node/reliability`
 - `adaos node reliability` surfaces readiness, degraded matrix, and channel diagnostics
 - Infra State shows realtime summary and transport diagnostics through Yjs-backed UI
+- runtime now exposes canonical channel overview entries for `hub_root`, `hub_root_browser`, and `browser_hub_sync`
+- runtime now exposes `hub_root_transport_strategy` with current transport, candidate list, recent attempts, reconnect/failure history, and active hypothesis parameters
+- CLI and Infra State now surface the current hub-root transport strategy instead of only the last readiness bit
+- detailed channel trace is no longer a default console behavior; summary/incident output remains visible while deep console trace is explicit opt-in
 - channel stability is now assessed from incidents and transport churn, not only from the last connected snapshot
 - repo workspace fallback exists for built-in skills, scenarios, and `webui.json`
 - built-in fallback for `web_desktop` restores the return path from scenario views when scenario assets are missing on a hub
@@ -32,6 +36,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 
 - hub-root readiness is observable, but delivery guarantees are not yet enforced by an explicit Class A protocol layer
 - route and root-control incident classes still need clearer separation
+- transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar ownership boundary is documented, but not yet the default hardened runtime path
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 

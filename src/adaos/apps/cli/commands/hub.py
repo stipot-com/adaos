@@ -53,12 +53,19 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     if json_output:
         _print(data, json_output=True)
         return
-    tree = (data or {}).get("readiness_tree") or {}
-    root = tree.get("root_control") or {}
-    route = tree.get("route") or {}
+    runtime = (data or {}).get("runtime") if isinstance((data or {}).get("runtime"), dict) else {}
+    overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+    strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
+    strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
+    root = overview.get("hub_root") if isinstance(overview.get("hub_root"), dict) else {}
+    route = overview.get("hub_root_browser") if isinstance(overview.get("hub_root_browser"), dict) else {}
     typer.echo(
-        f"root_control={root.get('status')}/{root.get('summary')} | "
-        f"route={route.get('status')}/{route.get('summary')}"
+        f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
+        f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
+        f"transport={strategy.get('effective_transport') or '-'} "
+        f"state={strategy_assessment.get('state') or 'unknown'} "
+        f"server={strategy.get('selected_server') or '-'} "
+        f"last={strategy.get('last_event') or '-'}"
     )
 
 
@@ -80,13 +87,19 @@ def hub_root_watch(
             r = requests.get(url, headers=headers, timeout=5.0)
             r.raise_for_status()
             data = r.json()
-            tree = (data or {}).get("readiness_tree") or {}
-            root = tree.get("root_control") or {}
-            route = tree.get("route") or {}
+            runtime = (data or {}).get("runtime") if isinstance((data or {}).get("runtime"), dict) else {}
+            overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+            strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
+            strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
+            root = overview.get("hub_root") if isinstance(overview.get("hub_root"), dict) else {}
+            route = overview.get("hub_root_browser") if isinstance(overview.get("hub_root_browser"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
-                f"{ts} root_control={root.get('status')} route={route.get('status')} "
-                f"root={root.get('details', {})} route_details={route.get('details', {})}"
+                f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
+                f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} "
+                f"transport={strategy.get('effective_transport') or '-'} "
+                f"state={strategy_assessment.get('state') or 'unknown'} "
+                f"last={strategy.get('last_event') or '-'}"
             )
         except KeyboardInterrupt:
             raise

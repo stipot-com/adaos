@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 
 class MessageTaxonomy(str, Enum):
@@ -270,12 +271,278 @@ _LOCK = threading.RLock()
 _INTEGRATION_NAMES = ("telegram", "github", "llm")
 _CHANNEL_NAMES = ("root_control", "route")
 _CHANNEL_HISTORY_LIMIT = 128
+_TRANSPORT_HISTORY_LIMIT = 64
+_UNSET = object()
 _ROOT_CONTROL = RuntimeSignal()
 _ROUTE = RuntimeSignal()
 _INTEGRATIONS: dict[str, RuntimeSignal] = {name: RuntimeSignal() for name in _INTEGRATION_NAMES}
 _CHANNEL_HISTORY: dict[str, deque[dict[str, Any]]] = {
     name: deque(maxlen=_CHANNEL_HISTORY_LIMIT) for name in _CHANNEL_NAMES
 }
+_HUB_ROOT_TRANSPORT_STATE: dict[str, Any] = {
+    "requested_transport": None,
+    "effective_transport": None,
+    "selected_server": None,
+    "url_override": None,
+    "current_ws_tag": None,
+    "last_event": "",
+    "last_error": "",
+    "last_summary": "",
+    "attempt_seq": 0,
+    "last_attempt_at": 0.0,
+    "last_connected_at": 0.0,
+    "last_failure_at": 0.0,
+    "candidates": [],
+    "failover_policy": {},
+    "hypothesis": {},
+    "updated_at": 0.0,
+}
+_HUB_ROOT_TRANSPORT_HISTORY: deque[dict[str, Any]] = deque(maxlen=_TRANSPORT_HISTORY_LIMIT)
+
+
+def _copy_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _dedup_texts(items: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(items, (list, tuple)):
+        return result
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _hub_root_transport_from_server(server: str | None, *, explicit_transport: str | None = None) -> str | None:
+    explicit = str(explicit_transport or "").strip().lower()
+    if explicit:
+        return explicit
+    text = str(server or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = urlparse(text)
+        scheme = str(parsed.scheme or "").strip().lower()
+    except Exception:
+        scheme = ""
+    if scheme in {"ws", "wss"}:
+        return "ws"
+    if scheme in {"nats", "tls"}:
+        return "tcp"
+    if scheme in {"http", "https"}:
+        return "sidecar"
+    return None
+
+
+def configure_hub_root_transport_strategy(
+    *,
+    requested_transport: Any = _UNSET,
+    effective_transport: Any = _UNSET,
+    selected_server: Any = _UNSET,
+    url_override: Any = _UNSET,
+    current_ws_tag: Any = _UNSET,
+    candidates: Any = _UNSET,
+    failover_policy: Any = _UNSET,
+    hypothesis: Any = _UNSET,
+) -> None:
+    with _LOCK:
+        state = _HUB_ROOT_TRANSPORT_STATE
+        if requested_transport is not _UNSET:
+            state["requested_transport"] = str(requested_transport or "").strip().lower() or None
+        if effective_transport is not _UNSET or selected_server is not _UNSET:
+            state["effective_transport"] = _hub_root_transport_from_server(
+                selected_server if selected_server is not _UNSET else state.get("selected_server"),
+                explicit_transport=effective_transport if effective_transport is not _UNSET else None,
+            )
+        if selected_server is not _UNSET:
+            state["selected_server"] = str(selected_server or "").strip() or None
+        if url_override is not _UNSET:
+            state["url_override"] = str(url_override or "").strip() or None
+        if current_ws_tag is not _UNSET:
+            state["current_ws_tag"] = str(current_ws_tag or "").strip() or None
+        if candidates is not _UNSET:
+            state["candidates"] = _dedup_texts(candidates)
+        if failover_policy is not _UNSET:
+            state["failover_policy"] = _copy_dict(failover_policy)
+        if hypothesis is not _UNSET:
+            state["hypothesis"] = _copy_dict(hypothesis)
+        state["updated_at"] = time.time()
+
+
+def record_hub_root_transport_event(
+    event: str,
+    *,
+    transport: str | None = None,
+    server: str | None = None,
+    summary: str = "",
+    error: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    evt = str(event or "").strip().lower() or "event"
+    srv = str(server or "").strip() or None
+    tr = _hub_root_transport_from_server(srv, explicit_transport=transport)
+    err = str(error or "").strip() or None
+    ts = time.time()
+    record = {
+        "ts": ts,
+        "event": evt,
+        "transport": tr,
+        "server": srv,
+        "summary": str(summary or ""),
+        "error": err,
+        "details": dict(details or {}),
+    }
+    with _LOCK:
+        state = _HUB_ROOT_TRANSPORT_STATE
+        if tr:
+            state["effective_transport"] = tr
+        if srv:
+            state["selected_server"] = srv
+        state["last_event"] = evt
+        state["last_summary"] = str(summary or "")
+        if err:
+            state["last_error"] = err
+        if evt in {"attempt", "connect_try", "reconnect_requested"}:
+            state["attempt_seq"] = int(state.get("attempt_seq") or 0) + 1
+            state["last_attempt_at"] = ts
+        if evt in {"connected", "ready", "reconnected"}:
+            state["last_connected_at"] = ts
+            state["last_error"] = ""
+        if evt in {"connect_failed", "down", "disconnected", "watchdog_error", "supervisor_error", "reader_terminated"}:
+            state["last_failure_at"] = ts
+        state["updated_at"] = ts
+        _HUB_ROOT_TRANSPORT_HISTORY.append(record)
+
+
+def _hub_root_transport_assessment(history: list[dict[str, Any]], *, now_ts: float) -> dict[str, Any]:
+    failure_events = {
+        "connect_failed",
+        "down",
+        "disconnected",
+        "watchdog_error",
+        "supervisor_error",
+        "reader_terminated",
+    }
+    connect_events = {"connected", "ready", "reconnected"}
+    threshold_5m = now_ts - 300.0
+    threshold_15m = now_ts - 900.0
+    failures_5m = 0
+    failures_15m = 0
+    connects_15m = 0
+    attempts_15m = 0
+    transports_15m: list[str] = []
+    last_event = ""
+    last_failure_at: float | None = None
+    last_connected_at: float | None = None
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = float(item.get("ts") or 0.0)
+        except Exception:
+            ts = 0.0
+        if ts <= 0.0:
+            continue
+        event = str(item.get("event") or "").strip().lower()
+        if ts >= threshold_15m:
+            if event in {"attempt", "connect_try", "reconnect_requested"}:
+                attempts_15m += 1
+            if event in connect_events:
+                connects_15m += 1
+            if event in failure_events:
+                failures_15m += 1
+            transport = str(item.get("transport") or "").strip().lower()
+            if transport:
+                transports_15m.append(transport)
+        if ts >= threshold_5m and event in failure_events:
+            failures_5m += 1
+        if event in connect_events:
+            last_connected_at = ts
+        if event in failure_events:
+            last_failure_at = ts
+        last_event = event or last_event
+
+    transport_switches_15m = 0
+    prev_transport = ""
+    for transport in transports_15m:
+        if not transport:
+            continue
+        if prev_transport and transport != prev_transport:
+            transport_switches_15m += 1
+        prev_transport = transport
+
+    last_failure_ago_s = _round_age(now_ts, last_failure_at)
+    state = "unknown"
+    reason = "hub-root transport has not been observed enough yet"
+    if last_failure_ago_s is not None and last_failure_ago_s <= 30.0 and (
+        last_connected_at is None or (isinstance(last_failure_at, (int, float)) and last_failure_at >= float(last_connected_at or 0.0))
+    ):
+        state = "down"
+        reason = "latest hub-root transport incident is fresh and no newer successful reconnect is recorded"
+    elif failures_5m >= 2 or transport_switches_15m >= 2:
+        state = "flapping"
+        reason = "multiple recent transport failures or transport switches were recorded"
+    elif failures_15m >= 1 or attempts_15m > max(1, connects_15m):
+        state = "unstable"
+        reason = "recent reconnect attempts or failures indicate an unstable hub-root transport"
+    elif last_connected_at is not None:
+        state = "stable"
+        reason = "hub-root transport has a recent successful connect without fresh failures"
+
+    return {
+        "state": state,
+        "reason": reason,
+        "last_event": last_event or None,
+        "failures_5m": failures_5m,
+        "failures_15m": failures_15m,
+        "attempts_15m": attempts_15m,
+        "connects_15m": connects_15m,
+        "transport_switches_15m": transport_switches_15m,
+        "last_failure_at": last_failure_at,
+        "last_failure_ago_s": last_failure_ago_s,
+        "last_connected_at": last_connected_at,
+        "last_connected_ago_s": _round_age(now_ts, last_connected_at),
+    }
+
+
+def hub_root_transport_strategy_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    with _LOCK:
+        state = {
+            "requested_transport": _HUB_ROOT_TRANSPORT_STATE.get("requested_transport"),
+            "effective_transport": _HUB_ROOT_TRANSPORT_STATE.get("effective_transport"),
+            "selected_server": _HUB_ROOT_TRANSPORT_STATE.get("selected_server"),
+            "url_override": _HUB_ROOT_TRANSPORT_STATE.get("url_override"),
+            "current_ws_tag": _HUB_ROOT_TRANSPORT_STATE.get("current_ws_tag"),
+            "last_event": _HUB_ROOT_TRANSPORT_STATE.get("last_event"),
+            "last_error": _HUB_ROOT_TRANSPORT_STATE.get("last_error"),
+            "last_summary": _HUB_ROOT_TRANSPORT_STATE.get("last_summary"),
+            "attempt_seq": int(_HUB_ROOT_TRANSPORT_STATE.get("attempt_seq") or 0),
+            "last_attempt_at": _HUB_ROOT_TRANSPORT_STATE.get("last_attempt_at"),
+            "last_connected_at": _HUB_ROOT_TRANSPORT_STATE.get("last_connected_at"),
+            "last_failure_at": _HUB_ROOT_TRANSPORT_STATE.get("last_failure_at"),
+            "candidates": list(_HUB_ROOT_TRANSPORT_STATE.get("candidates") or []),
+            "failover_policy": _copy_dict(_HUB_ROOT_TRANSPORT_STATE.get("failover_policy")),
+            "hypothesis": _copy_dict(_HUB_ROOT_TRANSPORT_STATE.get("hypothesis")),
+            "updated_at": _HUB_ROOT_TRANSPORT_STATE.get("updated_at"),
+        }
+        history = list(_HUB_ROOT_TRANSPORT_HISTORY)
+    state["effective_transport"] = _hub_root_transport_from_server(
+        state.get("selected_server"),
+        explicit_transport=state.get("effective_transport"),
+    )
+    state["assessment"] = _hub_root_transport_assessment(history, now_ts=now)
+    state["updated_ago_s"] = _round_age(now, state.get("updated_at"))
+    state["last_attempt_ago_s"] = _round_age(now, state.get("last_attempt_at"))
+    state["last_connected_ago_s"] = _round_age(now, state.get("last_connected_at"))
+    state["last_failure_ago_s"] = _round_age(now, state.get("last_failure_at"))
+    state["recent_events"] = history[-10:]
+    return state
 
 
 def _set_signal(
@@ -343,6 +610,27 @@ def reset_reliability_runtime_state() -> None:
             _set_signal(_INTEGRATIONS[name], status=ReadinessStatus.UNKNOWN)
         for name in _CHANNEL_NAMES:
             _CHANNEL_HISTORY.setdefault(name, deque(maxlen=_CHANNEL_HISTORY_LIMIT)).clear()
+        _HUB_ROOT_TRANSPORT_STATE.update(
+            {
+                "requested_transport": None,
+                "effective_transport": None,
+                "selected_server": None,
+                "url_override": None,
+                "current_ws_tag": None,
+                "last_event": "",
+                "last_error": "",
+                "last_summary": "",
+                "attempt_seq": 0,
+                "last_attempt_at": 0.0,
+                "last_connected_at": 0.0,
+                "last_failure_at": 0.0,
+                "candidates": [],
+                "failover_policy": {},
+                "hypothesis": {},
+                "updated_at": 0.0,
+            }
+        )
+        _HUB_ROOT_TRANSPORT_HISTORY.clear()
 
 
 def mark_root_control_up(*, summary: str = "hub-root control session established", details: dict[str, Any] | None = None) -> None:
@@ -504,6 +792,32 @@ def runtime_signal_snapshot() -> dict[str, Any]:
             "route": _ROUTE.to_dict(),
             "integrations": {name: signal.to_dict() for name, signal in sorted(_INTEGRATIONS.items())},
         }
+
+
+def effective_channel_view(
+    channel_id: str,
+    *,
+    tree_item: dict[str, Any],
+    diag_item: dict[str, Any],
+    transport_assessment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    status = str(tree_item.get("status") or diag_item.get("status") or ReadinessStatus.UNKNOWN.value)
+    stability = diag_item.get("stability") if isinstance(diag_item.get("stability"), dict) else {}
+    effective_state = str(stability.get("state") or "unknown")
+    assessment = transport_assessment if isinstance(transport_assessment, dict) else {}
+    transport_state = str(assessment.get("state") or "").strip().lower()
+    if channel_id in {"root_control", "route"} and transport_state in {"down", "unstable", "flapping"}:
+        if status == ReadinessStatus.READY.value:
+            status = ReadinessStatus.DEGRADED.value
+        elif status == ReadinessStatus.UNKNOWN.value and transport_state == "down":
+            status = ReadinessStatus.DOWN.value
+        if effective_state in {"stable", "unknown"} or transport_state == "down":
+            effective_state = transport_state
+    return {
+        "status": status,
+        "state": effective_state,
+        "stability": stability,
+    }
 
 
 def _history_count(entries: list[dict[str, Any]], *, within_s: float, now_ts: float, ready: bool | None = None) -> int:
@@ -1149,6 +1463,69 @@ def build_degraded_matrix(*, role: str, readiness_tree: dict[str, Any]) -> dict[
     return base
 
 
+def channel_overview_snapshot(
+    *,
+    readiness_tree: dict[str, Any],
+    channel_diagnostics: dict[str, Any],
+    transport_strategy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    strategy = transport_strategy if isinstance(transport_strategy, dict) else {}
+    assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
+
+    root_tree = readiness_tree.get("root_control") if isinstance(readiness_tree.get("root_control"), dict) else {}
+    root_diag = channel_diagnostics.get("root_control") if isinstance(channel_diagnostics.get("root_control"), dict) else {}
+    route_tree = readiness_tree.get("route") if isinstance(readiness_tree.get("route"), dict) else {}
+    route_diag = channel_diagnostics.get("route") if isinstance(channel_diagnostics.get("route"), dict) else {}
+    sync_tree = readiness_tree.get("sync") if isinstance(readiness_tree.get("sync"), dict) else {}
+    sync_diag: dict[str, Any] = {}
+
+    hub_root = effective_channel_view(
+        "root_control",
+        tree_item=root_tree,
+        diag_item=root_diag,
+        transport_assessment=assessment,
+    )
+    hub_root_browser = effective_channel_view(
+        "route",
+        tree_item=route_tree,
+        diag_item=route_diag,
+        transport_assessment=assessment,
+    )
+    browser_hub_sync = effective_channel_view(
+        "sync",
+        tree_item=sync_tree,
+        diag_item=sync_diag,
+        transport_assessment={},
+    )
+
+    return {
+        "hub_root": {
+            "channel_id": "root_control",
+            "title": "Hub -> Root control",
+            "effective_status": hub_root.get("status"),
+            "effective_state": hub_root.get("state"),
+            "readiness": root_tree,
+            "diagnostics": root_diag,
+        },
+        "hub_root_browser": {
+            "channel_id": "route",
+            "title": "Hub -> Root -> Browser relay",
+            "effective_status": hub_root_browser.get("status"),
+            "effective_state": hub_root_browser.get("state"),
+            "readiness": route_tree,
+            "diagnostics": route_diag,
+        },
+        "browser_hub_sync": {
+            "channel_id": "sync",
+            "title": "Browser -> Hub sync",
+            "effective_status": browser_hub_sync.get("status"),
+            "effective_state": browser_hub_sync.get("state"),
+            "readiness": sync_tree,
+            "diagnostics": sync_diag,
+        },
+    }
+
+
 def reliability_model_snapshot() -> dict[str, Any]:
     return {
         "message_taxonomy": [item.value for item in MessageTaxonomy],
@@ -1172,6 +1549,7 @@ def reliability_snapshot(
     connected_to_hub: bool | None,
 ) -> dict[str, Any]:
     channel_diagnostics = channel_diagnostics_snapshot()
+    transport_strategy = hub_root_transport_strategy_snapshot()
     readiness_tree = build_readiness_tree(
         role=role,
         local_ready=local_ready,
@@ -1181,6 +1559,11 @@ def reliability_snapshot(
         channel_diagnostics=channel_diagnostics,
     )
     degraded_matrix = build_degraded_matrix(role=role, readiness_tree=readiness_tree)
+    channel_overview = channel_overview_snapshot(
+        readiness_tree=readiness_tree,
+        channel_diagnostics=channel_diagnostics,
+        transport_strategy=transport_strategy,
+    )
     return {
         "ok": True,
         "node": {
@@ -1199,5 +1582,7 @@ def reliability_snapshot(
             "readiness_tree": readiness_tree,
             "degraded_matrix": degraded_matrix,
             "channel_diagnostics": channel_diagnostics,
+            "channel_overview": channel_overview,
+            "hub_root_transport_strategy": transport_strategy,
         },
     }

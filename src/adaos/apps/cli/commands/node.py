@@ -48,12 +48,33 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     tree = runtime.get("readiness_tree") if isinstance(runtime.get("readiness_tree"), dict) else {}
     matrix = runtime.get("degraded_matrix") if isinstance(runtime.get("degraded_matrix"), dict) else {}
     channel_diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
+    channel_overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+    strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
+    strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
 
     typer.echo(
         f"node={node.get('node_id') or '?'} role={node.get('role') or '?'} "
         f"ready={bool(node.get('ready'))} state={node.get('node_state') or '?'}"
     )
+    if channel_overview:
+        for name in ("hub_root", "hub_root_browser", "browser_hub_sync"):
+            item = channel_overview.get(name) if isinstance(channel_overview.get(name), dict) else {}
+            if item:
+                typer.echo(
+                    f"{name}: {item.get('effective_status') or 'unknown'}/"
+                    f"{item.get('effective_state') or 'unknown'}"
+                )
+    if strategy:
+        typer.echo(
+            "hub_root.transport: "
+            f"requested={strategy.get('requested_transport') or '-'} "
+            f"effective={strategy.get('effective_transport') or '-'} "
+            f"state={strategy_assessment.get('state') or 'unknown'} "
+            f"server={strategy.get('selected_server') or '-'} "
+            f"last={strategy.get('last_event') or '-'} "
+            f"attempts={strategy.get('attempt_seq') if strategy.get('attempt_seq') is not None else '?'}"
+        )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}
         typer.echo(f"{name}: {item.get('status') or 'unknown'}")

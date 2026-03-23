@@ -45,6 +45,8 @@ from adaos.services.nats_config import (
 )
 from adaos.services.reliability import (
     ReadinessStatus,
+    configure_hub_root_transport_strategy,
+    hub_root_transport_strategy_snapshot,
     mark_root_control_down,
     note_root_control_reconnect,
     mark_root_control_up,
@@ -52,6 +54,7 @@ from adaos.services.reliability import (
     mark_route_ready,
     note_route_incident,
     observe_route_e2e,
+    record_hub_root_transport_event,
     set_integration_readiness,
 )
 from adaos.services.realtime_sidecar import (
@@ -82,6 +85,51 @@ def _env_truthy(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _hub_channel_console_trace_enabled() -> bool:
+    return _env_truthy(os.getenv("HUB_CHANNEL_CONSOLE_TRACE"), default=False)
+
+
+def _hub_channel_console_allow_rl(key: str, msg: str) -> bool:
+    if _hub_channel_console_trace_enabled():
+        return True
+    text = str(msg or "")
+    detail_prefixes = (
+        "nats.ws_diag",
+        "nats.ws_eof",
+        "nats.env",
+        "nats.transport",
+        "nats.ws_hb",
+        "nats.ws_tag",
+        "nats.keepalive",
+        "nats.connect_try",
+        "nats.try",
+        "root.snap",
+        "root.snap_fail",
+        "nats.sidecar_route",
+        "nats.sidecar_unready",
+        "hub-route.probe_resend",
+        "hub-route.probe_resend_cfg",
+    )
+    if any(str(key or "").startswith(prefix) for prefix in detail_prefixes):
+        return False
+    if "[hub-io] nats ws diag:" in text:
+        return False
+    return True
+
+
+def _hub_root_transport_kind(server: str | None) -> str | None:
+    text = str(server or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith(("ws://", "wss://")):
+        return "ws"
+    if text.startswith(("nats://", "tls://")):
+        return "tcp"
+    if text.startswith(("http://", "https://")):
+        return "sidecar"
+    return None
 
 
 def _hub_nats_prefer_dedicated() -> str:
@@ -247,6 +295,23 @@ class BootstrapService:
         elif url_override is not None:
             # Explicit empty override clears it.
             os.environ.pop("HUB_NATS_URL_OVERRIDE", None)
+        try:
+            strategy_update: dict[str, Any] = {}
+            if transport is not None:
+                strategy_update["requested_transport"] = tr
+            if url_override is not None:
+                strategy_update["url_override"] = override
+            if strategy_update:
+                configure_hub_root_transport_strategy(**strategy_update)
+            record_hub_root_transport_event(
+                "reconnect_requested",
+                transport=tr,
+                server=override,
+                summary="manual hub-root reconnect requested",
+                details={"requested_transport": tr, "url_override": override},
+            )
+        except Exception:
+            pass
         # Trigger reconnect by closing the active connection if present.
         nc = getattr(self, "_hub_root_nc", None)
         if nc is not None:
@@ -259,6 +324,7 @@ class BootstrapService:
         return {
             "ok": True,
             "requested": {"transport": tr, "url_override": override},
+            "strategy": hub_root_transport_strategy_snapshot(),
         }
 
     def _prepare_environment(self) -> None:
@@ -678,6 +744,8 @@ class BootstrapService:
                     Uses monotonic time to avoid being affected by clock changes.
                     """
                     try:
+                        if not _hub_channel_console_allow_rl(key, msg):
+                            return
                         now = time.monotonic()
                         last = nats_last_log_at.get(key, 0.0)
                         if now - last < every_s:
@@ -1158,6 +1226,34 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                            try:
+                                configure_hub_root_transport_strategy(
+                                    requested_transport=str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower() or None,
+                                    selected_server=nats_last_server or nats_attempt_server or (candidates[0] if candidates else None),
+                                    url_override=str(os.getenv("HUB_NATS_URL_OVERRIDE", "") or "").strip() or None,
+                                    candidates=list(candidates),
+                                    failover_policy={
+                                        "sidecar_enabled": bool(realtime_enabled),
+                                        "sidecar_remote_candidates": list(remote_candidates),
+                                        "allow_tcp_fallback": _env_truthy(
+                                            os.getenv("ADAOS_REALTIME_ALLOW_TCP_FALLBACK"),
+                                            default=False,
+                                        ),
+                                        "ws_impl_auto_fallback": _env_truthy(
+                                            os.getenv("HUB_NATS_WS_AUTO_FALLBACK"),
+                                            default=False,
+                                        ),
+                                    },
+                                    hypothesis={
+                                        "selector_loop": bool(os.name == "nt" and os.getenv("ADAOS_WIN_SELECTOR_LOOP", "0") == "1"),
+                                        "ws_impl": str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip() or None,
+                                        "raw_keepalive": _env_truthy(os.getenv("HUB_NATS_RAW_KEEPALIVE"), default=False),
+                                        "rx_timeout_s": str(os.getenv("HUB_NATS_RX_TIMEOUT_S", "") or "").strip() or None,
+                                    },
+                                )
+                            except Exception:
+                                pass
+
                             hub_nats_verbose = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                             hub_nats_quiet = os.getenv("HUB_NATS_QUIET", "1") == "1"
                             if hub_nats_verbose or not hub_nats_quiet:
@@ -1167,6 +1263,21 @@ class BootstrapService:
                                 nonlocal reported_down
                                 if not reported_down:
                                     et = type(err).__name__ if err else kind
+                                    log_server = _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    )
+                                    try:
+                                        record_hub_root_transport_event(
+                                            "down" if kind in {"disconnected", "eof"} else kind,
+                                            transport=_hub_root_transport_kind(log_server),
+                                            server=log_server,
+                                            summary=f"hub-root transport down ({kind})",
+                                            error=str(err) if err else None,
+                                            details={"kind": kind},
+                                        )
+                                    except Exception:
+                                        pass
                                     # Produce a richer one-time diagnostics line to aid debugging WS/TLS/DNS issues
                                     if hub_nats_verbose or not hub_nats_quiet:
                                         try:
@@ -1202,10 +1313,7 @@ class BootstrapService:
                                             details={
                                                 "kind": kind,
                                                 "error": str(err) if err else None,
-                                                "server": _resolve_nats_log_server(
-                                                    current_attempt=nats_attempt_server,
-                                                    connected_server=nats_last_server,
-                                                ),
+                                                "server": log_server,
                                             },
                                         )
                                         mark_route_degraded(
@@ -1219,6 +1327,10 @@ class BootstrapService:
                             def _emit_up() -> None:
                                 nonlocal reported_down
                                 if reported_down:
+                                    log_server = _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    )
                                     if hub_nats_verbose or not hub_nats_quiet:
                                         try:
                                             print("[hub-io] nats connection restored")
@@ -1229,13 +1341,20 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     try:
+                                        record_hub_root_transport_event(
+                                            "connected",
+                                            transport=_hub_root_transport_kind(log_server),
+                                            server=log_server,
+                                            summary="hub-root control session established",
+                                            details={"ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None},
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
                                         mark_root_control_up(
                                             summary="hub-root control session established",
                                             details={
-                                                "server": _resolve_nats_log_server(
-                                                    current_attempt=nats_attempt_server,
-                                                    connected_server=nats_last_server,
-                                                ),
+                                                "server": log_server,
                                                 "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                             },
                                         )
@@ -1876,6 +1995,26 @@ class BootstrapService:
                                             )
                                     except Exception:
                                         pass
+                                    try:
+                                        configure_hub_root_transport_strategy(
+                                            effective_transport=_hub_root_transport_kind(connect_server),
+                                            selected_server=connect_server,
+                                            current_ws_tag=ws_connect_tag if isinstance(ws_connect_tag, str) else None,
+                                            hypothesis={
+                                                "selector_loop": bool(os.name == "nt" and os.getenv("ADAOS_WIN_SELECTOR_LOOP", "0") == "1"),
+                                                "ws_impl": str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip() or None,
+                                                "raw_keepalive": _env_truthy(os.getenv("HUB_NATS_RAW_KEEPALIVE"), default=False),
+                                            },
+                                        )
+                                        record_hub_root_transport_event(
+                                            "attempt",
+                                            transport=_hub_root_transport_kind(connect_server),
+                                            server=connect_server,
+                                            summary="hub-root connect attempt started",
+                                            details={"ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None},
+                                        )
+                                    except Exception:
+                                        pass
                                     # Keepalive:
                                     # - Root's ws-nats-proxy sends NATS `PING\r\n` frames to the hub, but those
                                     #   only keep the WS tunnel alive if the hub actually replies with `PONG\r\n`.
@@ -1923,6 +2062,21 @@ class BootstrapService:
                                                 f"[hub-io] nats keepalive ping_interval={ping_interval}s max_outstanding_pings={max_outstanding_pings}",
                                                 every_s=60.0,
                                             )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        configure_hub_root_transport_strategy(
+                                            effective_transport=_hub_root_transport_kind(connect_server),
+                                            selected_server=connect_server,
+                                            current_ws_tag=ws_connect_tag if isinstance(ws_connect_tag, str) else None,
+                                            hypothesis={
+                                                "selector_loop": bool(os.name == "nt" and os.getenv("ADAOS_WIN_SELECTOR_LOOP", "0") == "1"),
+                                                "ws_impl": str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip() or None,
+                                                "raw_keepalive": _env_truthy(os.getenv("HUB_NATS_RAW_KEEPALIVE"), default=False),
+                                                "ping_interval_s": ping_interval,
+                                                "max_outstanding_pings": max_outstanding_pings,
+                                            },
+                                        )
                                     except Exception:
                                         pass
                                     await asyncio.wait_for(
@@ -2029,6 +2183,17 @@ class BootstrapService:
                                                 f"[hub-io] nats ws diag: tag={ws_connect_tag} server={locals().get('connect_server', None)} err={type(e).__name__} closed={ws_closed} close_code={ws_close_code} ws_exc={ws_exc}",
                                                 every_s=2.0,
                                             )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        record_hub_root_transport_event(
+                                            "connect_failed",
+                                            transport=_hub_root_transport_kind(locals().get("connect_server", None)),
+                                            server=locals().get("connect_server", None),
+                                            summary="hub-root connect attempt failed",
+                                            error=str(e),
+                                            details={"ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None},
+                                        )
                                     except Exception:
                                         pass
 
@@ -2446,12 +2611,40 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     try:
+                                        record_hub_root_transport_event(
+                                            "reconnected",
+                                            transport=_hub_root_transport_kind(connected_server),
+                                            server=connected_server,
+                                            summary="hub-root transport websocket tag changed after reconnect",
+                                            details=reconnect_payload,
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
                                         self.ctx.bus.publish(
                                             Event(type="subnet.nats.reconnect", payload=reconnect_payload, source="io.nats")
                                         )
                                     except Exception:
                                         pass
                                 established_ws_tag = ws_connect_tag if isinstance(ws_connect_tag, str) and ws_connect_tag else established_ws_tag
+                            except Exception:
+                                pass
+                            try:
+                                configure_hub_root_transport_strategy(
+                                    effective_transport=_hub_root_transport_kind(connected_server),
+                                    selected_server=connected_server,
+                                    current_ws_tag=ws_connect_tag if isinstance(ws_connect_tag, str) else None,
+                                )
+                                record_hub_root_transport_event(
+                                    "connected",
+                                    transport=_hub_root_transport_kind(connected_server),
+                                    server=connected_server,
+                                    summary="hub-root control session established",
+                                    details={
+                                        "phase": "initial_connect",
+                                        "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
+                                    },
+                                )
                             except Exception:
                                 pass
                             try:
@@ -2702,7 +2895,7 @@ class BootstrapService:
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
                         _route_diag = _route_verbose or os.getenv("HUB_ROUTE_DIAG", "0") == "1"
                         # Tx logs are extremely noisy (one line per request / response). Keep them separately gated.
-                        _route_tx_verbose = os.getenv("HUB_ROUTE_TX_VERBOSE", "0") == "1"
+                        _route_tx_verbose = os.getenv("HUB_ROUTE_CONSOLE_TX_VERBOSE", "0") == "1"
                         # Trace is an opt-in "everything we know" log for debugging WS routing breaks.
                         _route_trace = os.getenv("HUB_ROUTE_TRACE", "0") == "1"
                         _route_http_trace = (
@@ -2776,7 +2969,7 @@ class BootstrapService:
                                 pass
 
                         def _route_log(msg: str) -> None:
-                            if not (_route_trace or _route_verbose):
+                            if not _hub_channel_console_trace_enabled():
                                 return
                             try:
                                 print(f"[hub-route:{route_run_id}] {msg}")
@@ -4016,7 +4209,7 @@ class BootstrapService:
                                             url = f"{bases[0]}{path}{search}"
                                             if _route_verbose and path not in ("/api/node/status", "/api/ping"):
                                                 try:
-                                                    print(f"[hub-route] http upstream url={url}")
+                                                    _route_log(f"[hub-route] http upstream url={url}")
                                                 except Exception:
                                                     pass
                                             body = None
@@ -4134,7 +4327,7 @@ class BootstrapService:
                                 route_outcome = f"handler_failed:{type(e).__name__}"
                                 if _route_verbose:
                                     try:
-                                        print(f"[hub-route] handler failed key={key}: {type(e).__name__}: {e}")
+                                        _route_log(f"[hub-route] handler failed key={key}: {type(e).__name__}: {e}")
                                     except Exception:
                                         pass
                                 # Avoid pure timeouts for HTTP keys; surface an error response instead.
@@ -5126,6 +5319,23 @@ class BootstrapService:
                                             pass
                                         try:
                                             print("[hub-io] nats ws auto-fallback -> aiohttp (HUB_NATS_WS_AUTO_FALLBACK=1)")
+                                        except Exception:
+                                            pass
+                                        try:
+                                            configure_hub_root_transport_strategy(
+                                                hypothesis={
+                                                    "selector_loop": bool(os.name == "nt" and os.getenv("ADAOS_WIN_SELECTOR_LOOP", "0") == "1"),
+                                                    "ws_impl": "aiohttp",
+                                                    "raw_keepalive": _env_truthy(os.getenv("HUB_NATS_RAW_KEEPALIVE"), default=False),
+                                                }
+                                            )
+                                            record_hub_root_transport_event(
+                                                "auto_fallback",
+                                                transport="ws",
+                                                server=nats_last_server,
+                                                summary="hub-root WS client implementation switched to aiohttp after transient failure",
+                                                error=str(e),
+                                            )
                                         except Exception:
                                             pass
                             except Exception:
