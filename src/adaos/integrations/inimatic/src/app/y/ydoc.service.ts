@@ -143,18 +143,7 @@ export class YDocService {
       const baseWs = baseHttp.replace(/^http/, 'ws')
       const serverUrl = `${baseWs}/yws`
       const room = this.currentWebspaceId || 'default'
-      const syncPath = this.channels.createSyncProvider(
-        this.doc,
-        serverUrl,
-        room,
-        {
-          dev: this.deviceId,
-          ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
-        },
-      )
-      this.provider = syncPath.provider
-      this.syncConnectionState$.next('connecting')
-      this.attachProviderConnectionSignals(this.provider)
+      const syncPath = this.createSyncProvider(serverUrl, room)
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.info(
@@ -195,6 +184,88 @@ export class YDocService {
     const payload = this.decodeJwtPayload(token)
     const hubId = payload?.hub_id || payload?.subnet_id || payload?.owner_id
     return typeof hubId === 'string' && hubId.trim() ? hubId.trim() : null
+  }
+
+  private createSyncProvider(
+    serverUrl: string,
+    room: string,
+  ): {
+    provider: WebsocketProvider | DataChannelProvider
+    path: 'webrtc_data:yjs' | 'yws'
+  } {
+    const syncPath = this.channels.createSyncProvider(this.doc, serverUrl, room, {
+      dev: this.deviceId,
+      ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
+    })
+    this.provider = syncPath.provider
+    this.syncConnectionState$.next('connecting')
+    this.attachProviderConnectionSignals(this.provider)
+    return {
+      provider: syncPath.provider,
+      path: syncPath.path as 'webrtc_data:yjs' | 'yws',
+    }
+  }
+
+  private async waitForFirstSync(timeoutMs: number): Promise<boolean> {
+    const provider = this.provider
+    return Promise.race([
+      new Promise<boolean>((resolve) => {
+        if (!provider) {
+          resolve(true)
+          return
+        }
+        if ((provider as any).synced) {
+          resolve(true)
+          return
+        }
+        const handler = (synced: boolean) => {
+          if (!synced) return
+          try {
+            ;(provider as any).off?.('sync', handler as any)
+          } catch {}
+          resolve(true)
+        }
+        ;(provider as any).on?.('sync', handler as any)
+      }),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ])
+  }
+
+  private hasSeededDocContent(): boolean {
+    try {
+      const webspaces = this.toJSON(this.getPath('data/webspaces'))
+      if (Array.isArray(webspaces?.items) && webspaces.items.length > 0) {
+        return true
+      }
+    } catch {}
+    try {
+      const ui = this.toJSON(this.getPath('ui'))
+      if (ui && typeof ui === 'object' && Object.keys(ui).length > 0) {
+        return true
+      }
+    } catch {}
+    try {
+      const data = this.toJSON(this.getPath('data'))
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        return true
+      }
+    } catch {}
+    return false
+  }
+
+  private async recoverSyncProvider(serverUrl: string, room: string): Promise<boolean> {
+    try {
+      this.provider?.destroy()
+    } catch {}
+    this.provider = undefined
+    this.syncConnectionState$.next('idle')
+    await new Promise<void>((resolve) => setTimeout(resolve, 250))
+    const syncPath = this.createSyncProvider(serverUrl, room)
+    if (isDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.warn(`[YDocService] retrying sync provider after timeout via ${syncPath.path}`)
+    }
+    return this.waitForFirstSync(6000)
   }
 
   async initFromHub(): Promise<void> {
@@ -594,13 +665,7 @@ export class YDocService {
     // transport adapters directly in application code.
     const serverUrl = `${baseWs}/yws`
     const room = webspaceId || 'default'
-    const syncPath = this.channels.createSyncProvider(this.doc, serverUrl, room, {
-      dev: this.deviceId,
-      ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
-    })
-    this.provider = syncPath.provider
-    this.syncConnectionState$.next('connecting')
-    this.attachProviderConnectionSignals(this.provider)
+    const syncPath = this.createSyncProvider(serverUrl, room)
     if (isDebugEnabled()) {
       // eslint-disable-next-line no-console
       console.info(
@@ -610,24 +675,14 @@ export class YDocService {
 
     // Do not fail app startup on a slow/unstable WS path. The provider will keep reconnecting in the background.
     // We still wait a bit for "first sync" to provide fast feedback, but treat timeout as degraded mode.
-    const firstSyncOrTimeout = await Promise.race([
-      new Promise<boolean>((resolve) => {
-        if (!this.provider) { resolve(true); return }
-        if (this.provider.synced) { resolve(true); return }
-        const handler = (synced: boolean) => {
-          if (synced) {
-            this.provider?.off('sync', handler as any)
-            resolve(true)
-          }
-        }
-        this.provider.on('sync', handler as any)
-      }),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 9000)),
-    ])
+    const firstSyncOrTimeout = await this.waitForFirstSync(9000)
     if (!firstSyncOrTimeout) {
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.warn('[YDocService] yws sync timeout; continuing and waiting for reconnect')
+      }
+      if (isRemoteProxy && syncPath.path === 'yws' && !this.hasSeededDocContent()) {
+        await this.recoverSyncProvider(serverUrl, room)
       }
     }
 

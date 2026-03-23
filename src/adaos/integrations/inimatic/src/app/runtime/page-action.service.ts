@@ -106,6 +106,9 @@ export class PageActionService {
       ) {
         try {
           await this.ydoc.clearStorage()
+          // The command ACK means the hub accepted the reload, not that the
+          // reseeded YDoc is already ready for the next browser connection.
+          await new Promise((resolve) => setTimeout(resolve, 1200))
           // full page reload to re-init YDoc with fresh state
           location.reload()
         } catch {

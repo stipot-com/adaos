@@ -142,7 +142,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			this.ydoc.syncConnectionState$,
 		]).pipe(
 			map(([probe, eventsState, syncState]) => {
-				if (eventsState === 'connected' || syncState === 'connected') {
+				if (syncState === 'connected') {
 					return 'online' as const
 				}
 				if (probe === 'online') {
@@ -518,6 +518,11 @@ export class AppComponent implements OnInit, OnDestroy {
 		}
 		try {
 			await this.ydoc.clearStorage()
+		} catch { }
+		try {
+			// `desktop.webspace.reload` is acked when the command is accepted,
+			// not when the reseed has already finished on the hub.
+			await new Promise((resolve) => setTimeout(resolve, 1200))
 		} catch { }
 		try {
 			location.reload()
