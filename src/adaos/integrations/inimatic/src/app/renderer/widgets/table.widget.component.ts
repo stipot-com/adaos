@@ -83,9 +83,9 @@ type TableButton = {
       .table-wrap {
         width: 100%;
         overflow: auto;
-        border: 1px solid rgba(0, 0, 0, 0.08);
+        border: 1px solid var(--ion-color-step-200, rgba(0, 0, 0, 0.12));
         border-radius: 10px;
-        background: rgba(255, 255, 255, 0.6);
+        background: var(--ion-item-background, var(--ion-background-color, transparent));
       }
       .t {
         width: 100%;
@@ -96,18 +96,19 @@ type TableButton = {
       .t td {
         text-align: left;
         padding: 10px 12px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+        border-bottom: 1px solid var(--ion-color-step-150, rgba(0, 0, 0, 0.08));
         vertical-align: middle;
         font-size: 13px;
+        color: var(--ion-text-color, inherit);
       }
       .t th {
         font-size: 12px;
         letter-spacing: 0.02em;
         text-transform: uppercase;
-        opacity: 0.75;
+        opacity: 0.85;
         position: sticky;
         top: 0;
-        background: rgba(250, 250, 250, 0.92);
+        background: var(--ion-item-background, var(--ion-background-color, transparent));
         z-index: 1;
       }
       .t tr:last-child td {
@@ -263,4 +264,3 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
     return path.split('.').reduce((acc, k) => (acc != null ? (acc as any)[k] : undefined), obj)
   }
 }
-

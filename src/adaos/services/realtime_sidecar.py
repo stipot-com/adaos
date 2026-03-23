@@ -611,6 +611,19 @@ class _RelayStats:
     sidecar_nats_pings_outstanding: int = 0
     client_nats_pings_outstanding: int = 0
     last_error: str | None = None
+    active_session: bool = False
+    local_client_total: int = 0
+    session_open_total: int = 0
+    session_close_total: int = 0
+    remote_connect_total: int = 0
+    remote_connect_fail_total: int = 0
+    remote_quarantine_total: int = 0
+    superseded_total: int = 0
+    last_session_open_at: float | None = None
+    last_session_close_at: float | None = None
+    last_remote_connect_error: str | None = None
+    last_remote_connect_error_at: float | None = None
+    last_remote_disconnect_at: float | None = None
 
 
 class RealtimeSidecarServer:
@@ -623,6 +636,26 @@ class RealtimeSidecarServer:
         self._stopped = asyncio.Event()
         self._stats = _RelayStats()
         self._pending_ping_sources: deque[str] = deque()
+
+    def _begin_session_stats(self, *, session_id: str) -> None:
+        previous = self._stats
+        self._stats = _RelayStats(
+            session_id=session_id,
+            local_connected_at=time.monotonic(),
+            active_session=True,
+            local_client_total=int(previous.local_client_total or 0),
+            session_open_total=int(previous.session_open_total or 0),
+            session_close_total=int(previous.session_close_total or 0),
+            remote_connect_total=int(previous.remote_connect_total or 0),
+            remote_connect_fail_total=int(previous.remote_connect_fail_total or 0),
+            remote_quarantine_total=int(previous.remote_quarantine_total or 0),
+            superseded_total=int(previous.superseded_total or 0),
+            last_session_open_at=time.monotonic(),
+            last_session_close_at=previous.last_session_close_at,
+            last_remote_connect_error=previous.last_remote_connect_error,
+            last_remote_connect_error_at=previous.last_remote_connect_error_at,
+            last_remote_disconnect_at=previous.last_remote_disconnect_at,
+        )
 
     def _log(self, msg: str) -> None:
         try:
@@ -656,6 +689,7 @@ class RealtimeSidecarServer:
             "ts": round(time.time(), 3),
             "listen": f"{self._host}:{self._port}",
             "session_id": self._stats.session_id,
+            "active_session": self._stats.active_session,
             "remote_url": self._stats.remote_url,
             "ws_ping_interval_s": self._stats.ws_ping_interval_s,
             "sidecar_nats_ping_interval_s": self._stats.sidecar_nats_ping_interval_s,
@@ -678,6 +712,18 @@ class RealtimeSidecarServer:
             "sidecar_nats_pings_outstanding": self._stats.sidecar_nats_pings_outstanding,
             "client_nats_pings_outstanding": self._stats.client_nats_pings_outstanding,
             "last_error": self._stats.last_error,
+            "local_client_total": self._stats.local_client_total,
+            "session_open_total": self._stats.session_open_total,
+            "session_close_total": self._stats.session_close_total,
+            "remote_connect_total": self._stats.remote_connect_total,
+            "remote_connect_fail_total": self._stats.remote_connect_fail_total,
+            "remote_quarantine_total": self._stats.remote_quarantine_total,
+            "superseded_total": self._stats.superseded_total,
+            "last_session_open_ago_s": _ago(self._stats.last_session_open_at),
+            "last_session_close_ago_s": _ago(self._stats.last_session_close_at),
+            "last_remote_disconnect_ago_s": _ago(self._stats.last_remote_disconnect_at),
+            "last_remote_connect_error": self._stats.last_remote_connect_error,
+            "last_remote_connect_error_ago_s": _ago(self._stats.last_remote_connect_error_at),
             "loop_policy": type(asyncio.get_event_loop_policy()).__name__,
             "loop": type(asyncio.get_running_loop()).__name__,
         }
@@ -771,6 +817,9 @@ class RealtimeSidecarServer:
                 sock = _ws_socket(ws)
                 keepalive_ok = _set_tcp_keepalive(sock)
                 self._stats.ws_ping_interval_s = heartbeat_s
+                self._stats.remote_connect_total = int(self._stats.remote_connect_total or 0) + 1
+                self._stats.last_remote_connect_error = None
+                self._stats.last_remote_connect_error_at = None
                 self._log(
                     f"remote connect ok url={target} ping_interval={heartbeat_s} max_queue={max_queue} "
                     f"proxy={proxy} tcp_keepalive={keepalive_ok}"
@@ -778,6 +827,9 @@ class RealtimeSidecarServer:
                 return ws, target
             except Exception as exc:
                 last_exc = exc
+                self._stats.remote_connect_fail_total = int(self._stats.remote_connect_fail_total or 0) + 1
+                self._stats.last_remote_connect_error = f"{type(exc).__name__}: {exc}"
+                self._stats.last_remote_connect_error_at = time.monotonic()
                 self._log(f"remote connect failed url={target} err={type(exc).__name__}: {exc}")
         raise RuntimeError(f"realtime remote connect failed: {type(last_exc).__name__}: {last_exc}") from last_exc
 
@@ -919,7 +971,8 @@ class RealtimeSidecarServer:
         ws = None
         remote_url: str | None = None
         session_id = f"rt-{uuid.uuid4().hex[:10]}"
-        self._stats = _RelayStats(session_id=session_id, local_connected_at=time.monotonic())
+        self._begin_session_stats(session_id=session_id)
+        self._stats.session_open_total = int(self._stats.session_open_total or 0) + 1
         self._pending_ping_sources = deque()
         try:
             ws, remote_url = await self._connect_remote(session_id=session_id)
@@ -943,12 +996,17 @@ class RealtimeSidecarServer:
             self._stats.last_error = details
             if remote_url and _should_quarantine_realtime_remote(details):
                 _quarantine_realtime_remote(remote_url, details=details)
+                self._stats.remote_quarantine_total = int(self._stats.remote_quarantine_total or 0) + 1
                 self._log(
                     f"remote quarantined url={_realtime_remote_quarantine_key(remote_url)} "
                     f"for={_realtime_remote_quarantine_s():.0f}s err={details}"
                 )
             self._log(f"session error id={session_id} err={details}")
         finally:
+            self._stats.active_session = False
+            self._stats.session_close_total = int(self._stats.session_close_total or 0) + 1
+            self._stats.last_session_close_at = time.monotonic()
+            self._stats.last_remote_disconnect_at = time.monotonic()
             if ws is not None:
                 with contextlib.suppress(Exception):
                     await ws.close()
@@ -966,8 +1024,10 @@ class RealtimeSidecarServer:
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception:
             pass
+        self._stats.local_client_total = int(self._stats.local_client_total or 0) + 1
         if self._active_task is not None and not self._active_task.done():
             self._log("superseding previous local NATS client")
+            self._stats.superseded_total = int(self._stats.superseded_total or 0) + 1
             self._active_task.cancel()
             with contextlib.suppress(BaseException):
                 await self._active_task

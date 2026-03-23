@@ -30,6 +30,11 @@ This is intentionally minimal:
 - opens one remote NATS-over-WebSocket session to root
 - relays raw NATS bytes in both directions
 - writes periodic diagnostics to `.adaos/diagnostics/realtime_sidecar.jsonl`
+- exposes a runtime status surface in protocol terms:
+  - transport readiness
+  - control readiness
+  - reconnect, quarantine, and supersede counters
+  - transport provenance and ownership boundary
 
 Hub main process:
 
@@ -66,12 +71,14 @@ Implemented now.
 - add local TCP NATS relay
 - route hub NATS bridge through sidecar
 - disable direct hub WS transport when sidecar mode is on
+- expose sidecar runtime state in `GET /api/node/reliability`, CLI, and Infra State
 
 Success criteria:
 
 - hub startup shows `nats ws transport: sidecar`
 - root sees one stable hub WS-NATS session
 - no `nats keepalive pong missing` caused by hub-local WS stalls
+- operators can see that sidecar owns transport only, and can inspect `transport_ready`, `control_ready`, reconnect counters, and selected remote provenance
 
 ### Phase 2 — Route tunnel ownership
 

@@ -151,6 +151,12 @@ Runtime now also exposes `hardening_coverage`, and for the current `hub_root.*` 
 
 ## Phase 3: Sidecar as transport ownership boundary
 
+### Status
+
+Checkpoint reached.
+The sidecar now exposes a protocol-facing runtime surface with explicit ownership boundary, transport readiness, control readiness, reconnect counters, quarantine/supersede history, and transport provenance.
+This is still the transport-only Phase 3 checkpoint: the sidecar owns the `hub_root` NATS transport lifecycle, but does not yet own route tunnel transport, Yjs sync transport, or media transport.
+
 ### Focus
 
 Move transport ownership where it reduces blast radius, without moving protocol semantics.

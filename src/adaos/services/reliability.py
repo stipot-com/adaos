@@ -2622,7 +2622,12 @@ def reliability_model_snapshot() -> dict[str, Any]:
     }
 
 
-def sidecar_runtime_snapshot() -> dict[str, Any]:
+def sidecar_runtime_snapshot(
+    *,
+    readiness_tree: dict[str, Any] | None = None,
+    hub_root_protocol: dict[str, Any] | None = None,
+    transport_strategy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         from adaos.services.realtime_sidecar import (
             realtime_sidecar_diag_path,
@@ -2636,9 +2641,39 @@ def sidecar_runtime_snapshot() -> dict[str, Any]:
     diag_path = realtime_sidecar_diag_path()
     record = _read_last_jsonl_record(diag_path)
     now_ts = time.time()
+    readiness_tree = readiness_tree if isinstance(readiness_tree, dict) else {}
+    hub_root_protocol = hub_root_protocol if isinstance(hub_root_protocol, dict) else {}
+    transport_strategy = transport_strategy if isinstance(transport_strategy, dict) else {}
+
+    ownership = {
+        "owns": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("may_own") or []),
+        "must_not_own": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("must_not_own") or []),
+    }
+    delegations = {
+        "hub_root_transport": bool(enabled),
+        "route_tunnel_transport": False,
+        "sync_transport": False,
+        "media_transport": False,
+    }
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
+    diag_age_s = None
+    local_listener_state = "disabled" if not enabled else "unknown"
+    remote_session_state = "disabled" if not enabled else "unknown"
+    transport_ready = False
+    control_ready = "not_applicable"
+    route_ready = "not_owned"
+    sync_ready = "not_owned"
+    media_ready = "not_owned"
+    transport_provenance: dict[str, Any] = {
+        "local_url": realtime_sidecar_local_url(),
+        "diag_path": str(diag_path),
+        "requested_transport": transport_strategy.get("requested_transport"),
+        "effective_transport": transport_strategy.get("effective_transport"),
+        "selected_server": transport_strategy.get("selected_server"),
+        "last_transport_event": transport_strategy.get("last_event"),
+    }
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
@@ -2647,12 +2682,22 @@ def sidecar_runtime_snapshot() -> dict[str, Any]:
         remote_connected_ago_s = record.get("remote_connected_ago_s")
         local_connected_ago_s = record.get("local_connected_ago_s")
         ts = record.get("ts")
-        diag_age_s = None
         if isinstance(ts, (int, float)):
             diag_age_s = round(max(0.0, now_ts - float(ts)), 3)
+        fresh_diag = not isinstance(diag_age_s, (int, float)) or float(diag_age_s) <= 10.0
+        local_listener_state = "ready" if fresh_diag else "stale"
+        if isinstance(remote_connected_ago_s, (int, float)) and fresh_diag and not last_error:
+            remote_session_state = "ready"
+        elif isinstance(remote_connected_ago_s, (int, float)) and not fresh_diag:
+            remote_session_state = "stale"
+        else:
+            remote_session_state = "down"
         if last_error:
             status = "degraded"
             summary = f"sidecar reports transport error: {last_error}"
+        elif not fresh_diag:
+            status = "degraded"
+            summary = "sidecar diagnostics are stale"
         elif isinstance(remote_connected_ago_s, (int, float)):
             status = "ready"
             summary = "sidecar remote session is connected"
@@ -2662,23 +2707,77 @@ def sidecar_runtime_snapshot() -> dict[str, Any]:
         else:
             status = "unknown" if enabled else "disabled"
             summary = "sidecar diagnostics do not show an active session"
+        transport_ready = bool(status == "ready")
+        control_authority = hub_root_protocol.get("control_authority") if isinstance(hub_root_protocol.get("control_authority"), dict) else {}
+        control_authority_state = str(control_authority.get("state") or "").strip().lower()
+        if not transport_ready:
+            control_ready = "down"
+        elif control_authority_state in {"fresh", "aging"}:
+            control_ready = "ready"
+        elif control_authority_state:
+            control_ready = "degraded"
+        else:
+            control_ready = "unknown"
+        transport_provenance.update(
+            {
+                "session_id": record.get("session_id"),
+                "remote_url": record.get("remote_url"),
+                "loop_policy": record.get("loop_policy"),
+                "loop": record.get("loop"),
+                "active_session": bool(record.get("active_session")),
+                "local_client_total": int(record.get("local_client_total") or 0),
+                "session_open_total": int(record.get("session_open_total") or 0),
+                "session_close_total": int(record.get("session_close_total") or 0),
+                "remote_connect_total": int(record.get("remote_connect_total") or 0),
+                "remote_connect_fail_total": int(record.get("remote_connect_fail_total") or 0),
+                "remote_quarantine_total": int(record.get("remote_quarantine_total") or 0),
+                "superseded_total": int(record.get("superseded_total") or 0),
+                "last_remote_connect_error": record.get("last_remote_connect_error"),
+                "last_remote_connect_error_ago_s": record.get("last_remote_connect_error_ago_s"),
+                "last_remote_disconnect_ago_s": record.get("last_remote_disconnect_ago_s"),
+            }
+        )
         return {
             "enabled": enabled,
+            "phase": "nats_transport_sidecar",
+            "ownership_boundary": "transport_only",
+            "ownership": ownership,
+            "delegations": delegations,
             "status": status,
             "summary": summary,
             "local_url": realtime_sidecar_local_url(),
             "diag_path": str(diag_path),
             "diag_age_s": diag_age_s,
+            "local_listener_state": local_listener_state,
+            "remote_session_state": remote_session_state,
+            "transport_ready": transport_ready,
+            "control_ready": control_ready,
+            "route_ready": route_ready,
+            "sync_ready": sync_ready,
+            "media_ready": media_ready,
+            "transport_provenance": transport_provenance,
             "last_diag": record,
         }
 
     return {
         "enabled": enabled,
+        "phase": "nats_transport_sidecar",
+        "ownership_boundary": "transport_only",
+        "ownership": ownership,
+        "delegations": delegations,
         "status": status,
         "summary": summary,
         "local_url": realtime_sidecar_local_url(),
         "diag_path": str(diag_path),
         "diag_age_s": None,
+        "local_listener_state": local_listener_state,
+        "remote_session_state": remote_session_state,
+        "transport_ready": transport_ready,
+        "control_ready": control_ready,
+        "route_ready": route_ready,
+        "sync_ready": sync_ready,
+        "media_ready": media_ready,
+        "transport_provenance": transport_provenance,
         "last_diag": None,
     }
 
@@ -2711,7 +2810,11 @@ def reliability_snapshot(
         transport_strategy=transport_strategy,
     )
     hub_root_protocol = hub_root_protocol_snapshot()
-    sidecar_runtime = sidecar_runtime_snapshot()
+    sidecar_runtime = sidecar_runtime_snapshot(
+        readiness_tree=readiness_tree,
+        hub_root_protocol=hub_root_protocol,
+        transport_strategy=transport_strategy,
+    )
     return {
         "ok": True,
         "node": {
