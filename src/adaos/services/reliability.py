@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -316,6 +318,30 @@ def _dedup_texts(items: Any) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _read_last_jsonl_record(path: Path, *, max_bytes: int = 131072) -> dict[str, Any] | None:
+    try:
+        if not path.exists() or not path.is_file():
+            return None
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            chunk = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    for line in reversed(chunk.splitlines()):
+        text = str(line or "").strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _hub_root_transport_from_server(server: str | None, *, explicit_transport: str | None = None) -> str | None:
@@ -1537,6 +1563,67 @@ def reliability_model_snapshot() -> dict[str, Any]:
     }
 
 
+def sidecar_runtime_snapshot() -> dict[str, Any]:
+    try:
+        from adaos.services.realtime_sidecar import (
+            realtime_sidecar_diag_path,
+            realtime_sidecar_enabled,
+            realtime_sidecar_local_url,
+        )
+    except Exception:
+        return {"enabled": False, "status": "unavailable", "summary": "sidecar runtime module is unavailable"}
+
+    enabled = bool(realtime_sidecar_enabled())
+    diag_path = realtime_sidecar_diag_path()
+    record = _read_last_jsonl_record(diag_path)
+    now_ts = time.time()
+
+    status = "disabled"
+    summary = "realtime sidecar is disabled"
+    if enabled:
+        status = "unknown"
+        summary = "realtime sidecar is enabled but has no diagnostics yet"
+    if isinstance(record, dict):
+        last_error = str(record.get("last_error") or "").strip()
+        remote_connected_ago_s = record.get("remote_connected_ago_s")
+        local_connected_ago_s = record.get("local_connected_ago_s")
+        ts = record.get("ts")
+        diag_age_s = None
+        if isinstance(ts, (int, float)):
+            diag_age_s = round(max(0.0, now_ts - float(ts)), 3)
+        if last_error:
+            status = "degraded"
+            summary = f"sidecar reports transport error: {last_error}"
+        elif isinstance(remote_connected_ago_s, (int, float)):
+            status = "ready"
+            summary = "sidecar remote session is connected"
+        elif isinstance(local_connected_ago_s, (int, float)):
+            status = "degraded"
+            summary = "sidecar local listener is active but remote session is not connected"
+        else:
+            status = "unknown" if enabled else "disabled"
+            summary = "sidecar diagnostics do not show an active session"
+        return {
+            "enabled": enabled,
+            "status": status,
+            "summary": summary,
+            "local_url": realtime_sidecar_local_url(),
+            "diag_path": str(diag_path),
+            "diag_age_s": diag_age_s,
+            "last_diag": record,
+        }
+
+    return {
+        "enabled": enabled,
+        "status": status,
+        "summary": summary,
+        "local_url": realtime_sidecar_local_url(),
+        "diag_path": str(diag_path),
+        "diag_age_s": None,
+        "last_diag": None,
+    }
+
+
 def reliability_snapshot(
     *,
     node_id: str,
@@ -1564,6 +1651,7 @@ def reliability_snapshot(
         channel_diagnostics=channel_diagnostics,
         transport_strategy=transport_strategy,
     )
+    sidecar_runtime = sidecar_runtime_snapshot()
     return {
         "ok": True,
         "node": {
@@ -1584,5 +1672,6 @@ def reliability_snapshot(
             "channel_diagnostics": channel_diagnostics,
             "channel_overview": channel_overview,
             "hub_root_transport_strategy": transport_strategy,
+            "sidecar_runtime": sidecar_runtime,
         },
     }
