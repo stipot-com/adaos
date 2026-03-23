@@ -79,6 +79,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         )
     if sidecar:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
+        process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
         typer.echo(
             "sidecar: "
             f"phase={sidecar.get('phase') or '-'} "
@@ -91,6 +92,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"connects={provenance.get('remote_connect_total') or 0}/"
             f"{provenance.get('remote_connect_fail_total') or 0} "
             f"superseded={provenance.get('superseded_total') or 0} "
+            f"pid={process.get('listener_pid') or '-'} "
             f"local={sidecar.get('local_url') or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )

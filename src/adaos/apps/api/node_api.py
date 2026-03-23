@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 from adaos.apps.api.auth import require_token
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
 from adaos.services.reliability import reliability_snapshot
+from adaos.services.realtime_sidecar import (
+    realtime_sidecar_listener_snapshot,
+    restart_realtime_sidecar_subprocess,
+)
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
 
@@ -40,6 +44,10 @@ class RoleChangeResponse(BaseModel):
 class HubRootReconnectRequest(BaseModel):
     transport: Optional[str] = Field(None, pattern="^(ws|tcp|nats)?$")
     url_override: Optional[str] = None
+
+
+class SidecarRestartRequest(BaseModel):
+    reconnect_hub_root: bool = True
 
 
 def _route_info(role: str) -> tuple[str | None, bool | None]:
@@ -95,6 +103,61 @@ async def node_reliability() -> dict[str, Any]:
 @router.post("/hub-root/reconnect", dependencies=[Depends(require_token)])
 async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]:
     return await request_hub_root_reconnect(transport=payload.transport, url_override=payload.url_override)
+
+
+@router.get("/sidecar/status", dependencies=[Depends(require_token)])
+async def sidecar_status(request: Request) -> dict[str, Any]:
+    conf = load_config()
+    route_mode, connected = _route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
+    reliability = reliability_snapshot(
+        node_id=conf.node_id,
+        subnet_id=conf.subnet_id,
+        role=conf.role,
+        local_ready=is_ready(),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
+        route_mode=route_mode,
+        connected_to_hub=connected,
+    )
+    runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
+    process = realtime_sidecar_listener_snapshot(getattr(request.app.state, "realtime_sidecar_proc", None))
+    return {
+        "ok": True,
+        "runtime": runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {},
+        "process": process,
+    }
+
+
+@router.post("/sidecar/restart", dependencies=[Depends(require_token)])
+async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> dict[str, Any]:
+    conf = load_config()
+    proc = getattr(request.app.state, "realtime_sidecar_proc", None)
+    new_proc, restart_result = await restart_realtime_sidecar_subprocess(proc=proc, role=conf.role)
+    request.app.state.realtime_sidecar_proc = new_proc
+    reconnect_result: dict[str, Any] | None = None
+    if bool(payload.reconnect_hub_root) and str(conf.role or "").strip().lower() == "hub":
+        reconnect_result = await request_hub_root_reconnect()
+    route_mode, connected = _route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
+    reliability = reliability_snapshot(
+        node_id=conf.node_id,
+        subnet_id=conf.subnet_id,
+        role=conf.role,
+        local_ready=is_ready(),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
+        route_mode=route_mode,
+        connected_to_hub=connected,
+    )
+    runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
+    return {
+        "ok": True,
+        "restart": restart_result,
+        "reconnect": reconnect_result,
+        "runtime": runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {},
+        "process": realtime_sidecar_listener_snapshot(new_proc),
+    }
 
 
 @router.post("/role", response_model=RoleChangeResponse, dependencies=[Depends(require_token)])

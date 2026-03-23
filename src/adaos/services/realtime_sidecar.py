@@ -586,6 +586,78 @@ async def stop_realtime_sidecar_subprocess(proc: subprocess.Popen[Any] | None) -
         proc.kill()
 
 
+def realtime_sidecar_listener_snapshot(proc: subprocess.Popen[Any] | None = None) -> dict[str, Any]:
+    host = realtime_sidecar_host()
+    port = realtime_sidecar_port()
+    listener_pid = _find_realtime_listener_pid(host, port)
+    managed_pid: int | None = None
+    managed_alive = False
+    managed_exit_code: int | None = None
+    try:
+        if proc is not None:
+            pid = int(getattr(proc, "pid", 0) or 0)
+            managed_pid = pid or None
+            exit_code = proc.poll()
+            if exit_code is None:
+                managed_alive = True
+            elif isinstance(exit_code, int):
+                managed_exit_code = exit_code
+    except Exception:
+        managed_pid = managed_pid if isinstance(managed_pid, int) and managed_pid > 0 else None
+        managed_alive = False
+        managed_exit_code = None
+    listener_running = bool(isinstance(listener_pid, int) and listener_pid > 0)
+    listener_matches_managed = bool(
+        listener_running
+        and isinstance(managed_pid, int)
+        and managed_pid > 0
+        and int(listener_pid) == int(managed_pid)
+    )
+    adopted_listener = bool(listener_running and not listener_matches_managed)
+    return {
+        "host": host,
+        "port": int(port),
+        "local_url": realtime_sidecar_local_url(),
+        "log_path": str(realtime_sidecar_log_path()),
+        "diag_path": str(realtime_sidecar_diag_path()),
+        "managed_pid": managed_pid,
+        "managed_alive": managed_alive,
+        "managed_exit_code": managed_exit_code,
+        "listener_pid": int(listener_pid) if listener_running else None,
+        "listener_running": listener_running,
+        "listener_matches_managed": listener_matches_managed,
+        "adopted_listener": adopted_listener,
+    }
+
+
+async def restart_realtime_sidecar_subprocess(
+    *,
+    proc: subprocess.Popen[Any] | None,
+    role: str | None = None,
+) -> tuple[subprocess.Popen[Any] | None, dict[str, Any]]:
+    before = realtime_sidecar_listener_snapshot(proc)
+    if not realtime_sidecar_enabled(role=role):
+        return proc, {
+            "ok": True,
+            "accepted": False,
+            "enabled": False,
+            "reason": "disabled",
+            "before": before,
+            "after": before,
+        }
+    await stop_realtime_sidecar_subprocess(proc)
+    new_proc = await start_realtime_sidecar_subprocess(role=role)
+    after = realtime_sidecar_listener_snapshot(new_proc)
+    return new_proc, {
+        "ok": True,
+        "accepted": True,
+        "enabled": True,
+        "reason": "restarted",
+        "before": before,
+        "after": after,
+    }
+
+
 @dataclass
 class _RelayStats:
     session_id: str | None = None

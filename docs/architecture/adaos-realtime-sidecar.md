@@ -35,6 +35,7 @@ This is intentionally minimal:
   - control readiness
   - reconnect, quarantine, and supersede counters
   - transport provenance and ownership boundary
+- can be inspected and restarted independently through the local control API / CLI without restarting the hub process
 
 Hub main process:
 
@@ -79,6 +80,7 @@ Success criteria:
 - root sees one stable hub WS-NATS session
 - no `nats keepalive pong missing` caused by hub-local WS stalls
 - operators can see that sidecar owns transport only, and can inspect `transport_ready`, `control_ready`, reconnect counters, and selected remote provenance
+- operators can restart sidecar transport runtime independently from hub business runtime
 
 ### Phase 2 — Route tunnel ownership
 

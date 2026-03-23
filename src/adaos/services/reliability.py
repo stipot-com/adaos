@@ -2632,6 +2632,7 @@ def sidecar_runtime_snapshot(
         from adaos.services.realtime_sidecar import (
             realtime_sidecar_diag_path,
             realtime_sidecar_enabled,
+            realtime_sidecar_listener_snapshot,
             realtime_sidecar_local_url,
         )
     except Exception:
@@ -2674,6 +2675,7 @@ def sidecar_runtime_snapshot(
         "selected_server": transport_strategy.get("selected_server"),
         "last_transport_event": transport_strategy.get("last_event"),
     }
+    process_snapshot = realtime_sidecar_listener_snapshot()
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
@@ -2756,6 +2758,7 @@ def sidecar_runtime_snapshot(
             "sync_ready": sync_ready,
             "media_ready": media_ready,
             "transport_provenance": transport_provenance,
+            "process": process_snapshot,
             "last_diag": record,
         }
 
@@ -2778,6 +2781,7 @@ def sidecar_runtime_snapshot(
         "sync_ready": sync_ready,
         "media_ready": media_ready,
         "transport_provenance": transport_provenance,
+        "process": process_snapshot,
         "last_diag": None,
     }
 

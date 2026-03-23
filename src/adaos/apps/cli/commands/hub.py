@@ -19,6 +19,8 @@ join_code_app = typer.Typer(help="Join-code management.")
 app.add_typer(join_code_app, name="join-code")
 root_link_app = typer.Typer(help="Hub-root link diagnostics and control.")
 app.add_typer(root_link_app, name="root")
+sidecar_app = typer.Typer(help="Realtime sidecar diagnostics and control.")
+root_link_app.add_typer(sidecar_app, name="sidecar")
 
 
 def _print(data: Any, *, json_output: bool) -> None:
@@ -136,7 +138,8 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
-        f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} | "
+        f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
+        f"pid={(sidecar.get('process') or {}).get('listener_pid') if isinstance(sidecar.get('process'), dict) else '-'} | "
         f"root_incident={root_diag.get('last_incident_class') or '-'} "
         f"route_incident={route_diag.get('last_incident_class') or '-'} "
         f"last={strategy.get('last_event') or '-'}"
@@ -223,6 +226,7 @@ def hub_root_watch(
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
+                f"pid={(sidecar.get('process') or {}).get('listener_pid') if isinstance(sidecar.get('process'), dict) else '-'} "
                 f"root_incident={root_diag.get('last_incident_class') or '-'} "
                 f"route_incident={route_diag.get('last_incident_class') or '-'} "
                 f"state={strategy_assessment.get('state') or 'unknown'} "
@@ -376,6 +380,73 @@ def hub_root_reports(
                 f"phase={status.get('phase') or '-'} "
                 f"slot={slot.get('active_slot') or '-'}"
             )
+
+
+@sidecar_app.command("status")
+def hub_root_sidecar_status(
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """
+    Print realtime sidecar runtime and process/listener status.
+    """
+    import requests
+
+    base = resolve_control_base_url()
+    token = resolve_control_token()
+    url = base + "/api/node/sidecar/status"
+    headers = {"X-AdaOS-Token": token}
+    r = requests.get(url, headers=headers, timeout=5.0)
+    r.raise_for_status()
+    data = r.json()
+    if json_output:
+        _print(data, json_output=True)
+        return
+    runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    process = data.get("process") if isinstance(data.get("process"), dict) else {}
+    typer.echo(
+        f"sidecar={runtime.get('status') or 'unknown'} "
+        f"phase={runtime.get('phase') or '-'} "
+        f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
+        f"control={runtime.get('control_ready') or '-'} "
+        f"route={runtime.get('route_ready') or '-'} "
+        f"listener_pid={process.get('listener_pid') or '-'} "
+        f"managed_pid={process.get('managed_pid') or '-'} "
+        f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
+    )
+
+
+@sidecar_app.command("restart")
+def hub_root_sidecar_restart(
+    reconnect_hub_root: bool = typer.Option(True, "--reconnect/--no-reconnect", help="Request hub-root reconnect after sidecar restart"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """
+    Restart realtime sidecar without restarting the hub process.
+    """
+    import requests
+
+    base = resolve_control_base_url()
+    token = resolve_control_token()
+    url = base + "/api/node/sidecar/restart"
+    headers = {"X-AdaOS-Token": token}
+    payload = {"reconnect_hub_root": bool(reconnect_hub_root)}
+    r = requests.post(url, headers=headers, json=payload, timeout=20.0)
+    r.raise_for_status()
+    data = r.json()
+    if json_output:
+        _print(data, json_output=True)
+        return
+    restart = data.get("restart") if isinstance(data.get("restart"), dict) else {}
+    process = data.get("process") if isinstance(data.get("process"), dict) else {}
+    runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    typer.echo(
+        f"accepted={bool(restart.get('accepted'))} "
+        f"reason={restart.get('reason') or '-'} "
+        f"sidecar={runtime.get('status') or 'unknown'}/{runtime.get('control_ready') or '-'} "
+        f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
+        f"listener_pid={process.get('listener_pid') or '-'} "
+        f"managed_pid={process.get('managed_pid') or '-'}"
+    )
 
 
 @join_code_app.command("create")
