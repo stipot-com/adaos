@@ -85,14 +85,38 @@ def _hub_headers() -> dict[str, str]:
 def _hub_get(path: str, *, params: dict | None = None) -> dict:
     url = _hub_base_url() + path
     resp = requests.get(url, headers=_hub_headers(), params=params or {}, timeout=10)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                detail = str(payload.get("detail") or payload.get("error") or payload.get("message") or payload)
+            else:
+                detail = str(payload)
+        except Exception:
+            detail = (resp.text or "").strip()
+        raise RuntimeError(f"HTTP {resp.status_code} GET {path}: {detail}".strip()) from exc
     return resp.json()
 
 
 def _hub_post(path: str, *, body: dict | None = None) -> dict:
     url = _hub_base_url() + path
     resp = requests.post(url, headers=_hub_headers(), json=body or {}, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                detail = str(payload.get("detail") or payload.get("error") or payload.get("message") or payload)
+            else:
+                detail = str(payload)
+        except Exception:
+            detail = (resp.text or "").strip()
+        raise RuntimeError(f"HTTP {resp.status_code} POST {path}: {detail}".strip()) from exc
     return resp.json()
 
 

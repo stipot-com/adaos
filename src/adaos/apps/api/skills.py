@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from adaos.adapters.db import SqliteSkillRegistry
@@ -19,6 +20,7 @@ from packaging.version import Version, InvalidVersion
 
 
 router = APIRouter(tags=["skills"], dependencies=[Depends(require_token)])
+log = logging.getLogger(__name__)
 
 
 def _get_manager(ctx: AgentContext = Depends(get_ctx)) -> SkillManager:
@@ -385,10 +387,16 @@ async def runtime_status(name: str, mgr: SkillManager = Depends(_get_manager)):
 
 @router.post("/runtime/setup")
 async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_manager)):
-    result = mgr.setup_skill(body.name)
-    if isinstance(result, dict):
-        return {"ok": bool(result.get("ok", True)), **result}
-    return {"ok": True, "result": result}
+    try:
+        result = mgr.setup_skill(body.name)
+        if isinstance(result, dict):
+            return {"ok": bool(result.get("ok", True)), **result}
+        return {"ok": True, "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("runtime setup failed: %s", body.name)
+        raise HTTPException(status_code=500, detail=str(exc) or "runtime setup failed") from exc
 
 
 @router.post("/update")
