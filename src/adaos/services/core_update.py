@@ -42,6 +42,10 @@ def status_path() -> Path:
     return _state_root() / "status.json"
 
 
+def last_result_path() -> Path:
+    return _state_root() / "last_result.json"
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -91,10 +95,25 @@ def read_status() -> dict[str, Any]:
     return _read_json(status_path()) or {"state": "idle", "updated_at": time.time()}
 
 
+def read_last_result() -> dict[str, Any] | None:
+    payload = _read_json(last_result_path())
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_terminal_status(payload: dict[str, Any]) -> bool:
+    state = str(payload.get("state") or "").strip().lower()
+    phase = str(payload.get("phase") or "").strip().lower()
+    if state in {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled"}:
+        return True
+    return bool(state == "idle" and phase == "validate")
+
+
 def write_status(payload: dict[str, Any]) -> dict[str, Any]:
     merged = dict(payload)
     merged.setdefault("updated_at", time.time())
     _write_json(status_path(), merged)
+    if _is_terminal_status(merged):
+        _write_json(last_result_path(), merged)
     try:
         get_ctx().bus.publish(
             DomainEvent(

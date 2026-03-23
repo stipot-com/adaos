@@ -167,6 +167,7 @@ from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
 from adaos.services.core_update import clear_plan as clear_core_update_plan
+from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import write_plan as write_core_update_plan
@@ -1075,6 +1076,7 @@ async def admin_update_status():
     return {
         "ok": True,
         "status": read_core_update_status(),
+        "last_result": read_core_update_last_result(),
         "plan": read_core_update_plan(),
         "slots": core_slot_status(),
         "active_manifest": active_slot_manifest(),

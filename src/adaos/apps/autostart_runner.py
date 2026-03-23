@@ -112,6 +112,11 @@ def _update_validation_timeout_sec() -> float:
         return 20.0
 
 
+def _update_validation_strict() -> bool:
+    raw = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_STRICT") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _validation_headers(token: str | None) -> dict[str, str]:
     headers = {"Accept": "application/json"}
     if token:
@@ -120,6 +125,8 @@ def _validation_headers(token: str | None) -> dict[str, str]:
 
 
 def _required_update_checks(base_url: str) -> list[tuple[str, bool]]:
+    if not _update_validation_strict():
+        return [(f"{base_url}/api/ping", False)]
     return [
         (f"{base_url}/api/ping", False),
         (f"{base_url}/api/status", True),
@@ -158,6 +165,7 @@ def _probe_update_runtime(
     deadline = time.time() + max(1.0, timeout_sec)
     last_error = "runtime validation did not start"
     headers = _validation_headers(token)
+    strict = _update_validation_strict()
     attempts = 0
     last_attempt: dict[str, Any] = {}
     while time.time() < deadline:
@@ -165,6 +173,7 @@ def _probe_update_runtime(
         attempt: dict[str, Any] = {
             "ts": time.time(),
             "checks": [],
+            "warnings": [],
         }
         for url, need_token in _required_update_checks(base_url):
             check: dict[str, Any] = {
@@ -216,12 +225,79 @@ def _probe_update_runtime(
                 attempt["checks"].append(check)
                 break
         else:
+            if not strict:
+                for url, need_token in [
+                    (f"{base_url}/api/status", True),
+                    (f"{base_url}/api/admin/update/status", True),
+                ]:
+                    check = {
+                        "url": url,
+                        "requires_token": bool(need_token),
+                        "advisory": True,
+                    }
+                    try:
+                        response = requests.get(
+                            url,
+                            headers=headers if need_token else {"Accept": "application/json"},
+                            timeout=1.5,
+                        )
+                        check["status_code"] = int(response.status_code)
+                        if response.status_code != HTTPStatus.OK:
+                            check["ok"] = False
+                            check["error"] = f"{url} returned {response.status_code}"
+                            attempt["warnings"].append(dict(check))
+                            attempt["checks"].append(check)
+                            continue
+                        payload = response.json()
+                        if not isinstance(payload, dict) or payload.get("ok") is False:
+                            check["ok"] = False
+                            check["error"] = f"{url} returned invalid payload"
+                            attempt["warnings"].append(dict(check))
+                            attempt["checks"].append(check)
+                            continue
+                        if expected_slot and url.endswith("/api/admin/update/status"):
+                            slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
+                            active_manifest = (
+                                payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
+                            )
+                            active_slot_name = str(slots.get("active_slot") or active_manifest.get("slot") or "").strip().upper()
+                            check["active_slot"] = active_slot_name
+                            if active_slot_name and active_slot_name != str(expected_slot).strip().upper():
+                                last_error = (
+                                    f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
+                                )
+                                check["ok"] = False
+                                check["error"] = last_error
+                                attempt["checks"].append(check)
+                                break
+                        check["ok"] = True
+                        check["payload_keys"] = sorted(str(key) for key in payload.keys())
+                        attempt["checks"].append(check)
+                    except Exception as exc:
+                        check["ok"] = False
+                        check["error"] = str(exc)
+                        attempt["warnings"].append(dict(check))
+                        attempt["checks"].append(check)
+                else:
+                    return True, {
+                        "ok": True,
+                        "summary": "ok" if not attempt["warnings"] else "ok_with_warnings",
+                        "base_url": base_url,
+                        "attempts": attempts,
+                        "token_present": bool(token),
+                        "strict": strict,
+                        "last_attempt": attempt,
+                    }
+                last_attempt = attempt
+                time.sleep(0.5)
+                continue
             return True, {
                 "ok": True,
                 "summary": "ok",
                 "base_url": base_url,
                 "attempts": attempts,
                 "token_present": bool(token),
+                "strict": strict,
                 "last_attempt": attempt,
             }
         last_attempt = attempt
@@ -232,6 +308,7 @@ def _probe_update_runtime(
         "base_url": base_url,
         "attempts": attempts,
         "token_present": bool(token),
+        "strict": strict,
         "last_attempt": last_attempt,
     }
 
