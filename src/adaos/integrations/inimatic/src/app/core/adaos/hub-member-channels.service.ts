@@ -92,7 +92,13 @@ export class HubMemberChannelsService {
 			kind: string,
 			payload: Record<string, any>,
 		) => Promise<any>,
+		{
+			onEventsMessage,
+		}: {
+			onEventsMessage?: ((data: string) => void) | null
+		} = {},
 	): Promise<boolean> {
+		this.rtc.onEventsMessage = onEventsMessage ?? null
 		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
 		this.publishSnapshot()
 		return ok

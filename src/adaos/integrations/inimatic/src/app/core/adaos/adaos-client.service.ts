@@ -2,7 +2,6 @@ import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { Injectable } from '@angular/core'
 import { map } from 'rxjs/operators'
 import { HubMemberChannelsService } from './hub-member-channels.service'
-import { WebRtcTransportService } from './webrtc-transport.service'
 
 export type AdaosEvent = { type: string; [k: string]: any }
 export interface AdaosConfig {
@@ -163,7 +162,6 @@ export class AdaosClient {
 
 	constructor(
 		private http: HttpClient,
-		public readonly rtc: WebRtcTransportService,
 		private channels: HubMemberChannelsService,
 	) {
 		const boundSubnet = (() => {
@@ -225,15 +223,14 @@ export class AdaosClient {
 			return { ws, direct: false }
 		}
 
-		// Wire RTC events-channel messages into the same pending-cmd handler
-		this.rtc.onEventsMessage = (data: string) => {
-			this.onEventsMessage({ data } as MessageEvent)
-		}
-
 		const sendCmd = (kind: string, payload: Record<string, any>) =>
 			this.sendEventsCommand(kind, payload, 8000)
 
-		const ok = await this.channels.negotiateDirectPaths(ws, sendCmd)
+		const ok = await this.channels.negotiateDirectPaths(ws, sendCmd, {
+			onEventsMessage: (data: string) => {
+				this.onEventsMessage({ data } as MessageEvent)
+			},
+		})
 		return { ws, direct: ok }
 	}
 

@@ -464,7 +464,11 @@ def autostart_enable_cmd(
 ):
     ctx = get_ctx()
     spec = default_autostart_spec(ctx, host=host, port=port, token=token)
-    res = autostart_enable(ctx, spec)
+    try:
+        res = autostart_enable(ctx, spec)
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
     else:

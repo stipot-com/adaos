@@ -284,6 +284,68 @@ def _macos_label() -> str:
     return "com.adaos.autostart"
 
 
+def _linux_user_bus_path() -> Path | None:
+    """
+    systemctl --user talks to the user's systemd manager over the session D-Bus.
+    In most distros that means a socket at $XDG_RUNTIME_DIR/bus.
+    """
+    xdg = str(os.getenv("XDG_RUNTIME_DIR") or "").strip()
+    if xdg:
+        try:
+            candidate = (Path(xdg).expanduser().resolve() / "bus").resolve()
+        except Exception:
+            candidate = None
+        if candidate is not None and candidate.exists():
+            return candidate
+    # Fallback for environments where XDG_RUNTIME_DIR isn't set but the address is.
+    addr = str(os.getenv("DBUS_SESSION_BUS_ADDRESS") or "").strip()
+    m = re.search(r"unix:path=([^,]+)", addr)
+    if m:
+        try:
+            candidate = Path(m.group(1)).expanduser().resolve()
+        except Exception:
+            candidate = None
+        if candidate is not None and candidate.exists():
+            return candidate
+    return None
+
+
+def _linux_systemctl_user_available() -> bool:
+    if not _is_linux():
+        return False
+    if not shutil_which("systemctl"):
+        return False
+    return _linux_user_bus_path() is not None
+
+
+def _linux_systemctl_user_unavailable_hint(*, service_path: Path, wrapper: Path) -> str:
+    bus = _linux_user_bus_path()
+    bus_str = str(bus) if bus is not None else ""
+    parts = [
+        "systemctl --user is not available (no user session D-Bus).",
+        "",
+        "This usually happens when running as root, over SSH without a login session, or inside a container without systemd.",
+        "",
+        f"Generated files (already written):",
+        f"- service: {service_path}",
+        f"- wrapper: {wrapper}",
+        "",
+        "Fix options:",
+        "- Run AdaOS under a regular user with a proper login session.",
+        "- If you need it to run without logging in, enable lingering: `loginctl enable-linger <user>` and re-login.",
+        "- Ensure `XDG_RUNTIME_DIR` points to `/run/user/<uid>` and the bus socket exists (typically `/run/user/<uid>/bus`).",
+    ]
+    if bus_str:
+        parts.append(f"- Detected bus socket: {bus_str}")
+    parts += [
+        "",
+        "After the session bus is available, you can enable the service manually:",
+        f"- `systemctl --user daemon-reload`",
+        f"- `systemctl --user enable --now {_linux_service_name()}`",
+    ]
+    return "\n".join(parts).strip()
+
+
 def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dict:
     _bootstrap_core_slot(ctx, token=spec.env.get("ADAOS_TOKEN"))
     base_dir = ctx.paths.base_dir()
@@ -330,6 +392,8 @@ def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dic
                 ]
             ),
         )
+        if shutil_which("systemctl") and not _linux_systemctl_user_available():
+            raise RuntimeError(_linux_systemctl_user_unavailable_hint(service_path=service_path, wrapper=wrapper))
         if shutil_which("systemctl"):
             _run(["systemctl", "--user", "daemon-reload"])
             enabled = _run(["systemctl", "--user", "enable", "--now", _linux_service_name()])
@@ -408,7 +472,7 @@ def disable(ctx: AgentContext) -> dict:
 
     if _is_linux():
         service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
-        if shutil_which("systemctl"):
+        if shutil_which("systemctl") and _linux_systemctl_user_available():
             _run(["systemctl", "--user", "disable", "--now", _linux_service_name()])
             _run(["systemctl", "--user", "daemon-reload"])
         if service_path.exists():
@@ -491,9 +555,10 @@ def status(ctx: AgentContext) -> dict:
         service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
         enabled = service_path.exists()
         active = None
-        if shutil_which("systemctl"):
+        if shutil_which("systemctl") and _linux_systemctl_user_available():
             is_enabled = _run(["systemctl", "--user", "is-enabled", _linux_service_name()])
-            enabled = is_enabled.returncode == 0
+            if is_enabled.returncode == 0:
+                enabled = True
             is_active = _run(["systemctl", "--user", "is-active", _linux_service_name()])
             active = is_active.returncode == 0
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
