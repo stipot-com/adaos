@@ -10,7 +10,28 @@ import requests
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import active_slot_manifest, slot_status
 from adaos.services.core_update import read_status
+from adaos.services.hub_root_protocol_store import ack_stream_message, prepare_stream_message
 from adaos.services.root.client import RootHttpClient
+
+_CORE_UPDATE_STREAM_FLOW_ID = "hub_root.integration.github_core_update"
+
+
+def _core_update_stream_id(conf) -> str:
+    subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "unknown_hub"
+    return f"hub-integration:github-core-update:{subnet_id}"
+
+
+def _core_update_authority_epoch(conf) -> str:
+    manifest = active_slot_manifest() or {}
+    subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "unknown_hub"
+    commit = str(manifest.get("git_commit") or "").strip()
+    branch = str(manifest.get("target_rev") or manifest.get("git_branch") or "").strip()
+    parts = [f"hub:{subnet_id}"]
+    if commit:
+        parts.append(f"commit:{commit[:12]}")
+    elif branch:
+        parts.append(f"branch:{branch}")
+    return "|".join(parts)
 
 
 def _root_client(conf) -> RootHttpClient | None:
@@ -45,8 +66,31 @@ def report_hub_core_update_state(conf) -> dict[str, Any] | None:
     if client is None:
         return None
     payload = build_core_update_report(conf)
+    protocol_meta = prepare_stream_message(
+        stream_id=_core_update_stream_id(conf),
+        flow_id=_CORE_UPDATE_STREAM_FLOW_ID,
+        traffic_class="integration",
+        delivery_class="must_not_lose",
+        message_type="state_report",
+        payload=payload,
+        ttl_ms=300_000,
+        authority_epoch=_core_update_authority_epoch(conf),
+        ack_required=True,
+    )
     payload["reported_at"] = time.time()
-    return client.hub_core_update_report(payload=payload)
+    payload["_protocol"] = dict(protocol_meta)
+    result = client.hub_core_update_report(payload=payload)
+    try:
+        ack_stream_message(
+            _core_update_stream_id(conf),
+            message_id=str(protocol_meta.get("message_id") or ""),
+            cursor=int(protocol_meta.get("cursor") or 0),
+            duplicate=bool((result or {}).get("duplicate")),
+            result="duplicate" if bool((result or {}).get("duplicate")) else "accepted",
+        )
+    except Exception:
+        logging.getLogger("adaos.hub-io").debug("core update stream ack failed", exc_info=True)
+    return result
 
 
 def reconcile_hub_core_update(conf, *, countdown_sec: float = 60.0) -> dict[str, Any] | None:

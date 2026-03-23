@@ -112,7 +112,8 @@ Strengthen the most critical control plane first.
 
 Checkpoint reached.
 Runtime now exposes explicit hub-root traffic classes with per-class pending budgets, live subscription/backpressure metrics, route runtime pressure, and integration outbox state.
-Class A durability, inbox dedupe, and cursor-based replay are still pending and remain the next hardening step.
+The first concrete Class A stream is now explicit for `hub_root.integration.github_core_update`: hub reports carry stable `stream_id/message_id/cursor`, the hub persists pending ack state locally, and root rejects stale or duplicate state reports by cursor/message id.
+Generalized Class A durability, inbox dedupe, and cursor-based replay are still pending for the remaining control and integration flows.
 
 ### Work items
 

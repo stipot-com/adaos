@@ -93,13 +93,24 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
         tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
         route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
+        streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+        core_update_stream = next(
+            (
+                entry
+                for entry in streams.values()
+                if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.integration.github_core_update"
+            ),
+            {},
+        )
         typer.echo(
             "protocol: "
             f"state={assessment.get('state') or 'unknown'} "
             f"control_subs={control_cls.get('active_subscriptions') or 0} "
             f"route_subs={route_cls.get('active_subscriptions') or 0} "
             f"route_backlog={route_runtime.get('pending_events') or 0} "
-            f"tg_outbox={tg_outbox.get('size') or 0}"
+            f"tg_outbox={tg_outbox.get('size') or 0} "
+            f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+            f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
         )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}

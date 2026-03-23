@@ -2463,6 +2463,60 @@ mtlsRouter.post('/hub/core_update/report', async (req, res) => {
 	}
 	try {
 		const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+		const protocol =
+			typeof (body as any)._protocol === 'object' && (body as any)._protocol !== null
+				? ((body as any)._protocol as Record<string, unknown>)
+				: null
+		const incomingStreamId =
+			typeof protocol?.['stream_id'] === 'string' ? String(protocol?.['stream_id']).trim() : ''
+		const incomingMessageId =
+			typeof protocol?.['message_id'] === 'string' ? String(protocol?.['message_id']).trim() : ''
+		const incomingCursorRaw = Number(protocol?.['cursor'])
+		const incomingCursor = Number.isFinite(incomingCursorRaw) ? Math.trunc(incomingCursorRaw) : null
+		const existingRaw = await redisClient.hGet(ROOT_CORE_UPDATE_REPORTS_HASH, identity.subnetId)
+		let existingRecord: Record<string, unknown> | null = null
+		if (existingRaw) {
+			try {
+				existingRecord = JSON.parse(existingRaw)
+			} catch {
+				existingRecord = null
+			}
+		}
+		const existingProtocol =
+			typeof existingRecord?.['_protocol'] === 'object' && existingRecord?.['_protocol'] !== null
+				? (existingRecord['_protocol'] as Record<string, unknown>)
+				: null
+		const existingStreamId =
+			typeof existingProtocol?.['stream_id'] === 'string'
+				? String(existingProtocol?.['stream_id']).trim()
+				: ''
+		const existingMessageId =
+			typeof existingProtocol?.['message_id'] === 'string'
+				? String(existingProtocol?.['message_id']).trim()
+				: ''
+		const existingCursorRaw = Number(existingProtocol?.['cursor'])
+		const existingCursor = Number.isFinite(existingCursorRaw) ? Math.trunc(existingCursorRaw) : null
+		if (
+			incomingStreamId &&
+			existingStreamId &&
+			incomingStreamId === existingStreamId &&
+			incomingCursor !== null &&
+			existingCursor !== null &&
+			(existingCursor > incomingCursor ||
+				(existingCursor === incomingCursor &&
+					(existingMessageId === incomingMessageId || !!incomingMessageId)))
+		) {
+			return res.status(202).json({
+				ok: true,
+				hub_id: identity.subnetId,
+				accepted: false,
+				duplicate: true,
+				stream_id: incomingStreamId,
+				message_id: incomingMessageId || null,
+				cursor: incomingCursor,
+				stored_cursor: existingCursor,
+			})
+		}
 		const record = {
 			hub_id: identity.subnetId,
 			reported_at: Date.now(),
@@ -2478,7 +2532,15 @@ mtlsRouter.post('/hub/core_update/report', async (req, res) => {
 			identity.subnetId,
 			JSON.stringify(normalizeCoreUpdateSubnetState(record)),
 		)
-		return res.status(202).json({ ok: true, hub_id: identity.subnetId })
+		return res.status(202).json({
+			ok: true,
+			hub_id: identity.subnetId,
+			accepted: true,
+			duplicate: false,
+			stream_id: incomingStreamId || null,
+			message_id: incomingMessageId || null,
+			cursor: incomingCursor,
+		})
 	} catch (error) {
 		return res.status(500).json({ ok: false, error: String((error as Error)?.message || error) })
 	}

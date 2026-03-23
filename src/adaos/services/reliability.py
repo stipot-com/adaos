@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
+
 
 class MessageTaxonomy(str, Enum):
     COMMAND = "command"
@@ -463,6 +465,7 @@ def _new_protocol_runtime() -> dict[str, Any]:
                 "updated_at": 0.0,
             }
         },
+        "streams": {},
         "updated_at": 0.0,
     }
 
@@ -2042,6 +2045,16 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
             name: int(hub_root_protocol_class_policy(name).get("stale_authority_after_s") or 0)
             for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES
         },
+        "tracked_streams": [
+            {
+                "flow_id": "hub_root.integration.github_core_update",
+                "stream_id_pattern": "hub-integration:github-core-update:<hub_id>",
+                "delivery_class": "must_not_lose",
+                "message_type": "state_report",
+                "ack_required": True,
+                "dedupe_scope": "cursor_and_message_id",
+            }
+        ],
     }
 
 
@@ -2049,6 +2062,7 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
     traffic_classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
     route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
     integration_outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+    streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
     control = traffic_classes.get("control") if isinstance(traffic_classes.get("control"), dict) else {}
     route = traffic_classes.get("route") if isinstance(traffic_classes.get("route"), dict) else {}
     telegram = integration_outboxes.get("telegram") if isinstance(integration_outboxes.get("telegram"), dict) else {}
@@ -2090,6 +2104,26 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
             state = "pressure"
         reasons.append("integration_outbox_full")
 
+    for stream_id, entry in streams.items():
+        if not isinstance(entry, dict):
+            continue
+        pending = entry.get("pending")
+        if not isinstance(pending, dict):
+            continue
+        pending_age_s = pending.get("age_s")
+        traffic = str(entry.get("traffic_class") or "integration").strip().lower()
+        cls = traffic_classes.get(traffic) if isinstance(traffic_classes.get(traffic), dict) else {}
+        policy = cls.get("policy") if isinstance(cls.get("policy"), dict) else {}
+        stale_after_s = int(policy.get("stale_authority_after_s") or 0)
+        flow_id = str(entry.get("flow_id") or stream_id).strip()
+        if isinstance(pending_age_s, (int, float)) and stale_after_s > 0 and float(pending_age_s) >= float(stale_after_s):
+            state = "degraded"
+            reasons.append(f"pending_ack_stale:{flow_id}")
+        elif isinstance(pending_age_s, (int, float)) and float(pending_age_s) > 0.0:
+            if state == "nominal":
+                state = "pressure"
+            reasons.append(f"pending_ack:{flow_id}")
+
     if not reasons:
         reasons.append("no_active_protocol_pressure")
     return {"state": state, "reason": "; ".join(reasons)}
@@ -2103,8 +2137,20 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             "subscriptions": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("subscriptions") or {})),
             "route_runtime": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("route_runtime") or {})),
             "integration_outboxes": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("integration_outboxes") or {})),
+            "streams": {},
             "updated_at": _HUB_ROOT_PROTOCOL_RUNTIME.get("updated_at"),
         }
+    try:
+        stream_state = protocol_streams_snapshot(now_ts=now)
+        runtime["streams"] = (
+            stream_state.get("streams")
+            if isinstance(stream_state.get("streams"), dict)
+            else {}
+        )
+        if not runtime.get("updated_at") and stream_state.get("updated_at"):
+            runtime["updated_at"] = stream_state.get("updated_at")
+    except Exception:
+        runtime["streams"] = {}
     traffic_classes = runtime.get("traffic_classes") if isinstance(runtime.get("traffic_classes"), dict) else {}
     for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES:
         cls = traffic_classes.get(name) if isinstance(traffic_classes.get(name), dict) else {}
@@ -2128,6 +2174,14 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             continue
         entry["updated_ago_s"] = _round_age(now, entry.get("updated_at"))
         entry["last_error_ago_s"] = _round_age(now, entry.get("last_error_at"))
+    streams = runtime.get("streams") if isinstance(runtime.get("streams"), dict) else {}
+    pending_acks = 0
+    for entry in streams.values():
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("pending"), dict):
+            pending_acks += 1
+    runtime["pending_ack_streams"] = pending_acks
     runtime["updated_ago_s"] = _round_age(now, runtime.get("updated_at"))
     runtime["assessment"] = _hub_root_protocol_assessment(runtime)
     return runtime

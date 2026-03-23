@@ -68,6 +68,15 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
     outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
     tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
+    streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+    core_update_stream = next(
+        (
+            entry
+            for entry in streams.values()
+            if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.integration.github_core_update"
+        ),
+        {},
+    )
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -76,7 +85,9 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"server={strategy.get('selected_server') or '-'} | "
         f"protocol={protocol_assessment.get('state') or 'unknown'} "
         f"route_backlog={route_runtime.get('pending_events') or 0} "
-        f"tg_outbox={tg_outbox.get('size') or 0} | "
+        f"tg_outbox={tg_outbox.get('size') or 0} "
+        f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+        f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} | "
         f"root_incident={root_diag.get('last_incident_class') or '-'} "
         f"route_incident={route_diag.get('last_incident_class') or '-'} "
@@ -117,6 +128,15 @@ def hub_root_watch(
             route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
             outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
             tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
+            streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+            core_update_stream = next(
+                (
+                    entry
+                    for entry in streams.values()
+                    if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.integration.github_core_update"
+                ),
+                {},
+            )
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -125,6 +145,8 @@ def hub_root_watch(
                 f"protocol={protocol_assessment.get('state') or 'unknown'} "
                 f"route_backlog={route_runtime.get('pending_events') or 0} "
                 f"tg_outbox={tg_outbox.get('size') or 0} "
+                f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+                f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} "
                 f"root_incident={root_diag.get('last_incident_class') or '-'} "
                 f"route_incident={route_diag.get('last_incident_class') or '-'} "
