@@ -2624,7 +2624,8 @@ mtlsRouter.post('/hub/core_update/report', async (req, res) => {
 		}
 		const record = {
 			hub_id: identity.subnetId,
-			reported_at: Date.now(),
+			root_received_at: new Date().toISOString(),
+			root_ack_result: 'accepted',
 			...body,
 		}
 		await redisClient.hSet(
@@ -2689,7 +2690,8 @@ mtlsRouter.post('/hub/control/report', async (req, res) => {
 		}
 		const record = {
 			hub_id: identity.subnetId,
-			reported_at: Date.now(),
+			root_received_at: new Date().toISOString(),
+			root_ack_result: 'accepted',
 			...body,
 		}
 		await redisClient.hSet(

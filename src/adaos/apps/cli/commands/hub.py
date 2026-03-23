@@ -36,6 +36,27 @@ def _local_api_base() -> str:
     return resolve_control_base_url()
 
 
+def _root_verify_from_conf(conf: Any) -> str | bool | ssl.SSLContext:
+    verify: str | bool | ssl.SSLContext = True
+    try:
+        ca_path = conf.ca_cert_path()
+        if isinstance(ca_path, Path) and ca_path.exists():
+            try:
+                import certifi  # type: ignore
+
+                ctx = ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                ctx = ssl.create_default_context()
+            try:
+                ctx.load_verify_locations(cafile=str(ca_path))
+            except Exception:
+                pass
+            verify = ctx
+    except Exception:
+        verify = True
+    return verify
+
+
 @root_link_app.command("status")
 def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON output")) -> None:
     """
@@ -206,6 +227,108 @@ def hub_root_reconnect(
     r = requests.post(url, headers=headers, json=payload, timeout=8.0)
     r.raise_for_status()
     _print(r.json(), json_output=json_output)
+
+
+@root_link_app.command("reports")
+def hub_root_reports(
+    kind: str = typer.Option("all", "--kind", help="all|control|core-update"),
+    hub_id: str | None = typer.Option(None, "--hub-id", help="Hub/subnet id to inspect (default: current hub)"),
+    root: str | None = typer.Option(None, "--root", help="Root server base URL"),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for root reports. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """
+    Fetch explicit root-side hub reports for control and core-update streams.
+    """
+    ctx = get_ctx()
+    conf = ctx.config
+    root_base = (root or getattr(getattr(conf, "root_settings", None), "base_url", None) or "https://api.inimatic.com").rstrip("/")
+    root_token = str(
+        token
+        or os.getenv("HUB_ROOT_TOKEN")
+        or os.getenv("ADAOS_ROOT_TOKEN")
+        or os.getenv("ROOT_TOKEN")
+        or ""
+    ).strip()
+    if not root_token:
+        raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
+    target_hub_id = hub_id
+    if target_hub_id is None:
+        try:
+            target_hub_id = str(conf.subnet_id or "").strip() or None
+        except Exception:
+            target_hub_id = None
+
+    kind_key = str(kind or "all").strip().lower()
+    if kind_key not in {"all", "control", "core-update", "core_update"}:
+        raise typer.BadParameter("kind must be one of: all, control, core-update")
+
+    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
+    payload: dict[str, Any] = {"ok": True, "root_url": root_base}
+    if kind_key in {"all", "control"}:
+        payload["control"] = client.root_control_reports(root_token=root_token, hub_id=target_hub_id)
+    if kind_key in {"all", "core-update", "core_update"}:
+        payload["core_update"] = client.root_core_update_reports(root_token=root_token, hub_id=target_hub_id)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+
+    def _protocol(report: dict[str, Any]) -> dict[str, Any]:
+        value = report.get("_protocol")
+        return value if isinstance(value, dict) else {}
+
+    control_items = payload.get("control", {}).get("items") if isinstance(payload.get("control"), dict) else None
+    if isinstance(control_items, list):
+        typer.echo("control reports:")
+        if not control_items:
+            typer.echo("  (empty)")
+        for item in control_items:
+            if not isinstance(item, dict):
+                continue
+            report = item.get("report") if isinstance(item.get("report"), dict) else {}
+            proto = _protocol(report)
+            lifecycle = report.get("lifecycle") if isinstance(report.get("lifecycle"), dict) else {}
+            root_control = report.get("root_control") if isinstance(report.get("root_control"), dict) else {}
+            route = report.get("route") if isinstance(report.get("route"), dict) else {}
+            typer.echo(
+                "  "
+                f"{item.get('hub_id') or report.get('subnet_id') or '-'} "
+                f"cursor={proto.get('cursor') or 0} "
+                f"message={proto.get('message_id') or '-'} "
+                f"root_received={report.get('root_received_at') or '-'} "
+                f"ack={report.get('root_ack_result') or '-'} "
+                f"node_state={lifecycle.get('node_state') or '-'} "
+                f"root={root_control.get('status') or root_control.get('state') or '-'} "
+                f"route={route.get('status') or route.get('state') or '-'}"
+            )
+
+    core_items = payload.get("core_update", {}).get("items") if isinstance(payload.get("core_update"), dict) else None
+    if isinstance(core_items, list):
+        typer.echo("core_update reports:")
+        if not core_items:
+            typer.echo("  (empty)")
+        for item in core_items:
+            if not isinstance(item, dict):
+                continue
+            report = item.get("report") if isinstance(item.get("report"), dict) else {}
+            proto = _protocol(report)
+            status = report.get("status") if isinstance(report.get("status"), dict) else {}
+            slot = report.get("slot_status") if isinstance(report.get("slot_status"), dict) else {}
+            typer.echo(
+                "  "
+                f"{item.get('hub_id') or report.get('subnet_id') or '-'} "
+                f"cursor={proto.get('cursor') or 0} "
+                f"message={proto.get('message_id') or '-'} "
+                f"root_received={report.get('root_received_at') or '-'} "
+                f"ack={report.get('root_ack_result') or '-'} "
+                f"state={status.get('state') or '-'} "
+                f"phase={status.get('phase') or '-'} "
+                f"slot={slot.get('active_slot') or '-'}"
+            )
 
 
 @join_code_app.command("create")

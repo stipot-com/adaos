@@ -2115,6 +2115,16 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
                 "ttl_s": 600,
             }
         ],
+        "tracked_request_keys": [
+            {
+                "flow_id": "hub_root.integration.llm",
+                "request_key": "request_id",
+                "delivery_class": "nice_to_replay",
+                "dedupe_scope": "root_redis_ttl_window",
+                "ttl_s": 600,
+                "conflict_rule": "request_fingerprint_must_match",
+            }
+        ],
     }
 
 
