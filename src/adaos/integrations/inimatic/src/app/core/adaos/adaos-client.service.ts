@@ -123,8 +123,6 @@ export class AdaosClient {
 			timeout: any
 		}
 	>()
-	private useWebRtc = false
-	private rtcStateSub: { unsubscribe(): void } | null = null
 
 	constructor(
 		private http: HttpClient,
@@ -175,23 +173,13 @@ export class AdaosClient {
 			this.sendEventsCommand(kind, payload, 8000)
 
 		const ok = await this.rtc.negotiate(signalingWs, sendCmd)
-		this.useWebRtc = ok
-
-		// Clean up previous subscription to avoid memory leaks
-		this.rtcStateSub?.unsubscribe()
-
-		// Listen for WebRTC failure → automatic fallback to WS
-		this.rtcStateSub = this.rtc.state$.subscribe((st) => {
-			if (st === 'failed' && this.useWebRtc) {
-				this.useWebRtc = false
-			}
-		})
-
 		return ok
 	}
 
 	isWebRtcActive(): boolean {
-		return this.useWebRtc && this.rtc.isConnected()
+		return (
+			this.channels.resolveActivePath('command') === 'webrtc_data:events'
+		)
 	}
 
 	getBaseUrl() {
@@ -374,7 +362,7 @@ export class AdaosClient {
 		const isSignaling = kind.startsWith('rtc.')
 		this.channels.sendEventsEnvelope(ws, json, {
 			channelId: 'command',
-			forceWs: isSignaling || !this.useWebRtc,
+			forceWs: isSignaling,
 		})
 		return ack
 	}

@@ -162,33 +162,36 @@ export class AppComponent implements OnInit, OnDestroy {
 			distinctUntilChanged(),
 		)
 
-		// Toast notifications on transport state transitions.
-		this.transportSub = this.rtc.state$.pipe(
+		// Toast notifications should also follow semantic member transport state,
+		// not the raw RTC peer state.
+		this.transportSub = this.transportState$.pipe(
 			distinctUntilChanged(),
 			pairwise(),
 			filter(([prev, cur]) => {
 				// Show toast for meaningful transitions
-				return (prev === 'connected' && cur === 'failed') ||
-					(prev === 'failed' && cur === 'connected') ||
-					(prev === 'connecting' && cur === 'failed') ||
+				return (prev === 'connected' && cur === 'ws') ||
+					(prev === 'ws' && cur === 'connected') ||
+					(prev === 'connecting' && cur === 'ws') ||
+					(prev === 'signaling' && cur === 'ws') ||
 					(prev === 'signaling' && cur === 'connected') ||
 					(prev === 'connecting' && cur === 'connected') ||  // Recovery
-					(prev === 'idle' && cur === 'connecting')  // Renegotiation
+					(prev === 'ws' && cur === 'connecting') ||
+					(prev === 'ws' && cur === 'signaling')
 			}),
 		).subscribe(async ([prev, cur]) => {
 			let message = ''
 			let color: 'warning' | 'success' | 'primary' = 'success'
 
-			if (cur === 'failed') {
+			if (cur === 'ws') {
 				message = 'Direct connection unavailable. Using cloud relay — possible delays.'
 				color = 'warning'
 			} else if (cur === 'connected') {
-				if (prev === 'failed' || prev === 'connecting') {
+				if (prev === 'ws' || prev === 'connecting' || prev === 'signaling') {
 					message = 'Direct P2P connection established.'
 					color = 'success'
 				}
-			} else if (cur === 'connecting') {
-				if (prev === 'idle') {
+			} else if (cur === 'connecting' || cur === 'signaling') {
+				if (prev === 'ws') {
 					message = 'Reconnecting...'
 					color = 'primary'
 				}
