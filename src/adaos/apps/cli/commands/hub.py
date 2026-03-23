@@ -91,6 +91,9 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     control_authority = protocol.get("control_authority") if isinstance(protocol.get("control_authority"), dict) else {}
     tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
     llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
+    route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+    route_control_flow = route_flows.get("control") if isinstance(route_flows.get("control"), dict) else {}
+    route_frame_flow = route_flows.get("frame") if isinstance(route_flows.get("frame"), dict) else {}
     streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
     control_lifecycle_stream = next(
         (
@@ -116,6 +119,8 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"server={strategy.get('selected_server') or '-'} | "
         f"protocol={protocol_assessment.get('state') or 'unknown'} "
         f"route_backlog={route_runtime.get('pending_events') or 0} "
+        f"route_ctrl={route_control_flow.get('state') or '-'} "
+        f"route_frame={route_frame_flow.get('state') or '-'} "
         f"tg_outbox={tg_outbox.get('size') or 0} "
         f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
         f"llm_mode={llm_outbox.get('idempotency_mode') or '-'} "
@@ -167,6 +172,9 @@ def hub_root_watch(
             control_authority = protocol.get("control_authority") if isinstance(protocol.get("control_authority"), dict) else {}
             tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
             llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
+            route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+            route_control_flow = route_flows.get("control") if isinstance(route_flows.get("control"), dict) else {}
+            route_frame_flow = route_flows.get("frame") if isinstance(route_flows.get("frame"), dict) else {}
             streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
             control_lifecycle_stream = next(
                 (
@@ -191,6 +199,8 @@ def hub_root_watch(
                 f"transport={strategy.get('effective_transport') or '-'} "
                 f"protocol={protocol_assessment.get('state') or 'unknown'} "
                 f"route_backlog={route_runtime.get('pending_events') or 0} "
+                f"route_ctrl={route_control_flow.get('state') or '-'} "
+                f"route_frame={route_frame_flow.get('state') or '-'} "
                 f"tg_outbox={tg_outbox.get('size') or 0} "
                 f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
                 f"llm_mode={llm_outbox.get('idempotency_mode') or '-'} "
@@ -218,6 +228,7 @@ def hub_root_watch(
 def hub_root_reconnect(
     transport: str | None = typer.Option(None, "--transport", help="ws|tcp"),
     url_override: str | None = typer.Option(None, "--url-override", help="Override NATS server URL"),
+    timeout_s: float = typer.Option(15.0, "--timeout", min=1.0, help="HTTP timeout (seconds)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """
@@ -230,9 +241,27 @@ def hub_root_reconnect(
     url = base + "/api/node/hub-root/reconnect"
     headers = {"X-AdaOS-Token": token}
     payload = {"transport": transport, "url_override": url_override}
-    r = requests.post(url, headers=headers, json=payload, timeout=8.0)
-    r.raise_for_status()
-    _print(r.json(), json_output=json_output)
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=float(timeout_s))
+        r.raise_for_status()
+        _print(r.json(), json_output=json_output)
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
+        payload = {
+            "ok": False,
+            "error": {"type": type(e).__name__, "message": str(e)},
+            "hint": "If the local control API is busy, retry with --timeout 30 or check `adaos node reliability`.",
+        }
+        if json_output:
+            _print(payload, json_output=True)
+        else:
+            typer.echo(f"error: {payload['error']['type']}: {payload['error']['message']}")
+            typer.echo(payload["hint"])
+        raise typer.Exit(code=2)
+    except Exception as e:
+        if json_output:
+            _print({"ok": False, "error": {"type": type(e).__name__, "message": str(e)}}, json_output=True)
+            raise typer.Exit(code=2)
+        raise
 
 
 @root_link_app.command("reports")

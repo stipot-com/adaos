@@ -60,6 +60,7 @@ from adaos.services.reliability import (
     observe_hub_root_integration_outbox,
     observe_hub_root_protocol_publish,
     observe_hub_root_protocol_subscription,
+    observe_hub_root_route_flow,
     observe_hub_root_route_runtime,
     record_hub_root_transport_event,
     set_integration_readiness,
@@ -321,18 +322,76 @@ class BootstrapService:
         except Exception:
             pass
         # Trigger reconnect by closing the active connection if present.
+        close_diag: dict[str, Any] = {"attempted": False, "timeout": False, "forced_ws_close": False}
         nc = getattr(self, "_hub_root_nc", None)
         if nc is not None:
             try:
                 close = getattr(nc, "close", None)
                 if callable(close):
-                    await close()
+                    close_diag["attempted"] = True
+                    try:
+                        close_timeout_s = float(os.getenv("HUB_ROOT_RECONNECT_CLOSE_TIMEOUT_S", "1.5") or "1.5")
+                    except Exception:
+                        close_timeout_s = 1.5
+                    if close_timeout_s < 0.2:
+                        close_timeout_s = 0.2
+
+                    # NOTE: asyncio.wait_for() can itself hang if the close coroutine ignores cancellation.
+                    # Use asyncio.wait() with timeout to ensure the HTTP request returns promptly.
+                    try:
+                        task = asyncio.create_task(close())
+                        done, pending = await asyncio.wait({task}, timeout=close_timeout_s)
+                        if pending:
+                            close_diag["timeout"] = True
+                            try:
+                                task.cancel()
+                            except Exception:
+                                pass
+                            # Best-effort: force-close websocket transport internals if present to avoid a stuck close().
+                            try:
+                                tr = getattr(nc, "_transport", None)
+                                ws = getattr(tr, "_ws", None) if tr else None
+                                close_task = getattr(tr, "_close_task", None) if tr else None
+                                client = getattr(tr, "_client", None) if tr else None
+                                try:
+                                    if ws is not None:
+                                        t = asyncio.create_task(ws.close())
+                                        await asyncio.wait({t}, timeout=0.5)
+                                        if not t.done():
+                                            try:
+                                                t.cancel()
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
+                                try:
+                                    if close_task is not None and hasattr(close_task, "done") and not close_task.done():
+                                        close_task.set_result(None)
+                                except Exception:
+                                    pass
+                                try:
+                                    if client is not None:
+                                        t = asyncio.create_task(client.close())
+                                        await asyncio.wait({t}, timeout=0.5)
+                                        if not t.done():
+                                            try:
+                                                t.cancel()
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
+                                close_diag["forced_ws_close"] = True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
         return {
             "ok": True,
             "requested": {"transport": tr, "url_override": override},
             "strategy": hub_root_transport_strategy_snapshot(),
+            "close": close_diag,
         }
 
     def _prepare_environment(self) -> None:
@@ -3401,6 +3460,47 @@ class BootstrapService:
                             except Exception:
                                 return None
 
+                        def _route_payload_bytes(payload: dict[str, Any] | None) -> int | None:
+                            try:
+                                p0 = payload or {}
+                                t0 = str(p0.get("t") or "")
+                                kind0 = str(p0.get("kind") or "")
+                                if t0 in ("frame", "chunk"):
+                                    if kind0 == "bin":
+                                        b64 = p0.get("data_b64")
+                                        if isinstance(b64, str) and b64:
+                                            return len(base64.b64decode(b64.encode("ascii")))
+                                    data0 = p0.get("data")
+                                    if isinstance(data0, str):
+                                        return len(data0.encode("utf-8"))
+                                    return None
+                                return len(_json.dumps(p0, ensure_ascii=False).encode("utf-8"))
+                            except Exception:
+                                return None
+
+                        def _route_observe_flow(
+                            flow: str,
+                            event: str,
+                            *,
+                            direction: str | None = None,
+                            payload: dict[str, Any] | None = None,
+                            payload_bytes: int | None = None,
+                            error: str | None = None,
+                            pending: bool = False,
+                        ) -> None:
+                            try:
+                                size = payload_bytes if payload_bytes is not None else _route_payload_bytes(payload)
+                                observe_hub_root_route_flow(
+                                    flow,
+                                    event,
+                                    direction=direction,
+                                    payload_bytes=size,
+                                    error=error,
+                                    pending=pending,
+                                )
+                            except Exception:
+                                pass
+
                         def _mark_pending(key: str) -> None:
                             try:
                                 st = pending_tunnel_meta.get(key)
@@ -3492,6 +3592,11 @@ class BootstrapService:
                                     )
                                 except Exception:
                                     pass
+                                _route_observe_flow(
+                                    "control",
+                                    "forced_close_no_upstream",
+                                    error="no_upstream",
+                                )
                                 try:
                                     _update_route_protocol_runtime(last_force_close_at=time.time())
                                 except Exception:
@@ -3630,6 +3735,20 @@ class BootstrapService:
                                     )
                                 except Exception:
                                     pass
+                                if t0 in ("frame", "chunk"):
+                                    _route_observe_flow(
+                                        "frame",
+                                        f"browser_{t0}",
+                                        direction="to_browser",
+                                        payload=payload,
+                                    )
+                                elif t0 in ("http_resp", "close"):
+                                    _route_observe_flow(
+                                        "control",
+                                        f"browser_{t0}",
+                                        direction="to_browser",
+                                        payload=payload,
+                                    )
                                 if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
                                     try:
                                         took_ms = (time.monotonic() - reply_started) * 1000.0
@@ -3738,6 +3857,20 @@ class BootstrapService:
                                     )
                                 except Exception:
                                     pass
+                                if t0 in ("frame", "chunk"):
+                                    _route_observe_flow(
+                                        "frame",
+                                        f"{t0}_publish_fail",
+                                        payload=payload,
+                                        error=str(e),
+                                    )
+                                elif t0 in ("http_resp", "close"):
+                                    _route_observe_flow(
+                                        "control",
+                                        f"{t0}_publish_fail",
+                                        payload=payload,
+                                        error=str(e),
+                                    )
                                 try:
                                     _update_route_protocol_runtime(last_publish_fail_at=time.time())
                                 except Exception:
@@ -3863,6 +3996,7 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
+                                _route_observe_flow("control", "upstream_closed")
                                 try:
                                     await _route_reply(key, {"t": "close"})
                                 except Exception:
@@ -3916,9 +4050,16 @@ class BootstrapService:
                                 if frame_kind == "bin":
                                     b64 = (payload or {}).get("data_b64")
                                     if isinstance(b64, str) and b64:
+                                        raw = base64.b64decode(b64.encode("ascii"))
                                         await asyncio.wait_for(
-                                            ws.send(base64.b64decode(b64.encode("ascii"))),
+                                            ws.send(raw),
                                             timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                        )
+                                        _route_observe_flow(
+                                            "frame",
+                                            "frame_upstream_sent",
+                                            direction="to_upstream",
+                                            payload_bytes=len(raw),
                                         )
                                 else:
                                     txt = (payload or {}).get("data")
@@ -3926,6 +4067,12 @@ class BootstrapService:
                                         await asyncio.wait_for(
                                             ws.send(txt),
                                             timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                        )
+                                        _route_observe_flow(
+                                            "frame",
+                                            "frame_upstream_sent",
+                                            direction="to_upstream",
+                                            payload_bytes=len(txt.encode("utf-8")),
                                         )
                                 return
 
@@ -3967,10 +4114,23 @@ class BootstrapService:
                                     ws.send(blob),
                                     timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
                                 )
+                                _route_observe_flow(
+                                    "frame",
+                                    "chunk_upstream_sent",
+                                    direction="to_upstream",
+                                    payload_bytes=len(blob),
+                                )
                             else:
+                                text_blob = "".join([p for p in parts if isinstance(p, str)])
                                 await asyncio.wait_for(
-                                    ws.send("".join([p for p in parts if isinstance(p, str)])),
+                                    ws.send(text_blob),
                                     timeout=max(0.1, float(_route_upstream_ws_send_timeout_s)),
+                                )
+                                _route_observe_flow(
+                                    "frame",
+                                    "chunk_upstream_sent",
+                                    direction="to_upstream",
+                                    payload_bytes=len(text_blob.encode("utf-8")),
                                 )
 
                         async def _route_cb(msg) -> None:
@@ -4218,12 +4378,19 @@ class BootstrapService:
 
                                 if t == "open":
                                     route_outcome = "open"
+                                    _route_observe_flow("control", "open_request", payload=data)
                                     # Open a local WS to the hub server and start pumping frames.
                                     if websockets_mod is None:
                                         route_outcome = "open_no_websockets"
                                         _clear_pending_tunnel_state(key, drop_events=True)
                                         if _route_trace:
                                             _route_log(f"[hub-route] open upstream failed key={_key_tag(key)} err=websockets_unavailable")
+                                        _route_observe_flow(
+                                            "control",
+                                            "open_connect_fail",
+                                            payload=data,
+                                            error="websockets_unavailable",
+                                        )
                                         await _route_reply(key, {"t": "close", "err": "websockets_unavailable"})
                                         return
                                     path = str((data or {}).get("path") or "/ws")
@@ -4314,6 +4481,12 @@ class BootstrapService:
                                             _route_log(
                                                 f"[hub-route] upstream.connect fail key={_key_tag(key)} err={type(e).__name__}: {e}"
                                             )
+                                        _route_observe_flow(
+                                            "control",
+                                            "open_connect_fail",
+                                            payload=data,
+                                            error=str(e),
+                                        )
                                         await _route_reply(key, {"t": "close", "err": str(e)})
                                         return
                                     route_outcome = "open_connected"
@@ -4337,11 +4510,13 @@ class BootstrapService:
                                         _update_route_protocol_runtime()
                                     except Exception:
                                         pass
+                                    _route_observe_flow("control", "open_ready", payload=data)
                                     route_outcome = "open_ready"
                                     return
 
                                 if t == "close":
                                     route_outcome = "close_local"
+                                    _route_observe_flow("control", "close_local", payload=data)
                                     rec = tunnels.pop(key, None)
                                     task = tunnel_tasks.pop(key, None)
                                     _clear_pending_tunnel_state(key, drop_events=True)
@@ -4368,6 +4543,13 @@ class BootstrapService:
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
                                         route_outcome = "frame_no_upstream"
+                                        _route_observe_flow(
+                                            "frame",
+                                            "frame_no_upstream",
+                                            payload=data,
+                                            error="no_upstream",
+                                            pending=True,
+                                        )
                                         _queue_pending_tunnel_event(key, data)
                                         _mark_pending(key)
                                         try:
@@ -4406,6 +4588,12 @@ class BootstrapService:
                                         route_outcome = "frame_sent"
                                     except Exception as e:
                                         route_outcome = f"frame_send_fail:{type(e).__name__}"
+                                        _route_observe_flow(
+                                            "frame",
+                                            "frame_send_fail",
+                                            payload=data,
+                                            error=str(e),
+                                        )
                                         if _route_verbose or _route_trace:
                                             try:
                                                 _route_log(
@@ -4420,6 +4608,13 @@ class BootstrapService:
                                     ws = rec.get("ws") if isinstance(rec, dict) else None
                                     if not ws:
                                         route_outcome = "chunk_no_upstream"
+                                        _route_observe_flow(
+                                            "frame",
+                                            "chunk_no_upstream",
+                                            payload=data,
+                                            error="no_upstream",
+                                            pending=True,
+                                        )
                                         _queue_pending_tunnel_event(key, data)
                                         _mark_pending(key)
                                         try:
@@ -4458,6 +4653,12 @@ class BootstrapService:
                                         route_outcome = "chunk_sent"
                                     except Exception as e:
                                         route_outcome = f"chunk_send_fail:{type(e).__name__}"
+                                        _route_observe_flow(
+                                            "frame",
+                                            "chunk_send_fail",
+                                            payload=data,
+                                            error=str(e),
+                                        )
                                         if _route_verbose or _route_trace:
                                             try:
                                                 _route_log(

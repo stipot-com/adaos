@@ -429,6 +429,28 @@ def _new_protocol_traffic_class_state(name: str) -> dict[str, Any]:
     }
 
 
+def _new_route_flow_state(name: str) -> dict[str, Any]:
+    return {
+        "name": str(name or "").strip().lower() or "unknown",
+        "event_total": 0,
+        "to_upstream_total": 0,
+        "to_browser_total": 0,
+        "bytes_to_upstream": 0,
+        "bytes_to_browser": 0,
+        "pending_total": 0,
+        "publish_fail_total": 0,
+        "send_fail_total": 0,
+        "connect_fail_total": 0,
+        "forced_close_total": 0,
+        "upstream_close_total": 0,
+        "last_event": "",
+        "last_event_at": 0.0,
+        "last_error": "",
+        "last_error_at": 0.0,
+        "updated_at": 0.0,
+    }
+
+
 def _new_protocol_runtime() -> dict[str, Any]:
     return {
         "traffic_classes": {
@@ -449,6 +471,10 @@ def _new_protocol_runtime() -> dict[str, Any]:
             "last_force_close_at": 0.0,
             "last_no_upstream_at": 0.0,
             "last_publish_fail_at": 0.0,
+            "flows": {
+                "control": _new_route_flow_state("control"),
+                "frame": _new_route_flow_state("frame"),
+            },
         },
         "integration_outboxes": {
             "telegram": {
@@ -979,6 +1005,64 @@ def observe_hub_root_route_runtime(**details: Any) -> None:
         route_runtime = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("route_runtime", {})
         for key, value in details.items():
             route_runtime[key] = value
+        flows = route_runtime.get("flows")
+        if not isinstance(flows, dict):
+            route_runtime["flows"] = {
+                "control": _new_route_flow_state("control"),
+                "frame": _new_route_flow_state("frame"),
+            }
+        route_runtime["updated_at"] = now
+        _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
+
+
+def observe_hub_root_route_flow(
+    flow: str,
+    event: str,
+    *,
+    direction: str | None = None,
+    payload_bytes: int | None = None,
+    error: str | None = None,
+    pending: bool = False,
+) -> None:
+    key = str(flow or "").strip().lower()
+    event_name = str(event or "").strip().lower()
+    if key not in {"control", "frame"} or not event_name:
+        return
+    now = time.time()
+    with _LOCK:
+        route_runtime = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("route_runtime", {})
+        flows = route_runtime.setdefault("flows", {})
+        entry = flows.get(key)
+        if not isinstance(entry, dict):
+            entry = _new_route_flow_state(key)
+            flows[key] = entry
+        entry["event_total"] = int(entry.get("event_total") or 0) + 1
+        entry["last_event"] = event_name
+        entry["last_event_at"] = now
+        if direction == "to_upstream":
+            entry["to_upstream_total"] = int(entry.get("to_upstream_total") or 0) + 1
+            if payload_bytes is not None:
+                entry["bytes_to_upstream"] = int(entry.get("bytes_to_upstream") or 0) + max(0, int(payload_bytes))
+        elif direction == "to_browser":
+            entry["to_browser_total"] = int(entry.get("to_browser_total") or 0) + 1
+            if payload_bytes is not None:
+                entry["bytes_to_browser"] = int(entry.get("bytes_to_browser") or 0) + max(0, int(payload_bytes))
+        if pending:
+            entry["pending_total"] = int(entry.get("pending_total") or 0) + 1
+        if "publish_fail" in event_name:
+            entry["publish_fail_total"] = int(entry.get("publish_fail_total") or 0) + 1
+        if "send_fail" in event_name:
+            entry["send_fail_total"] = int(entry.get("send_fail_total") or 0) + 1
+        if "connect_fail" in event_name:
+            entry["connect_fail_total"] = int(entry.get("connect_fail_total") or 0) + 1
+        if "forced_close" in event_name:
+            entry["forced_close_total"] = int(entry.get("forced_close_total") or 0) + 1
+        if "upstream_closed" in event_name:
+            entry["upstream_close_total"] = int(entry.get("upstream_close_total") or 0) + 1
+        if error:
+            entry["last_error"] = str(error).strip()
+            entry["last_error_at"] = now
+        entry["updated_at"] = now
         route_runtime["updated_at"] = now
         _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
 
@@ -2129,6 +2213,65 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
     }
 
 
+def _route_flow_state_snapshot(
+    flow: dict[str, Any],
+    *,
+    now_ts: float,
+    route_runtime: dict[str, Any],
+) -> dict[str, Any]:
+    entry = dict(flow or {})
+    last_event_ago_s = _round_age(now_ts, entry.get("last_event_at"))
+    last_error_ago_s = _round_age(now_ts, entry.get("last_error_at"))
+    entry["last_event_ago_s"] = last_event_ago_s
+    entry["last_error_ago_s"] = last_error_ago_s
+    name = str(entry.get("name") or "unknown")
+    pending_events = int(route_runtime.get("pending_events") or 0)
+    pending_tunnels = int(route_runtime.get("pending_tunnels") or 0)
+    pending_chunks = int(route_runtime.get("pending_chunks") or 0)
+    last_no_upstream_ago_s = _round_age(now_ts, route_runtime.get("last_no_upstream_at"))
+    last_force_close_ago_s = _round_age(now_ts, route_runtime.get("last_force_close_at"))
+
+    state = "nominal"
+    reason = "no_recent_route_pressure"
+    if name == "control":
+        if (
+            isinstance(last_error_ago_s, (int, float))
+            and float(last_error_ago_s) <= 30.0
+            and str(entry.get("last_error") or "").strip()
+        ):
+            state = "degraded"
+            reason = f"recent_error:{entry.get('last_event') or 'control_error'}"
+        elif isinstance(last_force_close_ago_s, (int, float)) and float(last_force_close_ago_s) <= 30.0:
+            state = "degraded"
+            reason = "forced_close_no_upstream"
+        elif pending_tunnels > 0 or (pending_events > 0 and isinstance(last_no_upstream_ago_s, (int, float)) and float(last_no_upstream_ago_s) <= 30.0):
+            state = "pressure"
+            reason = "pending_upstream_open"
+        elif int(route_runtime.get("active_tunnels") or 0) > 0:
+            state = "active"
+            reason = "route_control_session_active"
+    elif name == "frame":
+        if (
+            isinstance(last_error_ago_s, (int, float))
+            and float(last_error_ago_s) <= 20.0
+            and str(entry.get("last_error") or "").strip()
+        ):
+            state = "degraded"
+            reason = f"recent_error:{entry.get('last_event') or 'frame_error'}"
+        elif pending_events > 0 or pending_chunks > 0:
+            state = "pressure"
+            reason = "pending_frame_backlog"
+        elif isinstance(last_no_upstream_ago_s, (int, float)) and float(last_no_upstream_ago_s) <= 20.0:
+            state = "pressure"
+            reason = "recent_no_upstream"
+        elif isinstance(last_event_ago_s, (int, float)) and float(last_event_ago_s) <= 30.0:
+            state = "active"
+            reason = "recent_frame_activity"
+    entry["state"] = state
+    entry["reason"] = reason
+    return entry
+
+
 def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
     traffic_classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
     route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
@@ -2163,6 +2306,25 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
         if state == "nominal":
             state = "pressure"
         reasons.append("route_queue_at_limit")
+
+    route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+    route_control_flow = route_flows.get("control") if isinstance(route_flows.get("control"), dict) else {}
+    route_frame_flow = route_flows.get("frame") if isinstance(route_flows.get("frame"), dict) else {}
+    if str(route_control_flow.get("state") or "") == "degraded":
+        state = "degraded"
+        reasons.append("route_control_unhealthy")
+    elif str(route_control_flow.get("state") or "") == "pressure":
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("route_control_pressure")
+    if str(route_frame_flow.get("state") or "") == "degraded":
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("route_frame_unhealthy")
+    elif str(route_frame_flow.get("state") or "") == "pressure":
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("route_frame_pressure")
 
     telegram_size = int(telegram.get("size") or 0)
     telegram_max = telegram.get("max_size")
@@ -2311,6 +2473,23 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
         entry["last_dispatch_ago_s"] = _round_age(now, entry.get("last_dispatch_at"))
         entry["last_error_ago_s"] = _round_age(now, entry.get("last_error_at"))
         entry["updated_ago_s"] = _round_age(now, entry.get("updated_at"))
+    route_runtime = runtime.get("route_runtime") if isinstance(runtime.get("route_runtime"), dict) else {}
+    route_runtime["updated_ago_s"] = _round_age(now, route_runtime.get("updated_at"))
+    route_runtime["last_force_close_ago_s"] = _round_age(now, route_runtime.get("last_force_close_at"))
+    route_runtime["last_no_upstream_ago_s"] = _round_age(now, route_runtime.get("last_no_upstream_at"))
+    route_runtime["last_publish_fail_ago_s"] = _round_age(now, route_runtime.get("last_publish_fail_at"))
+    route_flows = route_runtime.get("flows")
+    if not isinstance(route_flows, dict):
+        route_flows = {
+            "control": _new_route_flow_state("control"),
+            "frame": _new_route_flow_state("frame"),
+        }
+        route_runtime["flows"] = route_flows
+    for flow_name in ("control", "frame"):
+        flow_entry = route_flows.get(flow_name)
+        if not isinstance(flow_entry, dict):
+            flow_entry = _new_route_flow_state(flow_name)
+        route_flows[flow_name] = _route_flow_state_snapshot(flow_entry, now_ts=now, route_runtime=route_runtime)
     outboxes = runtime.get("integration_outboxes") if isinstance(runtime.get("integration_outboxes"), dict) else {}
     for entry in outboxes.values():
         if not isinstance(entry, dict):

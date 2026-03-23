@@ -95,6 +95,9 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
         llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
         route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
+        route_flows = route_runtime.get("flows") if isinstance(route_runtime.get("flows"), dict) else {}
+        route_control_flow = route_flows.get("control") if isinstance(route_flows.get("control"), dict) else {}
+        route_frame_flow = route_flows.get("frame") if isinstance(route_flows.get("frame"), dict) else {}
         streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
         control_lifecycle_stream = next(
             (
@@ -118,6 +121,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"control_subs={control_cls.get('active_subscriptions') or 0} "
             f"route_subs={route_cls.get('active_subscriptions') or 0} "
             f"route_backlog={route_runtime.get('pending_events') or 0} "
+            f"route_ctrl={route_control_flow.get('state') or '-'} "
+            f"route_frame={route_frame_flow.get('state') or '-'} "
             f"tg_outbox={tg_outbox.get('size') or 0} "
             f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
             f"llm_mode={llm_outbox.get('idempotency_mode') or '-'} "
