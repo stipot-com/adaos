@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -300,6 +301,173 @@ _HUB_ROOT_TRANSPORT_STATE: dict[str, Any] = {
     "updated_at": 0.0,
 }
 _HUB_ROOT_TRANSPORT_HISTORY: deque[dict[str, Any]] = deque(maxlen=_TRANSPORT_HISTORY_LIMIT)
+
+_HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES = ("control", "integration", "route", "sync_metadata")
+_HUB_ROOT_PROTOCOL_CLASS_DEFAULTS: dict[str, dict[str, Any]] = {
+    "control": {
+        "priority": "highest",
+        "ack_policy": "required",
+        "replay": "bounded",
+        "idempotency": "strict",
+        "drop_policy": "never",
+        "worker_budget": 1,
+        "pending_msgs_limit": 256,
+        "pending_bytes_limit": 8 * 1024 * 1024,
+        "stale_authority_after_s": 30,
+    },
+    "integration": {
+        "priority": "medium",
+        "ack_policy": "integration_specific",
+        "replay": "selected_flows_only",
+        "idempotency": "operation_key",
+        "drop_policy": "buffer_then_drop_oldest",
+        "worker_budget": 1,
+        "pending_msgs_limit": 1024,
+        "pending_bytes_limit": 16 * 1024 * 1024,
+        "stale_authority_after_s": 120,
+    },
+    "route": {
+        "priority": "lower_than_control",
+        "ack_policy": "request_reply_only",
+        "replay": "session_bounded",
+        "idempotency": "session_scoped",
+        "drop_policy": "slow_consumer_backpressure",
+        "worker_budget": 1,
+        "pending_msgs_limit": 4096,
+        "pending_bytes_limit": 64 * 1024 * 1024,
+        "stale_authority_after_s": 45,
+    },
+    "sync_metadata": {
+        "priority": "below_control",
+        "ack_policy": "negotiation_specific",
+        "replay": "bounded",
+        "idempotency": "cursor_scoped",
+        "drop_policy": "drop_oldest_noncritical",
+        "worker_budget": 1,
+        "pending_msgs_limit": 512,
+        "pending_bytes_limit": 8 * 1024 * 1024,
+        "stale_authority_after_s": 60,
+    },
+}
+
+
+def _protocol_env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        value = int(default)
+    return max(int(minimum), value)
+
+
+def hub_root_protocol_class_policy(traffic_class: str) -> dict[str, Any]:
+    key = str(traffic_class or "").strip().lower()
+    defaults = _HUB_ROOT_PROTOCOL_CLASS_DEFAULTS.get(key)
+    if defaults is None:
+        raise ValueError(f"unsupported hub-root traffic class: {traffic_class!r}")
+    prefix = f"HUB_PROTOCOL_{key.upper()}"
+    return {
+        **defaults,
+        "traffic_class": key,
+        "pending_msgs_limit": _protocol_env_int(
+            f"{prefix}_PENDING_MSGS_LIMIT",
+            int(defaults.get("pending_msgs_limit") or 0),
+            minimum=1,
+        ),
+        "pending_bytes_limit": _protocol_env_int(
+            f"{prefix}_PENDING_BYTES_LIMIT",
+            int(defaults.get("pending_bytes_limit") or 0),
+            minimum=1024,
+        ),
+        "stale_authority_after_s": _protocol_env_int(
+            f"{prefix}_STALE_AUTHORITY_AFTER_S",
+            int(defaults.get("stale_authority_after_s") or 0),
+            minimum=1,
+        ),
+        "worker_budget": _protocol_env_int(
+            f"{prefix}_WORKER_BUDGET",
+            int(defaults.get("worker_budget") or 1),
+            minimum=1,
+        ),
+    }
+
+
+def hub_root_protocol_traffic_class(subject: str) -> str:
+    subj = str(subject or "").strip().lower()
+    if subj.startswith("hub.control."):
+        return "control"
+    if subj.startswith("route."):
+        return "route"
+    if subj.startswith("tg.input.") or subj.startswith("tg.output.") or subj.startswith("io.tg.in."):
+        return "integration"
+    if subj.startswith("sync.") or subj.startswith("cursor.") or subj.startswith("ystate."):
+        return "sync_metadata"
+    return "integration"
+
+
+def _new_protocol_traffic_class_state(name: str) -> dict[str, Any]:
+    return {
+        "traffic_class": name,
+        "policy": hub_root_protocol_class_policy(name),
+        "active_subscriptions": 0,
+        "subjects": [],
+        "dispatch_count": 0,
+        "publish_ok": 0,
+        "publish_fail": 0,
+        "handler_errors": 0,
+        "pressure_events": 0,
+        "last_dispatch_at": 0.0,
+        "last_publish_at": 0.0,
+        "last_error_at": 0.0,
+        "last_error": "",
+        "last_qsize": None,
+        "max_qsize": 0,
+        "last_pending_bytes": None,
+        "max_pending_bytes": 0,
+        "last_message_bytes": None,
+    }
+
+
+def _new_protocol_runtime() -> dict[str, Any]:
+    return {
+        "traffic_classes": {
+            name: _new_protocol_traffic_class_state(name)
+            for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES
+        },
+        "subscriptions": {},
+        "route_runtime": {
+            "active_tunnels": 0,
+            "active_reader_tasks": 0,
+            "pending_tunnels": 0,
+            "pending_events": 0,
+            "pending_chunks": 0,
+            "max_pending_events": 0,
+            "no_upstream_close_after_s": None,
+            "legacy_v1_enabled": False,
+            "v2_enabled": False,
+            "last_force_close_at": 0.0,
+            "last_no_upstream_at": 0.0,
+            "last_publish_fail_at": 0.0,
+        },
+        "integration_outboxes": {
+            "telegram": {
+                "name": "telegram",
+                "size": 0,
+                "max_size": None,
+                "drained_total": 0,
+                "dropped_total": 0,
+                "publish_ok": 0,
+                "publish_fail": 0,
+                "connected": None,
+                "last_error": "",
+                "last_error_at": 0.0,
+                "updated_at": 0.0,
+            }
+        },
+        "updated_at": 0.0,
+    }
+
+
+_HUB_ROOT_PROTOCOL_RUNTIME: dict[str, Any] = _new_protocol_runtime()
 
 
 def _copy_dict(value: Any) -> dict[str, Any]:
@@ -628,6 +796,222 @@ def _record_channel_incident(
     )
 
 
+def _protocol_class_state(traffic_class: str) -> dict[str, Any]:
+    key = str(traffic_class or "").strip().lower()
+    traffic_classes = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("traffic_classes", {})
+    state = traffic_classes.get(key)
+    if not isinstance(state, dict):
+        state = _new_protocol_traffic_class_state(key)
+        traffic_classes[key] = state
+    state["policy"] = hub_root_protocol_class_policy(key)
+    return state
+
+
+def _protocol_refresh_subjects_locked() -> None:
+    subscriptions = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("subscriptions", {})
+    traffic_classes = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("traffic_classes", {})
+    active_by_class: dict[str, list[str]] = {name: [] for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES}
+    for subject, entry in subscriptions.items():
+        if not isinstance(entry, dict):
+            continue
+        traffic_class = str(entry.get("traffic_class") or hub_root_protocol_traffic_class(subject))
+        if bool(entry.get("active", True)):
+            active_by_class.setdefault(traffic_class, []).append(str(subject))
+    for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES:
+        cls = traffic_classes.setdefault(name, _new_protocol_traffic_class_state(name))
+        subjects = sorted(active_by_class.get(name, []))
+        cls["policy"] = hub_root_protocol_class_policy(name)
+        cls["subjects"] = subjects
+        cls["active_subscriptions"] = len(subjects)
+
+
+def observe_hub_root_protocol_subscription(
+    subject: str,
+    *,
+    traffic_class: str | None = None,
+    pending_msgs_limit: int | None = None,
+    pending_bytes_limit: int | None = None,
+    qsize: int | None = None,
+    pending_bytes: int | None = None,
+    dispatched: bool = False,
+    message_bytes: int | None = None,
+    handler_error: str | None = None,
+    worker_done: bool | None = None,
+) -> None:
+    subj = str(subject or "").strip()
+    if not subj:
+        return
+    traffic = str(traffic_class or hub_root_protocol_traffic_class(subj)).strip().lower()
+    now = time.time()
+    with _LOCK:
+        cls = _protocol_class_state(traffic)
+        entry = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("subscriptions", {}).setdefault(
+            subj,
+            {
+                "subject": subj,
+                "traffic_class": traffic,
+                "active": True,
+                "dispatch_count": 0,
+                "handler_errors": 0,
+                "last_error": "",
+                "last_error_at": 0.0,
+                "last_dispatch_at": 0.0,
+                "last_qsize": None,
+                "max_qsize": 0,
+                "last_pending_bytes": None,
+                "max_pending_bytes": 0,
+                "pending_msgs_limit": None,
+                "pending_bytes_limit": None,
+                "worker_done": False,
+                "updated_at": 0.0,
+                "last_message_bytes": None,
+            },
+        )
+        entry["traffic_class"] = traffic
+        entry["active"] = not bool(worker_done)
+        if pending_msgs_limit is not None:
+            entry["pending_msgs_limit"] = int(pending_msgs_limit)
+        elif entry.get("pending_msgs_limit") is None:
+            entry["pending_msgs_limit"] = int(cls["policy"].get("pending_msgs_limit") or 0)
+        if pending_bytes_limit is not None:
+            entry["pending_bytes_limit"] = int(pending_bytes_limit)
+        elif entry.get("pending_bytes_limit") is None:
+            entry["pending_bytes_limit"] = int(cls["policy"].get("pending_bytes_limit") or 0)
+        if qsize is not None:
+            q0 = max(0, int(qsize))
+            entry["last_qsize"] = q0
+            entry["max_qsize"] = max(int(entry.get("max_qsize") or 0), q0)
+            cls["last_qsize"] = q0
+            cls["max_qsize"] = max(int(cls.get("max_qsize") or 0), q0)
+            limit = int(entry.get("pending_msgs_limit") or 0)
+            if limit > 0 and q0 >= limit:
+                cls["pressure_events"] = int(cls.get("pressure_events") or 0) + 1
+        if pending_bytes is not None:
+            b0 = max(0, int(pending_bytes))
+            entry["last_pending_bytes"] = b0
+            entry["max_pending_bytes"] = max(int(entry.get("max_pending_bytes") or 0), b0)
+            cls["last_pending_bytes"] = b0
+            cls["max_pending_bytes"] = max(int(cls.get("max_pending_bytes") or 0), b0)
+        if message_bytes is not None:
+            entry["last_message_bytes"] = int(message_bytes)
+            cls["last_message_bytes"] = int(message_bytes)
+        if dispatched:
+            entry["dispatch_count"] = int(entry.get("dispatch_count") or 0) + 1
+            entry["last_dispatch_at"] = now
+            cls["dispatch_count"] = int(cls.get("dispatch_count") or 0) + 1
+            cls["last_dispatch_at"] = now
+        if handler_error:
+            err = str(handler_error).strip()
+            entry["handler_errors"] = int(entry.get("handler_errors") or 0) + 1
+            entry["last_error"] = err
+            entry["last_error_at"] = now
+            cls["handler_errors"] = int(cls.get("handler_errors") or 0) + 1
+            cls["last_error"] = err
+            cls["last_error_at"] = now
+        if worker_done is not None:
+            entry["worker_done"] = bool(worker_done)
+        entry["updated_at"] = now
+        _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
+        _protocol_refresh_subjects_locked()
+
+
+def observe_hub_root_protocol_publish(
+    subject: str,
+    *,
+    ok: bool,
+    traffic_class: str | None = None,
+    payload_bytes: int | None = None,
+    latency_ms: float | None = None,
+    error: str | None = None,
+) -> None:
+    subj = str(subject or "").strip()
+    if not subj:
+        return
+    traffic = str(traffic_class or hub_root_protocol_traffic_class(subj)).strip().lower()
+    now = time.time()
+    with _LOCK:
+        cls = _protocol_class_state(traffic)
+        if ok:
+            cls["publish_ok"] = int(cls.get("publish_ok") or 0) + 1
+            cls["last_publish_at"] = now
+        else:
+            cls["publish_fail"] = int(cls.get("publish_fail") or 0) + 1
+            cls["last_error_at"] = now
+            cls["last_error"] = str(error or "").strip()
+        if payload_bytes is not None:
+            cls["last_message_bytes"] = int(payload_bytes)
+        if latency_ms is not None:
+            cls["last_publish_latency_ms"] = round(float(latency_ms), 3)
+        _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
+
+
+def observe_hub_root_route_runtime(**details: Any) -> None:
+    if not details:
+        return
+    now = time.time()
+    with _LOCK:
+        route_runtime = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("route_runtime", {})
+        for key, value in details.items():
+            route_runtime[key] = value
+        route_runtime["updated_at"] = now
+        _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
+
+
+def observe_hub_root_integration_outbox(
+    name: str,
+    *,
+    size: int | None = None,
+    max_size: int | None = None,
+    drained: int | None = None,
+    dropped: int | None = None,
+    publish_ok: int | None = None,
+    publish_fail: int | None = None,
+    connected: bool | None = None,
+    last_error: str | None = None,
+) -> None:
+    key = str(name or "").strip().lower()
+    if not key:
+        return
+    now = time.time()
+    with _LOCK:
+        outboxes = _HUB_ROOT_PROTOCOL_RUNTIME.setdefault("integration_outboxes", {})
+        entry = outboxes.setdefault(
+            key,
+            {
+                "name": key,
+                "size": 0,
+                "max_size": None,
+                "drained_total": 0,
+                "dropped_total": 0,
+                "publish_ok": 0,
+                "publish_fail": 0,
+                "connected": None,
+                "last_error": "",
+                "last_error_at": 0.0,
+                "updated_at": 0.0,
+            },
+        )
+        if size is not None:
+            entry["size"] = max(0, int(size))
+        if max_size is not None:
+            entry["max_size"] = max(0, int(max_size))
+        if drained is not None:
+            entry["drained_total"] = int(entry.get("drained_total") or 0) + max(0, int(drained))
+        if dropped is not None:
+            entry["dropped_total"] = int(entry.get("dropped_total") or 0) + max(0, int(dropped))
+        if publish_ok is not None:
+            entry["publish_ok"] = int(entry.get("publish_ok") or 0) + max(0, int(publish_ok))
+        if publish_fail is not None:
+            entry["publish_fail"] = int(entry.get("publish_fail") or 0) + max(0, int(publish_fail))
+        if connected is not None:
+            entry["connected"] = bool(connected)
+        if last_error:
+            entry["last_error"] = str(last_error).strip()
+            entry["last_error_at"] = now
+        entry["updated_at"] = now
+        _HUB_ROOT_PROTOCOL_RUNTIME["updated_at"] = now
+
+
 def reset_reliability_runtime_state() -> None:
     with _LOCK:
         _set_signal(_ROOT_CONTROL, status=ReadinessStatus.UNKNOWN)
@@ -657,6 +1041,8 @@ def reset_reliability_runtime_state() -> None:
             }
         )
         _HUB_ROOT_TRANSPORT_HISTORY.clear()
+        _HUB_ROOT_PROTOCOL_RUNTIME.clear()
+        _HUB_ROOT_PROTOCOL_RUNTIME.update(_new_protocol_runtime())
 
 
 def mark_root_control_up(*, summary: str = "hub-root control session established", details: dict[str, Any] | None = None) -> None:
@@ -1646,6 +2032,107 @@ def channel_overview_snapshot(
     }
 
 
+def hub_root_protocol_model_snapshot() -> dict[str, Any]:
+    return {
+        "traffic_classes": {
+            name: hub_root_protocol_class_policy(name)
+            for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES
+        },
+        "stale_authority_thresholds_s": {
+            name: int(hub_root_protocol_class_policy(name).get("stale_authority_after_s") or 0)
+            for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES
+        },
+    }
+
+
+def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
+    traffic_classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
+    route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
+    integration_outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+    control = traffic_classes.get("control") if isinstance(traffic_classes.get("control"), dict) else {}
+    route = traffic_classes.get("route") if isinstance(traffic_classes.get("route"), dict) else {}
+    telegram = integration_outboxes.get("telegram") if isinstance(integration_outboxes.get("telegram"), dict) else {}
+
+    reasons: list[str] = []
+    state = "nominal"
+    if int(control.get("active_subscriptions") or 0) <= 0:
+        state = "degraded"
+        reasons.append("control_subscription_missing")
+    if int(control.get("handler_errors") or 0) > 0:
+        state = "degraded"
+        reasons.append("control_handler_errors")
+    control_qsize = control.get("last_qsize")
+    control_limit = ((control.get("policy") or {}) if isinstance(control.get("policy"), dict) else {}).get("pending_msgs_limit")
+    if isinstance(control_qsize, int) and isinstance(control_limit, int) and control_limit > 0 and control_qsize >= control_limit:
+        state = "degraded"
+        reasons.append("control_queue_at_limit")
+
+    route_backlog = int(route_runtime.get("pending_events") or 0)
+    route_qsize = route.get("last_qsize")
+    route_limit = ((route.get("policy") or {}) if isinstance(route.get("policy"), dict) else {}).get("pending_msgs_limit")
+    if route_backlog > 0:
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("route_backlog")
+    if isinstance(route_qsize, int) and isinstance(route_limit, int) and route_limit > 0 and route_qsize >= route_limit:
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("route_queue_at_limit")
+
+    telegram_size = int(telegram.get("size") or 0)
+    telegram_max = telegram.get("max_size")
+    if telegram_size > 0:
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("integration_buffering")
+    if isinstance(telegram_max, int) and telegram_max > 0 and telegram_size >= telegram_max:
+        if state == "nominal":
+            state = "pressure"
+        reasons.append("integration_outbox_full")
+
+    if not reasons:
+        reasons.append("no_active_protocol_pressure")
+    return {"state": state, "reason": "; ".join(reasons)}
+
+
+def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    with _LOCK:
+        runtime = {
+            "traffic_classes": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("traffic_classes") or {})),
+            "subscriptions": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("subscriptions") or {})),
+            "route_runtime": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("route_runtime") or {})),
+            "integration_outboxes": json.loads(json.dumps(_HUB_ROOT_PROTOCOL_RUNTIME.get("integration_outboxes") or {})),
+            "updated_at": _HUB_ROOT_PROTOCOL_RUNTIME.get("updated_at"),
+        }
+    traffic_classes = runtime.get("traffic_classes") if isinstance(runtime.get("traffic_classes"), dict) else {}
+    for name in _HUB_ROOT_PROTOCOL_TRAFFIC_CLASSES:
+        cls = traffic_classes.get(name) if isinstance(traffic_classes.get(name), dict) else {}
+        if not cls:
+            cls = _new_protocol_traffic_class_state(name)
+            traffic_classes[name] = cls
+        cls["policy"] = hub_root_protocol_class_policy(name)
+        cls["last_dispatch_ago_s"] = _round_age(now, cls.get("last_dispatch_at"))
+        cls["last_publish_ago_s"] = _round_age(now, cls.get("last_publish_at"))
+        cls["last_error_ago_s"] = _round_age(now, cls.get("last_error_at"))
+    subscriptions = runtime.get("subscriptions") if isinstance(runtime.get("subscriptions"), dict) else {}
+    for entry in subscriptions.values():
+        if not isinstance(entry, dict):
+            continue
+        entry["last_dispatch_ago_s"] = _round_age(now, entry.get("last_dispatch_at"))
+        entry["last_error_ago_s"] = _round_age(now, entry.get("last_error_at"))
+        entry["updated_ago_s"] = _round_age(now, entry.get("updated_at"))
+    outboxes = runtime.get("integration_outboxes") if isinstance(runtime.get("integration_outboxes"), dict) else {}
+    for entry in outboxes.values():
+        if not isinstance(entry, dict):
+            continue
+        entry["updated_ago_s"] = _round_age(now, entry.get("updated_at"))
+        entry["last_error_ago_s"] = _round_age(now, entry.get("last_error_at"))
+    runtime["updated_ago_s"] = _round_age(now, runtime.get("updated_at"))
+    runtime["assessment"] = _hub_root_protocol_assessment(runtime)
+    return runtime
+
+
 def reliability_model_snapshot() -> dict[str, Any]:
     return {
         "message_taxonomy": [item.value for item in MessageTaxonomy],
@@ -1654,6 +2141,7 @@ def reliability_model_snapshot() -> dict[str, Any]:
         "authorities": [item.value for item in Authority],
         "authority_boundaries": AUTHORITY_BOUNDARIES,
         "flow_inventory": [item.to_dict() for item in HUB_ROOT_FLOW_SPECS],
+        "hub_root_protocol": hub_root_protocol_model_snapshot(),
     }
 
 
@@ -1745,6 +2233,7 @@ def reliability_snapshot(
         channel_diagnostics=channel_diagnostics,
         transport_strategy=transport_strategy,
     )
+    hub_root_protocol = hub_root_protocol_snapshot()
     sidecar_runtime = sidecar_runtime_snapshot()
     return {
         "ok": True,
@@ -1766,6 +2255,7 @@ def reliability_snapshot(
             "channel_diagnostics": channel_diagnostics,
             "channel_overview": channel_overview,
             "hub_root_transport_strategy": transport_strategy,
+            "hub_root_protocol": hub_root_protocol,
             "sidecar_runtime": sidecar_runtime,
         },
     }

@@ -108,6 +108,12 @@ Make readiness and degradation visible before changing protocol ownership.
 
 Strengthen the most critical control plane first.
 
+### Status
+
+Checkpoint reached.
+Runtime now exposes explicit hub-root traffic classes with per-class pending budgets, live subscription/backpressure metrics, route runtime pressure, and integration outbox state.
+Class A durability, inbox dedupe, and cursor-based replay are still pending and remain the next hardening step.
+
 ### Work items
 
 - classify current hub-root messages by taxonomy and delivery class

@@ -39,6 +39,11 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolved_token(raw_token: str | None = None) -> str | None:
+    token = str(raw_token or os.getenv("ADAOS_TOKEN") or "").strip()
+    return token or None
+
+
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
     fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
     payload = dict(values)
@@ -116,33 +121,91 @@ def _required_update_checks(base_url: str) -> list[tuple[str, bool]]:
     ]
 
 
-def _probe_update_runtime(*, host: str, port: int, token: str | None, timeout_sec: float) -> tuple[bool, str]:
+def _tail_text(path: Path, *, limit: int = 4000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return text[-limit:].strip()
+
+
+def _validation_log_paths(slot: str | None) -> tuple[Path, Path]:
+    base_dir = Path(os.getenv("ADAOS_BASE_DIR") or (Path.home() / ".adaos")).expanduser().resolve()
+    logs_dir = (base_dir / "logs").resolve()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    suffix = str(slot or "unknown").strip().upper() or "UNKNOWN"
+    return (
+        (logs_dir / f"autostart-slot-{suffix}.out.log").resolve(),
+        (logs_dir / f"autostart-slot-{suffix}.err.log").resolve(),
+    )
+
+
+def _probe_update_runtime(*, host: str, port: int, token: str | None, timeout_sec: float) -> tuple[bool, dict[str, Any]]:
     base_url = f"http://{host}:{int(port)}"
     deadline = time.time() + max(1.0, timeout_sec)
     last_error = "runtime validation did not start"
     headers = _validation_headers(token)
+    attempts = 0
+    last_attempt: dict[str, Any] = {}
     while time.time() < deadline:
+        attempts += 1
+        attempt: dict[str, Any] = {
+            "ts": time.time(),
+            "checks": [],
+        }
         for url, need_token in _required_update_checks(base_url):
+            check: dict[str, Any] = {
+                "url": url,
+                "requires_token": bool(need_token),
+            }
             try:
                 response = requests.get(
                     url,
                     headers=headers if need_token else {"Accept": "application/json"},
                     timeout=1.5,
                 )
+                check["status_code"] = int(response.status_code)
                 if response.status_code != HTTPStatus.OK:
                     last_error = f"{url} returned {response.status_code}"
+                    check["ok"] = False
+                    check["error"] = last_error
+                    attempt["checks"].append(check)
                     break
                 payload = response.json()
                 if not isinstance(payload, dict) or payload.get("ok") is False:
                     last_error = f"{url} returned invalid payload"
+                    check["ok"] = False
+                    check["error"] = last_error
+                    attempt["checks"].append(check)
                     break
+                check["ok"] = True
+                check["payload_keys"] = sorted(str(key) for key in payload.keys())
+                attempt["checks"].append(check)
             except Exception as exc:
                 last_error = f"{url} probe failed: {exc}"
+                check["ok"] = False
+                check["error"] = str(exc)
+                attempt["checks"].append(check)
                 break
         else:
-            return True, "ok"
+            return True, {
+                "ok": True,
+                "summary": "ok",
+                "base_url": base_url,
+                "attempts": attempts,
+                "token_present": bool(token),
+                "last_attempt": attempt,
+            }
+        last_attempt = attempt
         time.sleep(0.5)
-    return False, last_error
+    return False, {
+        "ok": False,
+        "summary": last_error,
+        "base_url": base_url,
+        "attempts": attempts,
+        "token_present": bool(token),
+        "last_attempt": last_attempt,
+    }
 
 
 def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: int, validate: bool = False) -> None:
@@ -154,7 +217,8 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
     manifest = active_slot_manifest()
     if not isinstance(manifest, dict):
         return
-    argv, command = _slot_launch_spec(manifest, host=host, port=port, token=args.token)
+    resolved_token = _resolved_token(args.token)
+    argv, command = _slot_launch_spec(manifest, host=host, port=port, token=resolved_token)
     if not argv and not command:
         write_status(
             {
@@ -172,42 +236,70 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             env[str(key)] = str(value)
     env["ADAOS_ACTIVE_CORE_SLOT"] = slot
     env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(slot_dir(slot))
-    if args.token:
-        env["ADAOS_TOKEN"] = str(args.token)
+    if resolved_token:
+        env["ADAOS_TOKEN"] = str(resolved_token)
     cwd_raw = str(manifest.get("cwd") or "").strip()
     cwd = Path(cwd_raw).expanduser().resolve() if cwd_raw else None
     if validate:
         started_at = time.time()
-        proc = subprocess.Popen(argv or command or [], shell=bool(command), env=env, cwd=str(cwd) if cwd else None)
-        ok, details = _probe_update_runtime(
-            host=host,
-            port=port,
-            token=args.token,
-            timeout_sec=_update_validation_timeout_sec(),
-        )
-        if ok:
-            write_status(
-                {
-                    "state": "validated",
-                    "phase": "validate",
-                    "message": f"slot {slot} passed post-switch validation",
-                    "target_slot": slot,
-                    "manifest": manifest,
-                    "validated_at": time.time(),
-                }
+        stdout_path, stderr_path = _validation_log_paths(slot)
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_path.open("a", encoding="utf-8", buffering=1) as stdout_fh, stderr_path.open(
+            "a", encoding="utf-8", buffering=1
+        ) as stderr_fh:
+            proc = subprocess.Popen(
+                argv or command or [],
+                shell=bool(command),
+                env=env,
+                cwd=str(cwd) if cwd else None,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
             )
-            raise SystemExit(int(proc.wait()))
-        proc.terminate()
-        try:
-            proc.wait(timeout=5.0)
-        except Exception:
-            proc.kill()
+            ok, details = _probe_update_runtime(
+                host=host,
+                port=port,
+                token=resolved_token,
+                timeout_sec=_update_validation_timeout_sec(),
+            )
+            if ok:
+                write_status(
+                    {
+                        "state": "validated",
+                        "phase": "validate",
+                        "message": f"slot {slot} passed post-switch validation",
+                        "target_slot": slot,
+                        "manifest": manifest,
+                        "validated_at": time.time(),
+                        "validation_logs": {
+                            "stdout_path": str(stdout_path),
+                            "stderr_path": str(stderr_path),
+                        },
+                    }
+                )
+                raise SystemExit(int(proc.wait()))
+            proc.terminate()
+            try:
+                proc.wait(timeout=5.0)
+            except Exception:
+                proc.kill()
+        validation_stdout = _tail_text(stdout_path)
+        validation_stderr = _tail_text(stderr_path)
         restored = rollback_to_previous_slot()
         payload: dict[str, Any] = {
             "state": "failed",
             "phase": "validate",
             "message": f"slot {slot} failed post-switch validation",
             "validation_error": details,
+            "validation_error_summary": str(details.get("summary") or "validation failed")
+            if isinstance(details, dict)
+            else str(details or "validation failed"),
+            "validation_stdout": validation_stdout,
+            "validation_stderr": validation_stderr,
+            "validation_logs": {
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+            },
             "target_slot": slot,
             "manifest": manifest,
             "started_at": started_at,
@@ -224,6 +316,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
 
 def main() -> None:
     args = _parse_args()
+    token = _resolved_token(args.token)
     init_ctx()
     plan = read_plan()
     pending_update_succeeded = False
@@ -258,8 +351,8 @@ def main() -> None:
         except Exception:
             pass
 
-    if args.token:
-        os.environ["ADAOS_TOKEN"] = str(args.token)
+    if token:
+        os.environ["ADAOS_TOKEN"] = str(token)
     os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
     os.environ["ADAOS_AUTOSTART_MODE"] = "1"
 

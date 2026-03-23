@@ -46,6 +46,8 @@ from adaos.services.nats_config import (
 from adaos.services.reliability import (
     ReadinessStatus,
     configure_hub_root_transport_strategy,
+    hub_root_protocol_class_policy,
+    hub_root_protocol_traffic_class,
     hub_root_transport_strategy_snapshot,
     mark_root_control_down,
     note_root_control_reconnect,
@@ -54,6 +56,10 @@ from adaos.services.reliability import (
     mark_route_ready,
     note_route_incident,
     observe_route_e2e,
+    observe_hub_root_integration_outbox,
+    observe_hub_root_protocol_publish,
+    observe_hub_root_protocol_subscription,
+    observe_hub_root_route_runtime,
     record_hub_root_transport_event,
     set_integration_readiness,
 )
@@ -2394,8 +2400,25 @@ class BootstrapService:
                                     return None
                                 return None
 
+                            def _sub_pending_bytes(sub0: Any) -> int | None:
+                                try:
+                                    pending_bytes = getattr(sub0, "pending_bytes", None)
+                                    if isinstance(pending_bytes, int):
+                                        return int(pending_bytes)
+                                    if callable(pending_bytes):
+                                        return int(pending_bytes())
+                                except Exception:
+                                    return None
+                                return None
+
                             async def _sub(subject: str, *, cb: Any):
-                                sub = await nc.subscribe(subject)
+                                traffic_class = hub_root_protocol_traffic_class(subject)
+                                policy = hub_root_protocol_class_policy(traffic_class)
+                                sub = await nc.subscribe(
+                                    subject,
+                                    pending_msgs_limit=int(policy.get("pending_msgs_limit") or 1),
+                                    pending_bytes_limit=int(policy.get("pending_bytes_limit") or 1024),
+                                )
                                 # `nats-py` queues SUB locally and may not push it to the server until
                                 # some later flush / publish. That breaks Root->Hub routing because
                                 # `route.to_hub.*` must be active before the first proxied request arrives.
@@ -2411,6 +2434,17 @@ class BootstrapService:
                                 else:
                                     await nc.flush(timeout=2.0)
                                 subs.append(sub)
+                                try:
+                                    observe_hub_root_protocol_subscription(
+                                        subject,
+                                        traffic_class=traffic_class,
+                                        pending_msgs_limit=int(policy.get("pending_msgs_limit") or 0),
+                                        pending_bytes_limit=int(policy.get("pending_bytes_limit") or 0),
+                                        qsize=_sub_qsize(sub),
+                                        pending_bytes=_sub_pending_bytes(sub),
+                                    )
+                                except Exception:
+                                    pass
 
                                 async def _runner() -> None:
                                     try:
@@ -2438,6 +2472,17 @@ class BootstrapService:
                                                         f"[hub-route:dispatch] start sub={subject} msg={msg_subject} qsize={_sub_qsize(sub)} bytes={msg_bytes}"
                                                     )
                                                 await cb(msg)
+                                                try:
+                                                    observe_hub_root_protocol_subscription(
+                                                        subject,
+                                                        traffic_class=traffic_class,
+                                                        qsize=_sub_qsize(sub),
+                                                        pending_bytes=_sub_pending_bytes(sub),
+                                                        dispatched=True,
+                                                        message_bytes=msg_bytes,
+                                                    )
+                                                except Exception:
+                                                    pass
                                                 if started is not None:
                                                     took_ms = (time.monotonic() - started) * 1000.0
                                                     _route_dispatch_log(
@@ -2446,6 +2491,16 @@ class BootstrapService:
                                             except asyncio.CancelledError:
                                                 raise
                                             except Exception as e:
+                                                try:
+                                                    observe_hub_root_protocol_subscription(
+                                                        subject,
+                                                        traffic_class=traffic_class,
+                                                        qsize=_sub_qsize(sub),
+                                                        pending_bytes=_sub_pending_bytes(sub),
+                                                        handler_error=f"{type(e).__name__}: {e}",
+                                                    )
+                                                except Exception:
+                                                    pass
                                                 try:
                                                     self._log.warning(
                                                         "nats subscription handler failed subject=%s type=%s err=%s",
@@ -2459,11 +2514,33 @@ class BootstrapService:
                                         return
                                     except Exception as e:
                                         try:
+                                            observe_hub_root_protocol_subscription(
+                                                subject,
+                                                traffic_class=traffic_class,
+                                                qsize=_sub_qsize(sub),
+                                                pending_bytes=_sub_pending_bytes(sub),
+                                                handler_error=f"worker_stopped:{type(e).__name__}: {e}",
+                                                worker_done=True,
+                                            )
+                                        except Exception:
+                                            pass
+                                        try:
                                             self._log.warning(
                                                 "nats subscription worker stopped subject=%s type=%s err=%s",
                                                 subject,
                                                 type(e).__name__,
                                                 e,
+                                            )
+                                        except Exception:
+                                            pass
+                                    finally:
+                                        try:
+                                            observe_hub_root_protocol_subscription(
+                                                subject,
+                                                traffic_class=traffic_class,
+                                                qsize=_sub_qsize(sub),
+                                                pending_bytes=_sub_pending_bytes(sub),
+                                                worker_done=True,
                                             )
                                         except Exception:
                                             pass
@@ -2479,6 +2556,38 @@ class BootstrapService:
                                 setattr(self, "_tg_output_nats_nc", nc)
                             except Exception:
                                 pass
+
+                            def _report_tg_outbox(
+                                *,
+                                drained: int = 0,
+                                dropped: int = 0,
+                                publish_ok: int = 0,
+                                publish_fail: int = 0,
+                                last_error: str | None = None,
+                            ) -> None:
+                                try:
+                                    q0 = getattr(self, "_tg_output_pending", None)
+                                    size0 = len(q0) if q0 is not None else 0
+                                except Exception:
+                                    size0 = 0
+                                try:
+                                    max_outbox0 = int(os.getenv("HUB_TG_OUTBOX_MAX", "200") or "200")
+                                except Exception:
+                                    max_outbox0 = 200
+                                try:
+                                    observe_hub_root_integration_outbox(
+                                        "telegram",
+                                        size=size0,
+                                        max_size=max_outbox0,
+                                        drained=drained,
+                                        dropped=dropped,
+                                        publish_ok=publish_ok,
+                                        publish_fail=publish_fail,
+                                        connected=bool(getattr(self, "_tg_output_nats_nc", None)),
+                                        last_error=last_error,
+                                    )
+                                except Exception:
+                                    pass
 
                             # Drain outbox (replay replies produced while NATS was down/flapping).
                             try:
@@ -2505,12 +2614,37 @@ class BootstrapService:
                                             except Exception:
                                                 pass
                                             drained += 1
+                                            try:
+                                                observe_hub_root_protocol_publish(
+                                                    str(subj0),
+                                                    ok=True,
+                                                    traffic_class="integration",
+                                                    payload_bytes=len(bytes(data0)),
+                                                )
+                                            except Exception:
+                                                pass
                                         except Exception:
+                                            try:
+                                                observe_hub_root_protocol_publish(
+                                                    str(subj0),
+                                                    ok=False,
+                                                    traffic_class="integration",
+                                                    payload_bytes=len(bytes(data0)),
+                                                    error="drain_failed",
+                                                )
+                                            except Exception:
+                                                pass
                                             break
                                     if drained and (hub_nats_verbose or trace):
                                         _rl_log("nats.outbox", f"[hub-io] tg outbox drained={drained}", every_s=1.0)
+                                    _report_tg_outbox(drained=drained)
+                                else:
+                                    _report_tg_outbox()
                             except Exception:
-                                pass
+                                try:
+                                    _report_tg_outbox(last_error="drain_failed")
+                                except Exception:
+                                    pass
 
                             try:
                                 if not bool(getattr(self, "_tg_output_bridge_hooked", False)):
@@ -2531,6 +2665,7 @@ class BootstrapService:
                                                 max_outbox = 200
 
                                             def _queue() -> None:
+                                                dropped = 0
                                                 try:
                                                     q = getattr(self, "_tg_output_pending", None)
                                                     if q is None:
@@ -2538,9 +2673,14 @@ class BootstrapService:
                                                         setattr(self, "_tg_output_pending", q)
                                                     while max_outbox > 0 and len(q) >= max_outbox:
                                                         q.popleft()
+                                                        dropped += 1
                                                     q.append((subj, data))
                                                 except Exception:
                                                     return
+                                                try:
+                                                    _report_tg_outbox(dropped=dropped)
+                                                except Exception:
+                                                    pass
 
                                             nc2 = getattr(self, "_tg_output_nats_nc", None)
                                             if not nc2:
@@ -2553,7 +2693,30 @@ class BootstrapService:
                                                     fp = getattr(nc2, "_flush_pending", None)
                                                     if callable(fp):
                                                         await fp(force_flush=True)
+                                                    try:
+                                                        observe_hub_root_protocol_publish(
+                                                            subj,
+                                                            ok=True,
+                                                            traffic_class="integration",
+                                                            payload_bytes=len(data),
+                                                        )
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        _report_tg_outbox(publish_ok=1)
+                                                    except Exception:
+                                                        pass
                                                 except Exception:
+                                                    try:
+                                                        observe_hub_root_protocol_publish(
+                                                            subj,
+                                                            ok=False,
+                                                            traffic_class="integration",
+                                                            payload_bytes=len(data),
+                                                            error="publish_failed",
+                                                        )
+                                                    except Exception:
+                                                        pass
                                                     _queue()
 
                                             try:
@@ -2890,7 +3053,13 @@ class BootstrapService:
                         # v2:  route.v2.to_browser.<hubId>.<key>
                         reply_subjects: dict[str, str] = {}
                         MAX_CHUNK_RAW = 300_000
-                        MAX_PENDING_TUNNEL_EVENTS = 128
+                        try:
+                            MAX_PENDING_TUNNEL_EVENTS = max(
+                                8,
+                                int(os.getenv("HUB_ROUTE_PENDING_EVENTS_MAX", "128") or "128"),
+                            )
+                        except Exception:
+                            MAX_PENDING_TUNNEL_EVENTS = 128
 
                         _route_verbose = os.getenv("HUB_ROUTE_VERBOSE", "0") == "1"
                         _route_diag = _route_verbose or os.getenv("HUB_ROUTE_DIAG", "0") == "1"
@@ -2914,6 +3083,8 @@ class BootstrapService:
                             route_run_id = uuid.uuid4().hex[:6]
                         except Exception:
                             route_run_id = "route"
+                        route_sub = None
+                        route_sub_v2 = None
                         # In WS-proxied NATS setups, route replies can sit in local buffers and root times out
                         # waiting for `route.to_browser.*`. Keep fast drain enabled by default.
                         _route_force_flush = os.getenv("HUB_ROUTE_FORCE_FLUSH", "1") == "1"
@@ -2964,6 +3135,36 @@ class BootstrapService:
                                     "hub-route.probe_resend_cfg",
                                     f"[hub-route] probe resend delays_s={_route_probe_resend_delays_s}",
                                     every_s=60.0,
+                                )
+                            except Exception:
+                                pass
+
+                        def _update_route_protocol_runtime(**details: Any) -> None:
+                            try:
+                                pending_events = 0
+                                for items0 in pending_tunnel_events.values():
+                                    try:
+                                        pending_events += len(items0 or [])
+                                    except Exception:
+                                        continue
+                                active_reader_tasks = 0
+                                for task0 in tunnel_tasks.values():
+                                    try:
+                                        if task0 and not task0.done():
+                                            active_reader_tasks += 1
+                                    except Exception:
+                                        continue
+                                observe_hub_root_route_runtime(
+                                    active_tunnels=len(tunnels),
+                                    active_reader_tasks=active_reader_tasks,
+                                    pending_tunnels=len(pending_tunnel_events),
+                                    pending_events=pending_events,
+                                    pending_chunks=len(pending_chunks),
+                                    max_pending_events=MAX_PENDING_TUNNEL_EVENTS,
+                                    no_upstream_close_after_s=_route_no_upstream_close_after_s,
+                                    legacy_v1_enabled=bool(route_sub is not None),
+                                    v2_enabled=bool(route_sub_v2 is not None),
+                                    **details,
                                 )
                             except Exception:
                                 pass
@@ -3108,6 +3309,10 @@ class BootstrapService:
                                     pending_tunnel_events.pop(key, None)
                                 except Exception:
                                     pass
+                            try:
+                                _update_route_protocol_runtime()
+                            except Exception:
+                                pass
 
                         async def _maybe_force_close_no_upstream(key: str) -> None:
                             if _route_no_upstream_close_after_s <= 0:
@@ -3141,6 +3346,10 @@ class BootstrapService:
                                             "age_s": round(float(age), 3),
                                         },
                                     )
+                                except Exception:
+                                    pass
+                                try:
+                                    _update_route_protocol_runtime(last_force_close_at=time.time())
                                 except Exception:
                                     pass
                                 if _route_trace:
@@ -3267,6 +3476,16 @@ class BootstrapService:
                                     )
                                 except asyncio.TimeoutError:
                                     raise RuntimeError("publish timeout")
+                                try:
+                                    observe_hub_root_protocol_publish(
+                                        reply_subject,
+                                        ok=True,
+                                        traffic_class="route",
+                                        payload_bytes=len(_json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                                        latency_ms=(time.monotonic() - reply_started) * 1000.0,
+                                    )
+                                except Exception:
+                                    pass
                                 if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
                                     try:
                                         took_ms = (time.monotonic() - reply_started) * 1000.0
@@ -3277,93 +3496,108 @@ class BootstrapService:
                                         pass
                                 # Ensure the reply is actually flushed quickly; otherwise Root may time out
                                 # waiting on `route.to_browser.<key>` (especially over websocket-proxied NATS).
-                                try:
-                                    t = (payload or {}).get("t")
-                                    if _route_trace:
+                                t = (payload or {}).get("t")
+                                if _route_trace:
+                                    try:
+                                        if t in ("close", "http_resp") or (_route_frame_verbose and t in ("frame", "chunk")):
+                                            status = (payload or {}).get("status")
+                                            kind = (payload or {}).get("kind")
+                                            size = None
+                                            if t == "frame":
+                                                data = (payload or {}).get("data") or (payload or {}).get("data_b64")
+                                                try:
+                                                    size = len(data) if data is not None else None
+                                                except Exception:
+                                                    size = None
+                                            if t == "chunk":
+                                                data = (payload or {}).get("data") or (payload or {}).get("data_b64")
+                                                try:
+                                                    size = len(data) if data is not None else None
+                                                except Exception:
+                                                    size = None
+                                            _route_log(
+                                                f"[hub-route] tx t={t} key={_key_tag(key)} status={status} kind={kind} size={size}"
+                                            )
+                                    except Exception:
+                                        pass
+                                if _route_force_flush and t in ("http_resp", "close"):
+                                    # Fast-drain pending bytes without relying on NATS PING/PONG.
+                                    # This avoids `flush()` (which can time out when PONGs are flaky behind WS proxies).
+                                    try:
+                                        tout = max(0.1, float(_route_flush_timeout_s))
+                                    except Exception:
+                                        tout = 1.0
+                                    flush_err = None
+                                    flush_started = time.monotonic()
+                                    fp = getattr(nc, "_flush_pending", None)
+                                    if callable(fp):
                                         try:
-                                            if t in ("close", "http_resp") or (_route_frame_verbose and t in ("frame", "chunk")):
-                                                status = (payload or {}).get("status")
-                                                kind = (payload or {}).get("kind")
-                                                size = None
-                                                if t == "frame":
-                                                    data = (payload or {}).get("data") or (payload or {}).get("data_b64")
-                                                    try:
-                                                        size = len(data) if data is not None else None
-                                                    except Exception:
-                                                        size = None
-                                                if t == "chunk":
-                                                    data = (payload or {}).get("data") or (payload or {}).get("data_b64")
-                                                    try:
-                                                        size = len(data) if data is not None else None
-                                                    except Exception:
-                                                        size = None
-                                                _route_log(
-                                                    f"[hub-route] tx t={t} key={_key_tag(key)} status={status} kind={kind} size={size}"
-                                                )
+                                            try:
+                                                await asyncio.wait_for(fp(force_flush=True), timeout=tout)
+                                            except TypeError:
+                                                try:
+                                                    await asyncio.wait_for(fp(True), timeout=tout)
+                                                except TypeError:
+                                                    await asyncio.wait_for(fp(), timeout=tout)
+                                        except Exception as e:
+                                            flush_err = e
+                                    else:
+                                        # Fallback: old clients might not have `_flush_pending`.
+                                        try:
+                                            await nc.flush(timeout=tout)
+                                        except Exception as e:
+                                            flush_err = e
+                                    flush_took_s = time.monotonic() - flush_started
+                                    if flush_err is not None:
+                                        try:
+                                            _rl_log(
+                                                "hub-route.flush_fail",
+                                                f"[hub-route] flush failed t={t} key={key}: {type(flush_err).__name__}: {flush_err} {_route_nc_diag()}",
+                                                every_s=1.0,
+                                            )
                                         except Exception:
                                             pass
-                                    if _route_force_flush and t in ("http_resp", "close"):
-                                        # Fast-drain pending bytes without relying on NATS PING/PONG.
-                                        # This avoids `flush()` (which can time out when PONGs are flaky behind WS proxies).
+                                    elif flush_took_s >= max(0.5, float(tout) * 0.9) and t == "http_resp":
+                                        # Slow flush can still cause root timeouts even if publish succeeds.
                                         try:
-                                            tout = max(0.1, float(_route_flush_timeout_s))
+                                            _rl_log(
+                                                "hub-route.flush_slow",
+                                                f"[hub-route] flush slow took_s={flush_took_s:.3f} t={t} key={key} {_route_nc_diag()}",
+                                                every_s=1.0,
+                                            )
                                         except Exception:
-                                            tout = 1.0
-                                        flush_err = None
-                                        flush_started = time.monotonic()
-                                        fp = getattr(nc, "_flush_pending", None)
-                                        if callable(fp):
-                                            try:
-                                                try:
-                                                    await asyncio.wait_for(fp(force_flush=True), timeout=tout)
-                                                except TypeError:
-                                                    try:
-                                                        await asyncio.wait_for(fp(True), timeout=tout)
-                                                    except TypeError:
-                                                        await asyncio.wait_for(fp(), timeout=tout)
-                                            except Exception as e:
-                                                flush_err = e
-                                        else:
-                                            # Fallback: old clients might not have `_flush_pending`.
-                                            try:
-                                                await nc.flush(timeout=tout)
-                                            except Exception as e:
-                                                flush_err = e
-                                        flush_took_s = time.monotonic() - flush_started
-                                        if flush_err is not None:
-                                            try:
-                                                _rl_log(
-                                                    "hub-route.flush_fail",
-                                                    f"[hub-route] flush failed t={t} key={key}: {type(flush_err).__name__}: {flush_err} {_route_nc_diag()}",
-                                                    every_s=1.0,
-                                                )
-                                            except Exception:
-                                                pass
-                                        elif flush_took_s >= max(0.5, float(tout) * 0.9) and t == "http_resp":
-                                            # Slow flush can still cause root timeouts even if publish succeeds.
-                                            try:
-                                                _rl_log(
-                                                    "hub-route.flush_slow",
-                                                    f"[hub-route] flush slow took_s={flush_took_s:.3f} t={t} key={key} {_route_nc_diag()}",
-                                                    every_s=1.0,
-                                                )
-                                            except Exception:
-                                                pass
-                                        if _route_tx_verbose:
-                                            try:
-                                                print(f"[hub-route] tx {t} key={key}")
-                                            except Exception:
-                                                pass
-                                        elif _route_http_trace and t in ("http_resp", "close"):
-                                            try:
-                                                _route_log(
-                                                    f"[hub-route] reply.flushed key={_key_tag(key)} subj={reply_subject} flush_ms={flush_took_s * 1000.0:.1f} {_route_payload_summary(payload)}"
-                                                )
-                                            except Exception:
-                                                pass
+                                            pass
+                                    if _route_tx_verbose:
+                                        try:
+                                            print(f"[hub-route] tx {t} key={key}")
+                                        except Exception:
+                                            pass
+                                    elif _route_http_trace and t in ("http_resp", "close"):
+                                        try:
+                                            _route_log(
+                                                f"[hub-route] reply.flushed key={_key_tag(key)} subj={reply_subject} flush_ms={flush_took_s * 1000.0:.1f} {_route_payload_summary(payload)}"
+                                            )
+                                        except Exception:
+                                            pass
+                                try:
+                                    _update_route_protocol_runtime()
                                 except Exception:
                                     pass
                             except Exception as e:
+                                try:
+                                    observe_hub_root_protocol_publish(
+                                        reply_subject,
+                                        ok=False,
+                                        traffic_class="route",
+                                        payload_bytes=len(_json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                                        error=f"{type(e).__name__}: {e}",
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    _update_route_protocol_runtime(last_publish_fail_at=time.time())
+                                except Exception:
+                                    pass
                                 # Do not silently drop probe replies: Root will time out and surface `hub_unreachable`.
                                 if t0 in ("http_resp", "close") or _route_verbose:
                                     try:
@@ -3510,6 +3744,10 @@ class BootstrapService:
                                     await ws.close()
                                 except Exception:
                                     pass
+                                try:
+                                    _update_route_protocol_runtime()
+                                except Exception:
+                                    pass
 
                         def _queue_pending_tunnel_event(key: str, payload: dict[str, Any]) -> None:
                             try:
@@ -3520,6 +3758,10 @@ class BootstrapService:
                                 if len(items) >= MAX_PENDING_TUNNEL_EVENTS:
                                     items.pop(0)
                                 items.append(dict(payload))
+                            except Exception:
+                                pass
+                            try:
+                                _update_route_protocol_runtime()
                             except Exception:
                                 pass
 
@@ -3947,6 +4189,10 @@ class BootstrapService:
                                                 except Exception:
                                                     pass
                                             break
+                                    try:
+                                        _update_route_protocol_runtime()
+                                    except Exception:
+                                        pass
                                     route_outcome = "open_ready"
                                     return
 
@@ -3958,6 +4204,10 @@ class BootstrapService:
                                     try:
                                         if task:
                                             task.cancel()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _update_route_protocol_runtime()
                                     except Exception:
                                         pass
                                     try:
@@ -3987,6 +4237,10 @@ class BootstrapService:
                                                     summary="hub route frame arrived while upstream is not connected",
                                                     details={"key_tag": _key_tag(key), "age_s": age_s, "t": "frame"},
                                                 )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            _update_route_protocol_runtime(last_no_upstream_at=time.time())
                                         except Exception:
                                             pass
                                         await _maybe_force_close_no_upstream(key)
@@ -4035,6 +4289,10 @@ class BootstrapService:
                                                     summary="hub route chunk arrived while upstream is not connected",
                                                     details={"key_tag": _key_tag(key), "age_s": age_s, "t": "chunk"},
                                                 )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            _update_route_protocol_runtime(last_no_upstream_at=time.time())
                                         except Exception:
                                             pass
                                         await _maybe_force_close_no_upstream(key)
@@ -4414,7 +4672,6 @@ class BootstrapService:
                                         pass
                                 return
 
-                        route_sub = None
                         try:
                             # Legacy v1 subject. Disabled by default because it cannot be isolated by hub id,
                             # so it allows cross-hub route traffic and can cause hard-to-debug flaps.
@@ -4422,7 +4679,6 @@ class BootstrapService:
                                 route_sub = await _sub("route.to_hub.*", cb=_route_cb)
                         except Exception:
                             route_sub = None
-                        route_sub_v2 = None
                         try:
                             # v2: route.v2.to_hub.<hubId>.<key>
                             route_sub_v2 = await _sub(f"route.v2.to_hub.{hub_id}.*", cb=_route_cb)
@@ -4452,6 +4708,10 @@ class BootstrapService:
                                     ]
                                 },
                             )
+                        except Exception:
+                            pass
+                        try:
+                            _update_route_protocol_runtime()
                         except Exception:
                             pass
                     except Exception as e:

@@ -50,6 +50,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     channel_diagnostics = runtime.get("channel_diagnostics") if isinstance(runtime.get("channel_diagnostics"), dict) else {}
     channel_overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
     strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
+    protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
@@ -83,6 +84,22 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"status={sidecar.get('status') or 'unknown'} "
             f"local={sidecar.get('local_url') or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
+        )
+    if protocol:
+        assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
+        classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
+        control_cls = classes.get("control") if isinstance(classes.get("control"), dict) else {}
+        route_cls = classes.get("route") if isinstance(classes.get("route"), dict) else {}
+        outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+        tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
+        route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
+        typer.echo(
+            "protocol: "
+            f"state={assessment.get('state') or 'unknown'} "
+            f"control_subs={control_cls.get('active_subscriptions') or 0} "
+            f"route_subs={route_cls.get('active_subscriptions') or 0} "
+            f"route_backlog={route_runtime.get('pending_events') or 0} "
+            f"tg_outbox={tg_outbox.get('size') or 0}"
         )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}
