@@ -12,12 +12,11 @@ import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
-import { Observable, of, timer, Subscription, combineLatest } from 'rxjs'
+import { Observable, of, timer, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, filter, map, pairwise, startWith, switchMap, timeout } from 'rxjs/operators'
 import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { PairingService } from './runtime/pairing.service'
-import { WebRtcTransportService } from './core/adaos/webrtc-transport.service'
 import { HubMemberChannelsService } from './core/adaos/hub-member-channels.service'
 import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
@@ -84,7 +83,6 @@ export class AppComponent implements OnInit, OnDestroy {
 		private http: HttpClient,
 		private pairing: PairingService,
 		private zone: NgZone,
-		private rtc: WebRtcTransportService,
 		private channels: HubMemberChannelsService,
 		private toastCtrl: ToastController,
 	) {
@@ -101,8 +99,8 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.applyTheme(this.colorSchemeMedia.matches)
 		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
 
-		// Initialize visibility tracking for WebRTC reconnection on mobile devices
-		this.rtc.initVisibilityTracking()
+		// Initialize semantic member-channel runtime and underlying transport visibility handling.
+		this.channels.initRuntime()
 
 		try {
 			window.addEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
@@ -141,24 +139,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
 		// Header transport state should reflect the active semantic member path,
 		// not just whether a raw WebRTC peer happens to be connected.
-		this.transportState$ = combineLatest([
-			this.rtc.state$,
-			this.channels.snapshot$,
-		]).pipe(
-			map(([rtcState, snapshot]) => {
-				const commandPath = snapshot.channels.command.activePath
-				const syncPath = snapshot.channels.sync.activePath
-				if (
-					commandPath === 'webrtc_data:events' ||
-					syncPath === 'webrtc_data:yjs'
-				) {
-					return 'connected'
-				}
-				if (rtcState === 'signaling' || rtcState === 'connecting') {
-					return rtcState
-				}
-				return 'ws'
-			}),
+		this.transportState$ = this.channels.transportState$.pipe(
 			distinctUntilChanged(),
 		)
 

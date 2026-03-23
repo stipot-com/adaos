@@ -17,6 +17,12 @@ export type HubMemberSemanticPath =
 	| 'webrtc_data:yjs'
 	| 'yws'
 
+export type HubMemberTransportState =
+	| 'signaling'
+	| 'connecting'
+	| 'connected'
+	| 'ws'
+
 type ChannelSpec = {
 	paths: readonly HubMemberSemanticPath[]
 	freezeMs: number
@@ -66,14 +72,26 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 @Injectable({ providedIn: 'root' })
 export class HubMemberChannelsService {
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
+	private runtimeInitialized = false
 	readonly snapshot$ = new BehaviorSubject<HubMemberChannelSnapshot>(
 		this.buildSnapshot(),
+	)
+	readonly transportState$ = new BehaviorSubject<HubMemberTransportState>(
+		this.buildTransportState(this.snapshot$.value),
 	)
 
 	constructor(private rtc: WebRtcTransportService) {
 		this.rtc.state$.subscribe(() => {
 			this.publishSnapshot()
 		})
+	}
+
+	initRuntime(): void {
+		if (!this.runtimeInitialized) {
+			this.runtimeInitialized = true
+			this.rtc.initVisibilityTracking()
+		}
+		this.publishSnapshot()
 	}
 
 	resolveActivePath(
@@ -261,7 +279,27 @@ export class HubMemberChannelsService {
 		}
 	}
 
+	private buildTransportState(
+		snapshot: HubMemberChannelSnapshot,
+	): HubMemberTransportState {
+		const rtcState = this.rtc.state$.value
+		const commandPath = snapshot.channels.command.activePath
+		const syncPath = snapshot.channels.sync.activePath
+		if (
+			commandPath === 'webrtc_data:events' ||
+			syncPath === 'webrtc_data:yjs'
+		) {
+			return 'connected'
+		}
+		if (rtcState === 'signaling' || rtcState === 'connecting') {
+			return rtcState
+		}
+		return 'ws'
+	}
+
 	private publishSnapshot(): void {
-		this.snapshot$.next(this.buildSnapshot())
+		const snapshot = this.buildSnapshot()
+		this.snapshot$.next(snapshot)
+		this.transportState$.next(this.buildTransportState(snapshot))
 	}
 }
