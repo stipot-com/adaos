@@ -8,6 +8,7 @@ export type WidgetType =
   | 'ui.chat'
   | 'ui.voiceInput'
   | 'ui.list'
+  | 'ui.table'
   | 'ui.form'
   | 'ui.actions'
   | 'ui.jsonViewer'

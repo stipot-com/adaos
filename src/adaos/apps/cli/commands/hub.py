@@ -88,6 +88,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
     route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
     outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+    control_authority = protocol.get("control_authority") if isinstance(protocol.get("control_authority"), dict) else {}
     tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
     llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
     streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
@@ -121,6 +122,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"llm_cache={llm_outbox.get('cache_hit_total') or 0}/{llm_outbox.get('cache_miss_total') or 0} "
         f"pending_acks={protocol.get('pending_ack_streams') or 0} "
         f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
+        f"control_auth={control_authority.get('state') or '-'} "
         f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
         f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} | "
@@ -162,6 +164,7 @@ def hub_root_watch(
             route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
             route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
             outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
+            control_authority = protocol.get("control_authority") if isinstance(protocol.get("control_authority"), dict) else {}
             tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
             llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
             streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
@@ -194,6 +197,7 @@ def hub_root_watch(
                 f"llm_cache={llm_outbox.get('cache_hit_total') or 0}/{llm_outbox.get('cache_miss_total') or 0} "
                 f"pending_acks={protocol.get('pending_ack_streams') or 0} "
                 f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
+                f"control_auth={control_authority.get('state') or '-'} "
                 f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
                 f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} "

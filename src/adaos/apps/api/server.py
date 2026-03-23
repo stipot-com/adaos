@@ -167,6 +167,7 @@ from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
 from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
 from adaos.services.core_update import clear_plan as clear_core_update_plan
+from adaos.services.core_update import finalize_runtime_boot_status as finalize_core_update_boot_status
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
@@ -1073,9 +1074,13 @@ async def admin_update_rollback(body: CoreUpdateRollbackRequest):
 
 @app.get("/api/admin/update/status", dependencies=[Depends(require_token)])
 async def admin_update_status():
+    try:
+        finalized = finalize_core_update_boot_status()
+    except Exception:
+        finalized = None
     return {
         "ok": True,
-        "status": read_core_update_status(),
+        "status": finalized if isinstance(finalized, dict) else read_core_update_status(),
         "last_result": read_core_update_last_result(),
         "plan": read_core_update_plan(),
         "slots": core_slot_status(),

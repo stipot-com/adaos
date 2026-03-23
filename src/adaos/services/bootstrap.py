@@ -535,7 +535,10 @@ class BootstrapService:
             self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
         try:
-            from adaos.services.core_update import read_status as _read_core_update_status
+            from adaos.services.core_update import (
+                finalize_runtime_boot_status as _finalize_runtime_boot_status,
+                read_status as _read_core_update_status,
+            )
 
             await bus.emit(
                 "core.update.status",
@@ -544,6 +547,7 @@ class BootstrapService:
                 actor="system",
             )
         except Exception:
+            _finalize_runtime_boot_status = None
             self._log.debug("failed to emit initial core.update.status", exc_info=True)
         await bus.emit("sys.bus.ready", {}, source="lifecycle", actor="system")
         # Start in-process scheduler after the bus is ready.
@@ -714,6 +718,11 @@ class BootstrapService:
             self._ready.set()
             self._booted = True
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+            try:
+                if callable(_finalize_runtime_boot_status):
+                    _finalize_runtime_boot_status()
+            except Exception:
+                self._log.debug("failed to finalize core.update.status after sys.ready", exc_info=True)
             await _report_control_lifecycle("sys.ready")
             self._boot_tasks.append(
                 asyncio.create_task(
@@ -728,6 +737,11 @@ class BootstrapService:
                 self._ready.set()
                 self._booted = True
                 await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+                try:
+                    if callable(_finalize_runtime_boot_status):
+                        _finalize_runtime_boot_status()
+                except Exception:
+                    self._log.debug("failed to finalize core.update.status after sys.ready", exc_info=True)
 
         # After IO bus is ready, wire outbound subscriber for Telegram if NATS/local
         try:

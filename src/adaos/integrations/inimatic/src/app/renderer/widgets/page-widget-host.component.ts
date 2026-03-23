@@ -30,6 +30,7 @@ import { VoiceInputWidgetComponent } from './voice-input.widget.component'
 import { ListWidgetComponent } from './list.widget.component'
 import { FormWidgetComponent } from './form.widget.component'
 import { JsonViewerWidgetComponent } from './json-viewer.widget.component'
+import { TableWidgetComponent } from './table.widget.component'
 import { isVerboseDebugEnabled } from '../../debug-log'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
@@ -43,6 +44,7 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'ui.chat': ChatWidgetComponent,
   'ui.voiceInput': VoiceInputWidgetComponent,
   'ui.list': ListWidgetComponent,
+  'ui.table': TableWidgetComponent,
   'ui.form': FormWidgetComponent,
   'ui.actions': CommandBarWidgetComponent,
   'ui.jsonViewer': JsonViewerWidgetComponent,

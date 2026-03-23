@@ -99,8 +99,20 @@ class CliGitClient(GitClient):
     def pull(self, dir: StrOrPath) -> None:
         _run_git(["pull", "--ff-only"], cwd=dir)
 
+    def fetch(self, dir: StrOrPath, remote: str = "origin", branch: Optional[str] = None, depth: Optional[int] = None) -> None:
+        args = ["fetch", "--prune", remote]
+        eff_depth = self._depth if depth is None else depth
+        if eff_depth and eff_depth > 0:
+            args += [f"--depth={eff_depth}"]
+        if branch:
+            args.append(branch)
+        _run_git(args, cwd=dir)
+
     def current_commit(self, dir: StrOrPath) -> str:
         return _run_git(["rev-parse", "HEAD"], cwd=dir)
+
+    def show(self, dir: StrOrPath, spec: str) -> str:
+        return _run_git(["show", spec], cwd=dir)
 
     # --- sparse ---
     def sparse_init(self, dir: StrOrPath, cone: bool = True) -> None:

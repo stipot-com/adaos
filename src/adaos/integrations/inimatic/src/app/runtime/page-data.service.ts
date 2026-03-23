@@ -53,32 +53,43 @@ export class PageDataService {
     const body = this.resolveParams(cfg.body)
     const params = this.resolveParams(cfg.params)
     const method = cfg.method || 'GET'
+    const absUrl = this.absUrl(url)
+    const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
     if (method === 'GET') {
       return this.http
-        .get<T>(url, { params: params as any })
+        .get<T>(absUrl, { params: params as any, headers })
         .pipe(map((v) => v as T))
     }
     if (method === 'DELETE') {
       return this.http
-        .delete<T>(url, { params: params as any })
+        .delete<T>(absUrl, { params: params as any, headers })
         .pipe(map((v) => v as T))
     }
     if (method === 'POST') {
       return this.http
-        .post<T>(url, body, { params: params as any })
+        .post<T>(absUrl, body, { params: params as any, headers })
         .pipe(map((v) => v as T))
     }
     if (method === 'PUT') {
       return this.http
-        .put<T>(url, body, { params: params as any })
+        .put<T>(absUrl, body, { params: params as any, headers })
         .pipe(map((v) => v as T))
     }
     if (method === 'PATCH') {
       return this.http
-        .patch<T>(url, body, { params: params as any })
+        .patch<T>(absUrl, body, { params: params as any, headers })
         .pipe(map((v) => v as T))
     }
     return of(undefined)
+  }
+
+  private absUrl(url: string): string {
+    const raw = String(url || '').trim()
+    if (!raw) return raw
+    if (/^https?:\/\//i.test(raw)) return raw
+    const base = String(this.adaos.getBaseUrl ? this.adaos.getBaseUrl() : '').replace(/\/$/, '')
+    const rel = raw.startsWith('/') ? raw : `/${raw}`
+    return `${base}${rel}`
   }
 
   private resolveParams(input: any): any {

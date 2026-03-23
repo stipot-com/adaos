@@ -11,7 +11,15 @@ from typing import Any
 
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx
-from adaos.services.core_slots import activate_slot, active_slot, choose_inactive_slot, previous_slot, read_slot_manifest, rollback_to_previous_slot, slot_dir
+from adaos.services.core_slots import (
+    activate_slot,
+    active_slot,
+    choose_inactive_slot,
+    previous_slot,
+    read_slot_manifest,
+    rollback_to_previous_slot,
+    slot_dir,
+)
 
 
 def _base_dir() -> Path:
@@ -126,6 +134,35 @@ def write_status(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     return merged
+
+
+def finalize_runtime_boot_status() -> dict[str, Any] | None:
+    current = read_status()
+    state = str(current.get("state") or "").strip().lower()
+    phase = str(current.get("phase") or "").strip().lower()
+    if state == "succeeded" and phase == "validate":
+        return current
+    if state not in {"restarting", "applying", "validated"} and not (
+        state == "succeeded" and phase in {"", "apply", "launch", "shutdown"}
+    ):
+        return None
+
+    now = time.time()
+    slot = str(current.get("target_slot") or active_slot() or "").strip().upper()
+    manifest = read_slot_manifest(slot) if slot else None
+    payload = dict(current)
+    payload["state"] = "succeeded"
+    payload["phase"] = "validate"
+    payload["message"] = (
+        f"runtime boot validated on slot {slot}" if slot else "runtime boot validated"
+    )
+    payload["validated_at"] = now
+    payload["finished_at"] = float(payload.get("finished_at") or now)
+    if slot:
+        payload["target_slot"] = slot
+    if isinstance(manifest, dict) and manifest:
+        payload["manifest"] = manifest
+    return write_status(payload)
 
 
 def _repo_root() -> Path | None:

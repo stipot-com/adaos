@@ -371,7 +371,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             if ok:
                 write_status(
                     {
-                        "state": "validated",
+                        "state": "succeeded",
                         "phase": "validate",
                         "message": f"slot {slot} passed post-switch validation",
                         "target_slot": slot,

@@ -532,6 +532,30 @@ async def process_events_command(
             await _ack()
         return None
 
+    if kind == "skills.update":
+        # Trigger a best-effort skill source refresh (git pull / monorepo sparse pull)
+        # and acknowledge with updated version if available.
+        try:
+            from adaos.services.agent_context import get_ctx as _get_ctx
+            from adaos.services.skill.update import SkillUpdateService
+
+            ctx = _get_ctx()
+            skill_name = str(payload.get("name") or payload.get("skill") or "").strip()
+            dry_run = bool(payload.get("dry_run", False))
+            if not skill_name:
+                await _ack(False, error="name required")
+                return None
+            result = SkillUpdateService(ctx).request_update(skill_name, dry_run=dry_run)
+            _publish_bus("skills.updated", {"name": skill_name, "version": result.version, "updated": result.updated})
+            await _ack(True, data={"name": skill_name, "updated": result.updated, "version": result.version})
+        except FileNotFoundError:
+            await _ack(False, error="skill_not_installed")
+        except PermissionError as exc:
+            await _ack(False, error=str(exc) or "fs_readonly")
+        except Exception as exc:
+            await _ack(False, error=str(exc) or "update_failed")
+        return None
+
     if kind == "nlp.teacher.candidate.apply":
         _publish_bus("nlp.teacher.candidate.apply", {"candidate_id": payload.get("candidate_id"), "target": payload.get("target"), "webspace_id": payload.get("webspace_id")})
         await _ack()

@@ -37,8 +37,18 @@ class SecureGitClient(GitClient):
             self.net.require_url(url)
         self.base.pull(dir)
 
+    def fetch(self, dir: str, remote: str = "origin", branch: Optional[str] = None, depth: Optional[int] = None) -> None:
+        url = self._origin_url(dir)
+        if url:
+            self.net.require_url(url)
+        self.base.fetch(dir, remote=remote, branch=branch, depth=depth)
+
     def current_commit(self, dir: str) -> str:
         return self.base.current_commit(dir)
+
+    def show(self, dir: str, spec: str) -> str:
+        # Purely local operation once refs are present.
+        return self.base.show(dir, spec)
 
     # sparse passthrough
     def sparse_init(self, dir: str, cone: bool = True) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends
@@ -9,8 +10,12 @@ from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
+from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.yjs.webspace import default_webspace_id
+
+import yaml
+from packaging.version import Version, InvalidVersion
 
 
 router = APIRouter(tags=["skills"], dependencies=[Depends(require_token)])
@@ -47,6 +52,92 @@ def _to_mapping(obj: Any) -> Dict[str, Any]:
                 value = getattr(value, "value")
             data[key] = value
     return data or {"repr": repr(obj)}
+
+
+class UpdateReq(BaseModel):
+    name: str
+    dry_run: bool = False
+
+
+def _safe_version(v: Any) -> Version | None:
+    if v is None:
+        return None
+    raw = str(v).strip()
+    if not raw:
+        return None
+    try:
+        return Version(raw)
+    except InvalidVersion:
+        return None
+
+
+def _read_remote_manifest_version(ctx: AgentContext, *, skill_id: str) -> str | None:
+    """
+    Best-effort resolve remote version for a skill without modifying worktree.
+    - monorepo: `origin/<branch>:skills/<id>/skill.yaml`
+    - standalone: `origin/HEAD:skill.yaml`
+    """
+    settings = getattr(ctx, "settings", None)
+    git = getattr(ctx, "git", None)
+    repo = getattr(ctx, "skills_repo", None)
+    if git is None or repo is None:
+        return None
+
+    meta = repo.get(skill_id)
+    if meta is None:
+        return None
+    local_path = Path(getattr(meta, "path", Path(ctx.paths.skills_dir()) / skill_id))
+
+    monorepo_url = getattr(settings, "skills_monorepo_url", None) if settings else None
+    monorepo_branch = (getattr(settings, "skills_monorepo_branch", None) if settings else None) or "main"
+
+    if monorepo_url:
+        skills_root = Path(ctx.paths.skills_dir())
+        if (skills_root / ".git").exists():
+            repo_root = skills_root
+        elif (skills_root.parent / ".git").exists():
+            repo_root = skills_root.parent
+        else:
+            return None
+        try:
+            git.fetch(str(repo_root), remote="origin", branch=monorepo_branch)
+        except Exception:
+            pass
+        candidates = [
+            f"origin/{monorepo_branch}:skills/{skill_id}/skill.yaml",
+            f"origin/{monorepo_branch}:skills/{skill_id}/manifest.yaml",
+            f"origin/{monorepo_branch}:skills/{skill_id}/adaos.skill.yaml",
+        ]
+    else:
+        repo_root = local_path
+        if not (repo_root / ".git").exists():
+            return None
+        try:
+            git.fetch(str(repo_root), remote="origin")
+        except Exception:
+            pass
+        candidates = [
+            "origin/HEAD:skill.yaml",
+            "origin/HEAD:manifest.yaml",
+            "origin/HEAD:adaos.skill.yaml",
+        ]
+
+    for spec in candidates:
+        try:
+            raw = git.show(str(repo_root), spec)
+        except Exception:
+            continue
+        try:
+            data = yaml.safe_load(raw) or {}
+        except Exception:
+            continue
+        ver = data.get("version")
+        if ver is None:
+            continue
+        s = str(ver).strip()
+        if s:
+            return s
+    return None
 
 
 class InstallReq(BaseModel):
@@ -104,6 +195,53 @@ async def list_skills(fs: bool = False, mgr: SkillManager = Depends(_get_manager
             "extra": extra,
         }
     return result
+
+
+@router.get("/installed-status")
+async def installed_status(mgr: SkillManager = Depends(_get_manager), ctx: AgentContext = Depends(get_ctx)):
+    """
+    Installed skills with runtime slot and update hint (remote version > local version).
+    """
+    rows = mgr.list_installed()
+    items: list[dict[str, Any]] = []
+
+    for row in (rows or []):
+        if not bool(getattr(row, "installed", True)):
+            continue
+        name = str(getattr(row, "name", "") or "").strip()
+        if not name:
+            continue
+
+        meta = mgr.get(name)
+        local_version = (getattr(meta, "version", None) if meta else None) or getattr(row, "active_version", None)
+        local_version_s = str(local_version).strip() if local_version is not None else ""
+
+        slot = ""
+        try:
+            st = mgr.runtime_status(name)
+            slot = str(st.get("active_slot") or "").strip()
+        except Exception:
+            slot = ""
+
+        remote_version_s = _read_remote_manifest_version(ctx, skill_id=name) or ""
+
+        update_available = False
+        lv = _safe_version(local_version_s)
+        rv = _safe_version(remote_version_s)
+        if lv is not None and rv is not None and rv > lv:
+            update_available = True
+
+        items.append(
+            {
+                "name": name,
+                "version": local_version_s,
+                "slot": slot,
+                "remote_version": remote_version_s,
+                "update_available": update_available,
+            }
+        )
+
+    return {"ok": True, "items": items}
 
 
 @router.post("/sync")
@@ -251,3 +389,10 @@ async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_
     if isinstance(result, dict):
         return {"ok": bool(result.get("ok", True)), **result}
     return {"ok": True, "result": result}
+
+
+@router.post("/update")
+async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
+    service = SkillUpdateService(ctx)
+    result = service.request_update(body.name, dry_run=body.dry_run)
+    return {"ok": True, "updated": result.updated, "version": result.version}

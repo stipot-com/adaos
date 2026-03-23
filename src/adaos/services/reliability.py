@@ -2212,6 +2212,66 @@ def _hub_root_protocol_assessment(protocol: dict[str, Any]) -> dict[str, Any]:
     return {"state": state, "reason": "; ".join(reasons)}
 
 
+def _hub_root_control_authority_snapshot(protocol: dict[str, Any]) -> dict[str, Any]:
+    traffic_classes = protocol.get("traffic_classes") if isinstance(protocol.get("traffic_classes"), dict) else {}
+    streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+    control = traffic_classes.get("control") if isinstance(traffic_classes.get("control"), dict) else {}
+    policy = control.get("policy") if isinstance(control.get("policy"), dict) else {}
+    stale_after_s = int(policy.get("stale_authority_after_s") or 0)
+    stream = next(
+        (
+            entry
+            for entry in streams.values()
+            if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.control.lifecycle"
+        ),
+        {},
+    )
+    if not isinstance(stream, dict) or not stream:
+        return {
+            "state": "missing",
+            "reason": "control lifecycle stream is missing",
+            "stale_after_s": stale_after_s,
+        }
+
+    pending = stream.get("pending") if isinstance(stream.get("pending"), dict) else None
+    ack_total = int(stream.get("ack_total") or 0)
+    ack_age_s = stream.get("last_ack_ago_s")
+    issue_age_s = stream.get("last_issue_ago_s")
+    state = "unknown"
+    reason = "control lifecycle authority has not reported yet"
+    if isinstance(pending, dict):
+        state = "pending"
+        reason = "control lifecycle report is awaiting ack"
+    elif ack_total <= 0:
+        if stale_after_s > 0 and isinstance(issue_age_s, (int, float)) and float(issue_age_s) >= float(stale_after_s):
+            state = "missing"
+            reason = "control lifecycle authority ack is missing"
+        else:
+            state = "booting"
+            reason = "control lifecycle authority is booting"
+    elif stale_after_s > 0 and isinstance(ack_age_s, (int, float)) and float(ack_age_s) >= float(stale_after_s):
+        state = "stale"
+        reason = "control lifecycle authority is stale"
+    elif stale_after_s > 0 and isinstance(ack_age_s, (int, float)) and float(ack_age_s) >= max(5.0, float(stale_after_s) / 2.0):
+        state = "aging"
+        reason = "control lifecycle authority is aging"
+    else:
+        state = "fresh"
+        reason = "control lifecycle authority is fresh"
+    return {
+        "state": state,
+        "reason": reason,
+        "stream_id": str(stream.get("stream_id") or ""),
+        "stale_after_s": stale_after_s,
+        "ack_age_s": ack_age_s,
+        "issue_age_s": issue_age_s,
+        "last_ack_result": str(stream.get("last_ack_result") or ""),
+        "issued_cursor": int(stream.get("last_issued_cursor") or 0),
+        "acked_cursor": int(stream.get("last_acked_cursor") or 0),
+        "pending": bool(isinstance(pending, dict)),
+    }
+
+
 def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
     with _LOCK:
@@ -2266,6 +2326,7 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             pending_acks += 1
     runtime["pending_ack_streams"] = pending_acks
     runtime["updated_ago_s"] = _round_age(now, runtime.get("updated_at"))
+    runtime["control_authority"] = _hub_root_control_authority_snapshot(runtime)
     runtime["assessment"] = _hub_root_protocol_assessment(runtime)
     return runtime
 
