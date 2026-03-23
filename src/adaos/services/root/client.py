@@ -528,6 +528,24 @@ class RootHttpClient:
             )
         )
 
+    def hub_control_report(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        return dict(
+            self._request(
+                "POST",
+                "/v1/hub/control/report",
+                json=dict(payload),
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=30.0,
+            )
+        )
+
     def root_dispatch_core_update(
         self,
         *,

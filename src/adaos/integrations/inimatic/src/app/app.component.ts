@@ -241,10 +241,19 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	get subnetId(): string | null {
 		const jwt = this.readSessionJwt()
-		if (!jwt || !jwt.includes('.')) return null
-		const payload = this.decodeJwtPayload(jwt)
-		const raw = payload?.subnet_id
-		return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+		if (jwt && jwt.includes('.')) {
+			const payload = this.decodeJwtPayload(jwt)
+			const raw = payload?.subnet_id || payload?.hub_id || payload?.owner_id
+			if (typeof raw === 'string' && raw.trim()) {
+				return raw.trim()
+			}
+		}
+		try {
+			const persisted = (localStorage.getItem('adaos_hub_id') || '').trim()
+			return persisted || null
+		} catch {
+			return null
+		}
 	}
 
 	private invalidateOwnerSessionAndReload(): void {

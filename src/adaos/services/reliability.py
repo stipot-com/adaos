@@ -2054,6 +2054,14 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
         },
         "tracked_streams": [
             {
+                "flow_id": "hub_root.control.lifecycle",
+                "stream_id_pattern": "hub-control:lifecycle:<hub_id>",
+                "delivery_class": "must_not_lose",
+                "message_type": "state_report",
+                "ack_required": True,
+                "dedupe_scope": "cursor_and_message_id",
+            },
+            {
                 "flow_id": "hub_root.integration.github_core_update",
                 "stream_id_pattern": "hub-integration:github-core-update:<hub_id>",
                 "delivery_class": "must_not_lose",

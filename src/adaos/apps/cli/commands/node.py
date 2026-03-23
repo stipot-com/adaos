@@ -94,6 +94,14 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
         route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
         streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+        control_lifecycle_stream = next(
+            (
+                entry
+                for entry in streams.values()
+                if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.control.lifecycle"
+            ),
+            {},
+        )
         core_update_stream = next(
             (
                 entry
@@ -111,6 +119,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"tg_outbox={tg_outbox.get('size') or 0} "
             f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
             f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+            f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
         )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):

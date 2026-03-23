@@ -75,6 +75,7 @@ from adaos.services.realtime_sidecar import (
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
 from adaos.services.scheduler import start_scheduler
 from adaos.services.scenario import (
@@ -483,6 +484,15 @@ class BootstrapService:
         except Exception:
             pass
         conf = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+
+        async def _report_control_lifecycle(trigger: str) -> None:
+            try:
+                if getattr(conf, "role", None) != "hub":
+                    return
+                await asyncio.to_thread(report_hub_control_lifecycle_state, conf)
+            except Exception:
+                self._log.debug("control lifecycle report failed trigger=%s", trigger, exc_info=True)
+
         self._prepare_environment()
         # local adapter over LocalEventBus
         core_bus = self.ctx.bus if isinstance(self.ctx.bus, LocalEventBus) else LocalEventBus()
@@ -688,6 +698,7 @@ class BootstrapService:
             self._ready.set()
             self._booted = True
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+            await _report_control_lifecycle("sys.ready")
         else:
             task = await self._member_register_and_heartbeat(conf)
             if task:
@@ -1329,6 +1340,10 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
+                                    try:
+                                        asyncio.create_task(_report_control_lifecycle(f"subnet.nats.down:{kind}"))
+                                    except Exception:
+                                        pass
                                     reported_down = True
 
                             def _emit_up() -> None:
@@ -1365,6 +1380,10 @@ class BootstrapService:
                                                 "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                             },
                                         )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        asyncio.create_task(_report_control_lifecycle("subnet.nats.up"))
                                     except Exception:
                                         pass
                                     reported_down = False
@@ -2904,6 +2923,10 @@ class BootstrapService:
                                         "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                     },
                                 )
+                            except Exception:
+                                pass
+                            try:
+                                asyncio.create_task(_report_control_lifecycle("nats.initial_connect"))
                             except Exception:
                                 pass
                             # First successful connect after failures
@@ -5741,6 +5764,12 @@ class BootstrapService:
 
     async def shutdown(self) -> None:
         await bus.emit("sys.stopping", {}, source="lifecycle", actor="system")
+        try:
+            conf = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+            if getattr(conf, "role", None) == "hub":
+                await asyncio.to_thread(report_hub_control_lifecycle_state, conf)
+        except Exception:
+            self._log.debug("control lifecycle report failed trigger=sys.stopping", exc_info=True)
         try:
             await get_service_supervisor().shutdown()
         except Exception:

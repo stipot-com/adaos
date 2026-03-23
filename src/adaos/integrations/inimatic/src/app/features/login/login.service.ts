@@ -341,7 +341,9 @@ export class LoginService {
 			// ignore storage errors
 		}
 		try {
-			if (finish.owner_id) localStorage.setItem(this.hubIdKey, finish.owner_id)
+			const payload = this.decodeJwtPayload(finish.session_jwt)
+			const hubId = this.pickHubIdFromJwtPayload(payload) || finish.owner_id || null
+			if (hubId) localStorage.setItem(this.hubIdKey, hubId)
 		} catch {}
 
 		return {
@@ -389,7 +391,9 @@ export class LoginService {
 			// ignore storage errors
 		}
 		try {
-			if (finish.owner_id) localStorage.setItem(this.hubIdKey, finish.owner_id)
+			const payload = this.decodeJwtPayload(finish.session_jwt)
+			const hubId = this.pickHubIdFromJwtPayload(payload) || finish.owner_id || null
+			if (hubId) localStorage.setItem(this.hubIdKey, hubId)
 		} catch {}
 
 		return {

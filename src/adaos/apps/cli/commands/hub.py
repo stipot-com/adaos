@@ -69,6 +69,14 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
     tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
     streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+    control_lifecycle_stream = next(
+        (
+            entry
+            for entry in streams.values()
+            if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.control.lifecycle"
+        ),
+        {},
+    )
     core_update_stream = next(
         (
             entry
@@ -88,6 +96,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"tg_outbox={tg_outbox.get('size') or 0} "
         f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
         f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+        f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
         f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} | "
         f"root_incident={root_diag.get('last_incident_class') or '-'} "
@@ -130,6 +139,14 @@ def hub_root_watch(
             outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
             tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
             streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
+            control_lifecycle_stream = next(
+                (
+                    entry
+                    for entry in streams.values()
+                    if isinstance(entry, dict) and str(entry.get("flow_id") or "") == "hub_root.control.lifecycle"
+                ),
+                {},
+            )
             core_update_stream = next(
                 (
                     entry
@@ -148,6 +165,7 @@ def hub_root_watch(
                 f"tg_outbox={tg_outbox.get('size') or 0} "
                 f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
                 f"pending_acks={protocol.get('pending_ack_streams') or 0} "
+                f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
                 f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')} "
                 f"root_incident={root_diag.get('last_incident_class') or '-'} "
