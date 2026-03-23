@@ -1,5 +1,6 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { Injectable } from '@angular/core'
+import { BehaviorSubject } from 'rxjs'
 import { map } from 'rxjs/operators'
 import { HubMemberChannelsService } from './hub-member-channels.service'
 
@@ -29,6 +30,11 @@ export interface SubnetRegisterResponse {
 	event_id: string
 	server_time_utc: string
 }
+
+export type AdaosEventsConnectionState =
+	| 'disconnected'
+	| 'connecting'
+	| 'connected'
 
 const ROOT_BASE = (() => {
 	const value = (window as any).__ADAOS_ROOT_BASE__ ?? 'http://127.0.0.1:3030'
@@ -151,6 +157,8 @@ export class AdaosClient {
 	private cfg: AdaosConfig
 	private eventsWs?: WebSocket
 	private eventsReady?: Promise<WebSocket>
+	readonly eventsConnectionState$ =
+		new BehaviorSubject<AdaosEventsConnectionState>('disconnected')
 	private pendingCmds = new Map<
 		string,
 		{
@@ -311,6 +319,7 @@ export class AdaosClient {
 		}
 		this.eventsWs = undefined
 		this.eventsReady = undefined
+		this.eventsConnectionState$.next('disconnected')
 		for (const [, entry] of this.pendingCmds) {
 			clearTimeout(entry.timeout)
 			entry.reject(reason ?? new Error('events websocket closed'))
@@ -336,12 +345,14 @@ export class AdaosClient {
 
 	private ensureEventsSocket(): Promise<WebSocket> {
 		if (this.eventsWs && this.eventsWs.readyState === WebSocket.OPEN) {
+			this.eventsConnectionState$.next('connected')
 			return Promise.resolve(this.eventsWs)
 		}
 		if (this.eventsReady) {
 			return this.eventsReady
 		}
 		this.eventsReady = new Promise<WebSocket>((resolve, reject) => {
+			this.eventsConnectionState$.next('connecting')
 			const ws = new WebSocket(this.eventsUrl())
 			this.eventsWs = ws
 			const cleanup = () => {
@@ -350,6 +361,7 @@ export class AdaosClient {
 			}
 			const onOpen = () => {
 				cleanup()
+				this.eventsConnectionState$.next('connected')
 				ws.addEventListener('message', this.onEventsMessage)
 				ws.addEventListener('close', () => this.resetEventsSocket())
 				resolve(ws)

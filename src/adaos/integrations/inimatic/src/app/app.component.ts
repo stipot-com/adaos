@@ -12,7 +12,7 @@ import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
-import { Observable, of, timer, Subscription } from 'rxjs'
+import { Observable, combineLatest, of, timer, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, filter, map, pairwise, startWith, switchMap, timeout } from 'rxjs/operators'
 import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
@@ -114,11 +114,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
 		// Keep this lightweight: it only drives a small "online/offline" indicator.
 		// Polling too frequently creates log noise on the root proxy and on hubs.
-		this.hubStatus$ = timer(0, 15000).pipe(
+		const hubProbe$ = timer(0, 15000).pipe(
 			switchMap(() => {
 				const { url, headers } = this.getHubStatusRequest()
 				return this.http.get(url, { responseType: 'text', headers }).pipe(
-					timeout(2000),
+					timeout(4500),
 					map(() => 'online' as const),
 					catchError((err) => {
 						// Root-proxy returns 401/403 when the stored session_jwt is expired/invalid.
@@ -134,6 +134,29 @@ export class AppComponent implements OnInit, OnDestroy {
 				)
 			}),
 			startWith('checking' as const),
+			distinctUntilChanged(),
+		)
+		this.hubStatus$ = combineLatest([
+			hubProbe$,
+			this.adaos.eventsConnectionState$,
+			this.ydoc.syncConnectionState$,
+		]).pipe(
+			map(([probe, eventsState, syncState]) => {
+				if (eventsState === 'connected' || syncState === 'connected') {
+					return 'online' as const
+				}
+				if (probe === 'online') {
+					return 'online' as const
+				}
+				if (
+					probe === 'checking' ||
+					eventsState === 'connecting' ||
+					syncState === 'connecting'
+				) {
+					return 'checking' as const
+				}
+				return 'offline' as const
+			}),
 			distinctUntilChanged(),
 		)
 

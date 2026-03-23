@@ -276,8 +276,12 @@ def hub_root_reconnect(
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
         payload = {
             "ok": False,
+            "base_url": base,
             "error": {"type": type(e).__name__, "message": str(e)},
-            "hint": "If the local control API is busy, retry with --timeout 30 or check `adaos node reliability`.",
+            "hint": (
+                f"Resolved control base {base}. If this is stale, check node.yaml/autostart control URL "
+                "or set ADAOS_CONTROL_URL explicitly. If the control API is busy, retry with --timeout 30."
+            ),
         }
         if json_output:
             _print(payload, json_output=True)

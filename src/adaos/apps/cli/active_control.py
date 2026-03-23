@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -18,23 +20,33 @@ def _is_local_url(url: str | None) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def _pick_env_url() -> str | None:
-    # Prefer explicit control base variables. Avoid `ADAOS_API_BASE` by default: it is Root API base
-    # in prod and would make CLI call the wrong server.
+def _normalize_url(raw: str | None) -> str | None:
+    txt = str(raw or "").strip()
+    if not txt:
+        return None
+    return txt.rstrip("/")
+
+
+def _pick_env_override_url() -> str | None:
+    # Explicit control base variables are authoritative and may point to a non-local server.
     for key in ("ADAOS_CONTROL_URL", "ADAOS_CONTROL_BASE"):
-        raw = str(os.getenv(key, "") or "").strip()
+        raw = _normalize_url(os.getenv(key, ""))
         if raw:
-            return raw.rstrip("/")
-    # Next: accept self-advertised URLs, but only when they point to local host.
+            return raw
+    return None
+
+
+def _pick_local_env_url() -> str | None:
+    # Accept self-advertised URLs only when they point to local host.
     for key in ("ADAOS_SELF_BASE_URL", "ADAOS_HUB_URL"):
-        raw = str(os.getenv(key, "") or "").strip()
+        raw = _normalize_url(os.getenv(key, ""))
         if raw and _is_local_url(raw):
-            return raw.rstrip("/")
+            return raw
     # Backward-compat: accept legacy ADAOS_BASE/ADAOS_API_BASE only for local URLs.
     for key in ("ADAOS_BASE", "ADAOS_API_BASE"):
-        raw = str(os.getenv(key, "") or "").strip()
+        raw = _normalize_url(os.getenv(key, ""))
         if raw and _is_local_url(raw):
-            return raw.rstrip("/")
+            return raw
     return None
 
 
@@ -44,6 +56,79 @@ def _pick_env_token() -> str | None:
         if raw:
             return raw
     return None
+
+
+def _append_candidate(candidates: list[str], seen: set[str], raw: str | None) -> None:
+    url = _normalize_url(raw)
+    if not url or url in seen:
+        return
+    candidates.append(url)
+    seen.add(url)
+
+
+def _node_config_control_url() -> tuple[str | None, str | None]:
+    try:
+        from adaos.services.node_config import load_config
+
+        conf = load_config()
+        role = str(getattr(conf, "role", "") or "").strip().lower() or None
+        cfg_url = _normalize_url(getattr(conf, "hub_url", None))
+        return role, cfg_url
+    except Exception:
+        return None, None
+
+
+def _autostart_control_url() -> str | None:
+    try:
+        from adaos.services.agent_context import get_ctx
+        from adaos.services.autostart import status as autostart_status
+
+        info = autostart_status(get_ctx())
+        raw = _normalize_url((info or {}).get("url") if isinstance(info, dict) else None)
+        if raw and _is_local_url(raw):
+            return raw
+    except Exception:
+        pass
+    return None
+
+
+def _pidfile_control_urls() -> list[str]:
+    try:
+        from adaos.services.agent_context import get_ctx
+
+        state_root = get_ctx().paths.state_dir()
+        state_dir = Path(state_root() if callable(state_root) else state_root)
+        api_dir = state_dir / "api"
+        if not api_dir.exists():
+            return []
+        found: list[tuple[float, str]] = []
+        for path in api_dir.glob("serve-*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            raw = _normalize_url(data.get("advertised_base"))
+            if not raw or not _is_local_url(raw):
+                continue
+            try:
+                started_at = float(data.get("started_at") or 0.0)
+            except Exception:
+                started_at = 0.0
+            found.append((started_at, raw))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return [url for _, url in found]
+    except Exception:
+        return []
+
+
+def _looks_like_control_api_response(code: int | None, payload: dict[str, Any] | None) -> bool:
+    if code is None:
+        return False
+    if isinstance(payload, dict):
+        return True
+    return int(code) in {401, 403}
 
 
 def resolve_control_base_url(
@@ -61,33 +146,47 @@ def resolve_control_base_url(
     4) localhost fallback
     """
     if explicit is not None:
-        txt = str(explicit or "").strip()
+        txt = _normalize_url(explicit)
         if txt:
-            return txt.rstrip("/")
+            return txt
     if hub_url is not None:
-        txt = str(hub_url or "").strip()
+        txt = _normalize_url(hub_url)
         if txt:
-            return txt.rstrip("/")
+            return txt
 
-    # If node.yaml is available, prefer it over local env "self" URLs.
-    # This is critical for AB core-slots: repo root may be stale, but runtime updates node.yaml,
-    # including the *actual* listening host:port (for example 8779).
-    try:
-        from adaos.services.node_config import load_config
+    role, cfg_url = _node_config_control_url()
+    if role == "member" and cfg_url:
+        return cfg_url
 
-        conf = load_config()
-        role = str(getattr(conf, "role", "") or "").strip().lower()
-        cfg_url = str(getattr(conf, "hub_url", "") or "").strip()
-        if role == "member" and cfg_url:
-            return cfg_url.rstrip("/")
-        if role == "hub" and cfg_url and _is_local_url(cfg_url):
-            return cfg_url.rstrip("/")
-    except Exception:
-        pass
+    env_override = _pick_env_override_url()
+    if env_override:
+        return env_override
 
-    env_url = _pick_env_url()
-    if env_url:
-        return env_url
+    candidates: list[str] = []
+    seen: set[str] = set()
+    if role == "hub" and cfg_url and _is_local_url(cfg_url):
+        _append_candidate(candidates, seen, cfg_url)
+    _append_candidate(candidates, seen, _pick_local_env_url())
+    _append_candidate(candidates, seen, _autostart_control_url())
+    for raw in _pidfile_control_urls():
+        _append_candidate(candidates, seen, raw)
+    for raw in (
+        "http://127.0.0.1:8777",
+        "http://127.0.0.1:8778",
+        "http://127.0.0.1:8779",
+        "http://localhost:8777",
+        "http://localhost:8778",
+        "http://localhost:8779",
+    ):
+        _append_candidate(candidates, seen, raw)
+
+    token = resolve_control_token()
+    for candidate in candidates:
+        code, payload = probe_control_api(base_url=candidate, token=token, timeout_s=0.35)
+        if _looks_like_control_api_response(code, payload):
+            return candidate
+    if candidates:
+        return candidates[0]
     return "http://127.0.0.1:8777"
 
 

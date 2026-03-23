@@ -6,14 +6,21 @@ import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { DataChannelProvider } from './datachannel-provider'
 import { isDebugEnabled } from '../debug-log'
 import { LoginService } from '../features/login/login.service'
-import { firstValueFrom } from 'rxjs'
+import { BehaviorSubject, firstValueFrom } from 'rxjs'
 import { HubMemberChannelsService } from '../core/adaos/hub-member-channels.service'
+
+export type YDocSyncConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
   private db?: IndexeddbPersistence
   private provider?: WebsocketProvider | DataChannelProvider
+  readonly syncConnectionState$ = new BehaviorSubject<YDocSyncConnectionState>('idle')
   private initialized = false
   private initPromise?: Promise<void>
   private softReauthPromise?: Promise<void>
@@ -130,6 +137,7 @@ export class YDocService {
         this.provider?.destroy()
       } catch {}
       this.provider = undefined
+      this.syncConnectionState$.next('idle')
 
       const baseHttp = (this.adaos.getBaseUrl() || '').trim()
       const baseWs = baseHttp.replace(/^http/, 'ws')
@@ -145,6 +153,8 @@ export class YDocService {
         },
       )
       this.provider = syncPath.provider
+      this.syncConnectionState$.next('connecting')
+      this.attachProviderConnectionSignals(this.provider)
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.info(
@@ -207,6 +217,7 @@ export class YDocService {
       this.provider?.destroy()
     } catch {}
     this.provider = undefined
+    this.syncConnectionState$.next('idle')
 
     const readSession = (): { hubId: string | null; sessionJwt: string | null } => {
       try {
@@ -588,6 +599,8 @@ export class YDocService {
       ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
     })
     this.provider = syncPath.provider
+    this.syncConnectionState$.next('connecting')
+    this.attachProviderConnectionSignals(this.provider)
     if (isDebugEnabled()) {
       // eslint-disable-next-line no-console
       console.info(
@@ -617,31 +630,6 @@ export class YDocService {
         console.warn('[YDocService] yws sync timeout; continuing and waiting for reconnect')
       }
     }
-
-    // If the WS is disconnected for a long time and the session JWT has expired, force a clean re-login.
-    // Without this, y-websocket will keep retrying with an invalid token forever and the UI will "never recover".
-    try {
-      const p: any = this.provider as any
-      if (p && typeof p.on === 'function') {
-        p.on('status', (ev: any) => {
-          try {
-            const st = String(ev?.status || '')
-            if (st !== 'disconnected') return
-            const jwt = (localStorage.getItem(this.sessionJwtKey) || '').trim()
-            if (!jwt) return
-            if (!jwt.includes('.')) return
-            if (!this.isJwtValid(jwt)) {
-              // Token is expired: attempt a soft re-auth (WebAuthn) and recreate provider without reload.
-              if (!this.softReauthPromise) {
-                this.softReauthPromise = this.trySoftReauthAndRecreateProvider().finally(() => {
-                  this.softReauthPromise = undefined
-                })
-              }
-            }
-          } catch {}
-        })
-      }
-    } catch {}
 
   }
 
@@ -737,6 +725,39 @@ export class YDocService {
         }
       })
     }
+  }
+
+  private attachProviderConnectionSignals(provider: WebsocketProvider | DataChannelProvider | undefined): void {
+    try {
+      const p: any = provider as any
+      if (!p || typeof p.on !== 'function') return
+      p.on('sync', (synced: any) => {
+        try {
+          this.syncConnectionState$.next(Boolean(synced) ? 'connected' : 'disconnected')
+        } catch {}
+      })
+      p.on('status', (ev: any) => {
+        try {
+          const st = String(ev?.status || '').trim().toLowerCase()
+          if (st === 'connected') {
+            this.syncConnectionState$.next('connected')
+            return
+          }
+          if (st !== 'disconnected') return
+          this.syncConnectionState$.next('disconnected')
+          const jwt = (localStorage.getItem(this.sessionJwtKey) || '').trim()
+          if (!jwt || !jwt.includes('.')) return
+          if (!this.isJwtValid(jwt)) {
+            // Token is expired: attempt a soft re-auth (WebAuthn) and recreate provider without reload.
+            if (!this.softReauthPromise) {
+              this.softReauthPromise = this.trySoftReauthAndRecreateProvider().finally(() => {
+                this.softReauthPromise = undefined
+              })
+            }
+          }
+        } catch {}
+      })
+    } catch {}
   }
 
   dumpSnapshot(): void {
