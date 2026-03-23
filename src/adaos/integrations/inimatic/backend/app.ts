@@ -446,7 +446,7 @@ function normalizeCoreUpdateSubnetState(record: Record<string, any>): Record<str
 	}
 }
 
-function parseStoredHubReport(raw: string | null): Record<string, unknown> | null {
+function parseStoredHubReport(raw: string | null | undefined): Record<string, unknown> | null {
 	if (!raw) return null
 	try {
 		const payload = JSON.parse(raw)
