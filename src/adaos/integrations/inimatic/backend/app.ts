@@ -249,12 +249,15 @@ const ROOT_HUB_CONTROL_REPORTS_HASH = 'root:hub_control_reports'
 const ROOT_CORE_UPDATE_REPORTS_HASH = 'root:hub_core_update_reports'
 const ROOT_CORE_UPDATE_RELEASES_HASH = 'root:hub_core_update_releases'
 const ROOT_CORE_UPDATE_SUBNETS_HASH = 'root:hub_core_update_subnets'
+const ROOT_LLM_RESPONSE_CACHE_PREFIX = 'root:llm:response:v1'
 const OWNER_REGISTRATION_URL = `${WEB_ORIGIN.replace(/\/+$/, '')}/?mode=registration`
 const CORE_UPDATE_GITHUB_WEBHOOK_SECRET = (process.env['GITHUB_WEBHOOK_SECRET'] || '').trim()
 const CORE_UPDATE_GITHUB_BRANCH = (process.env['CORE_UPDATE_GITHUB_BRANCH'] || process.env['ADAOS_INIT_REV'] || 'rev2026').trim()
 const CORE_UPDATE_GITHUB_REPO = (process.env['CORE_UPDATE_GITHUB_REPO'] || 'stipot-com/adaos').trim().toLowerCase()
 const CORE_UPDATE_GITHUB_COUNTDOWN_SEC =
 	Number.parseFloat(process.env['CORE_UPDATE_GITHUB_COUNTDOWN_SEC'] || '60') || 60
+const ROOT_LLM_REQUEST_DEDUPE_TTL_S =
+	Number.parseInt(process.env['ROOT_LLM_REQUEST_DEDUPE_TTL_S'] || '600', 10) || 600
 
 // Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
 try {
@@ -1078,6 +1081,28 @@ app.get('/v1/llm/models', async (_req, res) => {
 	}
 })
 
+function llmRequestId(body: Record<string, unknown>): string {
+	const raw = body['request_id']
+	return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function llmRequestFingerprint(payload: Record<string, unknown>): string {
+	return createHash('sha256')
+		.update(JSON.stringify(payload))
+		.digest('hex')
+}
+
+function llmCacheKey(requestId: string): string {
+	return `${ROOT_LLM_RESPONSE_CACHE_PREFIX}:${requestId}`
+}
+
+function attachLlmProtocolMeta(payload: unknown, meta: Record<string, unknown>): Record<string, unknown> {
+	if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+		return { ...(payload as Record<string, unknown>), _protocol: meta }
+	}
+	return { ok: true, value: payload, _protocol: meta }
+}
+
 app.post('/v1/llm/response', async (req, res) => {
 	const apiKey = (process.env['OPENAI_API_KEY'] ?? '').trim()
 	if (!apiKey) {
@@ -1090,6 +1115,7 @@ app.post('/v1/llm/response', async (req, res) => {
 			(typeof body.model === 'string' && body.model.trim()) ||
 			(process.env['OPENAI_RESPONSES_MODEL'] ?? 'gpt-4o-mini')
 		const messages = Array.isArray(body.messages) ? body.messages : []
+		const requestId = llmRequestId(body)
 
 		const input = messages.map((m: any) => ({
 			role: typeof m?.role === 'string' ? m.role : 'user',
@@ -1110,6 +1136,36 @@ app.post('/v1/llm/response', async (req, res) => {
 		}
 		if (typeof body.top_p === 'number') {
 			openaiPayload.top_p = body.top_p
+		}
+		const fingerprint = requestId ? llmRequestFingerprint(openaiPayload) : ''
+		if (requestId) {
+			const cachedRaw = await redisClient.get(llmCacheKey(requestId))
+			if (cachedRaw) {
+				try {
+					const cached = JSON.parse(cachedRaw)
+					if (cached && typeof cached === 'object') {
+						const cachedFingerprint =
+							typeof cached['request_fingerprint'] === 'string' ? cached['request_fingerprint'] : ''
+						if (cachedFingerprint && cachedFingerprint !== fingerprint) {
+							return res.status(409).json({
+								ok: false,
+								error: 'llm_request_id_conflict',
+								request_id: requestId,
+							})
+						}
+						const cachedResponse = cached['response']
+						return res.json(
+							attachLlmProtocolMeta(cachedResponse, {
+								request_id: requestId,
+								idempotency_mode: 'request_id',
+								dedupe: 'hit',
+								cache_ttl_s: ROOT_LLM_REQUEST_DEDUPE_TTL_S,
+								cached_at: typeof cached['cached_at'] === 'string' ? cached['cached_at'] : null,
+							}),
+						)
+					}
+				} catch {}
+			}
 		}
 
 		const r = await fetch('https://api.openai.com/v1/responses', {
@@ -1137,7 +1193,27 @@ app.post('/v1/llm/response', async (req, res) => {
 				.json(data ?? { ok: false, error: 'llm_upstream_failed', status: r.status })
 		}
 
-		return res.json(data ?? { ok: true })
+		if (requestId) {
+			await redisClient.setEx(
+				llmCacheKey(requestId),
+				ROOT_LLM_REQUEST_DEDUPE_TTL_S,
+				JSON.stringify({
+					request_id: requestId,
+					request_fingerprint: fingerprint,
+					cached_at: new Date().toISOString(),
+					response: data ?? { ok: true },
+				}),
+			)
+		}
+		const protocolMeta = requestId
+			? {
+				request_id: requestId,
+				idempotency_mode: 'request_id',
+				dedupe: 'miss',
+				cache_ttl_s: ROOT_LLM_REQUEST_DEDUPE_TTL_S,
+			}
+			: null
+		return res.json(protocolMeta ? attachLlmProtocolMeta(data ?? { ok: true }, protocolMeta) : (data ?? { ok: true }))
 	} catch (error: any) {
 		console.error('llm proxy failed', error)
 		return res

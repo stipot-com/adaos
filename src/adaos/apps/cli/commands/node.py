@@ -92,6 +92,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         route_cls = classes.get("route") if isinstance(classes.get("route"), dict) else {}
         outboxes = protocol.get("integration_outboxes") if isinstance(protocol.get("integration_outboxes"), dict) else {}
         tg_outbox = outboxes.get("telegram") if isinstance(outboxes.get("telegram"), dict) else {}
+        llm_outbox = outboxes.get("llm") if isinstance(outboxes.get("llm"), dict) else {}
         route_runtime = protocol.get("route_runtime") if isinstance(protocol.get("route_runtime"), dict) else {}
         streams = protocol.get("streams") if isinstance(protocol.get("streams"), dict) else {}
         control_lifecycle_stream = next(
@@ -118,6 +119,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"route_backlog={route_runtime.get('pending_events') or 0} "
             f"tg_outbox={tg_outbox.get('size') or 0} "
             f"tg_mode={tg_outbox.get('idempotency_mode') or '-'} "
+            f"llm_mode={llm_outbox.get('idempotency_mode') or '-'} "
+            f"llm_cache={llm_outbox.get('cache_hit_total') or 0}/{llm_outbox.get('cache_miss_total') or 0} "
             f"pending_acks={protocol.get('pending_ack_streams') or 0} "
             f"control_cursor={control_lifecycle_stream.get('last_acked_cursor') or 0}/{control_lifecycle_stream.get('last_issued_cursor') or 0} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"

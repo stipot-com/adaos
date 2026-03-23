@@ -462,10 +462,31 @@ def _new_protocol_runtime() -> dict[str, Any]:
                 "connected": None,
                 "idempotency_mode": "operation_key",
                 "last_operation_key": "",
+                "cache_hit_total": 0,
+                "cache_miss_total": 0,
+                "conflict_total": 0,
                 "last_error": "",
                 "last_error_at": 0.0,
                 "updated_at": 0.0,
-            }
+            },
+            "llm": {
+                "name": "llm",
+                "size": 0,
+                "max_size": None,
+                "drained_total": 0,
+                "dropped_total": 0,
+                "publish_ok": 0,
+                "publish_fail": 0,
+                "connected": None,
+                "idempotency_mode": "request_id",
+                "last_operation_key": "",
+                "cache_hit_total": 0,
+                "cache_miss_total": 0,
+                "conflict_total": 0,
+                "last_error": "",
+                "last_error_at": 0.0,
+                "updated_at": 0.0,
+            },
         },
         "streams": {},
         "updated_at": 0.0,
@@ -973,6 +994,10 @@ def observe_hub_root_integration_outbox(
     publish_fail: int | None = None,
     connected: bool | None = None,
     operation_key: str | None = None,
+    idempotency_mode: str | None = None,
+    cache_hit: int | None = None,
+    cache_miss: int | None = None,
+    conflict: int | None = None,
     last_error: str | None = None,
 ) -> None:
     key = str(name or "").strip().lower()
@@ -994,6 +1019,9 @@ def observe_hub_root_integration_outbox(
                 "connected": None,
                 "idempotency_mode": "operation_key",
                 "last_operation_key": "",
+                "cache_hit_total": 0,
+                "cache_miss_total": 0,
+                "conflict_total": 0,
                 "last_error": "",
                 "last_error_at": 0.0,
                 "updated_at": 0.0,
@@ -1015,6 +1043,14 @@ def observe_hub_root_integration_outbox(
             entry["connected"] = bool(connected)
         if operation_key:
             entry["last_operation_key"] = str(operation_key).strip()
+        if idempotency_mode:
+            entry["idempotency_mode"] = str(idempotency_mode).strip()
+        if cache_hit is not None:
+            entry["cache_hit_total"] = int(entry.get("cache_hit_total") or 0) + max(0, int(cache_hit))
+        if cache_miss is not None:
+            entry["cache_miss_total"] = int(entry.get("cache_miss_total") or 0) + max(0, int(cache_miss))
+        if conflict is not None:
+            entry["conflict_total"] = int(entry.get("conflict_total") or 0) + max(0, int(conflict))
         if last_error:
             entry["last_error"] = str(last_error).strip()
             entry["last_error_at"] = now

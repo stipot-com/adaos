@@ -15,7 +15,11 @@ from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
-from adaos.services.reliability import ReadinessStatus, set_integration_readiness
+from adaos.services.reliability import (
+    ReadinessStatus,
+    observe_hub_root_integration_outbox,
+    set_integration_readiness,
+)
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.root.client import RootHttpClient
 from adaos.services.yjs.doc import async_get_ydoc
@@ -538,13 +542,28 @@ def _build_prompt(*, request: dict[str, Any], webspace_id: str, context: dict[st
     return [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}]
 
 
-async def _llm_call(messages: list[dict[str, str]]) -> dict[str, Any]:
+async def _llm_call(messages: list[dict[str, str]], *, request_id: str | None = None) -> dict[str, Any]:
     ctx = get_ctx()
     http = RootHttpClient.from_settings(ctx.settings)
     body = {"model": _MODEL, "messages": messages, "max_tokens": _MAX_TOKENS, "temperature": 0.2}
+    req_id = str(request_id or "").strip()
+    if req_id:
+        body["request_id"] = req_id
     try:
         result = await asyncio.to_thread(http.request, "POST", "/v1/llm/response", json=body, timeout=_TIMEOUT_S)
     except Exception as exc:
+        try:
+            observe_hub_root_integration_outbox(
+                "llm",
+                publish_fail=1,
+                connected=False,
+                operation_key=req_id or None,
+                idempotency_mode="request_id" if req_id else "none",
+                conflict=1 if "llm_request_id_conflict" in str(exc) else None,
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            pass
         try:
             set_integration_readiness(
                 "llm",
@@ -556,12 +575,31 @@ async def _llm_call(messages: list[dict[str, str]]) -> dict[str, Any]:
             pass
         raise
 
+    protocol = result.get("_protocol") if isinstance(result, dict) and isinstance(result.get("_protocol"), dict) else {}
+    cache_state = str(protocol.get("dedupe") or "").strip().lower()
     try:
+        observe_hub_root_integration_outbox(
+            "llm",
+            publish_ok=1,
+            connected=True,
+            operation_key=req_id or None,
+            idempotency_mode="request_id" if req_id else "none",
+            cache_hit=1 if cache_state == "hit" else None,
+            cache_miss=1 if req_id and cache_state != "hit" else None,
+        )
+    except Exception:
+        pass
+    try:
+        details = {"model": _MODEL}
+        if req_id:
+            details["request_id"] = req_id
+        if cache_state:
+            details["cache"] = cache_state
         set_integration_readiness(
             "llm",
             status=ReadinessStatus.READY,
             summary="root LLM proxy request succeeded",
-            details={"model": _MODEL},
+            details=details,
         )
     except Exception:
         pass
@@ -747,7 +785,7 @@ async def _on_teacher_request(evt: Any) -> None:
             _log.debug("failed to append teacher event (llm.request) webspace=%s", webspace_id, exc_info=True)
 
         try:
-            res = await _llm_call(messages)
+            res = await _llm_call(messages, request_id=request_id or log_id)
         except Exception as exc:
             _log.warning("llm teacher call failed: %s", exc)
             try:
