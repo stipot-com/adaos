@@ -110,7 +110,9 @@ fallback_to_uv() {
   local reason="$1"
   warn "$reason"
   warn "Falling back to uv-based bootstrap (no root, no system Python required)..."
-  exec "./tools/bootstrap_uv.sh" "${ORIG_ARGS[@]}"
+  # Some installers/extractors may drop the executable bit (or mount with `noexec`),
+  # so invoke explicitly via bash instead of executing the file directly.
+  exec bash "./tools/bootstrap_uv.sh" "${ORIG_ARGS[@]}"
 }
 
 print_next_steps() {
