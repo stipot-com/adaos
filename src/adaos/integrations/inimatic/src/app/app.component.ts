@@ -12,12 +12,13 @@ import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
-import { Observable, of, timer, Subscription } from 'rxjs'
+import { Observable, of, timer, Subscription, combineLatest } from 'rxjs'
 import { catchError, distinctUntilChanged, filter, map, pairwise, startWith, switchMap, timeout } from 'rxjs/operators'
 import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { PairingService } from './runtime/pairing.service'
 import { WebRtcTransportService } from './core/adaos/webrtc-transport.service'
+import { HubMemberChannelsService } from './core/adaos/hub-member-channels.service'
 import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
@@ -84,6 +85,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		private pairing: PairingService,
 		private zone: NgZone,
 		private rtc: WebRtcTransportService,
+		private channels: HubMemberChannelsService,
 		private toastCtrl: ToastController,
 	) {
 		this.isAndroid =
@@ -137,10 +139,26 @@ export class AppComponent implements OnInit, OnDestroy {
 			distinctUntilChanged(),
 		)
 
-		// Transport state: maps RTC state to a simplified view for the header indicator.
-		// 'failed' means we fell back to WS, so show it as 'ws' in the UI.
-		this.transportState$ = this.rtc.state$.pipe(
-			map((s) => s === 'failed' ? 'ws' : s),
+		// Header transport state should reflect the active semantic member path,
+		// not just whether a raw WebRTC peer happens to be connected.
+		this.transportState$ = combineLatest([
+			this.rtc.state$,
+			this.channels.snapshot$,
+		]).pipe(
+			map(([rtcState, snapshot]) => {
+				const commandPath = snapshot.channels.command.activePath
+				const syncPath = snapshot.channels.sync.activePath
+				if (
+					commandPath === 'webrtc_data:events' ||
+					syncPath === 'webrtc_data:yjs'
+				) {
+					return 'connected'
+				}
+				if (rtcState === 'signaling' || rtcState === 'connecting') {
+					return rtcState
+				}
+				return 'ws'
+			}),
 			distinctUntilChanged(),
 		)
 

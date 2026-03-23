@@ -7,6 +7,7 @@ import { DataChannelProvider } from './datachannel-provider'
 import { isDebugEnabled } from '../debug-log'
 import { LoginService } from '../features/login/login.service'
 import { firstValueFrom } from 'rxjs'
+import { HubMemberChannelsService } from '../core/adaos/hub-member-channels.service'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
@@ -25,7 +26,11 @@ export class YDocService {
   private readonly yjsPersistKey = 'adaos_yjs_persist'
   private readonly p2pKey = 'adaos_p2p'
 
-  constructor(private adaos: AdaosClient, private login: LoginService) {
+  constructor(
+    private adaos: AdaosClient,
+    private login: LoginService,
+    private channels: HubMemberChannelsService,
+  ) {
     this.deviceId = this.ensureDeviceId()
   }
 
@@ -130,15 +135,21 @@ export class YDocService {
       const baseWs = baseHttp.replace(/^http/, 'ws')
       const serverUrl = `${baseWs}/yws`
       const room = this.currentWebspaceId || 'default'
-      this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
-        params: {
+      const syncPath = this.channels.createSyncProvider(
+        this.doc,
+        serverUrl,
+        room,
+        {
           dev: this.deviceId,
           ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
         },
-      })
+      )
+      this.provider = syncPath.provider
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
-        console.info('[YDocService] soft re-auth complete; yws provider recreated')
+        console.info(
+          `[YDocService] soft re-auth complete; sync provider recreated via ${syncPath.path}`,
+        )
       }
     } catch (e) {
       if (isDebugEnabled()) {
@@ -561,19 +572,20 @@ export class YDocService {
       console.info('[YDocService] P2P/WebRTC disabled (set ?p2p=1 to re-enable)')
     }
 
-    // 3) Connect Yjs via DataChannel (WebRTC) or y-websocket (WS fallback)
-    if (webRtcActive) {
-      const yjsDc = this.adaos.rtc.getYjsChannel()
-      if (yjsDc) {
-        this.provider = new DataChannelProvider(this.doc, yjsDc)
-      }
-    }
-    if (!this.provider) {
-      const serverUrl = `${baseWs}/yws`
-      const room = webspaceId || 'default'
-      this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
-        params: { dev: this.deviceId, ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}) },
-      })
+    // 3) Connect Yjs through the semantic sync channel rather than branching
+    // transport adapters directly in application code.
+    const serverUrl = `${baseWs}/yws`
+    const room = webspaceId || 'default'
+    const syncPath = this.channels.createSyncProvider(this.doc, serverUrl, room, {
+      dev: this.deviceId,
+      ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
+    })
+    this.provider = syncPath.provider
+    if (isDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[YDocService] sync channel selected path=${syncPath.path} webRtcActive=${webRtcActive}`,
+      )
     }
 
     // Do not fail app startup on a slow/unstable WS path. The provider will keep reconnecting in the background.

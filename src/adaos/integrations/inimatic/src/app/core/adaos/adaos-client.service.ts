@@ -1,6 +1,7 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { Injectable } from '@angular/core'
 import { map } from 'rxjs/operators'
+import { HubMemberChannelsService } from './hub-member-channels.service'
 import { WebRtcTransportService } from './webrtc-transport.service'
 
 export type AdaosEvent = { type: string; [k: string]: any }
@@ -127,7 +128,8 @@ export class AdaosClient {
 
 	constructor(
 		private http: HttpClient,
-		public readonly rtc: WebRtcTransportService
+		public readonly rtc: WebRtcTransportService,
+		private channels: HubMemberChannelsService,
 	) {
 		const lsBase = (() => {
 			try {
@@ -334,9 +336,8 @@ export class AdaosClient {
 	subscribe(topics: string[]) {
 		if (!topics.length) return
 		const msg = JSON.stringify({ type: 'subscribe', topics })
-		if (this.useWebRtc && this.rtc.sendEvents(msg)) return
 		this.ensureEventsSocket()
-			.then((ws) => ws.send(msg))
+			.then((ws) => this.channels.sendControlEnvelope(ws, msg))
 			.catch(() => {})
 	}
 
@@ -368,13 +369,13 @@ export class AdaosClient {
 			})
 		})
 		const json = JSON.stringify(envelope)
-		// Signaling commands (rtc.*) must always go through WS even when WebRTC is active.
+		// Signaling/control commands (rtc.*) stay on WS even when the member command
+		// channel prefers a direct data path.
 		const isSignaling = kind.startsWith('rtc.')
-		if (!isSignaling && this.useWebRtc && this.rtc.sendEvents(json)) {
-			// Sent via WebRTC DataChannel
-		} else {
-			ws.send(json)
-		}
+		this.channels.sendEventsEnvelope(ws, json, {
+			channelId: 'command',
+			forceWs: isSignaling || !this.useWebRtc,
+		})
 		return ack
 	}
 
