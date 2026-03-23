@@ -5,6 +5,8 @@ import { WebsocketProvider } from 'y-websocket'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { DataChannelProvider } from './datachannel-provider'
 import { isDebugEnabled } from '../debug-log'
+import { LoginService } from '../features/login/login.service'
+import { firstValueFrom } from 'rxjs'
 
 @Injectable({ providedIn: 'root' })
 export class YDocService {
@@ -13,6 +15,8 @@ export class YDocService {
   private provider?: WebsocketProvider | DataChannelProvider
   private initialized = false
   private initPromise?: Promise<void>
+  private softReauthPromise?: Promise<void>
+  private lastSoftReauthAttemptAt = 0
   private readonly deviceId: string
   private currentWebspaceId = 'default'
   private readonly webspaceKey = 'adaos_webspace_id'
@@ -21,7 +25,7 @@ export class YDocService {
   private readonly yjsPersistKey = 'adaos_yjs_persist'
   private readonly p2pKey = 'adaos_p2p'
 
-  constructor(private adaos: AdaosClient) {
+  constructor(private adaos: AdaosClient, private login: LoginService) {
     this.deviceId = this.ensureDeviceId()
   }
 
@@ -88,6 +92,61 @@ export class YDocService {
     try {
       this.adaos.setAuthAdaosToken(null)
     } catch {}
+  }
+
+  private async trySoftReauthAndRecreateProvider(): Promise<void> {
+    const now = Date.now()
+    // Avoid hammering WebAuthn prompts on flapping networks.
+    if (now - this.lastSoftReauthAttemptAt < 60_000) return
+    this.lastSoftReauthAttemptAt = now
+    try {
+      // Do not trigger WebAuthn prompts in background tabs.
+      if (typeof document !== 'undefined' && (document as any).hidden) return
+    } catch {}
+
+    try {
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.info('[YDocService] attempting soft re-auth via WebAuthn')
+      }
+      const res = await firstValueFrom(this.login.login())
+      const jwt = String(res?.sessionJwt || '').trim()
+      if (!jwt) throw new Error('soft_reauth_failed: no jwt')
+
+      // LoginService persists jwt (and often hub id) to localStorage; ensure AdaosClient sees it.
+      this.adaos.setAuthBearer(jwt)
+      try {
+        const hubId = this.pickHubIdFromJwt(jwt)
+        if (hubId) localStorage.setItem(this.hubIdKey, hubId)
+      } catch {}
+
+      // Recreate WS provider with the fresh token (keep the Y.Doc intact).
+      try {
+        this.provider?.destroy()
+      } catch {}
+      this.provider = undefined
+
+      const baseHttp = (this.adaos.getBaseUrl() || '').trim()
+      const baseWs = baseHttp.replace(/^http/, 'ws')
+      const serverUrl = `${baseWs}/yws`
+      const room = this.currentWebspaceId || 'default'
+      this.provider = new WebsocketProvider(serverUrl, room, this.doc, {
+        params: {
+          dev: this.deviceId,
+          ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
+        },
+      })
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.info('[YDocService] soft re-auth complete; yws provider recreated')
+      }
+    } catch (e) {
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.warn('[YDocService] soft re-auth failed', e)
+      }
+      // Fall back: keep retrying with existing provider, user can re-login manually.
+    }
   }
 
   private decodeJwtPayload(token: string): any | null {
@@ -553,9 +612,12 @@ export class YDocService {
             if (!jwt) return
             if (!jwt.includes('.')) return
             if (!this.isJwtValid(jwt)) {
-              this.invalidateWebSession()
-              // Reload to trigger the login flow.
-              window.location.reload()
+              // Token is expired: attempt a soft re-auth (WebAuthn) and recreate provider without reload.
+              if (!this.softReauthPromise) {
+                this.softReauthPromise = this.trySoftReauthAndRecreateProvider().finally(() => {
+                  this.softReauthPromise = undefined
+                })
+              }
             }
           } catch {}
         })
