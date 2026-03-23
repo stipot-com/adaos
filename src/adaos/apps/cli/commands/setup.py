@@ -460,12 +460,24 @@ def autostart_enable_cmd(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8777, "--port"),
     token: Optional[str] = typer.Option(None, "--token", help="X-AdaOS-Token (stored in service environment)"),
+    scope: str = typer.Option("auto", "--scope", help="Linux: auto|user|system"),
+    run_as: Optional[str] = typer.Option(None, "--run-as", help="Linux (system scope): run service as this user"),
+    create_user: bool = typer.Option(False, "--create-user", help="Linux: create --run-as user if missing (requires root)"),
+    base_dir: Optional[str] = typer.Option(None, "--base-dir", help="Override ADAOS_BASE_DIR for autostart"),
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     ctx = get_ctx()
     spec = default_autostart_spec(ctx, host=host, port=port, token=token)
+    if base_dir:
+        spec.env["ADAOS_BASE_DIR"] = str(base_dir)
     try:
-        res = autostart_enable(ctx, spec)
+        res = autostart_enable(
+            ctx,
+            spec,
+            scope=str(scope or "auto").strip().lower(),
+            run_as=run_as,
+            create_user=bool(create_user),
+        )
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
@@ -473,7 +485,7 @@ def autostart_enable_cmd(
         typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
     else:
         typer.secho("[AdaOS] autostart enabled", fg=typer.colors.GREEN)
-        for k in ("task", "service", "plist", "wrapper"):
+        for k in ("scope", "run_as", "task", "service", "plist", "wrapper"):
             if k in res:
                 typer.echo(f"{k}: {res[k]}")
 

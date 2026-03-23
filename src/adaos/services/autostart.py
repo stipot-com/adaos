@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
@@ -37,6 +37,27 @@ def _is_macos() -> bool:
 
 def _is_linux() -> bool:
     return sys.platform.startswith("linux")
+
+
+def _linux_euid() -> int | None:
+    try:
+        return int(os.geteuid())  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _linux_is_root() -> bool:
+    return _linux_euid() == 0
+
+
+def _base_dir_from_spec(ctx: AgentContext, spec: AutostartSpec | None = None) -> Path:
+    raw = str((spec.env.get("ADAOS_BASE_DIR") if spec else "") or "").strip()
+    if raw:
+        try:
+            return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+    return ctx.paths.base_dir()
 
 
 def default_spec(
@@ -284,6 +305,28 @@ def _macos_label() -> str:
     return "com.adaos.autostart"
 
 
+def _linux_service_path_user() -> Path:
+    return (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
+
+
+def _linux_service_path_system() -> Path:
+    return (Path("/etc/systemd/system") / _linux_service_name()).resolve()
+
+
+def _linux_has_systemd_pid1() -> bool:
+    try:
+        comm = Path("/proc/1/comm").read_text(encoding="utf-8", errors="replace").strip().lower()
+    except Exception:
+        comm = ""
+    if comm == "systemd":
+        return True
+    try:
+        exe = Path("/proc/1/exe").resolve()
+    except Exception:
+        exe = None
+    return bool(exe and exe.name.lower().startswith("systemd"))
+
+
 def _linux_user_bus_path() -> Path | None:
     """
     systemctl --user talks to the user's systemd manager over the session D-Bus.
@@ -318,7 +361,15 @@ def _linux_systemctl_user_available() -> bool:
     return _linux_user_bus_path() is not None
 
 
-def _linux_systemctl_user_unavailable_hint(*, service_path: Path, wrapper: Path) -> str:
+def _linux_systemctl_system_available() -> bool:
+    if not _is_linux():
+        return False
+    if not shutil_which("systemctl"):
+        return False
+    return _linux_is_root() and _linux_has_systemd_pid1()
+
+
+def _linux_systemctl_user_unavailable_hint(*, user_service_path: Path, wrapper: Path) -> str:
     bus = _linux_user_bus_path()
     bus_str = str(bus) if bus is not None else ""
     parts = [
@@ -327,13 +378,14 @@ def _linux_systemctl_user_unavailable_hint(*, service_path: Path, wrapper: Path)
         "This usually happens when running as root, over SSH without a login session, or inside a container without systemd.",
         "",
         f"Generated files (already written):",
-        f"- service: {service_path}",
+        f"- service: {user_service_path}",
         f"- wrapper: {wrapper}",
         "",
         "Fix options:",
         "- Run AdaOS under a regular user with a proper login session.",
         "- If you need it to run without logging in, enable lingering: `loginctl enable-linger <user>` and re-login.",
         "- Ensure `XDG_RUNTIME_DIR` points to `/run/user/<uid>` and the bus socket exists (typically `/run/user/<uid>/bus`).",
+        "- If you're in a Proxmox CT/LXC: enable systemd in the container, or use the system service mode (root).",
     ]
     if bus_str:
         parts.append(f"- Detected bus socket: {bus_str}")
@@ -346,9 +398,132 @@ def _linux_systemctl_user_unavailable_hint(*, service_path: Path, wrapper: Path)
     return "\n".join(parts).strip()
 
 
-def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dict:
+def _linux_systemctl_system_unavailable_hint(*, wrapper: Path) -> str:
+    parts = [
+        "systemctl (system scope) is not available.",
+        "",
+        "This usually means one of:",
+        "- you're not root, or",
+        "- PID 1 is not systemd (common in LXC containers without systemd), or",
+        "- systemd isn't running properly inside the container.",
+        "",
+        f"Wrapper script (already written): {wrapper}",
+        "",
+        "Fix options (Proxmox CT/LXC):",
+        "- Enable systemd inside the container (often requires `nesting=1` and `keyctl=1`) and reboot CT.",
+        "- Or use a different supervisor (cron, pm2, etc.) instead of systemd.",
+    ]
+    return "\n".join(parts).strip()
+
+
+def _linux_write_service_file(
+    service_path: Path,
+    *,
+    wrapper: Path,
+    scope: Literal["user", "system"],
+    run_as: str | None = None,
+) -> None:
+    unit_lines = [
+        "[Unit]",
+        "Description=AdaOS",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"ExecStart={wrapper}",
+        "Restart=always",
+        "RestartSec=3",
+        "Environment=PYTHONUNBUFFERED=1",
+    ]
+    if scope == "system" and run_as:
+        unit_lines += [f"User={run_as}", f"Group={run_as}"]
+    unit_lines += [
+        "",
+        "[Install]",
+        "WantedBy=default.target" if scope == "user" else "WantedBy=multi-user.target",
+        "",
+    ]
+    _write_text(
+        service_path,
+        "\n".join(unit_lines),
+    )
+
+
+def _linux_user_exists(username: str) -> bool:
+    name = str(username or "").strip()
+    if not name:
+        return False
+    proc = _run(["id", "-u", name])
+    return proc.returncode == 0
+
+
+def _linux_create_system_user(username: str) -> None:
+    """
+    Best-effort creation of a service user for Ubuntu/Debian environments.
+    """
+    name = str(username or "").strip()
+    if not name:
+        raise RuntimeError("invalid username")
+    if _linux_user_exists(name):
+        return
+    proc = _run(["useradd", "--system", "--create-home", "--shell", "/usr/sbin/nologin", name])
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or f"failed to create user: {name}").strip())
+
+
+def _linux_paths_safe_for_run_as(spec: AutostartSpec, *, run_as: str) -> tuple[bool, str]:
+    """
+    Running as a non-root user can't work if the Python executable or base dir
+    lives under /root (common in dev installs).
+    """
+    user = str(run_as or "").strip()
+    if not user or user == "root":
+        return True, ""
+    python_path = str(spec.argv[0] or "").strip()
+    base_dir = str(spec.env.get("ADAOS_BASE_DIR") or "").strip()
+    shared_dotenv = str(spec.env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+    bad: list[str] = []
+    for label, value in [
+        ("python", python_path),
+        ("ADAOS_BASE_DIR", base_dir),
+        ("ADAOS_SHARED_DOTENV_PATH", shared_dotenv),
+    ]:
+        if value.startswith("/root/") or value == "/root" or value.startswith("/root\\"):
+            bad.append(f"{label}={value}")
+    if not bad:
+        return True, ""
+    hint = "\n".join(
+        [
+            "cannot run AdaOS as a non-root user because paths point to /root:",
+            *[f"- {x}" for x in bad],
+            "",
+            "Fix options:",
+            "- Install AdaOS/venv outside /root (e.g. /opt/adaos) and use a base dir like /var/lib/adaos.",
+            "- Or run autostart as root (system scope) without --run-as.",
+            "",
+            "Tip: you can override the base dir for autostart via `adaos autostart enable --base-dir /var/lib/adaos`.",
+        ]
+    ).strip()
+    return False, hint
+
+
+def enable(
+    ctx: AgentContext,
+    spec: AutostartSpec,
+    *,
+    force: bool = True,
+    scope: Literal["auto", "user", "system"] = "auto",
+    run_as: str | None = None,
+    create_user: bool = False,
+) -> dict:
+    scope_norm = str(scope or "auto").strip().lower()
+    if scope_norm not in {"auto", "user", "system"}:
+        raise RuntimeError(f"invalid autostart scope: {scope!r} (expected auto|user|system)")
+    scope = scope_norm  # type: ignore[assignment]
+
     _bootstrap_core_slot(ctx, token=spec.env.get("ADAOS_TOKEN"))
-    base_dir = ctx.paths.base_dir()
+    base_dir = _base_dir_from_spec(ctx, spec)
     bin_dir = (base_dir / "bin").resolve()
     bin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -369,37 +544,72 @@ def enable(ctx: AgentContext, spec: AutostartSpec, *, force: bool = True) -> dic
     if _is_linux():
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
         _write_wrapper_sh(wrapper, argv=spec.argv, env=spec.env)
-        service_dir = (_home() / ".config" / "systemd" / "user").resolve()
-        service_path = (service_dir / _linux_service_name()).resolve()
-        _write_text(
-            service_path,
-            "\n".join(
-                [
-                    "[Unit]",
-                    "Description=AdaOS (user)",
-                    "After=network-online.target",
-                    "",
-                    "[Service]",
-                    "Type=simple",
-                    f"ExecStart={wrapper}",
-                    "Restart=always",
-                    "RestartSec=3",
-                    "Environment=PYTHONUNBUFFERED=1",
-                    "",
-                    "[Install]",
-                    "WantedBy=default.target",
-                    "",
-                ]
-            ),
-        )
-        if shutil_which("systemctl") and not _linux_systemctl_user_available():
-            raise RuntimeError(_linux_systemctl_user_unavailable_hint(service_path=service_path, wrapper=wrapper))
-        if shutil_which("systemctl"):
+        user_service_path = _linux_service_path_user()
+        _linux_write_service_file(user_service_path, wrapper=wrapper, scope="user")
+
+        # Prefer user service when the user session bus is available.
+        if (scope in {"auto", "user"}) and shutil_which("systemctl") and _linux_systemctl_user_available():
             _run(["systemctl", "--user", "daemon-reload"])
             enabled = _run(["systemctl", "--user", "enable", "--now", _linux_service_name()])
             if enabled.returncode != 0:
                 raise RuntimeError((enabled.stderr or enabled.stdout or "failed to enable systemd user service").strip())
-        return {"ok": True, "platform": "linux", "wrapper": str(wrapper), "service": str(service_path)}
+            return {
+                "ok": True,
+                "platform": "linux",
+                "scope": "user",
+                "wrapper": str(wrapper),
+                "service": str(user_service_path),
+            }
+
+        # In containers / root sessions there is often no user bus. If PID1 is systemd and
+        # we're root, fall back to a system service.
+        if (scope in {"auto", "system"}) and shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
+            run_as_user = str(run_as or "").strip() or None
+            if run_as_user and run_as_user != "root":
+                ok, hint = _linux_paths_safe_for_run_as(spec, run_as=run_as_user)
+                if not ok:
+                    raise RuntimeError(hint)
+                if create_user:
+                    _linux_create_system_user(run_as_user)
+                elif not _linux_user_exists(run_as_user):
+                    raise RuntimeError(f"user does not exist: {run_as_user} (use --create-user to create it)")
+
+            system_service_path = _linux_service_path_system()
+            _linux_write_service_file(system_service_path, wrapper=wrapper, scope="system", run_as=run_as_user)
+            _run(["systemctl", "daemon-reload"])
+            enabled = _run(["systemctl", "enable", "--now", _linux_service_name()])
+            if enabled.returncode != 0:
+                raise RuntimeError((enabled.stderr or enabled.stdout or "failed to enable systemd system service").strip())
+            return {
+                "ok": True,
+                "platform": "linux",
+                "scope": "system",
+                "run_as": run_as_user or "root",
+                "wrapper": str(wrapper),
+                "service": str(system_service_path),
+                "user_service": str(user_service_path),
+            }
+
+        if scope == "user" and shutil_which("systemctl") and not _linux_systemctl_user_available():
+            raise RuntimeError(_linux_systemctl_user_unavailable_hint(user_service_path=user_service_path, wrapper=wrapper))
+
+        if scope == "system" and shutil_which("systemctl") and not _linux_systemctl_system_available():
+            raise RuntimeError(_linux_systemctl_system_unavailable_hint(wrapper=wrapper))
+
+        if scope == "auto" and shutil_which("systemctl") and (not _linux_systemctl_user_available()) and (not _linux_systemctl_system_available()):
+            raise RuntimeError(
+                "\n".join(
+                    [
+                        "cannot enable autostart: neither systemctl --user nor systemctl (system) is available.",
+                        "",
+                        _linux_systemctl_user_unavailable_hint(user_service_path=user_service_path, wrapper=wrapper),
+                        "",
+                        _linux_systemctl_system_unavailable_hint(wrapper=wrapper),
+                    ]
+                ).strip()
+            )
+
+        return {"ok": True, "platform": "linux", "wrapper": str(wrapper), "service": str(user_service_path)}
 
     if _is_macos():
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
@@ -471,13 +681,24 @@ def disable(ctx: AgentContext) -> dict:
         return {"ok": ok, "platform": "windows", "task": name}
 
     if _is_linux():
-        service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
+        user_service_path = _linux_service_path_user()
+        system_service_path = _linux_service_path_system()
+
         if shutil_which("systemctl") and _linux_systemctl_user_available():
             _run(["systemctl", "--user", "disable", "--now", _linux_service_name()])
             _run(["systemctl", "--user", "daemon-reload"])
-        if service_path.exists():
+        if shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
+            _run(["systemctl", "disable", "--now", _linux_service_name()])
+            _run(["systemctl", "daemon-reload"])
+
+        if user_service_path.exists():
             try:
-                service_path.unlink()
+                user_service_path.unlink()
+            except Exception:
+                pass
+        if system_service_path.exists():
+            try:
+                system_service_path.unlink()
             except Exception:
                 pass
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
@@ -486,7 +707,12 @@ def disable(ctx: AgentContext) -> dict:
                 wrapper.unlink()
             except Exception:
                 pass
-        return {"ok": True, "platform": "linux", "service": str(service_path)}
+        return {
+            "ok": True,
+            "platform": "linux",
+            "user_service": str(user_service_path),
+            "system_service": str(system_service_path),
+        }
 
     if _is_macos():
         plist_path = (_home() / "Library" / "LaunchAgents" / f"{_macos_label()}.plist").resolve()
@@ -552,21 +778,57 @@ def status(ctx: AgentContext) -> dict:
         return payload
 
     if _is_linux():
-        service_path = (_home() / ".config" / "systemd" / "user" / _linux_service_name()).resolve()
-        enabled = service_path.exists()
+        user_service_path = _linux_service_path_user()
+        system_service_path = _linux_service_path_system()
+
+        enabled = user_service_path.exists()
         active = None
+        scope = "user"
+
+        def _parse_execstart(path: Path) -> Path | None:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return None
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("ExecStart="):
+                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if not value:
+                        return None
+                    try:
+                        return Path(value).expanduser().resolve()
+                    except Exception:
+                        return None
+            return None
+
         if shutil_which("systemctl") and _linux_systemctl_user_available():
             is_enabled = _run(["systemctl", "--user", "is-enabled", _linux_service_name()])
-            if is_enabled.returncode == 0:
-                enabled = True
+            enabled = is_enabled.returncode == 0
             is_active = _run(["systemctl", "--user", "is-active", _linux_service_name()])
             active = is_active.returncode == 0
+        elif shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
+            scope = "system"
+            enabled = system_service_path.exists()
+            is_enabled = _run(["systemctl", "is-enabled", _linux_service_name()])
+            enabled = is_enabled.returncode == 0
+            is_active = _run(["systemctl", "is-active", _linux_service_name()])
+            active = is_active.returncode == 0
+
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
+        service_path = system_service_path if scope == "system" else user_service_path
+        wrapper_from_service = _parse_execstart(service_path) if service_path.exists() else None
+        if wrapper_from_service is not None:
+            wrapper = wrapper_from_service
+
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
         host, port = host_port or ("127.0.0.1", 8777)
         listening = _tcp_probe(host, port) if active else False
         return {
             "platform": "linux",
+            "scope": scope,
             "enabled": bool(enabled),
             "active": active,
             "listening": listening,
@@ -574,6 +836,8 @@ def status(ctx: AgentContext) -> dict:
             "port": port,
             "url": f"http://{host}:{int(port)}",
             "service": str(service_path),
+            "user_service": str(user_service_path),
+            "system_service": str(system_service_path),
             "wrapper": str(wrapper),
         }
 
