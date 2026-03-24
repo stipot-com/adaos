@@ -10,12 +10,18 @@ export type HubMemberSemanticChannelId =
 	| 'event'
 	| 'sync'
 	| 'presence'
+	| 'route'
+	| 'media'
 
 export type HubMemberSemanticPath =
 	| 'webrtc_data:events'
 	| 'ws'
 	| 'webrtc_data:yjs'
 	| 'yws'
+
+export type HubMemberCommandPolicy =
+	| 'member_command'
+	| 'control_ws'
 
 export type HubMemberTransportState =
 	| 'signaling'
@@ -79,6 +85,14 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 	presence: {
 		paths: ['webrtc_data:events', 'ws'],
 		freezeMs: 5_000,
+	},
+	route: {
+		paths: ['ws'],
+		freezeMs: 0,
+	},
+	media: {
+		paths: [],
+		freezeMs: 0,
 	},
 }
 
@@ -174,6 +188,27 @@ export class HubMemberChannelsService {
 		ws.send(json)
 		this.forceActivePath(channelId, 'ws')
 		return 'ws'
+	}
+
+	resolveCommandPolicy(kind: string): HubMemberCommandPolicy {
+		const normalized = String(kind || '').trim().toLowerCase()
+		if (normalized.startsWith('rtc.')) {
+			return 'control_ws'
+		}
+		return 'member_command'
+	}
+
+	sendCommandEnvelope(
+		ws: WebSocket,
+		kind: string,
+		json: string,
+	): HubMemberSemanticPath {
+		if (this.resolveCommandPolicy(kind) === 'control_ws') {
+			return this.sendControlEnvelope(ws, json)
+		}
+		return this.sendEventsEnvelope(ws, json, {
+			channelId: 'command',
+		})
 	}
 
 	sendControlEnvelope(ws: WebSocket, json: string): 'ws' {
@@ -301,16 +336,8 @@ export class HubMemberChannelsService {
 	}
 
 	private isPathAvailable(path: HubMemberSemanticPath): boolean {
-		if (path === 'ws' || path === 'yws') return true
-		if (path === 'webrtc_data:events') {
-			const dc = this.rtc.getEventsChannel()
-			return this.rtc.isConnected() && dc?.readyState === 'open'
-		}
-		if (path === 'webrtc_data:yjs') {
-			const dc = this.rtc.getYjsChannel()
-			return this.rtc.isConnected() && dc?.readyState === 'open'
-		}
-		return false
+		const state = this.getPathEvidenceState(path)
+		return state === 'connecting' || state === 'connected'
 	}
 
 	private buildSnapshot(nowMs = Date.now()): HubMemberChannelSnapshot {
@@ -392,6 +419,26 @@ export class HubMemberChannelsService {
 						: this.getRtcPathState('yjs'),
 			},
 		}
+	}
+
+	private getPathEvidenceState(
+		path: HubMemberSemanticPath,
+	): HubMemberPathEvidenceState {
+		if (path === 'ws') return this.wsState
+		if (path === 'yws') {
+			return this.syncPathEvidence.path === 'yws'
+				? this.syncPathEvidence.state
+				: 'idle'
+		}
+		if (path === 'webrtc_data:events') {
+			return this.getRtcPathState('events')
+		}
+		if (path === 'webrtc_data:yjs') {
+			return this.syncPathEvidence.path === 'webrtc_data:yjs'
+				? this.syncPathEvidence.state
+				: this.getRtcPathState('yjs')
+		}
+		return 'disconnected'
 	}
 
 	private getRtcPathState(

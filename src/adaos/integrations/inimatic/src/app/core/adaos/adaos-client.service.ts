@@ -243,12 +243,6 @@ export class AdaosClient {
 		return { ws, direct: ok }
 	}
 
-	isWebRtcActive(): boolean {
-		return (
-			this.channels.resolveActivePath('command') === 'webrtc_data:events'
-		)
-	}
-
 	getBaseUrl() {
 		return this.cfg.baseUrl
 	}
@@ -431,13 +425,7 @@ export class AdaosClient {
 			})
 		})
 		const json = JSON.stringify(envelope)
-		// Signaling/control commands (rtc.*) stay on WS even when the member command
-		// channel prefers a direct data path.
-		const isSignaling = kind.startsWith('rtc.')
-		this.channels.sendEventsEnvelope(ws, json, {
-			channelId: 'command',
-			forceWs: isSignaling,
-		})
+		this.channels.sendCommandEnvelope(ws, kind, json)
 		return ack
 	}
 

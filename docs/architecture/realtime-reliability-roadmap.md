@@ -192,6 +192,8 @@ The browser shell now consumes semantic member transport state directly from the
 Yjs startup no longer performs raw WebRTC upgrade orchestration itself; it now asks the member-transport layer to prepare direct paths and then builds sync providers through the semantic selector.
 The browser connection client no longer owns raw WebRTC callback wiring either; low-level RTC state is now contained inside the transport runtime and the semantic channel selector.
 The browser-side semantic selector now also carries explicit live path evidence for routed `/ws` and `/yws` (`idle` / `connecting` / `connected` / `disconnected`) instead of treating those fallback paths as implicitly healthy, so UI transport state and channel snapshots reflect real browser transport state rather than static assumptions.
+The frontend semantic channel model now also declares `route` and `media` explicitly, and routed fallback availability is now derived from live browser-side path evidence instead of being treated as always-available by definition.
+Command-path exceptions that must stay on the control plane, such as `rtc.*` signaling, are now also resolved inside the semantic channel layer instead of being hard-coded in the browser connection client.
 This is still intentionally a semantic-path checkpoint, not a full transport rewrite: signaling and subscription setup remain explicit control-plane WS behavior, and transport-specific orchestration still exists around negotiation, reconnect, and low-level datachannel runtime.
 
 ### Focus
