@@ -3591,6 +3591,20 @@ def reliability_snapshot(
 ) -> dict[str, Any]:
     channel_diagnostics = channel_diagnostics_snapshot()
     transport_strategy = hub_root_transport_strategy_snapshot()
+    hub_root_protocol = hub_root_protocol_snapshot()
+    hub_member_channels = hub_member_semantic_channels_snapshot(
+        role=role,
+        route_mode=route_mode,
+        connected_to_hub=connected_to_hub,
+        hub_root_protocol=hub_root_protocol,
+    )
+    hub_member_connection_state = hub_member_connection_state_snapshot(
+        role=role,
+        route_mode=route_mode,
+        connected_to_hub=connected_to_hub,
+        node_id=node_id,
+        node_names=node_names,
+    )
     readiness_tree = build_readiness_tree(
         role=role,
         local_ready=local_ready,
@@ -3606,20 +3620,6 @@ def reliability_snapshot(
         readiness_tree=readiness_tree,
         channel_diagnostics=channel_diagnostics,
         transport_strategy=transport_strategy,
-    )
-    hub_root_protocol = hub_root_protocol_snapshot()
-    hub_member_channels = hub_member_semantic_channels_snapshot(
-        role=role,
-        route_mode=route_mode,
-        connected_to_hub=connected_to_hub,
-        hub_root_protocol=hub_root_protocol,
-    )
-    hub_member_connection_state = hub_member_connection_state_snapshot(
-        role=role,
-        route_mode=route_mode,
-        connected_to_hub=connected_to_hub,
-        node_id=node_id,
-        node_names=node_names,
     )
     sidecar_runtime = sidecar_runtime_snapshot(
         readiness_tree=readiness_tree,

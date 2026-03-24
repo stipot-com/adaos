@@ -15,7 +15,6 @@ from adaos.services.realtime_sidecar import (
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
-from adaos.services.subnet.link_manager import get_hub_link_manager
 
 router = APIRouter()
 
@@ -287,6 +286,8 @@ async def request_member_snapshot(node_id: str) -> dict[str, Any]:
             "node_id": node_id,
             "error": "hub_role_required",
         }
+    from adaos.services.subnet.link_manager import get_hub_link_manager
+
     return await get_hub_link_manager().request_member_snapshot(node_id, reason="node_api")
 
 
@@ -301,6 +302,8 @@ async def request_member_update(node_id: str, payload: MemberUpdateRequest) -> d
             "error": "hub_role_required",
         }
     action = "update" if str(payload.action or "").strip().lower() == "start" else str(payload.action or "").strip().lower()
+    from adaos.services.subnet.link_manager import get_hub_link_manager
+
     return await get_hub_link_manager().request_member_update(
         node_id,
         action=action,
