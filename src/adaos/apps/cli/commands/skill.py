@@ -556,6 +556,13 @@ def cmd_install(
             return
         try:
             setup_result = _hub_post("/api/skills/runtime/setup", body={"name": skill_id})
+        except RuntimeError as exc:
+            message = str(exc)
+            if "setup not supported" in message.lower():
+                typer.secho(_("cli.skill.install.setup_not_supported"), fg=typer.colors.YELLOW)
+                return
+            typer.secho(_("cli.skill.install.setup_failed", error=message), fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
         except Exception as exc:
             typer.secho(_("cli.skill.install.setup_failed", error=str(exc)), fg=typer.colors.RED)
             raise typer.Exit(1) from exc
