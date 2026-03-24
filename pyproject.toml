@@ -25,7 +25,6 @@ dependencies = [
   "typer>=0.16.0",
   "rich>=13.7.1",
   "openai>=1.43.0",
-  "litellm<1.77,>=1.60", # TODO external bug https://github.com/All-Hands-AI/OpenHands/issues/11053?utm_source=chatgpt.com
   "GitPython>=3.1.43",
   "SQLAlchemy>=2.0.32",
   "sqlite-utils>=3.36",
