@@ -50,6 +50,11 @@ type ChannelState = {
 
 export type HubMemberChannelSnapshot = {
 	updatedAt: number
+	controlPlane: {
+		subscriptionsTracked: number
+		lastReplayAt: number | null
+		lastReplayCount: number
+	}
 	pathEvidence: Record<
 		HubMemberSemanticPath,
 		{
@@ -99,7 +104,10 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 @Injectable({ providedIn: 'root' })
 export class HubMemberChannelsService {
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
+	private readonly controlSubscriptions = new Set<string>()
 	private runtimeInitialized = false
+	private lastControlReplayAt: number | null = null
+	private lastControlReplayCount = 0
 	private wsState: HubMemberPathEvidenceState = 'idle'
 	private syncPathEvidence: {
 		path: 'webrtc_data:yjs' | 'yws' | null
@@ -214,6 +222,48 @@ export class HubMemberChannelsService {
 	sendControlEnvelope(ws: WebSocket, json: string): 'ws' {
 		ws.send(json)
 		return 'ws'
+	}
+
+	registerControlSubscriptions(topics: string[]): string[] {
+		const added: string[] = []
+		for (const raw of topics) {
+			const topic = String(raw || '').trim()
+			if (!topic || this.controlSubscriptions.has(topic)) {
+				continue
+			}
+			this.controlSubscriptions.add(topic)
+			added.push(topic)
+		}
+		if (added.length) {
+			this.publishSnapshot()
+		}
+		return added
+	}
+
+	onControlWsOpen(ws: WebSocket): void {
+		const topics = [...this.controlSubscriptions]
+		if (!topics.length) {
+			this.publishSnapshot()
+			return
+		}
+		this.sendControlSubscriptions(ws, topics)
+	}
+
+	sendControlSubscriptions(ws: WebSocket, topics: string[]): number {
+		const normalized = topics
+			.map((raw) => String(raw || '').trim())
+			.filter((topic, index, arr) => !!topic && arr.indexOf(topic) === index)
+		if (!normalized.length) {
+			return 0
+		}
+		this.sendControlEnvelope(
+			ws,
+			JSON.stringify({ type: 'subscribe', topics: normalized }),
+		)
+		this.lastControlReplayAt = Date.now()
+		this.lastControlReplayCount = normalized.length
+		this.publishSnapshot()
+		return normalized.length
 	}
 
 	createSyncProvider(
@@ -361,6 +411,11 @@ export class HubMemberChannelsService {
 		}
 		return {
 			updatedAt: nowMs,
+			controlPlane: {
+				subscriptionsTracked: this.controlSubscriptions.size,
+				lastReplayAt: this.lastControlReplayAt,
+				lastReplayCount: this.lastControlReplayCount,
+			},
 			pathEvidence,
 			channels,
 		}

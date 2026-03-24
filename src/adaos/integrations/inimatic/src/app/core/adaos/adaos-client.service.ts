@@ -362,6 +362,7 @@ export class AdaosClient {
 				this.channels.reportWsState('connected')
 				ws.addEventListener('message', this.onEventsMessage)
 				ws.addEventListener('close', () => this.resetEventsSocket())
+				this.channels.onControlWsOpen(ws)
 				resolve(ws)
 			}
 			const onError = (err: Event) => {
@@ -391,10 +392,13 @@ export class AdaosClient {
 
 	subscribe(topics: string[]) {
 		if (!topics.length) return
-		const msg = JSON.stringify({ type: 'subscribe', topics })
-		this.ensureEventsSocket()
-			.then((ws) => this.channels.sendControlEnvelope(ws, msg))
-			.catch(() => {})
+		const added = this.channels.registerControlSubscriptions(topics)
+		if (!added.length) return
+		if (this.eventsWs && this.eventsWs.readyState === WebSocket.OPEN) {
+			this.channels.sendControlSubscriptions(this.eventsWs, added)
+			return
+		}
+		this.ensureEventsSocket().catch(() => {})
 	}
 
 	async sendEventsCommand(
