@@ -87,8 +87,6 @@ class ScenarioManager:
             ".gitignore",
             "registry.json",
             "schemas",
-            "skills/",
-            "scenarios/",
             *[f"skills/{n}" for n in skill_names],
             *[f"scenarios/{n}" for n in names],
         ]
