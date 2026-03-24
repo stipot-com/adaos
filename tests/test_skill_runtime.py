@@ -54,7 +54,7 @@ def skill_factory() -> Callable[[str], tuple[SkillRuntimeEnvironment, str]]:
         active_slot: str | None = None,
     ) -> tuple[SkillRuntimeEnvironment, str]:
         ctx = get_ctx()
-        skills_root = Path(ctx.paths.skills_cache_dir())
+        skills_root = Path(ctx.paths.skills_dir())
         env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name=name)
         selected = active_slot or slots[0]
         env.prepare_version(version, activate_slot=selected)

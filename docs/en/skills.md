@@ -30,7 +30,7 @@ skills/
     skill.yaml         # skill manifest (required)
 ```
 
-Runtime slots (`.adaos/skills/.runtime/...`) are maintained by the platform and usually do not need to be edited
+Runtime slots (`.adaos/workspace/skills/.runtime/...`) are maintained by the platform and usually do not need to be edited
 manually; they are derived from the workspace skills via `adaos dev skill activate` or the runtime updater.
 
 ---

@@ -211,11 +211,9 @@ class SkillManager:
             )
             skill_dir = resolver.resolve(name, space=source if source in ("dev", "workspace") else "workspace")
 
-        # 2) Runtime store must not be coupled to the source location.
-        # Workspace sources can be git-tracked; keep `.runtime/*` under cache root.
-        source_norm = (source or "workspace").strip().lower()
-        skills_root = self.ctx.paths.dev_skills_dir() if source_norm == "dev" else self.ctx.paths.skills_cache_dir()
-        env = SkillRuntimeEnvironment(skills_root=Path(skills_root), skill_name=name)
+        # 2) Runtime store lives under `<skills_root>/.runtime/<skill>/data/...`,
+        # i.e. next to the sources but not inside the git-tracked skill folder.
+        env = SkillRuntimeEnvironment(skills_root=skill_dir.parent, skill_name=name)
         version = env.resolve_active_version()
         package_dir = getattr(self.ctx.paths, "package_dir", None)
         if callable(package_dir):
@@ -838,15 +836,15 @@ class SkillManager:
         run_tests: bool = False,
         preferred_slot: str | None = None,
     ) -> RuntimeInstallResult:
-        workspace_root = self.ctx.paths.skills_dir()
-        skill_dir = workspace_root / name
+        skills_root = self.ctx.paths.skills_dir()
+        skill_dir = skills_root / name
         if not skill_dir.exists():
             raise FileNotFoundError(f"skill '{name}' not found at {skill_dir}")
 
         manifest = self._load_manifest(skill_dir)
         version = version_override or str(manifest.get("version") or "0.0.0")
 
-        env = SkillRuntimeEnvironment(skills_root=self.ctx.paths.skills_cache_dir(), skill_name=name)
+        env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name=name)
         env.prepare_version(version)
 
         slot_name = preferred_slot or env.select_inactive_slot(version)
@@ -1118,11 +1116,11 @@ class SkillManager:
                 pass
 
     def gc_runtime(self, name: str | None = None) -> Dict[str, Iterable[str]]:
-        runtime_root = self.ctx.paths.skills_cache_dir()
-        targets = [name] if name else [p.name for p in (runtime_root / ".runtime").glob("*") if p.is_dir()]
+        skills_root = self.ctx.paths.skills_dir()
+        targets = [name] if name else [p.name for p in (skills_root / ".runtime").glob("*") if p.is_dir()]
         cleaned: Dict[str, Iterable[str]] = {}
         for skill in targets:
-            env = SkillRuntimeEnvironment(skills_root=runtime_root, skill_name=skill)
+            env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill)
             active_version = env.resolve_active_version()
             removed: list[str] = []
             for version in env.list_versions():
@@ -1139,10 +1137,9 @@ class SkillManager:
         status = self.runtime_status(name)
         ctx = self.ctx
         base = ctx.paths.skills_dir()
-        runtime_base = ctx.paths.skills_cache_dir()
         return {
             "skill_root": str((base / name).resolve()),
-            "runtime_root": str((runtime_base / ".runtime" / name).resolve()),
+            "runtime_root": str((base / ".runtime" / name).resolve()),
             "active_slot": status["active_slot"],
             "resolved_manifest": status["resolved_manifest"],
         }
@@ -1436,9 +1433,7 @@ class SkillManager:
     # ------------------------------------------------------------------
     def _runtime_env(self, name: str) -> SkillRuntimeEnvironment:
         return SkillRuntimeEnvironment(
-            # Runtime store must not live under git-tracked workspace sources.
-            # Use the cache root (typically `<base>/skills`) for mutable `.runtime/*`.
-            skills_root=self.ctx.paths.skills_cache_dir(),
+            skills_root=self.ctx.paths.skills_dir(),
             skill_name=name,
         )
 

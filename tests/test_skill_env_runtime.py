@@ -17,7 +17,7 @@ class _Caps:
 
 def test_slot_skill_env_uses_shared_runtime_store() -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_cache_dir())
+    skills_root = Path(ctx.paths.skills_dir())
     env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name="demo_skill")
     env.prepare_version("1.0.0")
 
@@ -32,7 +32,7 @@ def test_slot_skill_env_uses_shared_runtime_store() -> None:
 def test_sync_skill_env_merges_template_legacy_and_store(tmp_path: Path, monkeypatch) -> None:
     ctx = get_ctx()
     workspace_root = Path(ctx.paths.skills_dir())
-    skills_root = Path(ctx.paths.skills_cache_dir())
+    skills_root = Path(ctx.paths.skills_dir())
     skill_name = "merge_skill"
     skill_dir = workspace_root / skill_name
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def test_skill_memory_and_skill_env_share_same_store(tmp_path: Path, monkeypatch
 
 def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_cache_dir())
+    skills_root = Path(ctx.paths.skills_dir())
     env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name="ctx_pref_skill")
     env.prepare_version("3.0.0")
     slot = env.build_slot_paths("3.0.0", "A")
@@ -114,7 +114,7 @@ def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:
 def test_skill_env_workspace_context_uses_runtime_store_without_prepared_runtime(monkeypatch) -> None:
     ctx = get_ctx()
     workspace_root = Path(ctx.paths.skills_dir())
-    runtime_root = Path(ctx.paths.skills_cache_dir())
+    runtime_root = Path(ctx.paths.skills_dir())
     skill_dir = workspace_root / "workspace_only_skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
 
