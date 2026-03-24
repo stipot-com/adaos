@@ -550,8 +550,15 @@ class BootstrapService:
                 if getattr(conf, "role", None) != "hub":
                     return
                 await asyncio.to_thread(report_hub_control_lifecycle_state, conf)
-            except Exception:
-                self._log.debug("control lifecycle report failed trigger=%s", trigger, exc_info=True)
+            except Exception as exc:
+                # This is best-effort telemetry to Root; never break hub boot/loop on failures.
+                # Include the error string in the structured log so JSON log collectors still show it.
+                self._log.debug(
+                    "control lifecycle report failed trigger=%s error=%s",
+                    trigger,
+                    str(exc),
+                    exc_info=True,
+                )
 
         try:
             _control_lifecycle_heartbeat_s = float(

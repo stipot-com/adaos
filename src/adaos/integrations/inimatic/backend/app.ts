@@ -518,7 +518,7 @@ app.post('/v1/github/core_update/callback', express.raw({ type: 'application/jso
 	const after = String(body?.after || '').trim()
 	const payload = {
 		target_rev: branch,
-		target_version: after ? after.slice(0, 12) : '',
+		target_version: after || '',
 		reason: `github.push:${branch}${after ? `:${after.slice(0, 12)}` : ''}`,
 		countdown_sec: CORE_UPDATE_GITHUB_COUNTDOWN_SEC,
 		drain_timeout_sec: 10,

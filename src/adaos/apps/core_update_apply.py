@@ -13,6 +13,42 @@ from pathlib import Path
 from adaos.services.core_slots import write_slot_manifest
 
 
+def _is_probably_git_sha(value: str) -> bool:
+    token = str(value or "").strip()
+    if len(token) < 7 or len(token) > 40:
+        return False
+    for ch in token:
+        if ch not in "0123456789abcdefABCDEF":
+            return False
+    return True
+
+
+def _checkout_target_version(repo_dir: Path, *, target_rev: str, target_version: str) -> None:
+    """
+    Ensure the checkout is at the requested git commit-ish when target_version looks like a SHA.
+
+    This prevents "partial update" situations where a branch tip moves (or is different
+    from what the update coordinator expects) while the update runner still prepares a slot.
+    """
+    target_version = str(target_version or "").strip()
+    if not _is_probably_git_sha(target_version):
+        return
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("git is required for core updates but is not installed")
+    try:
+        _run([git, "checkout", target_version], cwd=repo_dir)
+        return
+    except Exception:
+        # Shallow clones may not contain the commit object even if the branch was specified.
+        # Fetch more history for the target branch and retry.
+        if target_rev:
+            _run([git, "fetch", "--depth", "50", "origin", target_rev], cwd=repo_dir)
+        else:
+            _run([git, "fetch", "--depth", "50", "origin"], cwd=repo_dir)
+        _run([git, "checkout", target_version], cwd=repo_dir)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare inactive AdaOS core slot")
     parser.add_argument("--target-rev", default="")
@@ -43,7 +79,7 @@ def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def _clone_repo(repo_url: str, target_rev: str, checkout_dir: Path) -> None:
+def _clone_repo(repo_url: str, target_rev: str, target_version: str, checkout_dir: Path) -> None:
     git = shutil.which("git")
     if not git:
         raise RuntimeError("git is required for core updates but is not installed")
@@ -52,9 +88,10 @@ def _clone_repo(repo_url: str, target_rev: str, checkout_dir: Path) -> None:
         cmd.extend(["--branch", target_rev])
     cmd.extend([repo_url, str(checkout_dir)])
     _run(cmd)
+    _checkout_target_version(checkout_dir, target_rev=target_rev, target_version=target_version)
 
 
-def _clone_local_repo(source_repo_root: Path, target_rev: str, checkout_dir: Path) -> None:
+def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: str, checkout_dir: Path) -> None:
     git = shutil.which("git")
     git_dir = source_repo_root / ".git"
     if git and git_dir.exists():
@@ -62,6 +99,7 @@ def _clone_local_repo(source_repo_root: Path, target_rev: str, checkout_dir: Pat
             _run([git, "clone", str(source_repo_root), str(checkout_dir)])
             if target_rev:
                 _run([git, "checkout", target_rev], cwd=checkout_dir)
+            _checkout_target_version(checkout_dir, target_rev=target_rev, target_version=target_version)
             return
         except Exception:
             pass
@@ -124,6 +162,7 @@ def prepare_slot(
     slot_dir = Path(slot_dir_path).expanduser().resolve()
     slot_dir.mkdir(parents=True, exist_ok=True)
     target_rev = str(target_rev or "").strip()
+    target_version = str(target_version or "").strip()
     repo_url = str(repo_url or os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
     source_repo_dir = Path(str(source_repo_root or "")).expanduser().resolve() if str(source_repo_root or "").strip() else None
     shared_dotenv = str(shared_dotenv_path or "").strip()
@@ -135,13 +174,13 @@ def prepare_slot(
         source_is_git = _is_git_repo(source_repo_dir)
         git_available = bool(shutil.which("git"))
         if source_repo_dir is not None and source_repo_dir.exists() and source_is_git:
-            _clone_local_repo(source_repo_dir, target_rev, checkout_tmp)
+            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
         elif git_available and repo_url:
-            _clone_repo(repo_url, target_rev, checkout_tmp)
+            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
         elif source_repo_dir is not None and source_repo_dir.exists():
-            _clone_local_repo(source_repo_dir, target_rev, checkout_tmp)
+            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
         else:
-            _clone_repo(repo_url, target_rev, checkout_tmp)
+            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
         venv_tmp = prepared_slot / "venv"
         _run([sys.executable, "-m", "venv", str(venv_tmp)])
         py = _venv_python(venv_tmp)
