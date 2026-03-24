@@ -191,6 +191,7 @@ Frontend transport notifications now also follow semantic member-path transition
 The browser shell now consumes semantic member transport state directly from the channel selector service, while raw WebRTC visibility/reconnect state is pushed down into the transport/runtime layer instead of remaining an app-shell concern.
 Yjs startup no longer performs raw WebRTC upgrade orchestration itself; it now asks the member-transport layer to prepare direct paths and then builds sync providers through the semantic selector.
 The browser connection client no longer owns raw WebRTC callback wiring either; low-level RTC state is now contained inside the transport runtime and the semantic channel selector.
+The browser-side semantic selector now also carries explicit live path evidence for routed `/ws` and `/yws` (`idle` / `connecting` / `connected` / `disconnected`) instead of treating those fallback paths as implicitly healthy, so UI transport state and channel snapshots reflect real browser transport state rather than static assumptions.
 This is still intentionally a semantic-path checkpoint, not a full transport rewrite: signaling and subscription setup remain explicit control-plane WS behavior, and transport-specific orchestration still exists around negotiation, reconnect, and low-level datachannel runtime.
 
 ### Focus

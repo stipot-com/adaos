@@ -23,6 +23,12 @@ export type HubMemberTransportState =
 	| 'connected'
 	| 'ws'
 
+export type HubMemberPathEvidenceState =
+	| 'idle'
+	| 'connecting'
+	| 'connected'
+	| 'disconnected'
+
 type ChannelSpec = {
 	paths: readonly HubMemberSemanticPath[]
 	freezeMs: number
@@ -38,6 +44,12 @@ type ChannelState = {
 
 export type HubMemberChannelSnapshot = {
 	updatedAt: number
+	pathEvidence: Record<
+		HubMemberSemanticPath,
+		{
+			state: HubMemberPathEvidenceState
+		}
+	>
 	channels: Record<
 		HubMemberSemanticChannelId,
 		{
@@ -46,6 +58,7 @@ export type HubMemberChannelSnapshot = {
 			availablePaths: HubMemberSemanticPath[]
 			freezeRemainingMs: number
 			switchTotal: number
+			activeReady: boolean
 		}
 	>
 }
@@ -73,6 +86,14 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 export class HubMemberChannelsService {
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private runtimeInitialized = false
+	private wsState: HubMemberPathEvidenceState = 'idle'
+	private syncPathEvidence: {
+		path: 'webrtc_data:yjs' | 'yws' | null
+		state: HubMemberPathEvidenceState
+	} = {
+		path: null,
+		state: 'idle',
+	}
 	readonly snapshot$ = new BehaviorSubject<HubMemberChannelSnapshot>(
 		this.buildSnapshot(),
 	)
@@ -84,6 +105,19 @@ export class HubMemberChannelsService {
 		this.rtc.state$.subscribe(() => {
 			this.publishSnapshot()
 		})
+	}
+
+	reportWsState(state: 'disconnected' | 'connecting' | 'connected'): void {
+		this.wsState = state
+		this.publishSnapshot()
+	}
+
+	reportSyncPathState(
+		path: 'webrtc_data:yjs' | 'yws' | null,
+		state: 'idle' | 'connecting' | 'connected' | 'disconnected',
+	): void {
+		this.syncPathEvidence = { path, state }
+		this.publishSnapshot()
 	}
 
 	async negotiateDirectPaths(
@@ -160,6 +194,7 @@ export class HubMemberChannelsService {
 		if (path === 'webrtc_data:yjs') {
 			const dc = this.rtc.getYjsChannel()
 			if (dc && dc.readyState === 'open') {
+				this.reportSyncPathState('webrtc_data:yjs', 'connecting')
 				this.publishSnapshot()
 				return {
 					provider: new DataChannelProvider(doc, dc),
@@ -168,6 +203,7 @@ export class HubMemberChannelsService {
 			}
 		}
 		this.forceActivePath('sync', 'yws')
+		this.reportSyncPathState('yws', 'connecting')
 		return {
 			provider: new WebsocketProvider(serverUrl, room, doc, {
 				params,
@@ -278,6 +314,7 @@ export class HubMemberChannelsService {
 	}
 
 	private buildSnapshot(nowMs = Date.now()): HubMemberChannelSnapshot {
+		const pathEvidence = this.buildPathEvidence()
 		const channels = {} as HubMemberChannelSnapshot['channels']
 		for (const channelId of Object.keys(
 			CHANNEL_SPECS,
@@ -289,10 +326,15 @@ export class HubMemberChannelsService {
 				availablePaths: state.availablePaths,
 				freezeRemainingMs: state.freezeRemainingMs,
 				switchTotal: this.ensureState(channelId).switchTotal,
+				activeReady: !!(
+					state.activePath &&
+					pathEvidence[state.activePath]?.state === 'connected'
+				),
 			}
 		}
 		return {
 			updatedAt: nowMs,
+			pathEvidence,
 			channels,
 		}
 	}
@@ -303,16 +345,74 @@ export class HubMemberChannelsService {
 		const rtcState = this.rtc.state$.value
 		const commandPath = snapshot.channels.command.activePath
 		const syncPath = snapshot.channels.sync.activePath
+		const commandReady = !!(
+			commandPath &&
+			snapshot.pathEvidence[commandPath]?.state === 'connected'
+		)
+		const syncReady = !!(
+			syncPath &&
+			snapshot.pathEvidence[syncPath]?.state === 'connected'
+		)
 		if (
-			commandPath === 'webrtc_data:events' ||
-			syncPath === 'webrtc_data:yjs'
+			(commandPath === 'webrtc_data:events' && commandReady) ||
+			(syncPath === 'webrtc_data:yjs' && syncReady)
 		) {
 			return 'connected'
 		}
 		if (rtcState === 'signaling' || rtcState === 'connecting') {
 			return rtcState
 		}
+		if (
+			snapshot.pathEvidence.ws.state === 'connecting' ||
+			snapshot.pathEvidence.yws.state === 'connecting'
+		) {
+			return 'connecting'
+		}
 		return 'ws'
+	}
+
+	private buildPathEvidence(): HubMemberChannelSnapshot['pathEvidence'] {
+		return {
+			ws: {
+				state: this.wsState,
+			},
+			yws: {
+				state:
+					this.syncPathEvidence.path === 'yws'
+						? this.syncPathEvidence.state
+						: 'idle',
+			},
+			'webrtc_data:events': {
+				state: this.getRtcPathState('events'),
+			},
+			'webrtc_data:yjs': {
+				state:
+					this.syncPathEvidence.path === 'webrtc_data:yjs'
+						? this.syncPathEvidence.state
+						: this.getRtcPathState('yjs'),
+			},
+		}
+	}
+
+	private getRtcPathState(
+		channel: 'events' | 'yjs',
+	): HubMemberPathEvidenceState {
+		const rtcState = this.rtc.state$.value
+		const dc =
+			channel === 'events'
+				? this.rtc.getEventsChannel()
+				: this.rtc.getYjsChannel()
+		if (dc?.readyState === 'open' && this.rtc.isConnected()) {
+			return 'connected'
+		}
+		if (
+			dc?.readyState === 'connecting' ||
+			rtcState === 'signaling' ||
+			rtcState === 'connecting'
+		) {
+			return 'connecting'
+		}
+		return 'disconnected'
 	}
 
 	private publishSnapshot(): void {

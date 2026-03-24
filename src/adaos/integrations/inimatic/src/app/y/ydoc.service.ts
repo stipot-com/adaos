@@ -27,6 +27,7 @@ export class YDocService {
   private lastSoftReauthAttemptAt = 0
   private readonly deviceId: string
   private currentWebspaceId = 'default'
+  private currentSyncPath: 'webrtc_data:yjs' | 'yws' | null = null
   private readonly webspaceKey = 'adaos_webspace_id'
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
@@ -133,11 +134,7 @@ export class YDocService {
       } catch {}
 
       // Recreate WS provider with the fresh token (keep the Y.Doc intact).
-      try {
-        this.provider?.destroy()
-      } catch {}
-      this.provider = undefined
-      this.syncConnectionState$.next('idle')
+      this.destroyCurrentProvider()
 
       const baseHttp = (this.adaos.getBaseUrl() || '').trim()
       const baseWs = baseHttp.replace(/^http/, 'ws')
@@ -197,6 +194,7 @@ export class YDocService {
       dev: this.deviceId,
       ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
     })
+    this.currentSyncPath = syncPath.path as 'webrtc_data:yjs' | 'yws'
     this.provider = syncPath.provider
     this.syncConnectionState$.next('connecting')
     this.attachProviderConnectionSignals(this.provider)
@@ -254,11 +252,7 @@ export class YDocService {
   }
 
   private async recoverSyncProvider(serverUrl: string, room: string): Promise<boolean> {
-    try {
-      this.provider?.destroy()
-    } catch {}
-    this.provider = undefined
-    this.syncConnectionState$.next('idle')
+    this.destroyCurrentProvider()
     await new Promise<void>((resolve) => setTimeout(resolve, 250))
     const syncPath = this.createSyncProvider(serverUrl, room)
     if (isDebugEnabled()) {
@@ -284,11 +278,7 @@ export class YDocService {
 
   private async doInitFromHub(): Promise<void> {
     // If we're re-initializing after a failure, make sure old provider is torn down.
-    try {
-      this.provider?.destroy()
-    } catch {}
-    this.provider = undefined
-    this.syncConnectionState$.next('idle')
+    this.destroyCurrentProvider()
 
     const readSession = (): { hubId: string | null; sessionJwt: string | null } => {
       try {
@@ -788,7 +778,12 @@ export class YDocService {
       if (!p || typeof p.on !== 'function') return
       p.on('sync', (synced: any) => {
         try {
-          this.syncConnectionState$.next(Boolean(synced) ? 'connected' : 'disconnected')
+          const connected = Boolean(synced)
+          this.syncConnectionState$.next(connected ? 'connected' : 'disconnected')
+          this.channels.reportSyncPathState(
+            this.currentSyncPath,
+            connected ? 'connected' : 'disconnected',
+          )
         } catch {}
       })
       p.on('status', (ev: any) => {
@@ -796,10 +791,12 @@ export class YDocService {
           const st = String(ev?.status || '').trim().toLowerCase()
           if (st === 'connected') {
             this.syncConnectionState$.next('connected')
+            this.channels.reportSyncPathState(this.currentSyncPath, 'connected')
             return
           }
           if (st !== 'disconnected') return
           this.syncConnectionState$.next('disconnected')
+          this.channels.reportSyncPathState(this.currentSyncPath, 'disconnected')
           const jwt = (localStorage.getItem(this.sessionJwtKey) || '').trim()
           if (!jwt || !jwt.includes('.')) return
           if (!this.isJwtValid(jwt)) {
@@ -813,6 +810,17 @@ export class YDocService {
         } catch {}
       })
     } catch {}
+  }
+
+  private destroyCurrentProvider(): void {
+    const lastPath = this.currentSyncPath
+    try {
+      this.provider?.destroy()
+    } catch {}
+    this.provider = undefined
+    this.currentSyncPath = null
+    this.syncConnectionState$.next('idle')
+    this.channels.reportSyncPathState(lastPath, 'idle')
   }
 
   dumpSnapshot(): void {

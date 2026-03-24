@@ -212,6 +212,7 @@ export class AdaosClient {
 				null,
 			authKind: boundSubnet?.sessionJwt ? 'bearer' : 'adaos-token',
 		}
+		this.channels.reportWsState('disconnected')
 	}
 
 	/**
@@ -320,6 +321,7 @@ export class AdaosClient {
 		this.eventsWs = undefined
 		this.eventsReady = undefined
 		this.eventsConnectionState$.next('disconnected')
+		this.channels.reportWsState('disconnected')
 		for (const [, entry] of this.pendingCmds) {
 			clearTimeout(entry.timeout)
 			entry.reject(reason ?? new Error('events websocket closed'))
@@ -353,6 +355,7 @@ export class AdaosClient {
 		}
 		this.eventsReady = new Promise<WebSocket>((resolve, reject) => {
 			this.eventsConnectionState$.next('connecting')
+			this.channels.reportWsState('connecting')
 			const ws = new WebSocket(this.eventsUrl())
 			this.eventsWs = ws
 			const cleanup = () => {
@@ -362,6 +365,7 @@ export class AdaosClient {
 			const onOpen = () => {
 				cleanup()
 				this.eventsConnectionState$.next('connected')
+				this.channels.reportWsState('connected')
 				ws.addEventListener('message', this.onEventsMessage)
 				ws.addEventListener('close', () => this.resetEventsSocket())
 				resolve(ws)
