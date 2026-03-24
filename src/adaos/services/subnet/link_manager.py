@@ -31,6 +31,12 @@ class HubMemberLink:
     last_hub_event_type: str | None = None
     last_hub_core_update_state: str | None = None
     last_hub_core_update_action: str | None = None
+    last_control_request_id: str | None = None
+    last_control_request_at: float | None = None
+    last_control_action: str | None = None
+    last_control_reason: str | None = None
+    last_control_result_at: float | None = None
+    last_control_result: dict[str, Any] = field(default_factory=dict)
     last_snapshot_at: float | None = None
     node_snapshot: dict[str, Any] = field(default_factory=dict)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -208,6 +214,133 @@ class HubLinkManager:
         await link.send_json({"t": "node.names.set", "node_names": list(node_names)})
         return {"ok": True, "node_id": node_id, "node_names": list(node_names)}
 
+    async def request_member_snapshot(self, node_id: str, *, reason: str = "manual_refresh") -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "accepted": False, "error": "member_not_connected", "node_id": node_id}
+        await link.send_json(
+            {
+                "t": "node.snapshot.request",
+                "reason": str(reason or "manual_refresh"),
+                "ts": time.time(),
+            }
+        )
+        link.last_hub_event_at = time.time()
+        link.last_hub_event_type = "node.snapshot.request"
+        payload = {
+            "node_id": node_id,
+            "reason": str(reason or "manual_refresh"),
+        }
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.snapshot.requested",
+                    payload=payload,
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+        return {"ok": True, "accepted": True, **payload}
+
+    async def request_member_update(
+        self,
+        node_id: str,
+        *,
+        action: str,
+        target_rev: str = "",
+        target_version: str = "",
+        countdown_sec: float | None = None,
+        drain_timeout_sec: float | None = None,
+        signal_delay_sec: float | None = None,
+        reason: str = "hub.member_control",
+    ) -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "accepted": False, "error": "member_not_connected", "node_id": node_id}
+        action_norm = str(action or "").strip().lower()
+        if action_norm == "start":
+            action_norm = "update"
+        if action_norm not in {"update", "cancel", "rollback"}:
+            return {"ok": False, "accepted": False, "error": "invalid_action", "node_id": node_id, "action": action_norm}
+        request_id = f"member_update_{uuid.uuid4().hex}"
+        msg = {
+            "t": "core.update.request",
+            "request_id": request_id,
+            "action": action_norm,
+            "target_rev": str(target_rev or ""),
+            "target_version": str(target_version or ""),
+            "reason": str(reason or "hub.member_control"),
+            "ts": time.time(),
+        }
+        if countdown_sec is not None:
+            msg["countdown_sec"] = float(countdown_sec)
+        if drain_timeout_sec is not None:
+            msg["drain_timeout_sec"] = float(drain_timeout_sec)
+        if signal_delay_sec is not None:
+            msg["signal_delay_sec"] = float(signal_delay_sec)
+        await link.send_json(msg)
+        link.last_hub_event_at = time.time()
+        link.last_hub_event_type = "core.update.request"
+        link.last_control_request_id = request_id
+        link.last_control_request_at = time.time()
+        link.last_control_action = action_norm
+        link.last_control_reason = str(reason or "hub.member_control")
+        link.last_control_result_at = None
+        link.last_control_result = {"ok": None, "state": "requested", "request_id": request_id}
+        payload = {
+            "node_id": node_id,
+            "request_id": request_id,
+            "action": action_norm,
+            "target_rev": str(target_rev or ""),
+            "target_version": str(target_version or ""),
+            "reason": str(reason or "hub.member_control"),
+        }
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.update.requested",
+                    payload=payload,
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+        return {"ok": True, "accepted": True, **payload}
+
+    async def update_member_control_result(self, node_id: str, *, result: dict[str, Any]) -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "error": "member_not_connected", "node_id": node_id}
+        payload = dict(result or {})
+        link.last_control_result_at = time.time()
+        link.last_control_result = payload
+        request_id = str(payload.get("request_id") or "").strip()
+        action = str(payload.get("action") or "").strip()
+        if request_id:
+            link.last_control_request_id = request_id
+        if action:
+            link.last_control_action = action
+        outbound = {
+            "node_id": node_id,
+            "result": dict(link.last_control_result),
+            "captured_at": link.last_control_result_at,
+        }
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.update.result",
+                    payload=outbound,
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+        return {"ok": True, **outbound}
+
     async def broadcast_event(self, *, event_type: str, payload: dict[str, Any], source: str = "hub") -> dict[str, Any]:
         event_type_norm = str(event_type or "").strip()
         if not event_type_norm:
@@ -267,6 +400,20 @@ class HubLinkManager:
                     "last_hub_event_type": link.last_hub_event_type,
                     "last_hub_core_update_state": link.last_hub_core_update_state,
                     "last_hub_core_update_action": link.last_hub_core_update_action,
+                    "last_control_request_id": link.last_control_request_id,
+                    "last_control_request_ago_s": (
+                        round(max(0.0, now - float(link.last_control_request_at)), 3)
+                        if link.last_control_request_at
+                        else None
+                    ),
+                    "last_control_action": link.last_control_action,
+                    "last_control_reason": link.last_control_reason,
+                    "last_control_result_ago_s": (
+                        round(max(0.0, now - float(link.last_control_result_at)), 3)
+                        if link.last_control_result_at
+                        else None
+                    ),
+                    "last_control_result": dict(link.last_control_result) if isinstance(link.last_control_result, dict) else {},
                     "node_snapshot": dict(link.node_snapshot) if isinstance(link.node_snapshot, dict) else {},
                     "pending_rpc": len(link.pending_rpc),
                     "connected": True,

@@ -42,6 +42,32 @@ def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2
     return response.status_code, payload
 
 
+def _control_post_json(
+    *,
+    control: str,
+    path: str,
+    token: str,
+    body: dict[str, Any],
+    timeout: float = 2.5,
+) -> tuple[int | None, Any]:
+    url = control.rstrip("/") + path
+    headers = {"X-AdaOS-Token": token or resolve_control_token()}
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        response = sess.post(url, headers=headers, json=body, timeout=timeout)
+    except Exception:
+        return None, None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = (response.text or "").strip()
+    return response.status_code, payload
+
+
 def _print_reliability_summary(payload: dict[str, Any]) -> None:
     node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -479,6 +505,154 @@ def node_reliability(
         _print(payload, json_output=True)
     else:
         _print_reliability_summary(payload)
+
+
+@app.command("members")
+def node_members(
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path="/api/node/members",
+        token=resolve_control_token(explicit=cfg.token),
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] member probe failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] member probe failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    state = (
+        payload.get("hub_member_connection_state")
+        if isinstance(payload.get("hub_member_connection_state"), dict)
+        else {}
+    )
+    role = str(state.get("role") or "").strip().lower()
+    assessment = state.get("assessment") if isinstance(state.get("assessment"), dict) else {}
+    if role == "hub":
+        rollout = state.get("update_rollout") if isinstance(state.get("update_rollout"), dict) else {}
+        typer.echo(
+            f"hub_member_links: state={assessment.get('state') or 'unknown'} "
+            f"members={state.get('member_total') or 0} rollout={rollout.get('state') or '-'}"
+        )
+        members = state.get("members") if isinstance(state.get("members"), list) else []
+        for item in members:
+            if not isinstance(item, dict):
+                continue
+            last_control = item.get("last_control_result") if isinstance(item.get("last_control_result"), dict) else {}
+            typer.echo(
+                f"- {item.get('label') or item.get('node_id') or 'member'} "
+                f"snapshot={item.get('snapshot_state') or '-'} "
+                f"rollout={item.get('rollout_state') or '-'} "
+                f"runtime={item.get('snapshot_runtime_git_short_commit') or item.get('snapshot_runtime_version') or '-'} "
+                f"update={item.get('snapshot_update_state') or '-'} "
+                f"control={item.get('last_control_action') or '-'}:{last_control.get('ok') if 'ok' in last_control else '-'} "
+                f"last_snapshot_ago={item.get('last_snapshot_ago_s') if item.get('last_snapshot_ago_s') is not None else '-'}"
+            )
+        return
+    hub = state.get("hub") if isinstance(state.get("hub"), dict) else {}
+    follow = hub.get("last_follow_result") if isinstance(hub.get("last_follow_result"), dict) else {}
+    typer.echo(
+        f"member_link: state={assessment.get('state') or 'unknown'} "
+        f"hub={hub.get('hub_node_id') or '-'} "
+        f"hub_update={((hub.get('last_hub_core_update') if isinstance(hub.get('last_hub_core_update'), dict) else {}) or {}).get('state') or '-'} "
+        f"follow_ok={follow.get('ok') if 'ok' in follow else '-'}"
+    )
+
+
+@app.command("member-refresh")
+def node_member_refresh(
+    node_id: str = typer.Option(..., "--node-id", help="Remote member node_id"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path=f"/api/node/members/{node_id}/snapshot/request",
+        token=resolve_control_token(explicit=cfg.token),
+        body={},
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] member refresh failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] member refresh failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(
+        f"member snapshot refresh: accepted={payload.get('accepted')} "
+        f"node_id={payload.get('node_id') or node_id} "
+        f"reason={payload.get('reason') or '-'}"
+    )
+
+
+@app.command("member-update")
+def node_member_update(
+    node_id: str = typer.Option(..., "--node-id", help="Remote member node_id"),
+    action: str = typer.Option(..., "--action", help="update|cancel|rollback"),
+    target_rev: str | None = typer.Option(None, "--target-rev", help="Target rev for update"),
+    target_version: str | None = typer.Option(None, "--target-version", help="Target version for update"),
+    countdown_sec: float | None = typer.Option(None, "--countdown", min=0.0, help="Countdown before restart"),
+    drain_timeout_sec: float | None = typer.Option(None, "--drain-timeout", min=0.0, help="Drain timeout seconds"),
+    signal_delay_sec: float | None = typer.Option(None, "--signal-delay", min=0.0, help="Signal delay seconds"),
+    reason: str | None = typer.Option(None, "--reason", help="Operator reason"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path=f"/api/node/members/{node_id}/update",
+        token=resolve_control_token(explicit=cfg.token),
+        body={
+            "action": action,
+            "target_rev": target_rev,
+            "target_version": target_version,
+            "countdown_sec": countdown_sec,
+            "drain_timeout_sec": drain_timeout_sec,
+            "signal_delay_sec": signal_delay_sec,
+            "reason": reason,
+        },
+        timeout=8.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] member update failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] member update failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(
+        f"member update request: accepted={payload.get('accepted')} "
+        f"node_id={payload.get('node_id') or node_id} "
+        f"action={payload.get('action') or action} "
+        f"request_id={payload.get('request_id') or '-'}"
+    )
 
 
 @role_app.command("set")

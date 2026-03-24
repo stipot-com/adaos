@@ -15,6 +15,7 @@ from adaos.services.realtime_sidecar import (
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
+from adaos.services.subnet.link_manager import get_hub_link_manager
 
 router = APIRouter()
 
@@ -56,6 +57,16 @@ class SidecarRestartRequest(BaseModel):
 class NodeNamesUpdateRequest(BaseModel):
     node_names: list[str] | None = None
     value: str | None = None
+
+
+class MemberUpdateRequest(BaseModel):
+    action: str = Field(..., pattern="^(update|start|cancel|rollback)$")
+    target_rev: str | None = None
+    target_version: str | None = None
+    countdown_sec: float | None = None
+    drain_timeout_sec: float | None = None
+    signal_delay_sec: float | None = None
+    reason: str | None = None
 
 
 def _route_info(role: str) -> tuple[str | None, bool | None]:
@@ -264,3 +275,39 @@ async def node_members() -> dict[str, Any]:
             else {}
         ),
     }
+
+
+@router.post("/members/{node_id}/snapshot/request", dependencies=[Depends(require_token)])
+async def request_member_snapshot(node_id: str) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "node_id": node_id,
+            "error": "hub_role_required",
+        }
+    return await get_hub_link_manager().request_member_snapshot(node_id, reason="node_api")
+
+
+@router.post("/members/{node_id}/update", dependencies=[Depends(require_token)])
+async def request_member_update(node_id: str, payload: MemberUpdateRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "node_id": node_id,
+            "error": "hub_role_required",
+        }
+    action = "update" if str(payload.action or "").strip().lower() == "start" else str(payload.action or "").strip().lower()
+    return await get_hub_link_manager().request_member_update(
+        node_id,
+        action=action,
+        target_rev=str(payload.target_rev or ""),
+        target_version=str(payload.target_version or ""),
+        countdown_sec=payload.countdown_sec,
+        drain_timeout_sec=payload.drain_timeout_sec,
+        signal_delay_sec=payload.signal_delay_sec,
+        reason=str(payload.reason or "node_api.member_update"),
+    )

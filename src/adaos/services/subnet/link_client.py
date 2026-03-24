@@ -12,6 +12,7 @@ from typing import Any, Callable
 import requests
 import websockets  # type: ignore
 
+from adaos.build_info import BUILD_INFO
 from adaos.domain import Event as DomainEvent
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.agent_context import get_ctx
@@ -65,6 +66,11 @@ class MemberLinkClient:
         self._last_follow_result: dict[str, Any] = {}
         self._last_follow_error = ""
         self._last_follow_at = 0.0
+        self._last_control_request: dict[str, Any] = {}
+        self._last_control_result: dict[str, Any] = {}
+        self._last_control_error = ""
+        self._last_control_requested_at = 0.0
+        self._last_control_completed_at = 0.0
 
     @staticmethod
     def _parse_bus_prefixes(raw: str | None) -> list[str] | None:
@@ -101,6 +107,11 @@ class MemberLinkClient:
             "last_follow_result": dict(self._last_follow_result) if isinstance(self._last_follow_result, dict) else {},
             "last_follow_error": self._last_follow_error or None,
             "last_follow_ago_s": round(max(0.0, now - self._last_follow_at), 3) if self._last_follow_at else None,
+            "last_control_request": dict(self._last_control_request) if isinstance(self._last_control_request, dict) else {},
+            "last_control_result": dict(self._last_control_result) if isinstance(self._last_control_result, dict) else {},
+            "last_control_error": self._last_control_error or None,
+            "last_control_request_ago_s": round(max(0.0, now - self._last_control_requested_at), 3) if self._last_control_requested_at else None,
+            "last_control_result_ago_s": round(max(0.0, now - self._last_control_completed_at), 3) if self._last_control_completed_at else None,
             "updated_at": now,
         }
 
@@ -169,6 +180,13 @@ class MemberLinkClient:
                     "git_branch": str(active_manifest.get("git_branch") or ""),
                     "git_subject": str(active_manifest.get("git_subject") or ""),
                 },
+            },
+            "hub_control_request": {
+                "request": dict(self._last_control_request) if isinstance(self._last_control_request, dict) else {},
+                "result": dict(self._last_control_result) if isinstance(self._last_control_result, dict) else {},
+                "error": self._last_control_error or "",
+                "requested_at": self._last_control_requested_at or None,
+                "completed_at": self._last_control_completed_at or None,
             },
         }
 
@@ -388,6 +406,12 @@ class MemberLinkClient:
                                 continue
                             if t == "hub.event":
                                 await self._on_hub_event(msg)
+                                continue
+                            if t == "node.snapshot.request":
+                                self._queue_node_snapshot()
+                                continue
+                            if t == "core.update.request":
+                                await self._on_core_update_request(ws, msg)
                                 continue
                             if t == "node.names.set":
                                 await self._on_node_names_set(msg)
@@ -643,6 +667,98 @@ class MemberLinkClient:
             except Exception:
                 continue
         return candidates[0] if candidates else "http://127.0.0.1:8777"
+
+    async def _on_core_update_request(self, ws, msg: dict[str, Any]) -> None:
+        action = str(msg.get("action") or "").strip().lower()
+        if action == "start":
+            action = "update"
+        request_id = str(msg.get("request_id") or "").strip()
+        reason = str(msg.get("reason") or "hub.member_control").strip() or "hub.member_control"
+        target_rev = str(msg.get("target_rev") or "").strip()
+        target_version = str(msg.get("target_version") or "").strip()
+        try:
+            countdown_sec = float(msg.get("countdown_sec") or (15.0 if action == "update" else 12.0))
+        except Exception:
+            countdown_sec = 15.0 if action == "update" else 12.0
+        try:
+            drain_timeout_sec = float(msg.get("drain_timeout_sec") or 10.0)
+        except Exception:
+            drain_timeout_sec = 10.0
+        try:
+            signal_delay_sec = float(msg.get("signal_delay_sec") or 0.25)
+        except Exception:
+            signal_delay_sec = 0.25
+        self._last_control_requested_at = time.time()
+        self._last_control_completed_at = 0.0
+        self._last_control_error = ""
+        self._last_control_request = {
+            "request_id": request_id,
+            "action": action,
+            "reason": reason,
+            "target_rev": target_rev,
+            "target_version": target_version,
+            "countdown_sec": countdown_sec,
+            "drain_timeout_sec": drain_timeout_sec,
+            "signal_delay_sec": signal_delay_sec,
+            "state": "requested",
+        }
+        if action not in {"update", "cancel", "rollback"}:
+            self._last_control_error = "invalid_action"
+            result = {
+                "ok": False,
+                "request_id": request_id,
+                "action": action,
+                "error": "invalid_action",
+            }
+        else:
+            if action == "cancel":
+                path = "/api/admin/update/cancel"
+                body = {"reason": reason}
+            elif action == "rollback":
+                path = "/api/admin/update/rollback"
+                body = {
+                    "reason": reason,
+                    "countdown_sec": countdown_sec,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                }
+            else:
+                path = "/api/admin/update/start"
+                body = {
+                    "reason": reason,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "countdown_sec": countdown_sec,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                }
+            try:
+                admin_result = await asyncio.to_thread(self._post_local_admin, path, body)
+                result = {
+                    "ok": True,
+                    "request_id": request_id,
+                    "action": action,
+                    "response": admin_result if isinstance(admin_result, dict) else {"ok": True},
+                }
+            except Exception as exc:
+                self._last_control_error = f"{type(exc).__name__}: {exc}"
+                result = {
+                    "ok": False,
+                    "request_id": request_id,
+                    "action": action,
+                    "error": self._last_control_error,
+                }
+        self._last_control_completed_at = time.time()
+        self._last_control_result = dict(result)
+        self._last_control_request["state"] = "completed"
+        self._last_control_request["ok"] = bool(result.get("ok"))
+        if not result.get("ok") and result.get("error"):
+            self._last_control_request["error"] = str(result.get("error"))
+        self._queue_node_snapshot()
+        try:
+            await ws.send(json.dumps({"t": "core.update.result", "result": result}))
+        except Exception:
+            pass
 
     async def _on_node_names_set(self, msg: dict[str, Any]) -> None:
         node_names = normalize_node_names(msg.get("node_names"))
