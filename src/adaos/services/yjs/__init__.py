@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .doc import get_ydoc, async_get_ydoc, mutate_live_room
+from .gateway import close_webspace_yws_connections, reset_live_webspace_room
 from .store import (
     AdaosMemoryYStore,
     get_ystore_for_webspace,
@@ -14,6 +15,8 @@ __all__ = [
     "get_ydoc",
     "async_get_ydoc",
     "mutate_live_room",
+    "close_webspace_yws_connections",
+    "reset_live_webspace_room",
     "AdaosMemoryYStore",
     "get_ystore_for_webspace",
     "reset_ystore_for_webspace",
@@ -22,4 +25,3 @@ __all__ = [
     "default_webspace_id",
     "dev_webspace_id",
 ]
-

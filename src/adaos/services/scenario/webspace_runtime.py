@@ -909,11 +909,11 @@ class WebspaceService:
             _log.warning("failed to delete webspace %s: %s", webspace_id, exc)
             return False
         try:
-            from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
+            from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
             from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
-
+ 
             try:
-                y_server.rooms.pop(webspace_id, None)
+                await reset_live_webspace_room(webspace_id, close_reason="webspace_delete")
             except Exception:
                 pass
             try:
@@ -1055,11 +1055,11 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     except Exception:
         pass
     try:
-        from adaos.services.yjs.gateway import y_server  # pylint: disable=import-outside-toplevel
+        from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
         from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
-
+ 
         try:
-            y_server.rooms.pop(webspace_id, None)
+            await reset_live_webspace_room(webspace_id, close_reason="webspace_reload")
         except Exception:
             pass
         try:

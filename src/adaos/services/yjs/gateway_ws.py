@@ -5,6 +5,7 @@ Yjs websocket gateway implementation (service layer).
 """
 
 import asyncio
+import inspect
 import json
 import time
 import logging
@@ -37,6 +38,7 @@ router = APIRouter()
 _log = logging.getLogger("adaos.events_ws")
 _ylog = logging.getLogger("adaos.yjs.gateway")
 _TRANSPORT_LOCK = threading.RLock()
+_ACTIVE_YWS_LOCK = threading.RLock()
 _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
     "ws": {
         "active_connections": 0,
@@ -53,6 +55,7 @@ _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
         "last_close_at": 0.0,
     },
 }
+_ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 
 def _transport_mark_open(name: str) -> None:
@@ -96,6 +99,101 @@ def _transport_mark_close(name: str) -> None:
         entry["active_connections"] = max(0, active)
         entry["close_total"] = int(entry.get("close_total") or 0) + 1
         entry["last_close_at"] = now
+
+
+def _track_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    with _ACTIVE_YWS_LOCK:
+        items = _ACTIVE_YWS_CONNECTIONS.setdefault(key, [])
+        if websocket not in items:
+            items.append(websocket)
+
+
+def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    with _ACTIVE_YWS_LOCK:
+        items = _ACTIVE_YWS_CONNECTIONS.get(key)
+        if not items:
+            return
+        try:
+            items.remove(websocket)
+        except ValueError:
+            pass
+        if not items:
+            _ACTIVE_YWS_CONNECTIONS.pop(key, None)
+
+
+async def close_webspace_yws_connections(
+    webspace_id: str,
+    *,
+    code: int = 1012,
+    reason: str = "webspace_reload",
+) -> int:
+    key = str(webspace_id or "").strip() or "default"
+    with _ACTIVE_YWS_LOCK:
+        sockets = list(_ACTIVE_YWS_CONNECTIONS.get(key) or [])
+    closed = 0
+    close_reason = str(reason or "webspace_reload")[:120]
+    for websocket in sockets:
+        try:
+            await websocket.close(code=code, reason=close_reason)
+            closed += 1
+        except Exception:
+            pass
+    if closed:
+        await asyncio.sleep(0)
+    return closed
+
+
+async def reset_live_webspace_room(
+    webspace_id: str,
+    *,
+    close_reason: str = "webspace_reload",
+) -> dict[str, Any]:
+    key = str(webspace_id or "").strip() or "default"
+    closed_connections = await close_webspace_yws_connections(
+        key,
+        code=1012,
+        reason=close_reason,
+    )
+    if closed_connections:
+        # Let the active serve() coroutines observe disconnect and run cleanup before
+        # a new room is created for the same webspace.
+        await asyncio.sleep(0.15)
+
+    room = y_server.rooms.pop(key, None)
+    _room_locks.pop(key, None)
+    room_stopped = False
+    ystore_stopped = False
+
+    if room is not None:
+        stop_room = getattr(room, "stop", None)
+        if callable(stop_room):
+            try:
+                result = stop_room()
+                if inspect.isawaitable(result):
+                    await result
+                room_stopped = True
+            except Exception:
+                room_stopped = False
+        ystore = getattr(room, "ystore", None)
+        stop_ystore = getattr(ystore, "stop", None)
+        if callable(stop_ystore):
+            try:
+                result = stop_ystore()
+                if inspect.isawaitable(result):
+                    await result
+                ystore_stopped = True
+            except Exception:
+                ystore_stopped = False
+
+    return {
+        "webspace_id": key,
+        "closed_connections": closed_connections,
+        "room_dropped": room is not None,
+        "room_stopped": room_stopped,
+        "ystore_stopped": ystore_stopped,
+    }
 
 
 def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
@@ -401,6 +499,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
             pass
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
     await websocket.accept()
+    _track_yws_connection(webspace_id, websocket)
     _transport_mark_open("yws")
     await start_y_server()
 
@@ -410,6 +509,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     except RuntimeError:
         return
     finally:
+        _untrack_yws_connection(webspace_id, websocket)
         _transport_mark_close("yws")
         _ylog.info("yws connection closed webspace=%s dev=%s", webspace_id, dev_id)
         if _ws_trace_enabled():
