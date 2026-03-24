@@ -24,7 +24,13 @@ class HubMemberLink:
     websocket: WebSocket
     hostname: str | None = None
     roles: list[str] = field(default_factory=list)
+    node_names: list[str] = field(default_factory=list)
     connected_at: float = field(default_factory=lambda: time.time())
+    last_message_at: float = field(default_factory=lambda: time.time())
+    last_hub_event_at: float | None = None
+    last_hub_event_type: str | None = None
+    last_hub_core_update_state: str | None = None
+    last_hub_core_update_action: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_rpc: Dict[str, asyncio.Future] = field(default_factory=dict)
 
@@ -47,9 +53,25 @@ class HubLinkManager:
     def __init__(self) -> None:
         self._links: dict[str, HubMemberLink] = {}
         self._lock = asyncio.Lock()
+        self._hub_event_total = 0
+        self._hub_core_update_broadcast_total = 0
 
-    async def register(self, node_id: str, ws: WebSocket, *, hostname: str | None, roles: list[str] | None) -> HubMemberLink:
-        link = HubMemberLink(node_id=node_id, websocket=ws, hostname=hostname, roles=list(roles or []))
+    async def register(
+        self,
+        node_id: str,
+        ws: WebSocket,
+        *,
+        hostname: str | None,
+        roles: list[str] | None,
+        node_names: list[str] | None = None,
+    ) -> HubMemberLink:
+        link = HubMemberLink(
+            node_id=node_id,
+            websocket=ws,
+            hostname=hostname,
+            roles=list(roles or []),
+            node_names=list(node_names or []),
+        )
         async with self._lock:
             # replace existing link if reconnecting
             prev = self._links.get(node_id)
@@ -61,6 +83,22 @@ class HubLinkManager:
                         fut.set_exception(ConnectionError("link_replaced"))
             except Exception:
                 pass
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.link.up",
+                    payload={
+                        "node_id": node_id,
+                        "hostname": hostname,
+                        "roles": list(roles or []),
+                        "node_names": list(node_names or []),
+                    },
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
         return link
 
     async def unregister(self, node_id: str) -> None:
@@ -74,6 +112,17 @@ class HubLinkManager:
                     fut.set_exception(ConnectionError("link_closed"))
         except Exception:
             pass
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.link.down",
+                    payload={"node_id": node_id},
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
 
     def is_connected(self, node_id: str) -> bool:
         return node_id in self._links
@@ -81,6 +130,111 @@ class HubLinkManager:
     async def _get_link(self, node_id: str) -> HubMemberLink | None:
         async with self._lock:
             return self._links.get(node_id)
+
+    async def note_member_activity(self, node_id: str, *, message_type: str | None = None) -> None:
+        link = await self._get_link(node_id)
+        if not link:
+            return
+        link.last_message_at = time.time()
+
+    async def update_member_metadata(self, node_id: str, *, node_names: list[str] | None = None) -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "error": "member_not_connected"}
+        if node_names is not None:
+            link.node_names = list(node_names)
+        link.last_message_at = time.time()
+        payload = {
+            "node_id": node_id,
+            "node_names": list(link.node_names),
+        }
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.meta.changed",
+                    payload=payload,
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+        return {"ok": True, **payload}
+
+    async def set_member_node_names(self, node_id: str, *, node_names: list[str]) -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "error": "member_not_connected"}
+        await link.send_json({"t": "node.names.set", "node_names": list(node_names)})
+        return {"ok": True, "node_id": node_id, "node_names": list(node_names)}
+
+    async def broadcast_event(self, *, event_type: str, payload: dict[str, Any], source: str = "hub") -> dict[str, Any]:
+        event_type_norm = str(event_type or "").strip()
+        if not event_type_norm:
+            return {"sent": 0, "failed": 0}
+        msg = {
+            "t": "hub.event",
+            "event": {
+                "type": event_type_norm,
+                "payload": payload if isinstance(payload, dict) else {"value": payload},
+                "source": str(source or "hub"),
+                "ts": time.time(),
+            },
+        }
+        async with self._lock:
+            links = list(self._links.values())
+        sent = 0
+        failed = 0
+        for link in links:
+            try:
+                await link.send_json(msg)
+                link.last_hub_event_at = time.time()
+                link.last_hub_event_type = event_type_norm
+                if event_type_norm == "core.update.status":
+                    link.last_hub_core_update_state = str((payload or {}).get("state") or "").strip() or None
+                    link.last_hub_core_update_action = str((payload or {}).get("action") or "").strip() or None
+                sent += 1
+            except Exception:
+                failed += 1
+        self._hub_event_total += sent
+        if event_type_norm == "core.update.status":
+            self._hub_core_update_broadcast_total += sent
+        return {"sent": sent, "failed": failed}
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        items: list[dict[str, Any]] = []
+        for link in sorted(self._links.values(), key=lambda item: item.node_id):
+            items.append(
+                {
+                    "node_id": link.node_id,
+                    "hostname": link.hostname,
+                    "roles": list(link.roles),
+                    "node_names": list(link.node_names),
+                    "connected_at": link.connected_at,
+                    "connected_ago_s": round(max(0.0, now - float(link.connected_at or now)), 3),
+                    "last_message_ago_s": round(max(0.0, now - float(link.last_message_at or now)), 3),
+                    "last_hub_event_ago_s": (
+                        round(max(0.0, now - float(link.last_hub_event_at)), 3)
+                        if link.last_hub_event_at
+                        else None
+                    ),
+                    "last_hub_event_type": link.last_hub_event_type,
+                    "last_hub_core_update_state": link.last_hub_core_update_state,
+                    "last_hub_core_update_action": link.last_hub_core_update_action,
+                    "pending_rpc": len(link.pending_rpc),
+                    "connected": True,
+                }
+            )
+        return {
+            "role": "hub",
+            "member_total": len(items),
+            "connected_total": len(items),
+            "hub_event_total": self._hub_event_total,
+            "hub_core_update_broadcast_total": self._hub_core_update_broadcast_total,
+            "members": items,
+            "updated_at": now,
+        }
 
     async def handle_rpc_response(self, node_id: str, msg: dict[str, Any]) -> bool:
         rid = msg.get("id")
@@ -199,3 +353,6 @@ def get_hub_link_manager() -> HubLinkManager:
         _HUB_MANAGER = HubLinkManager()
     return _HUB_MANAGER
 
+
+def hub_link_manager_snapshot() -> dict[str, Any]:
+    return get_hub_link_manager().snapshot()

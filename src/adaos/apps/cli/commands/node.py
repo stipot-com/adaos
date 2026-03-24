@@ -52,6 +52,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     strategy = runtime.get("hub_root_transport_strategy") if isinstance(runtime.get("hub_root_transport_strategy"), dict) else {}
     protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
     hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
+    hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
@@ -166,6 +167,34 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"presence={presence.get('active_path') or '-'}:{presence.get('state') or '-'} "
             f"route={route_channel.get('active_path') or '-'}:{route_channel.get('state') or '-'}"
         )
+    if hub_member_connection_state:
+        assessment = hub_member_connection_state.get("assessment") if isinstance(hub_member_connection_state.get("assessment"), dict) else {}
+        if str(hub_member_connection_state.get("role") or "") == "hub":
+            members = hub_member_connection_state.get("members") if isinstance(hub_member_connection_state.get("members"), list) else []
+            labels = [
+                str(item.get("label") or item.get("node_id") or "member")
+                for item in members[:4]
+                if isinstance(item, dict)
+            ]
+            typer.echo(
+                "hub_member_links: "
+                f"state={assessment.get('state') or 'unknown'} "
+                f"members={hub_member_connection_state.get('member_total') or 0} "
+                f"broadcasts={hub_member_connection_state.get('hub_core_update_broadcast_total') or 0} "
+                f"nodes={','.join(labels) if labels else '-'}"
+            )
+        else:
+            hub = hub_member_connection_state.get("hub") if isinstance(hub_member_connection_state.get("hub"), dict) else {}
+            mirrored = hub.get("last_hub_core_update") if isinstance(hub.get("last_hub_core_update"), dict) else {}
+            follow = hub.get("last_follow_result") if isinstance(hub.get("last_follow_result"), dict) else {}
+            typer.echo(
+                "member_link: "
+                f"state={hub_member_connection_state.get('state') or 'unknown'} "
+                f"hub={hub.get('hub_node_id') or '-'} "
+                f"hub_update={mirrored.get('state') or '-'} "
+                f"follow_ok={follow.get('ok') if isinstance(follow, dict) and 'ok' in follow else '-'} "
+                f"follow_err={hub.get('last_follow_error') or '-'}"
+            )
     for name in ("hub_local_core", "root_control", "route", "sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}
         typer.echo(f"{name}: {item.get('status') or 'unknown'}")

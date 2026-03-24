@@ -2608,6 +2608,111 @@ def hub_member_semantic_channels_snapshot(
     }
 
 
+def _node_label(node_names: Any, *, fallback: str) -> str:
+    if isinstance(node_names, list):
+        for item in node_names:
+            token = str(item or "").strip()
+            if token:
+                return token
+    return fallback
+
+
+def hub_member_connection_state_snapshot(
+    *,
+    role: str,
+    route_mode: str | None,
+    connected_to_hub: bool | None,
+    node_id: str,
+    node_names: list[str] | None = None,
+) -> dict[str, Any]:
+    role_norm = str(role or "").strip().lower()
+    now = time.time()
+    local_names = list(node_names or [])
+    if role_norm == "hub":
+        try:
+            from adaos.services.subnet.link_manager import hub_link_manager_snapshot
+
+            raw = hub_link_manager_snapshot()
+        except Exception:
+            raw = {"members": [], "member_total": 0, "connected_total": 0, "updated_at": now}
+        members = raw.get("members") if isinstance(raw.get("members"), list) else []
+        items: list[dict[str, Any]] = []
+        for index, item in enumerate(members, start=1):
+            if not isinstance(item, dict):
+                continue
+            member_names = item.get("node_names") if isinstance(item.get("node_names"), list) else []
+            label = _node_label(
+                member_names,
+                fallback="member" if index == 1 else f"member {index}",
+            )
+            items.append(
+                {
+                    **item,
+                    "label": label,
+                    "primary_name": label,
+                    "role": "member",
+                    "state": "connected" if bool(item.get("connected", True)) else "down",
+                }
+            )
+        assessment_state = "idle"
+        assessment_reason = "no_members_connected"
+        if items:
+            assessment_state = "nominal"
+            assessment_reason = "member_links_connected"
+        return {
+            "role": "hub",
+            "local_node": {
+                "node_id": node_id,
+                "node_names": local_names,
+                "label": _node_label(local_names, fallback="hub"),
+                "role": "hub",
+            },
+            "assessment": {
+                "state": assessment_state,
+                "reason": assessment_reason,
+            },
+            "member_total": len(items),
+            "connected_total": len(items),
+            "members": items,
+            "hub_event_total": int(raw.get("hub_event_total") or 0),
+            "hub_core_update_broadcast_total": int(raw.get("hub_core_update_broadcast_total") or 0),
+            "updated_at": float(raw.get("updated_at") or now),
+        }
+
+    try:
+        from adaos.services.subnet.link_client import member_link_client_snapshot
+
+        raw = member_link_client_snapshot()
+    except Exception:
+        raw = {
+            "connected": False,
+            "last_hub_core_update": {},
+            "last_follow_result": {},
+            "updated_at": now,
+        }
+    state = "connected" if bool(raw.get("connected")) else ("member_link" if str(route_mode or "") == "ws" else "disconnected")
+    assessment_state = "nominal" if bool(raw.get("connected")) else "degraded"
+    assessment_reason = "linked_to_hub" if bool(raw.get("connected")) else "member_link_down"
+    return {
+        "role": "member",
+        "local_node": {
+            "node_id": node_id,
+            "node_names": local_names,
+            "label": _node_label(local_names, fallback="member"),
+            "role": "member",
+        },
+        "assessment": {
+            "state": assessment_state,
+            "reason": assessment_reason,
+        },
+        "route_mode": route_mode,
+        "connected_to_hub": connected_to_hub,
+        "state": state,
+        "hub": raw,
+        "updated_at": float(raw.get("updated_at") or now),
+    }
+
+
 def hub_root_protocol_model_snapshot() -> dict[str, Any]:
     return {
         "traffic_classes": {
@@ -3225,6 +3330,7 @@ def reliability_snapshot(
     draining: bool,
     route_mode: str | None,
     connected_to_hub: bool | None,
+    node_names: list[str] | None = None,
 ) -> dict[str, Any]:
     channel_diagnostics = channel_diagnostics_snapshot()
     transport_strategy = hub_root_transport_strategy_snapshot()
@@ -3249,6 +3355,13 @@ def reliability_snapshot(
         connected_to_hub=connected_to_hub,
         hub_root_protocol=hub_root_protocol,
     )
+    hub_member_connection_state = hub_member_connection_state_snapshot(
+        role=role,
+        route_mode=route_mode,
+        connected_to_hub=connected_to_hub,
+        node_id=node_id,
+        node_names=node_names,
+    )
     sidecar_runtime = sidecar_runtime_snapshot(
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
@@ -3265,6 +3378,7 @@ def reliability_snapshot(
             "draining": bool(draining),
             "route_mode": route_mode,
             "connected_to_hub": connected_to_hub,
+            "node_names": list(node_names or []),
         },
         "model": reliability_model_snapshot(),
         "runtime": {
@@ -3276,6 +3390,7 @@ def reliability_snapshot(
             "hub_root_transport_strategy": transport_strategy,
             "hub_root_protocol": hub_root_protocol,
             "hub_member_channels": hub_member_channels,
+            "hub_member_connection_state": hub_member_connection_state,
             "sidecar_runtime": sidecar_runtime,
         },
     }

@@ -9,10 +9,13 @@ import time
 import urllib.parse
 from typing import Any, Callable
 
+import requests
 import websockets  # type: ignore
 
+from adaos.domain import Event as DomainEvent
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_config import normalize_node_names, set_node_names as persist_node_names
 from adaos.services.capacity import get_local_capacity
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.doc import apply_update_to_live_room
@@ -46,6 +49,18 @@ class MemberLinkClient:
         self._bus_subscribed = False
         self._yjs_enabled = os.getenv("ADAOS_SUBNET_YJS_REPLICATION", "1").strip().lower() not in ("0", "false", "no")
         self._bus_prefixes = self._parse_bus_prefixes(os.getenv("ADAOS_SUBNET_BUS_FORWARD_PREFIXES", "io.out.,ui."))
+        self._connected_at = 0.0
+        self._last_message_at = 0.0
+        self._last_pong_at = 0.0
+        self._ws_url = ""
+        self._hub_node_id = ""
+        self._last_hub_event_type = ""
+        self._last_hub_event_at = 0.0
+        self._last_hub_core_update: dict[str, Any] = {}
+        self._last_follow_key = ""
+        self._last_follow_result: dict[str, Any] = {}
+        self._last_follow_error = ""
+        self._last_follow_at = 0.0
 
     @staticmethod
     def _parse_bus_prefixes(raw: str | None) -> list[str] | None:
@@ -59,6 +74,31 @@ class MemberLinkClient:
 
     def is_connected(self) -> bool:
         return self._connected.is_set()
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        last_hub_core_update = (
+            dict(self._last_hub_core_update)
+            if isinstance(self._last_hub_core_update, dict)
+            else {}
+        )
+        return {
+            "role": "member",
+            "connected": self.is_connected(),
+            "ws_url": self._ws_url,
+            "hub_node_id": self._hub_node_id,
+            "connected_ago_s": round(max(0.0, now - self._connected_at), 3) if self._connected_at else None,
+            "last_message_ago_s": round(max(0.0, now - self._last_message_at), 3) if self._last_message_at else None,
+            "last_pong_ago_s": round(max(0.0, now - self._last_pong_at), 3) if self._last_pong_at else None,
+            "last_hub_event_type": self._last_hub_event_type,
+            "last_hub_event_ago_s": round(max(0.0, now - self._last_hub_event_at), 3) if self._last_hub_event_at else None,
+            "last_hub_core_update": last_hub_core_update,
+            "last_follow_key": self._last_follow_key or None,
+            "last_follow_result": dict(self._last_follow_result) if isinstance(self._last_follow_result, dict) else {},
+            "last_follow_error": self._last_follow_error or None,
+            "last_follow_ago_s": round(max(0.0, now - self._last_follow_at), 3) if self._last_follow_at else None,
+            "updated_at": now,
+        }
 
     async def start(self) -> None:
         if self._task is not None:
@@ -77,6 +117,7 @@ class MemberLinkClient:
                 pass
         self._task = None
         self._connected.clear()
+        self._connected_at = 0.0
         try:
             if self._remove_ystore_listener:
                 self._remove_ystore_listener()
@@ -159,6 +200,7 @@ class MemberLinkClient:
         self._ensure_bus_subscription()
 
         ws_url = _to_ws_url(conf.hub_url, "/ws/subnet")
+        self._ws_url = ws_url
         headers = [("X-AdaOS-Token", conf.token or "dev-local-token")]
 
         backoff = 1.0
@@ -174,6 +216,8 @@ class MemberLinkClient:
                     ping_interval=None,
                 ) as ws:
                     self._connected.set()
+                    self._connected_at = time.time()
+                    self._last_message_at = self._connected_at
                     backoff = 1.0
 
                     hello = {
@@ -182,12 +226,20 @@ class MemberLinkClient:
                         "subnet_id": conf.subnet_id,
                         "hostname": None,
                         "roles": ["member"],
+                        "node_names": normalize_node_names(getattr(getattr(conf, "node_settings", None), "node_names", [])),
                         "base_url": None,
                         "capacity": get_local_capacity(),
                     }
                     await ws.send(json.dumps(hello))
                     try:
-                        _ = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        raw_ack = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        try:
+                            ack = json.loads(raw_ack)
+                        except Exception:
+                            ack = {}
+                        if isinstance(ack, dict):
+                            self._hub_node_id = str(ack.get("hub_node_id") or "").strip()
+                            self._last_message_at = time.time()
                     except Exception:
                         pass
 
@@ -217,10 +269,20 @@ class MemberLinkClient:
                                 continue
                             if not isinstance(msg, dict):
                                 continue
+                            self._last_message_at = time.time()
                             t = msg.get("t")
+                            if t == "pong":
+                                self._last_pong_at = time.time()
+                                continue
                             if t == "yjs.update":
                                 if self._yjs_enabled:
                                     await self._on_yjs_update(msg)
+                                continue
+                            if t == "hub.event":
+                                await self._on_hub_event(msg)
+                                continue
+                            if t == "node.names.set":
+                                await self._on_node_names_set(msg)
                                 continue
                             if t == "rpc.req":
                                 await self._on_rpc(ws, msg)
@@ -249,6 +311,7 @@ class MemberLinkClient:
                 except Exception:
                     pass
                 self._connected.clear()
+                self._connected_at = 0.0
 
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2.0, 15.0)
@@ -316,6 +379,179 @@ class MemberLinkClient:
             return mgr.run_dev_tool(skill_name, public_tool, arguments or {}, timeout=timeout)
         return mgr.run_tool(skill_name, public_tool, arguments or {}, timeout=timeout)
 
+    async def _on_hub_event(self, msg: dict[str, Any]) -> None:
+        event = msg.get("event")
+        if not isinstance(event, dict):
+            return
+        event_type = str(event.get("type") or "").strip()
+        if not event_type:
+            return
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {"value": payload}
+        source = str(event.get("source") or "hub").strip() or "hub"
+        self._last_hub_event_type = event_type
+        self._last_hub_event_at = time.time()
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type=event_type if event_type != "core.update.status" else "hub.core_update.status",
+                    payload=dict(payload),
+                    source=source,
+                    ts=float(event.get("ts") or time.time()),
+                )
+            )
+        except Exception:
+            _log.debug("failed to publish mirrored hub event type=%s", event_type, exc_info=True)
+        if event_type == "core.update.status":
+            self._last_hub_core_update = dict(payload)
+            await self._follow_hub_core_update(payload)
+
+    async def _follow_hub_core_update(self, payload: dict[str, Any]) -> None:
+        if str(os.getenv("ADAOS_MEMBER_FOLLOW_HUB_UPDATE", "1")).strip().lower() in {"0", "false", "no", "off"}:
+            return
+        state = str(payload.get("state") or "").strip().lower()
+        action = str(payload.get("action") or "update").strip().lower()
+        target_rev = str(payload.get("target_rev") or "").strip()
+        target_version = str(payload.get("target_version") or "").strip()
+        scheduled_for = payload.get("scheduled_for")
+        follow_key = f"{action}:{target_rev}:{target_version}:{scheduled_for}:{state}"
+        if follow_key == self._last_follow_key and self._last_follow_at > 0:
+            return
+        if action not in {"update", "rollback"}:
+            return
+        if state not in {"countdown", "draining", "stopping", "cancelled"}:
+            return
+        if action == "update" and state != "cancelled" and not (target_rev or target_version):
+            return
+        from adaos.services.core_update import read_status as read_core_update_status
+
+        local_status = read_core_update_status()
+        local_state = str(local_status.get("state") or "").strip().lower()
+        if state == "cancelled":
+            if local_state not in {"countdown", "draining", "stopping"}:
+                return
+            path = "/api/admin/update/cancel"
+            body = {"reason": "hub.member_follow.cancel"}
+        elif action == "rollback":
+            if local_state in {"countdown", "draining", "stopping", "restarting", "applying"}:
+                return
+            body = {
+                "reason": "hub.member_follow.rollback",
+                "countdown_sec": self._remaining_countdown_s(scheduled_for, default=12.0),
+                "drain_timeout_sec": float(payload.get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float(payload.get("signal_delay_sec") or 0.25),
+            }
+            path = "/api/admin/update/rollback"
+        else:
+            if local_state in {"countdown", "draining", "stopping", "restarting", "applying"}:
+                return
+            body = {
+                "reason": "hub.member_follow.update",
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "countdown_sec": self._remaining_countdown_s(scheduled_for, default=15.0),
+                "drain_timeout_sec": float(payload.get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float(payload.get("signal_delay_sec") or 0.25),
+            }
+            path = "/api/admin/update/start"
+        self._last_follow_key = follow_key
+        self._last_follow_at = time.time()
+        try:
+            result = await asyncio.to_thread(self._post_local_admin, path, body)
+            self._last_follow_result = result if isinstance(result, dict) else {"ok": True}
+            self._last_follow_error = ""
+        except Exception as exc:
+            self._last_follow_error = f"{type(exc).__name__}: {exc}"
+            self._last_follow_result = {"ok": False, "error": self._last_follow_error}
+
+    @staticmethod
+    def _remaining_countdown_s(scheduled_for: Any, *, default: float) -> float:
+        try:
+            value = float(scheduled_for or 0.0)
+        except Exception:
+            value = 0.0
+        if value <= 0.0:
+            return default
+        remaining = max(5.0, min(120.0, value - time.time()))
+        return round(remaining, 3)
+
+    @staticmethod
+    def _post_local_admin(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        base = MemberLinkClient._resolve_local_control_base()
+        conf = get_ctx().config
+        token = str(getattr(conf, "token", "") or "dev-local-token")
+        headers = {"X-AdaOS-Token": token, "Accept": "application/json"}
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+        response = sess.post(base.rstrip("/") + path, headers=headers, json=body, timeout=8.0)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {"ok": True}
+
+    @staticmethod
+    def _resolve_local_control_base() -> str:
+        candidates: list[str] = []
+        for raw in (
+            os.getenv("ADAOS_SELF_BASE_URL"),
+            os.getenv("ADAOS_CONTROL_URL"),
+            os.getenv("ADAOS_CONTROL_BASE"),
+            "http://127.0.0.1:8777",
+            "http://127.0.0.1:8778",
+            "http://127.0.0.1:8779",
+            "http://localhost:8777",
+            "http://localhost:8778",
+            "http://localhost:8779",
+        ):
+            text = str(raw or "").strip().rstrip("/")
+            if not text or text in candidates:
+                continue
+            candidates.append(text)
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+        for base in candidates:
+            try:
+                resp = sess.get(base + "/api/ping", headers={"Accept": "application/json"}, timeout=0.5)
+                if int(resp.status_code) == 200:
+                    return base
+            except Exception:
+                continue
+        return candidates[0] if candidates else "http://127.0.0.1:8777"
+
+    async def _on_node_names_set(self, msg: dict[str, Any]) -> None:
+        node_names = normalize_node_names(msg.get("node_names"))
+        conf = persist_node_names(node_names)
+        try:
+            self._out_q.put_nowait(
+                {
+                    "t": "node.meta",
+                    "node_names": list(getattr(conf, "node_names", []) or []),
+                    "ts": time.time(),
+                }
+            )
+        except Exception:
+            pass
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="node.names.changed",
+                    payload={
+                        "node_id": str(getattr(conf, "node_id", "") or ""),
+                        "node_names": list(getattr(conf, "node_names", []) or []),
+                    },
+                    source="subnet.member",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+
 
 _MEMBER_CLIENT: MemberLinkClient | None = None
 
@@ -325,3 +561,7 @@ def get_member_link_client() -> MemberLinkClient:
     if _MEMBER_CLIENT is None:
         _MEMBER_CLIENT = MemberLinkClient()
     return _MEMBER_CLIENT
+
+
+def member_link_client_snapshot() -> dict[str, Any]:
+    return get_member_link_client().snapshot()

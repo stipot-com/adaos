@@ -85,6 +85,7 @@ class SubnetSettings:
 @dataclass
 class NodeSettings:
     id: str | None = None
+    node_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -206,6 +207,22 @@ class NodeConfig:
             return None
         return self.workspace_path() / owner
 
+    @property
+    def node_names(self) -> list[str]:
+        return normalize_node_names(self.node_settings.node_names)
+
+    @property
+    def primary_node_name(self) -> str:
+        names = self.node_names
+        if names:
+            return names[0]
+        role = str(self.role or "").strip().lower()
+        if role == "hub":
+            return "hub"
+        if role == "member":
+            return "member"
+        return self.node_id_value or "node"
+
 
 def _expand_path(value: str | None, fallback: str) -> Path:
     target = value or fallback
@@ -271,8 +288,35 @@ def displayable_path(value: Path | str | None) -> str | None:
     return _stringify_path(value)
 
 
+def normalize_node_names(value: Any, *, limit: int = 8) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.replace("\n", ",").split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item or "").strip() for item in value]
+    else:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        token = str(item or "").strip()
+        if not token:
+            continue
+        folded = token.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        result.append(token[:80])
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _settings_to_dict(settings: Any) -> dict[str, Any]:
     data = asdict(settings)
+    if isinstance(settings, NodeSettings):
+        data["node_names"] = normalize_node_names(data.get("node_names"))
     if isinstance(settings, RootSettings):
         data["base_url"] = data.get("base_url") or "https://api.inimatic.com"
         data["ca_cert"] = _stringify_path(data.get("ca_cert"))
@@ -336,7 +380,10 @@ def _settings_from_dict(settings_cls: type, payload: Any):
             hub=HubKeypair(key=hub_key, cert=hub_cert),
         )
     if settings_cls is NodeSettings:
-        return NodeSettings(id=payload.get("id") if isinstance(payload, dict) else None)
+        return NodeSettings(
+            id=payload.get("id") if isinstance(payload, dict) else None,
+            node_names=normalize_node_names(payload.get("node_names") if isinstance(payload, dict) else None),
+        )
     if settings_cls is DevSettings:
         workspace = payload.get("workspace") if isinstance(payload, dict) else None
         forge_repo = payload.get("forge_repo") if isinstance(payload, dict) else None
@@ -461,6 +508,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
 
 def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
     conf.sync_sections()
+    conf.node_settings.node_names = normalize_node_names(conf.node_settings.node_names)
     path = _config_path(ctx)
     data = conf.to_dict()
 
@@ -515,6 +563,13 @@ def set_role(role: str, *, hub_url: str | None = None, subnet_id: str | None = N
         # Join flow (join-code) is expected to set hub_url beforehand.
         if hub_url is not None:
             conf.hub_url = hub_url
+    save_config(conf, ctx=ctx)
+    return conf
+
+
+def set_node_names(node_names: Any, *, ctx: AgentContext | None = None) -> NodeConfig:
+    conf = load_config(ctx=ctx)
+    conf.node_settings.node_names = normalize_node_names(node_names)
     save_config(conf, ctx=ctx)
     return conf
 

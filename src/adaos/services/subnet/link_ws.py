@@ -77,11 +77,13 @@ async def subnet_ws(websocket: WebSocket) -> None:
             return
         hostname = raw.get("hostname")
         roles = raw.get("roles") or []
+        node_names = raw.get("node_names") or []
         link = await mgr.register(
             node_id,
             websocket,
             hostname=str(hostname) if hostname else None,
             roles=list(roles) if isinstance(roles, list) else [],
+            node_names=list(node_names) if isinstance(node_names, list) else [],
         )
         await link.send_json(
             {"t": "hello.ack", "ok": True, "hub_node_id": conf.node_id, "subnet_id": conf.subnet_id, "server_time": time.time()}
@@ -98,6 +100,10 @@ async def subnet_ws(websocket: WebSocket) -> None:
                 continue
 
             t = msg.get("t")
+            try:
+                await mgr.note_member_activity(node_id, message_type=str(t or ""))
+            except Exception:
+                pass
             if t == "ping":
                 try:
                     await link.send_json({"t": "pong", "ts": time.time()})
@@ -116,6 +122,12 @@ async def subnet_ws(websocket: WebSocket) -> None:
                 ev = msg.get("event")
                 if isinstance(ev, dict):
                     await mgr.ingest_member_bus_event(node_id=node_id, event=ev)
+                continue
+
+            if t == "node.meta":
+                node_names = msg.get("node_names") or []
+                if isinstance(node_names, list):
+                    await mgr.update_member_metadata(node_id, node_names=list(node_names))
                 continue
 
             if t == "yjs.update":

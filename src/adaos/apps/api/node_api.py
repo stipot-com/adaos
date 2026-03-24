@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
+from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
@@ -22,6 +23,8 @@ class NodeStatus(BaseModel):
     node_id: str
     subnet_id: str
     role: str
+    node_names: list[str] = Field(default_factory=list)
+    primary_node_name: str = ""
     ready: bool
     node_state: str = "ready"
     draining: bool = False
@@ -50,6 +53,11 @@ class SidecarRestartRequest(BaseModel):
     reconnect_hub_root: bool = True
 
 
+class NodeNamesUpdateRequest(BaseModel):
+    node_names: list[str] | None = None
+    value: str | None = None
+
+
 def _route_info(role: str) -> tuple[str | None, bool | None]:
     route_mode = None
     connected = None
@@ -74,6 +82,8 @@ async def node_status():
         node_id=conf.node_id,
         subnet_id=conf.subnet_id,
         role=conf.role,
+        node_names=list(getattr(conf, "node_names", []) or []),
+        primary_node_name=str(getattr(conf, "primary_node_name", "") or ""),
         ready=is_ready() and not bool(lifecycle.get("draining")),
         node_state=str(lifecycle.get("node_state") or "ready"),
         draining=bool(lifecycle.get("draining")),
@@ -97,6 +107,7 @@ async def node_reliability() -> dict[str, Any]:
         draining=bool(lifecycle.get("draining")),
         route_mode=route_mode,
         connected_to_hub=connected,
+        node_names=list(getattr(conf, "node_names", []) or []),
     )
 
 
@@ -119,6 +130,7 @@ async def sidecar_status(request: Request) -> dict[str, Any]:
         draining=bool(lifecycle.get("draining")),
         route_mode=route_mode,
         connected_to_hub=connected,
+        node_names=list(getattr(conf, "node_names", []) or []),
     )
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     process = realtime_sidecar_listener_snapshot(getattr(request.app.state, "realtime_sidecar_proc", None))
@@ -149,6 +161,7 @@ async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> d
         draining=bool(lifecycle.get("draining")),
         route_mode=route_mode,
         connected_to_hub=connected,
+        node_names=list(getattr(conf, "node_names", []) or []),
     )
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     return {
@@ -189,6 +202,8 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
             node_id=conf.node_id,
             subnet_id=conf.subnet_id,
             role=conf.role,
+            node_names=list(getattr(conf, "node_names", []) or []),
+            primary_node_name=str(getattr(conf, "primary_node_name", "") or ""),
             ready=is_ready(),
             node_state=str(runtime_lifecycle_snapshot().get("node_state") or "ready"),
             draining=bool(runtime_lifecycle_snapshot().get("draining")),
@@ -197,3 +212,55 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
         ),
         diagnostics=diags,
     )
+
+
+@router.get("/names", dependencies=[Depends(require_token)])
+async def node_names() -> dict[str, Any]:
+    conf = load_config()
+    return {
+        "ok": True,
+        "node_id": conf.node_id,
+        "role": conf.role,
+        "node_names": list(getattr(conf, "node_names", []) or []),
+        "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+    }
+
+
+@router.post("/names", dependencies=[Depends(require_token)])
+async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
+    source = payload.node_names if payload.node_names is not None else payload.value
+    conf = save_node_names_config(source)
+    return {
+        "ok": True,
+        "node_id": conf.node_id,
+        "role": conf.role,
+        "node_names": list(getattr(conf, "node_names", []) or []),
+        "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+    }
+
+
+@router.get("/members", dependencies=[Depends(require_token)])
+async def node_members() -> dict[str, Any]:
+    conf = load_config()
+    route_mode, connected = _route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
+    reliability = reliability_snapshot(
+        node_id=conf.node_id,
+        subnet_id=conf.subnet_id,
+        role=conf.role,
+        local_ready=is_ready(),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
+        route_mode=route_mode,
+        connected_to_hub=connected,
+        node_names=list(getattr(conf, "node_names", []) or []),
+    )
+    runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
+    return {
+        "ok": True,
+        "hub_member_connection_state": (
+            runtime.get("hub_member_connection_state")
+            if isinstance(runtime.get("hub_member_connection_state"), dict)
+            else {}
+        ),
+    }

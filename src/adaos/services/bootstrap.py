@@ -594,6 +594,26 @@ class BootstrapService:
         except Exception:
             self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
+        if str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+            try:
+                from adaos.services.subnet.link_manager import get_hub_link_manager as _get_hub_link_manager
+
+                def _forward_core_update_status_to_members(ev: Event) -> None:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type="core.update.status",
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror core.update.status to members", exc_info=True)
+
+                core_bus.subscribe("core.update.status", _forward_core_update_status_to_members)
+            except Exception:
+                self._log.debug("failed to install member core.update.status forwarder", exc_info=True)
         try:
             from adaos.services.core_update import (
                 finalize_runtime_boot_status as _finalize_runtime_boot_status,
