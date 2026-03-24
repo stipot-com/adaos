@@ -216,7 +216,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"follow_ok={follow.get('ok') if isinstance(follow, dict) and 'ok' in follow else '-'} "
                 f"follow_err={hub.get('last_follow_error') or '-'}"
             )
-    for name in ("hub_local_core", "root_control", "route", "sync", "media"):
+    for name in ("hub_local_core", "root_control", "route", "sync", "hub_member", "member_sync", "media"):
         item = tree.get(name) if isinstance(tree.get(name), dict) else {}
         typer.echo(f"{name}: {item.get('status') or 'unknown'}")
     for name in ("telegram", "github", "llm"):
@@ -242,6 +242,9 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         "github_action_completion",
         "llm_action_completion",
         "core_update_coordination_via_root",
+        "remote_member_snapshot_projection",
+        "hub_triggered_member_update_follow",
+        "member_sync_projection",
     ):
         item = matrix.get(name) if isinstance(matrix.get(name), dict) else {}
         typer.echo(f"{name}: {'allowed' if item.get('allowed') else 'blocked'}")

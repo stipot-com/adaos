@@ -2009,10 +2009,21 @@ def build_readiness_tree(
     draining: bool,
     connected_to_hub: bool | None,
     channel_diagnostics: dict[str, Any] | None = None,
+    hub_member_channels: dict[str, Any] | None = None,
+    hub_member_connection_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     signals = runtime_signal_snapshot()
     diagnostics = channel_diagnostics if isinstance(channel_diagnostics, dict) else channel_diagnostics_snapshot()
     role_norm = str(role or "").strip().lower()
+    member_channels = hub_member_channels if isinstance(hub_member_channels, dict) else {}
+    member_state = hub_member_connection_state if isinstance(hub_member_connection_state, dict) else {}
+    member_assessment = member_state.get("assessment") if isinstance(member_state.get("assessment"), dict) else {}
+    member_channels_map = member_channels.get("channels") if isinstance(member_channels.get("channels"), dict) else {}
+    member_sync_channel = (
+        member_channels_map.get("hub_member.sync")
+        if isinstance(member_channels_map.get("hub_member.sync"), dict)
+        else {}
+    )
 
     local_core = _node(
         ReadinessStatus.READY if local_ready else ReadinessStatus.DOWN,
@@ -2071,6 +2082,44 @@ def build_readiness_tree(
             name: _derived_integration_node(name, root_control, sig)
             for name, sig in signals["integrations"].items()
         }
+        member_total = int(member_state.get("member_total") or 0)
+        member_conn_state = str(member_assessment.get("state") or "").strip().lower()
+        member_conn_reason = str(member_assessment.get("reason") or "").strip()
+        if member_total <= 0:
+            hub_member = _node(
+                ReadinessStatus.READY,
+                "no members are currently connected",
+                observed=False,
+                details={"member_total": member_total, "derived_from": "hub_member_connection_state"},
+            )
+        elif member_conn_state in {"nominal", "transitioning"}:
+            hub_member = _node(
+                ReadinessStatus.READY,
+                member_conn_reason or "hub-member links are healthy",
+                observed=True,
+                details={"member_total": member_total, "derived_from": "hub_member_connection_state"},
+            )
+        elif member_conn_state in {"pressure"}:
+            hub_member = _node(
+                ReadinessStatus.DEGRADED,
+                member_conn_reason or "hub-member links are under pressure",
+                observed=True,
+                details={"member_total": member_total, "derived_from": "hub_member_connection_state"},
+            )
+        elif member_conn_state in {"degraded", "down"}:
+            hub_member = _node(
+                ReadinessStatus.DEGRADED if member_conn_state == "degraded" else ReadinessStatus.DOWN,
+                member_conn_reason or "hub-member links are unhealthy",
+                observed=True,
+                details={"member_total": member_total, "derived_from": "hub_member_connection_state"},
+            )
+        else:
+            hub_member = _node(
+                ReadinessStatus.UNKNOWN,
+                member_conn_reason or "hub-member link state is not observed yet",
+                observed=False,
+                details={"member_total": member_total, "derived_from": "hub_member_connection_state"},
+            )
     else:
         root_control = _node(
             ReadinessStatus.NOT_APPLICABLE,
@@ -2104,6 +2153,82 @@ def build_readiness_tree(
             )
             for name in sorted(signals["integrations"])
         }
+        hub_state = str(member_assessment.get("state") or "").strip().lower()
+        hub_reason = str(member_assessment.get("reason") or "").strip()
+        if hub_state in {"nominal"}:
+            hub_member = _node(
+                ReadinessStatus.READY,
+                hub_reason or "member link to hub is healthy",
+                observed=True,
+                details={"derived_from": "hub_member_connection_state"},
+            )
+        elif hub_state in {"pressure", "transitioning"}:
+            hub_member = _node(
+                ReadinessStatus.DEGRADED,
+                hub_reason or "member link to hub is under pressure",
+                observed=True,
+                details={"derived_from": "hub_member_connection_state"},
+            )
+        elif hub_state in {"degraded", "down"}:
+            hub_member = _node(
+                ReadinessStatus.DEGRADED if hub_state == "degraded" else ReadinessStatus.DOWN,
+                hub_reason or "member link to hub is unavailable",
+                observed=True,
+                details={"derived_from": "hub_member_connection_state"},
+            )
+        else:
+            hub_member = _node(
+                ReadinessStatus.UNKNOWN,
+                hub_reason or "member link state is unknown",
+                observed=False,
+                details={"derived_from": "hub_member_connection_state"},
+            )
+
+    member_sync_status = str(member_sync_channel.get("status") or ReadinessStatus.UNKNOWN.value).strip().lower()
+    member_sync_reason = str(member_sync_channel.get("reason") or "").strip()
+    member_sync_active_path = str(member_sync_channel.get("active_path") or "").strip()
+    if role_norm == "hub" and int(member_state.get("member_total") or 0) <= 0:
+        member_sync = _node(
+            ReadinessStatus.READY,
+            "member sync channels are idle because no members are connected",
+            observed=False,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
+    elif member_sync_status == ReadinessStatus.READY.value:
+        member_sync = _node(
+            ReadinessStatus.READY,
+            member_sync_reason or "member sync channel is healthy",
+            observed=True,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
+    elif member_sync_status == ReadinessStatus.DEGRADED.value:
+        member_sync = _node(
+            ReadinessStatus.DEGRADED,
+            member_sync_reason or "member sync channel is degraded",
+            observed=True,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
+    elif member_sync_status == ReadinessStatus.DOWN.value:
+        member_sync = _node(
+            ReadinessStatus.DOWN,
+            member_sync_reason or "member sync channel is down",
+            observed=True,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
+    elif member_sync_status == ReadinessStatus.NOT_APPLICABLE.value:
+        member_sync = _node(
+            ReadinessStatus.NOT_APPLICABLE,
+            member_sync_reason or "member sync channel is not applicable",
+            observed=False,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
+    else:
+        member_sync = _node(
+            ReadinessStatus.UNKNOWN,
+            member_sync_reason or "member sync channel state is unknown",
+            observed=False,
+            details={"active_path": member_sync_active_path, "derived_from": "hub_member_channels"},
+        )
 
     media = _node(
         ReadinessStatus.UNKNOWN,
@@ -2116,6 +2241,8 @@ def build_readiness_tree(
         "root_control": root_control,
         "route": route,
         "sync": sync,
+        "hub_member": hub_member,
+        "member_sync": member_sync,
         "integration": integrations,
         "media": media,
     }
@@ -2134,11 +2261,15 @@ def build_degraded_matrix(*, role: str, readiness_tree: dict[str, Any]) -> dict[
     local_core = readiness_tree["hub_local_core"]
     root_control = readiness_tree["root_control"]
     route = readiness_tree["route"]
+    hub_member = readiness_tree.get("hub_member") if isinstance(readiness_tree.get("hub_member"), dict) else {}
+    member_sync = readiness_tree.get("member_sync") if isinstance(readiness_tree.get("member_sync"), dict) else {}
     integrations = readiness_tree["integration"]
 
     local_ok = _is_ready(local_core)
     root_ok = _is_ready(root_control)
     route_ok = _is_ready(route)
+    hub_member_ok = _is_ready(hub_member)
+    member_sync_ok = _is_ready(member_sync)
     tg_ok = _is_ready(integrations.get("telegram", {}))
     gh_ok = _is_ready(integrations.get("github", {}))
     llm_ok = _is_ready(integrations.get("llm", {}))
@@ -2189,6 +2320,21 @@ def build_degraded_matrix(*, role: str, readiness_tree: dict[str, Any]) -> dict[
                     reason="Core update coordination depends on local core and root control readiness",
                     required_ready=["hub_local_core", "root_control"],
                 ),
+                "remote_member_snapshot_projection": _matrix_entry(
+                    allowed=local_ok and hub_member_ok,
+                    reason="Remote member projection requires local core and healthy hub-member control links",
+                    required_ready=["hub_local_core", "hub_member"],
+                ),
+                "hub_triggered_member_update_follow": _matrix_entry(
+                    allowed=local_ok and hub_member_ok,
+                    reason="Hub-triggered member rollout requires local core and healthy hub-member control links",
+                    required_ready=["hub_local_core", "hub_member"],
+                ),
+                "member_sync_projection": _matrix_entry(
+                    allowed=local_ok and hub_member_ok and member_sync_ok,
+                    reason="Member sync projection requires local core, hub-member control, and member sync readiness",
+                    required_ready=["hub_local_core", "hub_member", "member_sync"],
+                ),
             }
         )
     else:
@@ -2223,6 +2369,21 @@ def build_degraded_matrix(*, role: str, readiness_tree: dict[str, Any]) -> dict[
                     allowed=False,
                     reason="member/browser role does not coordinate core updates via root",
                     required_ready=[],
+                ),
+                "remote_member_snapshot_projection": _matrix_entry(
+                    allowed=False,
+                    reason="member/browser role does not project other remote members",
+                    required_ready=[],
+                ),
+                "hub_triggered_member_update_follow": _matrix_entry(
+                    allowed=local_ok and hub_member_ok,
+                    reason="Following hub-triggered updates requires local core and a healthy hub-member control link",
+                    required_ready=["hub_local_core", "hub_member"],
+                ),
+                "member_sync_projection": _matrix_entry(
+                    allowed=local_ok and hub_member_ok and member_sync_ok,
+                    reason="Member sync projection requires local core, hub-member control, and member sync readiness",
+                    required_ready=["hub_local_core", "hub_member", "member_sync"],
                 ),
             }
         )
@@ -3437,6 +3598,8 @@ def reliability_snapshot(
         draining=draining,
         connected_to_hub=connected_to_hub,
         channel_diagnostics=channel_diagnostics,
+        hub_member_channels=hub_member_channels,
+        hub_member_connection_state=hub_member_connection_state,
     )
     degraded_matrix = build_degraded_matrix(role=role, readiness_tree=readiness_tree)
     channel_overview = channel_overview_snapshot(
