@@ -222,23 +222,18 @@ export class AdaosClient {
 	 */
 	async prepareMemberTransport({
 		topics = [],
-		allowDirect = false,
 	}: {
 		topics?: string[]
-		allowDirect?: boolean
 	} = {}): Promise<{ ws: WebSocket; direct: boolean }> {
 		const ws = await this.connect(topics)
-		if (!allowDirect) {
-			return { ws, direct: false }
-		}
-
 		const sendCmd = (kind: string, payload: Record<string, any>) =>
 			this.sendEventsCommand(kind, payload, 8000)
 
-		const ok = await this.channels.negotiateDirectPaths(ws, sendCmd, {
+		const ok = await this.channels.prepareDirectPaths(ws, sendCmd, {
 			onEventsMessage: (data: string) => {
 				this.onEventsMessage({ data } as MessageEvent)
 			},
+			remoteProxy: this.getBaseUrl().includes('/hubs/'),
 		})
 		return { ws, direct: ok }
 	}

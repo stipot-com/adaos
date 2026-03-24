@@ -29,6 +29,17 @@ export type HubMemberTransportState =
 	| 'connected'
 	| 'ws'
 
+export type HubMemberDirectPolicySource =
+	| 'query'
+	| 'storage'
+	| 'default'
+
+export type HubMemberDirectNegotiationState =
+	| 'idle'
+	| 'skipped'
+	| 'connected'
+	| 'failed'
+
 export type HubMemberPathEvidenceState =
 	| 'idle'
 	| 'connecting'
@@ -50,6 +61,12 @@ type ChannelState = {
 
 export type HubMemberChannelSnapshot = {
 	updatedAt: number
+	directPolicy: {
+		enabled: boolean
+		source: HubMemberDirectPolicySource
+		lastNegotiationAt: number | null
+		lastNegotiationState: HubMemberDirectNegotiationState
+	}
 	controlPlane: {
 		subscriptionsTracked: number
 		lastReplayAt: number | null
@@ -106,6 +123,8 @@ export class HubMemberChannelsService {
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
 	private runtimeInitialized = false
+	private lastDirectNegotiationAt: number | null = null
+	private lastDirectNegotiationState: HubMemberDirectNegotiationState = 'idle'
 	private lastControlReplayAt: number | null = null
 	private lastControlReplayCount = 0
 	private wsState: HubMemberPathEvidenceState = 'idle'
@@ -142,7 +161,42 @@ export class HubMemberChannelsService {
 		this.publishSnapshot()
 	}
 
-	async negotiateDirectPaths(
+	private resolveDirectPathPolicy(): {
+		enabled: boolean
+		source: HubMemberDirectPolicySource
+	} {
+		try {
+			const url = new URL(window.location.href)
+			const p2p = (url.searchParams.get('p2p') || '').trim().toLowerCase()
+			if (p2p === '1' || p2p === 'true') {
+				return { enabled: true, source: 'query' }
+			}
+			if (p2p === '0' || p2p === 'false') {
+				return { enabled: false, source: 'query' }
+			}
+			const webrtc = (url.searchParams.get('webrtc') || '').trim().toLowerCase()
+			if (webrtc === '1' || webrtc === 'true') {
+				return { enabled: true, source: 'query' }
+			}
+			if (webrtc === '0' || webrtc === 'false') {
+				return { enabled: false, source: 'query' }
+			}
+		} catch {}
+
+		try {
+			const persisted = (localStorage.getItem('adaos_p2p') || '').trim()
+			if (persisted === '1') {
+				return { enabled: true, source: 'storage' }
+			}
+			if (persisted === '0') {
+				return { enabled: false, source: 'storage' }
+			}
+		} catch {}
+
+		return { enabled: true, source: 'default' }
+	}
+
+	async prepareDirectPaths(
 		signalingWs: WebSocket,
 		sendCommand: (
 			kind: string,
@@ -150,12 +204,22 @@ export class HubMemberChannelsService {
 		) => Promise<any>,
 		{
 			onEventsMessage,
+			remoteProxy = false,
 		}: {
 			onEventsMessage?: ((data: string) => void) | null
+			remoteProxy?: boolean
 		} = {},
 	): Promise<boolean> {
+		const policy = this.resolveDirectPathPolicy()
+		this.lastDirectNegotiationAt = Date.now()
+		if (!remoteProxy || !policy.enabled) {
+			this.lastDirectNegotiationState = 'skipped'
+			this.publishSnapshot()
+			return false
+		}
 		this.rtc.onEventsMessage = onEventsMessage ?? null
 		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
+		this.lastDirectNegotiationState = ok ? 'connected' : 'failed'
 		this.publishSnapshot()
 		return ok
 	}
@@ -411,6 +475,11 @@ export class HubMemberChannelsService {
 		}
 		return {
 			updatedAt: nowMs,
+			directPolicy: {
+				...this.resolveDirectPathPolicy(),
+				lastNegotiationAt: this.lastDirectNegotiationAt,
+				lastNegotiationState: this.lastDirectNegotiationState,
+			},
 			controlPlane: {
 				subscriptionsTracked: this.controlSubscriptions.size,
 				lastReplayAt: this.lastControlReplayAt,
