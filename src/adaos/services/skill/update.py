@@ -126,8 +126,9 @@ class SkillUpdateService:
         if meta is None:
             raise FileNotFoundError(f"skill '{skill_id}' is not installed")
 
-        root = self.ctx.paths.skills_dir()
-        skill_path = Path(getattr(meta, "path", root / skill_id))
+        workspace_root = self.ctx.paths.workspace_dir()
+        skills_root = self.ctx.paths.skills_workspace_dir()
+        skill_path = Path(getattr(meta, "path", skills_root / skill_id))
         version = getattr(meta, "version", None)
 
         if dry_run:
@@ -145,19 +146,26 @@ class SkillUpdateService:
             raise RuntimeError("Git client is not configured")
 
         monorepo = bool(settings and getattr(settings, "skills_monorepo_url", None))
-        repo_root = root
-        if monorepo and not (repo_root / ".git").exists():
-            repo_root = root.parent
+        repo_root = skill_path
+        sparse_target = ""
+        pull_root = skill_path
+        if monorepo:
+            # Monorepo lives at workspace root; skills live under workspace_root/skills/<id>.
+            repo_root = workspace_root
+            pull_root = workspace_root
+            sparse_target = f"skills/{skill_id}"
 
         with _preserve_skill_overlays(repo_root=repo_root, skill_path=skill_path):
             if monorepo:
                 if fs and hasattr(fs, "require_write"):
                     try:
-                        fs.require_write(str(root))
+                        fs.require_write(str(workspace_root))
+                        fs.require_write(str(skills_root))
                     except Exception as exc:
                         raise PermissionError("fs.readonly") from exc
-                git.sparse_add(str(root), skill_id)
-                git.pull(str(root))
+                # Ensure the requested skill path is present in sparse patterns before pulling.
+                git.sparse_add(str(workspace_root), sparse_target)
+                git.pull(str(pull_root))
             else:
                 git.pull(str(skill_path))
 
