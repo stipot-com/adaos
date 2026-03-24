@@ -21,7 +21,8 @@ app = typer.Typer(help=_("cli.secret.help"))
 
 def _skills_root() -> Path:
     ctx = get_ctx()
-    base = getattr(ctx.paths, "skills_dir")
+    # Secrets are stored in the runtime data tree; keep it outside workspace sources.
+    base = getattr(ctx.paths, "skills_cache_dir", None) or getattr(ctx.paths, "skills_dir")
     root = base() if callable(base) else base
     return Path(root).expanduser().resolve()
 

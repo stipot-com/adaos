@@ -176,12 +176,24 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 for item in members[:4]
                 if isinstance(item, dict)
             ]
+            runtimes = [
+                str(item.get("snapshot_runtime_git_short_commit") or item.get("snapshot_runtime_version") or "-")
+                for item in members[:4]
+                if isinstance(item, dict)
+            ]
+            updates = [
+                str(item.get("snapshot_update_state") or item.get("last_hub_core_update_state") or "-")
+                for item in members[:4]
+                if isinstance(item, dict)
+            ]
             typer.echo(
                 "hub_member_links: "
                 f"state={assessment.get('state') or 'unknown'} "
                 f"members={hub_member_connection_state.get('member_total') or 0} "
                 f"broadcasts={hub_member_connection_state.get('hub_core_update_broadcast_total') or 0} "
-                f"nodes={','.join(labels) if labels else '-'}"
+                f"nodes={','.join(labels) if labels else '-'} "
+                f"runtime={','.join(runtimes) if runtimes else '-'} "
+                f"update={','.join(updates) if updates else '-'}"
             )
         else:
             hub = hub_member_connection_state.get("hub") if isinstance(hub_member_connection_state.get("hub"), dict) else {}

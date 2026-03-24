@@ -18,7 +18,7 @@ from adaos.services.skill.tests_entry import main as run_skill_tests_entry
 @pytest.fixture
 def skill_slot(tmp_path: Path) -> Path:
     base = tmp_path / ".adaos"
-    slot = base / "workspace" / "skills" / ".runtime" / "demo" / "1.0.0" / "slots" / "current"
+    slot = base / "skills" / ".runtime" / "demo" / "1.0.0" / "slots" / "current"
     (slot / "vendor").mkdir(parents=True, exist_ok=True)
     namespace_root = slot / "src" / "skills" / "demo"
     namespace_root.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,7 @@ def test_load_test_secrets_merges_sources(skill_slot, monkeypatch):
 
 
 def test_bootstrap_test_ctx_provides_runtime(monkeypatch, skill_slot):
-    base = skill_slot.parents[6]
+    base = skill_slot.parents[5]
     monkeypatch.setenv("ADAOS_BASE_DIR", str(base))
     secrets_map = {"TOKEN": "123"}
 
@@ -80,7 +80,7 @@ def test_bootstrap_test_ctx_provides_runtime(monkeypatch, skill_slot):
 
 
 def test_tests_entry_executes_script_with_context(monkeypatch, skill_slot):
-    base = skill_slot.parents[6]
+    base = skill_slot.parents[5]
     monkeypatch.setenv("ADAOS_BASE_DIR", str(base))
 
     namespace_root = skill_slot / "src" / "skills" / "demo"

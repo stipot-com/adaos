@@ -17,7 +17,7 @@ class _Caps:
 
 def test_slot_skill_env_uses_shared_runtime_store() -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_dir())
+    skills_root = Path(ctx.paths.skills_cache_dir())
     env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name="demo_skill")
     env.prepare_version("1.0.0")
 
@@ -31,9 +31,10 @@ def test_slot_skill_env_uses_shared_runtime_store() -> None:
 
 def test_sync_skill_env_merges_template_legacy_and_store(tmp_path: Path, monkeypatch) -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_dir())
+    workspace_root = Path(ctx.paths.skills_dir())
+    skills_root = Path(ctx.paths.skills_cache_dir())
     skill_name = "merge_skill"
-    skill_dir = skills_root / skill_name
+    skill_dir = workspace_root / skill_name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / ".skill_env.json").write_text(
         json.dumps({"defaults": {"city": "Moscow"}, "ui": {"theme": "light"}}, ensure_ascii=False, indent=2),
@@ -90,13 +91,13 @@ def test_skill_memory_and_skill_env_share_same_store(tmp_path: Path, monkeypatch
 
 def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_dir())
+    skills_root = Path(ctx.paths.skills_cache_dir())
     env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name="ctx_pref_skill")
     env.prepare_version("3.0.0")
     slot = env.build_slot_paths("3.0.0", "A")
     staged_skill_root = slot.src_dir / "skills" / "ctx_pref_skill"
     staged_skill_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("ADAOS_SKILL_ENV_PATH", str(skills_root / "ctx_pref_skill" / ".skill_env.json"))
+    monkeypatch.setenv("ADAOS_SKILL_ENV_PATH", str(Path(ctx.paths.skills_dir()) / "ctx_pref_skill" / ".skill_env.json"))
     monkeypatch.delenv("ADAOS_SKILL_MEMORY_PATH", raising=False)
 
     previous = ctx.skill_ctx.get()
@@ -112,8 +113,9 @@ def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:
 
 def test_skill_env_workspace_context_uses_runtime_store_without_prepared_runtime(monkeypatch) -> None:
     ctx = get_ctx()
-    skills_root = Path(ctx.paths.skills_dir())
-    skill_dir = skills_root / "workspace_only_skill"
+    workspace_root = Path(ctx.paths.skills_dir())
+    runtime_root = Path(ctx.paths.skills_cache_dir())
+    skill_dir = workspace_root / "workspace_only_skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.delenv("ADAOS_SKILL_ENV_PATH", raising=False)
@@ -122,7 +124,7 @@ def test_skill_env_workspace_context_uses_runtime_store_without_prepared_runtime
     previous = ctx.skill_ctx.get()
     assert ctx.skill_ctx.set("workspace_only_skill", skill_dir)
     try:
-        assert skill_env_path() == skills_root / ".runtime" / "workspace_only_skill" / "data" / "db" / "skill_env.json"
+        assert skill_env_path() == runtime_root / ".runtime" / "workspace_only_skill" / "data" / "db" / "skill_env.json"
     finally:
         if previous is None:
             ctx.skill_ctx.clear()

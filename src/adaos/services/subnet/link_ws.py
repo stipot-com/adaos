@@ -130,6 +130,12 @@ async def subnet_ws(websocket: WebSocket) -> None:
                     await mgr.update_member_metadata(node_id, node_names=list(node_names))
                 continue
 
+            if t == "node.snapshot":
+                snapshot = msg.get("snapshot")
+                if isinstance(snapshot, dict):
+                    await mgr.update_member_snapshot(node_id, snapshot=snapshot)
+                continue
+
             if t == "yjs.update":
                 try:
                     webspace_id = str(msg.get("webspace_id") or "default")

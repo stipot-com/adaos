@@ -15,8 +15,12 @@ import websockets  # type: ignore
 from adaos.domain import Event as DomainEvent
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.agent_context import get_ctx
+from adaos.services.core_slots import active_slot_manifest, slot_status
+from adaos.services.core_update import read_last_result as read_core_update_last_result
+from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.node_config import normalize_node_names, set_node_names as persist_node_names
 from adaos.services.capacity import get_local_capacity
+from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.doc import apply_update_to_live_room
 from adaos.services.yjs.store import add_ystore_write_listener, get_ystore_for_webspace, suppress_ystore_write_notifications
@@ -100,6 +104,86 @@ class MemberLinkClient:
             "updated_at": now,
         }
 
+    def _local_node_snapshot(self) -> dict[str, Any]:
+        conf = get_ctx().config
+        lifecycle = runtime_lifecycle_snapshot()
+        update_status = read_core_update_status() or {}
+        last_result = read_core_update_last_result() or {}
+        slots = slot_status() or {}
+        active_manifest = active_slot_manifest() or {}
+        node_names = normalize_node_names(getattr(getattr(conf, "node_settings", None), "node_names", []))
+        now = time.time()
+        node_state = str(lifecycle.get("node_state") or "ready")
+        return {
+            "captured_at": now,
+            "node_id": str(getattr(conf, "node_id", "") or ""),
+            "subnet_id": str(getattr(conf, "subnet_id", "") or ""),
+            "role": str(getattr(conf, "role", "") or ""),
+            "node_names": list(node_names),
+            "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+            "ready": bool(node_state == "ready" and not bool(lifecycle.get("draining"))),
+            "node_state": node_state,
+            "reason": str(lifecycle.get("reason") or ""),
+            "draining": bool(lifecycle.get("draining")),
+            "route_mode": "ws" if self.is_connected() else "none",
+            "connected_to_hub": bool(self.is_connected()),
+            "build": {
+                "version": str(BUILD_INFO.version or ""),
+                "build_date": str(BUILD_INFO.build_date or ""),
+                "runtime_version": str(active_manifest.get("target_version") or ""),
+                "runtime_git_commit": str(active_manifest.get("git_commit") or ""),
+                "runtime_git_short_commit": str(active_manifest.get("git_short_commit") or ""),
+                "runtime_git_branch": str(active_manifest.get("git_branch") or active_manifest.get("target_rev") or ""),
+                "runtime_git_subject": str(active_manifest.get("git_subject") or ""),
+            },
+            "update_status": {
+                "state": str(update_status.get("state") or ""),
+                "phase": str(update_status.get("phase") or ""),
+                "action": str(update_status.get("action") or ""),
+                "message": str(update_status.get("message") or ""),
+                "reason": str(update_status.get("reason") or ""),
+                "target_rev": str(update_status.get("target_rev") or ""),
+                "target_version": str(update_status.get("target_version") or ""),
+                "target_slot": str(update_status.get("target_slot") or ""),
+                "scheduled_for": update_status.get("scheduled_for"),
+                "updated_at": update_status.get("updated_at"),
+                "finished_at": update_status.get("finished_at"),
+            },
+            "last_result": {
+                "state": str(last_result.get("state") or ""),
+                "phase": str(last_result.get("phase") or ""),
+                "message": str(last_result.get("message") or last_result.get("validation_error_summary") or ""),
+                "target_slot": str(last_result.get("target_slot") or ""),
+                "finished_at": last_result.get("finished_at"),
+                "validated_at": last_result.get("validated_at"),
+            },
+            "slots": {
+                "active_slot": str(slots.get("active_slot") or ""),
+                "previous_slot": str(slots.get("previous_slot") or ""),
+                "active_manifest": {
+                    "slot": str(active_manifest.get("slot") or ""),
+                    "target_rev": str(active_manifest.get("target_rev") or ""),
+                    "target_version": str(active_manifest.get("target_version") or ""),
+                    "git_commit": str(active_manifest.get("git_commit") or ""),
+                    "git_short_commit": str(active_manifest.get("git_short_commit") or ""),
+                    "git_branch": str(active_manifest.get("git_branch") or ""),
+                    "git_subject": str(active_manifest.get("git_subject") or ""),
+                },
+            },
+        }
+
+    def _queue_node_snapshot(self) -> None:
+        try:
+            self._out_q.put_nowait(
+                {
+                    "t": "node.snapshot",
+                    "snapshot": self._local_node_snapshot(),
+                    "ts": time.time(),
+                }
+            )
+        except Exception:
+            return
+
     async def start(self) -> None:
         if self._task is not None:
             return
@@ -164,6 +248,17 @@ class MemberLinkClient:
                 typ = getattr(ev, "type", None) or (ev.get("type") if isinstance(ev, dict) else None)
                 if not isinstance(typ, str) or not typ:
                     return
+                if typ in {
+                    "sys.ready",
+                    "subnet.stopping",
+                    "subnet.stopped",
+                    "core.update.status",
+                    "node.names.changed",
+                    "subnet.nats.up",
+                    "subnet.nats.down",
+                    "subnet.nats.reconnect",
+                }:
+                    self._queue_node_snapshot()
                 if self._bus_prefixes is not None and not any(typ.startswith(p) for p in self._bus_prefixes):
                     return
                 payload = getattr(ev, "payload", None) if hasattr(ev, "payload") else (ev.get("payload") if isinstance(ev, dict) else None)
@@ -208,6 +303,7 @@ class MemberLinkClient:
             sender_t: asyncio.Task | None = None
             receiver_t: asyncio.Task | None = None
             ping_t: asyncio.Task | None = None
+            snapshot_t: asyncio.Task | None = None
             try:
                 async with websockets.connect(
                     ws_url,
@@ -240,6 +336,18 @@ class MemberLinkClient:
                         if isinstance(ack, dict):
                             self._hub_node_id = str(ack.get("hub_node_id") or "").strip()
                             self._last_message_at = time.time()
+                    except Exception:
+                        pass
+                    try:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "t": "node.snapshot",
+                                    "snapshot": self._local_node_snapshot(),
+                                    "ts": time.time(),
+                                }
+                            )
+                        )
                     except Exception:
                         pass
 
@@ -288,10 +396,21 @@ class MemberLinkClient:
                                 await self._on_rpc(ws, msg)
                                 continue
 
+                    async def _snapshot_loop() -> None:
+                        interval_raw = str(os.getenv("ADAOS_SUBNET_SNAPSHOT_INTERVAL_S") or "").strip()
+                        try:
+                            interval = max(5.0, min(120.0, float(interval_raw or 20.0)))
+                        except Exception:
+                            interval = 20.0
+                        while True:
+                            await asyncio.sleep(interval)
+                            self._queue_node_snapshot()
+
                     sender_t = asyncio.create_task(_sender(), name="subnet-link-sender")
                     receiver_t = asyncio.create_task(_receiver(), name="subnet-link-receiver")
                     ping_t = asyncio.create_task(self._ping_loop(ws), name="subnet-link-ping")
-                    tasks = [sender_t, receiver_t, ping_t]
+                    snapshot_t = asyncio.create_task(_snapshot_loop(), name="subnet-link-snapshot")
+                    tasks = [sender_t, receiver_t, ping_t, snapshot_t]
                     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     for p in pending:
                         p.cancel()
@@ -303,11 +422,11 @@ class MemberLinkClient:
             except Exception as exc:
                 _log.debug("subnet link connect failed ws=%s err=%s", ws_url, exc)
             finally:
-                for t in (sender_t, receiver_t, ping_t):
+                for t in (sender_t, receiver_t, ping_t, snapshot_t):
                     if t and not t.done():
                         t.cancel()
                 try:
-                    await asyncio.gather(*(t for t in (sender_t, receiver_t, ping_t) if t), return_exceptions=True)
+                    await asyncio.gather(*(t for t in (sender_t, receiver_t, ping_t, snapshot_t) if t), return_exceptions=True)
                 except Exception:
                     pass
                 self._connected.clear()
@@ -464,6 +583,7 @@ class MemberLinkClient:
         except Exception as exc:
             self._last_follow_error = f"{type(exc).__name__}: {exc}"
             self._last_follow_result = {"ok": False, "error": self._last_follow_error}
+        self._queue_node_snapshot()
 
     @staticmethod
     def _remaining_countdown_s(scheduled_for: Any, *, default: float) -> float:
@@ -537,6 +657,7 @@ class MemberLinkClient:
             )
         except Exception:
             pass
+        self._queue_node_snapshot()
         try:
             get_ctx().bus.publish(
                 DomainEvent(

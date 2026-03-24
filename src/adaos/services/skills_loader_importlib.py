@@ -16,12 +16,20 @@ _LOG = logging.getLogger("adaos.services.skills_loader")
 
 class ImportlibSkillsLoader(SkillsLoaderPort):
     async def import_all_handlers(self, skills_root: Any) -> None:
-        root = Path(skills_root() if callable(skills_root) else skills_root)
-        self._sync_runtime_from_repo_workspace_if_missing(root)
-        self._sync_runtime_from_workspace_if_debug(root)
+        workspace_root = Path(skills_root() if callable(skills_root) else skills_root)
+        # Runtime bundles must live outside git-tracked workspace sources.
+        # Use the skills cache root (typically `<base>/skills`) for `.runtime/*`.
+        try:
+            ctx = get_ctx()
+            runtime_base = ctx.paths.skills_cache_dir()
+            runtime_root = Path(runtime_base() if callable(runtime_base) else runtime_base)
+        except Exception:
+            runtime_root = workspace_root
+        self._sync_runtime_from_repo_workspace_if_missing(runtime_root)
+        self._sync_runtime_from_workspace_if_debug(runtime_root)
         loaded: set[str] = set()
         loaded_projection_manifests: set[Path] = set()
-        for handler, skill_name in self._discover_runtime_handlers(root):
+        for handler, skill_name in self._discover_runtime_handlers(runtime_root):
             self._load_skill_data_projections(handler, loaded_projection_manifests)
             self._load_handler(handler)
             if skill_name:
@@ -32,7 +40,7 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
 
         # Dev/fast-path: load handlers straight from the workspace tree when a
         # skill does not have an installed runtime bundle under .runtime.
-        for handler, skill_name in self._discover_workspace_handlers(root, loaded):
+        for handler, skill_name in self._discover_workspace_handlers(workspace_root, loaded):
             self._load_skill_data_projections(handler, loaded_projection_manifests)
             self._load_handler(handler)
             if skill_name:
@@ -43,7 +51,7 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
 
         # Repo-bundled workspace skills are a final fallback for builtin skills
         # when the node-local workspace tree does not contain the sources.
-        for handler, skill_name in self._discover_repo_workspace_handlers(root, loaded):
+        for handler, skill_name in self._discover_repo_workspace_handlers(workspace_root, loaded):
             self._load_skill_data_projections(handler, loaded_projection_manifests)
             self._load_handler(handler)
             if skill_name:

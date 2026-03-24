@@ -125,6 +125,16 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         for item in member_links[:4]
         if isinstance(item, dict)
     ]
+    member_runtime = [
+        str(item.get("snapshot_runtime_git_short_commit") or item.get("snapshot_runtime_version") or "-")
+        for item in member_links[:4]
+        if isinstance(item, dict)
+    ]
+    member_update = [
+        str(item.get("snapshot_update_state") or item.get("last_hub_core_update_state") or "-")
+        for item in member_links[:4]
+        if isinstance(item, dict)
+    ]
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -150,7 +160,9 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"member_cmd={member_command.get('active_path') or '-'}:{member_command.get('state') or '-'} "
         f"member_sync={member_sync.get('active_path') or '-'}:{member_sync.get('state') or '-'} "
         f"member_links={hub_member_connection_state.get('member_total') or 0} "
-        f"member_names={','.join(member_labels) if member_labels else '-'} | "
+        f"member_names={','.join(member_labels) if member_labels else '-'} "
+        f"member_runtime={','.join(member_runtime) if member_runtime else '-'} "
+        f"member_update={','.join(member_update) if member_update else '-'} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

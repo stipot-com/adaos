@@ -31,6 +31,8 @@ class HubMemberLink:
     last_hub_event_type: str | None = None
     last_hub_core_update_state: str | None = None
     last_hub_core_update_action: str | None = None
+    last_snapshot_at: float | None = None
+    node_snapshot: dict[str, Any] = field(default_factory=dict)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_rpc: Dict[str, asyncio.Future] = field(default_factory=dict)
 
@@ -161,6 +163,44 @@ class HubLinkManager:
             pass
         return {"ok": True, **payload}
 
+    async def update_member_snapshot(self, node_id: str, *, snapshot: dict[str, Any]) -> dict[str, Any]:
+        link = await self._get_link(node_id)
+        if not link:
+            return {"ok": False, "error": "member_not_connected"}
+        snap = dict(snapshot or {})
+        node_names = snap.get("node_names")
+        if isinstance(node_names, list):
+            link.node_names = [str(item or "").strip() for item in node_names if str(item or "").strip()]
+        link.node_snapshot = snap
+        link.last_snapshot_at = time.time()
+        link.last_message_at = link.last_snapshot_at
+        update_status = snap.get("update_status")
+        if isinstance(update_status, dict):
+            state = str(update_status.get("state") or "").strip()
+            action = str(update_status.get("action") or "").strip()
+            if state:
+                link.last_hub_core_update_state = state
+            if action:
+                link.last_hub_core_update_action = action
+        payload = {
+            "node_id": node_id,
+            "node_names": list(link.node_names),
+            "snapshot": dict(link.node_snapshot),
+            "captured_at": link.last_snapshot_at,
+        }
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="subnet.member.snapshot.changed",
+                    payload=payload,
+                    source="subnet.link",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            pass
+        return {"ok": True, **payload}
+
     async def set_member_node_names(self, node_id: str, *, node_names: list[str]) -> dict[str, Any]:
         link = await self._get_link(node_id)
         if not link:
@@ -219,9 +259,15 @@ class HubLinkManager:
                         if link.last_hub_event_at
                         else None
                     ),
+                    "last_snapshot_ago_s": (
+                        round(max(0.0, now - float(link.last_snapshot_at)), 3)
+                        if link.last_snapshot_at
+                        else None
+                    ),
                     "last_hub_event_type": link.last_hub_event_type,
                     "last_hub_core_update_state": link.last_hub_core_update_state,
                     "last_hub_core_update_action": link.last_hub_core_update_action,
+                    "node_snapshot": dict(link.node_snapshot) if isinstance(link.node_snapshot, dict) else {},
                     "pending_rpc": len(link.pending_rpc),
                     "connected": True,
                 }

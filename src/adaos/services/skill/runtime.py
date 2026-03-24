@@ -106,7 +106,9 @@ class SkillPrepMissingFunctionError(SkillPrepError):
 
 
 def _runtime_env(skill_name: str, agent_ctx: AgentContext) -> SkillRuntimeEnvironment:
-    skills_root = Path(agent_ctx.paths.skills_dir())
+    # Runtime store must be outside the workspace sources tree so that
+    # git-tracked skills are not dirtied by `.runtime/*` updates.
+    skills_root = Path(agent_ctx.paths.skills_cache_dir())
     return SkillRuntimeEnvironment(skills_root=skills_root, skill_name=skill_name)
 
 

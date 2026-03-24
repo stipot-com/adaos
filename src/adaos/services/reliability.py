@@ -2640,7 +2640,12 @@ def hub_member_connection_state_snapshot(
         for index, item in enumerate(members, start=1):
             if not isinstance(item, dict):
                 continue
+            node_snapshot = item.get("node_snapshot") if isinstance(item.get("node_snapshot"), dict) else {}
+            snapshot_names = node_snapshot.get("node_names") if isinstance(node_snapshot.get("node_names"), list) else []
             member_names = item.get("node_names") if isinstance(item.get("node_names"), list) else []
+            member_names = member_names or snapshot_names
+            build = node_snapshot.get("build") if isinstance(node_snapshot.get("build"), dict) else {}
+            update_status = node_snapshot.get("update_status") if isinstance(node_snapshot.get("update_status"), dict) else {}
             label = _node_label(
                 member_names,
                 fallback="member" if index == 1 else f"member {index}",
@@ -2648,17 +2653,29 @@ def hub_member_connection_state_snapshot(
             items.append(
                 {
                     **item,
+                    "node_names": member_names,
+                    "node_snapshot": node_snapshot,
                     "label": label,
                     "primary_name": label,
                     "role": "member",
                     "state": "connected" if bool(item.get("connected", True)) else "down",
+                    "snapshot_ready": bool(node_snapshot.get("ready")),
+                    "snapshot_node_state": str(node_snapshot.get("node_state") or ""),
+                    "snapshot_update_state": str(update_status.get("state") or ""),
+                    "snapshot_update_phase": str(update_status.get("phase") or ""),
+                    "snapshot_runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
+                    "snapshot_runtime_version": str(build.get("runtime_version") or build.get("version") or ""),
                 }
             )
         assessment_state = "idle"
         assessment_reason = "no_members_connected"
         if items:
-            assessment_state = "nominal"
-            assessment_reason = "member_links_connected"
+            if all(isinstance(item.get("node_snapshot"), dict) and item.get("node_snapshot") for item in items):
+                assessment_state = "nominal"
+                assessment_reason = "member_links_and_snapshots_connected"
+            else:
+                assessment_state = "pressure"
+                assessment_reason = "member_snapshots_pending"
         return {
             "role": "hub",
             "local_node": {

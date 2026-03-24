@@ -30,7 +30,7 @@ skills/
     skill.yaml         # skill manifest (required)
 ```
 
-Runtime slots (`.adaos/workspace/skills/.runtime/...`) are maintained by the platform and usually do not need to be edited
+Runtime slots (`.adaos/skills/.runtime/...`) are maintained by the platform and usually do not need to be edited
 manually; they are derived from the workspace skills via `adaos dev skill activate` or the runtime updater.
 
 ---
@@ -146,4 +146,3 @@ Git-backed repositories).
 - Put tests under `skills/<name>/tests` and run them regularly via `adaos tests run`.
 - For dev skills, use the `adaos dev skill ...` commands and the Prompt IDE (`prompt_engineer_scenario`) to manage
   versions and Git workflows.
-
