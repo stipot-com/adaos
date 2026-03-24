@@ -197,6 +197,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         assessment = hub_member_connection_state.get("assessment") if isinstance(hub_member_connection_state.get("assessment"), dict) else {}
         if str(hub_member_connection_state.get("role") or "") == "hub":
             members = hub_member_connection_state.get("members") if isinstance(hub_member_connection_state.get("members"), list) else []
+            known_total = int(hub_member_connection_state.get("known_total") or 0)
+            linkless_total = int(hub_member_connection_state.get("linkless_total") or 0)
             rollout = hub_member_connection_state.get("update_rollout") if isinstance(hub_member_connection_state.get("update_rollout"), dict) else {}
             rollout_counts = rollout.get("rollout_counts") if isinstance(rollout.get("rollout_counts"), dict) else {}
             snapshot_counts = rollout.get("snapshot_counts") if isinstance(rollout.get("snapshot_counts"), dict) else {}
@@ -219,6 +221,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 "hub_member_links: "
                 f"state={assessment.get('state') or 'unknown'} "
                 f"members={hub_member_connection_state.get('member_total') or 0} "
+                f"known={known_total} "
+                f"linkless={linkless_total} "
                 f"broadcasts={hub_member_connection_state.get('hub_core_update_broadcast_total') or 0} "
                 f"rollout={rollout.get('state') or '-'} "
                 f"fresh={snapshot_counts.get('fresh') or 0} "
@@ -543,21 +547,29 @@ def node_members(
         rollout = state.get("update_rollout") if isinstance(state.get("update_rollout"), dict) else {}
         typer.echo(
             f"hub_member_links: state={assessment.get('state') or 'unknown'} "
-            f"members={state.get('member_total') or 0} rollout={rollout.get('state') or '-'}"
+            f"members={state.get('member_total') or 0} "
+            f"known={state.get('known_total') or 0} "
+            f"linkless={state.get('linkless_total') or 0} "
+            f"rollout={rollout.get('state') or '-'}"
         )
-        members = state.get("members") if isinstance(state.get("members"), list) else []
+        members = state.get("known_members") if isinstance(state.get("known_members"), list) else []
+        if not members:
+            members = state.get("members") if isinstance(state.get("members"), list) else []
         for item in members:
             if not isinstance(item, dict):
                 continue
             last_control = item.get("last_control_result") if isinstance(item.get("last_control_result"), dict) else {}
             typer.echo(
                 f"- {item.get('label') or item.get('node_id') or 'member'} "
+                f"state={item.get('state') or '-'} "
                 f"snapshot={item.get('snapshot_state') or '-'} "
                 f"rollout={item.get('rollout_state') or '-'} "
                 f"runtime={item.get('snapshot_runtime_git_short_commit') or item.get('snapshot_runtime_version') or '-'} "
                 f"update={item.get('snapshot_update_state') or '-'} "
                 f"control={item.get('last_control_action') or '-'}:{last_control.get('ok') if 'ok' in last_control else '-'} "
-                f"last_snapshot_ago={item.get('last_snapshot_ago_s') if item.get('last_snapshot_ago_s') is not None else '-'}"
+                f"observed_via={item.get('observed_via') or '-'} "
+                f"last_snapshot_ago={item.get('last_snapshot_ago_s') if item.get('last_snapshot_ago_s') is not None else '-'} "
+                f"last_seen_ago={item.get('last_seen_ago_s') if item.get('last_seen_ago_s') is not None else '-'}"
             )
         return
     hub = state.get("hub") if isinstance(state.get("hub"), dict) else {}

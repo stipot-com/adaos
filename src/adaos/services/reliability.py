@@ -2829,14 +2829,34 @@ def hub_member_connection_state_snapshot(
             raw = hub_link_manager_snapshot()
         except Exception:
             raw = {"members": [], "member_total": 0, "connected_total": 0, "updated_at": now}
+        try:
+            from adaos.services.registry.subnet_directory import get_directory
+
+            directory_nodes = get_directory().list_known_nodes()
+        except Exception:
+            directory_nodes = []
         members = raw.get("members") if isinstance(raw.get("members"), list) else []
         items: list[dict[str, Any]] = []
+        known_members: list[dict[str, Any]] = []
         rollout_counts: dict[str, int] = {}
         snapshot_counts: dict[str, int] = {}
         version_counts: dict[str, int] = {}
+        connected_ids: set[str] = set()
+        directory_by_id: dict[str, dict[str, Any]] = {}
+        for node in directory_nodes:
+            if not isinstance(node, dict):
+                continue
+            known_id = str(node.get("node_id") or "").strip()
+            if not known_id or known_id == node_id:
+                continue
+            directory_by_id[known_id] = node
         for index, item in enumerate(members, start=1):
             if not isinstance(item, dict):
                 continue
+            member_id = str(item.get("node_id") or "").strip()
+            if not member_id:
+                continue
+            connected_ids.add(member_id)
             node_snapshot = item.get("node_snapshot") if isinstance(item.get("node_snapshot"), dict) else {}
             snapshot_names = node_snapshot.get("node_names") if isinstance(node_snapshot.get("node_names"), list) else []
             member_names = item.get("node_names") if isinstance(item.get("node_names"), list) else []
@@ -2844,6 +2864,9 @@ def hub_member_connection_state_snapshot(
             build = node_snapshot.get("build") if isinstance(node_snapshot.get("build"), dict) else {}
             update_status = node_snapshot.get("update_status") if isinstance(node_snapshot.get("update_status"), dict) else {}
             connected = bool(item.get("connected", True))
+            directory_item = directory_by_id.get(member_id) if isinstance(directory_by_id.get(member_id), dict) else {}
+            online = bool(directory_item.get("online")) if directory_item else connected
+            last_seen = float(directory_item.get("last_seen") or 0.0) if directory_item else 0.0
             snapshot_state = _member_snapshot_state(
                 connected=connected,
                 last_snapshot_ago_s=item.get("last_snapshot_ago_s"),
@@ -2864,12 +2887,17 @@ def hub_member_connection_state_snapshot(
             items.append(
                 {
                     **item,
+                    "node_id": member_id,
                     "node_names": member_names,
                     "node_snapshot": node_snapshot,
                     "label": label,
                     "primary_name": label,
                     "role": "member",
                     "state": "connected" if connected else "down",
+                    "connected": connected,
+                    "online": online,
+                    "observed_via": "member_link",
+                    "last_seen_ago_s": round(max(0.0, now - last_seen), 3) if last_seen > 0.0 else None,
                     "snapshot_state": snapshot_state,
                     "rollout_state": rollout_state,
                     "snapshot_ready": bool(node_snapshot.get("ready")),
@@ -2878,6 +2906,44 @@ def hub_member_connection_state_snapshot(
                     "snapshot_update_phase": str(update_status.get("phase") or ""),
                     "snapshot_runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
                     "snapshot_runtime_version": str(build.get("runtime_version") or build.get("version") or ""),
+                }
+            )
+            known_members.append(items[-1])
+        linkless_online_total = 0
+        for known_id, node in directory_by_id.items():
+            if known_id in connected_ids:
+                continue
+            roles = node.get("roles") if isinstance(node.get("roles"), list) else []
+            if roles and "member" not in [str(item or "").strip().lower() for item in roles]:
+                continue
+            online = bool(node.get("online"))
+            if online:
+                linkless_online_total += 1
+            last_seen = float(node.get("last_seen") or 0.0)
+            label = _node_label([], fallback=f"member {len(known_members) + 1}")
+            known_members.append(
+                {
+                    "node_id": known_id,
+                    "hostname": node.get("hostname"),
+                    "roles": list(roles or []),
+                    "node_names": [],
+                    "node_snapshot": {},
+                    "label": label,
+                    "primary_name": label,
+                    "role": "member",
+                    "state": "heartbeat" if online else "offline",
+                    "connected": False,
+                    "online": online,
+                    "observed_via": "subnet_directory",
+                    "last_seen_ago_s": round(max(0.0, now - last_seen), 3) if last_seen > 0.0 else None,
+                    "snapshot_state": "pending" if online else "stale",
+                    "rollout_state": "pending" if online else "stale",
+                    "snapshot_ready": False,
+                    "snapshot_node_state": str(node.get("node_state") or ""),
+                    "snapshot_update_state": "",
+                    "snapshot_update_phase": "",
+                    "snapshot_runtime_git_short_commit": "",
+                    "snapshot_runtime_version": "",
                 }
             )
         assessment_state = "idle"
@@ -2909,6 +2975,12 @@ def hub_member_connection_state_snapshot(
             else:
                 assessment_state = "pressure"
                 assessment_reason = "member_snapshots_pending"
+        elif linkless_online_total > 0:
+            assessment_state = "pressure"
+            assessment_reason = "known_members_without_links"
+        if assessment_state == "nominal" and linkless_online_total > 0:
+            assessment_state = "pressure"
+            assessment_reason = "some_members_without_links"
         return {
             "role": "hub",
             "local_node": {
@@ -2923,7 +2995,10 @@ def hub_member_connection_state_snapshot(
             },
             "member_total": len(items),
             "connected_total": len(items),
+            "known_total": len(known_members),
+            "linkless_total": max(0, len(known_members) - len(items)),
             "members": items,
+            "known_members": known_members,
             "update_rollout": {
                 "state": rollout_state,
                 "reason": rollout_reason,

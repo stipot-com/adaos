@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
+from urllib.parse import urlparse
 
 import requests
 
@@ -223,10 +224,42 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _is_local_url(url: str | None) -> bool:
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    try:
+        host = str(urlparse(raw).hostname or "").strip().lower()
+    except Exception:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _state_dir() -> Path:
+    raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
+    if raw:
+        try:
+            return (Path(raw).expanduser().resolve() / "state").resolve()
+        except Exception:
+            pass
+    try:
+        from adaos.services.agent_context import get_ctx
+
+        state_root = get_ctx().paths.state_dir()
+        return Path(state_root() if callable(state_root) else state_root).resolve()
+    except Exception:
+        return (_home() / ".adaos" / "state").resolve()
+
+
 def _tcp_probe(host: str, port: int, *, timeout: float = 0.6) -> bool:
     host = str(host or "").strip() or "127.0.0.1"
     try:
         port_i = int(port)
+    except Exception:
+        return False
+    try:
+        with socket.create_connection((host, port_i), timeout=timeout):
+            return True
     except Exception:
         return False
 
@@ -319,7 +352,10 @@ def _discover_live_control_bind(configured_host: str, configured_port: int) -> t
     except Exception:
         conf = None
     if conf is not None:
-        local_bind = _local_url_to_host_port(getattr(conf, "hub_url", None))
+        try:
+            local_bind = _local_url_to_host_port(getattr(conf, "hub_url", None))
+        except Exception:
+            local_bind = None
         if local_bind is not None:
             _push(*local_bind)
     for _, host, port in _pidfile_control_candidates():
@@ -336,6 +372,9 @@ def _discover_live_control_bind(configured_host: str, configured_port: int) -> t
 
     for host, port in candidates:
         if _http_probe_local_control(host, port):
+            return host, port
+    for host, port in candidates:
+        if (host, port) == (configured_host, configured_port) and _tcp_probe(host, port):
             return host, port
     return None
     try:
