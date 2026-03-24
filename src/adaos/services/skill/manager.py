@@ -97,7 +97,26 @@ class SkillManager:
         self.ctx.skills_repo.ensure()
         root = self.ctx.paths.workspace_dir()
         names = [r.name for r in self.reg.list()]
-        prefixed = [f"skills/{n}" for n in names]
+        scenario_names: list[str] = []
+        try:
+            from adaos.adapters.db import SqliteScenarioRegistry
+
+            scenario_names = [r.name for r in SqliteScenarioRegistry(self.ctx.sql).list()]
+        except Exception:
+            scenario_names = []
+
+        # Workspace repo hosts both /skills and /scenarios under a single sparse-checkout.
+        # Keep both sets in the sparse pattern list to avoid "disappearing" directories
+        # when syncing one kind.
+        prefixed = [
+            ".gitignore",
+            "registry.json",
+            "schemas",
+            "skills/",
+            "scenarios/",
+            *[f"skills/{n}" for n in names],
+            *[f"scenarios/{n}" for n in scenario_names],
+        ]
         ensure_clean(self.ctx.git, str(root), prefixed)
         self.ctx.git.sparse_init(str(root), cone=False)
         if prefixed:

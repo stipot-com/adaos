@@ -248,7 +248,12 @@ async def installed_status(mgr: SkillManager = Depends(_get_manager), ctx: Agent
 
 @router.post("/sync")
 async def sync(mgr: SkillManager = Depends(_get_manager)):
-    mgr.sync()
+    try:
+        mgr.sync()
+    except Exception as exc:
+        # Surface the failure as a structured client error instead of a 500.
+        # Common causes: dirty workspace, git remote/upstream misconfiguration, or merge conflicts.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 

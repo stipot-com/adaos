@@ -146,6 +146,13 @@ class CliGitClient(GitClient):
         except GitError as exc:
             msg = str(exc)
             lowered = msg.lower()
+            if "no tracking information for the current branch" in lowered or "set the remote as upstream" in lowered:
+                branch = _safe_git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])
+                if branch and branch != "HEAD":
+                    # repo was likely initialized via `git init` + `fetch` and lacks upstream config.
+                    # Pull explicitly from origin/<branch> as a best-effort fix.
+                    _run_git(["pull", "--ff-only", "origin", branch], cwd=dir)
+                    return
             if "not possible to fast-forward" in lowered or "diverging branches" in lowered or "non-fast-forward" in lowered:
                 hint = _format_divergence_hint(dir)
                 if hint:
