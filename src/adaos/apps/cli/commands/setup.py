@@ -70,18 +70,64 @@ def _installed_names(rows: list[object]) -> list[str]:
     return sorted(set(names))
 
 
+def _workspace_kind_names(ctx, workspace_root, kind: str) -> list[str]:
+    names: set[str] = set()
+    prefix = f"{kind}/"
+    workspace_root = workspace_root.resolve()
+
+    try:
+        sparse = SparseWorkspace(ctx.git, workspace_root)
+        for pattern in sparse.read_patterns():
+            value = str(pattern or "").strip()
+            if not value.startswith(prefix):
+                continue
+            tail = value[len(prefix) :].strip().strip("/")
+            if tail:
+                names.add(tail)
+    except Exception:
+        pass
+
+    try:
+        kind_root = workspace_root / kind
+        if kind_root.exists():
+            for child in kind_root.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    names.add(child.name)
+    except Exception:
+        pass
+
+    return sorted(names)
+
+
+def _effective_registry_names(ctx, registry_names: list[str], workspace_root, kind: str) -> tuple[list[str], bool]:
+    names = sorted(set(str(name) for name in (registry_names or []) if str(name).strip()))
+    if names:
+        return names, False
+    fallback = _workspace_kind_names(ctx, workspace_root, kind)
+    if fallback:
+        return fallback, True
+    return [], False
+
+
 def _sync_workspace_sparse_to_registry(ctx) -> dict:
     """
     Skills and scenarios share the same workspace monorepo checkout; sparse
     patterns must be applied as a union, otherwise one sync overwrites the other.
     """
+    workspace_root = ctx.paths.workspace_dir()
     skill_rows = SqliteSkillRegistry(ctx.sql).list()
     scenario_rows = SqliteScenarioRegistry(ctx.sql).list()
-    skills = _installed_names(skill_rows)
-    scenarios = _installed_names(scenario_rows)
+    registry_skills = _installed_names(skill_rows)
+    registry_scenarios = _installed_names(scenario_rows)
+    skills, skills_fallback = _effective_registry_names(ctx, registry_skills, workspace_root, "skills")
+    scenarios, scenarios_fallback = _effective_registry_names(ctx, registry_scenarios, workspace_root, "scenarios")
     desired = registry_pattern_set([*(f"skills/{n}" for n in skills), *(f"scenarios/{n}" for n in scenarios)])
+    fallback_used: dict[str, list[str]] = {}
+    if skills_fallback:
+        fallback_used["skills"] = skills
+    if scenarios_fallback:
+        fallback_used["scenarios"] = scenarios
 
-    workspace_root = ctx.paths.workspace_dir()
     try:
         from adaos.services.git.availability import get_git_availability
 
@@ -107,6 +153,9 @@ def _sync_workspace_sparse_to_registry(ctx) -> dict:
             "mode": "archive",
             "skills": skills,
             "scenarios": scenarios,
+            "registry_skills": registry_skills,
+            "registry_scenarios": registry_scenarios,
+            "fallback_used": fallback_used,
             "errors": errors,
             "patterns": desired,
         }
@@ -120,9 +169,26 @@ def _sync_workspace_sparse_to_registry(ctx) -> dict:
     try:
         ctx.git.pull(str(workspace_root))
     except Exception as exc:
-        return {"ok": False, "skills": skills, "scenarios": scenarios, "error": str(exc), "patterns": desired}
+        return {
+            "ok": False,
+            "skills": skills,
+            "scenarios": scenarios,
+            "registry_skills": registry_skills,
+            "registry_scenarios": registry_scenarios,
+            "fallback_used": fallback_used,
+            "error": str(exc),
+            "patterns": desired,
+        }
 
-    return {"ok": True, "skills": skills, "scenarios": scenarios, "patterns": desired}
+    return {
+        "ok": True,
+        "skills": skills,
+        "scenarios": scenarios,
+        "registry_skills": registry_skills,
+        "registry_scenarios": registry_scenarios,
+        "fallback_used": fallback_used,
+        "patterns": desired,
+    }
 
 
 @_run_safe
@@ -239,14 +305,22 @@ def update(
     scenario_mgr = _scenario_mgr()
     skill_mgr = _skill_mgr()
     out: dict = {"pulled": {}, "runtime_updated": [], "yjs_synced": [], "warnings": []}
+    effective_scenario_names: list[str] = []
 
     if pull:
         try:
             # Apply sparse-checkout union once, then pull once.
             res = _sync_workspace_sparse_to_registry(ctx)
+            effective_scenario_names = [str(name) for name in (res.get("scenarios") or []) if str(name).strip()]
             out["pulled"]["workspace"] = bool(res.get("ok"))
             out["pulled"]["skills"] = bool(res.get("ok"))
             out["pulled"]["scenarios"] = bool(res.get("ok"))
+            fallback_used = res.get("fallback_used") or {}
+            if isinstance(fallback_used, dict):
+                if fallback_used.get("skills"):
+                    out["warnings"].append("skill registry empty; preserved workspace skills from current sparse/materialized state")
+                if fallback_used.get("scenarios"):
+                    out["warnings"].append("scenario registry empty; preserved workspace scenarios from current sparse/materialized state")
             if not res.get("ok"):
                 out["warnings"].append(f"workspace pull: {res.get('error')}")
         except Exception as exc:
@@ -321,10 +395,16 @@ def update(
             scenario_rows = SqliteScenarioRegistry(ctx.sql).list()
         except Exception:
             scenario_rows = []
-        for row in scenario_rows:
-            name = getattr(row, "name", None) or getattr(row, "id", None)
-            if not name or not bool(getattr(row, "installed", True)):
-                continue
+        scenario_names = _installed_names(scenario_rows)
+        if not scenario_names and effective_scenario_names:
+            scenario_names = list(effective_scenario_names)
+            out["warnings"].append("scenario registry empty during YJS sync; used workspace fallback scenario list")
+        if not scenario_names:
+            workspace_fallback_scenarios = _workspace_kind_names(ctx, ctx.paths.workspace_dir(), "scenarios")
+            if workspace_fallback_scenarios:
+                scenario_names = workspace_fallback_scenarios
+                out["warnings"].append("scenario registry empty during YJS sync; discovered scenarios from current workspace")
+        for name in scenario_names:
             try:
                 scenario_mgr.sync_to_yjs(str(name), webspace_id=target_webspace)
                 out["yjs_synced"].append({"scenario": str(name), "ok": True})
