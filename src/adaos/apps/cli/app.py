@@ -7,7 +7,14 @@ import shutil
 from pathlib import Path
 from typing import Optional
 import typer
-from dotenv import load_dotenv, find_dotenv
+try:
+    from dotenv import load_dotenv, find_dotenv
+except Exception:
+    def load_dotenv(*args, **kwargs):
+        return False
+
+    def find_dotenv(*args, **kwargs):
+        return ""
 from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
 
 
@@ -164,8 +171,6 @@ def _read(name: str, default: str = "") -> str:
 
 def _write_env_var(key: str, value: str, dotenv_path: Path | None = None):
     """Примитивно патчим .env (или создаём)."""
-    from dotenv import find_dotenv  # локальный импорт, чтобы не тянуть при тестах
-
     dotenv_path = dotenv_path or Path(find_dotenv() or ".env")
     lines: list[str] = []
     if dotenv_path.exists():

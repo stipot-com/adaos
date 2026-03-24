@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
   "typer>=0.16.0",
   "rich>=13.7.1",
+  "python-dotenv>=1.0.1",
   "openai>=1.43.0",
   "GitPython>=3.1.43",
   "SQLAlchemy>=2.0.32",
