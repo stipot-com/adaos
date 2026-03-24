@@ -120,6 +120,9 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     member_command = hub_member_channels.get("hub_member.command") if isinstance(hub_member_channels.get("hub_member.command"), dict) else {}
     member_sync = hub_member_channels.get("hub_member.sync") if isinstance(hub_member_channels.get("hub_member.sync"), dict) else {}
     member_links = hub_member_connection_state.get("members") if isinstance(hub_member_connection_state.get("members"), list) else []
+    rollout = hub_member_connection_state.get("update_rollout") if isinstance(hub_member_connection_state.get("update_rollout"), dict) else {}
+    rollout_counts = rollout.get("rollout_counts") if isinstance(rollout.get("rollout_counts"), dict) else {}
+    snapshot_counts = rollout.get("snapshot_counts") if isinstance(rollout.get("snapshot_counts"), dict) else {}
     member_labels = [
         str(item.get("label") or item.get("node_id") or "member")
         for item in member_links[:4]
@@ -160,6 +163,12 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"member_cmd={member_command.get('active_path') or '-'}:{member_command.get('state') or '-'} "
         f"member_sync={member_sync.get('active_path') or '-'}:{member_sync.get('state') or '-'} "
         f"member_links={hub_member_connection_state.get('member_total') or 0} "
+        f"rollout={rollout.get('state') or '-'} "
+        f"fresh={snapshot_counts.get('fresh') or 0} "
+        f"pending={snapshot_counts.get('pending') or 0} "
+        f"stale={snapshot_counts.get('stale') or 0} "
+        f"in_progress={rollout_counts.get('in_progress') or 0} "
+        f"failed={rollout_counts.get('failed') or 0} "
         f"member_names={','.join(member_labels) if member_labels else '-'} "
         f"member_runtime={','.join(member_runtime) if member_runtime else '-'} "
         f"member_update={','.join(member_update) if member_update else '-'} | "
@@ -233,6 +242,10 @@ def hub_root_watch(
             hub_member_channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}
             member_command = hub_member_channels.get("hub_member.command") if isinstance(hub_member_channels.get("hub_member.command"), dict) else {}
             member_sync = hub_member_channels.get("hub_member.sync") if isinstance(hub_member_channels.get("hub_member.sync"), dict) else {}
+            hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
+            rollout = hub_member_connection_state.get("update_rollout") if isinstance(hub_member_connection_state.get("update_rollout"), dict) else {}
+            rollout_counts = rollout.get("rollout_counts") if isinstance(rollout.get("rollout_counts"), dict) else {}
+            snapshot_counts = rollout.get("snapshot_counts") if isinstance(rollout.get("snapshot_counts"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -256,6 +269,12 @@ def hub_root_watch(
                 f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0} "
                 f"member_cmd={member_command.get('active_path') or '-'}:{member_command.get('state') or '-'} "
                 f"member_sync={member_sync.get('active_path') or '-'}:{member_sync.get('state') or '-'} "
+                f"member_rollout={rollout.get('state') or '-'} "
+                f"fresh={snapshot_counts.get('fresh') or 0} "
+                f"pending={snapshot_counts.get('pending') or 0} "
+                f"stale={snapshot_counts.get('stale') or 0} "
+                f"in_progress={rollout_counts.get('in_progress') or 0} "
+                f"failed={rollout_counts.get('failed') or 0} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

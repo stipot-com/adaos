@@ -1043,10 +1043,32 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     """
     payload = _payload(evt)
     webspace_id = _webspace_id(payload)
-    scenario_id = str(payload.get("scenario_id") or "web_desktop")
+    scenario_id = str(payload.get("scenario_id") or "").strip()
+    if not scenario_id:
+        # Default to the webspace's active scenario to avoid reseeding the wrong
+        # package when the user is currently running a non-default desktop scenario.
+        try:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                ui_map = ydoc.get_map("ui")
+                current = ui_map.get("current_scenario")
+                if current:
+                    scenario_id = str(current)
+        except Exception:
+            scenario_id = ""
+    if not scenario_id:
+        scenario_id = "web_desktop"
     if not webspace_id:
         return
     _log.info("reloading webspace %s from scenario %s", webspace_id, scenario_id)
+
+    # Ensure rebuild step uses the same scenario we are reseeding from.
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            with ydoc.begin_transaction() as txn:
+                ui_map.set(txn, "current_scenario", scenario_id)
+    except Exception:
+        pass
 
     # Ensure scenario.json changes are picked up (loader caches content in-memory).
     try:

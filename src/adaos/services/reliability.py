@@ -2617,6 +2617,39 @@ def _node_label(node_names: Any, *, fallback: str) -> str:
     return fallback
 
 
+def _member_snapshot_state(*, connected: bool, last_snapshot_ago_s: Any) -> str:
+    if not connected:
+        return "down"
+    if last_snapshot_ago_s is None:
+        return "pending"
+    try:
+        age = float(last_snapshot_ago_s)
+    except Exception:
+        return "pending"
+    if age >= 90.0:
+        return "stale"
+    if age >= 30.0:
+        return "aging"
+    return "fresh"
+
+
+def _member_rollout_state(update_state: str, *, snapshot_state: str) -> str:
+    state = str(update_state or "").strip().lower()
+    if state in {"countdown", "draining", "stopping", "restarting", "applying", "rolling_back", "rollback", "validate", "validating"}:
+        return "in_progress"
+    if state in {"succeeded", "validated"}:
+        return "updated"
+    if state in {"rolled_back"}:
+        return "rolled_back"
+    if state in {"failed"}:
+        return "failed"
+    if state in {"cancelled"}:
+        return "cancelled"
+    if snapshot_state in {"pending", "aging", "stale"}:
+        return snapshot_state
+    return "steady"
+
+
 def hub_member_connection_state_snapshot(
     *,
     role: str,
@@ -2637,6 +2670,9 @@ def hub_member_connection_state_snapshot(
             raw = {"members": [], "member_total": 0, "connected_total": 0, "updated_at": now}
         members = raw.get("members") if isinstance(raw.get("members"), list) else []
         items: list[dict[str, Any]] = []
+        rollout_counts: dict[str, int] = {}
+        snapshot_counts: dict[str, int] = {}
+        version_counts: dict[str, int] = {}
         for index, item in enumerate(members, start=1):
             if not isinstance(item, dict):
                 continue
@@ -2646,6 +2682,20 @@ def hub_member_connection_state_snapshot(
             member_names = member_names or snapshot_names
             build = node_snapshot.get("build") if isinstance(node_snapshot.get("build"), dict) else {}
             update_status = node_snapshot.get("update_status") if isinstance(node_snapshot.get("update_status"), dict) else {}
+            connected = bool(item.get("connected", True))
+            snapshot_state = _member_snapshot_state(
+                connected=connected,
+                last_snapshot_ago_s=item.get("last_snapshot_ago_s"),
+            )
+            rollout_state = _member_rollout_state(
+                str(update_status.get("state") or ""),
+                snapshot_state=snapshot_state,
+            )
+            runtime_ref = str(build.get("runtime_git_short_commit") or build.get("runtime_version") or build.get("version") or "").strip()
+            snapshot_counts[snapshot_state] = int(snapshot_counts.get(snapshot_state) or 0) + 1
+            rollout_counts[rollout_state] = int(rollout_counts.get(rollout_state) or 0) + 1
+            if runtime_ref:
+                version_counts[runtime_ref] = int(version_counts.get(runtime_ref) or 0) + 1
             label = _node_label(
                 member_names,
                 fallback="member" if index == 1 else f"member {index}",
@@ -2658,7 +2708,9 @@ def hub_member_connection_state_snapshot(
                     "label": label,
                     "primary_name": label,
                     "role": "member",
-                    "state": "connected" if bool(item.get("connected", True)) else "down",
+                    "state": "connected" if connected else "down",
+                    "snapshot_state": snapshot_state,
+                    "rollout_state": rollout_state,
                     "snapshot_ready": bool(node_snapshot.get("ready")),
                     "snapshot_node_state": str(node_snapshot.get("node_state") or ""),
                     "snapshot_update_state": str(update_status.get("state") or ""),
@@ -2669,8 +2721,28 @@ def hub_member_connection_state_snapshot(
             )
         assessment_state = "idle"
         assessment_reason = "no_members_connected"
+        rollout_state = "idle"
+        rollout_reason = "no_members_connected"
         if items:
-            if all(isinstance(item.get("node_snapshot"), dict) and item.get("node_snapshot") for item in items):
+            if rollout_counts.get("failed"):
+                rollout_state = "degraded"
+                rollout_reason = "member_update_failed"
+            elif snapshot_counts.get("stale"):
+                rollout_state = "degraded"
+                rollout_reason = "member_snapshots_stale"
+            elif snapshot_counts.get("pending"):
+                rollout_state = "pressure"
+                rollout_reason = "member_snapshots_pending"
+            elif rollout_counts.get("in_progress"):
+                rollout_state = "transitioning"
+                rollout_reason = "member_update_in_progress"
+            else:
+                rollout_state = "nominal"
+                rollout_reason = "member_rollout_steady"
+            if rollout_state in {"degraded", "pressure"}:
+                assessment_state = rollout_state
+                assessment_reason = rollout_reason
+            elif all(isinstance(item.get("node_snapshot"), dict) and item.get("node_snapshot") for item in items):
                 assessment_state = "nominal"
                 assessment_reason = "member_links_and_snapshots_connected"
             else:
@@ -2691,6 +2763,13 @@ def hub_member_connection_state_snapshot(
             "member_total": len(items),
             "connected_total": len(items),
             "members": items,
+            "update_rollout": {
+                "state": rollout_state,
+                "reason": rollout_reason,
+                "snapshot_counts": snapshot_counts,
+                "rollout_counts": rollout_counts,
+                "version_counts": version_counts,
+            },
             "hub_event_total": int(raw.get("hub_event_total") or 0),
             "hub_core_update_broadcast_total": int(raw.get("hub_core_update_broadcast_total") or 0),
             "updated_at": float(raw.get("updated_at") or now),

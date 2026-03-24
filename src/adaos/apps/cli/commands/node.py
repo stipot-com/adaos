@@ -171,6 +171,9 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         assessment = hub_member_connection_state.get("assessment") if isinstance(hub_member_connection_state.get("assessment"), dict) else {}
         if str(hub_member_connection_state.get("role") or "") == "hub":
             members = hub_member_connection_state.get("members") if isinstance(hub_member_connection_state.get("members"), list) else []
+            rollout = hub_member_connection_state.get("update_rollout") if isinstance(hub_member_connection_state.get("update_rollout"), dict) else {}
+            rollout_counts = rollout.get("rollout_counts") if isinstance(rollout.get("rollout_counts"), dict) else {}
+            snapshot_counts = rollout.get("snapshot_counts") if isinstance(rollout.get("snapshot_counts"), dict) else {}
             labels = [
                 str(item.get("label") or item.get("node_id") or "member")
                 for item in members[:4]
@@ -191,6 +194,12 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"state={assessment.get('state') or 'unknown'} "
                 f"members={hub_member_connection_state.get('member_total') or 0} "
                 f"broadcasts={hub_member_connection_state.get('hub_core_update_broadcast_total') or 0} "
+                f"rollout={rollout.get('state') or '-'} "
+                f"fresh={snapshot_counts.get('fresh') or 0} "
+                f"pending={snapshot_counts.get('pending') or 0} "
+                f"stale={snapshot_counts.get('stale') or 0} "
+                f"in_progress={rollout_counts.get('in_progress') or 0} "
+                f"failed={rollout_counts.get('failed') or 0} "
                 f"nodes={','.join(labels) if labels else '-'} "
                 f"runtime={','.join(runtimes) if runtimes else '-'} "
                 f"update={','.join(updates) if updates else '-'}"
