@@ -318,8 +318,17 @@ def hub_root_reconnect(
     payload = {"transport": transport, "url_override": url_override}
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=float(timeout_s))
-        r.raise_for_status()
-        _print(r.json(), json_output=json_output)
+        try:
+            body = r.json()
+        except Exception:
+            body = (r.text or "").strip()
+        if int(r.status_code) >= 400:
+            typer.secho(f"[AdaOS] hub-root reconnect failed: HTTP {r.status_code}", fg=typer.colors.RED)
+            typer.echo(f"base_url: {base}")
+            if body:
+                typer.echo(body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, indent=2))
+            raise typer.Exit(code=1)
+        _print(body, json_output=json_output)
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
         payload = {
             "ok": False,

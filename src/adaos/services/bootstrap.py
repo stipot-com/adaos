@@ -298,102 +298,118 @@ class BootstrapService:
         """
         tr = str(transport or "").strip().lower() or None
         override = str(url_override or "").strip() or None
-        if tr is not None:
-            os.environ["HUB_NATS_TRANSPORT"] = tr
-        if override is not None:
-            os.environ["HUB_NATS_URL_OVERRIDE"] = override
-        elif url_override is not None:
-            # Explicit empty override clears it.
-            os.environ.pop("HUB_NATS_URL_OVERRIDE", None)
-        try:
-            strategy_update: dict[str, Any] = {}
-            if transport is not None:
-                strategy_update["requested_transport"] = tr
-            if url_override is not None:
-                strategy_update["url_override"] = override
-            if strategy_update:
-                configure_hub_root_transport_strategy(**strategy_update)
-            record_hub_root_transport_event(
-                "reconnect_requested",
-                transport=tr,
-                server=override,
-                summary="manual hub-root reconnect requested",
-                details={"requested_transport": tr, "url_override": override},
-            )
-        except Exception:
-            pass
-        # Trigger reconnect by closing the active connection if present.
         close_diag: dict[str, Any] = {"attempted": False, "timeout": False, "forced_ws_close": False}
-        nc = getattr(self, "_hub_root_nc", None)
-        if nc is not None:
-            try:
-                close = getattr(nc, "close", None)
-                if callable(close):
-                    close_diag["attempted"] = True
-                    try:
-                        close_timeout_s = float(os.getenv("HUB_ROOT_RECONNECT_CLOSE_TIMEOUT_S", "1.5") or "1.5")
-                    except Exception:
-                        close_timeout_s = 1.5
-                    if close_timeout_s < 0.2:
-                        close_timeout_s = 0.2
 
-                    # NOTE: asyncio.wait_for() can itself hang if the close coroutine ignores cancellation.
-                    # Use asyncio.wait() with timeout to ensure the HTTP request returns promptly.
-                    try:
-                        task = asyncio.create_task(close())
-                        done, pending = await asyncio.wait({task}, timeout=close_timeout_s)
-                        if pending:
-                            close_diag["timeout"] = True
-                            try:
-                                task.cancel()
-                            except Exception:
-                                pass
-                            # Best-effort: force-close websocket transport internals if present to avoid a stuck close().
-                            try:
-                                tr = getattr(nc, "_transport", None)
-                                ws = getattr(tr, "_ws", None) if tr else None
-                                close_task = getattr(tr, "_close_task", None) if tr else None
-                                client = getattr(tr, "_client", None) if tr else None
-                                try:
-                                    if ws is not None:
-                                        t = asyncio.create_task(ws.close())
-                                        await asyncio.wait({t}, timeout=0.5)
-                                        if not t.done():
-                                            try:
-                                                t.cancel()
-                                            except Exception:
-                                                pass
-                                except Exception:
-                                    pass
-                                try:
-                                    if close_task is not None and hasattr(close_task, "done") and not close_task.done():
-                                        close_task.set_result(None)
-                                except Exception:
-                                    pass
-                                try:
-                                    if client is not None:
-                                        t = asyncio.create_task(client.close())
-                                        await asyncio.wait({t}, timeout=0.5)
-                                        if not t.done():
-                                            try:
-                                                t.cancel()
-                                            except Exception:
-                                                pass
-                                except Exception:
-                                    pass
-                                close_diag["forced_ws_close"] = True
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
+        def _safe_strategy() -> dict[str, Any]:
+            try:
+                return hub_root_transport_strategy_snapshot()
+            except Exception:
+                return {}
+
+        try:
+            if tr is not None:
+                os.environ["HUB_NATS_TRANSPORT"] = tr
+            if override is not None:
+                os.environ["HUB_NATS_URL_OVERRIDE"] = override
+            elif url_override is not None:
+                # Explicit empty override clears it.
+                os.environ.pop("HUB_NATS_URL_OVERRIDE", None)
+            try:
+                strategy_update: dict[str, Any] = {}
+                if transport is not None:
+                    strategy_update["requested_transport"] = tr
+                if url_override is not None:
+                    strategy_update["url_override"] = override
+                if strategy_update:
+                    configure_hub_root_transport_strategy(**strategy_update)
+                record_hub_root_transport_event(
+                    "reconnect_requested",
+                    transport=tr,
+                    server=override,
+                    summary="manual hub-root reconnect requested",
+                    details={"requested_transport": tr, "url_override": override},
+                )
             except Exception:
                 pass
-        return {
-            "ok": True,
-            "requested": {"transport": tr, "url_override": override},
-            "strategy": hub_root_transport_strategy_snapshot(),
-            "close": close_diag,
-        }
+            # Trigger reconnect by closing the active connection if present.
+            nc = getattr(self, "_hub_root_nc", None)
+            if nc is not None:
+                try:
+                    close = getattr(nc, "close", None)
+                    if callable(close):
+                        close_diag["attempted"] = True
+                        try:
+                            close_timeout_s = float(os.getenv("HUB_ROOT_RECONNECT_CLOSE_TIMEOUT_S", "1.5") or "1.5")
+                        except Exception:
+                            close_timeout_s = 1.5
+                        if close_timeout_s < 0.2:
+                            close_timeout_s = 0.2
+
+                        # NOTE: asyncio.wait_for() can itself hang if the close coroutine ignores cancellation.
+                        # Use asyncio.wait() with timeout to ensure the HTTP request returns promptly.
+                        try:
+                            task = asyncio.create_task(close())
+                            _done, pending = await asyncio.wait({task}, timeout=close_timeout_s)
+                            if pending:
+                                close_diag["timeout"] = True
+                                try:
+                                    task.cancel()
+                                except Exception:
+                                    pass
+                                # Best-effort: force-close websocket transport internals if present to avoid a stuck close().
+                                try:
+                                    tr_obj = getattr(nc, "_transport", None)
+                                    ws = getattr(tr_obj, "_ws", None) if tr_obj else None
+                                    close_task = getattr(tr_obj, "_close_task", None) if tr_obj else None
+                                    client = getattr(tr_obj, "_client", None) if tr_obj else None
+                                    try:
+                                        if ws is not None:
+                                            t = asyncio.create_task(ws.close())
+                                            await asyncio.wait({t}, timeout=0.5)
+                                            if not t.done():
+                                                try:
+                                                    t.cancel()
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if close_task is not None and hasattr(close_task, "done") and not close_task.done():
+                                            close_task.set_result(None)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if client is not None:
+                                            t = asyncio.create_task(client.close())
+                                            await asyncio.wait({t}, timeout=0.5)
+                                            if not t.done():
+                                                try:
+                                                    t.cancel()
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                                    close_diag["forced_ws_close"] = True
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            return {
+                "ok": True,
+                "requested": {"transport": tr, "url_override": override},
+                "strategy": _safe_strategy(),
+                "close": close_diag,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "requested": {"transport": tr, "url_override": override},
+                "strategy": _safe_strategy(),
+                "close": close_diag,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     def _prepare_environment(self) -> None:
         """
