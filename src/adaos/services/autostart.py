@@ -6,9 +6,12 @@ import re
 import socket
 import subprocess
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
+
+import requests
 
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
@@ -226,6 +229,115 @@ def _tcp_probe(host: str, port: int, *, timeout: float = 0.6) -> bool:
         port_i = int(port)
     except Exception:
         return False
+
+
+def _local_url_to_host_port(url: str | None) -> tuple[str, int] | None:
+    raw = str(url or "").strip()
+    if not raw or not _is_local_url(raw):
+        return None
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "").strip() or "127.0.0.1"
+        port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
+    except Exception:
+        return None
+    return host, port
+
+
+def _pidfile_control_candidates() -> list[tuple[float, str, int]]:
+    found: list[tuple[float, str, int]] = []
+    try:
+        api_dir = _state_dir() / "api"
+        if not api_dir.exists():
+            return found
+        for path in api_dir.glob("serve-*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            advertised = _local_url_to_host_port(data.get("advertised_base"))
+            if advertised is None:
+                continue
+            try:
+                started_at = float(data.get("started_at") or 0.0)
+            except Exception:
+                started_at = 0.0
+            found.append((started_at, advertised[0], advertised[1]))
+    except Exception:
+        return []
+    found.sort(key=lambda item: item[0], reverse=True)
+    return found
+
+
+def _http_probe_local_control(host: str, port: int, *, timeout: float = 0.5) -> bool:
+    base = f"http://{str(host or '127.0.0.1').strip() or '127.0.0.1'}:{int(port)}"
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        resp = sess.get(f"{base}/api/ping", headers={"Accept": "application/json"}, timeout=timeout)
+        if int(resp.status_code) == 200:
+            return True
+    except Exception:
+        pass
+    token = _default_control_token()
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-AdaOS-Token"] = token
+    try:
+        resp = sess.get(f"{base}/api/node/status", headers=headers, timeout=timeout)
+        return int(resp.status_code) in {200, 401, 403}
+    except Exception:
+        return False
+
+
+def _discover_live_control_bind(configured_host: str, configured_port: int) -> tuple[str, int] | None:
+    candidates: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _push(host: str | None, port: int | None) -> None:
+        try:
+            host_norm = str(host or "").strip() or "127.0.0.1"
+            port_norm = int(port or 0)
+        except Exception:
+            return
+        if port_norm <= 0:
+            return
+        item = (host_norm, port_norm)
+        if item in seen:
+            return
+        seen.add(item)
+        candidates.append(item)
+
+    _push(configured_host, configured_port)
+    try:
+        conf = load_config()
+    except Exception:
+        conf = None
+    if conf is not None:
+        local_bind = _local_url_to_host_port(getattr(conf, "hub_url", None))
+        if local_bind is not None:
+            _push(*local_bind)
+    for _, host, port in _pidfile_control_candidates():
+        _push(host, port)
+    for item in (
+        ("127.0.0.1", 8777),
+        ("127.0.0.1", 8778),
+        ("127.0.0.1", 8779),
+        ("localhost", 8777),
+        ("localhost", 8778),
+        ("localhost", 8779),
+    ):
+        _push(*item)
+
+    for host, port in candidates:
+        if _http_probe_local_control(host, port):
+            return host, port
+    return None
     try:
         with socket.create_connection((host, port_i), timeout=timeout):
             return True
@@ -754,8 +866,10 @@ def status(ctx: AgentContext) -> dict:
         enabled = proc.returncode == 0 and state_raw not in {"disabled"}
         active = proc.returncode == 0 and state_raw in {"running"}
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
-        host, port = host_port or ("127.0.0.1", 8777)
-        listening = _tcp_probe(host, port) if enabled else False
+        configured_host, configured_port = host_port or ("127.0.0.1", 8777)
+        live_host_port = _discover_live_control_bind(configured_host, configured_port) if active else None
+        host, port = live_host_port or (configured_host, configured_port)
+        listening = bool(live_host_port) if active else False
         payload = {
             "platform": "windows",
             "enabled": enabled,
@@ -768,6 +882,11 @@ def status(ctx: AgentContext) -> dict:
             "wrapper": str(wrapper),
             "expected_wrapper": str(expected_wrapper),
         }
+        if (configured_host, configured_port) != (host, port):
+            payload["configured_host"] = configured_host
+            payload["configured_port"] = configured_port
+            payload["configured_url"] = f"http://{configured_host}:{int(configured_port)}"
+            payload["live_url"] = f"http://{host}:{int(port)}"
         if task_to_run:
             payload["task_to_run"] = task_to_run
         if registered_wrapper is not None:
@@ -824,9 +943,11 @@ def status(ctx: AgentContext) -> dict:
             wrapper = wrapper_from_service
 
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
-        host, port = host_port or ("127.0.0.1", 8777)
-        listening = _tcp_probe(host, port) if active else False
-        return {
+        configured_host, configured_port = host_port or ("127.0.0.1", 8777)
+        live_host_port = _discover_live_control_bind(configured_host, configured_port) if active else None
+        host, port = live_host_port or (configured_host, configured_port)
+        listening = bool(live_host_port) if active else False
+        payload = {
             "platform": "linux",
             "scope": scope,
             "enabled": bool(enabled),
@@ -840,6 +961,12 @@ def status(ctx: AgentContext) -> dict:
             "system_service": str(system_service_path),
             "wrapper": str(wrapper),
         }
+        if (configured_host, configured_port) != (host, port):
+            payload["configured_host"] = configured_host
+            payload["configured_port"] = configured_port
+            payload["configured_url"] = f"http://{configured_host}:{int(configured_port)}"
+            payload["live_url"] = f"http://{host}:{int(port)}"
+        return payload
 
     if _is_macos():
         plist_path = (_home() / "Library" / "LaunchAgents" / f"{_macos_label()}.plist").resolve()
@@ -852,9 +979,11 @@ def status(ctx: AgentContext) -> dict:
             active = probe.returncode == 0
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
-        host, port = host_port or ("127.0.0.1", 8777)
-        listening = _tcp_probe(host, port) if active else False
-        return {
+        configured_host, configured_port = host_port or ("127.0.0.1", 8777)
+        live_host_port = _discover_live_control_bind(configured_host, configured_port) if active else None
+        host, port = live_host_port or (configured_host, configured_port)
+        listening = bool(live_host_port) if active else False
+        payload = {
             "platform": "macos",
             "enabled": bool(enabled),
             "active": active,
@@ -865,6 +994,12 @@ def status(ctx: AgentContext) -> dict:
             "plist": str(plist_path),
             "wrapper": str(wrapper),
         }
+        if (configured_host, configured_port) != (host, port):
+            payload["configured_host"] = configured_host
+            payload["configured_port"] = configured_port
+            payload["configured_url"] = f"http://{configured_host}:{int(configured_port)}"
+            payload["live_url"] = f"http://{host}:{int(port)}"
+        return payload
 
     return {"platform": platform.platform(), "enabled": False}
 

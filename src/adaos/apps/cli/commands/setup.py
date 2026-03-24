@@ -14,7 +14,7 @@ from requests import RequestException
 
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.apps.cli.i18n import _
-from adaos.apps.cli.active_control import resolve_control_base_url
+from adaos.apps.cli.active_control import probe_control_api, resolve_control_base_url, resolve_control_token
 from adaos.apps.cli.commands.api import _resolve_stop_bind
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import get_ctx
@@ -370,20 +370,39 @@ def _repo_git_text(*args: str) -> str:
         return ""
 
 
-def _autostart_admin_base_url() -> str:
+def _autostart_admin_base_url(token: Optional[str] = None) -> str:
+    explicit = str(os.getenv("ADAOS_CONTROL_URL") or os.getenv("ADAOS_CONTROL_BASE") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
     ctx = get_ctx()
     status = autostart_status(ctx)
-    host = str(status.get("host") or "127.0.0.1").strip() or "127.0.0.1"
-    port = int(status.get("port") or 8777)
-    if bool(status.get("enabled")):
-        return f"http://{host}:{port}"
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: Optional[str]) -> None:
+        value = str(raw or "").strip().rstrip("/")
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    _push(status.get("live_url"))
+    _push(status.get("url"))
 
     conf = getattr(ctx, "config", None)
     bind = _resolve_stop_bind(conf)
     if bind is not None:
         host, port = bind
-        return f"http://{host}:{int(port)}"
-    return resolve_control_base_url()
+        _push(f"http://{host}:{int(port)}")
+    _push(resolve_control_base_url())
+
+    resolved_token = resolve_control_token(explicit=token)
+    for base in candidates:
+        code, _payload = probe_control_api(base_url=base, token=resolved_token, timeout_s=0.75)
+        if code is not None:
+            return base
+    return candidates[0] if candidates else resolve_control_base_url()
 
 
 def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
@@ -398,21 +417,23 @@ def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
 
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
     try:
-        response = requests.get(_autostart_admin_base_url() + path, headers=_autostart_admin_headers(token), timeout=15)
+        base_url = _autostart_admin_base_url(token=token)
+        response = requests.get(base_url + path, headers=_autostart_admin_headers(token), timeout=15)
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
         raise RuntimeError(
-            "local AdaOS admin API is unavailable; the service may be restarting or failed to boot. "
+            f"local AdaOS admin API is unavailable at {locals().get('base_url', 'unknown')}; the service may be restarting or failed to boot. "
             "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
         ) from exc
 
 
 def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
     try:
+        base_url = _autostart_admin_base_url(token=token)
         response = requests.post(
-            _autostart_admin_base_url() + path,
+            base_url + path,
             headers=_autostart_admin_headers(token),
             json=body or {},
             timeout=30,
@@ -422,7 +443,7 @@ def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optiona
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
         raise RuntimeError(
-            "local AdaOS admin API is unavailable; the service may be restarting or failed to boot. "
+            f"local AdaOS admin API is unavailable at {locals().get('base_url', 'unknown')}; the service may be restarting or failed to boot. "
             "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
         ) from exc
 
@@ -444,6 +465,10 @@ def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=
         typer.echo(msg)
         if "url" in s:
             typer.echo(f"url: {s['url']}")
+        if "configured_url" in s:
+            typer.echo(f"configured url: {s['configured_url']}")
+        if "live_url" in s:
+            typer.echo(f"live url: {s['live_url']}")
         if "service" in s:
             typer.echo(f"service: {s['service']}")
         if "task" in s:

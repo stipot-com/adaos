@@ -215,14 +215,27 @@ def probe_control_api(*, base_url: str, token: str, timeout_s: float = 2.0) -> t
     Best-effort probe: GET /api/node/status.
     Returns (status_code, json_payload_or_None). status_code None means unreachable.
     """
-    url = str(base_url).rstrip("/") + "/api/node/status"
+    base = str(base_url).rstrip("/")
     headers = {"X-AdaOS-Token": str(token or "")}
+    sess = requests.Session()
     try:
-        resp = requests.get(url, headers=headers, timeout=float(timeout_s))
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        resp = sess.get(base + "/api/node/status", headers=headers, timeout=float(timeout_s))
+    except Exception:
+        resp = None
+    if resp is not None:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+        return int(resp.status_code), payload if isinstance(payload, dict) else None
+    try:
+        resp = sess.get(base + "/api/ping", headers={"Accept": "application/json"}, timeout=float(timeout_s))
     except Exception:
         return None, None
-    try:
-        payload = resp.json()
-    except Exception:
-        payload = None
-    return int(resp.status_code), payload if isinstance(payload, dict) else None
+    if int(resp.status_code) != 200:
+        return int(resp.status_code), None
+    return int(resp.status_code), {"ok": True, "ping": True}
