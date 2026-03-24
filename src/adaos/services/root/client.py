@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
 import httpx
 import ssl, os
@@ -122,6 +123,15 @@ class RootHttpClient:
         if headers:
             request_headers = {str(k): str(v) for k, v in headers.items()}
         effective_verify = self.verify if verify is None else verify
+        if isinstance(effective_verify, str):
+            mode = (os.getenv("ADAOS_ROOT_CA_MODE") or "append").strip().lower()
+            if mode == "append":
+                ca_path = Path(effective_verify)
+                if ca_path.exists():
+                    ctx = ssl.create_default_context()
+                    # Add user-provided CA certificates without discarding system defaults.
+                    ctx.load_verify_locations(cafile=str(ca_path))
+                    effective_verify = ctx
         try:
             with httpx.Client(
                 base_url=self.base_url,

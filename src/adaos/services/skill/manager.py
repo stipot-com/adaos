@@ -317,6 +317,12 @@ class SkillManager:
         if manifest_path.exists():
             try:
                 tools_added = self._runtime_sync_manifest_tools(name, manifest_path, skill_dir)
+                tools_added.extend(
+                    self._runtime_sync_manifest_tools_from_handlers(
+                        manifest_path=manifest_path,
+                        handlers_main=skill_dir / "handlers" / "main.py",
+                    )
+                )
             except Exception as exc:
                 # Do not treat manifest sync as fatal for runtime_update; report in payload.
                 return {
@@ -502,6 +508,112 @@ class SkillManager:
                 "schema": {
                     "input": input_schema,
                     "output": output_schema,
+                },
+                "permissions": base_permissions,
+                "secrets": base_secrets,
+            }
+            added.append(tool_name)
+
+        if added:
+            data["tools"] = tools
+            tmp = manifest_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, manifest_path)
+
+        return added
+
+    @staticmethod
+    def _discover_tools_from_handlers(handlers_main: Path) -> list[tuple[str, str]]:
+        """
+        Discover ``@tool``-decorated handlers in ``handlers/main.py``.
+
+        Returns list of (tool_name, func_name). Best-effort: parse/read errors yield empty list.
+        """
+        try:
+            source = handlers_main.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        try:
+            tree = ast.parse(source, filename=str(handlers_main))
+        except SyntaxError:
+            return []
+
+        discovered: list[tuple[str, str]] = []
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            func_name = node.name
+            for dec in node.decorator_list:
+                # Match @tool("name") or @tool(name="..."), and bare @tool.
+                tool_name: str | None = None
+                if isinstance(dec, ast.Call):
+                    target = dec.func
+                    is_tool = False
+                    if isinstance(target, ast.Name) and target.id == "tool":
+                        is_tool = True
+                    elif isinstance(target, ast.Attribute) and target.attr == "tool":
+                        is_tool = True
+                    if not is_tool:
+                        continue
+                    if dec.args:
+                        arg = dec.args[0]
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            tool_name = arg.value
+                    if not tool_name:
+                        for kw in dec.keywords or []:
+                            if kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                                tool_name = kw.value.value
+                                break
+                elif isinstance(dec, ast.Name) and dec.id == "tool":
+                    tool_name = func_name
+                if tool_name:
+                    discovered.append((tool_name, func_name))
+        return discovered
+
+    def _runtime_sync_manifest_tools_from_handlers(
+        self,
+        *,
+        manifest_path: Path,
+        handlers_main: Path,
+    ) -> list[str]:
+        """
+        Extend ``resolved.manifest.json`` tools using ``@tool`` decorators from handlers.
+
+        Keeps runtime manifests up-to-date during local DEBUG sync without writing back
+        into the git-tracked workspace skill sources.
+        """
+        if not manifest_path.exists():
+            return []
+
+        discovered = self._discover_tools_from_handlers(handlers_main)
+        if not discovered:
+            return []
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = data.get("tools") or {}
+        if not isinstance(tools, dict):
+            tools = {}
+        policy = data.get("policy") or {}
+        default_timeout = float(policy.get("timeout_seconds") or 30.0)
+        default_retries = int(policy.get("retry_count") or 1)
+
+        template = next(iter(tools.values()), None)
+        base_permissions = template.get("permissions") if isinstance(template, dict) else None
+        base_secrets = template.get("secrets") if isinstance(template, dict) else []
+
+        added: list[str] = []
+        for tool_name, func_name in discovered:
+            if not tool_name or tool_name in tools:
+                continue
+            tools[tool_name] = {
+                "name": tool_name,
+                "module": "handlers.main",
+                "callable": func_name,
+                "timeout_seconds": default_timeout,
+                "retries": default_retries,
+                "schema": {
+                    "input": {"type": "object", "properties": {}},
+                    "output": {"type": "object", "properties": {}},
                 },
                 "permissions": base_permissions,
                 "secrets": base_secrets,
@@ -2086,7 +2198,7 @@ class SkillManager:
     def run_dev_skill_tests(self, name: str) -> Dict[str, TestResult]:
         """Запуск тестов DEV-навыка прямо из исходников (без install/slots/.runtime).
         - Ищем тесты в <dev>/skills/<name>/tests/**/*.py (pytest discovery).
-        - Логи пишем в <dev>/skills/<name>/logs/tests.dev.log.
+        - Логи пишем в <dev>/skills/.runtime/<name>/data/logs/tests.dev.log.
         - Запрещаем произвольные пути; только внутри DEV root.
         """
         self.caps.require("core", "skills.manage")
@@ -2137,8 +2249,9 @@ class SkillManager:
             "ADAOS_SKILL_PACKAGE": f"skills.{name}",
         }
 
-        # Директория логов — в корне навыка (не .runtime)
-        logs_dir = skill_dir / "logs"
+        env = self._runtime_env_dev(name)
+        env.ensure_base()
+        logs_dir = env.data_root() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = logs_dir / "tests.dev.log"
 
@@ -2156,7 +2269,7 @@ class SkillManager:
         # Запускаем тесты: источник — каталог навыка; pytest сам найдёт tests/**/*.py
         return run_tests(
             skill_dir,  # skill_source
-            log_path=log_path,  # <skill>/logs/tests.dev.log
+            log_path=log_path,  # <dev>/skills/.runtime/<name>/data/logs/tests.dev.log
             interpreter=interpreter,  # sys.executable или из манифеста
             python_paths=python_paths,  # из манифеста + package_root
             skill_env_path=skill_env_path,  # опционально
