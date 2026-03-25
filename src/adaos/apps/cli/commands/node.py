@@ -13,7 +13,9 @@ from adaos.apps.cli.active_control import resolve_control_token
 
 app = typer.Typer(help="Node operations (join/status/role).")
 role_app = typer.Typer(help="Manage local node role.")
+yjs_app = typer.Typer(help="Yjs sync diagnostics and control.")
 app.add_typer(role_app, name="role")
+app.add_typer(yjs_app, name="yjs")
 
 
 def _print(data: Any, *, json_output: bool) -> None:
@@ -296,6 +298,38 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     ):
         item = matrix.get(name) if isinstance(matrix.get(name), dict) else {}
         typer.echo(f"{name}: {'allowed' if item.get('allowed') else 'blocked'}")
+
+
+def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    assessment = runtime.get("assessment") if isinstance(runtime.get("assessment"), dict) else {}
+    transport = runtime.get("transport") if isinstance(runtime.get("transport"), dict) else {}
+    typer.echo(
+        "yjs_runtime: "
+        f"state={assessment.get('state') or 'unknown'} "
+        f"webspaces={runtime.get('webspace_total') or 0} "
+        f"active={runtime.get('active_webspace_total') or 0} "
+        f"compacted={runtime.get('compacted_webspace_total') or 0} "
+        f"updates={runtime.get('update_log_total') or 0} "
+        f"replay={runtime.get('replay_window_total') or 0} "
+        f"yws={transport.get('active_yws_connections') or 0}"
+    )
+    webspaces = runtime.get("webspaces") if isinstance(runtime.get("webspaces"), dict) else {}
+    for webspace_id, item in sorted(webspaces.items()):
+        if not isinstance(item, dict):
+            continue
+        typer.echo(
+            f"- {webspace_id}: "
+            f"mode={item.get('log_mode') or '-'} "
+            f"log={item.get('update_log_entries') or 0}/{item.get('max_update_log_entries') or 0} "
+            f"replay={item.get('replay_window_entries') or 0}/{item.get('replay_window_limit') or 0} "
+            f"writes={item.get('write_total') or 0} "
+            f"compacts={item.get('compact_total') or 0} "
+            f"backups={item.get('backup_total') or 0} "
+            f"snapshot={'yes' if item.get('snapshot_file_exists') else 'no'} "
+            f"last_write_ago={item.get('last_write_ago_s') if item.get('last_write_ago_s') is not None else '-'} "
+            f"last_backup_ago={item.get('last_backup_ago_s') if item.get('last_backup_ago_s') is not None else '-'}"
+        )
 
 
 def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
@@ -593,6 +627,71 @@ def node_members(
         f"hub_update={((hub.get('last_hub_core_update') if isinstance(hub.get('last_hub_core_update'), dict) else {}) or {}).get('state') or '-'} "
         f"follow_ok={follow.get('ok') if 'ok' in follow else '-'}"
     )
+
+
+@yjs_app.command("status")
+def node_yjs_status(
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path="/api/node/yjs/runtime",
+        token=resolve_control_token(explicit=cfg.token),
+        timeout=5.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs runtime probe failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs runtime probe failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    _print_yjs_runtime_summary(payload)
+
+
+@yjs_app.command("backup")
+def node_yjs_backup(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to snapshot"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}/backup",
+        token=resolve_control_token(explicit=cfg.token),
+        body={},
+        timeout=8.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs backup failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs backup failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(
+        f"yjs backup: accepted={payload.get('accepted')} webspace={payload.get('webspace_id') or webspace}"
+    )
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
 
 
 @app.command("member-refresh")

@@ -18,13 +18,14 @@ from adaos.services.media_library import (
     media_snapshot,
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
-from adaos.services.reliability import reliability_snapshot
+from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
+from adaos.services.yjs.store import get_ystore_for_webspace
 
 router = APIRouter()
 
@@ -275,6 +276,35 @@ async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
         "role": conf.role,
         "node_names": list(getattr(conf, "node_names", []) or []),
         "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+    }
+
+
+@router.get("/yjs/runtime", dependencies=[Depends(require_token)])
+async def node_yjs_runtime() -> dict[str, Any]:
+    conf = load_config()
+    return {
+        "ok": True,
+        "runtime": yjs_sync_runtime_snapshot(role=conf.role),
+    }
+
+
+@router.post("/yjs/webspaces/{webspace_id}/backup", dependencies=[Depends(require_token)])
+async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    store = get_ystore_for_webspace(str(webspace_id or "default") or "default")
+    await store.backup_to_disk()
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": str(webspace_id or "default") or "default",
+        "runtime": yjs_sync_runtime_snapshot(role=conf.role),
     }
 
 

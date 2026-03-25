@@ -37,6 +37,14 @@ export type YDocSyncRuntimeSnapshot = {
   lastFirstSyncTimeoutAt: number | null
   lastProviderDisconnectedAt: number | null
   lastSoftReauthAt: number | null
+  awareness: {
+    ephemeral: true
+    localStatePresent: boolean
+    totalStateCount: number
+    remoteStateCount: number
+    updateCount: number
+    lastUpdateAt: number | null
+  }
 }
 
 @Injectable({ providedIn: 'root' })
@@ -68,6 +76,12 @@ export class YDocService {
   private lastFirstSyncTimeoutAt: number | null = null
   private lastProviderDisconnectedAt: number | null = null
   private lastSoftReauthAt: number | null = null
+  private awarenessUpdateCount = 0
+  private lastAwarenessUpdateAt: number | null = null
+  private awarenessLocalStatePresent = false
+  private awarenessTotalStateCount = 0
+  private awarenessRemoteStateCount = 0
+  private awarenessCleanup?: () => void
 
   constructor(
     private adaos: AdaosClient,
@@ -95,6 +109,14 @@ export class YDocService {
       lastFirstSyncTimeoutAt: this.lastFirstSyncTimeoutAt,
       lastProviderDisconnectedAt: this.lastProviderDisconnectedAt,
       lastSoftReauthAt: this.lastSoftReauthAt,
+      awareness: {
+        ephemeral: true,
+        localStatePresent: this.awarenessLocalStatePresent,
+        totalStateCount: this.awarenessTotalStateCount,
+        remoteStateCount: this.awarenessRemoteStateCount,
+        updateCount: this.awarenessUpdateCount,
+        lastUpdateAt: this.lastAwarenessUpdateAt,
+      },
     }
   }
 
@@ -105,6 +127,68 @@ export class YDocService {
   private setSyncConnectionState(state: YDocSyncConnectionState): void {
     this.syncConnectionState$.next(state)
     this.publishSyncRuntime()
+  }
+
+  private refreshAwarenessState(awareness: any | undefined | null): void {
+    try {
+      const states = awareness?.getStates?.()
+      if (!states || typeof states.forEach !== 'function') {
+        this.awarenessLocalStatePresent = false
+        this.awarenessTotalStateCount = 0
+        this.awarenessRemoteStateCount = 0
+        return
+      }
+      let total = 0
+      let remote = 0
+      let localPresent = false
+      states.forEach((value: any, clientId: any) => {
+        total += 1
+        if (clientId === this.doc.clientID) {
+          localPresent = value != null
+        } else {
+          remote += 1
+        }
+      })
+      this.awarenessLocalStatePresent = localPresent
+      this.awarenessTotalStateCount = total
+      this.awarenessRemoteStateCount = remote
+    } catch {
+      this.awarenessLocalStatePresent = false
+      this.awarenessTotalStateCount = 0
+      this.awarenessRemoteStateCount = 0
+    }
+  }
+
+  private attachAwarenessSignals(provider: WebsocketProvider | DataChannelProvider | undefined): void {
+    try {
+      this.awarenessCleanup?.()
+    } catch {}
+    this.awarenessCleanup = undefined
+    const awareness = (provider as any)?.awareness
+    if (!awareness || typeof awareness.on !== 'function') {
+      this.refreshAwarenessState(null)
+      this.publishSyncRuntime()
+      return
+    }
+    const onUpdate = () => {
+      this.lastAwarenessUpdateAt = Date.now()
+      this.awarenessUpdateCount += 1
+      this.refreshAwarenessState(awareness)
+      this.publishSyncRuntime()
+    }
+    try {
+      awareness.on('update', onUpdate)
+      this.refreshAwarenessState(awareness)
+      this.publishSyncRuntime()
+      this.awarenessCleanup = () => {
+        try {
+          awareness.off?.('update', onUpdate)
+        } catch {}
+      }
+    } catch {
+      this.refreshAwarenessState(null)
+      this.publishSyncRuntime()
+    }
   }
 
   getSyncRuntimeSnapshot(): YDocSyncRuntimeSnapshot {
@@ -258,6 +342,7 @@ export class YDocService {
     this.provider = syncPath.provider
     this.lastProviderCreatedAt = Date.now()
     this.setSyncConnectionState('connecting')
+    this.attachAwarenessSignals(this.provider)
     this.attachProviderConnectionSignals(this.provider)
     this.publishSyncRuntime()
     return {
@@ -983,8 +1068,13 @@ export class YDocService {
     try {
       this.provider?.destroy()
     } catch {}
+    try {
+      this.awarenessCleanup?.()
+    } catch {}
+    this.awarenessCleanup = undefined
     this.provider = undefined
     this.currentSyncPath = null
+    this.refreshAwarenessState(null)
     this.setSyncConnectionState('idle')
     this.channels.reportSyncPathState(lastPath, 'idle')
   }

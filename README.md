@@ -79,6 +79,7 @@ adaos autostart update-status
 adaos autostart update-start
 # Контроль
 cat ~/adaos/.adaos/state/core_update/status.json
+cat ~/.adaos/state/core_update/status.json
 adaos autostart update-cancel
 adaos autostart update-rollback
 adaos autostart smoke-update

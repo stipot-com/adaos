@@ -78,6 +78,14 @@
 				>
 					<ion-icon name="close-outline"></ion-icon>
 				</ion-button>
+				<ion-button
+					*ngIf="isAuthenticated"
+					(click)="onClickYjsResync($event)"
+					title="Resync Yjs (Shift/Alt: clear local cache)"
+					aria-label="Resync Yjs"
+				>
+					<ion-icon name="sync-outline"></ion-icon>
+				</ion-button>
 				<ion-button *ngIf="isAuthenticated" (click)="onClickYjsReload()" [attr.aria-label]="'aria.reload' | t">
 					<ion-icon name="refresh-outline"></ion-icon>
 				</ion-button>

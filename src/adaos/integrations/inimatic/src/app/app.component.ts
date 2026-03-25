@@ -24,6 +24,7 @@ import { TPipe } from './runtime/t.pipe'
 import { HttpErrorResponse } from '@angular/common/http'
 import { observeDeep } from './y/y-helpers'
 import { HubMemberChannelHealth, HubMemberChannelSnapshot } from './core/adaos/hub-member-channels.service'
+import { YDocSyncRuntimeSnapshot } from './y/ydoc.service'
 
 type SemanticStatusView = {
 	label: string
@@ -173,8 +174,11 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.transportState$ = this.channels.transportState$.pipe(
 			distinctUntilChanged(),
 		)
-		this.semanticStatus$ = this.channels.snapshot$.pipe(
-			map((snapshot) => this.buildSemanticStatus(snapshot)),
+		this.semanticStatus$ = combineLatest([
+			this.channels.snapshot$,
+			this.ydoc.syncRuntime$,
+		]).pipe(
+			map(([snapshot, syncRuntime]) => this.buildSemanticStatus(snapshot, syncRuntime)),
 			distinctUntilChanged(
 				(a, b) =>
 					a.label === b.label &&
@@ -478,6 +482,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	private buildSemanticStatus(
 		snapshot: HubMemberChannelSnapshot,
+		syncRuntime: YDocSyncRuntimeSnapshot,
 	): SemanticStatusView {
 		const command = snapshot.channels.command
 		const sync = snapshot.channels.sync
@@ -536,6 +541,19 @@ export class AppComponent implements OnInit, OnDestroy {
 				}`,
 			)
 		}
+		details.push(
+			`sync-runtime=${syncRuntime.connectionState}:${syncRuntime.currentPath || '-'} persist=${
+				syncRuntime.persistenceEnabled ? 'on' : 'off'
+			}`,
+		)
+		if (syncRuntime.lastResyncReason) {
+			details.push(
+				`resync=${syncRuntime.lastResyncReason}:${syncRuntime.lastResyncOk === null ? 'pending' : syncRuntime.lastResyncOk ? 'ok' : 'timeout'} count=${syncRuntime.resyncCount}`,
+			)
+		}
+		details.push(
+			`awareness=ephemeral local=${syncRuntime.awareness.localStatePresent ? 'yes' : 'no'} remote=${syncRuntime.awareness.remoteStateCount} total=${syncRuntime.awareness.totalStateCount}`,
+		)
 		return {
 			label: labelMap[overall],
 			title: details.join(' | '),
@@ -597,6 +615,24 @@ export class AppComponent implements OnInit, OnDestroy {
 		// Keep the header refresh button semantically aligned with the existing
 		// "YJS reload" action (reseed current webspace from scenario).
 		await this.runWebspaceYjsAction('desktop.webspace.reload', ws)
+	}
+
+	async onClickYjsResync(ev?: MouseEvent): Promise<void> {
+		if (!this.isAuthenticated) return
+		const clearLocalCache = !!(ev?.altKey || ev?.shiftKey)
+		const ok = await this.ydoc.resyncCurrentWebspace({
+			reason: 'manual',
+			clearLocalCache,
+		})
+		const toast = await this.toastCtrl.create({
+			message: ok
+				? `Yjs resync complete${clearLocalCache ? ' (local cache reset)' : ''}.`
+				: `Yjs resync timed out${clearLocalCache ? ' after local cache reset' : ''}; background recovery continues.`,
+			duration: ok ? 2200 : 3200,
+			position: 'bottom',
+			color: ok ? 'success' : 'warning',
+		})
+		await toast.present()
 	}
 
 	private async runWebspaceYjsAction(
