@@ -8,6 +8,7 @@ import { isDebugEnabled } from '../debug-log'
 import { LoginService } from '../features/login/login.service'
 import { BehaviorSubject, firstValueFrom } from 'rxjs'
 import { HubMemberChannelsService } from '../core/adaos/hub-member-channels.service'
+import { HubMemberSyncRecoveryReason } from '../core/adaos/hub-member-channels.service'
 
 export type YDocSyncConnectionState =
   | 'idle'
@@ -166,14 +167,23 @@ export class YDocService {
   private createSyncProvider(
     serverUrl: string,
     room: string,
+    options?: {
+      recoveryReason?: HubMemberSyncRecoveryReason | null
+    },
   ): {
     provider: WebsocketProvider | DataChannelProvider
     path: 'webrtc_data:yjs' | 'yws'
   } {
-    const syncPath = this.channels.createSyncProvider(this.doc, serverUrl, room, {
-      dev: this.deviceId,
-      ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
-    })
+    const syncPath = this.channels.createSyncProvider(
+      this.doc,
+      serverUrl,
+      room,
+      {
+        dev: this.deviceId,
+        ...(this.adaos.getToken() ? { token: String(this.adaos.getToken()) } : {}),
+      },
+      options ?? {},
+    )
     this.currentSyncPath = syncPath.path as 'webrtc_data:yjs' | 'yws'
     this.provider = syncPath.provider
     this.syncConnectionState$.next('connecting')
@@ -231,15 +241,53 @@ export class YDocService {
     return false
   }
 
-  private async recoverSyncProvider(serverUrl: string, room: string): Promise<boolean> {
+  private async attemptSemanticSyncRecovery(
+    reason: HubMemberSyncRecoveryReason,
+    {
+      serverUrl,
+      room,
+      remoteProxy,
+    }: {
+      serverUrl: string
+      room: string
+      remoteProxy: boolean
+    },
+  ): Promise<boolean> {
+    if (
+      !this.channels.shouldRecoverSyncProvider({
+        path: this.currentSyncPath,
+        remoteProxy,
+        hasSeededContent: this.hasSeededDocContent(),
+      })
+    ) {
+      this.channels.recordSyncRecoverySkipped(reason)
+      return false
+    }
     this.destroyCurrentProvider()
     await new Promise<void>((resolve) => setTimeout(resolve, 250))
-    const syncPath = this.createSyncProvider(serverUrl, room)
-    if (isDebugEnabled()) {
-      // eslint-disable-next-line no-console
-      console.warn(`[YDocService] retrying sync provider after timeout via ${syncPath.path}`)
+    try {
+      const syncPath = this.createSyncProvider(serverUrl, room, {
+        recoveryReason: reason,
+      })
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[YDocService] retrying sync provider via ${syncPath.path} reason=${reason}`,
+        )
+      }
+      const ok = await this.waitForFirstSync(6000)
+      if (!ok) {
+        this.channels.recordSyncRecoveryFailed(reason)
+      }
+      return ok
+    } catch (err) {
+      this.channels.recordSyncRecoveryFailed(reason)
+      if (isDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.warn('[YDocService] sync provider recovery failed', err)
+      }
+      return false
     }
-    return this.waitForFirstSync(6000)
   }
 
   async initFromHub(): Promise<void> {
@@ -650,7 +698,11 @@ export class YDocService {
         console.warn('[YDocService] yws sync timeout; continuing and waiting for reconnect')
       }
       if (isRemoteProxy && syncPath.path === 'yws' && !this.hasSeededDocContent()) {
-        await this.recoverSyncProvider(serverUrl, room)
+        await this.attemptSemanticSyncRecovery('first_sync_timeout', {
+          serverUrl,
+          room,
+          remoteProxy: isRemoteProxy,
+        })
       }
     }
 
@@ -775,6 +827,16 @@ export class YDocService {
           if (st !== 'disconnected') return
           this.syncConnectionState$.next('disconnected')
           this.channels.reportSyncPathState(this.currentSyncPath, 'disconnected')
+          if (this.currentSyncPath === 'yws') {
+            const baseHttp = this.adaos.getBaseUrl().replace(/\/$/, '')
+            const serverUrl = `${baseHttp.replace(/^http/, 'ws')}/yws`
+            const room = this.currentWebspaceId || 'default'
+            void this.attemptSemanticSyncRecovery('provider_disconnected', {
+              serverUrl,
+              room,
+              remoteProxy: baseHttp.includes('/hubs/'),
+            })
+          }
           const jwt = (localStorage.getItem(this.sessionJwtKey) || '').trim()
           if (!jwt || !jwt.includes('.')) return
           if (!this.isJwtValid(jwt)) {

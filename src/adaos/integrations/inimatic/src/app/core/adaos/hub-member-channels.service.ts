@@ -46,6 +46,16 @@ export type HubMemberDirectRecoveryState =
 	| 'recovered'
 	| 'failed'
 
+export type HubMemberSyncRecoveryReason =
+	| 'first_sync_timeout'
+	| 'provider_disconnected'
+
+export type HubMemberSyncRecoveryState =
+	| 'idle'
+	| 'skipped'
+	| 'recreated'
+	| 'failed'
+
 export type HubMemberPathEvidenceState =
 	| 'idle'
 	| 'connecting'
@@ -77,6 +87,15 @@ export type HubMemberChannelSnapshot = {
 		eligible: boolean
 		lastAttemptAt: number | null
 		lastAttemptState: HubMemberDirectRecoveryState
+	}
+	syncRecovery: {
+		eligible: boolean
+		lastAttemptAt: number | null
+		lastAttemptState: HubMemberSyncRecoveryState
+		lastReason: HubMemberSyncRecoveryReason | null
+		recoveryCount: number
+		lastCreatedPath: HubMemberSemanticPath | null
+		lastCreatedAt: number | null
 	}
 	controlPlane: {
 		subscriptionsTracked: number
@@ -133,6 +152,7 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 export class HubMemberChannelsService {
 	private static readonly DIRECT_RECOVERY_HEALTH_CHECK_MS = 30_000
 	private static readonly DIRECT_RECOVERY_DEBOUNCE_MS = 1_000
+	private static readonly SYNC_RECOVERY_DEBOUNCE_MS = 1_500
 
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
@@ -146,6 +166,12 @@ export class HubMemberChannelsService {
 	private lastDirectNegotiationState: HubMemberDirectNegotiationState = 'idle'
 	private lastDirectRecoveryAt: number | null = null
 	private lastDirectRecoveryState: HubMemberDirectRecoveryState = 'idle'
+	private lastSyncProviderCreateAt: number | null = null
+	private lastSyncProviderPath: HubMemberSemanticPath | null = null
+	private lastSyncRecoveryAt: number | null = null
+	private lastSyncRecoveryState: HubMemberSyncRecoveryState = 'idle'
+	private lastSyncRecoveryReason: HubMemberSyncRecoveryReason | null = null
+	private syncRecoveryCount = 0
 	private lastControlReplayAt: number | null = null
 	private lastControlReplayCount = 0
 	private wsState: HubMemberPathEvidenceState = 'idle'
@@ -431,14 +457,28 @@ export class HubMemberChannelsService {
 		serverUrl: string,
 		room: string,
 		params: Record<string, string>,
+		{
+			recoveryReason = null,
+		}: {
+			recoveryReason?: HubMemberSyncRecoveryReason | null
+		} = {},
 	): {
 		provider: WebsocketProvider | DataChannelProvider
 		path: HubMemberSemanticPath
 	} {
+		const nowMs = Date.now()
 		const path = this.resolveActivePath('sync')
+		this.lastSyncProviderCreateAt = nowMs
 		if (path === 'webrtc_data:yjs') {
 			const dc = this.rtc.getYjsChannel()
 			if (dc && dc.readyState === 'open') {
+				this.lastSyncProviderPath = 'webrtc_data:yjs'
+				if (recoveryReason) {
+					this.lastSyncRecoveryAt = nowMs
+					this.lastSyncRecoveryReason = recoveryReason
+					this.lastSyncRecoveryState = 'recreated'
+					this.syncRecoveryCount += 1
+				}
 				this.reportSyncPathState('webrtc_data:yjs', 'connecting')
 				this.publishSnapshot()
 				return {
@@ -448,6 +488,13 @@ export class HubMemberChannelsService {
 			}
 		}
 		this.forceActivePath('sync', 'yws')
+		this.lastSyncProviderPath = 'yws'
+		if (recoveryReason) {
+			this.lastSyncRecoveryAt = nowMs
+			this.lastSyncRecoveryReason = recoveryReason
+			this.lastSyncRecoveryState = 'recreated'
+			this.syncRecoveryCount += 1
+		}
 		this.reportSyncPathState('yws', 'connecting')
 		return {
 			provider: new WebsocketProvider(serverUrl, room, doc, {
@@ -455,6 +502,48 @@ export class HubMemberChannelsService {
 			}),
 			path: 'yws',
 		}
+	}
+
+	shouldRecoverSyncProvider(
+		{
+			path,
+			remoteProxy,
+			hasSeededContent,
+		}: {
+			path: HubMemberSemanticPath | null
+			remoteProxy: boolean
+			hasSeededContent: boolean
+		},
+		nowMs = Date.now(),
+	): boolean {
+		if (!remoteProxy || path !== 'yws' || hasSeededContent) {
+			return false
+		}
+		if (this.wsState !== 'connected') {
+			return false
+		}
+		if (
+			this.lastSyncRecoveryAt &&
+			nowMs - this.lastSyncRecoveryAt <
+				HubMemberChannelsService.SYNC_RECOVERY_DEBOUNCE_MS
+		) {
+			return false
+		}
+		return true
+	}
+
+	recordSyncRecoverySkipped(reason: HubMemberSyncRecoveryReason): void {
+		this.lastSyncRecoveryAt = Date.now()
+		this.lastSyncRecoveryReason = reason
+		this.lastSyncRecoveryState = 'skipped'
+		this.publishSnapshot()
+	}
+
+	recordSyncRecoveryFailed(reason: HubMemberSyncRecoveryReason): void {
+		this.lastSyncRecoveryAt = Date.now()
+		this.lastSyncRecoveryReason = reason
+		this.lastSyncRecoveryState = 'failed'
+		this.publishSnapshot()
 	}
 
 	getSnapshot(): HubMemberChannelSnapshot {
@@ -581,6 +670,22 @@ export class HubMemberChannelsService {
 				lastAttemptAt: this.lastDirectRecoveryAt,
 				lastAttemptState: this.lastDirectRecoveryState,
 			},
+			syncRecovery: {
+				eligible: this.shouldRecoverSyncProvider(
+					{
+						path: this.currentSyncPath(),
+						remoteProxy: this.directRemoteProxyEligible,
+						hasSeededContent: false,
+					},
+					nowMs,
+				),
+				lastAttemptAt: this.lastSyncRecoveryAt,
+				lastAttemptState: this.lastSyncRecoveryState,
+				lastReason: this.lastSyncRecoveryReason,
+				recoveryCount: this.syncRecoveryCount,
+				lastCreatedPath: this.lastSyncProviderPath,
+				lastCreatedAt: this.lastSyncProviderCreateAt,
+			},
 			controlPlane: {
 				subscriptionsTracked: this.controlSubscriptions.size,
 				lastReplayAt: this.lastControlReplayAt,
@@ -644,6 +749,19 @@ export class HubMemberChannelsService {
 						: this.getRtcPathState('yjs'),
 			},
 		}
+	}
+
+	private currentSyncPath(): HubMemberSemanticPath | null {
+		if (this.syncPathEvidence.path === 'webrtc_data:yjs') {
+			return 'webrtc_data:yjs'
+		}
+		if (this.syncPathEvidence.path === 'yws') {
+			return 'yws'
+		}
+		const activeSyncPath = this.ensureState('sync').activePath
+		return activeSyncPath === 'webrtc_data:yjs' || activeSyncPath === 'yws'
+			? activeSyncPath
+			: null
 	}
 
 	private getPathEvidenceState(
