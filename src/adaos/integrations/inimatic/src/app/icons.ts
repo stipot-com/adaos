@@ -32,6 +32,7 @@ import {
   downloadOutline,
   flashOutline,
   folderOpenOutline,
+  gitNetworkOutline,
   hardwareChipOutline,
   helpCircleOutline,
   homeOutline,
@@ -54,6 +55,7 @@ import {
   appsOutline,
   contractOutline,
   expandOutline,
+  videocamOutline,
   warningOutline,
 } from 'ionicons/icons'
 
@@ -91,6 +93,7 @@ export function registerIcons(): void {
     'download-outline': downloadOutline,
     'flash-outline': flashOutline,
     'folder-open-outline': folderOpenOutline,
+    'git-network-outline': gitNetworkOutline,
     'hardware-chip-outline': hardwareChipOutline,
     'help-circle-outline': helpCircleOutline,
     'home-outline': homeOutline,
@@ -113,6 +116,7 @@ export function registerIcons(): void {
     'apps-outline': appsOutline,
     'contract-outline': contractOutline,
     'expand-outline': expandOutline,
+    'videocam-outline': videocamOutline,
     'warning-outline': warningOutline,
   })
 }

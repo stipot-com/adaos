@@ -29,6 +29,7 @@ import { Subscription } from 'rxjs'
       white-space: pre;
       overflow-x: auto;
       font-size: 0.85rem;
+      color: var(--ion-text-color, #111827);
     }
     code.lang-python {
       color: #f8f8f2;
@@ -43,7 +44,7 @@ import { Subscription } from 'rxjs'
       color: #ffd866;
     }
     code.lang-text {
-      color: #f8f8f2;
+      color: var(--ion-text-color, #111827);
     }
   `,
   ],
