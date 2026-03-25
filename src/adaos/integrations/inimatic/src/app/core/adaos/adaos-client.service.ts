@@ -228,10 +228,7 @@ export class AdaosClient {
 		const sendCmd = (kind: string, payload: Record<string, any>) =>
 			this.sendEventsCommand(kind, payload, 8000)
 
-		const ok = await this.channels.prepareDirectPaths(ws, sendCmd, {
-			onEventsMessage: (data: string) => {
-				this.channels.handleIncomingControlMessage(data)
-			},
+		const ok = await this.channels.prepareDirectPaths(sendCmd, {
 			remoteProxy: this.getBaseUrl().includes('/hubs/'),
 		})
 		return { ws, direct: ok }

@@ -184,7 +184,7 @@ Move transport ownership where it reduces blast radius, without moving protocol 
 
 ### Status
 
-Checkpoint reached.
+Completed for current browser/hub-member semantic ownership scope.
 Runtime now exposes explicit hub-member semantic channels (`command`, `event`, `sync`, `presence`, `route`, `media`) with one selected active path per channel, live transport evidence from `/ws`, `/yws`, WebRTC datachannels, and root relay runtime, plus explicit failover order, freeze windows, and duplicate-suppression notes.
 Frontend command delivery and sync-provider creation now also use a shared semantic channel selector instead of branching directly on WebRTC-vs-WS in application code, and the web header transport indicator now follows the selected semantic member path instead of raw WebRTC peer state.
 Frontend transport notifications now also follow semantic member-path transitions, and the client no longer keeps a separate application-level `useWebRtc` authority for command routing.
@@ -213,6 +213,8 @@ Hub-triggered member rollout is now also an explicit operator control surface in
 Hub/member observability no longer depends only on an active member link either: hub runtime now also tracks known members from subnet directory / heartbeat state, and Infra State node tabs can render those observed members even before a full snapshot-bearing member link is established.
 This is still intentionally a semantic-path checkpoint, not a full transport rewrite: signaling and subscription setup remain explicit control-plane WS behavior, and transport-specific orchestration still exists around negotiation, reconnect, and low-level datachannel runtime.
 The remaining direct-path reconnect policy is now also mostly lifted into the semantic layer: browser member channels decide when a disconnected direct path should first try `ICE restart` versus a full renegotiation, apply disconnect grace and exponential backoff there, and expose the low-level RTC runtime snapshot (`rtc state`, ICE state, last failure reason) to the browser UI. The WebRTC transport service now acts primarily as an executor of SDP/ICE operations instead of hiding retry policy inside the transport runtime itself.
+Control-plane RTC signaling ownership is now also aligned with that boundary: browser member channels route inbound `rtc.answer` / `rtc.ice` messages and outbound local ICE candidates through the semantic layer, while the low-level WebRTC transport remains responsible only for peer lifecycle, SDP/ICE execution, and datachannel runtime.
+With that boundary in place, the browser-side exit criteria are met for implementation scope: one logical stream has one active authority path, failover rules are explicit, and application/browser adapters no longer decide transport semantics themselves. Remaining work is live-session validation and later media specialization, not more structural Phase 4 refactoring.
 
 ### Focus
 

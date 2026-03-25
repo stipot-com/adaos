@@ -225,6 +225,9 @@ export class HubMemberChannelsService {
 		string,
 		PendingControlCommandEntry
 	>()
+	private directSignalCommand:
+		| ((kind: string, payload: Record<string, any>) => Promise<any>)
+		| null = null
 	private controlSessionSocket?: WebSocket
 	private controlSessionReady?: Promise<WebSocket>
 	private runtimeInitialized = false
@@ -274,6 +277,12 @@ export class HubMemberChannelsService {
 	)
 
 	constructor(private rtc: WebRtcTransportService) {
+		this.rtc.onEventsMessage = (data: string) => {
+			this.handleIncomingControlMessage(data)
+		}
+		this.rtc.onLocalIceCandidate = (candidate) => {
+			void this.sendRtcSignal('rtc.ice', { candidate })
+		}
 		this.rtc.state$.subscribe((state) => {
 			if (
 				(state === 'disconnected' || state === 'failed') &&
@@ -398,29 +407,26 @@ export class HubMemberChannelsService {
 	}
 
 	async prepareDirectPaths(
-		signalingWs: WebSocket,
 		sendCommand: (
 			kind: string,
 			payload: Record<string, any>,
 		) => Promise<any>,
 		{
-			onEventsMessage,
 			remoteProxy = false,
 		}: {
-			onEventsMessage?: ((data: string) => void) | null
 			remoteProxy?: boolean
 		} = {},
 	): Promise<boolean> {
 		const policy = this.resolveDirectPathPolicy()
 		this.directRemoteProxyEligible = remoteProxy
+		this.directSignalCommand = sendCommand
 		this.lastDirectNegotiationAt = Date.now()
 		if (!remoteProxy || !policy.enabled) {
 			this.lastDirectNegotiationState = 'skipped'
 			this.publishSnapshot()
 			return false
 		}
-		this.rtc.onEventsMessage = onEventsMessage ?? null
-		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
+		const ok = await this.rtc.negotiate(sendCommand)
 		this.lastDirectNegotiationState = ok ? 'connected' : 'failed'
 		this.noteDirectRecoveryResult(ok, Date.now(), 'full_renegotiate')
 		this.publishSnapshot()
@@ -580,6 +586,21 @@ export class HubMemberChannelsService {
 				}
 				return { handled: true, ack: msg }
 			}
+			if (msg?.ch === 'events' && msg?.kind === 'rtc.ice') {
+				this.rtc.acceptRemoteIceCandidate(msg?.payload?.candidate)
+				return { handled: true }
+			}
+			if (
+				msg?.ch === 'events' &&
+				msg?.kind === 'rtc.answer' &&
+				msg?.payload?.sdp
+			) {
+				this.rtc.acceptRemoteAnswer({
+					type: msg?.payload?.type || 'answer',
+					sdp: msg?.payload?.sdp,
+				})
+				return { handled: true }
+			}
 		} catch {}
 		return { handled: false }
 	}
@@ -660,6 +681,20 @@ export class HubMemberChannelsService {
 		this.lastControlReplayCount = normalized.length
 		this.publishSnapshot()
 		return normalized.length
+	}
+
+	private async sendRtcSignal(
+		kind: string,
+		payload: Record<string, any>,
+	): Promise<void> {
+		if (!this.directSignalCommand) {
+			return
+		}
+		try {
+			await this.directSignalCommand(kind, payload)
+		} catch {
+			// Direct-path probing is best-effort; semantic recovery policy handles retries.
+		}
 	}
 
 	private isDirectRecoveryEligible(nowMs = Date.now()): boolean {

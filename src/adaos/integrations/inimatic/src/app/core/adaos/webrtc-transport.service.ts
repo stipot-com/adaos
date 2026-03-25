@@ -24,9 +24,9 @@ export type RtcTransportRecoverySnapshot = {
 /**
  * Low-level WebRTC executor for the browser member transport.
  *
- * Policy decisions such as when to probe, retry, back off, or fall back now
- * belong to the semantic member-channel layer. This service only owns peer
- * lifecycle, SDP/ICE execution, and DataChannel callbacks.
+ * Semantic channel policy owns control-plane routing, retry/backoff, and
+ * failover authority. This service only owns peer lifecycle, SDP/ICE
+ * execution, and DataChannel callbacks.
  */
 @Injectable({ providedIn: 'root' })
 export class WebRtcTransportService {
@@ -39,8 +39,6 @@ export class WebRtcTransportService {
 	private pc: RTCPeerConnection | null = null
 	private eventsChannel: RTCDataChannel | null = null
 	private yjsChannel: RTCDataChannel | null = null
-	private signalingWs: WebSocket | null = null
-	private signalingListener: ((ev: MessageEvent) => void) | null = null
 	private lastConnectedTimestamp = 0
 	private lastDisconnectedTimestamp = 0
 	private lastFailureTimestamp = 0
@@ -57,20 +55,18 @@ export class WebRtcTransportService {
 
 	onEventsMessage: ((data: string) => void) | null = null
 	onYjsMessage: ((data: ArrayBuffer) => void) | null = null
+	onLocalIceCandidate: ((candidate: RTCIceCandidateInit) => void) | null = null
 
 	async negotiate(
-		signalingWs: WebSocket,
 		sendCommand: (
 			kind: string,
 			payload: Record<string, any>,
 		) => Promise<any>,
 	): Promise<boolean> {
 		this.close()
-		this.signalingWs = signalingWs
 		this.state$.next('signaling')
 
 		try {
-			this.installSignalingListener(signalingWs)
 			return await this.doNegotiate(sendCommand)
 		} catch (err) {
 			this.lastFailureTimestamp = Date.now()
@@ -119,13 +115,11 @@ export class WebRtcTransportService {
 			iceConnectionState: this.pc?.iceConnectionState || 'new',
 			connectionState: this.pc?.connectionState || 'new',
 			canRestartIce: !!(this.pc && this.pendingSendCommand),
-			canRenegotiate: !!(this.signalingWs && this.pendingSendCommand),
+			canRenegotiate: !!this.pendingSendCommand,
 		}
 	}
 
 	close(): void {
-		this.removeSignalingListener()
-
 		if (this.eventsChannel) {
 			try {
 				this.eventsChannel.close()
@@ -144,6 +138,9 @@ export class WebRtcTransportService {
 			} catch {}
 			this.pc = null
 		}
+		try {
+			this.answerReject?.(new Error('rtc_closed'))
+		} catch {}
 		this.answerResolve = null
 		this.answerReject = null
 		this.pendingSendCommand = null
@@ -152,11 +149,11 @@ export class WebRtcTransportService {
 	}
 
 	async triggerFullRenegotiation(): Promise<boolean> {
-		if (!this.signalingWs || !this.pendingSendCommand) {
-			console.warn('Cannot renegotiate: missing WebSocket or sendCommand')
+		if (!this.pendingSendCommand) {
+			console.warn('Cannot renegotiate: missing sendCommand')
 			return false
 		}
-		return await this.negotiate(this.signalingWs, this.pendingSendCommand)
+		return await this.negotiate(this.pendingSendCommand)
 	}
 
 	async restartIceTransport(): Promise<boolean> {
@@ -193,6 +190,23 @@ export class WebRtcTransportService {
 		}
 	}
 
+	acceptRemoteIceCandidate(candidate: RTCIceCandidateInit | null | undefined): void {
+		if (!candidate || !this.pc) {
+			return
+		}
+		this.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
+	}
+
+	acceptRemoteAnswer(answer: RTCSessionDescriptionInit | null | undefined): void {
+		if (!answer?.sdp) {
+			return
+		}
+		this.answerResolve?.({
+			type: answer.type || 'answer',
+			sdp: answer.sdp,
+		})
+	}
+
 	private async doNegotiate(
 		sendCommand: (
 			kind: string,
@@ -216,13 +230,11 @@ export class WebRtcTransportService {
 
 		pc.onicecandidate = (ev) => {
 			if (ev.candidate) {
-				sendCommand('rtc.ice', {
-					candidate: {
-						candidate: ev.candidate.candidate,
-						sdpMid: ev.candidate.sdpMid,
-						sdpMLineIndex: ev.candidate.sdpMLineIndex,
-					},
-				}).catch(() => {})
+				this.onLocalIceCandidate?.({
+					candidate: ev.candidate.candidate,
+					sdpMid: ev.candidate.sdpMid,
+					sdpMLineIndex: ev.candidate.sdpMLineIndex,
+				})
 			}
 		}
 
@@ -240,9 +252,6 @@ export class WebRtcTransportService {
 			sdp: offer.sdp,
 			type: offer.type,
 		})
-
-		this.answerResolve = null
-		this.answerReject = null
 
 		if (ack?.data?.sdp) {
 			await pc.setRemoteDescription({
@@ -267,6 +276,8 @@ export class WebRtcTransportService {
 			}
 		}
 
+		this.answerResolve = null
+		this.answerReject = null
 		this.state$.next('connecting')
 
 		let dcTimer: ReturnType<typeof setTimeout> | null = null
@@ -354,45 +365,5 @@ export class WebRtcTransportService {
 				this.state$.next('failed')
 			}
 		}
-	}
-
-	private installSignalingListener(ws: WebSocket): void {
-		this.removeSignalingListener()
-		const listener = (ev: MessageEvent) => {
-			try {
-				const msg = JSON.parse(ev.data)
-				if (msg?.ch === 'events' && msg?.kind === 'rtc.ice') {
-					const c = msg.payload?.candidate
-					if (c && this.pc) {
-						this.pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-					}
-				}
-				if (
-					msg?.ch === 'events' &&
-					msg?.kind === 'rtc.answer' &&
-					msg?.payload?.sdp
-				) {
-					this.answerResolve?.({
-						type: msg.payload.type || 'answer',
-						sdp: msg.payload.sdp,
-					})
-				}
-			} catch {
-				// ignore non-json or irrelevant messages
-			}
-		}
-		this.signalingListener = listener
-		ws.addEventListener('message', listener)
-	}
-
-	private removeSignalingListener(): void {
-		if (this.signalingWs && this.signalingListener) {
-			this.signalingWs.removeEventListener(
-				'message',
-				this.signalingListener,
-			)
-		}
-		this.signalingListener = null
-		this.signalingWs = null
 	}
 }
