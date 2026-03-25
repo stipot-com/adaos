@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from adaos.apps.api.auth import require_token
+from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
+from adaos.services.media_library import (
+    ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+    guess_media_type,
+    list_media_files,
+    media_capabilities,
+    media_file_path,
+    media_snapshot,
+)
 from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot
 from adaos.services.realtime_sidecar import (
@@ -66,6 +76,25 @@ class MemberUpdateRequest(BaseModel):
     drain_timeout_sec: float | None = None
     signal_delay_sec: float | None = None
     reason: str | None = None
+
+
+def _raise_400(detail: str) -> None:
+    raise HTTPException(status_code=400, detail=detail)
+
+
+async def _require_request_token(
+    request: Request,
+    *,
+    authorization: str | None = Header(default=None),
+    x_adaos_token: str | None = Header(default=None),
+) -> None:
+    ensure_token(
+        resolve_presented_token(
+            x_adaos_token=x_adaos_token,
+            authorization=authorization,
+            query_token=str(request.query_params.get("token") or "").strip() or None,
+        )
+    )
 
 
 def _route_info(role: str) -> tuple[str | None, bool | None]:
@@ -247,6 +276,91 @@ async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
         "node_names": list(getattr(conf, "node_names", []) or []),
         "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
     }
+
+
+@router.get("/media/files", dependencies=[Depends(require_token)])
+async def list_media_library() -> dict[str, Any]:
+    snapshot = media_snapshot()
+    snapshot["proxy_limits"] = {
+        "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+    }
+    return snapshot
+
+
+@router.put("/media/files/{filename}", dependencies=[Depends(require_token)])
+async def upload_media_file(filename: str, request: Request) -> dict[str, Any]:
+    try:
+        target = media_file_path(filename)
+    except ValueError as exc:
+        _raise_400(str(exc))
+
+    replaced = target.exists()
+    tmp_path = target.with_name(f"{target.name}.upload-{os.getpid()}-{id(request)}.part")
+    total_bytes = 0
+    try:
+        with tmp_path.open("wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                total_bytes += len(chunk)
+        tmp_path.replace(target)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+    return {
+        "ok": True,
+        "filename": target.name,
+        "size_bytes": total_bytes,
+        "mime_type": guess_media_type(target.name),
+        "replaced": replaced,
+    }
+
+
+@router.delete("/media/files/{filename}", dependencies=[Depends(require_token)])
+async def delete_media_file(filename: str) -> dict[str, Any]:
+    try:
+        target = media_file_path(filename)
+    except ValueError as exc:
+        _raise_400(str(exc))
+    existed = target.exists()
+    if existed:
+        target.unlink()
+    return {
+        "ok": True,
+        "filename": target.name,
+        "deleted": existed,
+        "items": list_media_files(),
+    }
+
+
+@router.get("/media/files/content/{filename}")
+async def media_file_content(
+    filename: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_adaos_token: str | None = Header(default=None),
+):
+    await _require_request_token(
+        request,
+        authorization=authorization,
+        x_adaos_token=x_adaos_token,
+    )
+    try:
+        target = media_file_path(filename)
+    except ValueError as exc:
+        _raise_400(str(exc))
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="media_file_not_found")
+    return FileResponse(
+        path=target,
+        media_type=guess_media_type(target.name),
+        filename=target.name,
+    )
 
 
 @router.get("/members", dependencies=[Depends(require_token)])

@@ -31,6 +31,7 @@ import { ListWidgetComponent } from './list.widget.component'
 import { FormWidgetComponent } from './form.widget.component'
 import { JsonViewerWidgetComponent } from './json-viewer.widget.component'
 import { TableWidgetComponent } from './table.widget.component'
+import { MediaPlayerWidgetComponent } from './media-player.widget.component'
 import { isVerboseDebugEnabled } from '../../debug-log'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
@@ -52,6 +53,7 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'item.codeViewer': CodeViewerWidgetComponent,
   'item.details': DetailsWidgetComponent,
   'desktop.widgets': DesktopWidgetsWidgetComponent,
+  'media.videoBrowser': MediaPlayerWidgetComponent,
   'host.webspaceControls': CommandBarWidgetComponent,
   'input.text': TextInputWidgetComponent,
 }

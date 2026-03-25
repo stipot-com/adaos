@@ -19,6 +19,7 @@ export type WidgetType =
   | 'input.text'
   | 'input.selector'
   | 'desktop.widgets'
+  | 'media.videoBrowser'
   | 'host.webspaceControls'
 
 export interface LayoutArea {

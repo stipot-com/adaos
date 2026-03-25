@@ -12,6 +12,30 @@ def _expected_token() -> str:
         return "dev-local-token"
 
 
+def resolve_presented_token(
+    *,
+    x_adaos_token: str | None = None,
+    authorization: str | None = None,
+    query_token: str | None = None,
+) -> str | None:
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    elif x_adaos_token:
+        token = x_adaos_token
+    elif query_token:
+        token = query_token
+    return token
+
+
+def ensure_token(token: str | None) -> None:
+    if token != _expected_token():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing X-AdaOS-Token",
+        )
+
+
 async def require_token(
     x_adaos_token: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -19,17 +43,12 @@ async def require_token(
     """
     Принимаем либо X-AdaOS-Token, либо Authorization: Bearer <token>.
     """
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    elif x_adaos_token:
-        token = x_adaos_token
-
-    if token != _expected_token():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-AdaOS-Token",
+    ensure_token(
+        resolve_presented_token(
+            x_adaos_token=x_adaos_token,
+            authorization=authorization,
         )
+    )
 
 
 def require_owner_token(token: str) -> None:
