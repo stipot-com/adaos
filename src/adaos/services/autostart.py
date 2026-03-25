@@ -66,37 +66,34 @@ def _base_dir_from_spec(ctx: AgentContext, spec: AutostartSpec | None = None) ->
 
 
 def _service_settings(ctx: AgentContext) -> Settings:
+    settings = getattr(ctx, "settings", None)
+    profile = str(getattr(settings, "profile", "default") or "default")
+    base_dir = ctx.paths.base_dir()
+    base_dir = base_dir() if callable(base_dir) else base_dir
+    base_dir = Path(base_dir).expanduser().resolve()
+
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv is None:
-        settings = getattr(ctx, "settings", None)
         if isinstance(settings, Settings):
-            return settings
-        profile = str(getattr(settings, "profile", "default") or "default")
-        return Settings.from_sources().with_overrides(base_dir=ctx.paths.base_dir(), profile=profile)
+            return settings.with_overrides(base_dir=base_dir, profile=profile)
+        return Settings.from_sources().with_overrides(base_dir=base_dir, profile=profile)
 
     try:
         env_file_vars = _parse_env_file(str(shared_dotenv))
-        env_type = str(env_file_vars.get("ENV_TYPE", "prod") or "prod").strip()
-        profile = str(env_file_vars.get("ADAOS_PROFILE", "") or "").strip() or getattr(
-            ctx.settings, "profile", "default"
-        )
+        profile = str(env_file_vars.get("ADAOS_PROFILE", "") or "").strip() or profile
         override_base = str(env_file_vars.get("ADAOS_BASE_DIR", "") or "").strip()
-        override_base_suffix = str(env_file_vars.get("ADAOS_BASE_DIR_SUFFIX", "") or "").strip()
-        base_dir_env = str(env_file_vars.get("BASE_DIR", "") or "").strip()
+        legacy_base = str(env_file_vars.get("BASE_DIR", "") or "").strip()
         if override_base:
             base_dir = Path(override_base).expanduser().resolve()
-        elif env_type == "dev":
-            base_dir = (shared_dotenv.parent / f".adaos{override_base_suffix}").resolve()
-        elif base_dir_env:
-            base_dir = Path(base_dir_env).expanduser().resolve()
-        else:
-            base_dir = (Path.home() / ".adaos").resolve()
-        settings = getattr(ctx, "settings", None)
+        elif legacy_base:
+            base_dir = Path(legacy_base).expanduser().resolve()
         if isinstance(settings, Settings):
             return settings.with_overrides(base_dir=base_dir, profile=profile)
         return Settings.from_sources(env_file=str(shared_dotenv)).with_overrides(base_dir=base_dir, profile=profile)
     except Exception:
-        return getattr(ctx, "settings", None) or Settings.from_sources()
+        if isinstance(settings, Settings):
+            return settings.with_overrides(base_dir=base_dir, profile=profile)
+        return Settings.from_sources().with_overrides(base_dir=base_dir, profile=profile)
 
 
 def default_spec(
