@@ -2,6 +2,7 @@
 from __future__ import annotations
 import subprocess, os
 from pathlib import Path
+import logging
 from typing import Optional, Final, Sequence, Union
 from adaos.ports.git import GitClient
 
@@ -10,6 +11,8 @@ class GitError(RuntimeError): ...
 
 
 StrOrPath = Union[str, Path]
+
+_log = logging.getLogger(__name__)
 
 
 def _run_git(args: list[str], cwd: Optional[StrOrPath] = None) -> str:
@@ -28,6 +31,75 @@ def _safe_git(dir: StrOrPath, args: list[str]) -> Optional[str]:
         return _run_git(args, cwd=dir).strip()
     except Exception:
         return None
+
+
+def _is_adaos_workspace_repo(dir: StrOrPath) -> bool:
+    """
+    Guardrail: only apply auto-reconciliation to the AdaOS workspace monorepo.
+
+    The original incident happens on "/root/adaos/.adaos/workspace" where
+    operational code expects the worktree to be fully materialized by sync.
+    """
+    try:
+        p = Path(dir).resolve()
+    except Exception:
+        p = Path(dir)
+    parts = [str(x).lower() for x in p.parts]
+    if not parts:
+        return False
+    if parts[-1] != "workspace":
+        return False
+    return any(part == ".adaos" for part in parts)
+
+
+def _truncate(text: str, *, limit: int = 12000) -> str:
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n... (truncated)"
+
+
+def _log_git_snapshot(dir: StrOrPath) -> None:
+    repo_path = str(Path(dir))
+    try:
+        st = _run_git(["status"], cwd=dir)
+        _log.warning("git snapshot repo=%s\n%s", repo_path, _truncate(st, limit=8000))
+    except Exception as exc:
+        _log.warning("git snapshot status failed repo=%s err=%s", repo_path, exc)
+    try:
+        lg = _run_git(["log", "--oneline", "--decorate", "-5"], cwd=dir)
+        _log.warning("git snapshot log repo=%s\n%s", repo_path, _truncate(lg, limit=8000))
+    except Exception as exc:
+        _log.warning("git snapshot log failed repo=%s err=%s", repo_path, exc)
+
+
+def _log_git_replacement_diff(dir: StrOrPath, *, target_ref: str) -> None:
+    """
+    Emit a best-effort diff that shows what will change if we hard-reset to target_ref.
+    """
+    repo_path = str(Path(dir))
+    head = _safe_git(dir, ["rev-parse", "HEAD"]) or ""
+    target = _safe_git(dir, ["rev-parse", target_ref]) or ""
+    if head and target:
+        _log.warning("git reconcile reset repo=%s from=%s to=%s", repo_path, head[:12], target[:12])
+    try:
+        lr = _run_git(["log", "--oneline", "--left-right", "--cherry", f"HEAD...{target_ref}"], cwd=dir)
+        if lr.strip():
+            _log.warning("git reconcile commits repo=%s\n%s", repo_path, _truncate(lr, limit=12000))
+    except Exception as exc:
+        _log.warning("git reconcile commits failed repo=%s err=%s", repo_path, exc)
+    for args, title in (
+        (["diff", "--stat", f"HEAD..{target_ref}"], "git reconcile diff --stat"),
+        (["diff", "--name-status", f"HEAD..{target_ref}"], "git reconcile diff --name-status"),
+        (["diff", f"HEAD..{target_ref}"], "git reconcile diff"),
+    ):
+        try:
+            out = _run_git(args, cwd=dir)
+            if out.strip():
+                _log.warning("%s repo=%s\n%s", title, repo_path, _truncate(out))
+        except Exception as exc:
+            _log.warning("%s failed repo=%s err=%s", title, repo_path, exc)
 
 
 def _format_divergence_hint(dir: StrOrPath) -> Optional[str]:
@@ -154,6 +226,28 @@ class CliGitClient(GitClient):
                     _run_git(["pull", "--ff-only", "origin", branch], cwd=dir)
                     return
             if "not possible to fast-forward" in lowered or "diverging branches" in lowered or "non-fast-forward" in lowered:
+                # Auto-reconcile only for AdaOS workspace monorepo.
+                if _is_adaos_workspace_repo(dir):
+                    env_type = str(os.getenv("ENV_TYPE", "prod") or "prod").strip().lower()
+                    repo_path = str(Path(dir))
+                    if env_type == "dev":
+                        # In dev, keep history by rebasing and autostashing, and log a snapshot for diagnostics.
+                        _log.warning("git pull divergence detected; auto-rebasing (ENV_TYPE=dev) repo=%s", repo_path)
+                        _log_git_snapshot(dir)
+                        _run_git(["pull", "--rebase", "--autostash"], cwd=dir)
+                        return
+                    # In non-dev (prod/stage), prefer a deterministic state: reset to origin/main.
+                    _log.warning(
+                        "git pull divergence detected; auto-resetting to origin/main (ENV_TYPE=%s) repo=%s",
+                        env_type,
+                        repo_path,
+                    )
+                    _run_git(["fetch", "origin"], cwd=dir)
+                    _log_git_snapshot(dir)
+                    _log_git_replacement_diff(dir, target_ref="origin/main")
+                    _run_git(["reset", "--hard", "origin/main"], cwd=dir)
+                    return
+
                 hint = _format_divergence_hint(dir)
                 if hint:
                     raise GitError(f"{msg}\n\n{hint}") from exc

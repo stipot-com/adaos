@@ -212,6 +212,7 @@ Those same hub-member semantics are now also promoted into the canonical readine
 Hub-triggered member rollout is now also an explicit operator control surface instead of passive follow only: the hub can request `update` / `cancel` / `rollback` on a selected member over the member link, members execute that through their own local admin API, and CLI plus Infra State surface the last remote control request/result together with the member snapshot.
 Hub/member observability no longer depends only on an active member link either: hub runtime now also tracks known members from subnet directory / heartbeat state, and Infra State node tabs can render those observed members even before a full snapshot-bearing member link is established.
 This is still intentionally a semantic-path checkpoint, not a full transport rewrite: signaling and subscription setup remain explicit control-plane WS behavior, and transport-specific orchestration still exists around negotiation, reconnect, and low-level datachannel runtime.
+The remaining direct-path reconnect policy is now also mostly lifted into the semantic layer: browser member channels decide when a disconnected direct path should first try `ICE restart` versus a full renegotiation, apply disconnect grace and exponential backoff there, and expose the low-level RTC runtime snapshot (`rtc state`, ICE state, last failure reason) to the browser UI. The WebRTC transport service now acts primarily as an executor of SDP/ICE operations instead of hiding retry policy inside the transport runtime itself.
 
 ### Focus
 

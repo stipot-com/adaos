@@ -491,7 +491,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		])
 		const labelMap: Record<HubMemberChannelHealth, string> = {
 			ready: 'link ok',
-			fallback: 'link fallback',
+			fallback: 'link relay',
 			recovering: 'link recovering',
 			degraded: 'link degraded',
 			unavailable: 'link unavailable',
@@ -502,11 +502,19 @@ export class AppComponent implements OnInit, OnDestroy {
 			`route=${route.health}${route.activePath ? ` via ${route.activePath}` : ''}`,
 			`media=${media.health} (${snapshot.mediaPolicy.mode})`,
 			`control=${control.sessionState} pending=${control.pendingCommands} opens=${control.sessionOpenCount}`,
+			`rtc=${snapshot.rtcRuntime.state} ice=${snapshot.rtcRuntime.iceConnectionState} conn=${snapshot.rtcRuntime.connectionState}`,
 		]
 		if (snapshot.directRecovery.lastAttemptState !== 'idle') {
 			details.push(
-				`direct-recovery=${snapshot.directRecovery.lastAttemptState}`,
+				`direct-recovery=${snapshot.directRecovery.lastAttemptState}${
+					snapshot.directRecovery.lastAttemptMode
+						? `:${snapshot.directRecovery.lastAttemptMode}`
+						: ''
+				}`,
 			)
+		}
+		if (snapshot.rtcRuntime.lastFailureReason) {
+			details.push(`rtc-failure=${snapshot.rtcRuntime.lastFailureReason}`)
 		}
 		if (snapshot.directRecovery.nextAttemptAt) {
 			const waitSec = Math.max(
@@ -516,7 +524,7 @@ export class AppComponent implements OnInit, OnDestroy {
 				),
 			)
 			details.push(
-				`direct-next-probe=${waitSec}s failures=${snapshot.directRecovery.failureCount}`,
+				`direct-next-probe=${waitSec}s failures=${snapshot.directRecovery.failureCount} attempts=${snapshot.directRecovery.attemptCount}`,
 			)
 		}
 		if (snapshot.syncRecovery.lastAttemptState !== 'idle') {

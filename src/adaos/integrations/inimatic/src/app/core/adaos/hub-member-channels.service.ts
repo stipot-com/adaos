@@ -46,6 +46,10 @@ export type HubMemberDirectRecoveryState =
 	| 'recovered'
 	| 'failed'
 
+export type HubMemberDirectRecoveryMode =
+	| 'ice_restart'
+	| 'full_renegotiate'
+
 export type HubMemberSyncRecoveryReason =
 	| 'first_sync_timeout'
 	| 'provider_disconnected'
@@ -115,6 +119,8 @@ export type HubMemberChannelSnapshot = {
 		eligible: boolean
 		lastAttemptAt: number | null
 		lastAttemptState: HubMemberDirectRecoveryState
+		lastAttemptMode: HubMemberDirectRecoveryMode | null
+		attemptCount: number
 		failureCount: number
 		nextAttemptAt: number | null
 	}
@@ -140,6 +146,17 @@ export type HubMemberChannelSnapshot = {
 		lastCommandOutcome: HubMemberControlCommandOutcome | null
 		lastReplayAt: number | null
 		lastReplayCount: number
+	}
+	rtcRuntime: {
+		state: ReturnType<WebRtcTransportService['getRecoverySnapshot']>['state']
+		iceConnectionState: ReturnType<WebRtcTransportService['getRecoverySnapshot']>['iceConnectionState']
+		connectionState: ReturnType<WebRtcTransportService['getRecoverySnapshot']>['connectionState']
+		lastConnectedAt: number | null
+		lastDisconnectedAt: number | null
+		lastFailureAt: number | null
+		lastFailureReason: string | null
+		canRestartIce: boolean
+		canRenegotiate: boolean
 	}
 	mediaPolicy: {
 		mode: HubMemberMediaPolicyMode
@@ -195,9 +212,11 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 @Injectable({ providedIn: 'root' })
 export class HubMemberChannelsService {
 	private static readonly DIRECT_RECOVERY_HEALTH_CHECK_MS = 30_000
+	private static readonly DIRECT_RECOVERY_DISCONNECT_GRACE_MS = 3_000
 	private static readonly DIRECT_RECOVERY_DEBOUNCE_MS = 1_000
 	private static readonly DIRECT_RECOVERY_BACKOFF_BASE_MS = 15_000
 	private static readonly DIRECT_RECOVERY_BACKOFF_MAX_MS = 5 * 60_000
+	private static readonly DIRECT_RECOVERY_ICE_RESTART_LIMIT = 3
 	private static readonly SYNC_RECOVERY_DEBOUNCE_MS = 1_500
 
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
@@ -218,6 +237,9 @@ export class HubMemberChannelsService {
 	private lastDirectNegotiationState: HubMemberDirectNegotiationState = 'idle'
 	private lastDirectRecoveryAt: number | null = null
 	private lastDirectRecoveryState: HubMemberDirectRecoveryState = 'idle'
+	private lastDirectRecoveryMode: HubMemberDirectRecoveryMode | null = null
+	private directRecoveryAttemptCount = 0
+	private directRecoveryIceRestartCount = 0
 	private directRecoveryFailureCount = 0
 	private nextDirectRecoveryAt: number | null = null
 	private lastSyncProviderCreateAt: number | null = null
@@ -252,7 +274,14 @@ export class HubMemberChannelsService {
 	)
 
 	constructor(private rtc: WebRtcTransportService) {
-		this.rtc.state$.subscribe(() => {
+		this.rtc.state$.subscribe((state) => {
+			if (
+				(state === 'disconnected' || state === 'failed') &&
+				this.wsState === 'connected' &&
+				this.isPageVisible
+			) {
+				this.scheduleDirectRecovery()
+			}
 			this.publishSnapshot()
 		})
 	}
@@ -393,7 +422,7 @@ export class HubMemberChannelsService {
 		this.rtc.onEventsMessage = onEventsMessage ?? null
 		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
 		this.lastDirectNegotiationState = ok ? 'connected' : 'failed'
-		this.noteDirectRecoveryResult(ok, Date.now())
+		this.noteDirectRecoveryResult(ok, Date.now(), 'full_renegotiate')
 		this.publishSnapshot()
 		return ok
 	}
@@ -647,12 +676,11 @@ export class HubMemberChannelsService {
 		if (this.nextDirectRecoveryAt && nowMs < this.nextDirectRecoveryAt) {
 			return false
 		}
-		if (this.wsState !== 'connected' || !rtc.canRenegotiate) {
+		if (this.wsState !== 'connected') {
 			return false
 		}
-		return (
-			rtc.state === 'failed' ||
-			(rtc.state !== 'connected' && connectionStale)
+		return this.resolveDirectRecoveryMode(nowMs, rtc) !== null || (
+			rtc.state !== 'connected' && connectionStale && rtc.canRenegotiate
 		)
 	}
 
@@ -663,14 +691,22 @@ export class HubMemberChannelsService {
 		const run = (async () => {
 			const nowMs = Date.now()
 			this.lastDirectRecoveryAt = nowMs
-			if (!this.isDirectRecoveryEligible(nowMs)) {
+			const rtc = this.rtc.getRecoverySnapshot()
+			const mode = this.resolveDirectRecoveryMode(nowMs, rtc)
+			if (!mode) {
+				this.lastDirectRecoveryMode = null
 				this.lastDirectRecoveryState = 'skipped'
 				this.publishSnapshot()
 				return false
 			}
-			const ok = await this.rtc.triggerFullRenegotiation()
+			this.lastDirectRecoveryMode = mode
+			this.directRecoveryAttemptCount += 1
+			const ok =
+				mode === 'ice_restart'
+					? await this.rtc.restartIceTransport()
+					: await this.rtc.triggerFullRenegotiation()
 			this.lastDirectRecoveryState = ok ? 'recovered' : 'failed'
-			this.noteDirectRecoveryResult(ok, Date.now())
+			this.noteDirectRecoveryResult(ok, Date.now(), mode)
 			this.publishSnapshot()
 			return ok
 		})()
@@ -678,6 +714,53 @@ export class HubMemberChannelsService {
 			this.directRecoveryInFlight = undefined
 		})
 		return this.directRecoveryInFlight
+	}
+
+	private resolveDirectRecoveryMode(
+		nowMs: number,
+		rtc = this.rtc.getRecoverySnapshot(),
+	): HubMemberDirectRecoveryMode | null {
+		const policy = this.resolveDirectPathPolicy()
+		if (!this.directRemoteProxyEligible || !policy.enabled) {
+			return null
+		}
+		if (this.wsState !== 'connected') {
+			return null
+		}
+		if (this.nextDirectRecoveryAt && nowMs < this.nextDirectRecoveryAt) {
+			return null
+		}
+		if (
+			rtc.state === 'disconnected' &&
+			rtc.lastDisconnectedAt &&
+			nowMs - rtc.lastDisconnectedAt <
+				HubMemberChannelsService.DIRECT_RECOVERY_DISCONNECT_GRACE_MS
+		) {
+			return null
+		}
+		if (
+			rtc.state === 'disconnected' &&
+			rtc.canRestartIce &&
+			this.directRecoveryIceRestartCount <
+				HubMemberChannelsService.DIRECT_RECOVERY_ICE_RESTART_LIMIT
+		) {
+			return 'ice_restart'
+		}
+		if (
+			(rtc.state === 'failed' || rtc.state === 'disconnected') &&
+			rtc.canRenegotiate
+		) {
+			return 'full_renegotiate'
+		}
+		const lastConnectedAt = rtc.lastConnectedAt ?? 0
+		const connectionStale =
+			!lastConnectedAt ||
+			nowMs - lastConnectedAt >
+				HubMemberChannelsService.DIRECT_RECOVERY_HEALTH_CHECK_MS
+		if (rtc.state !== 'connected' && connectionStale && rtc.canRenegotiate) {
+			return 'full_renegotiate'
+		}
+		return null
 	}
 
 	createSyncProvider(
@@ -928,6 +1011,7 @@ export class HubMemberChannelsService {
 	}
 
 	private buildSnapshot(nowMs = Date.now()): HubMemberChannelSnapshot {
+		const rtc = this.rtc.getRecoverySnapshot()
 		const pathEvidence = this.buildPathEvidence()
 		const channels = {} as HubMemberChannelSnapshot['channels']
 		for (const channelId of Object.keys(
@@ -964,6 +1048,8 @@ export class HubMemberChannelsService {
 				eligible: this.isDirectRecoveryEligible(nowMs),
 				lastAttemptAt: this.lastDirectRecoveryAt,
 				lastAttemptState: this.lastDirectRecoveryState,
+				lastAttemptMode: this.lastDirectRecoveryMode,
+				attemptCount: this.directRecoveryAttemptCount,
 				failureCount: this.directRecoveryFailureCount,
 				nextAttemptAt: this.nextDirectRecoveryAt,
 			},
@@ -996,6 +1082,17 @@ export class HubMemberChannelsService {
 				lastCommandOutcome: this.lastControlCommandOutcome,
 				lastReplayAt: this.lastControlReplayAt,
 				lastReplayCount: this.lastControlReplayCount,
+			},
+			rtcRuntime: {
+				state: rtc.state,
+				iceConnectionState: rtc.iceConnectionState,
+				connectionState: rtc.connectionState,
+				lastConnectedAt: rtc.lastConnectedAt,
+				lastDisconnectedAt: rtc.lastDisconnectedAt,
+				lastFailureAt: rtc.lastFailureAt,
+				lastFailureReason: rtc.lastFailureReason,
+				canRestartIce: rtc.canRestartIce,
+				canRenegotiate: rtc.canRenegotiate,
 			},
 			mediaPolicy: {
 				mode: 'out_of_scope',
@@ -1105,11 +1202,23 @@ export class HubMemberChannelsService {
 		return 'degraded'
 	}
 
-	private noteDirectRecoveryResult(ok: boolean, nowMs: number): void {
+	private noteDirectRecoveryResult(
+		ok: boolean,
+		nowMs: number,
+		mode?: HubMemberDirectRecoveryMode | null,
+	): void {
 		if (ok) {
+			if (mode === 'full_renegotiate') {
+				this.directRecoveryIceRestartCount = 0
+			}
 			this.directRecoveryFailureCount = 0
 			this.nextDirectRecoveryAt = null
 			return
+		}
+		if (mode === 'ice_restart') {
+			this.directRecoveryIceRestartCount += 1
+		} else if (mode === 'full_renegotiate') {
+			this.directRecoveryIceRestartCount = 0
 		}
 		this.directRecoveryFailureCount += 1
 		const backoffMs = Math.min(

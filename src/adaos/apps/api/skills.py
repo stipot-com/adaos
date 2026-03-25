@@ -260,10 +260,13 @@ async def sync(mgr: SkillManager = Depends(_get_manager)):
 @router.post("/install")
 async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
     # Best-effort sync to ensure monorepo workspace exists
+    sync_error: Exception | None = None
     try:
         mgr.sync()
-    except Exception:
-        pass
+    except Exception as exc:
+        # We may still be able to install if the skill is already materialized locally.
+        # Keep the error to surface it if we later discover that the skill is missing.
+        sync_error = exc
     try:
         result = mgr.install(
             body.name,
@@ -273,8 +276,14 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
             probe_tools=body.probe_tools,
         )
     except FileNotFoundError:
-        # Retry once after an explicit sync in case the repo was missing
-        mgr.sync()
+        # Retry once after an explicit sync in case the repo was missing.
+        # If the best-effort sync already failed, surface that as a client error.
+        if sync_error is not None:
+            raise HTTPException(status_code=409, detail=str(sync_error)) from sync_error
+        try:
+            mgr.sync()
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         result = mgr.install(
             body.name,
             pin=body.pin,
