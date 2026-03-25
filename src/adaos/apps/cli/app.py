@@ -132,6 +132,25 @@ def _maybe_set_windows_selector_loop() -> None:
 
 _maybe_set_windows_selector_loop()
 
+
+def _apply_cli_log_noise_defaults() -> None:
+    """
+    Keep routine CLI output quiet even when the global log level is DEBUG.
+
+    Users can still override this via ADAOS_LOG_HIDE or ADAOS_CLI_DEBUG.
+    """
+    if str(os.getenv("ADAOS_CLI_DEBUG", "0") or "0").strip() == "1":
+        return
+    existing = str(os.getenv("ADAOS_LOG_HIDE", "") or "").strip()
+    rule = "adaos.eventbus=INFO"
+    if not existing:
+        os.environ["ADAOS_LOG_HIDE"] = rule
+        return
+    items = [part.strip() for part in existing.split(",") if part.strip()]
+    if any(part.split("=", 1)[0].split(":", 1)[0].strip() == "adaos.eventbus" for part in items):
+        return
+    os.environ["ADAOS_LOG_HIDE"] = ",".join([*items, rule])
+
 from adaos.sdk.manage.environment import prepare_environment
 from adaos.services.settings import Settings
 from adaos.apps.bootstrap import init_ctx, reload_ctx
@@ -147,8 +166,6 @@ from adaos.apps.cli.commands import sandbox as sandbox_cmd
 from adaos.apps.cli.commands import setup as setup_cmd
 
 app = typer.Typer(help=_("cli.help"))
-
-init_ctx()
 
 # -------- helpers --------
 
@@ -226,6 +243,8 @@ def main(
     """
     Вызывается перед любыми подкомандами: строит (или пересобирает) контекст и гарантирует готовность окружения.
     """
+    _apply_cli_log_noise_defaults()
+
     # 1) читаем базовые настройки (константы/.env/ENV)
     settings = Settings.from_sources()
 

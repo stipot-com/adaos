@@ -76,3 +76,39 @@ def test_should_not_reexec_repo_venv_when_already_using_it(monkeypatch, tmp_path
     monkeypatch.delenv("ADAOS_CLI_REEXECED", raising=False)
     monkeypatch.delenv("ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC", raising=False)
     assert not cli_app._should_reexec_repo_venv()
+
+
+def test_apply_cli_log_noise_defaults_sets_eventbus_rule(monkeypatch):
+    monkeypatch.delenv("ADAOS_CLI_DEBUG", raising=False)
+    monkeypatch.delenv("ADAOS_LOG_HIDE", raising=False)
+
+    cli_app._apply_cli_log_noise_defaults()
+
+    assert os.environ["ADAOS_LOG_HIDE"] == "adaos.eventbus=INFO"
+
+
+def test_apply_cli_log_noise_defaults_appends_without_overwriting_existing_rules(monkeypatch):
+    monkeypatch.delenv("ADAOS_CLI_DEBUG", raising=False)
+    monkeypatch.setenv("ADAOS_LOG_HIDE", "adaos.router=WARNING")
+
+    cli_app._apply_cli_log_noise_defaults()
+
+    assert os.environ["ADAOS_LOG_HIDE"] == "adaos.router=WARNING,adaos.eventbus=INFO"
+
+
+def test_apply_cli_log_noise_defaults_respects_cli_debug(monkeypatch):
+    monkeypatch.setenv("ADAOS_CLI_DEBUG", "1")
+    monkeypatch.delenv("ADAOS_LOG_HIDE", raising=False)
+
+    cli_app._apply_cli_log_noise_defaults()
+
+    assert "ADAOS_LOG_HIDE" not in os.environ
+
+
+def test_apply_cli_log_noise_defaults_keeps_explicit_eventbus_rule(monkeypatch):
+    monkeypatch.delenv("ADAOS_CLI_DEBUG", raising=False)
+    monkeypatch.setenv("ADAOS_LOG_HIDE", "adaos.eventbus=DEBUG,adaos.router=WARNING")
+
+    cli_app._apply_cli_log_noise_defaults()
+
+    assert os.environ["ADAOS_LOG_HIDE"] == "adaos.eventbus=DEBUG,adaos.router=WARNING"
