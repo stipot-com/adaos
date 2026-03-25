@@ -18,6 +18,7 @@ from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
 from adaos.services.core_slots import active_slot, activate_slot, read_slot_manifest, slot_dir
 from adaos.services.node_config import load_config
+from adaos.services.settings import Settings, _parse_env_file
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,40 @@ def _base_dir_from_spec(ctx: AgentContext, spec: AutostartSpec | None = None) ->
     return ctx.paths.base_dir()
 
 
+def _service_settings(ctx: AgentContext) -> Settings:
+    shared_dotenv = _shared_dotenv_path(ctx)
+    if shared_dotenv is None:
+        settings = getattr(ctx, "settings", None)
+        if isinstance(settings, Settings):
+            return settings
+        profile = str(getattr(settings, "profile", "default") or "default")
+        return Settings.from_sources().with_overrides(base_dir=ctx.paths.base_dir(), profile=profile)
+
+    try:
+        env_file_vars = _parse_env_file(str(shared_dotenv))
+        env_type = str(env_file_vars.get("ENV_TYPE", "prod") or "prod").strip()
+        profile = str(env_file_vars.get("ADAOS_PROFILE", "") or "").strip() or getattr(
+            ctx.settings, "profile", "default"
+        )
+        override_base = str(env_file_vars.get("ADAOS_BASE_DIR", "") or "").strip()
+        override_base_suffix = str(env_file_vars.get("ADAOS_BASE_DIR_SUFFIX", "") or "").strip()
+        base_dir_env = str(env_file_vars.get("BASE_DIR", "") or "").strip()
+        if override_base:
+            base_dir = Path(override_base).expanduser().resolve()
+        elif env_type == "dev":
+            base_dir = (shared_dotenv.parent / f".adaos{override_base_suffix}").resolve()
+        elif base_dir_env:
+            base_dir = Path(base_dir_env).expanduser().resolve()
+        else:
+            base_dir = (Path.home() / ".adaos").resolve()
+        settings = getattr(ctx, "settings", None)
+        if isinstance(settings, Settings):
+            return settings.with_overrides(base_dir=base_dir, profile=profile)
+        return Settings.from_sources(env_file=str(shared_dotenv)).with_overrides(base_dir=base_dir, profile=profile)
+    except Exception:
+        return getattr(ctx, "settings", None) or Settings.from_sources()
+
+
 def default_spec(
     ctx: AgentContext,
     *,
@@ -71,8 +106,9 @@ def default_spec(
     port: int = 8777,
     token: str | None = None,
 ) -> AutostartSpec:
-    base_dir = ctx.paths.base_dir()
-    profile = getattr(ctx.settings, "profile", "default")
+    service_settings = _service_settings(ctx)
+    base_dir = service_settings.base_dir
+    profile = getattr(service_settings, "profile", getattr(ctx.settings, "profile", "default"))
     argv = (
         sys.executable,
         "-m",
@@ -414,6 +450,41 @@ def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
     return host, port
 
 
+def _parse_wrapper_env(wrapper: Path) -> dict[str, str]:
+    try:
+        text = wrapper.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {}
+
+    env: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        m = re.match(r"^\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(['\"])(.*)\2\s*$", line)
+        if m:
+            key = m.group(1)
+            value = m.group(3)
+            quote = m.group(2)
+            if quote == "'":
+                value = value.replace("''", "'")
+            env[key] = value
+            continue
+
+        m = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(['\"])(.*)\2\s*$", line)
+        if m:
+            key = m.group(1)
+            value = m.group(3)
+            quote = m.group(2)
+            if quote == "'":
+                value = value.replace("'\"'\"'", "'")
+            env[key] = value
+            continue
+
+    return env
+
+
 def _windows_task_name() -> str:
     return "AdaOS"
 
@@ -693,6 +764,19 @@ def enable(
         return {"ok": True, "platform": "windows", "wrapper": str(wrapper), "task": name}
 
     if _is_linux():
+        run_as_user = str(run_as or "").strip() or None
+        if (
+            scope in {"auto", "system"}
+            and shutil_which("systemctl")
+            and _linux_is_root()
+            and _linux_has_systemd_pid1()
+            and run_as_user
+            and run_as_user != "root"
+        ):
+            ok, hint = _linux_paths_safe_for_run_as(spec, run_as=run_as_user)
+            if not ok:
+                raise RuntimeError(hint)
+
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
         _write_wrapper_sh(wrapper, argv=spec.argv, env=spec.env)
         user_service_path = _linux_service_path_user()
@@ -715,11 +799,7 @@ def enable(
         # In containers / root sessions there is often no user bus. If PID1 is systemd and
         # we're root, fall back to a system service.
         if (scope in {"auto", "system"}) and shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
-            run_as_user = str(run_as or "").strip() or None
             if run_as_user and run_as_user != "root":
-                ok, hint = _linux_paths_safe_for_run_as(spec, run_as=run_as_user)
-                if not ok:
-                    raise RuntimeError(hint)
                 if create_user:
                     _linux_create_system_user(run_as_user)
                 elif not _linux_user_exists(run_as_user):
@@ -901,6 +981,7 @@ def status(ctx: AgentContext) -> dict:
         registered_wrapper_raw = _extract_task_wrapper_from_command(task_to_run)
         registered_wrapper = Path(registered_wrapper_raw).expanduser().resolve() if registered_wrapper_raw else None
         wrapper = registered_wrapper or expected_wrapper
+        wrapper_env = _parse_wrapper_env(wrapper) if wrapper.exists() else {}
         state_raw = (task_info.get("scheduled task state") or task_info.get("status") or "").strip().lower()
         enabled = proc.returncode == 0 and state_raw not in {"disabled"}
         active = proc.returncode == 0 and state_raw in {"running"}
@@ -921,6 +1002,14 @@ def status(ctx: AgentContext) -> dict:
             "wrapper": str(wrapper),
             "expected_wrapper": str(expected_wrapper),
         }
+        if wrapper_env:
+            payload["wrapper_env"] = wrapper_env
+            wrapper_base_dir = str(wrapper_env.get("ADAOS_BASE_DIR") or "").strip()
+            if wrapper_base_dir:
+                payload["base_dir"] = str(Path(wrapper_base_dir).expanduser().resolve())
+            wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+            if wrapper_shared_dotenv:
+                payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port
@@ -980,6 +1069,7 @@ def status(ctx: AgentContext) -> dict:
         wrapper_from_service = _parse_execstart(service_path) if service_path.exists() else None
         if wrapper_from_service is not None:
             wrapper = wrapper_from_service
+        wrapper_env = _parse_wrapper_env(wrapper) if wrapper.exists() else {}
 
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
         configured_host, configured_port = host_port or ("127.0.0.1", 8777)
@@ -1000,6 +1090,14 @@ def status(ctx: AgentContext) -> dict:
             "system_service": str(system_service_path),
             "wrapper": str(wrapper),
         }
+        if wrapper_env:
+            payload["wrapper_env"] = wrapper_env
+            wrapper_base_dir = str(wrapper_env.get("ADAOS_BASE_DIR") or "").strip()
+            if wrapper_base_dir:
+                payload["base_dir"] = str(Path(wrapper_base_dir).expanduser().resolve())
+            wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+            if wrapper_shared_dotenv:
+                payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port
@@ -1017,6 +1115,7 @@ def status(ctx: AgentContext) -> dict:
             probe = _run(["launchctl", "print", f"{domain}/{_macos_label()}"])
             active = probe.returncode == 0
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
+        wrapper_env = _parse_wrapper_env(wrapper) if wrapper.exists() else {}
         host_port = _parse_wrapper_host_port(wrapper) if wrapper.exists() else None
         configured_host, configured_port = host_port or ("127.0.0.1", 8777)
         live_host_port = _discover_live_control_bind(configured_host, configured_port) if active else None
@@ -1033,6 +1132,14 @@ def status(ctx: AgentContext) -> dict:
             "plist": str(plist_path),
             "wrapper": str(wrapper),
         }
+        if wrapper_env:
+            payload["wrapper_env"] = wrapper_env
+            wrapper_base_dir = str(wrapper_env.get("ADAOS_BASE_DIR") or "").strip()
+            if wrapper_base_dir:
+                payload["base_dir"] = str(Path(wrapper_base_dir).expanduser().resolve())
+            wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+            if wrapper_shared_dotenv:
+                payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port

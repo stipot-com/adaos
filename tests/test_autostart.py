@@ -34,6 +34,43 @@ def test_default_autostart_spec_uses_runner(tmp_path: Path) -> None:
     assert spec.env["ADAOS_TOKEN"] == "t1"
 
 
+def test_default_autostart_spec_uses_shared_dotenv_env_type_dev(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    shared_dotenv = repo_root / ".env"
+    shared_dotenv.write_text("ENV_TYPE=dev\nADAOS_PROFILE=from-dotenv\n", encoding="utf-8")
+
+    monkeypatch.setattr(autostart, "_shared_dotenv_path", lambda ctx: shared_dotenv)
+
+    ctx = _FakeCtx(tmp_path / "stale-home-base")
+    spec = default_spec(ctx, host="127.0.0.1", port=8779, token="t1")
+
+    assert spec.env["ADAOS_BASE_DIR"] == str((repo_root / ".adaos").resolve())
+    assert spec.env["ADAOS_PROFILE"] == "from-dotenv"
+    assert spec.env["ADAOS_SHARED_DOTENV_PATH"] == str(shared_dotenv.resolve())
+
+
+def test_default_autostart_spec_uses_shared_dotenv_non_dev_home_base(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    shared_dotenv = repo_root / ".env"
+    shared_dotenv.write_text("ENV_TYPE=\nADAOS_PROFILE=from-dotenv\n", encoding="utf-8")
+
+    monkeypatch.setattr(autostart, "_shared_dotenv_path", lambda ctx: shared_dotenv)
+    monkeypatch.setattr(autostart.Path, "home", staticmethod(lambda: (tmp_path / "home").resolve()))
+
+    ctx = _FakeCtx(repo_root / ".adaos")
+    spec = default_spec(ctx, host="127.0.0.1", port=8779, token="t1")
+
+    assert spec.env["ADAOS_BASE_DIR"] == str(((tmp_path / "home").resolve() / ".adaos").resolve())
+    assert spec.env["ADAOS_PROFILE"] == "from-dotenv"
+    assert spec.env["ADAOS_SHARED_DOTENV_PATH"] == str(shared_dotenv.resolve())
+
+
 def test_slot_launch_spec_formats_placeholders() -> None:
     argv, command = _slot_launch_spec(
         {

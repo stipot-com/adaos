@@ -52,3 +52,51 @@ def test_windows_status_detects_disabled_stale_task(monkeypatch, tmp_path: Path)
     assert status["expected_wrapper"] == str(current_wrapper.resolve())
     assert status["wrapper_matches_expected"] is False
     assert status["port"] == 8778
+
+
+def test_windows_status_reports_wrapper_context(monkeypatch, tmp_path: Path) -> None:
+    current_wrapper = tmp_path / "bin" / "adaos-autostart.ps1"
+    current_wrapper.parent.mkdir(parents=True, exist_ok=True)
+    current_wrapper.write_text("", encoding="utf-8")
+
+    service_base = tmp_path / "service-base"
+    shared_dotenv = tmp_path / ".env.shared"
+    wrapper = tmp_path / "old" / "adaos-autostart.ps1"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(
+        "\n".join(
+            [
+                f"$env:ADAOS_BASE_DIR = '{service_base}'",
+                f"$env:ADAOS_SHARED_DOTENV_PATH = '{shared_dotenv}'",
+                "$args = @(",
+                "  '--host'",
+                "  '127.0.0.1'",
+                "  '--port'",
+                "  '8778'",
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = (
+            "TaskName: \\AdaOS\n"
+            "Status: Running\n"
+            "Scheduled Task State: Running\n"
+            f'Task To Run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{wrapper}"\n'
+        )
+        stderr = ""
+
+    monkeypatch.setattr(autostart, "_is_windows", lambda: True)
+    monkeypatch.setattr(autostart, "_is_linux", lambda: False)
+    monkeypatch.setattr(autostart, "_is_macos", lambda: False)
+    monkeypatch.setattr(autostart, "_run", lambda cmd: _Proc())
+    monkeypatch.setattr(autostart, "_discover_live_control_bind", lambda host, port: (host, port))
+
+    status = autostart.status(_FakeCtx(tmp_path))
+
+    assert status["base_dir"] == str(service_base.resolve())
+    assert status["shared_dotenv_path"] == str(shared_dotenv.resolve())
+    assert status["wrapper_env"]["ADAOS_BASE_DIR"] == str(service_base)
