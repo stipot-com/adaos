@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import traceback
+import asyncio
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,8 @@ from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
+from adaos.services.eventbus import emit as bus_emit
+from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
 from adaos.services.yjs.webspace import default_webspace_id
 
 app = typer.Typer(help=_("cli.help_skill"))
@@ -118,6 +121,62 @@ def _hub_post(path: str, *, body: dict | None = None) -> dict:
             detail = (resp.text or "").strip()
         raise RuntimeError(f"HTTP {resp.status_code} POST {path}: {detail}".strip()) from exc
     return resp.json()
+
+
+def _notify_hub_skill_activated(name: str, *, space: str = "default", webspace_id: str | None = None) -> None:
+    try:
+        _hub_post(
+            "/api/skills/runtime/notify-activated",
+            body={
+                "name": name,
+                "space": space,
+                "webspace_id": webspace_id or default_webspace_id(),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_local_skill_updated(name: str, *, webspace_id: str | None = None) -> None:
+    try:
+        ctx = get_ctx()
+        bus = getattr(ctx, "bus", None)
+        if bus is None:
+            return
+        bus_emit(
+            bus,
+            "skills.updated",
+            {
+                "name": name,
+                "webspace_id": webspace_id or default_webspace_id(),
+            },
+            "cli.skill",
+        )
+    except Exception:
+        pass
+
+
+def _rebuild_local_webspace(*, webspace_id: str | None = None) -> None:
+    try:
+        ctx = get_ctx()
+        asyncio.run(WebspaceScenarioRuntime(ctx).rebuild_webspace_async(webspace_id or default_webspace_id()))
+    except Exception:
+        pass
+
+
+def _refresh_runtime_side_effects(
+    name: str,
+    *,
+    webspace_id: str | None = None,
+    notify_activation: bool = False,
+    emit_updated: bool = False,
+) -> None:
+    target_webspace = webspace_id or default_webspace_id()
+    if emit_updated:
+        _emit_local_skill_updated(name, webspace_id=target_webspace)
+    if notify_activation:
+        _notify_hub_skill_activated(name, webspace_id=target_webspace)
+    _rebuild_local_webspace(webspace_id=target_webspace)
 
 
 @_run_safe
@@ -635,6 +694,11 @@ def cmd_install(
         raise typer.Exit(1) from exc
 
     typer.secho(f"skill {skill_name} now active on slot {activated_slot}", fg=typer.colors.GREEN)
+    _refresh_runtime_side_effects(
+        skill_name,
+        webspace_id=default_webspace_id(),
+        notify_activation=True,
+    )
 
     if silent:
         return
@@ -818,6 +882,12 @@ def activate(name: str, slot: Optional[str] = typer.Option(None, "--slot"), vers
             pass
     except Exception:
         pass
+
+    _refresh_runtime_side_effects(
+        name,
+        webspace_id=default_webspace_id(),
+        notify_activation=True,
+    )
 
     typer.secho(f"skill {name} now active on slot {target}", fg=typer.colors.GREEN)
 
@@ -1158,22 +1228,42 @@ def migrate(
         if dry_run:
             typer.secho("dry-run is not supported in hub api mode; ignoring", fg=typer.colors.YELLOW)
         if name:
-            # "migrate <name>" in API-first mode maps to a best-effort refresh+install on the running server.
-            _hub_post("/api/skills/sync")
-            _hub_post(
-                "/api/skills/install",
+            result = _hub_post(
+                "/api/skills/update",
                 body={
                     "name": name,
-                    "pin": None,
-                    "perform_validation": False,
-                    "strict": True,
-                    "probe_tools": False,
+                    "dry_run": False,
+                    "webspace_id": default_webspace_id(),
                 },
             )
-            typer.echo(f"{name}: updated")
+            typer.echo(
+                f"{name}: {'updated' if result.get('updated') else 'up-to-date'}"
+                + (f" (version {result.get('version')})" if result.get("version") else "")
+            )
             return
         _hub_post("/api/skills/sync")
-        typer.echo("skills synced")
+        listing = _hub_get("/api/skills/list")
+        items = listing.get("items") if isinstance(listing, dict) else []
+        if not isinstance(items, list):
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            skill_name = str(item.get("name") or item.get("id") or "").strip()
+            if not skill_name:
+                continue
+            result = _hub_post(
+                "/api/skills/update",
+                body={
+                    "name": skill_name,
+                    "dry_run": False,
+                    "webspace_id": default_webspace_id(),
+                },
+            )
+            typer.echo(
+                f"{skill_name}: {'updated' if result.get('updated') else 'up-to-date'}"
+                + (f" (version {result.get('version')})" if result.get("version") else "")
+            )
         return
     service = SkillUpdateService(get_ctx())
     names: list[str]
@@ -1201,5 +1291,12 @@ def migrate(
             f"{skill_name}: {'updated' if result.updated else 'up-to-date'}"
             + (f" (version {result.version})" if result.version else "")
         )
+        if not dry_run:
+            _refresh_runtime_side_effects(
+                skill_name,
+                webspace_id=default_webspace_id(),
+                notify_activation=True,
+                emit_updated=True,
+            )
     if failed:
         raise typer.Exit(1)

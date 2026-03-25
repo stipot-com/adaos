@@ -13,6 +13,7 @@ from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
 from adaos.services.yjs.webspace import default_webspace_id
 
 import yaml
@@ -59,6 +60,7 @@ def _to_mapping(obj: Any) -> Dict[str, Any]:
 class UpdateReq(BaseModel):
     name: str
     dry_run: bool = False
+    webspace_id: str | None = None
 
 
 def _safe_version(v: Any) -> Version | None:
@@ -417,4 +419,19 @@ async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_
 async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
     service = SkillUpdateService(ctx)
     result = service.request_update(body.name, dry_run=body.dry_run)
+    webspace_id = body.webspace_id or default_webspace_id()
+    if not body.dry_run:
+        bus = getattr(ctx, "bus", None)
+        if bus is not None:
+            bus_emit(bus, "skills.updated", {"name": body.name, "webspace_id": webspace_id}, "api.skills")
+            bus_emit(
+                bus,
+                "skills.activated",
+                {"skill_name": body.name, "space": "default", "webspace_id": webspace_id},
+                "api.skills",
+            )
+        try:
+            await WebspaceScenarioRuntime(ctx).rebuild_webspace_async(webspace_id)
+        except Exception:
+            log.exception("webspace rebuild failed after skill update: %s", body.name)
     return {"ok": True, "updated": result.updated, "version": result.version}
