@@ -53,6 +53,8 @@ export type HubMemberDirectRecoveryMode =
 export type HubMemberSyncRecoveryReason =
 	| 'first_sync_timeout'
 	| 'provider_disconnected'
+	| 'soft_reauth'
+	| 'manual'
 
 export type HubMemberSyncRecoveryState =
 	| 'idle'

@@ -80,6 +80,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
     hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
+    sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
 
@@ -123,6 +124,23 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"pid={process.get('listener_pid') or '-'} "
             f"local={sidecar.get('local_url') or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
+        )
+    if sync_runtime:
+        assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
+        transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
+        webspaces = sync_runtime.get("webspaces") if isinstance(sync_runtime.get("webspaces"), dict) else {}
+        default_ws = webspaces.get("default") if isinstance(webspaces.get("default"), dict) else {}
+        typer.echo(
+            "sync_runtime: "
+            f"state={assessment.get('state') or 'unknown'} "
+            f"webspaces={sync_runtime.get('webspace_total') or 0} "
+            f"active={sync_runtime.get('active_webspace_total') or 0} "
+            f"compacted={sync_runtime.get('compacted_webspace_total') or 0} "
+            f"updates={sync_runtime.get('update_log_total') or 0} "
+            f"replay={sync_runtime.get('replay_window_total') or 0} "
+            f"yws={transport.get('active_yws_connections') or 0} "
+            f"default={default_ws.get('log_mode') or '-'}:"
+            f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
         )
     if protocol:
         assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}

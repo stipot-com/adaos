@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import contextlib
 import contextvars
@@ -20,6 +21,14 @@ _log = logging.getLogger("adaos.yjs.ystore")
 
 _SUPPRESS_NOTIFY: contextvars.ContextVar[bool] = contextvars.ContextVar("adaos_ystore_suppress_notify", default=False)
 _GLOBAL_WRITE_LISTENERS: list[Callable[[str, bytes], Any]] = []
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        value = int(default)
+    return max(int(minimum), value)
 
 
 def add_ystore_write_listener(cb: Callable[[str, bytes], Any]) -> Callable[[], None]:
@@ -79,7 +88,7 @@ def _notify_write_listeners(webspace_id: str, update: bytes) -> None:
             continue
 
 
-def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> None:
+def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> int:
     """
     Heavy snapshot encoding/writing performed in a worker thread.
     """
@@ -87,10 +96,10 @@ def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> 
         try:
             path.unlink()
         except FileNotFoundError:
-            return
+            return 0
         except Exception as exc:
             _log.warning("failed to remove stale YStore snapshot %s: %s", path, exc, exc_info=True)
-        return
+        return 0
 
     ydoc = Y.YDoc()
     for update, _meta, _ts in updates:
@@ -103,8 +112,10 @@ def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> 
         tmp.write_bytes(snapshot)
         tmp.replace(path)
         _log.debug("YStore snapshot written for webspace=%s path=%s", path.name.removesuffix(".sqlite3"), path)
+        return len(snapshot)
     except Exception as exc:
         _log.warning("failed to write YStore snapshot %s: %s", path, exc, exc_info=True)
+        return 0
 
 
 def ystores_root() -> Path:
@@ -146,6 +157,11 @@ class AdaosMemoryYStore(BaseYStore):
         self.path = path
         self.metadata_callback = None
         self.document_ttl = document_ttl
+        self.max_updates = _env_int("ADAOS_YSTORE_MAX_UPDATES", 128, minimum=8)
+        self.replay_window = min(
+            self.max_updates - 1,
+            _env_int("ADAOS_YSTORE_REPLAY_WINDOW", 32, minimum=0),
+        )
         self._lock: Lock = Lock()
         self._updates: List[Tuple[bytes, bytes, float]] = []
         self._loaded_from_disk = False
@@ -153,6 +169,15 @@ class AdaosMemoryYStore(BaseYStore):
         self._starting: bool = False
         self._task_group = None
         self._running: bool = False
+        self._write_total = 0
+        self._compact_total = 0
+        self._backup_total = 0
+        self._last_write_at = 0.0
+        self._last_compact_at = 0.0
+        self._last_backup_at = 0.0
+        self._last_loaded_from_disk_at = 0.0
+        self._last_update_bytes = 0
+        self._last_snapshot_bytes = 0
 
     async def start(self, *, task_status: TaskStatus[None] = TASK_STATUS_IGNORED):
         """
@@ -175,23 +200,43 @@ class AdaosMemoryYStore(BaseYStore):
         metadata = await self.get_metadata()
         now = time.time()
         async with self._lock:
+            self._write_total += 1
+            self._last_write_at = now
+            self._last_update_bytes = len(data)
             if self.document_ttl is not None and self._updates:
                 last_ts = self._updates[-1][2]
                 if now - last_ts > self.document_ttl:
-                    # Squash history into a single snapshot.
-                    ydoc = Y.YDoc()
-                    for update, _meta, _ts in self._updates:
-                        Y.apply_update(ydoc, update)  # type: ignore[arg-type]
-                    self._updates.clear()
-                    squashed = Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
-                    self._updates.append((squashed, metadata, now))
-                    return
+                    # Squash stale history into a snapshot and continue with a
+                    # fresh append-only window.
+                    self._compact_updates_locked(now=now, keep_tail=0)
 
             self._updates.append((data, metadata, now))
+            if len(self._updates) > self.max_updates:
+                self._compact_updates_locked(now=now, keep_tail=self.replay_window)
         try:
             _notify_write_listeners(self.path, data)
         except Exception:
             pass
+
+    def _compact_updates_locked(self, *, now: float, keep_tail: int | None = None) -> None:
+        updates = list(self._updates)
+        if not updates:
+            return
+        total = len(updates)
+        tail_count = self.replay_window if keep_tail is None else int(keep_tail)
+        tail_count = max(0, min(tail_count, max(0, total - 1)))
+        prefix_count = max(1, total - tail_count)
+        prefix = updates[:prefix_count]
+        tail = updates[prefix_count:]
+        ydoc = Y.YDoc()
+        for update, _meta, _ts in prefix:
+            Y.apply_update(ydoc, update)  # type: ignore[arg-type]
+        snapshot = Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
+        metadata = prefix[-1][1] if prefix else b""
+        self._updates = [(snapshot, metadata, now), *tail]
+        self._compact_total += 1
+        self._last_compact_at = now
+        self._last_snapshot_bytes = len(snapshot)
 
     async def _load_from_disk_if_needed(self) -> None:
         if self._loaded_from_disk:
@@ -213,6 +258,8 @@ class AdaosMemoryYStore(BaseYStore):
         async with self._lock:
             if not self._updates:
                 self._updates.append((data, metadata, now))
+                self._last_loaded_from_disk_at = now
+                self._last_snapshot_bytes = len(data)
         self._loaded_from_disk = True
 
     async def read(self) -> AsyncIterator[tuple[bytes, bytes]]:  # type: ignore[override]
@@ -236,7 +283,58 @@ class AdaosMemoryYStore(BaseYStore):
             updates = list(self._updates)
 
         path = ystore_path_for_webspace(self.path)
-        await anyio.to_thread.run_sync(_persist_snapshot, path, updates)
+        written_bytes = await anyio.to_thread.run_sync(_persist_snapshot, path, updates)
+        async with self._lock:
+            self._backup_total += 1
+            self._last_backup_at = time.time()
+            if written_bytes:
+                self._last_snapshot_bytes = int(written_bytes)
+
+    def runtime_snapshot(self, *, now_ts: float | None = None) -> dict[str, Any]:
+        now = time.time() if now_ts is None else float(now_ts)
+        snapshot_path = ystore_path_for_webspace(self.path)
+        snapshot_exists = snapshot_path.exists()
+        try:
+            snapshot_size = snapshot_path.stat().st_size if snapshot_exists else 0
+        except Exception:
+            snapshot_size = 0
+        updates = list(self._updates)
+        update_log_entries = len(updates)
+        base_snapshot_present = bool(updates) and bool(self._loaded_from_disk or self._compact_total > 0)
+        replay_window_entries = max(0, update_log_entries - (1 if base_snapshot_present else 0))
+        if update_log_entries <= 0:
+            log_mode = "empty"
+        elif base_snapshot_present:
+            log_mode = "snapshot_plus_diff"
+        else:
+            log_mode = "append_only"
+        return {
+            "webspace_id": self.path,
+            "log_mode": log_mode,
+            "update_log_entries": update_log_entries,
+            "replay_window_entries": replay_window_entries,
+            "replay_window_limit": int(self.replay_window),
+            "max_update_log_entries": int(self.max_updates),
+            "loaded_from_disk": bool(self._loaded_from_disk),
+            "running": bool(self._running),
+            "write_total": int(self._write_total),
+            "compact_total": int(self._compact_total),
+            "backup_total": int(self._backup_total),
+            "snapshot_file_exists": bool(snapshot_exists),
+            "snapshot_file_size": int(snapshot_size),
+            "last_update_bytes": int(self._last_update_bytes),
+            "last_snapshot_bytes": int(self._last_snapshot_bytes),
+            "last_write_at": self._last_write_at or None,
+            "last_write_ago_s": round(max(0.0, now - self._last_write_at), 3) if self._last_write_at else None,
+            "last_compact_at": self._last_compact_at or None,
+            "last_compact_ago_s": round(max(0.0, now - self._last_compact_at), 3) if self._last_compact_at else None,
+            "last_backup_at": self._last_backup_at or None,
+            "last_backup_ago_s": round(max(0.0, now - self._last_backup_at), 3) if self._last_backup_at else None,
+            "last_loaded_from_disk_at": self._last_loaded_from_disk_at or None,
+            "last_loaded_from_disk_ago_s": round(max(0.0, now - self._last_loaded_from_disk_at), 3)
+            if self._last_loaded_from_disk_at
+            else None,
+        }
 
 
 _YSTORE_CACHE: Dict[str, AdaosMemoryYStore] = {}
@@ -254,6 +352,32 @@ def get_ystore_for_webspace(webspace_id: str) -> AdaosMemoryYStore:
         store = AdaosMemoryYStore(webspace_id)
         _YSTORE_CACHE[webspace_id] = store
     return store
+
+
+def ystore_runtime_snapshot(*, webspace_id: str | None = None, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    if webspace_id:
+        store = get_ystore_for_webspace(str(webspace_id))
+        return {
+            "webspace_id": str(webspace_id),
+            "webspace_total": 1,
+            "webspaces": {
+                str(webspace_id): store.runtime_snapshot(now_ts=now),
+            },
+        }
+
+    webspaces: dict[str, Any] = {}
+    active_total = 0
+    for ws_id, store in sorted(_YSTORE_CACHE.items()):
+        item = store.runtime_snapshot(now_ts=now)
+        webspaces[str(ws_id)] = item
+        if int(item.get("update_log_entries") or 0) > 0 or bool(item.get("snapshot_file_exists")):
+            active_total += 1
+    return {
+        "webspace_total": len(webspaces),
+        "active_webspace_total": active_total,
+        "webspaces": webspaces,
+    }
 
 
 def reset_ystore_for_webspace(webspace_id: str) -> None:

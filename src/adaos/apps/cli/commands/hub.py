@@ -84,6 +84,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
     hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
+    sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     protocol_assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
     coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}
@@ -138,6 +139,10 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         for item in member_links[:4]
         if isinstance(item, dict)
     ]
+    sync_assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
+    sync_transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
+    sync_webspaces = sync_runtime.get("webspaces") if isinstance(sync_runtime.get("webspaces"), dict) else {}
+    default_sync = sync_webspaces.get("default") if isinstance(sync_webspaces.get("default"), dict) else {}
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -175,6 +180,11 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"member_names={','.join(member_labels) if member_labels else '-'} "
         f"member_runtime={','.join(member_runtime) if member_runtime else '-'} "
         f"member_update={','.join(member_update) if member_update else '-'} | "
+        f"sync_runtime={sync_assessment.get('state') or '-'} "
+        f"webspaces={sync_runtime.get('webspace_total') or 0} "
+        f"active={sync_runtime.get('active_webspace_total') or 0} "
+        f"yws={sync_transport.get('active_yws_connections') or 0} "
+        f"default={default_sync.get('log_mode') or '-'}:{default_sync.get('update_log_entries') or 0}/{default_sync.get('max_update_log_entries') or 0} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
@@ -210,6 +220,7 @@ def hub_root_watch(
             protocol = runtime.get("hub_root_protocol") if isinstance(runtime.get("hub_root_protocol"), dict) else {}
             hub_member = runtime.get("hub_member_channels") if isinstance(runtime.get("hub_member_channels"), dict) else {}
             sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
+            sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
             strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
             protocol_assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
             coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}
@@ -249,6 +260,10 @@ def hub_root_watch(
             rollout = hub_member_connection_state.get("update_rollout") if isinstance(hub_member_connection_state.get("update_rollout"), dict) else {}
             rollout_counts = rollout.get("rollout_counts") if isinstance(rollout.get("rollout_counts"), dict) else {}
             snapshot_counts = rollout.get("snapshot_counts") if isinstance(rollout.get("snapshot_counts"), dict) else {}
+            sync_assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
+            sync_transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
+            sync_webspaces = sync_runtime.get("webspaces") if isinstance(sync_runtime.get("webspaces"), dict) else {}
+            default_sync = sync_webspaces.get("default") if isinstance(sync_webspaces.get("default"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -282,6 +297,9 @@ def hub_root_watch(
                 f"stale={snapshot_counts.get('stale') or 0} "
                 f"in_progress={rollout_counts.get('in_progress') or 0} "
                 f"failed={rollout_counts.get('failed') or 0} "
+                f"sync_runtime={sync_assessment.get('state') or '-'} "
+                f"yws={sync_transport.get('active_yws_connections') or 0} "
+                f"default={default_sync.get('log_mode') or '-'}:{default_sync.get('update_log_entries') or 0}/{default_sync.get('max_update_log_entries') or 0} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

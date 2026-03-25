@@ -3652,6 +3652,98 @@ def sidecar_runtime_snapshot(
     }
 
 
+def yjs_sync_runtime_snapshot(*, role: str, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    role_norm = str(role or "").strip().lower()
+    if role_norm != "hub":
+        return {
+            "available": False,
+            "scope": "hub_local_only",
+            "assessment": {
+                "state": "not_applicable",
+                "reason": "local Yjs store runtime is observed on the hub only",
+            },
+            "transport": {},
+            "webspace_total": 0,
+            "active_webspace_total": 0,
+            "webspaces": {},
+        }
+
+    try:
+        from adaos.services.yjs.store import ystore_runtime_snapshot
+
+        store_runtime = ystore_runtime_snapshot(now_ts=now)
+    except Exception as exc:
+        return {
+            "available": False,
+            "scope": "hub_local_only",
+            "assessment": {
+                "state": "unavailable",
+                "reason": f"failed to load Yjs store runtime: {exc}",
+            },
+            "transport": {},
+            "webspace_total": 0,
+            "active_webspace_total": 0,
+            "webspaces": {},
+        }
+
+    try:
+        from adaos.services.yjs.gateway_ws import gateway_transport_snapshot
+
+        gateway = gateway_transport_snapshot()
+    except Exception:
+        gateway = {}
+    transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+    yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+
+    webspaces = store_runtime.get("webspaces") if isinstance(store_runtime.get("webspaces"), dict) else {}
+    webspace_total = int(store_runtime.get("webspace_total") or len(webspaces))
+    active_webspace_total = int(store_runtime.get("active_webspace_total") or 0)
+    assessment_state = "nominal"
+    reasons: list[str] = []
+    max_fill_ratio = 0.0
+    compacted_total = 0
+    replay_window_total = 0
+    update_log_total = 0
+    for item in webspaces.values():
+        if not isinstance(item, dict):
+            continue
+        update_entries = int(item.get("update_log_entries") or 0)
+        max_entries = int(item.get("max_update_log_entries") or 0)
+        replay_window_total += int(item.get("replay_window_entries") or 0)
+        update_log_total += update_entries
+        compacted_total += 1 if int(item.get("compact_total") or 0) > 0 else 0
+        if max_entries > 0:
+            max_fill_ratio = max(max_fill_ratio, float(update_entries) / float(max_entries))
+    if webspace_total <= 0:
+        assessment_state = "idle"
+        reasons.append("no_yjs_webspaces_cached")
+    elif max_fill_ratio >= 0.9:
+        assessment_state = "pressure"
+        reasons.append("bounded_replay_window_near_limit")
+    else:
+        reasons.append("bounded_sync_runtime_observed")
+
+    return {
+        "available": True,
+        "scope": "hub_local_only",
+        "assessment": {
+            "state": assessment_state,
+            "reason": "; ".join(reasons),
+        },
+        "transport": {
+            "active_yws_connections": int(yws_transport.get("active_connections") or 0),
+            "last_open_ago_s": yws_transport.get("last_open_ago_s"),
+        },
+        "webspace_total": webspace_total,
+        "active_webspace_total": active_webspace_total,
+        "compacted_webspace_total": compacted_total,
+        "update_log_total": update_log_total,
+        "replay_window_total": replay_window_total,
+        "webspaces": webspaces,
+    }
+
+
 def reliability_snapshot(
     *,
     node_id: str,
@@ -3701,6 +3793,7 @@ def reliability_snapshot(
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,
     )
+    sync_runtime = yjs_sync_runtime_snapshot(role=role)
     return {
         "ok": True,
         "node": {
@@ -3726,5 +3819,6 @@ def reliability_snapshot(
             "hub_member_channels": hub_member_channels,
             "hub_member_connection_state": hub_member_connection_state,
             "sidecar_runtime": sidecar_runtime,
+            "sync_runtime": sync_runtime,
         },
     }

@@ -16,12 +16,38 @@ export type YDocSyncConnectionState =
   | 'connected'
   | 'disconnected'
 
+export type YDocSyncResyncReason =
+  | HubMemberSyncRecoveryReason
+  | 'manual'
+
+export type YDocSyncRuntimeSnapshot = {
+  updatedAt: number
+  webspaceId: string
+  initialized: boolean
+  initInFlight: boolean
+  persistenceEnabled: boolean
+  connectionState: YDocSyncConnectionState
+  currentPath: 'webrtc_data:yjs' | 'yws' | null
+  resyncCount: number
+  lastResyncAt: number | null
+  lastResyncReason: YDocSyncResyncReason | null
+  lastResyncOk: boolean | null
+  lastResyncClearLocalCache: boolean
+  lastProviderCreatedAt: number | null
+  lastFirstSyncTimeoutAt: number | null
+  lastProviderDisconnectedAt: number | null
+  lastSoftReauthAt: number | null
+}
+
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
   private db?: IndexeddbPersistence
   private provider?: WebsocketProvider | DataChannelProvider
   readonly syncConnectionState$ = new BehaviorSubject<YDocSyncConnectionState>('idle')
+  readonly syncRuntime$ = new BehaviorSubject<YDocSyncRuntimeSnapshot>(
+    this.buildSyncRuntimeSnapshot(),
+  )
   private initialized = false
   private initPromise?: Promise<void>
   private softReauthPromise?: Promise<void>
@@ -33,6 +59,15 @@ export class YDocService {
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
   private readonly yjsPersistKey = 'adaos_yjs_persist'
+  private resyncCount = 0
+  private lastResyncAt: number | null = null
+  private lastResyncReason: YDocSyncResyncReason | null = null
+  private lastResyncOk: boolean | null = null
+  private lastResyncClearLocalCache = false
+  private lastProviderCreatedAt: number | null = null
+  private lastFirstSyncTimeoutAt: number | null = null
+  private lastProviderDisconnectedAt: number | null = null
+  private lastSoftReauthAt: number | null = null
 
   constructor(
     private adaos: AdaosClient,
@@ -40,6 +75,40 @@ export class YDocService {
     private channels: HubMemberChannelsService,
   ) {
     this.deviceId = this.ensureDeviceId()
+  }
+
+  private buildSyncRuntimeSnapshot(): YDocSyncRuntimeSnapshot {
+    return {
+      updatedAt: Date.now(),
+      webspaceId: this.currentWebspaceId || 'default',
+      initialized: this.initialized,
+      initInFlight: !!this.initPromise,
+      persistenceEnabled: this.isPersistenceEnabled(),
+      connectionState: this.syncConnectionState$.value,
+      currentPath: this.currentSyncPath,
+      resyncCount: this.resyncCount,
+      lastResyncAt: this.lastResyncAt,
+      lastResyncReason: this.lastResyncReason,
+      lastResyncOk: this.lastResyncOk,
+      lastResyncClearLocalCache: this.lastResyncClearLocalCache,
+      lastProviderCreatedAt: this.lastProviderCreatedAt,
+      lastFirstSyncTimeoutAt: this.lastFirstSyncTimeoutAt,
+      lastProviderDisconnectedAt: this.lastProviderDisconnectedAt,
+      lastSoftReauthAt: this.lastSoftReauthAt,
+    }
+  }
+
+  private publishSyncRuntime(): void {
+    this.syncRuntime$.next(this.buildSyncRuntimeSnapshot())
+  }
+
+  private setSyncConnectionState(state: YDocSyncConnectionState): void {
+    this.syncConnectionState$.next(state)
+    this.publishSyncRuntime()
+  }
+
+  getSyncRuntimeSnapshot(): YDocSyncRuntimeSnapshot {
+    return this.buildSyncRuntimeSnapshot()
   }
 
   private isPersistenceEnabled(): boolean {
@@ -93,6 +162,8 @@ export class YDocService {
     // Avoid hammering WebAuthn prompts on flapping networks.
     if (now - this.lastSoftReauthAttemptAt < 60_000) return
     this.lastSoftReauthAttemptAt = now
+    this.lastSoftReauthAt = now
+    this.publishSyncRuntime()
     try {
       // Do not trigger WebAuthn prompts in background tabs.
       if (typeof document !== 'undefined' && (document as any).hidden) return
@@ -114,18 +185,17 @@ export class YDocService {
         if (hubId) localStorage.setItem(this.hubIdKey, hubId)
       } catch {}
 
-      // Recreate WS provider with the fresh token (keep the Y.Doc intact).
-      this.destroyCurrentProvider()
-
       const baseHttp = (this.adaos.getBaseUrl() || '').trim()
-      const baseWs = baseHttp.replace(/^http/, 'ws')
-      const serverUrl = `${baseWs}/yws`
       const room = this.currentWebspaceId || 'default'
-      const syncPath = this.createSyncProvider(serverUrl, room)
+      const ok = await this.resyncCurrentWebspace({
+        reason: 'soft_reauth',
+        remoteProxy: baseHttp.includes('/hubs/'),
+        room,
+      })
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.info(
-          `[YDocService] soft re-auth complete; sync provider recreated via ${syncPath.path}`,
+          `[YDocService] soft re-auth complete; sync provider recreated ok=${ok}`,
         )
       }
     } catch (e) {
@@ -186,8 +256,10 @@ export class YDocService {
     )
     this.currentSyncPath = syncPath.path as 'webrtc_data:yjs' | 'yws'
     this.provider = syncPath.provider
-    this.syncConnectionState$.next('connecting')
+    this.lastProviderCreatedAt = Date.now()
+    this.setSyncConnectionState('connecting')
     this.attachProviderConnectionSignals(this.provider)
+    this.publishSyncRuntime()
     return {
       provider: syncPath.provider,
       path: syncPath.path as 'webrtc_data:yjs' | 'yws',
@@ -263,43 +335,93 @@ export class YDocService {
       this.channels.recordSyncRecoverySkipped(reason)
       return false
     }
+    return this.resyncCurrentWebspace({
+      reason,
+      serverUrl,
+      room,
+      remoteProxy,
+      waitForFirstSyncTimeoutMs: 6000,
+    })
+  }
+
+  async resyncCurrentWebspace({
+    reason = 'manual',
+    clearLocalCache = false,
+    serverUrl,
+    room,
+    remoteProxy,
+    waitForFirstSyncTimeoutMs = 6000,
+  }: {
+    reason?: YDocSyncResyncReason
+    clearLocalCache?: boolean
+    serverUrl?: string
+    room?: string
+    remoteProxy?: boolean
+    waitForFirstSyncTimeoutMs?: number
+  } = {}): Promise<boolean> {
+    const baseHttp = (this.adaos.getBaseUrl() || '').trim().replace(/\/$/, '')
+    const resolvedServerUrl = serverUrl || `${baseHttp.replace(/^http/, 'ws')}/yws`
+    const resolvedRoom = room || this.currentWebspaceId || 'default'
+    const resolvedRemoteProxy =
+      typeof remoteProxy === 'boolean' ? remoteProxy : baseHttp.includes('/hubs/')
+
+    this.lastResyncAt = Date.now()
+    this.lastResyncReason = reason
+    this.lastResyncClearLocalCache = !!clearLocalCache
+    this.lastResyncOk = null
+    this.publishSyncRuntime()
+
+    if (clearLocalCache && this.isPersistenceEnabled()) {
+      await this.clearStorage()
+    }
+
     this.destroyCurrentProvider()
     await new Promise<void>((resolve) => setTimeout(resolve, 250))
     try {
-      const syncPath = this.createSyncProvider(serverUrl, room, {
+      const syncPath = this.createSyncProvider(resolvedServerUrl, resolvedRoom, {
         recoveryReason: reason,
       })
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.warn(
-          `[YDocService] retrying sync provider via ${syncPath.path} reason=${reason}`,
+          `[YDocService] resyncing provider via ${syncPath.path} reason=${reason} remoteProxy=${resolvedRemoteProxy}`,
         )
       }
-      const ok = await this.waitForFirstSync(6000)
+      const ok = await this.waitForFirstSync(waitForFirstSyncTimeoutMs)
+      this.lastResyncOk = ok
       if (!ok) {
         this.channels.recordSyncRecoveryFailed(reason)
       }
+      this.publishSyncRuntime()
       return ok
     } catch (err) {
+      this.lastResyncOk = false
       this.channels.recordSyncRecoveryFailed(reason)
+      this.publishSyncRuntime()
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
-        console.warn('[YDocService] sync provider recovery failed', err)
+        console.warn('[YDocService] sync provider resync failed', err)
       }
       return false
+    } finally {
+      this.resyncCount += 1
+      this.publishSyncRuntime()
     }
   }
 
   async initFromHub(): Promise<void> {
     if (this.initialized) return
     if (this.initPromise) return this.initPromise
+    this.publishSyncRuntime()
     this.initPromise = this.doInitFromHub()
       .then(() => {
         this.initialized = true
+        this.publishSyncRuntime()
       })
       .finally(() => {
         // Allow retries after failures (e.g. hub offline until user logs in to use root-proxy).
         this.initPromise = undefined
+        this.publishSyncRuntime()
       })
     return this.initPromise
   }
@@ -638,6 +760,7 @@ export class YDocService {
     }
     this.currentWebspaceId = webspaceId
     this.setPreferredWebspaceId(webspaceId)
+    this.publishSyncRuntime()
 
     // IndexedDB persistence can cause "stale UI" issues during active schema/scenario
     // development because the browser may replay an old local snapshot back into Yjs
@@ -693,6 +816,8 @@ export class YDocService {
     // We still wait a bit for "first sync" to provide fast feedback, but treat timeout as degraded mode.
     const firstSyncOrTimeout = await this.waitForFirstSync(9000)
     if (!firstSyncOrTimeout) {
+      this.lastFirstSyncTimeoutAt = Date.now()
+      this.publishSyncRuntime()
       if (isDebugEnabled()) {
         // eslint-disable-next-line no-console
         console.warn('[YDocService] yws sync timeout; continuing and waiting for reconnect')
@@ -809,7 +934,7 @@ export class YDocService {
       p.on('sync', (synced: any) => {
         try {
           const connected = Boolean(synced)
-          this.syncConnectionState$.next(connected ? 'connected' : 'disconnected')
+          this.setSyncConnectionState(connected ? 'connected' : 'disconnected')
           this.channels.reportSyncPathState(
             this.currentSyncPath,
             connected ? 'connected' : 'disconnected',
@@ -820,12 +945,13 @@ export class YDocService {
         try {
           const st = String(ev?.status || '').trim().toLowerCase()
           if (st === 'connected') {
-            this.syncConnectionState$.next('connected')
+            this.setSyncConnectionState('connected')
             this.channels.reportSyncPathState(this.currentSyncPath, 'connected')
             return
           }
           if (st !== 'disconnected') return
-          this.syncConnectionState$.next('disconnected')
+          this.lastProviderDisconnectedAt = Date.now()
+          this.setSyncConnectionState('disconnected')
           this.channels.reportSyncPathState(this.currentSyncPath, 'disconnected')
           if (this.currentSyncPath === 'yws') {
             const baseHttp = this.adaos.getBaseUrl().replace(/\/$/, '')
@@ -859,7 +985,7 @@ export class YDocService {
     } catch {}
     this.provider = undefined
     this.currentSyncPath = null
-    this.syncConnectionState$.next('idle')
+    this.setSyncConnectionState('idle')
     this.channels.reportSyncPathState(lastPath, 'idle')
   }
 

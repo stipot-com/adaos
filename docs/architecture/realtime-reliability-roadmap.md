@@ -265,6 +265,12 @@ Make Yjs transport-independent without building a second distributed system arou
 - Yjs reliability is not duplicated blindly across transport, log, and UI layers
 - awareness may drop without compromising document state
 
+### Checkpoint reached
+
+- hub-side YStore runtime now exposes bounded log and snapshot+diff state for operator diagnostics
+- browser sync now has an explicit resync path and runtime snapshot instead of scattered provider recreation logic
+- node reliability / hub-root status surface Yjs sync runtime alongside transport and protocol state
+
 ## Phase 6: Media plane
 
 ### Focus
