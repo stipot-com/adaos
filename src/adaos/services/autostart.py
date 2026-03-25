@@ -638,6 +638,26 @@ def _linux_systemctl_system_unavailable_hint(*, wrapper: Path) -> str:
     return "\n".join(parts).strip()
 
 
+def _linux_should_prefer_system_scope(scope: Literal["auto", "user", "system"], *, run_as: str | None = None) -> bool:
+    scope_norm = str(scope or "auto").strip().lower()
+    run_as_user = str(run_as or "").strip()
+    if scope_norm == "system":
+        return True
+    if scope_norm != "auto":
+        return False
+    if run_as_user:
+        return True
+    return bool(_linux_is_root() and _linux_has_systemd_pid1())
+
+
+def _best_effort_remove(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
 def _linux_write_service_file(
     service_path: Path,
     *,
@@ -765,8 +785,9 @@ def enable(
 
     if _is_linux():
         run_as_user = str(run_as or "").strip() or None
+        prefer_system_scope = _linux_should_prefer_system_scope(scope, run_as=run_as_user)
         if (
-            scope in {"auto", "system"}
+            prefer_system_scope
             and shutil_which("systemctl")
             and _linux_is_root()
             and _linux_has_systemd_pid1()
@@ -780,10 +801,12 @@ def enable(
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
         _write_wrapper_sh(wrapper, argv=spec.argv, env=spec.env)
         user_service_path = _linux_service_path_user()
-        _linux_write_service_file(user_service_path, wrapper=wrapper, scope="user")
 
-        # Prefer user service when the user session bus is available.
-        if (scope in {"auto", "user"}) and shutil_which("systemctl") and _linux_systemctl_user_available():
+        if not prefer_system_scope:
+            _linux_write_service_file(user_service_path, wrapper=wrapper, scope="user")
+
+        # Prefer user service when explicitly requested, or for non-root auto mode.
+        if (not prefer_system_scope) and (scope in {"auto", "user"}) and shutil_which("systemctl") and _linux_systemctl_user_available():
             _run(["systemctl", "--user", "daemon-reload"])
             enabled = _run(["systemctl", "--user", "enable", "--now", _linux_service_name()])
             if enabled.returncode != 0:
@@ -796,14 +819,18 @@ def enable(
                 "service": str(user_service_path),
             }
 
-        # In containers / root sessions there is often no user bus. If PID1 is systemd and
-        # we're root, fall back to a system service.
-        if (scope in {"auto", "system"}) and shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
+        # Prefer system scope for root / server environments where user services do not survive a reboot reliably.
+        if prefer_system_scope and shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
             if run_as_user and run_as_user != "root":
                 if create_user:
                     _linux_create_system_user(run_as_user)
                 elif not _linux_user_exists(run_as_user):
                     raise RuntimeError(f"user does not exist: {run_as_user} (use --create-user to create it)")
+
+            if shutil_which("systemctl") and _linux_systemctl_user_available():
+                _run(["systemctl", "--user", "disable", "--now", _linux_service_name()])
+                _run(["systemctl", "--user", "daemon-reload"])
+            _best_effort_remove(user_service_path)
 
             system_service_path = _linux_service_path_system()
             _linux_write_service_file(system_service_path, wrapper=wrapper, scope="system", run_as=run_as_user)
@@ -1028,10 +1055,6 @@ def status(ctx: AgentContext) -> dict:
         user_service_path = _linux_service_path_user()
         system_service_path = _linux_service_path_system()
 
-        enabled = user_service_path.exists()
-        active = None
-        scope = "user"
-
         def _parse_execstart(path: Path) -> Path | None:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
@@ -1051,21 +1074,48 @@ def status(ctx: AgentContext) -> dict:
                         return None
             return None
 
-        if shutil_which("systemctl") and _linux_systemctl_user_available():
-            is_enabled = _run(["systemctl", "--user", "is-enabled", _linux_service_name()])
-            enabled = is_enabled.returncode == 0
-            is_active = _run(["systemctl", "--user", "is-active", _linux_service_name()])
-            active = is_active.returncode == 0
-        elif shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
-            scope = "system"
+        def _query_user() -> dict[str, object]:
+            enabled = user_service_path.exists()
+            active = None
+            if shutil_which("systemctl") and _linux_systemctl_user_available():
+                is_enabled = _run(["systemctl", "--user", "is-enabled", _linux_service_name()])
+                enabled = is_enabled.returncode == 0
+                is_active = _run(["systemctl", "--user", "is-active", _linux_service_name()])
+                active = is_active.returncode == 0
+            return {"scope": "user", "enabled": bool(enabled), "active": active, "service_path": user_service_path}
+
+        def _query_system() -> dict[str, object]:
             enabled = system_service_path.exists()
-            is_enabled = _run(["systemctl", "is-enabled", _linux_service_name()])
-            enabled = is_enabled.returncode == 0
-            is_active = _run(["systemctl", "is-active", _linux_service_name()])
-            active = is_active.returncode == 0
+            active = None
+            if shutil_which("systemctl") and _linux_is_root() and _linux_has_systemd_pid1():
+                is_enabled = _run(["systemctl", "is-enabled", _linux_service_name()])
+                enabled = is_enabled.returncode == 0
+                is_active = _run(["systemctl", "is-active", _linux_service_name()])
+                active = is_active.returncode == 0
+            return {"scope": "system", "enabled": bool(enabled), "active": active, "service_path": system_service_path}
+
+        candidates: list[dict[str, object]] = []
+        if _linux_is_root() and _linux_has_systemd_pid1():
+            candidates.append(_query_system())
+        if _linux_systemctl_user_available() or user_service_path.exists():
+            candidates.append(_query_user())
+        if not candidates:
+            candidates.append(_query_user())
+
+        def _candidate_rank(item: dict[str, object]) -> tuple[bool, bool, bool]:
+            return (
+                item.get("active") is True,
+                item.get("enabled") is True,
+                item.get("scope") == "system" and _linux_is_root() and _linux_has_systemd_pid1(),
+            )
+
+        selected = max(candidates, key=_candidate_rank)
+        scope = str(selected.get("scope") or "user")
+        enabled = bool(selected.get("enabled"))
+        active = selected.get("active")
+        service_path = Path(selected.get("service_path") or user_service_path)
 
         wrapper = (bin_dir / "adaos-autostart.sh").resolve()
-        service_path = system_service_path if scope == "system" else user_service_path
         wrapper_from_service = _parse_execstart(service_path) if service_path.exists() else None
         if wrapper_from_service is not None:
             wrapper = wrapper_from_service

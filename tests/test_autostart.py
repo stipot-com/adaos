@@ -176,6 +176,43 @@ def test_linux_enable_root_falls_back_to_system_service(monkeypatch, tmp_path: P
     assert ["systemctl", "enable", "--now", "adaos.service"] in calls
 
 
+def test_linux_enable_root_prefers_system_service_even_with_user_bus(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    monkeypatch.setattr(autostart, "_bootstrap_core_slot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autostart, "_is_windows", lambda: False)
+    monkeypatch.setattr(autostart, "_is_macos", lambda: False)
+    monkeypatch.setattr(autostart, "_is_linux", lambda: True)
+    monkeypatch.setattr(autostart, "_home", lambda: tmp_path)
+    monkeypatch.setattr(autostart, "shutil_which", lambda cmd: "/bin/systemctl" if cmd == "systemctl" else None)
+    monkeypatch.setattr(autostart, "_linux_user_bus_path", lambda: tmp_path / "bus")
+    monkeypatch.setattr(autostart, "_linux_has_systemd_pid1", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_is_root", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_service_path_system", lambda: (tmp_path / "etc" / "systemd" / "system" / "adaos.service").resolve())
+
+    stale_user_service = tmp_path / ".config" / "systemd" / "user" / "adaos.service"
+    stale_user_service.parent.mkdir(parents=True, exist_ok=True)
+    stale_user_service.write_text("[Unit]\nDescription=stale\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
+
+    monkeypatch.setattr(autostart, "_run", lambda cmd: calls.append(cmd) or _Proc())
+
+    spec = default_spec(_FakeCtx(tmp_path), host="127.0.0.1", port=8777, token="t1")
+    res = enable(_FakeCtx(tmp_path), spec)
+
+    assert res["scope"] == "system"
+    assert ["systemctl", "enable", "--now", "adaos.service"] in calls
+    assert ["systemctl", "--user", "disable", "--now", "adaos.service"] in calls
+    assert not stale_user_service.exists()
+
+
 def test_linux_enable_system_run_as_user_rejects_root_paths(monkeypatch, tmp_path: Path) -> None:
     import adaos.services.autostart as autostart
 

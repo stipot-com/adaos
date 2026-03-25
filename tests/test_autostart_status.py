@@ -100,3 +100,46 @@ def test_windows_status_reports_wrapper_context(monkeypatch, tmp_path: Path) -> 
     assert status["base_dir"] == str(service_base.resolve())
     assert status["shared_dotenv_path"] == str(shared_dotenv.resolve())
     assert status["wrapper_env"]["ADAOS_BASE_DIR"] == str(service_base)
+
+
+def test_linux_status_root_prefers_system_service_when_user_bus_exists(monkeypatch, tmp_path: Path) -> None:
+    user_home = tmp_path / "home"
+    user_service = user_home / ".config" / "systemd" / "user" / "adaos.service"
+    system_service = tmp_path / "etc" / "systemd" / "system" / "adaos.service"
+    user_wrapper = tmp_path / "user-wrapper.sh"
+    system_wrapper = tmp_path / "system-wrapper.sh"
+
+    user_service.parent.mkdir(parents=True, exist_ok=True)
+    system_service.parent.mkdir(parents=True, exist_ok=True)
+    user_wrapper.write_text("export ADAOS_BASE_DIR='/tmp/user'\nexec python --host 127.0.0.1 --port 8777\n", encoding="utf-8")
+    system_wrapper.write_text("export ADAOS_BASE_DIR='/tmp/system'\nexec python --host 127.0.0.1 --port 8778\n", encoding="utf-8")
+    user_service.write_text(f"[Service]\nExecStart={user_wrapper}\n", encoding="utf-8")
+    system_service.write_text(f"[Service]\nExecStart={system_wrapper}\n", encoding="utf-8")
+
+    class _Proc:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = ""
+
+    def _run(cmd: list[str]):
+        return _Proc(0)
+
+    monkeypatch.setattr(autostart, "_is_windows", lambda: False)
+    monkeypatch.setattr(autostart, "_is_linux", lambda: True)
+    monkeypatch.setattr(autostart, "_is_macos", lambda: False)
+    monkeypatch.setattr(autostart, "_home", lambda: user_home)
+    monkeypatch.setattr(autostart, "_linux_service_path_system", lambda: system_service.resolve())
+    monkeypatch.setattr(autostart, "_linux_is_root", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_has_systemd_pid1", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_user_bus_path", lambda: tmp_path / "bus")
+    monkeypatch.setattr(autostart, "shutil_which", lambda cmd: "/bin/systemctl" if cmd == "systemctl" else None)
+    monkeypatch.setattr(autostart, "_run", _run)
+    monkeypatch.setattr(autostart, "_discover_live_control_bind", lambda host, port: (host, port))
+
+    status = autostart.status(_FakeCtx(tmp_path / "base"))
+
+    assert status["scope"] == "system"
+    assert status["service"] == str(system_service.resolve())
+    assert status["wrapper"] == str(system_wrapper.resolve())
+    assert status["port"] == 8778
