@@ -40,6 +40,12 @@ export type HubMemberDirectNegotiationState =
 	| 'connected'
 	| 'failed'
 
+export type HubMemberDirectRecoveryState =
+	| 'idle'
+	| 'skipped'
+	| 'recovered'
+	| 'failed'
+
 export type HubMemberPathEvidenceState =
 	| 'idle'
 	| 'connecting'
@@ -66,6 +72,11 @@ export type HubMemberChannelSnapshot = {
 		source: HubMemberDirectPolicySource
 		lastNegotiationAt: number | null
 		lastNegotiationState: HubMemberDirectNegotiationState
+	}
+	directRecovery: {
+		eligible: boolean
+		lastAttemptAt: number | null
+		lastAttemptState: HubMemberDirectRecoveryState
 	}
 	controlPlane: {
 		subscriptionsTracked: number
@@ -120,11 +131,21 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 
 @Injectable({ providedIn: 'root' })
 export class HubMemberChannelsService {
+	private static readonly DIRECT_RECOVERY_HEALTH_CHECK_MS = 30_000
+	private static readonly DIRECT_RECOVERY_DEBOUNCE_MS = 1_000
+
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
 	private runtimeInitialized = false
+	private visibilityTrackingInstalled = false
+	private isPageVisible = true
+	private directRecoveryDebounce: ReturnType<typeof setTimeout> | null = null
+	private directRecoveryInFlight?: Promise<boolean>
+	private directRemoteProxyEligible = false
 	private lastDirectNegotiationAt: number | null = null
 	private lastDirectNegotiationState: HubMemberDirectNegotiationState = 'idle'
+	private lastDirectRecoveryAt: number | null = null
+	private lastDirectRecoveryState: HubMemberDirectRecoveryState = 'idle'
 	private lastControlReplayAt: number | null = null
 	private lastControlReplayCount = 0
 	private wsState: HubMemberPathEvidenceState = 'idle'
@@ -150,6 +171,9 @@ export class HubMemberChannelsService {
 
 	reportWsState(state: 'disconnected' | 'connecting' | 'connected'): void {
 		this.wsState = state
+		if (state === 'connected' && this.isPageVisible) {
+			this.scheduleDirectRecovery()
+		}
 		this.publishSnapshot()
 	}
 
@@ -211,6 +235,7 @@ export class HubMemberChannelsService {
 		} = {},
 	): Promise<boolean> {
 		const policy = this.resolveDirectPathPolicy()
+		this.directRemoteProxyEligible = remoteProxy
 		this.lastDirectNegotiationAt = Date.now()
 		if (!remoteProxy || !policy.enabled) {
 			this.lastDirectNegotiationState = 'skipped'
@@ -227,9 +252,37 @@ export class HubMemberChannelsService {
 	initRuntime(): void {
 		if (!this.runtimeInitialized) {
 			this.runtimeInitialized = true
-			this.rtc.initVisibilityTracking()
+			this.installVisibilityTracking()
 		}
 		this.publishSnapshot()
+	}
+
+	private installVisibilityTracking(): void {
+		if (this.visibilityTrackingInstalled || typeof document === 'undefined') {
+			return
+		}
+		this.visibilityTrackingInstalled = true
+		this.isPageVisible = !document.hidden
+		document.addEventListener('visibilitychange', () => {
+			const nowVisible = !document.hidden
+			if (this.isPageVisible === nowVisible) {
+				return
+			}
+			this.isPageVisible = nowVisible
+			if (!nowVisible) {
+				return
+			}
+			this.scheduleDirectRecovery()
+		})
+	}
+
+	private scheduleDirectRecovery(): void {
+		if (this.directRecoveryDebounce) {
+			clearTimeout(this.directRecoveryDebounce)
+		}
+		this.directRecoveryDebounce = setTimeout(() => {
+			void this.attemptDirectRecovery()
+		}, HubMemberChannelsService.DIRECT_RECOVERY_DEBOUNCE_MS)
 	}
 
 	resolveActivePath(
@@ -328,6 +381,49 @@ export class HubMemberChannelsService {
 		this.lastControlReplayCount = normalized.length
 		this.publishSnapshot()
 		return normalized.length
+	}
+
+	private isDirectRecoveryEligible(nowMs = Date.now()): boolean {
+		const policy = this.resolveDirectPathPolicy()
+		const rtc = this.rtc.getRecoverySnapshot()
+		const lastConnectedAt = rtc.lastConnectedAt ?? 0
+		const connectionStale =
+			!lastConnectedAt ||
+			nowMs - lastConnectedAt >
+				HubMemberChannelsService.DIRECT_RECOVERY_HEALTH_CHECK_MS
+		if (!this.directRemoteProxyEligible || !policy.enabled) {
+			return false
+		}
+		if (this.wsState !== 'connected' || !rtc.canRenegotiate) {
+			return false
+		}
+		return (
+			rtc.state === 'failed' ||
+			(rtc.state !== 'connected' && connectionStale)
+		)
+	}
+
+	private async attemptDirectRecovery(): Promise<boolean> {
+		if (this.directRecoveryInFlight) {
+			return this.directRecoveryInFlight
+		}
+		const run = (async () => {
+			const nowMs = Date.now()
+			this.lastDirectRecoveryAt = nowMs
+			if (!this.isDirectRecoveryEligible(nowMs)) {
+				this.lastDirectRecoveryState = 'skipped'
+				this.publishSnapshot()
+				return false
+			}
+			const ok = await this.rtc.triggerFullRenegotiation()
+			this.lastDirectRecoveryState = ok ? 'recovered' : 'failed'
+			this.publishSnapshot()
+			return ok
+		})()
+		this.directRecoveryInFlight = run.finally(() => {
+			this.directRecoveryInFlight = undefined
+		})
+		return this.directRecoveryInFlight
 	}
 
 	createSyncProvider(
@@ -479,6 +575,11 @@ export class HubMemberChannelsService {
 				...this.resolveDirectPathPolicy(),
 				lastNegotiationAt: this.lastDirectNegotiationAt,
 				lastNegotiationState: this.lastDirectNegotiationState,
+			},
+			directRecovery: {
+				eligible: this.isDirectRecoveryEligible(nowMs),
+				lastAttemptAt: this.lastDirectRecoveryAt,
+				lastAttemptState: this.lastDirectRecoveryState,
 			},
 			controlPlane: {
 				subscriptionsTracked: this.controlSubscriptions.size,

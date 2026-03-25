@@ -8,6 +8,12 @@ export type RtcTransportState =
 	| 'connected'
 	| 'failed'
 
+export type RtcTransportRecoverySnapshot = {
+	state: RtcTransportState
+	lastConnectedAt: number | null
+	canRenegotiate: boolean
+}
+
 /**
  * Manages a WebRTC peer connection with two DataChannels:
  *  - **events** (ordered, reliable) — JSON commands mirroring /ws
@@ -117,13 +123,16 @@ export class WebRtcTransportService {
 		return this.eventsChannel
 	}
 
+	getRecoverySnapshot(): RtcTransportRecoverySnapshot {
+		return {
+			state: this.state$.value,
+			lastConnectedAt: this.lastConnectedTimestamp || null,
+			canRenegotiate: !!(this.signalingWs && this.pendingSendCommand),
+		}
+	}
+
 	close(): void {
 		this.removeSignalingListener()
-
-		if (this.visibilityChangeDebounce) {
-			clearTimeout(this.visibilityChangeDebounce)
-			this.visibilityChangeDebounce = null
-		}
 
 		if (this.eventsChannel) {
 			try {
