@@ -306,8 +306,10 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     transport = runtime.get("transport") if isinstance(runtime.get("transport"), dict) else {}
     selected = str(runtime.get("selected_webspace_id") or "").strip()
     action_overrides = runtime.get("action_overrides") if isinstance(runtime.get("action_overrides"), dict) else {}
+    recovery_playbook = runtime.get("recovery_playbook") if isinstance(runtime.get("recovery_playbook"), dict) else {}
     reload_override = action_overrides.get("reload") if isinstance(action_overrides.get("reload"), dict) else {}
     restore_override = action_overrides.get("restore") if isinstance(action_overrides.get("restore"), dict) else {}
+    recovery_order = recovery_playbook.get("action_order") if isinstance(recovery_playbook.get("action_order"), list) else []
     typer.echo(
         "yjs_runtime: "
         f"state={assessment.get('state') or 'unknown'} "
@@ -319,7 +321,8 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"replay={runtime.get('replay_window_total') or 0} "
         f"yws={transport.get('active_yws_connections') or 0} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
-        f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'}"
+        f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
+        f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'}"
     )
     webspaces = runtime.get("webspaces") if isinstance(runtime.get("webspaces"), dict) else {}
     for webspace_id, item in sorted(webspaces.items()):

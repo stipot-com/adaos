@@ -3662,6 +3662,7 @@ def yjs_sync_runtime_snapshot(
     role_norm = str(role or "").strip().lower()
     selected_webspace_id = str(webspace_id or "").strip()
     action_overrides: dict[str, Any] = {}
+    recovery_playbook: dict[str, Any] = {}
     if role_norm != "hub":
         return {
             "available": False,
@@ -3673,6 +3674,7 @@ def yjs_sync_runtime_snapshot(
             },
             "transport": {},
             "action_overrides": action_overrides,
+            "recovery_playbook": recovery_playbook,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3696,6 +3698,7 @@ def yjs_sync_runtime_snapshot(
             },
             "transport": {},
             "action_overrides": action_overrides,
+            "recovery_playbook": recovery_playbook,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3777,6 +3780,23 @@ def yjs_sync_runtime_snapshot(
             ),
         },
     }
+    recovery_order = ["backup", "reload"]
+    if snapshot_exists:
+        recovery_order.append("restore")
+    recovery_order.append("reset")
+    recovery_playbook = {
+        "default_action": "reload",
+        "default_reason": "scenario is the canonical source for routine webspace reseed and recovery",
+        "escalation_action": "restore" if snapshot_exists else None,
+        "escalation_reason": (
+            "use the last persisted disk snapshot when scenario reseed would discard wanted collaborative state"
+            if snapshot_exists
+            else "disk snapshot is unavailable, so recovery escalation skips restore"
+        ),
+        "last_resort_action": "reset",
+        "last_resort_reason": "hard-reset the webspace only when scenario reload or snapshot restore are unsuitable",
+        "action_order": recovery_order,
+    }
 
     return {
         "available": True,
@@ -3791,6 +3811,7 @@ def yjs_sync_runtime_snapshot(
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
         },
         "action_overrides": action_overrides,
+        "recovery_playbook": recovery_playbook,
         "webspace_total": webspace_total,
         "active_webspace_total": active_webspace_total,
         "compacted_webspace_total": compacted_total,
