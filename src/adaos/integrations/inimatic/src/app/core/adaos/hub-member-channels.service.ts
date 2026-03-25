@@ -94,6 +94,13 @@ type ChannelState = {
 	switchTotal: number
 }
 
+type PendingControlCommandEntry = {
+	kind: string
+	resolve: (message: any) => void
+	reject: (error: any) => void
+	timeout: ReturnType<typeof setTimeout>
+}
+
 export type HubMemberChannelSnapshot = {
 	updatedAt: number
 	directPolicy: {
@@ -106,6 +113,8 @@ export type HubMemberChannelSnapshot = {
 		eligible: boolean
 		lastAttemptAt: number | null
 		lastAttemptState: HubMemberDirectRecoveryState
+		failureCount: number
+		nextAttemptAt: number | null
 	}
 	syncRecovery: {
 		eligible: boolean
@@ -181,11 +190,16 @@ const CHANNEL_SPECS: Record<HubMemberSemanticChannelId, ChannelSpec> = {
 export class HubMemberChannelsService {
 	private static readonly DIRECT_RECOVERY_HEALTH_CHECK_MS = 30_000
 	private static readonly DIRECT_RECOVERY_DEBOUNCE_MS = 1_000
+	private static readonly DIRECT_RECOVERY_BACKOFF_BASE_MS = 15_000
+	private static readonly DIRECT_RECOVERY_BACKOFF_MAX_MS = 5 * 60_000
 	private static readonly SYNC_RECOVERY_DEBOUNCE_MS = 1_500
 
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
-	private readonly pendingControlCommands = new Map<string, string>()
+	private readonly pendingControlCommands = new Map<
+		string,
+		PendingControlCommandEntry
+	>()
 	private runtimeInitialized = false
 	private visibilityTrackingInstalled = false
 	private isPageVisible = true
@@ -196,6 +210,8 @@ export class HubMemberChannelsService {
 	private lastDirectNegotiationState: HubMemberDirectNegotiationState = 'idle'
 	private lastDirectRecoveryAt: number | null = null
 	private lastDirectRecoveryState: HubMemberDirectRecoveryState = 'idle'
+	private directRecoveryFailureCount = 0
+	private nextDirectRecoveryAt: number | null = null
 	private lastSyncProviderCreateAt: number | null = null
 	private lastSyncProviderPath: HubMemberSemanticPath | null = null
 	private lastSyncRecoveryAt: number | null = null
@@ -250,7 +266,10 @@ export class HubMemberChannelsService {
 		this.controlSessionState = 'disconnected'
 		this.lastControlDisconnectedAt = Date.now()
 		this.lastControlCloseReason = reason || 'closed'
-		this.pendingControlCommands.clear()
+		this.failAllPendingControlCommands(
+			new Error(reason || 'events websocket closed'),
+			'closed',
+		)
 		this.publishSnapshot()
 	}
 
@@ -322,6 +341,7 @@ export class HubMemberChannelsService {
 		this.rtc.onEventsMessage = onEventsMessage ?? null
 		const ok = await this.rtc.negotiate(signalingWs, sendCommand)
 		this.lastDirectNegotiationState = ok ? 'connected' : 'failed'
+		this.noteDirectRecoveryResult(ok, Date.now())
 		this.publishSnapshot()
 		return ok
 	}
@@ -357,9 +377,16 @@ export class HubMemberChannelsService {
 		if (this.directRecoveryDebounce) {
 			clearTimeout(this.directRecoveryDebounce)
 		}
+		const nowMs = Date.now()
+		const waitMs = this.nextDirectRecoveryAt
+			? Math.max(
+					HubMemberChannelsService.DIRECT_RECOVERY_DEBOUNCE_MS,
+					this.nextDirectRecoveryAt - nowMs,
+			  )
+			: HubMemberChannelsService.DIRECT_RECOVERY_DEBOUNCE_MS
 		this.directRecoveryDebounce = setTimeout(() => {
 			void this.attemptDirectRecovery()
-		}, HubMemberChannelsService.DIRECT_RECOVERY_DEBOUNCE_MS)
+		}, waitMs)
 	}
 
 	resolveActivePath(
@@ -413,19 +440,14 @@ export class HubMemberChannelsService {
 		})
 	}
 
-	createControlCommandEnvelope(
+	createPendingControlCommand(
 		kind: string,
 		payload: Record<string, any>,
+		timeoutMs: number,
 	): {
 		id: string
-		envelope: {
-			ch: 'events'
-			t: 'cmd'
-			id: string
-			kind: string
-			payload: Record<string, any>
-		}
 		json: string
+		ack: Promise<any>
 	} {
 		const id = `${kind}.${Date.now()}.${Math.random()
 			.toString(16)
@@ -437,24 +459,48 @@ export class HubMemberChannelsService {
 			kind,
 			payload: payload ?? {},
 		}
+		const ack = new Promise<any>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				this.failPendingControlCommand(
+					id,
+					new Error(`events command timeout: ${kind}`),
+					'timeout',
+				)
+			}, timeoutMs)
+			this.pendingControlCommands.set(id, {
+				kind,
+				resolve,
+				reject,
+				timeout,
+			})
+		})
+		this.publishSnapshot()
 		return {
 			id,
-			envelope,
 			json: JSON.stringify(envelope),
+			ack,
 		}
 	}
 
-	tryParseControlAck(raw: string): { id: string; message: any } | null {
+	handleIncomingControlMessage(raw: string): { handled: boolean; ack?: any } {
 		try {
 			const msg = JSON.parse(raw)
 			if (msg?.ch === 'events' && msg?.t === 'ack' && msg?.id) {
-				return {
-					id: String(msg.id),
-					message: msg,
+				const id = String(msg.id)
+				const pending = this.pendingControlCommands.get(id)
+				if (pending) {
+					clearTimeout(pending.timeout)
+					this.pendingControlCommands.delete(id)
+					this.lastControlCommandKind = pending.kind
+					this.lastControlCommandCompletedAt = Date.now()
+					this.lastControlCommandOutcome = 'ack'
+					pending.resolve(msg)
+					this.publishSnapshot()
 				}
+				return { handled: true, ack: msg }
 			}
 		} catch {}
-		return null
+		return { handled: false }
 	}
 
 	sendControlEnvelope(ws: WebSocket, json: string): 'ws' {
@@ -491,21 +537,31 @@ export class HubMemberChannelsService {
 		this.sendControlSubscriptions(ws, topics)
 	}
 
-	registerPendingControlCommand(id: string, kind: string): void {
-		this.pendingControlCommands.set(id, kind)
+	failPendingControlCommand(
+		id: string,
+		error: any,
+		outcome: Exclude<HubMemberControlCommandOutcome, 'ack'>,
+	): void {
+		const pending = this.pendingControlCommands.get(id)
+		if (!pending) {
+			return
+		}
+		clearTimeout(pending.timeout)
+		this.pendingControlCommands.delete(id)
+		this.lastControlCommandKind = pending.kind
+		this.lastControlCommandCompletedAt = Date.now()
+		this.lastControlCommandOutcome = outcome
+		pending.reject(error)
 		this.publishSnapshot()
 	}
 
-	completePendingControlCommand(
-		id: string,
-		outcome: HubMemberControlCommandOutcome,
+	failAllPendingControlCommands(
+		error: any,
+		outcome: Exclude<HubMemberControlCommandOutcome, 'ack'> = 'closed',
 	): void {
-		const kind = this.pendingControlCommands.get(id) || null
-		this.pendingControlCommands.delete(id)
-		this.lastControlCommandKind = kind
-		this.lastControlCommandCompletedAt = Date.now()
-		this.lastControlCommandOutcome = outcome
-		this.publishSnapshot()
+		for (const id of [...this.pendingControlCommands.keys()]) {
+			this.failPendingControlCommand(id, error, outcome)
+		}
 	}
 
 	sendControlSubscriptions(ws: WebSocket, topics: string[]): number {
@@ -536,6 +592,9 @@ export class HubMemberChannelsService {
 		if (!this.directRemoteProxyEligible || !policy.enabled) {
 			return false
 		}
+		if (this.nextDirectRecoveryAt && nowMs < this.nextDirectRecoveryAt) {
+			return false
+		}
 		if (this.wsState !== 'connected' || !rtc.canRenegotiate) {
 			return false
 		}
@@ -559,6 +618,7 @@ export class HubMemberChannelsService {
 			}
 			const ok = await this.rtc.triggerFullRenegotiation()
 			this.lastDirectRecoveryState = ok ? 'recovered' : 'failed'
+			this.noteDirectRecoveryResult(ok, Date.now())
 			this.publishSnapshot()
 			return ok
 		})()
@@ -680,25 +740,43 @@ export class HubMemberChannelsService {
 		const availablePaths = spec.paths.filter((path) =>
 			this.isPathAvailable(path),
 		)
+		const connectedPaths = availablePaths.filter(
+			(path) => this.getPathEvidenceState(path) === 'connected',
+		)
 		const preferredPath = availablePaths[0] || null
+		const preferredConnectedPath = connectedPaths[0] || null
 		const currentPath =
 			state.activePath && availablePaths.includes(state.activePath)
 				? state.activePath
 				: null
+		const currentConnectedPath =
+			currentPath && this.getPathEvidenceState(currentPath) === 'connected'
+				? currentPath
+				: null
 		let activePath = preferredPath
 		let freezeRemainingMs = 0
 
-		if (
-			currentPath &&
-			preferredPath &&
-			currentPath !== preferredPath &&
-			spec.freezeMs > 0
-		) {
-			const elapsed = Math.max(0, nowMs - state.lastSwitchAt)
-			if (elapsed < spec.freezeMs) {
-				activePath = currentPath
-				freezeRemainingMs = spec.freezeMs - elapsed
+		if (currentConnectedPath) {
+			activePath = currentConnectedPath
+			if (
+				preferredConnectedPath &&
+				currentConnectedPath !== preferredConnectedPath &&
+				spec.freezeMs > 0
+			) {
+				const elapsed = Math.max(0, nowMs - state.lastSwitchAt)
+				if (elapsed < spec.freezeMs) {
+					activePath = currentConnectedPath
+					freezeRemainingMs = spec.freezeMs - elapsed
+				} else {
+					activePath = preferredConnectedPath
+				}
+			} else if (preferredConnectedPath) {
+				activePath = preferredConnectedPath
 			}
+		} else if (preferredConnectedPath) {
+			activePath = preferredConnectedPath
+		} else if (currentPath) {
+			activePath = currentPath
 		}
 
 		if (state.activePath !== activePath) {
@@ -792,6 +870,8 @@ export class HubMemberChannelsService {
 				eligible: this.isDirectRecoveryEligible(nowMs),
 				lastAttemptAt: this.lastDirectRecoveryAt,
 				lastAttemptState: this.lastDirectRecoveryState,
+				failureCount: this.directRecoveryFailureCount,
+				nextAttemptAt: this.nextDirectRecoveryAt,
 			},
 			syncRecovery: {
 				eligible: this.shouldRecoverSyncProvider(
@@ -848,6 +928,13 @@ export class HubMemberChannelsService {
 		) {
 			return 'connected'
 		}
+		if (
+			(commandPath === 'ws' && commandReady) ||
+			(syncPath === 'yws' && syncReady) ||
+			snapshot.controlPlane.sessionState === 'connected'
+		) {
+			return 'ws'
+		}
 		if (rtcState === 'signaling' || rtcState === 'connecting') {
 			return rtcState
 		}
@@ -867,6 +954,24 @@ export class HubMemberChannelsService {
 		availablePaths: HubMemberSemanticPath[],
 		pathEvidence: HubMemberChannelSnapshot['pathEvidence'],
 	): HubMemberChannelHealth {
+		if (channelId === 'route') {
+			if (
+				this.controlSessionState === 'connected' &&
+				this.wsState === 'connected'
+			) {
+				return 'ready'
+			}
+			if (
+				this.controlSessionState === 'connecting' ||
+				this.wsState === 'connecting'
+			) {
+				return 'recovering'
+			}
+			if (this.wsState === 'connected') {
+				return 'fallback'
+			}
+			return 'degraded'
+		}
 		const spec = CHANNEL_SPECS[channelId]
 		if (!spec.paths.length) {
 			return 'unavailable'
@@ -876,18 +981,45 @@ export class HubMemberChannelsService {
 			? pathEvidence[preferredPath]?.state
 			: null
 		if (activePath && activeState === 'connected') {
-			return activePath === preferredPath ? 'ready' : 'fallback'
+			if (
+				activePath === preferredPath &&
+				preferredState === 'connected'
+			) {
+				return 'ready'
+			}
+			return 'fallback'
 		}
+		const hasConnectedFallback = availablePaths.some(
+			(path) => pathEvidence[path]?.state === 'connected',
+		)
 		if (
 			(activePath && activeState === 'connecting') ||
 			(preferredPath && preferredState === 'connecting')
 		) {
+			if (hasConnectedFallback) {
+				return 'fallback'
+			}
 			return 'recovering'
 		}
 		if (availablePaths.length > 0) {
 			return 'degraded'
 		}
 		return 'degraded'
+	}
+
+	private noteDirectRecoveryResult(ok: boolean, nowMs: number): void {
+		if (ok) {
+			this.directRecoveryFailureCount = 0
+			this.nextDirectRecoveryAt = null
+			return
+		}
+		this.directRecoveryFailureCount += 1
+		const backoffMs = Math.min(
+			HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_BASE_MS *
+				Math.pow(2, Math.max(0, this.directRecoveryFailureCount - 1)),
+			HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_MAX_MS,
+		)
+		this.nextDirectRecoveryAt = nowMs + backoffMs
 	}
 
 	private buildPathEvidence(): HubMemberChannelSnapshot['pathEvidence'] {

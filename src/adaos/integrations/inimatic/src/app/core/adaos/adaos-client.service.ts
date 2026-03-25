@@ -159,14 +159,6 @@ export class AdaosClient {
 	private eventsReady?: Promise<WebSocket>
 	readonly eventsConnectionState$ =
 		new BehaviorSubject<AdaosEventsConnectionState>('disconnected')
-	private pendingCmds = new Map<
-		string,
-		{
-			resolve: (msg: any) => void
-			reject: (err: any) => void
-			timeout: any
-		}
-	>()
 
 	constructor(
 		private http: HttpClient,
@@ -312,12 +304,6 @@ export class AdaosClient {
 		this.eventsConnectionState$.next('disconnected')
 		this.channels.reportWsState('disconnected')
 		this.channels.reportControlSessionClosed(this.describeSocketReason(reason))
-		for (const [cmdId, entry] of this.pendingCmds) {
-			clearTimeout(entry.timeout)
-			this.channels.completePendingControlCommand(cmdId, 'closed')
-			entry.reject(reason ?? new Error('events websocket closed'))
-		}
-		this.pendingCmds.clear()
 	}
 
 	private describeSocketReason(reason: any): string {
@@ -334,15 +320,8 @@ export class AdaosClient {
 
 	private onEventsMessage = (ev: MessageEvent) => {
 		const data = typeof ev.data === 'string' ? ev.data : ''
-		const ack = this.channels.tryParseControlAck(data)
-		if (ack) {
-			const pending = this.pendingCmds.get(ack.id)
-			if (pending) {
-				this.pendingCmds.delete(ack.id)
-				clearTimeout(pending.timeout)
-				this.channels.completePendingControlCommand(ack.id, 'ack')
-				pending.resolve(ack.message)
-			}
+		const handled = this.channels.handleIncomingControlMessage(data)
+		if (handled.handled) {
 			return
 		}
 	}
@@ -416,23 +395,17 @@ export class AdaosClient {
 		timeoutMs = 5000
 	): Promise<any> {
 		const ws = await this.ensureEventsSocket()
-		const command = this.channels.createControlCommandEnvelope(kind, payload)
-		const cmdId = command.id
-		const ack = new Promise<any>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.pendingCmds.delete(cmdId)
-				this.channels.completePendingControlCommand(cmdId, 'timeout')
-				reject(new Error(`events command timeout: ${kind}`))
-			}, timeoutMs)
-			this.pendingCmds.set(cmdId, {
-				resolve: (msg: any) => resolve(msg),
-				reject: (err: any) => reject(err),
-				timeout,
-			})
-		})
-		this.channels.registerPendingControlCommand(cmdId, kind)
-		this.channels.sendCommandEnvelope(ws, kind, command.json)
-		return ack
+		const command = this.channels.createPendingControlCommand(
+			kind,
+			payload,
+			timeoutMs,
+		)
+		try {
+			this.channels.sendCommandEnvelope(ws, kind, command.json)
+		} catch (err) {
+			this.channels.failPendingControlCommand(command.id, err, 'error')
+		}
+		return command.ack
 	}
 
 	say(text: string) {

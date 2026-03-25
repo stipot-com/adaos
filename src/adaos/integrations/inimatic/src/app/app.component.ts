@@ -508,6 +508,17 @@ export class AppComponent implements OnInit, OnDestroy {
 				`direct-recovery=${snapshot.directRecovery.lastAttemptState}`,
 			)
 		}
+		if (snapshot.directRecovery.nextAttemptAt) {
+			const waitSec = Math.max(
+				0,
+				Math.ceil(
+					(snapshot.directRecovery.nextAttemptAt - Date.now()) / 1000,
+				),
+			)
+			details.push(
+				`direct-next-probe=${waitSec}s failures=${snapshot.directRecovery.failureCount}`,
+			)
+		}
 		if (snapshot.syncRecovery.lastAttemptState !== 'idle') {
 			details.push(
 				`sync-recovery=${snapshot.syncRecovery.lastAttemptState}${
