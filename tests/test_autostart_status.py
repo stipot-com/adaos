@@ -143,3 +143,45 @@ def test_linux_status_root_prefers_system_service_when_user_bus_exists(monkeypat
     assert status["service"] == str(system_service.resolve())
     assert status["wrapper"] == str(system_wrapper.resolve())
     assert status["port"] == 8778
+
+
+def test_linux_status_reports_last_runner_status(monkeypatch, tmp_path: Path) -> None:
+    user_home = tmp_path / "home"
+    user_service = user_home / ".config" / "systemd" / "user" / "adaos.service"
+    wrapper = tmp_path / "user-wrapper.sh"
+    base_dir = tmp_path / "base"
+    status_path = base_dir / "state" / "core_update" / "status.json"
+
+    user_service.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(
+        f"export ADAOS_BASE_DIR='{base_dir}'\nexec python --host 127.0.0.1 --port 8777\n",
+        encoding="utf-8",
+    )
+    user_service.write_text(f"[Service]\nExecStart={wrapper}\n", encoding="utf-8")
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        '{"state":"failed","phase":"uvicorn.run","message":"autostart runner failed during uvicorn.run"}',
+        encoding="utf-8",
+    )
+
+    class _Proc:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = ""
+
+    monkeypatch.setattr(autostart, "_is_windows", lambda: False)
+    monkeypatch.setattr(autostart, "_is_linux", lambda: True)
+    monkeypatch.setattr(autostart, "_is_macos", lambda: False)
+    monkeypatch.setattr(autostart, "_home", lambda: user_home)
+    monkeypatch.setattr(autostart, "_linux_is_root", lambda: False)
+    monkeypatch.setattr(autostart, "_linux_has_systemd_pid1", lambda: False)
+    monkeypatch.setattr(autostart, "_linux_user_bus_path", lambda: tmp_path / "bus")
+    monkeypatch.setattr(autostart, "shutil_which", lambda cmd: "/bin/systemctl" if cmd == "systemctl" else None)
+    monkeypatch.setattr(autostart, "_run", lambda cmd: _Proc(0))
+    monkeypatch.setattr(autostart, "_discover_live_control_bind", lambda host, port: (host, port))
+
+    status = autostart.status(_FakeCtx(base_dir))
+
+    assert status["core_update_status"]["state"] == "failed"
+    assert status["core_update_status"]["phase"] == "uvicorn.run"

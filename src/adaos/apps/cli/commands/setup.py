@@ -551,12 +551,35 @@ def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=
             typer.echo(f"live url: {s['live_url']}")
         if "service" in s:
             typer.echo(f"service: {s['service']}")
+        if "scope" in s:
+            typer.echo(f"scope: {s['scope']}")
+        if "base_dir" in s:
+            typer.echo(f"base dir: {s['base_dir']}")
+        if "shared_dotenv_path" in s:
+            typer.echo(f"shared dotenv: {s['shared_dotenv_path']}")
+        if "system_scope_preferred" in s:
+            typer.echo(f"system scope preferred: {s['system_scope_preferred']}")
+        if "user_service_exists" in s or "system_service_exists" in s:
+            typer.echo(
+                f"user service exists: {s.get('user_service_exists')}, system service exists: {s.get('system_service_exists')}"
+            )
         if "task" in s:
             typer.echo(f"task: {s['task']}")
         if "plist" in s:
             typer.echo(f"plist: {s['plist']}")
         if "wrapper" in s:
             typer.echo(f"wrapper: {s['wrapper']}")
+        core_update = s.get("core_update_status")
+        if isinstance(core_update, dict):
+            state = core_update.get("state")
+            phase = core_update.get("phase")
+            message = core_update.get("message")
+            summary = f"last runner status: state={state}"
+            if phase:
+                summary += f", phase={phase}"
+            if message:
+                summary += f", message={message}"
+            typer.echo(summary)
 
 
 @autostart_app.command("enable")

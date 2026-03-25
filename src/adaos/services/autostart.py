@@ -340,6 +340,19 @@ def _pidfile_control_candidates() -> list[tuple[float, str, int]]:
     return found
 
 
+def _core_update_status_from_base_dir(base_dir: Path | str | None) -> dict[str, object] | None:
+    try:
+        if base_dir:
+            status_path = (Path(base_dir).expanduser().resolve() / "state" / "core_update" / "status.json").resolve()
+            if not status_path.exists():
+                return None
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+    return None
+
+
 def _http_probe_local_control(host: str, port: int, *, timeout: float = 0.5) -> bool:
     base = f"http://{str(host or '127.0.0.1').strip() or '127.0.0.1'}:{int(port)}"
     sess = requests.Session()
@@ -1037,6 +1050,9 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+        core_update_status = _core_update_status_from_base_dir(payload.get("base_dir") or ctx.paths.base_dir())
+        if core_update_status:
+            payload["core_update_status"] = core_update_status
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port
@@ -1148,6 +1164,12 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+        payload["user_service_exists"] = user_service_path.exists()
+        payload["system_service_exists"] = system_service_path.exists()
+        payload["system_scope_preferred"] = _linux_should_prefer_system_scope("auto")
+        core_update_status = _core_update_status_from_base_dir(payload.get("base_dir") or ctx.paths.base_dir())
+        if core_update_status:
+            payload["core_update_status"] = core_update_status
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port
@@ -1190,6 +1212,9 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+        core_update_status = _core_update_status_from_base_dir(payload.get("base_dir") or ctx.paths.base_dir())
+        if core_update_status:
+            payload["core_update_status"] = core_update_status
         if (configured_host, configured_port) != (host, port):
             payload["configured_host"] = configured_host
             payload["configured_port"] = configured_port

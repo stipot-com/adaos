@@ -5,6 +5,7 @@ import atexit
 import os
 import subprocess
 import time
+import traceback
 from http import HTTPStatus
 from pathlib import Path
 from string import Formatter
@@ -423,61 +424,93 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
 def main() -> None:
     args = _parse_args()
     token = _resolved_token(args.token)
-    init_ctx()
-    plan = read_plan()
-    pending_update_succeeded = False
-    conf = None
+    phase = "init"
+    pidfile: Path | None = None
     try:
-        conf = load_config()
-    except Exception:
+        phase = "init_ctx"
+        init_ctx()
+        phase = "read_plan"
+        plan = read_plan()
+        pending_update_succeeded = False
         conf = None
-    if plan:
-        result = execute_pending_update(plan)
-        clear_plan()
-        if conf is not None:
-            _upload_update_report(result, conf)
-        if str(result.get("state") or "") != "succeeded":
-            raise SystemExit(int(result.get("returncode") or 1) or 1)
-        pending_update_succeeded = True
-    else:
-        write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
-
-    host, port = _resolve_bind(conf, args.host, args.port)
-    advertised_base = _advertise_base(host, port)
-    _stop_previous_server(host, port)
-    pidfile = _pidfile_path(host, port)
-    _write_pidfile(pidfile, host=host, port=port, advertised_base=advertised_base)
-    atexit.register(_cleanup_pidfile, pidfile)
-
-    if conf is not None and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
         try:
-            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
-                conf.hub_url = advertised_base
-                save_config(conf)
+            conf = load_config()
+        except Exception:
+            conf = None
+        if plan:
+            phase = "execute_pending_update"
+            result = execute_pending_update(plan)
+            clear_plan()
+            if conf is not None:
+                _upload_update_report(result, conf)
+            if str(result.get("state") or "") != "succeeded":
+                raise SystemExit(int(result.get("returncode") or 1) or 1)
+            pending_update_succeeded = True
+        else:
+            phase = "boot"
+            write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
+
+        phase = "resolve_bind"
+        host, port = _resolve_bind(conf, args.host, args.port)
+        advertised_base = _advertise_base(host, port)
+        phase = "stop_previous_server"
+        _stop_previous_server(host, port)
+        phase = "write_pidfile"
+        pidfile = _pidfile_path(host, port)
+        _write_pidfile(pidfile, host=host, port=port, advertised_base=advertised_base)
+        atexit.register(_cleanup_pidfile, pidfile)
+
+        if conf is not None and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+            phase = "update_hub_url"
+            try:
+                if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
+                    conf.hub_url = advertised_base
+                    save_config(conf)
+            except Exception:
+                pass
+
+        if token:
+            os.environ["ADAOS_TOKEN"] = str(token)
+        os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
+        os.environ["ADAOS_AUTOSTART_MODE"] = "1"
+
+        phase = "launch_active_slot"
+        _launch_active_slot_if_needed(args, host=host, port=port, validate=pending_update_succeeded)
+
+        from adaos.apps.api.server import app as server_app
+
+        phase = "uvicorn.run"
+        try:
+            uvicorn.run(
+                server_app,
+                host=host,
+                port=int(port),
+                loop=_uvicorn_loop_mode(),
+                reload=False,
+                workers=1,
+                access_log=False,
+            )
+        finally:
+            if pidfile is not None:
+                _cleanup_pidfile(pidfile)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        try:
+            write_status(
+                {
+                    "state": "failed",
+                    "phase": phase,
+                    "message": f"autostart runner failed during {phase}",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(limit=20),
+                    "updated_at": time.time(),
+                }
+            )
         except Exception:
             pass
-
-    if token:
-        os.environ["ADAOS_TOKEN"] = str(token)
-    os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
-    os.environ["ADAOS_AUTOSTART_MODE"] = "1"
-
-    _launch_active_slot_if_needed(args, host=host, port=port, validate=pending_update_succeeded)
-
-    from adaos.apps.api.server import app as server_app
-
-    try:
-        uvicorn.run(
-            server_app,
-            host=host,
-            port=int(port),
-            loop=_uvicorn_loop_mode(),
-            reload=False,
-            workers=1,
-            access_log=False,
-        )
-    finally:
-        _cleanup_pidfile(pidfile)
+        raise
 
 
 if __name__ == "__main__":
