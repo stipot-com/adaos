@@ -273,8 +273,9 @@ Make Yjs transport-independent without building a second distributed system arou
 - browser header now exposes a manual Yjs resync action, separate from scenario reseed/reload
 - browser sync runtime now separates document recovery from ephemeral awareness state
 - node API / CLI now expose explicit Yjs runtime and snapshot-backup control paths
-- hub-side node API / CLI now expose explicit default-webspace Yjs reload/reset control paths
+- hub-side node API / CLI now expose explicit per-webspace Yjs reload/reset control paths
 - Infra State now surfaces Yjs runtime state and local Yjs backup/reload/reset operator actions
+- node API / CLI and Infra State can now focus Yjs diagnostics and local actions on a selected webspace instead of assuming `default`
 
 ## Phase 6: Media plane
 

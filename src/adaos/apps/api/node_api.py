@@ -285,11 +285,26 @@ async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
 
 
 @router.get("/yjs/runtime", dependencies=[Depends(require_token)])
-async def node_yjs_runtime() -> dict[str, Any]:
+async def node_yjs_runtime(webspace_id: str | None = None) -> dict[str, Any]:
     conf = load_config()
     return {
         "ok": True,
-        "runtime": yjs_sync_runtime_snapshot(role=conf.role),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=str(webspace_id or "").strip() or None,
+        ),
+    }
+
+
+@router.get("/yjs/webspaces/{webspace_id}/runtime", dependencies=[Depends(require_token)])
+async def node_yjs_webspace_runtime(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    return {
+        "ok": True,
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=str(webspace_id or "").strip() or "default",
+        ),
     }
 
 
@@ -309,7 +324,10 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
         "ok": True,
         "accepted": True,
         "webspace_id": str(webspace_id or "default") or "default",
-        "runtime": yjs_sync_runtime_snapshot(role=conf.role),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=str(webspace_id or "default") or "default",
+        ),
     }
 
 
@@ -328,7 +346,10 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reload",
     )
-    result["runtime"] = yjs_sync_runtime_snapshot(role=conf.role)
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
     return result
 
 
@@ -347,7 +368,10 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) ->
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reset",
     )
-    result["runtime"] = yjs_sync_runtime_snapshot(role=conf.role)
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
     return result
 
 

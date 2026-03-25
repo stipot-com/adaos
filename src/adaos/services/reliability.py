@@ -3652,13 +3652,20 @@ def sidecar_runtime_snapshot(
     }
 
 
-def yjs_sync_runtime_snapshot(*, role: str, now_ts: float | None = None) -> dict[str, Any]:
+def yjs_sync_runtime_snapshot(
+    *,
+    role: str,
+    now_ts: float | None = None,
+    webspace_id: str | None = None,
+) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
     role_norm = str(role or "").strip().lower()
+    selected_webspace_id = str(webspace_id or "").strip()
     if role_norm != "hub":
         return {
             "available": False,
             "scope": "hub_local_only",
+            "selected_webspace_id": selected_webspace_id or None,
             "assessment": {
                 "state": "not_applicable",
                 "reason": "local Yjs store runtime is observed on the hub only",
@@ -3672,11 +3679,15 @@ def yjs_sync_runtime_snapshot(*, role: str, now_ts: float | None = None) -> dict
     try:
         from adaos.services.yjs.store import ystore_runtime_snapshot
 
-        store_runtime = ystore_runtime_snapshot(now_ts=now)
+        store_runtime = ystore_runtime_snapshot(
+            webspace_id=selected_webspace_id or None,
+            now_ts=now,
+        )
     except Exception as exc:
         return {
             "available": False,
             "scope": "hub_local_only",
+            "selected_webspace_id": selected_webspace_id or None,
             "assessment": {
                 "state": "unavailable",
                 "reason": f"failed to load Yjs store runtime: {exc}",
@@ -3727,6 +3738,7 @@ def yjs_sync_runtime_snapshot(*, role: str, now_ts: float | None = None) -> dict
     return {
         "available": True,
         "scope": "hub_local_only",
+        "selected_webspace_id": selected_webspace_id or None,
         "assessment": {
             "state": assessment_state,
             "reason": "; ".join(reasons),

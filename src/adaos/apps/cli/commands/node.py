@@ -304,9 +304,11 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     assessment = runtime.get("assessment") if isinstance(runtime.get("assessment"), dict) else {}
     transport = runtime.get("transport") if isinstance(runtime.get("transport"), dict) else {}
+    selected = str(runtime.get("selected_webspace_id") or "").strip()
     typer.echo(
         "yjs_runtime: "
         f"state={assessment.get('state') or 'unknown'} "
+        f"selected={selected or '-'} "
         f"webspaces={runtime.get('webspace_total') or 0} "
         f"active={runtime.get('active_webspace_total') or 0} "
         f"compacted={runtime.get('compacted_webspace_total') or 0} "
@@ -631,6 +633,7 @@ def node_members(
 
 @yjs_app.command("status")
 def node_yjs_status(
+    webspace: str | None = typer.Option(None, "--webspace", help="Optional webspace id to focus on"),
     control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
@@ -638,9 +641,11 @@ def node_yjs_status(
 
     cfg = load_config()
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    token = str(webspace or "").strip()
+    path = f"/api/node/yjs/webspaces/{token}/runtime" if token else "/api/node/yjs/runtime"
     status_code, payload = _control_get_json(
         control=control0,
-        path="/api/node/yjs/runtime",
+        path=path,
         token=resolve_control_token(explicit=cfg.token),
         timeout=5.0,
     )
