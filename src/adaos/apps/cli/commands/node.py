@@ -771,6 +771,21 @@ def node_yjs_reset(
     )
 
 
+@yjs_app.command("restore")
+def node_yjs_restore(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to restore from disk snapshot"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="restore",
+        webspace=webspace,
+        scenario_id=None,
+        control=control,
+        json_output=json_output,
+    )
+
+
 @app.command("member-refresh")
 def node_member_refresh(
     node_id: str = typer.Option(..., "--node-id", help="Remote member node_id"),

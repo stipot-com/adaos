@@ -141,6 +141,13 @@ def ystore_path_for_webspace(webspace_id: str) -> Path:
     return ystores_root() / f"{safe}.sqlite3"
 
 
+def ystore_snapshot_exists(webspace_id: str) -> bool:
+    try:
+        return ystore_path_for_webspace(str(webspace_id or "")).exists()
+    except Exception:
+        return False
+
+
 class AdaosMemoryYStore(BaseYStore):
     """
     In-memory YStore with optional periodic snapshots to disk.
@@ -398,6 +405,53 @@ def reset_ystore_for_webspace(webspace_id: str) -> None:
             path.unlink()
     except Exception:
         _log.warning("failed to remove YStore snapshot for webspace=%s", webspace_id, exc_info=True)
+
+
+async def restore_ystore_for_webspace(webspace_id: str) -> dict[str, Any]:
+    """
+    Recreate the in-memory YStore for a webspace from its last persisted
+    snapshot, without reseeding from scenario sources.
+    """
+    key = str(webspace_id or "").strip() or "default"
+    path = ystore_path_for_webspace(key)
+    snapshot_exists = path.exists()
+    if not snapshot_exists:
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": key,
+            "error": "snapshot_missing",
+            "snapshot_path": str(path),
+        }
+
+    store = _YSTORE_CACHE.pop(key, None)
+    if store is not None:
+        try:
+            store._updates.clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    restored = AdaosMemoryYStore(key)
+    _YSTORE_CACHE[key] = restored
+    try:
+        await restored._load_from_disk_if_needed()  # type: ignore[attr-defined]
+    except Exception as exc:
+        _log.warning("failed to restore YStore snapshot for webspace=%s: %s", key, exc, exc_info=True)
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": key,
+            "error": f"restore_failed:{type(exc).__name__}",
+            "snapshot_path": str(path),
+        }
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": key,
+        "snapshot_path": str(path),
+        "runtime": restored.runtime_snapshot(),
+    }
 
 
 @subscribe("sys.ystore.backup")

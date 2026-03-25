@@ -276,6 +276,7 @@ Make Yjs transport-independent without building a second distributed system arou
 - hub-side node API / CLI now expose explicit per-webspace Yjs reload/reset control paths
 - Infra State now surfaces Yjs runtime state and local Yjs backup/reload/reset operator actions
 - node API / CLI and Infra State can now focus Yjs diagnostics and local actions on a selected webspace instead of assuming `default`
+- hub-side node API / CLI and Infra State now expose explicit per-webspace Yjs restore-from-snapshot recovery when a disk snapshot exists
 
 ## Phase 6: Media plane
 

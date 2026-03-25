@@ -4,7 +4,9 @@ from .doc import get_ydoc, async_get_ydoc, mutate_live_room
 from .store import (
     AdaosMemoryYStore,
     get_ystore_for_webspace,
+    restore_ystore_for_webspace,
     reset_ystore_for_webspace,
+    ystore_snapshot_exists,
     ystores_root,
     ystore_path_for_webspace,
 )
@@ -16,7 +18,9 @@ __all__ = [
     "mutate_live_room",
     "AdaosMemoryYStore",
     "get_ystore_for_webspace",
+    "restore_ystore_for_webspace",
     "reset_ystore_for_webspace",
+    "ystore_snapshot_exists",
     "ystores_root",
     "ystore_path_for_webspace",
     "default_webspace_id",

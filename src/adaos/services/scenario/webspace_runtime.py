@@ -1140,6 +1140,48 @@ async def reload_webspace_from_scenario(
     }
 
 
+async def restore_webspace_from_snapshot(webspace_id: str) -> dict[str, Any]:
+    """
+    Restore a webspace from its latest persisted YStore snapshot without
+    reseeding from scenario sources.
+    """
+    webspace_id = str(webspace_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+
+    from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
+    from adaos.services.yjs.store import restore_ystore_for_webspace  # pylint: disable=import-outside-toplevel
+
+    restore_result = await restore_ystore_for_webspace(webspace_id)
+    if not bool(restore_result.get("accepted")):
+        return restore_result
+
+    reset_result: dict[str, Any] = {}
+    try:
+        reset_result = await reset_live_webspace_room(webspace_id, close_reason="webspace_restore")
+    except Exception:
+        _log.warning("failed to reset live room before restore for webspace=%s", webspace_id, exc_info=True)
+
+    try:
+        emit(
+            get_ctx().bus,
+            "desktop.webspace.restored",
+            {
+                "webspace_id": webspace_id,
+                "snapshot_path": str(restore_result.get("snapshot_path") or ""),
+            },
+            "scenario.webspace_runtime",
+        )
+    except Exception:
+        _log.debug("failed to emit desktop.webspace.restored for webspace=%s", webspace_id, exc_info=True)
+
+    return {
+        **restore_result,
+        "action": "restore",
+        "reset_room": reset_result,
+    }
+
+
 @subscribe("desktop.webspace.reload")
 async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     """

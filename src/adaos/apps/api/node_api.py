@@ -19,7 +19,7 @@ from adaos.services.media_library import (
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
-from adaos.services.scenario.webspace_runtime import reload_webspace_from_scenario
+from adaos.services.scenario.webspace_runtime import reload_webspace_from_scenario, restore_webspace_from_snapshot
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
@@ -368,6 +368,24 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) ->
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reset",
     )
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/restore", dependencies=[Depends(require_token)])
+async def node_yjs_restore(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    result = await restore_webspace_from_snapshot(str(webspace_id or "default") or "default")
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
