@@ -81,6 +81,8 @@ export type HubMemberChannelHealth =
 	| 'degraded'
 	| 'unavailable'
 
+export type HubMemberMediaPolicyMode = 'out_of_scope'
+
 type ChannelSpec = {
 	paths: readonly HubMemberSemanticPath[]
 	freezeMs: number
@@ -138,6 +140,10 @@ export type HubMemberChannelSnapshot = {
 		lastCommandOutcome: HubMemberControlCommandOutcome | null
 		lastReplayAt: number | null
 		lastReplayCount: number
+	}
+	mediaPolicy: {
+		mode: HubMemberMediaPolicyMode
+		reason: string
 	}
 	pathEvidence: Record<
 		HubMemberSemanticPath,
@@ -200,6 +206,8 @@ export class HubMemberChannelsService {
 		string,
 		PendingControlCommandEntry
 	>()
+	private controlSessionSocket?: WebSocket
+	private controlSessionReady?: Promise<WebSocket>
 	private runtimeInitialized = false
 	private visibilityTrackingInstalled = false
 	private isPageVisible = true
@@ -260,6 +268,50 @@ export class HubMemberChannelsService {
 	reportControlSessionConnecting(): void {
 		this.controlSessionState = 'connecting'
 		this.publishSnapshot()
+	}
+
+	async ensureControlSession(url: string): Promise<WebSocket> {
+		if (
+			this.controlSessionSocket &&
+			this.controlSessionSocket.readyState === WebSocket.OPEN
+		) {
+			return this.controlSessionSocket
+		}
+		if (this.controlSessionReady) {
+			return this.controlSessionReady
+		}
+		this.reportWsState('connecting')
+		this.reportControlSessionConnecting()
+		this.controlSessionReady = new Promise<WebSocket>((resolve, reject) => {
+			const ws = new WebSocket(url)
+			this.controlSessionSocket = ws
+			const cleanup = () => {
+				ws.removeEventListener('open', onOpen)
+				ws.removeEventListener('error', onError)
+			}
+			const onOpen = () => {
+				cleanup()
+				this.reportWsState('connected')
+				ws.addEventListener('message', this.onControlSessionMessage)
+				ws.addEventListener('close', this.onControlSessionClose)
+				this.onControlWsOpen(ws)
+				resolve(ws)
+			}
+			const onError = (err: Event) => {
+				cleanup()
+				this.resetControlSession(err)
+				reject(err)
+			}
+			ws.addEventListener('open', onOpen)
+			ws.addEventListener('error', onError)
+		}).finally(() => {
+			this.controlSessionReady = undefined
+		})
+		return this.controlSessionReady
+	}
+
+	getControlSession(): WebSocket | undefined {
+		return this.controlSessionSocket
 	}
 
 	reportControlSessionClosed(reason?: string | null): void {
@@ -726,6 +778,48 @@ export class HubMemberChannelsService {
 		return this.buildSnapshot()
 	}
 
+	private onControlSessionMessage = (ev: MessageEvent): void => {
+		const data = typeof ev.data === 'string' ? ev.data : ''
+		this.handleIncomingControlMessage(data)
+	}
+
+	private onControlSessionClose = (ev: CloseEvent): void => {
+		this.resetControlSession(ev)
+	}
+
+	private resetControlSession(reason?: any): void {
+		if (this.controlSessionSocket) {
+			try {
+				this.controlSessionSocket.removeEventListener(
+					'message',
+					this.onControlSessionMessage,
+				)
+				this.controlSessionSocket.removeEventListener(
+					'close',
+					this.onControlSessionClose,
+				)
+			} catch {}
+		}
+		this.controlSessionSocket = undefined
+		this.controlSessionReady = undefined
+		this.reportWsState('disconnected')
+		this.reportControlSessionClosed(
+			this.describeControlSessionReason(reason),
+		)
+	}
+
+	private describeControlSessionReason(reason: any): string {
+		if (typeof reason === 'string' && reason.trim()) return reason.trim()
+		if (reason instanceof Error && reason.message) return reason.message
+		if (typeof reason?.reason === 'string' && reason.reason.trim()) {
+			return reason.reason.trim()
+		}
+		if (typeof reason?.type === 'string' && reason.type.trim()) {
+			return reason.type.trim()
+		}
+		return 'closed'
+	}
+
 	private resolveState(
 		channelId: HubMemberSemanticChannelId,
 		nowMs: number,
@@ -902,6 +996,10 @@ export class HubMemberChannelsService {
 				lastCommandOutcome: this.lastControlCommandOutcome,
 				lastReplayAt: this.lastControlReplayAt,
 				lastReplayCount: this.lastControlReplayCount,
+			},
+			mediaPolicy: {
+				mode: 'out_of_scope',
+				reason: 'phase4_media_semantics_not_implemented',
 			},
 			pathEvidence,
 			channels,

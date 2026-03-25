@@ -155,8 +155,6 @@ function rootAbs(path: string) {
 @Injectable({ providedIn: 'root' })
 export class AdaosClient {
 	private cfg: AdaosConfig
-	private eventsWs?: WebSocket
-	private eventsReady?: Promise<WebSocket>
 	readonly eventsConnectionState$ =
 		new BehaviorSubject<AdaosEventsConnectionState>('disconnected')
 
@@ -204,7 +202,16 @@ export class AdaosClient {
 				null,
 			authKind: boundSubnet?.sessionJwt ? 'bearer' : 'adaos-token',
 		}
-		this.channels.reportWsState('disconnected')
+		this.channels.snapshot$.subscribe((snapshot) => {
+			const sessionState = snapshot.controlPlane.sessionState
+			this.eventsConnectionState$.next(
+				sessionState === 'connected'
+					? 'connected'
+					: sessionState === 'connecting'
+						? 'connecting'
+						: 'disconnected',
+			)
+		})
 	}
 
 	/**
@@ -223,7 +230,7 @@ export class AdaosClient {
 
 		const ok = await this.channels.prepareDirectPaths(ws, sendCmd, {
 			onEventsMessage: (data: string) => {
-				this.onEventsMessage({ data } as MessageEvent)
+				this.channels.handleIncomingControlMessage(data)
 			},
 			remoteProxy: this.getBaseUrl().includes('/hubs/'),
 		})
@@ -290,84 +297,8 @@ export class AdaosClient {
 		return u.toString()
 	}
 
-	private resetEventsSocket(reason?: any) {
-		if (this.eventsWs) {
-			try {
-				this.eventsWs.removeEventListener(
-					'message',
-					this.onEventsMessage
-				)
-			} catch {}
-		}
-		this.eventsWs = undefined
-		this.eventsReady = undefined
-		this.eventsConnectionState$.next('disconnected')
-		this.channels.reportWsState('disconnected')
-		this.channels.reportControlSessionClosed(this.describeSocketReason(reason))
-	}
-
-	private describeSocketReason(reason: any): string {
-		if (typeof reason === 'string' && reason.trim()) return reason.trim()
-		if (reason instanceof Error && reason.message) return reason.message
-		if (typeof reason?.reason === 'string' && reason.reason.trim()) {
-			return reason.reason.trim()
-		}
-		if (typeof reason?.type === 'string' && reason.type.trim()) {
-			return reason.type.trim()
-		}
-		return 'closed'
-	}
-
-	private onEventsMessage = (ev: MessageEvent) => {
-		const data = typeof ev.data === 'string' ? ev.data : ''
-		const handled = this.channels.handleIncomingControlMessage(data)
-		if (handled.handled) {
-			return
-		}
-	}
-
-	private ensureEventsSocket(): Promise<WebSocket> {
-		if (this.eventsWs && this.eventsWs.readyState === WebSocket.OPEN) {
-			this.eventsConnectionState$.next('connected')
-			return Promise.resolve(this.eventsWs)
-		}
-		if (this.eventsReady) {
-			return this.eventsReady
-		}
-		this.eventsReady = new Promise<WebSocket>((resolve, reject) => {
-			this.eventsConnectionState$.next('connecting')
-			this.channels.reportWsState('connecting')
-			this.channels.reportControlSessionConnecting()
-			const ws = new WebSocket(this.eventsUrl())
-			this.eventsWs = ws
-			const cleanup = () => {
-				ws.removeEventListener('open', onOpen)
-				ws.removeEventListener('error', onError)
-			}
-			const onOpen = () => {
-				cleanup()
-				this.eventsConnectionState$.next('connected')
-				this.channels.reportWsState('connected')
-				ws.addEventListener('message', this.onEventsMessage)
-				ws.addEventListener('close', () => this.resetEventsSocket())
-				this.channels.onControlWsOpen(ws)
-				resolve(ws)
-			}
-			const onError = (err: Event) => {
-				cleanup()
-				this.resetEventsSocket(err)
-				reject(err)
-			}
-			ws.addEventListener('open', onOpen)
-			ws.addEventListener('error', onError)
-		}).finally(() => {
-			this.eventsReady = undefined
-		})
-		return this.eventsReady
-	}
-
 	async connect(topics: string[] = []): Promise<WebSocket> {
-		const ws = await this.ensureEventsSocket()
+		const ws = await this.channels.ensureControlSession(this.eventsUrl())
 		if (topics.length) {
 			this.subscribe(topics)
 		}
@@ -375,18 +306,19 @@ export class AdaosClient {
 	}
 
 	getEventsSocket(): WebSocket | undefined {
-		return this.eventsWs
+		return this.channels.getControlSession()
 	}
 
 	subscribe(topics: string[]) {
 		if (!topics.length) return
 		const added = this.channels.registerControlSubscriptions(topics)
 		if (!added.length) return
-		if (this.eventsWs && this.eventsWs.readyState === WebSocket.OPEN) {
-			this.channels.sendControlSubscriptions(this.eventsWs, added)
+		const ws = this.channels.getControlSession()
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			this.channels.sendControlSubscriptions(ws, added)
 			return
 		}
-		this.ensureEventsSocket().catch(() => {})
+		this.channels.ensureControlSession(this.eventsUrl()).catch(() => {})
 	}
 
 	async sendEventsCommand(
@@ -394,7 +326,7 @@ export class AdaosClient {
 		payload: Record<string, any>,
 		timeoutMs = 5000
 	): Promise<any> {
-		const ws = await this.ensureEventsSocket()
+		const ws = await this.channels.ensureControlSession(this.eventsUrl())
 		const command = this.channels.createPendingControlCommand(
 			kind,
 			payload,

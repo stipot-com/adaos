@@ -500,7 +500,7 @@ export class AppComponent implements OnInit, OnDestroy {
 			`command=${command.health}${command.activePath ? ` via ${command.activePath}` : ''}`,
 			`sync=${sync.health}${sync.activePath ? ` via ${sync.activePath}` : ''}`,
 			`route=${route.health}${route.activePath ? ` via ${route.activePath}` : ''}`,
-			`media=${media.health}`,
+			`media=${media.health} (${snapshot.mediaPolicy.mode})`,
 			`control=${control.sessionState} pending=${control.pendingCommands} opens=${control.sessionOpenCount}`,
 		]
 		if (snapshot.directRecovery.lastAttemptState !== 'idle') {
