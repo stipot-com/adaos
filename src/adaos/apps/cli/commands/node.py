@@ -307,9 +307,12 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     selected = str(runtime.get("selected_webspace_id") or "").strip()
     action_overrides = runtime.get("action_overrides") if isinstance(runtime.get("action_overrides"), dict) else {}
     recovery_playbook = runtime.get("recovery_playbook") if isinstance(runtime.get("recovery_playbook"), dict) else {}
+    recovery_guidance = runtime.get("recovery_guidance") if isinstance(runtime.get("recovery_guidance"), dict) else {}
     reload_override = action_overrides.get("reload") if isinstance(action_overrides.get("reload"), dict) else {}
     restore_override = action_overrides.get("restore") if isinstance(action_overrides.get("restore"), dict) else {}
     recovery_order = recovery_playbook.get("action_order") if isinstance(recovery_playbook.get("action_order"), list) else []
+    recommended_action = str(recovery_guidance.get("recommended_action") or "").strip() or "-"
+    risk_level = str(recovery_guidance.get("risk_level") or "").strip() or "-"
     typer.echo(
         "yjs_runtime: "
         f"state={assessment.get('state') or 'unknown'} "
@@ -322,8 +325,18 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"yws={transport.get('active_yws_connections') or 0} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
-        f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'}"
+        f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
+        f"next={recommended_action} "
+        f"risk={risk_level}"
     )
+    operator_summary = str(recovery_guidance.get("operator_summary") or "").strip()
+    if operator_summary:
+        typer.echo(f"  recovery: {operator_summary}")
+    warnings = recovery_guidance.get("warnings") if isinstance(recovery_guidance.get("warnings"), list) else []
+    for warning in warnings:
+        text = str(warning or "").strip()
+        if text:
+            typer.echo(f"  warn: {text}")
     webspaces = runtime.get("webspaces") if isinstance(runtime.get("webspaces"), dict) else {}
     for webspace_id, item in sorted(webspaces.items()):
         if not isinstance(item, dict):

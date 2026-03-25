@@ -146,9 +146,11 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     selected_sync = sync_webspaces.get(sync_selected) if isinstance(sync_webspaces.get(sync_selected), dict) else {}
     sync_action_overrides = sync_runtime.get("action_overrides") if isinstance(sync_runtime.get("action_overrides"), dict) else {}
     sync_recovery_playbook = sync_runtime.get("recovery_playbook") if isinstance(sync_runtime.get("recovery_playbook"), dict) else {}
+    sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
     reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
     restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
     recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
+    recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -194,7 +196,8 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"snapshot={'yes' if selected_sync.get('snapshot_file_exists') else 'no'} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
-        f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} | "
+        f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
+        f"next={recommended_action} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
@@ -277,9 +280,11 @@ def hub_root_watch(
             selected_sync = sync_webspaces.get(sync_selected) if isinstance(sync_webspaces.get(sync_selected), dict) else {}
             sync_action_overrides = sync_runtime.get("action_overrides") if isinstance(sync_runtime.get("action_overrides"), dict) else {}
             sync_recovery_playbook = sync_runtime.get("recovery_playbook") if isinstance(sync_runtime.get("recovery_playbook"), dict) else {}
+            sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
             reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
             restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
             recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
+            recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -320,6 +325,7 @@ def hub_root_watch(
                 f"reload={reload_override.get('source_of_truth') or 'scenario'} "
                 f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
                 f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
+                f"next={recommended_action} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

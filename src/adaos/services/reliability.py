@@ -3663,6 +3663,7 @@ def yjs_sync_runtime_snapshot(
     selected_webspace_id = str(webspace_id or "").strip()
     action_overrides: dict[str, Any] = {}
     recovery_playbook: dict[str, Any] = {}
+    recovery_guidance: dict[str, Any] = {}
     if role_norm != "hub":
         return {
             "available": False,
@@ -3675,6 +3676,7 @@ def yjs_sync_runtime_snapshot(
             "transport": {},
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
+            "recovery_guidance": recovery_guidance,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3699,6 +3701,7 @@ def yjs_sync_runtime_snapshot(
             "transport": {},
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
+            "recovery_guidance": recovery_guidance,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3753,7 +3756,47 @@ def yjs_sync_runtime_snapshot(
         elif webspaces:
             selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
     selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
-    snapshot_exists = bool(selected_entry.get("snapshot_file_exists")) if selected_entry else False
+    (
+        action_overrides,
+        recovery_playbook,
+        recovery_guidance,
+    ) = _build_yjs_recovery_policy(selected_entry)
+
+    return {
+        "available": True,
+        "scope": "hub_local_only",
+        "selected_webspace_id": selected_webspace_id or None,
+        "assessment": {
+            "state": assessment_state,
+            "reason": "; ".join(reasons),
+        },
+        "transport": {
+            "active_yws_connections": int(yws_transport.get("active_connections") or 0),
+            "last_open_ago_s": yws_transport.get("last_open_ago_s"),
+        },
+        "action_overrides": action_overrides,
+        "recovery_playbook": recovery_playbook,
+        "recovery_guidance": recovery_guidance,
+        "webspace_total": webspace_total,
+        "active_webspace_total": active_webspace_total,
+        "compacted_webspace_total": compacted_total,
+        "update_log_total": update_log_total,
+        "replay_window_total": replay_window_total,
+        "webspaces": webspaces,
+    }
+
+
+def _build_yjs_recovery_policy(selected_entry: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    entry = selected_entry if isinstance(selected_entry, dict) else {}
+    snapshot_exists = bool(entry.get("snapshot_file_exists")) if entry else False
+    selected_update_entries = int(entry.get("update_log_entries") or 0) if entry else 0
+    selected_replay_entries = int(entry.get("replay_window_entries") or 0) if entry else 0
+    selected_replay_limit = int(entry.get("replay_window_limit") or 0) if entry else 0
+    selected_backup_total = int(entry.get("backup_total") or 0) if entry else 0
+    selected_log_mode = str(entry.get("log_mode") or "") if entry else ""
+    backup_first = selected_update_entries > 0 and (
+        not snapshot_exists or selected_backup_total <= 0 or selected_replay_entries > 0
+    )
     action_overrides = {
         "backup": {
             "enabled": True,
@@ -3780,10 +3823,39 @@ def yjs_sync_runtime_snapshot(
             ),
         },
     }
-    recovery_order = ["backup", "reload"]
+    recovery_order: list[str] = []
+    if backup_first:
+        recovery_order.append("backup")
+    recovery_order.append("reload")
     if snapshot_exists:
         recovery_order.append("restore")
     recovery_order.append("reset")
+    warnings: list[str] = []
+    if selected_replay_limit > 0 and selected_replay_entries >= max(1, int(selected_replay_limit * 0.9)):
+        warnings.append("bounded replay window is near its limit")
+    if selected_update_entries > 0 and not snapshot_exists:
+        warnings.append("restore is unavailable until a disk snapshot exists")
+    if selected_log_mode == "append_only" and selected_update_entries > 0:
+        warnings.append("current state only lives in the append log; preserve it before destructive recovery")
+    if backup_first:
+        recommended_action = "backup"
+        recommended_reason = "persist the current in-memory state before reload, restore, or reset"
+    else:
+        recommended_action = "reload"
+        recommended_reason = "scenario remains the canonical source for routine Yjs reseed and recovery"
+    recovery_guidance = {
+        "backup_first": backup_first,
+        "recommended_action": recommended_action,
+        "recommended_reason": recommended_reason,
+        "risk_level": "warn" if warnings else "ok",
+        "warnings": warnings,
+        "operator_summary": (
+            f"{recommended_action} first; then "
+            + " -> ".join(step for step in recovery_order[1:])
+            if recovery_order and recovery_order[0] == recommended_action and len(recovery_order) > 1
+            else f"{recommended_action} first"
+        ),
+    }
     recovery_playbook = {
         "default_action": "reload",
         "default_reason": "scenario is the canonical source for routine webspace reseed and recovery",
@@ -3797,28 +3869,7 @@ def yjs_sync_runtime_snapshot(
         "last_resort_reason": "hard-reset the webspace only when scenario reload or snapshot restore are unsuitable",
         "action_order": recovery_order,
     }
-
-    return {
-        "available": True,
-        "scope": "hub_local_only",
-        "selected_webspace_id": selected_webspace_id or None,
-        "assessment": {
-            "state": assessment_state,
-            "reason": "; ".join(reasons),
-        },
-        "transport": {
-            "active_yws_connections": int(yws_transport.get("active_connections") or 0),
-            "last_open_ago_s": yws_transport.get("last_open_ago_s"),
-        },
-        "action_overrides": action_overrides,
-        "recovery_playbook": recovery_playbook,
-        "webspace_total": webspace_total,
-        "active_webspace_total": active_webspace_total,
-        "compacted_webspace_total": compacted_total,
-        "update_log_total": update_log_total,
-        "replay_window_total": replay_window_total,
-        "webspaces": webspaces,
-    }
+    return action_overrides, recovery_playbook, recovery_guidance
 
 
 def reliability_snapshot(
