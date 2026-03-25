@@ -192,10 +192,6 @@ if (!(Test-Path ".env")) {
         Copy-Item ".env.example" ".env"
         Write-Host ".env created from .env.example"
     }
-    elseif (Test-Path ".env.sample") {
-        Copy-Item ".env.sample" ".env"
-        Write-Host ".env created from .env.sample"
-    }
     elseif (Test-Path ".env.prod.sample") {
         Copy-Item ".env.prod.sample" ".env"
         Write-Host ".env created from .env.prod.sample"

@@ -384,14 +384,11 @@ if [[ ! -f .env ]]; then
   if [[ -f .env.example ]]; then
     cp .env.example .env
     ok ".env created from .env.example"
-  elif [[ -f .env.sample ]]; then
-    cp .env.sample .env
-    ok ".env created from .env.sample"
   elif [[ -f .env.prod.sample ]]; then
     cp .env.prod.sample .env
     ok ".env created from .env.prod.sample"
   else
-    warn "No .env found and no .env.example/.env.sample/.env.prod.sample present"
+    warn "No .env found and no .env.example/.env.prod.sample present"
   fi
 fi
 

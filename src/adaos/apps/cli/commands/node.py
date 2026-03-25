@@ -8,7 +8,7 @@ from typing import Any
 import requests
 import typer
 
-from adaos.services.node_config import displayable_path, load_config, save_config, set_role as cfg_set_role
+from adaos.services.node_config import load_config, save_config, set_role as cfg_set_role
 from adaos.apps.cli.active_control import resolve_control_token
 
 app = typer.Typer(help="Node operations (join/status/role).")
@@ -308,21 +308,16 @@ def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
     return rendezvous_url
 
 
-def _ensure_absolute_key_paths(cfg) -> None:
+def _ensure_managed_key_paths(cfg) -> None:
     """
-    Persist key paths in node.yaml as absolute paths under ADAOS_BASE_DIR.
+    Persist hub PKI materials under the active AdaOS base dir.
 
-    This matches hub-style config and avoids ambiguity when `node.yaml` is inspected manually.
+    We store canonical relative paths (`keys/...`) so a moved `.adaos`
+    continues to resolve correctly after ENV_TYPE/base_dir changes.
     """
-    try:
-        cfg.root_settings.ca_cert = displayable_path(cfg.ca_cert_path())
-    except Exception:
-        pass
-    try:
-        cfg.subnet_settings.hub.key = displayable_path(cfg.hub_key_path())
-        cfg.subnet_settings.hub.cert = displayable_path(cfg.hub_cert_path())
-    except Exception:
-        pass
+    cfg.root_settings.ca_cert = "keys/ca.cert"
+    cfg.subnet_settings.hub.key = "keys/hub_private.pem"
+    cfg.subnet_settings.hub.cert = "keys/hub_cert.pem"
 
 
 @app.command("join")
@@ -435,7 +430,7 @@ def node_join(
     except Exception:
         pass
     cfg.role = "member"
-    _ensure_absolute_key_paths(cfg)
+    _ensure_managed_key_paths(cfg)
     save_config(cfg)
 
     out = {

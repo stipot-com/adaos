@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 import os
+import shutil
 import sys
 import uuid
 import yaml
@@ -157,6 +158,12 @@ class NodeConfig:
         if not self.root_settings.ca_cert:
             self.root_settings.ca_cert = "keys/ca.cert"
             changed = True
+        if not self.subnet_settings.hub.key:
+            self.subnet_settings.hub.key = "keys/hub_private.pem"
+            changed = True
+        if not self.subnet_settings.hub.cert:
+            self.subnet_settings.hub.cert = "keys/hub_cert.pem"
+            changed = True
         if not self.dev_settings.workspace:
             self.dev_settings.workspace = "dev"
             changed = True
@@ -280,6 +287,32 @@ def _stringify_path(value: str | None) -> str | None:
     return str(Path("~") / relative_home)
 
 
+def _config_stringify_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = Path(str(value)).expanduser()
+    if not candidate.is_absolute():
+        return candidate.as_posix()
+    try:
+        resolved = candidate.resolve(strict=False)  # type: ignore[arg-type]
+    except TypeError:  # pragma: no cover - compatibility with Python <3.12
+        resolved = candidate
+
+    base = _base_dir()
+    try:
+        base_resolved = base.resolve(strict=False)
+    except TypeError:  # pragma: no cover - compatibility with Python <3.12
+        base_resolved = base
+
+    try:
+        relative_base = resolved.relative_to(base_resolved)
+    except ValueError:
+        return str(candidate)
+    if not relative_base.parts:
+        return "."
+    return relative_base.as_posix()
+
+
 def displayable_path(value: Path | str | None) -> str | None:
     if value is None:
         return None
@@ -319,15 +352,15 @@ def _settings_to_dict(settings: Any) -> dict[str, Any]:
         data["node_names"] = normalize_node_names(data.get("node_names"))
     if isinstance(settings, RootSettings):
         data["base_url"] = data.get("base_url") or "https://api.inimatic.com"
-        data["ca_cert"] = _stringify_path(data.get("ca_cert"))
+        data["ca_cert"] = _config_stringify_path(data.get("ca_cert"))
         owner = data.get("owner") or {}
         owner_id = owner.get("owner_id") if isinstance(owner, dict) else None
         data["owner"] = {"owner_id": owner_id} if owner_id else {}
     if isinstance(settings, SubnetSettings):
         hub = data.get("hub") or {}
         if isinstance(hub, dict):
-            key_path = _stringify_path(hub.get("key"))
-            cert_path = _stringify_path(hub.get("cert"))
+            key_path = _config_stringify_path(hub.get("key"))
+            cert_path = _config_stringify_path(hub.get("cert"))
             if key_path:
                 hub["key"] = key_path
             else:
@@ -457,6 +490,75 @@ def _normalize_root_state(raw: Any) -> RootState | None:
     return state or None
 
 
+def _migrate_managed_key_material(conf: NodeConfig) -> bool:
+    changed = False
+    managed_specs = [
+        ("root", "ca_cert", "keys/ca.cert"),
+        ("hub", "key", "keys/hub_private.pem"),
+        ("hub", "cert", "keys/hub_cert.pem"),
+    ]
+
+    def _get_value(group: str, field: str) -> str | None:
+        if group == "root":
+            return conf.root_settings.ca_cert
+        if field == "key":
+            return conf.subnet_settings.hub.key
+        return conf.subnet_settings.hub.cert
+
+    def _set_value(group: str, field: str, value: str) -> None:
+        nonlocal changed
+        current = _get_value(group, field)
+        if current != value:
+            changed = True
+        if group == "root":
+            conf.root_settings.ca_cert = value
+        elif field == "key":
+            conf.subnet_settings.hub.key = value
+        else:
+            conf.subnet_settings.hub.cert = value
+
+    base = _base_dir()
+    try:
+        base_resolved = base.resolve(strict=False)
+    except TypeError:  # pragma: no cover - compatibility with Python <3.12
+        base_resolved = base
+
+    for group, field, fallback in managed_specs:
+        current = _get_value(group, field)
+        configured_path = _expand_path(current, fallback)
+        canonical_path = _expand_path(fallback, fallback)
+
+        try:
+            configured_resolved = configured_path.resolve(strict=False)
+        except TypeError:  # pragma: no cover - compatibility with Python <3.12
+            configured_resolved = configured_path
+        try:
+            canonical_resolved = canonical_path.resolve(strict=False)
+        except TypeError:  # pragma: no cover - compatibility with Python <3.12
+            canonical_resolved = canonical_path
+
+        try:
+            inside_base = configured_resolved.relative_to(base_resolved)
+        except ValueError:
+            inside_base = None
+
+        if inside_base is not None:
+            canonical_value = _config_stringify_path(str(configured_resolved))
+            if canonical_value:
+                _set_value(group, field, canonical_value)
+            continue
+
+        should_rehome = configured_resolved.name == canonical_resolved.name
+        if should_rehome and configured_resolved.exists() and not canonical_resolved.exists():
+            canonical_resolved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(configured_resolved, canonical_resolved)
+            changed = True
+        if canonical_resolved.exists():
+            _set_value(group, field, fallback)
+
+    return changed
+
+
 def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     path = _config_path()
     if not path.exists():
@@ -500,6 +602,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     )
     changed = conf.ensure_defaults()
     conf.sync_sections()
+    changed = _migrate_managed_key_material(conf) or changed
     if changed:
         save_node(conf, ctx=ctx)
     _sync_ctx_config(conf, ctx)
