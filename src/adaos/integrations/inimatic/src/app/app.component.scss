@@ -83,6 +83,39 @@ ion-header ion-toolbar {
 	font-size: 16px;
 }
 
+.semantic-status {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	border: 1px solid rgba(127, 127, 127, 0.24);
+	background: rgba(127, 127, 127, 0.08);
+	color: var(--ion-color-medium);
+}
+
+.semantic-status[data-health='ready'] {
+	color: var(--ion-color-success);
+	border-color: color-mix(in srgb, var(--ion-color-success) 30%, transparent);
+	background: color-mix(in srgb, var(--ion-color-success) 10%, transparent);
+}
+
+.semantic-status[data-health='fallback'],
+.semantic-status[data-health='recovering'] {
+	color: var(--ion-color-warning);
+	border-color: color-mix(in srgb, var(--ion-color-warning) 30%, transparent);
+	background: color-mix(in srgb, var(--ion-color-warning) 10%, transparent);
+}
+
+.semantic-status[data-health='degraded'],
+.semantic-status[data-health='unavailable'] {
+	color: var(--ion-color-danger);
+	border-color: color-mix(in srgb, var(--ion-color-danger) 30%, transparent);
+	background: color-mix(in srgb, var(--ion-color-danger) 10%, transparent);
+}
+
 .transport-icon {
 	font-size: 16px;
 }
@@ -122,6 +155,9 @@ ion-header ion-toolbar {
 	}
 	.transport-icon {
 		font-size: 14px;
+	}
+	.semantic-status {
+		display: none;
 	}
 	.subnet-id {
 		max-width: 160px;

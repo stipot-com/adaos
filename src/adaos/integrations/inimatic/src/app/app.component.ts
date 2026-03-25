@@ -23,6 +23,13 @@ import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
 import { HttpErrorResponse } from '@angular/common/http'
 import { observeDeep } from './y/y-helpers'
+import { HubMemberChannelHealth, HubMemberChannelSnapshot } from './core/adaos/hub-member-channels.service'
+
+type SemanticStatusView = {
+	label: string
+	title: string
+	health: HubMemberChannelHealth
+}
 
 @Component({
 	selector: 'app-root',
@@ -46,6 +53,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	isAndroid: boolean
 	hubStatus$!: Observable<'checking' | 'online' | 'offline'>
 	transportState$!: Observable<string>
+	semanticStatus$!: Observable<SemanticStatusView>
 	readonly buildId = buildId
 	logoSrc = 'assets/icon/favicon.svg'
 	currentScenario = 'web_desktop'
@@ -164,6 +172,15 @@ export class AppComponent implements OnInit, OnDestroy {
 		// not just whether a raw WebRTC peer happens to be connected.
 		this.transportState$ = this.channels.transportState$.pipe(
 			distinctUntilChanged(),
+		)
+		this.semanticStatus$ = this.channels.snapshot$.pipe(
+			map((snapshot) => this.buildSemanticStatus(snapshot)),
+			distinctUntilChanged(
+				(a, b) =>
+					a.label === b.label &&
+					a.title === b.title &&
+					a.health === b.health,
+			),
 		)
 
 		// Toast notifications should also follow semantic member transport state,
@@ -457,6 +474,64 @@ export class AppComponent implements OnInit, OnDestroy {
 		document.body.classList.toggle('dark', isDark)
 		document.body.classList.toggle('ion-palette-dark', isDark)
 		this.logoSrc = isDark ? 'assets/icon/favicon_dark.png' : 'assets/icon/favicon.png'
+	}
+
+	private buildSemanticStatus(
+		snapshot: HubMemberChannelSnapshot,
+	): SemanticStatusView {
+		const command = snapshot.channels.command
+		const sync = snapshot.channels.sync
+		const route = snapshot.channels.route
+		const media = snapshot.channels.media
+		const control = snapshot.controlPlane
+		const overall = this.pickOverallSemanticHealth([
+			command.health,
+			sync.health,
+			route.health,
+		])
+		const labelMap: Record<HubMemberChannelHealth, string> = {
+			ready: 'link ok',
+			fallback: 'link fallback',
+			recovering: 'link recovering',
+			degraded: 'link degraded',
+			unavailable: 'link unavailable',
+		}
+		const details = [
+			`command=${command.health}${command.activePath ? ` via ${command.activePath}` : ''}`,
+			`sync=${sync.health}${sync.activePath ? ` via ${sync.activePath}` : ''}`,
+			`route=${route.health}${route.activePath ? ` via ${route.activePath}` : ''}`,
+			`media=${media.health}`,
+			`control=${control.sessionState} pending=${control.pendingCommands} opens=${control.sessionOpenCount}`,
+		]
+		if (snapshot.directRecovery.lastAttemptState !== 'idle') {
+			details.push(
+				`direct-recovery=${snapshot.directRecovery.lastAttemptState}`,
+			)
+		}
+		if (snapshot.syncRecovery.lastAttemptState !== 'idle') {
+			details.push(
+				`sync-recovery=${snapshot.syncRecovery.lastAttemptState}${
+					snapshot.syncRecovery.lastReason
+						? `:${snapshot.syncRecovery.lastReason}`
+						: ''
+				}`,
+			)
+		}
+		return {
+			label: labelMap[overall],
+			title: details.join(' | '),
+			health: overall,
+		}
+	}
+
+	private pickOverallSemanticHealth(
+		values: HubMemberChannelHealth[],
+	): HubMemberChannelHealth {
+		if (values.includes('degraded')) return 'degraded'
+		if (values.includes('recovering')) return 'recovering'
+		if (values.includes('fallback')) return 'fallback'
+		if (values.includes('ready')) return 'ready'
+		return 'unavailable'
 	}
 
 	get isAuthenticated(): boolean {

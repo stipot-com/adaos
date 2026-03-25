@@ -74,6 +74,13 @@ export type HubMemberPathEvidenceState =
 	| 'connected'
 	| 'disconnected'
 
+export type HubMemberChannelHealth =
+	| 'ready'
+	| 'fallback'
+	| 'recovering'
+	| 'degraded'
+	| 'unavailable'
+
 type ChannelSpec = {
 	paths: readonly HubMemberSemanticPath[]
 	freezeMs: number
@@ -138,6 +145,7 @@ export type HubMemberChannelSnapshot = {
 			freezeRemainingMs: number
 			switchTotal: number
 			activeReady: boolean
+			health: HubMemberChannelHealth
 		}
 	>
 }
@@ -403,6 +411,50 @@ export class HubMemberChannelsService {
 		return this.sendEventsEnvelope(ws, json, {
 			channelId: 'command',
 		})
+	}
+
+	createControlCommandEnvelope(
+		kind: string,
+		payload: Record<string, any>,
+	): {
+		id: string
+		envelope: {
+			ch: 'events'
+			t: 'cmd'
+			id: string
+			kind: string
+			payload: Record<string, any>
+		}
+		json: string
+	} {
+		const id = `${kind}.${Date.now()}.${Math.random()
+			.toString(16)
+			.slice(2)}`
+		const envelope = {
+			ch: 'events' as const,
+			t: 'cmd' as const,
+			id,
+			kind,
+			payload: payload ?? {},
+		}
+		return {
+			id,
+			envelope,
+			json: JSON.stringify(envelope),
+		}
+	}
+
+	tryParseControlAck(raw: string): { id: string; message: any } | null {
+		try {
+			const msg = JSON.parse(raw)
+			if (msg?.ch === 'events' && msg?.t === 'ack' && msg?.id) {
+				return {
+					id: String(msg.id),
+					message: msg,
+				}
+			}
+		} catch {}
+		return null
 	}
 
 	sendControlEnvelope(ws: WebSocket, json: string): 'ws' {
@@ -720,6 +772,13 @@ export class HubMemberChannelsService {
 					state.activePath &&
 					pathEvidence[state.activePath]?.state === 'connected'
 				),
+				health: this.computeChannelHealth(
+					channelId,
+					state.activePath,
+					state.preferredPath,
+					state.availablePaths,
+					pathEvidence,
+				),
 			}
 		}
 		return {
@@ -799,6 +858,36 @@ export class HubMemberChannelsService {
 			return 'connecting'
 		}
 		return 'ws'
+	}
+
+	private computeChannelHealth(
+		channelId: HubMemberSemanticChannelId,
+		activePath: HubMemberSemanticPath | null,
+		preferredPath: HubMemberSemanticPath | null,
+		availablePaths: HubMemberSemanticPath[],
+		pathEvidence: HubMemberChannelSnapshot['pathEvidence'],
+	): HubMemberChannelHealth {
+		const spec = CHANNEL_SPECS[channelId]
+		if (!spec.paths.length) {
+			return 'unavailable'
+		}
+		const activeState = activePath ? pathEvidence[activePath]?.state : null
+		const preferredState = preferredPath
+			? pathEvidence[preferredPath]?.state
+			: null
+		if (activePath && activeState === 'connected') {
+			return activePath === preferredPath ? 'ready' : 'fallback'
+		}
+		if (
+			(activePath && activeState === 'connecting') ||
+			(preferredPath && preferredState === 'connecting')
+		) {
+			return 'recovering'
+		}
+		if (availablePaths.length > 0) {
+			return 'degraded'
+		}
+		return 'degraded'
 	}
 
 	private buildPathEvidence(): HubMemberChannelSnapshot['pathEvidence'] {

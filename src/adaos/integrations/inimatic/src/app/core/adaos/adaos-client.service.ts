@@ -333,19 +333,17 @@ export class AdaosClient {
 	}
 
 	private onEventsMessage = (ev: MessageEvent) => {
-		try {
-			const msg = JSON.parse(ev.data)
-			if (msg?.ch === 'events' && msg?.t === 'ack' && msg?.id) {
-				const pending = this.pendingCmds.get(String(msg.id))
-				if (pending) {
-					this.pendingCmds.delete(String(msg.id))
-					clearTimeout(pending.timeout)
-					this.channels.completePendingControlCommand(String(msg.id), 'ack')
-					pending.resolve(msg)
-				}
+		const data = typeof ev.data === 'string' ? ev.data : ''
+		const ack = this.channels.tryParseControlAck(data)
+		if (ack) {
+			const pending = this.pendingCmds.get(ack.id)
+			if (pending) {
+				this.pendingCmds.delete(ack.id)
+				clearTimeout(pending.timeout)
+				this.channels.completePendingControlCommand(ack.id, 'ack')
+				pending.resolve(ack.message)
 			}
-		} catch {
-			// ignore malformed payloads
+			return
 		}
 	}
 
@@ -418,16 +416,8 @@ export class AdaosClient {
 		timeoutMs = 5000
 	): Promise<any> {
 		const ws = await this.ensureEventsSocket()
-		const cmdId = `${kind}.${Date.now()}.${Math.random()
-			.toString(16)
-			.slice(2)}`
-		const envelope = {
-			ch: 'events',
-			t: 'cmd',
-			id: cmdId,
-			kind,
-			payload: payload ?? {},
-		}
+		const command = this.channels.createControlCommandEnvelope(kind, payload)
+		const cmdId = command.id
 		const ack = new Promise<any>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingCmds.delete(cmdId)
@@ -441,8 +431,7 @@ export class AdaosClient {
 			})
 		})
 		this.channels.registerPendingControlCommand(cmdId, kind)
-		const json = JSON.stringify(envelope)
-		this.channels.sendCommandEnvelope(ws, kind, json)
+		this.channels.sendCommandEnvelope(ws, kind, command.json)
 		return ack
 	}
 
