@@ -49,6 +49,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from adaos.services.semver import bump_version
+
 
 logger = logging.getLogger(__name__)
 
@@ -109,25 +111,6 @@ def _format_expiry(moment: datetime) -> str:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc).isoformat()
-
-
-def _bump_version(current: str | None, index: int) -> str:
-    parts = [0, 0, 0]
-    if current:
-        raw_parts = str(current).split(".")
-        for idx in range(min(len(raw_parts), 3)):
-            token = raw_parts[idx]
-            digits = "".join(ch for ch in token if ch.isdigit())
-            if digits:
-                try:
-                    parts[idx] = int(digits)
-                except ValueError:
-                    parts[idx] = 0
-    index = max(0, min(index, 2))
-    parts[index] += 1
-    for reset in range(index + 1, 3):
-        parts[reset] = 0
-    return ".".join(str(value) for value in parts)
 
 
 def _root_state(cfg: NodeConfig) -> dict:
@@ -2072,7 +2055,7 @@ class RootDeveloperService:
             if explicit_version is not None:
                 data["version"] = explicit_version
             elif version_bump_index is not None:
-                data["version"] = _bump_version(existing_version, version_bump_index)
+                data["version"] = bump_version(existing_version, version_bump_index)
 
             timestamp = _current_timestamp()
             data["updated_at"] = timestamp
@@ -2141,7 +2124,7 @@ class RootDeveloperService:
             source,
             name,
             None,
-            version_bump_index=2,
+            version_bump_index=1,
             set_prototype=False,
         )
         archive_bytes = create_zip_bytes(source)
@@ -2254,7 +2237,7 @@ class RootDeveloperService:
         if target.exists():
             _, previous_version, _ = self._artifact_manifest_info(target, kind)
 
-        new_version = _bump_version(previous_version, bump_index)
+        new_version = bump_version(previous_version, bump_index)
 
         if warnings and not force and not dry_run:
             warning_text = "; ".join(warnings)

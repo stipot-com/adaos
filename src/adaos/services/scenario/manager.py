@@ -1,10 +1,13 @@
 # src\adaos\services\scenario\manager.py
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import re, os, json
 from pathlib import Path
 from typing import Optional, Literal
+
+import yaml
 
 from adaos.domain import SkillMeta, SkillRecord
 from adaos.ports import EventBus, GitClient, Capabilities
@@ -24,6 +27,7 @@ import y_py as Y
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
+from adaos.services.semver import bump_version
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.scenario.manager")
@@ -379,6 +383,7 @@ class ScenarioManager:
             raise RuntimeError("Scenarios repo is not initialized. Run `adaos scenario sync` once.")
         sub = name.strip()
         subpath = f"scenarios/{sub}"
+        self._bump_scenario_manifest_minor(Path(root) / "scenarios" / sub)
         changed = self.git.changed_files(str(root), subpath=subpath)
         if not changed:
             return "nothing-to-push"
@@ -398,6 +403,38 @@ class ScenarioManager:
         if sha != "nothing-to-commit":
             self.git.push(str(root))
         return sha
+
+    def _bump_scenario_manifest_minor(self, scenario_dir: Path) -> str | None:
+        candidates = ("scenario.yaml", "scenario.yml", "scenario.json")
+        manifest_path: Path | None = None
+        for candidate in candidates:
+            path = scenario_dir / candidate
+            if path.exists():
+                manifest_path = path
+                break
+        if manifest_path is None:
+            return None
+
+        try:
+            if manifest_path.suffix.lower() == ".json":
+                payload = json.loads(manifest_path.read_text(encoding="utf-8")) or {}
+            else:
+                payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        existing = payload.get("version")
+        existing_version = existing if isinstance(existing, str) and existing.strip() else None
+        payload["version"] = bump_version(existing_version, 1)
+        payload["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        if manifest_path.suffix.lower() == ".json":
+            manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        else:
+            manifest_path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False) + "\n", encoding="utf-8")
+        return str(payload.get("version") or "")
 
     def publish(self, name: str, *, bump: Literal["major", "minor", "patch"] = "patch", force: bool = False, dry_run: bool = False, signoff: bool = False) -> ArtifactPublishResult:
         """

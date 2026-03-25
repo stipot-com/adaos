@@ -33,6 +33,7 @@ from adaos.services.crypto.secrets_service import SecretsService
 from adaos.services.skill.secrets_backend import SkillSecretsBackend
 from adaos.services.skill.resolver import SkillPathResolver
 from adaos.services.capacity import install_skill_in_capacity, uninstall_skill_from_capacity
+from adaos.services.semver import bump_version
 import ast
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
@@ -923,6 +924,7 @@ class SkillManager:
 
         sub = name.strip()
         subpath = f"skills/{sub}"
+        self._bump_skill_manifest_minor(root / "skills" / sub)
         changed = self.ctx.git.changed_files(str(root), subpath=subpath)
         if not changed:
             return "nothing-to-push"
@@ -953,6 +955,26 @@ class SkillManager:
         if sha != "nothing-to-commit":
             self.ctx.git.push(str(root))
         return sha
+
+    def _bump_skill_manifest_minor(self, skill_dir: Path) -> str | None:
+        skill_yaml = skill_dir / "skill.yaml"
+        if not skill_yaml.exists():
+            return None
+        try:
+            payload = yaml.safe_load(skill_yaml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        existing = payload.get("version")
+        existing_version = existing if isinstance(existing, str) and existing.strip() else None
+        payload["version"] = bump_version(existing_version, 1)
+        payload["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        skill_yaml.write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        return str(payload.get("version") or "")
 
     # ------------------------------------------------------------------
     # Runtime lifecycle helpers
