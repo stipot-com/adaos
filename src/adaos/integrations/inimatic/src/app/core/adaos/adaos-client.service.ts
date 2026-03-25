@@ -311,11 +311,25 @@ export class AdaosClient {
 		this.eventsReady = undefined
 		this.eventsConnectionState$.next('disconnected')
 		this.channels.reportWsState('disconnected')
-		for (const [, entry] of this.pendingCmds) {
+		this.channels.reportControlSessionClosed(this.describeSocketReason(reason))
+		for (const [cmdId, entry] of this.pendingCmds) {
 			clearTimeout(entry.timeout)
+			this.channels.completePendingControlCommand(cmdId, 'closed')
 			entry.reject(reason ?? new Error('events websocket closed'))
 		}
 		this.pendingCmds.clear()
+	}
+
+	private describeSocketReason(reason: any): string {
+		if (typeof reason === 'string' && reason.trim()) return reason.trim()
+		if (reason instanceof Error && reason.message) return reason.message
+		if (typeof reason?.reason === 'string' && reason.reason.trim()) {
+			return reason.reason.trim()
+		}
+		if (typeof reason?.type === 'string' && reason.type.trim()) {
+			return reason.type.trim()
+		}
+		return 'closed'
 	}
 
 	private onEventsMessage = (ev: MessageEvent) => {
@@ -326,6 +340,7 @@ export class AdaosClient {
 				if (pending) {
 					this.pendingCmds.delete(String(msg.id))
 					clearTimeout(pending.timeout)
+					this.channels.completePendingControlCommand(String(msg.id), 'ack')
 					pending.resolve(msg)
 				}
 			}
@@ -345,6 +360,7 @@ export class AdaosClient {
 		this.eventsReady = new Promise<WebSocket>((resolve, reject) => {
 			this.eventsConnectionState$.next('connecting')
 			this.channels.reportWsState('connecting')
+			this.channels.reportControlSessionConnecting()
 			const ws = new WebSocket(this.eventsUrl())
 			this.eventsWs = ws
 			const cleanup = () => {
@@ -415,6 +431,7 @@ export class AdaosClient {
 		const ack = new Promise<any>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingCmds.delete(cmdId)
+				this.channels.completePendingControlCommand(cmdId, 'timeout')
 				reject(new Error(`events command timeout: ${kind}`))
 			}, timeoutMs)
 			this.pendingCmds.set(cmdId, {
@@ -423,6 +440,7 @@ export class AdaosClient {
 				timeout,
 			})
 		})
+		this.channels.registerPendingControlCommand(cmdId, kind)
 		const json = JSON.stringify(envelope)
 		this.channels.sendCommandEnvelope(ws, kind, json)
 		return ack

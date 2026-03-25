@@ -56,6 +56,18 @@ export type HubMemberSyncRecoveryState =
 	| 'recreated'
 	| 'failed'
 
+export type HubMemberControlSessionState =
+	| 'idle'
+	| 'connecting'
+	| 'connected'
+	| 'disconnected'
+
+export type HubMemberControlCommandOutcome =
+	| 'ack'
+	| 'timeout'
+	| 'closed'
+	| 'error'
+
 export type HubMemberPathEvidenceState =
 	| 'idle'
 	| 'connecting'
@@ -98,7 +110,16 @@ export type HubMemberChannelSnapshot = {
 		lastCreatedAt: number | null
 	}
 	controlPlane: {
+		sessionState: HubMemberControlSessionState
+		sessionOpenCount: number
+		lastConnectedAt: number | null
+		lastDisconnectedAt: number | null
+		lastCloseReason: string | null
 		subscriptionsTracked: number
+		pendingCommands: number
+		lastCommandKind: string | null
+		lastCommandCompletedAt: number | null
+		lastCommandOutcome: HubMemberControlCommandOutcome | null
 		lastReplayAt: number | null
 		lastReplayCount: number
 	}
@@ -156,6 +177,7 @@ export class HubMemberChannelsService {
 
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
+	private readonly pendingControlCommands = new Map<string, string>()
 	private runtimeInitialized = false
 	private visibilityTrackingInstalled = false
 	private isPageVisible = true
@@ -172,6 +194,14 @@ export class HubMemberChannelsService {
 	private lastSyncRecoveryState: HubMemberSyncRecoveryState = 'idle'
 	private lastSyncRecoveryReason: HubMemberSyncRecoveryReason | null = null
 	private syncRecoveryCount = 0
+	private controlSessionState: HubMemberControlSessionState = 'idle'
+	private controlSessionOpenCount = 0
+	private lastControlConnectedAt: number | null = null
+	private lastControlDisconnectedAt: number | null = null
+	private lastControlCloseReason: string | null = null
+	private lastControlCommandKind: string | null = null
+	private lastControlCommandCompletedAt: number | null = null
+	private lastControlCommandOutcome: HubMemberControlCommandOutcome | null = null
 	private lastControlReplayAt: number | null = null
 	private lastControlReplayCount = 0
 	private wsState: HubMemberPathEvidenceState = 'idle'
@@ -200,6 +230,19 @@ export class HubMemberChannelsService {
 		if (state === 'connected' && this.isPageVisible) {
 			this.scheduleDirectRecovery()
 		}
+		this.publishSnapshot()
+	}
+
+	reportControlSessionConnecting(): void {
+		this.controlSessionState = 'connecting'
+		this.publishSnapshot()
+	}
+
+	reportControlSessionClosed(reason?: string | null): void {
+		this.controlSessionState = 'disconnected'
+		this.lastControlDisconnectedAt = Date.now()
+		this.lastControlCloseReason = reason || 'closed'
+		this.pendingControlCommands.clear()
 		this.publishSnapshot()
 	}
 
@@ -384,12 +427,33 @@ export class HubMemberChannelsService {
 	}
 
 	onControlWsOpen(ws: WebSocket): void {
+		this.controlSessionState = 'connected'
+		this.controlSessionOpenCount += 1
+		this.lastControlConnectedAt = Date.now()
+		this.lastControlCloseReason = null
 		const topics = [...this.controlSubscriptions]
 		if (!topics.length) {
 			this.publishSnapshot()
 			return
 		}
 		this.sendControlSubscriptions(ws, topics)
+	}
+
+	registerPendingControlCommand(id: string, kind: string): void {
+		this.pendingControlCommands.set(id, kind)
+		this.publishSnapshot()
+	}
+
+	completePendingControlCommand(
+		id: string,
+		outcome: HubMemberControlCommandOutcome,
+	): void {
+		const kind = this.pendingControlCommands.get(id) || null
+		this.pendingControlCommands.delete(id)
+		this.lastControlCommandKind = kind
+		this.lastControlCommandCompletedAt = Date.now()
+		this.lastControlCommandOutcome = outcome
+		this.publishSnapshot()
 	}
 
 	sendControlSubscriptions(ws: WebSocket, topics: string[]): number {
@@ -687,7 +751,16 @@ export class HubMemberChannelsService {
 				lastCreatedAt: this.lastSyncProviderCreateAt,
 			},
 			controlPlane: {
+				sessionState: this.controlSessionState,
+				sessionOpenCount: this.controlSessionOpenCount,
+				lastConnectedAt: this.lastControlConnectedAt,
+				lastDisconnectedAt: this.lastControlDisconnectedAt,
+				lastCloseReason: this.lastControlCloseReason,
 				subscriptionsTracked: this.controlSubscriptions.size,
+				pendingCommands: this.pendingControlCommands.size,
+				lastCommandKind: this.lastControlCommandKind,
+				lastCommandCompletedAt: this.lastControlCommandCompletedAt,
+				lastCommandOutcome: this.lastControlCommandOutcome,
 				lastReplayAt: this.lastControlReplayAt,
 				lastReplayCount: this.lastControlReplayCount,
 			},
