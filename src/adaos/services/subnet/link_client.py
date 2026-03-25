@@ -702,7 +702,7 @@ class MemberLinkClient:
             "signal_delay_sec": signal_delay_sec,
             "state": "requested",
         }
-        if action not in {"update", "cancel", "rollback"}:
+        if action not in {"update", "cancel", "rollback", "drain"}:
             self._last_control_error = "invalid_action"
             result = {
                 "ok": False,
@@ -721,6 +721,12 @@ class MemberLinkClient:
                     "countdown_sec": countdown_sec,
                     "drain_timeout_sec": drain_timeout_sec,
                     "signal_delay_sec": signal_delay_sec,
+                }
+            elif action == "drain":
+                path = "/api/admin/drain"
+                body = {
+                    "reason": reason,
+                    "drain_timeout_sec": drain_timeout_sec,
                 }
             else:
                 path = "/api/admin/update/start"

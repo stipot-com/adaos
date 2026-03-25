@@ -262,7 +262,7 @@ class HubLinkManager:
         action_norm = str(action or "").strip().lower()
         if action_norm == "start":
             action_norm = "update"
-        if action_norm not in {"update", "cancel", "rollback"}:
+        if action_norm not in {"update", "cancel", "rollback", "drain"}:
             return {"ok": False, "accepted": False, "error": "invalid_action", "node_id": node_id, "action": action_norm}
         request_id = f"member_update_{uuid.uuid4().hex}"
         msg = {
