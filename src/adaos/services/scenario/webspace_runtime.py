@@ -1035,15 +1035,24 @@ async def _on_webspace_refresh(evt: Dict[str, Any]) -> None:  # noqa: ARG001
     await svc.refresh()
 
 
-@subscribe("desktop.webspace.reload")
-async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
+async def reload_webspace_from_scenario(
+    webspace_id: str,
+    *,
+    scenario_id: str | None = None,
+    action: str = "reload",
+) -> dict[str, Any]:
     """
-    Re-seed the current webspace from its scenario, effectively
-    rebuilding ui/data/registry for debugging or recovery.
+    Re-seed a single webspace from its current or explicit scenario source and
+    rebuild its effective UI/runtime projection.
+
+    This is the explicit operator-facing sync recovery path used by event
+    handlers as well as local control API endpoints.
     """
-    payload = _payload(evt)
-    webspace_id = _webspace_id(payload)
-    scenario_id = str(payload.get("scenario_id") or "").strip()
+    webspace_id = str(webspace_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+
+    scenario_id = str(scenario_id or "").strip()
     if not scenario_id:
         # Default to the webspace's active scenario to avoid reseeding the wrong
         # package when the user is currently running a non-default desktop scenario.
@@ -1057,9 +1066,9 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
             scenario_id = ""
     if not scenario_id:
         scenario_id = "web_desktop"
-    if not webspace_id:
-        return
-    _log.info("reloading webspace %s from scenario %s", webspace_id, scenario_id)
+
+    verb = "resetting" if str(action or "").strip().lower() == "reset" else "reloading"
+    _log.info("%s webspace %s from scenario %s", verb, webspace_id, scenario_id)
 
     # Ensure rebuild step uses the same scenario we are reseeding from.
     try:
@@ -1079,9 +1088,12 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     try:
         from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
         from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
- 
+
         try:
-            await reset_live_webspace_room(webspace_id, close_reason="webspace_reload")
+            await reset_live_webspace_room(
+                webspace_id,
+                close_reason="webspace_reset" if verb == "resetting" else "webspace_reload",
+            )
         except Exception:
             pass
         try:
@@ -1107,6 +1119,7 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
             {
                 "webspace_id": webspace_id,
                 "scenario_id": scenario_id,
+                "action": "reset" if verb == "resetting" else "reload",
             },
             "scenario.webspace_runtime",
         )
@@ -1118,6 +1131,31 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
             exc_info=True,
         )
 
+    return {
+        "ok": True,
+        "accepted": True,
+        "action": "reset" if verb == "resetting" else "reload",
+        "webspace_id": webspace_id,
+        "scenario_id": scenario_id,
+    }
+
+
+@subscribe("desktop.webspace.reload")
+async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
+    """
+    Re-seed the current webspace from its scenario, effectively
+    rebuilding ui/data/registry for debugging or recovery.
+    """
+    payload = _payload(evt)
+    webspace_id = _webspace_id(payload)
+    if not webspace_id:
+        return
+    await reload_webspace_from_scenario(
+        webspace_id,
+        scenario_id=str(payload.get("scenario_id") or "").strip() or None,
+        action="reload",
+    )
+
 
 @subscribe("desktop.webspace.reset")
 async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
@@ -1127,7 +1165,15 @@ async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
     separate event so that future versions can differentiate between
     soft reload (updatable-only) and full reset.
     """
-    await _on_webspace_reload(evt)
+    payload = _payload(evt)
+    webspace_id = _webspace_id(payload)
+    if not webspace_id:
+        return
+    await reload_webspace_from_scenario(
+        webspace_id,
+        scenario_id=str(payload.get("scenario_id") or "").strip() or None,
+        action="reset",
+    )
 
 
 @subscribe("desktop.scenario.set")

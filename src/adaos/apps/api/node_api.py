@@ -19,6 +19,7 @@ from adaos.services.media_library import (
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
+from adaos.services.scenario.webspace_runtime import reload_webspace_from_scenario
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
@@ -77,6 +78,10 @@ class MemberUpdateRequest(BaseModel):
     drain_timeout_sec: float | None = None
     signal_delay_sec: float | None = None
     reason: str | None = None
+
+
+class WebspaceYjsActionRequest(BaseModel):
+    scenario_id: str | None = None
 
 
 def _raise_400(detail: str) -> None:
@@ -306,6 +311,44 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
         "webspace_id": str(webspace_id or "default") or "default",
         "runtime": yjs_sync_runtime_snapshot(role=conf.role),
     }
+
+
+@router.post("/yjs/webspaces/{webspace_id}/reload", dependencies=[Depends(require_token)])
+async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    result = await reload_webspace_from_scenario(
+        str(webspace_id or "default") or "default",
+        scenario_id=str(payload.scenario_id or "").strip() or None,
+        action="reload",
+    )
+    result["runtime"] = yjs_sync_runtime_snapshot(role=conf.role)
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/reset", dependencies=[Depends(require_token)])
+async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    result = await reload_webspace_from_scenario(
+        str(webspace_id or "default") or "default",
+        scenario_id=str(payload.scenario_id or "").strip() or None,
+        action="reset",
+    )
+    result["runtime"] = yjs_sync_runtime_snapshot(role=conf.role)
+    return result
 
 
 @router.get("/media/files", dependencies=[Depends(require_token)])

@@ -694,6 +694,78 @@ def node_yjs_backup(
         _print_yjs_runtime_summary({"runtime": runtime})
 
 
+def _node_yjs_control_action(
+    *,
+    action: str,
+    webspace: str,
+    scenario_id: str | None,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}/{action}",
+        token=resolve_control_token(explicit=cfg.token),
+        body={"scenario_id": scenario_id or None},
+        timeout=20.0,
+    )
+    if status_code is None:
+        typer.secho(f"[AdaOS] yjs {action} failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs {action} failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(
+        f"yjs {action}: accepted={payload.get('accepted')} "
+        f"webspace={payload.get('webspace_id') or webspace} "
+        f"scenario={payload.get('scenario_id') or '-'}"
+    )
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
+@yjs_app.command("reload")
+def node_yjs_reload(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to reseed"),
+    scenario_id: str | None = typer.Option(None, "--scenario-id", help="Explicit scenario id override"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="reload",
+        webspace=webspace,
+        scenario_id=scenario_id,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("reset")
+def node_yjs_reset(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to hard-reset"),
+    scenario_id: str | None = typer.Option(None, "--scenario-id", help="Explicit scenario id override"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="reset",
+        webspace=webspace,
+        scenario_id=scenario_id,
+        control=control,
+        json_output=json_output,
+    )
+
+
 @app.command("member-refresh")
 def node_member_refresh(
     node_id: str = typer.Option(..., "--node-id", help="Remote member node_id"),
