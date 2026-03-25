@@ -1135,6 +1135,7 @@ async def reload_webspace_from_scenario(
         "ok": True,
         "accepted": True,
         "action": "reset" if verb == "resetting" else "reload",
+        "source_of_truth": "scenario",
         "webspace_id": webspace_id,
         "scenario_id": scenario_id,
     }
@@ -1178,6 +1179,7 @@ async def restore_webspace_from_snapshot(webspace_id: str) -> dict[str, Any]:
     return {
         **restore_result,
         "action": "restore",
+        "source_of_truth": "snapshot",
         "reset_room": reset_result,
     }
 

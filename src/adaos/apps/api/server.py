@@ -1253,29 +1253,20 @@ class YjsReloadRequest(BaseModel):
 @app.post("/api/yjs/reload", dependencies=[Depends(require_token)])
 async def yjs_reload(body: YjsReloadRequest) -> dict:
     """
-    Soft reload of Yjs state for a given webspace.
-
-    This follows the same event path as the browser-side YJS reload action so
-    that reseeding, runtime rebuild, and post-reload restoration happen in the
-    same order.
+    Legacy endpoint retained only to point operators at the newer node-scoped
+    per-webspace control surface.
     """
-    webspace_id = body.webspace_id or "default"
-    try:
-        get_ctx().bus.publish(
-            DomainEvent(
-                type="desktop.webspace.reload",
-                payload={"webspace_id": webspace_id},
-                source="api.yjs_reload",
-                ts=time.time(),
-            )
-        )
-        await _wait_bus_idle(5.0)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        raise HTTPException(status_code=500, detail=f"yjs_reload failed: {exc}") from exc
-    return {
-        "ok": True,
-        "webspace_id": webspace_id,
-    }
+    webspace_id = str(body.webspace_id or "default")
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "error": "legacy_yjs_reload_endpoint_disabled",
+            "message": "Use the node-scoped per-webspace Yjs controls instead.",
+            "reload_path": f"/api/node/yjs/webspaces/{webspace_id}/reload",
+            "reset_path": f"/api/node/yjs/webspaces/{webspace_id}/reset",
+            "restore_path": f"/api/node/yjs/webspaces/{webspace_id}/restore",
+        },
+    )
 
 
 # TODO deprecated use bus instead. No external interface

@@ -3661,6 +3661,7 @@ def yjs_sync_runtime_snapshot(
     now = time.time() if now_ts is None else float(now_ts)
     role_norm = str(role or "").strip().lower()
     selected_webspace_id = str(webspace_id or "").strip()
+    action_overrides: dict[str, Any] = {}
     if role_norm != "hub":
         return {
             "available": False,
@@ -3671,6 +3672,7 @@ def yjs_sync_runtime_snapshot(
                 "reason": "local Yjs store runtime is observed on the hub only",
             },
             "transport": {},
+            "action_overrides": action_overrides,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3693,6 +3695,7 @@ def yjs_sync_runtime_snapshot(
                 "reason": f"failed to load Yjs store runtime: {exc}",
             },
             "transport": {},
+            "action_overrides": action_overrides,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3735,6 +3738,46 @@ def yjs_sync_runtime_snapshot(
     else:
         reasons.append("bounded_sync_runtime_observed")
 
+    if not selected_webspace_id:
+        try:
+            from adaos.services.yjs.webspace import default_webspace_id as _default_webspace_id
+
+            default_ws = _default_webspace_id()
+        except Exception:
+            default_ws = "default"
+        if default_ws in webspaces:
+            selected_webspace_id = default_ws
+        elif webspaces:
+            selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
+    selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
+    snapshot_exists = bool(selected_entry.get("snapshot_file_exists")) if selected_entry else False
+    action_overrides = {
+        "backup": {
+            "enabled": True,
+            "source_of_truth": "current_runtime",
+            "reason": "persist current in-memory Yjs state to disk snapshot",
+        },
+        "reload": {
+            "enabled": True,
+            "source_of_truth": "scenario",
+            "reason": "reseed the selected webspace from its scenario source",
+        },
+        "reset": {
+            "enabled": True,
+            "source_of_truth": "scenario",
+            "reason": "hard-reset the selected webspace from its scenario source",
+        },
+        "restore": {
+            "enabled": snapshot_exists,
+            "source_of_truth": "snapshot",
+            "reason": (
+                "restore the selected webspace from its last persisted disk snapshot"
+                if snapshot_exists
+                else "disk snapshot is missing for the selected webspace"
+            ),
+        },
+    }
+
     return {
         "available": True,
         "scope": "hub_local_only",
@@ -3747,6 +3790,7 @@ def yjs_sync_runtime_snapshot(
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
         },
+        "action_overrides": action_overrides,
         "webspace_total": webspace_total,
         "active_webspace_total": active_webspace_total,
         "compacted_webspace_total": compacted_total,
