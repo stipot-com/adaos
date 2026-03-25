@@ -3,6 +3,7 @@ export type WidgetType =
   | 'collection.grid'
   | 'collection.tree'
   | 'visual.metricTile'
+  | 'visual.qrCode'
   | 'feedback.log'
   | 'feedback.statusBar'
   | 'ui.chat'

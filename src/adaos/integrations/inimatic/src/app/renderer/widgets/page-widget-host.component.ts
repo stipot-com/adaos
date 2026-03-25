@@ -32,6 +32,7 @@ import { FormWidgetComponent } from './form.widget.component'
 import { JsonViewerWidgetComponent } from './json-viewer.widget.component'
 import { TableWidgetComponent } from './table.widget.component'
 import { MediaPlayerWidgetComponent } from './media-player.widget.component'
+import { QrCodeWidgetComponent } from './qr-code.widget.component'
 import { isVerboseDebugEnabled } from '../../debug-log'
 
 export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
@@ -40,6 +41,7 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
   'input.commandBar': CommandBarWidgetComponent,
   'input.selector': SelectorWidgetComponent,
   'visual.metricTile': MetricTileWidgetComponent,
+  'visual.qrCode': QrCodeWidgetComponent,
   'feedback.log': MetricTileWidgetComponent,
   'feedback.statusBar': StatusBarWidgetComponent,
   'ui.chat': ChatWidgetComponent,
