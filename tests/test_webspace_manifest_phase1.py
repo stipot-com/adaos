@@ -164,6 +164,28 @@ def test_webspace_service_list_filters_by_manifest_kind(monkeypatch) -> None:
     assert "dev-space" in dev_ids
 
 
+def test_webspace_listing_exposes_manifest_metadata(monkeypatch) -> None:
+    async def _fake_seed(_webspace_id: str, _scenario_id: str, *, dev: bool | None = None) -> None:
+        return None
+
+    async def _fake_sync_listing() -> None:
+        return None
+
+    monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+
+    service = webspace_runtime_module.WebspaceService()
+    asyncio.run(service.create("metadata-space", "Metadata Space", scenario_id="prompt_engineer_scenario", dev=True))
+
+    items = {item["id"]: item for item in webspace_runtime_module._webspace_listing()}
+    row = items["metadata-space"]
+
+    assert row["title"] == "DEV: Metadata Space"
+    assert row["kind"] == "dev"
+    assert row["home_scenario"] == "prompt_engineer_scenario"
+    assert row["source_mode"] == "dev"
+
+
 def test_webspace_reload_defaults_to_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "ws-home"
     ensure_workspace(webspace_id)

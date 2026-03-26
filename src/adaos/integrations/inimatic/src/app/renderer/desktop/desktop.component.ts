@@ -19,6 +19,15 @@ import { TPipe } from '../../runtime/t.pipe'
 import { addIcons } from 'ionicons'
 import { menuOutline, closeOutline, homeOutline, ellipsisHorizontalOutline } from 'ionicons/icons'
 
+type WebspaceEntry = {
+	id: string
+	title: string
+	created_at?: number
+	kind?: string
+	home_scenario?: string
+	source_mode?: string
+}
+
 @Component({
 	selector: 'ada-desktop',
 	standalone: true,
@@ -36,7 +45,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	sidebarOpen = false
 	private collapsedWidgetIds = new Set<string>()
 	fabActions: Array<{ id: string; icon?: string; label?: string; cmd?: string; payload?: any }> = []
-	webspaces: Array<{ id: string; title: string; created_at: number }> = []
+	webspaces: WebspaceEntry[] = []
 	activeWebspace = 'default'
 	pageSchema?: PageSchema
 	private areaWidgetCounts = new Map<string, number>()
@@ -238,7 +247,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		try {
 			const ws = this.y.getWebspaceId()
 			await this.adaos.sendEventsCommand('desktop.scenario.set', {
-				scenario_id: 'web_desktop',
+				scenario_id: this.currentHomeScenario(),
 				webspace_id: ws || undefined,
 			})
 		} catch {}
@@ -550,9 +559,15 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	private readWebspaces() {
 		const raw = this.y.toJSON(this.y.getPath('data/webspaces'))
-		const items = Array.isArray(raw?.items) ? raw.items : []
+		const items = Array.isArray(raw?.items) ? (raw.items as WebspaceEntry[]) : []
 		this.webspaces = items
 		this.activeWebspace = this.y.getWebspaceId()
+	}
+
+	private currentHomeScenario(): string {
+		const entry = this.webspaces.find(ws => ws.id === this.activeWebspace)
+		const scenarioId = String(entry?.home_scenario || '').trim()
+		return scenarioId || 'web_desktop'
 	}
 
 	private async syncToggleInstall(type: 'app' | 'widget', id: string) {

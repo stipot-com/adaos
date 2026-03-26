@@ -32,6 +32,15 @@ type SemanticStatusView = {
 	health: HubMemberChannelHealth
 }
 
+type WebspaceEntry = {
+	id: string
+	title?: string
+	created_at?: number
+	kind?: string
+	home_scenario?: string
+	source_mode?: string
+}
+
 @Component({
 	selector: 'app-root',
 	templateUrl: 'app.component.html',
@@ -593,9 +602,9 @@ export class AppComponent implements OnInit, OnDestroy {
 	async onClickHome(): Promise<void> {
 		try {
 			const ws = this.ydoc.getWebspaceId()
-			// Switch current scenario back to web_desktop for the active webspace.
+			const homeScenario = this.readCurrentHomeScenario()
 			await this.adaos.sendEventsCommand('desktop.scenario.set', {
-				scenario_id: 'web_desktop',
+				scenario_id: homeScenario,
 				webspace_id: ws || undefined,
 			})
 		} catch (err) {
@@ -607,6 +616,18 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	async onClickCloseToDesktop(): Promise<void> {
 		return this.onClickHome()
+	}
+
+	private readCurrentHomeScenario(): string {
+		try {
+			const currentWebspaceId = this.ydoc.getWebspaceId()
+			const raw = this.ydoc.toJSON(this.ydoc.getPath('data/webspaces'))
+			const items = Array.isArray(raw?.items) ? (raw.items as WebspaceEntry[]) : []
+			const entry = items.find(item => item.id === currentWebspaceId)
+			const scenarioId = String(entry?.home_scenario || '').trim()
+			if (scenarioId) return scenarioId
+		} catch { }
+		return 'web_desktop'
 	}
 
 	async onClickYjsReload(): Promise<void> {
