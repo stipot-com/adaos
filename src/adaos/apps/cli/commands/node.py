@@ -725,6 +725,7 @@ def _node_yjs_control_action(
     action: str,
     webspace: str,
     scenario_id: str | None,
+    set_home: bool | None,
     control: str | None,
     json_output: bool,
 ) -> None:
@@ -736,7 +737,10 @@ def _node_yjs_control_action(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/{action}",
         token=resolve_control_token(explicit=cfg.token),
-        body={"scenario_id": scenario_id or None},
+        body={
+            "scenario_id": scenario_id or None,
+            **({"set_home": bool(set_home)} if set_home is not None else {}),
+        },
         timeout=20.0,
     )
     if status_code is None:
@@ -771,6 +775,7 @@ def node_yjs_reload(
         action="reload",
         webspace=webspace,
         scenario_id=scenario_id,
+        set_home=None,
         control=control,
         json_output=json_output,
     )
@@ -787,6 +792,7 @@ def node_yjs_reset(
         action="reset",
         webspace=webspace,
         scenario_id=scenario_id,
+        set_home=None,
         control=control,
         json_output=json_output,
     )
@@ -802,6 +808,58 @@ def node_yjs_restore(
         action="restore",
         webspace=webspace,
         scenario_id=None,
+        set_home=None,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("scenario")
+def node_yjs_scenario(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to switch"),
+    scenario_id: str = typer.Option(..., "--scenario-id", help="Target scenario id"),
+    set_home: bool = typer.Option(False, "--set-home", help="Also persist this scenario as the webspace home"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="scenario",
+        webspace=webspace,
+        scenario_id=scenario_id,
+        set_home=set_home,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("go-home")
+def node_yjs_go_home(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to return to home scenario"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="go-home",
+        webspace=webspace,
+        scenario_id=None,
+        set_home=None,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("set-home")
+def node_yjs_set_home(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to update"),
+    scenario_id: str = typer.Option(..., "--scenario-id", help="Scenario id to persist as home"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="set-home",
+        webspace=webspace,
+        scenario_id=scenario_id,
+        set_home=None,
         control=control,
         json_output=json_output,
     )

@@ -1265,6 +1265,9 @@ async def yjs_reload(body: YjsReloadRequest) -> dict:
             "reload_path": f"/api/node/yjs/webspaces/{webspace_id}/reload",
             "reset_path": f"/api/node/yjs/webspaces/{webspace_id}/reset",
             "restore_path": f"/api/node/yjs/webspaces/{webspace_id}/restore",
+            "scenario_path": f"/api/node/yjs/webspaces/{webspace_id}/scenario",
+            "go_home_path": f"/api/node/yjs/webspaces/{webspace_id}/go-home",
+            "set_home_path": f"/api/node/yjs/webspaces/{webspace_id}/set-home",
         },
     )
 

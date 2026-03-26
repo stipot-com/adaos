@@ -19,7 +19,13 @@ from adaos.services.media_library import (
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
-from adaos.services.scenario.webspace_runtime import reload_webspace_from_scenario, restore_webspace_from_snapshot
+from adaos.services.scenario.webspace_runtime import (
+    WebspaceService,
+    go_home_webspace,
+    reload_webspace_from_scenario,
+    restore_webspace_from_snapshot,
+    switch_webspace_scenario,
+)
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
@@ -82,6 +88,7 @@ class MemberUpdateRequest(BaseModel):
 
 class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
+    set_home: bool = False
 
 
 def _raise_400(detail: str) -> None:
@@ -346,6 +353,97 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reload",
     )
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/scenario", dependencies=[Depends(require_token)])
+async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    scenario_id = str(payload.scenario_id or "").strip()
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": str(webspace_id or "default") or "default",
+            "error": "scenario_id_required",
+        }
+    result = await switch_webspace_scenario(
+        str(webspace_id or "default") or "default",
+        scenario_id,
+        set_home=bool(payload.set_home),
+    )
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/go-home", dependencies=[Depends(require_token)])
+async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    result = await go_home_webspace(str(webspace_id or "default") or "default")
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/set-home", dependencies=[Depends(require_token)])
+async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    scenario_id = str(payload.scenario_id or "").strip()
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": str(webspace_id or "default") or "default",
+            "error": "scenario_id_required",
+        }
+    info = await WebspaceService().set_home_scenario(str(webspace_id or "default") or "default", scenario_id)
+    result: dict[str, Any]
+    if info is None:
+        result = {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": str(webspace_id or "default") or "default",
+            "scenario_id": scenario_id,
+            "error": "webspace_not_found",
+        }
+    else:
+        result = {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": info.id,
+            "scenario_id": scenario_id,
+            "home_scenario": info.home_scenario,
+        }
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
