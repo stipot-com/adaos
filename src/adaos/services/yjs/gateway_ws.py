@@ -249,15 +249,14 @@ class WorkspaceWebsocketServer(WebsocketServer):
     async def get_room(self, name: str) -> YRoom:  # type: ignore[override]
         webspace_id = name or "default"
 
-        def _is_dev_space(ws_id: str) -> bool:
+        def _space_mode(ws_id: str) -> str:
             try:
                 row = get_workspace(ws_id)
-                if not row or not row.display_name:
-                    return False
-                title = row.display_name.strip()
-                return title.upper().startswith("DEV:")
+                if not row:
+                    return "workspace"
+                return row.effective_source_mode
             except Exception:
-                return False
+                return "workspace"
 
         # Double-checked locking to prevent concurrent room creation.
         # Without this, multiple concurrent get_room() calls can both pass
@@ -272,8 +271,14 @@ class WorkspaceWebsocketServer(WebsocketServer):
                     _ylog.info("creating YRoom for webspace=%s", webspace_id)
                     ensure_workspace(webspace_id)
                     ystore = get_ystore_for_webspace(webspace_id)
-                    space = "dev" if _is_dev_space(webspace_id) else "workspace"
-                    await ensure_webspace_seeded_from_scenario(ystore, webspace_id=webspace_id, space=space)
+                    row = get_workspace(webspace_id)
+                    space = _space_mode(webspace_id)
+                    await ensure_webspace_seeded_from_scenario(
+                        ystore,
+                        webspace_id=webspace_id,
+                        default_scenario_id=(row.effective_home_scenario if row and row.home_scenario else "web_desktop"),
+                        space=space,
+                    )
                     # Ensure periodic in-memory snapshotting for this webspace.
                     try:
                         sched = get_scheduler()
@@ -368,23 +373,20 @@ async def stop_y_server() -> None:
 async def ensure_webspace_ready(webspace_id: str, scenario_id: str | None = None) -> None:
     ensure_workspace(webspace_id)
     ystore = get_ystore_for_webspace(webspace_id)
-
-    def _is_dev_space(ws_id: str) -> bool:
-        try:
-            row = get_workspace(ws_id)
-            if not row or not row.display_name:
-                return False
-            title = row.display_name.strip()
-            return title.upper().startswith("DEV:")
-        except Exception:
-            return False
+    row = get_workspace(webspace_id)
+    space = row.effective_source_mode if row else "workspace"
+    base_scenario = str(scenario_id or "").strip()
+    if not base_scenario and row and row.home_scenario:
+        base_scenario = row.effective_home_scenario
+    if not base_scenario:
+        base_scenario = "web_desktop"
 
     try:
         await ensure_webspace_seeded_from_scenario(
             ystore,
             webspace_id=webspace_id,
-            default_scenario_id=scenario_id or "web_desktop",
-            space="dev" if _is_dev_space(webspace_id) else "workspace",
+            default_scenario_id=base_scenario,
+            space=space,
         )
     finally:
         try:

@@ -1,3 +1,4 @@
+# \src\adaos\services\scenario\projection_registry.py
 from __future__ import annotations
 
 from dataclasses import dataclass

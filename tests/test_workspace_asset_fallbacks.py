@@ -247,7 +247,7 @@ def test_webspace_reload_emits_reloaded_event_after_rebuild(monkeypatch) -> None
     assert emitted == [
         (
             "desktop.webspace.reloaded",
-            {"webspace_id": "default", "scenario_id": "web_desktop"},
+            {"webspace_id": "default", "scenario_id": "web_desktop", "action": "reload"},
             "scenario.webspace_runtime",
         )
     ]

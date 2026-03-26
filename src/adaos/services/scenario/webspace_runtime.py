@@ -58,6 +58,9 @@ class WebspaceInfo:
     id: str
     title: str
     created_at: int
+    kind: str = "workspace"
+    home_scenario: str = "web_desktop"
+    source_mode: str = "workspace"
     is_dev: bool = False
 
 
@@ -444,8 +447,7 @@ class WebspaceScenarioRuntime:
         try:
             row = workspace_index.get_workspace(webspace_id)
             if row:
-                title = row.display_name or row.workspace_id
-                mode = "dev" if _is_dev_title(title) else "workspace"
+                mode = row.effective_source_mode
         except Exception:
             mode = "mixed"
 
@@ -777,14 +779,27 @@ def _is_dev_title(title: Optional[str]) -> bool:
     return str(title).lstrip().upper().startswith("DEV:")
 
 
+def _display_name_for_kind(title: Optional[str], *, webspace_id: str, kind: str) -> str:
+    raw_title = (title or webspace_id).strip() or webspace_id
+    if kind == "dev":
+        if _is_dev_title(raw_title):
+            return raw_title
+        return f"DEV: {raw_title}"
+    if _is_dev_title(raw_title):
+        return raw_title.lstrip()[4:].lstrip() or webspace_id
+    return raw_title
+
+
 def _webspace_listing() -> List[Dict[str, Any]]:
     rows = workspace_index.list_workspaces()
     return [
         {
             "id": row.workspace_id,
-            "title": (row.display_name or row.workspace_id),
+            "title": row.title,
             "created_at": row.created_at,
-            "kind": "dev" if _is_dev_title(row.display_name or row.workspace_id) else "workspace",
+            "kind": row.effective_kind,
+            "home_scenario": row.effective_home_scenario,
+            "source_mode": row.effective_source_mode,
         }
         for row in rows
     ]
@@ -824,17 +839,21 @@ class WebspaceService:
         rows = workspace_index.list_workspaces()
         infos: List[WebspaceInfo] = []
         for row in rows:
-            title = row.display_name or row.workspace_id
-            is_dev = _is_dev_title(title)
-            if mode == "workspace" and is_dev:
+            title = row.title
+            kind = row.effective_kind
+            is_dev = row.is_dev
+            if mode == "workspace" and kind != "workspace":
                 continue
-            if mode == "dev" and not is_dev:
+            if mode == "dev" and kind != "dev":
                 continue
             infos.append(
                 WebspaceInfo(
                     id=row.workspace_id,
                     title=title,
                     created_at=row.created_at,
+                    kind=kind,
+                    home_scenario=row.effective_home_scenario,
+                    source_mode=row.effective_source_mode,
                     is_dev=is_dev,
                 )
             )
@@ -853,23 +872,27 @@ class WebspaceService:
     ) -> WebspaceInfo:
         webspace_id = _allocate_webspace_id(requested_id)
         _log.info("creating webspace %s (requested=%s dev=%s)", webspace_id, requested_id, dev)
+        kind = "dev" if dev else "workspace"
+        source_mode = "dev" if dev else "workspace"
         workspace_index.ensure_workspace(webspace_id)
-        raw_title = (title or webspace_id).strip()
-        if dev and not _is_dev_title(raw_title):
-            display_name = f"DEV: {raw_title}"
-        elif not dev and _is_dev_title(raw_title):
-            # Normalise accidental prefix when dev=False.
-            display_name = raw_title.lstrip()[4:].lstrip() or webspace_id
-        else:
-            display_name = raw_title or webspace_id
-        workspace_index.set_display_name(webspace_id, display_name)
+        display_name = _display_name_for_kind(title, webspace_id=webspace_id, kind=kind)
+        row = workspace_index.set_workspace_manifest(
+            webspace_id,
+            display_name=display_name,
+            kind=kind,
+            home_scenario=str(scenario_id or "").strip() or "web_desktop",
+            source_mode=source_mode,
+        )
         await _seed_webspace_from_scenario(webspace_id, scenario_id, dev=dev)
         await self._sync_listing()
         return WebspaceInfo(
             id=webspace_id,
-            title=display_name,
-            created_at=workspace_index.get_workspace(webspace_id).created_at,  # type: ignore[union-attr]
-            is_dev=_is_dev_title(display_name),
+            title=row.title,
+            created_at=row.created_at,
+            kind=row.effective_kind,
+            home_scenario=row.effective_home_scenario,
+            source_mode=row.effective_source_mode,
+            is_dev=row.is_dev,
         )
 
     async def rename(self, webspace_id: str, title: str) -> Optional[WebspaceInfo]:
@@ -881,21 +904,22 @@ class WebspaceService:
         if not row:
             _log.warning("cannot rename missing webspace %s", webspace_id)
             return None
-        keep_dev = _is_dev_title(row.display_name or row.workspace_id)
-        raw_title = title
-        if keep_dev and not _is_dev_title(raw_title):
-            display_name = f"DEV: {raw_title}"
-        elif not keep_dev and _is_dev_title(raw_title):
-            display_name = raw_title.lstrip()[4:].lstrip() or webspace_id
-        else:
-            display_name = raw_title
-        workspace_index.set_display_name(webspace_id, display_name)
+        display_name = _display_name_for_kind(title, webspace_id=webspace_id, kind=row.effective_kind)
+        row = workspace_index.set_workspace_manifest(
+            webspace_id,
+            display_name=display_name,
+            kind=row.effective_kind,
+            source_mode=row.effective_source_mode,
+        )
         await self._sync_listing()
         return WebspaceInfo(
             id=webspace_id,
-            title=display_name,
+            title=row.title,
             created_at=row.created_at,
-            is_dev=_is_dev_title(display_name),
+            kind=row.effective_kind,
+            home_scenario=row.effective_home_scenario,
+            source_mode=row.effective_source_mode,
+            is_dev=row.is_dev,
         )
 
     async def delete(self, webspace_id: str) -> bool:
@@ -936,22 +960,26 @@ async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str, *, de
     seeds inside ensure_webspace_seeded_from_scenario when needed.
     """
     ystore = get_ystore_for_webspace(webspace_id)
+    source_mode = "workspace"
     if dev is None:
         try:
             row = workspace_index.get_workspace(webspace_id)
             if row:
-                dev = _is_dev_title(row.display_name or row.workspace_id)
+                dev = row.is_dev
+                source_mode = row.effective_source_mode
             else:
                 dev = False
         except Exception:
             dev = False
+    elif dev:
+        source_mode = "dev"
     _log.debug("seeding webspace=%s scenario=%s dev=%s", webspace_id, scenario_id, dev)
     try:
         await ensure_webspace_seeded_from_scenario(
             ystore,
             webspace_id=webspace_id,
             default_scenario_id=scenario_id or "web_desktop",
-            space="dev" if dev else "workspace",
+            space=source_mode,
         )
     except Exception:
         _log.warning("failed to seed webspace=%s from scenario=%s", webspace_id, scenario_id, exc_info=True)
@@ -1053,6 +1081,13 @@ async def reload_webspace_from_scenario(
         raise ValueError("webspace_id is required")
 
     scenario_id = str(scenario_id or "").strip()
+    if not scenario_id:
+        try:
+            row = workspace_index.get_workspace(webspace_id)
+            if row and row.home_scenario:
+                scenario_id = row.effective_home_scenario
+        except Exception:
+            scenario_id = ""
     if not scenario_id:
         # Default to the webspace's active scenario to avoid reseeding the wrong
         # package when the user is currently running a non-default desktop scenario.
@@ -1245,8 +1280,8 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
             space = "workspace"
             try:
                 row = workspace_index.get_workspace(webspace_id)
-                if row and _is_dev_title(row.display_name or row.workspace_id):
-                    space = "dev"
+                if row:
+                    space = row.effective_source_mode
             except Exception:
                 space = "workspace"
 
