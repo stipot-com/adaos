@@ -7,6 +7,15 @@ import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
 import { observeDeep } from '../../y/y-helpers'
 
+type WebspaceEntry = {
+  id: string
+  title: string
+  created_at?: number
+  kind?: string
+  home_scenario?: string
+  source_mode?: string
+}
+
 @Component({
   selector: 'ada-workspace-manager-modal',
   standalone: true,
@@ -109,7 +118,7 @@ import { observeDeep } from '../../y/y-helpers'
   ],
 })
 export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
-  webspaces: Array<{ id: string; title: string; created_at?: number }> = []
+  webspaces: WebspaceEntry[] = []
   activeWebspace = ''
   newWorkspaceId = ''
   newWorkspaceTitle = ''
@@ -165,11 +174,15 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
     const title = this.newWorkspaceTitle.trim() || id
     try {
-      await this.adaos.sendEventsCommand('desktop.webspace.create', {
+      const payload: Record<string, any> = {
         id,
         title,
         dev: this.newWorkspaceDev,
-      })
+      }
+      if (this.newWorkspaceDev) {
+        payload['scenario_id'] = this.readCurrentScenarioId()
+      }
+      await this.adaos.sendEventsCommand('desktop.webspace.create', payload)
       this.newWorkspaceId = ''
       this.newWorkspaceTitle = ''
       this.newWorkspaceDev = false
@@ -235,5 +248,15 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   private async presentToast(message: string): Promise<void> {
     const toast = await this.toast.create({ message, duration: 2000 })
     await toast.present()
+  }
+
+  private readCurrentScenarioId(): string {
+    try {
+      const raw = this.ydoc.toJSON(this.ydoc.getPath('ui/current_scenario'))
+      if (typeof raw === 'string' && raw.trim()) {
+        return raw.trim()
+      }
+    } catch {}
+    return 'web_desktop'
   }
 }

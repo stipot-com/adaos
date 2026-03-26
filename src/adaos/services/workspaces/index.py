@@ -131,7 +131,7 @@ class WebspaceManifest:
 WorkspaceRow = WebspaceManifest
 
 
-def _row_from_db(row: tuple[Any, ...]) -> WebspaceManifest:
+def _row_from_db(row: tuple[Any, ...], *, apply_defaults: bool = True) -> WebspaceManifest:
     manifest = WebspaceManifest(
         workspace_id=str(row[0]),
         path=str(row[1]),
@@ -144,7 +144,46 @@ def _row_from_db(row: tuple[Any, ...]) -> WebspaceManifest:
         profile_scope=_normalize_optional_text(row[8]),
         device_binding=_normalize_optional_text(row[9]),
     )
-    return manifest.with_defaults()
+    return manifest.with_defaults() if apply_defaults else manifest
+
+
+def _manifest_needs_persisted_defaults(manifest: WebspaceManifest) -> bool:
+    normalized = manifest.with_defaults()
+    return any(
+        (
+            manifest.display_name != normalized.display_name,
+            manifest.kind != normalized.kind,
+            manifest.source_mode != normalized.source_mode,
+            manifest.owner_scope != normalized.owner_scope,
+            manifest.profile_scope != normalized.profile_scope,
+            manifest.device_binding != normalized.device_binding,
+        )
+    )
+
+
+def _persist_manifest_defaults(con, manifest: WebspaceManifest) -> WebspaceManifest:
+    normalized = manifest.with_defaults()
+    if not _manifest_needs_persisted_defaults(manifest):
+        return normalized
+    con.execute(
+        """
+        UPDATE y_workspaces
+        SET display_name=?, kind=?, home_scenario=?, source_mode=?,
+            owner_scope=?, profile_scope=?, device_binding=?
+        WHERE workspace_id=?
+        """,
+        (
+            normalized.display_name,
+            normalized.kind,
+            manifest.home_scenario,
+            normalized.source_mode,
+            normalized.owner_scope,
+            normalized.profile_scope,
+            normalized.device_binding,
+            manifest.workspace_id,
+        ),
+    )
+    return normalized
 
 
 def _ensure_schema(con) -> None:
@@ -194,9 +233,16 @@ def get_workspace(workspace_id: str) -> Optional[WebspaceManifest]:
             (workspace_id,),
         )
         row = cur.fetchone()
+        manifest = None
+        if row:
+            raw_manifest = _row_from_db(row, apply_defaults=False)
+            dirty = _manifest_needs_persisted_defaults(raw_manifest)
+            manifest = _persist_manifest_defaults(con, raw_manifest)
+            if dirty:
+                con.commit()
     if not row:
         return None
-    return _row_from_db(row)
+    return manifest
 
 
 def list_workspaces() -> List[WebspaceManifest]:
@@ -206,7 +252,15 @@ def list_workspaces() -> List[WebspaceManifest]:
         cur = con.execute(
             f"SELECT {_ROW_SELECT} FROM y_workspaces ORDER BY created_at"
         )
-        rows = [_row_from_db(row) for row in cur.fetchall()]
+        rows = []
+        dirty = False
+        for db_row in cur.fetchall():
+            manifest = _row_from_db(db_row, apply_defaults=False)
+            if _manifest_needs_persisted_defaults(manifest):
+                dirty = True
+            rows.append(_persist_manifest_defaults(con, manifest))
+        if dirty:
+            con.commit()
     if not rows:
         rows = [ensure_workspace(default_webspace_id())]
     return rows

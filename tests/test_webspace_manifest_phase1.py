@@ -5,6 +5,7 @@ import sys
 import types
 from types import SimpleNamespace
 
+from adaos.services.agent_context import get_ctx
 if "y_py" not in sys.modules:
     sys.modules["y_py"] = types.SimpleNamespace(YDoc=object)
 if "ypy_websocket" not in sys.modules:
@@ -13,6 +14,7 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket.ystore"] = ystore_mod
 
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
+from adaos.services.workspaces import index as workspace_index_module
 from adaos.services.workspaces import ensure_workspace, get_workspace, set_workspace_manifest
 
 
@@ -203,3 +205,32 @@ def test_webspace_reload_falls_back_to_current_scenario_for_legacy_manifest(monk
     assert captured == [(webspace_id, "legacy_prompt_scenario", None)]
     assert result["scenario_id"] == "legacy_prompt_scenario"
     assert emitted[-1][1]["scenario_id"] == "legacy_prompt_scenario"
+
+
+def test_get_workspace_backfills_legacy_manifest_defaults() -> None:
+    webspace_id = "legacy-dev-manifest"
+    ctx = get_ctx()
+
+    with ctx.sql.connect() as con:
+        workspace_index_module._ensure_schema(con)
+        con.execute("DELETE FROM y_workspaces WHERE workspace_id=?", (webspace_id,))
+        con.execute(
+            "INSERT INTO y_workspaces(workspace_id, path, created_at, display_name) VALUES(?,?,?,?)",
+            (webspace_id, "state/ystores/legacy-dev-manifest.sqlite3", 123456, "DEV: Legacy Dev"),
+        )
+        con.commit()
+
+    row = get_workspace(webspace_id)
+
+    assert row is not None
+    assert row.kind == "dev"
+    assert row.source_mode == "dev"
+    assert row.home_scenario is None
+
+    with ctx.sql.connect() as con:
+        stored = con.execute(
+            "SELECT kind, source_mode FROM y_workspaces WHERE workspace_id=?",
+            (webspace_id,),
+        ).fetchone()
+
+    assert stored == ("dev", "dev")
