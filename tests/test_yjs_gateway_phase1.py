@@ -219,3 +219,52 @@ def test_get_room_uses_manifest_defaults_for_room_seed(monkeypatch) -> None:
             "space": "dev",
         }
     ]
+
+
+def test_process_events_command_publishes_go_home(monkeypatch) -> None:
+    published: list[tuple[str, dict[str, object] | None]] = []
+    responses: list[dict[str, object]] = []
+
+    monkeypatch.setattr(gateway_module, "_make_publish_bus", lambda *args, **kwargs: (lambda topic, extra=None: published.append((topic, extra))))
+
+    async def _send_response(msg: dict[str, object]) -> None:
+        responses.append(msg)
+
+    asyncio.run(
+        gateway_module.process_events_command(
+            kind="desktop.webspace.go_home",
+            cmd_id="cmd-1",
+            payload={"webspace_id": "default"},
+            device_id="dev-1",
+            webspace_id="default",
+            send_response=_send_response,
+        )
+    )
+
+    assert published == [("desktop.webspace.go_home", {"webspace_id": "default"})]
+    assert responses[-1]["ok"] is True
+
+
+def test_process_events_command_requires_scenario_id_for_set_home(monkeypatch) -> None:
+    published: list[tuple[str, dict[str, object] | None]] = []
+    responses: list[dict[str, object]] = []
+
+    monkeypatch.setattr(gateway_module, "_make_publish_bus", lambda *args, **kwargs: (lambda topic, extra=None: published.append((topic, extra))))
+
+    async def _send_response(msg: dict[str, object]) -> None:
+        responses.append(msg)
+
+    asyncio.run(
+        gateway_module.process_events_command(
+            kind="desktop.webspace.set_home",
+            cmd_id="cmd-2",
+            payload={"webspace_id": "default"},
+            device_id="dev-1",
+            webspace_id="default",
+            send_response=_send_response,
+        )
+    )
+
+    assert published == []
+    assert responses[-1]["ok"] is False
+    assert responses[-1]["error"] == "scenario_id required"

@@ -668,6 +668,20 @@ async def process_events_command(
         await _ack()
         return None
 
+    if kind == "desktop.webspace.go_home":
+        _publish_bus("desktop.webspace.go_home", payload)
+        await _ack()
+        return None
+
+    if kind == "desktop.webspace.set_home":
+        target = (payload or {}).get("scenario_id")
+        if not target:
+            await _ack(False, error="scenario_id required")
+        else:
+            _publish_bus("desktop.webspace.set_home", payload)
+            await _ack()
+        return None
+
     if kind == "desktop.webspace.use":
         target = payload.get("id") or payload.get("webspace_id")
         if not target:

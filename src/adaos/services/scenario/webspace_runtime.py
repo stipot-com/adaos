@@ -805,6 +805,18 @@ def _webspace_listing() -> List[Dict[str, Any]]:
     ]
 
 
+def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceInfo:
+    return WebspaceInfo(
+        id=row.workspace_id,
+        title=row.title,
+        created_at=row.created_at,
+        kind=row.effective_kind,
+        home_scenario=row.effective_home_scenario,
+        source_mode=row.effective_source_mode,
+        is_dev=row.is_dev,
+    )
+
+
 async def _sync_webspace_listing() -> None:
     listing = _webspace_listing()
     rows = workspace_index.list_workspaces()
@@ -846,17 +858,7 @@ class WebspaceService:
                 continue
             if mode == "dev" and kind != "dev":
                 continue
-            infos.append(
-                WebspaceInfo(
-                    id=row.workspace_id,
-                    title=title,
-                    created_at=row.created_at,
-                    kind=kind,
-                    home_scenario=row.effective_home_scenario,
-                    source_mode=row.effective_source_mode,
-                    is_dev=is_dev,
-                )
-            )
+            infos.append(_webspace_info_from_row(row))
         return infos
 
     async def _sync_listing(self) -> None:
@@ -885,15 +887,7 @@ class WebspaceService:
         )
         await _seed_webspace_from_scenario(webspace_id, scenario_id, dev=dev)
         await self._sync_listing()
-        return WebspaceInfo(
-            id=webspace_id,
-            title=row.title,
-            created_at=row.created_at,
-            kind=row.effective_kind,
-            home_scenario=row.effective_home_scenario,
-            source_mode=row.effective_source_mode,
-            is_dev=row.is_dev,
-        )
+        return _webspace_info_from_row(row)
 
     async def rename(self, webspace_id: str, title: str) -> Optional[WebspaceInfo]:
         webspace_id = (webspace_id or "").strip()
@@ -912,15 +906,20 @@ class WebspaceService:
             source_mode=row.effective_source_mode,
         )
         await self._sync_listing()
-        return WebspaceInfo(
-            id=webspace_id,
-            title=row.title,
-            created_at=row.created_at,
-            kind=row.effective_kind,
-            home_scenario=row.effective_home_scenario,
-            source_mode=row.effective_source_mode,
-            is_dev=row.is_dev,
-        )
+        return _webspace_info_from_row(row)
+
+    async def set_home_scenario(self, webspace_id: str, scenario_id: str) -> Optional[WebspaceInfo]:
+        webspace_id = (webspace_id or "").strip()
+        scenario_id = (scenario_id or "").strip()
+        if not webspace_id or not scenario_id:
+            return None
+        row = workspace_index.get_workspace(webspace_id)
+        if not row:
+            _log.warning("cannot set home_scenario for missing webspace %s", webspace_id)
+            return None
+        row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+        await self._sync_listing()
+        return _webspace_info_from_row(row)
 
     async def delete(self, webspace_id: str) -> bool:
         webspace_id = (webspace_id or "").strip()
@@ -1223,6 +1222,128 @@ async def restore_webspace_from_snapshot(webspace_id: str) -> dict[str, Any]:
     }
 
 
+async def switch_webspace_scenario(
+    webspace_id: str,
+    scenario_id: str,
+    *,
+    set_home: bool = False,
+) -> dict[str, Any]:
+    webspace_id = str(webspace_id or "").strip()
+    scenario_id = str(scenario_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+    if not scenario_id:
+        raise ValueError("scenario_id is required")
+
+    _log.info("desktop.scenario.set webspace=%s scenario=%s set_home=%s", webspace_id, scenario_id, set_home)
+
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            space = "workspace"
+            try:
+                row = workspace_index.get_workspace(webspace_id)
+                if row:
+                    space = row.effective_source_mode
+            except Exception:
+                space = "workspace"
+
+            content = _load_scenario_switch_content(scenario_id, space=space)
+            if not isinstance(content, dict) or not content:
+                _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
+                return {"ok": False, "accepted": False, "error": "scenario_not_found", "webspace_id": webspace_id, "scenario_id": scenario_id}
+            ui_section = ((content.get("ui") or {}).get("application")) or {}
+            if not isinstance(ui_section, dict):
+                ui_section = {}
+            registry_section = content.get("registry") or {}
+            if not isinstance(registry_section, dict):
+                registry_section = {}
+            catalog_section = content.get("catalog") or {}
+            if not isinstance(catalog_section, dict):
+                catalog_section = {}
+            data_section = content.get("data") or {}
+            if not isinstance(data_section, dict):
+                data_section = {}
+
+            ui_map = ydoc.get_map("ui")
+            registry_map = ydoc.get_map("registry")
+            data_map = ydoc.get_map("data")
+
+            with ydoc.begin_transaction() as txn:
+                scenarios_ui_raw = ui_map.get("scenarios")
+                scenarios_ui = dict(scenarios_ui_raw) if isinstance(scenarios_ui_raw, Mapping) else {}
+                updated_ui = dict(scenarios_ui)
+                updated_ui[scenario_id] = {"application": ui_section}
+                ui_map.set(txn, "scenarios", updated_ui)
+                ui_map.set(txn, "current_scenario", scenario_id)
+
+                reg_scenarios_raw = registry_map.get("scenarios")
+                reg_scenarios = dict(reg_scenarios_raw) if isinstance(reg_scenarios_raw, Mapping) else {}
+                reg_updated = dict(reg_scenarios)
+                reg_updated[scenario_id] = registry_section
+                registry_map.set(txn, "scenarios", reg_updated)
+
+                data_scenarios_raw = data_map.get("scenarios")
+                data_scenarios = dict(data_scenarios_raw) if isinstance(data_scenarios_raw, Mapping) else {}
+                data_updated = dict(data_scenarios)
+                entry_raw = data_updated.get(scenario_id) or {}
+                entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
+                entry["catalog"] = catalog_section
+                data_updated[scenario_id] = entry
+                data_map.set(txn, "scenarios", data_updated)
+
+                if isinstance(data_section, dict):
+                    for key, value in data_section.items():
+                        if not isinstance(key, str):
+                            continue
+                        if key == "installed":
+                            continue
+                        try:
+                            payload_value = json.loads(json.dumps(value))
+                        except Exception:
+                            payload_value = value
+                        data_map.set(txn, key, payload_value)
+    except Exception:
+        _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
+        return {"ok": False, "accepted": False, "error": "scenario_switch_failed", "webspace_id": webspace_id, "scenario_id": scenario_id}
+
+    ctx = get_ctx()
+    runtime = WebspaceScenarioRuntime(ctx)
+    await runtime.rebuild_webspace_async(webspace_id)
+
+    try:
+        wf = ScenarioWorkflowRuntime(ctx)
+        await wf.sync_workflow_for_webspace(scenario_id, webspace_id)
+    except Exception:
+        _log.warning(
+            "failed to sync workflow for webspace=%s scenario=%s",
+            webspace_id,
+            scenario_id,
+            exc_info=True,
+        )
+
+    row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
+    if set_home:
+        row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+        await _sync_webspace_listing()
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": webspace_id,
+        "scenario_id": scenario_id,
+        "home_scenario": row.effective_home_scenario,
+        "set_home": bool(set_home),
+    }
+
+
+async def go_home_webspace(webspace_id: str) -> dict[str, Any]:
+    webspace_id = str(webspace_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+    row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
+    return await switch_webspace_scenario(webspace_id, row.effective_home_scenario, set_home=False)
+
+
 @subscribe("desktop.webspace.reload")
 async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     """
@@ -1259,6 +1380,26 @@ async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
     )
 
 
+@subscribe("desktop.webspace.go_home")
+async def _on_webspace_go_home(evt: Dict[str, Any]) -> None:
+    payload = _payload(evt)
+    webspace_id = _webspace_id(payload)
+    if not webspace_id:
+        return
+    await go_home_webspace(webspace_id)
+
+
+@subscribe("desktop.webspace.set_home")
+async def _on_webspace_set_home(evt: Dict[str, Any]) -> None:
+    payload = _payload(evt)
+    webspace_id = _webspace_id(payload)
+    scenario_id = str(payload.get("scenario_id") or "").strip()
+    if not webspace_id or not scenario_id:
+        return
+    svc = WebspaceService(get_ctx())
+    await svc.set_home_scenario(webspace_id, scenario_id)
+
+
 @subscribe("desktop.scenario.set")
 async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     """
@@ -1274,105 +1415,8 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     if not scenario_id:
         return
     webspace_id = _webspace_id(payload)
-    _log.info("desktop.scenario.set webspace=%s scenario=%s", webspace_id, scenario_id)
-
-    # Lightweight projection of scenario.json into the target webspace YDoc:
-    # load declarative sections and update ui.scenarios/data.scenarios/registry.
-    try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            # Use dev or workspace scenario content depending on the target webspace.
-            space = "workspace"
-            try:
-                row = workspace_index.get_workspace(webspace_id)
-                if row:
-                    space = row.effective_source_mode
-            except Exception:
-                space = "workspace"
-
-            content = _load_scenario_switch_content(scenario_id, space=space)
-            if not isinstance(content, dict) or not content:
-                _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
-                return
-            ui_section = ((content.get("ui") or {}).get("application")) or {}
-            if not isinstance(ui_section, dict):
-                ui_section = {}
-            registry_section = content.get("registry") or {}
-            if not isinstance(registry_section, dict):
-                registry_section = {}
-            catalog_section = content.get("catalog") or {}
-            if not isinstance(catalog_section, dict):
-                catalog_section = {}
-            data_section = content.get("data") or {}
-            if not isinstance(data_section, dict):
-                data_section = {}
-
-            ui_map = ydoc.get_map("ui")
-            registry_map = ydoc.get_map("registry")
-            data_map = ydoc.get_map("data")
-
-            with ydoc.begin_transaction() as txn:
-                # ui.scenarios[scenario_id].application
-                scenarios_ui_raw = ui_map.get("scenarios")
-                scenarios_ui = dict(scenarios_ui_raw) if isinstance(scenarios_ui_raw, Mapping) else {}
-                updated_ui = dict(scenarios_ui)
-                updated_ui[scenario_id] = {"application": ui_section}
-                ui_map.set(txn, "scenarios", updated_ui)
-                # always switch current_scenario explicitly
-                ui_map.set(txn, "current_scenario", scenario_id)
-
-                # registry.scenarios[scenario_id]
-                reg_scenarios_raw = registry_map.get("scenarios")
-                reg_scenarios = dict(reg_scenarios_raw) if isinstance(reg_scenarios_raw, Mapping) else {}
-                reg_updated = dict(reg_scenarios)
-                reg_updated[scenario_id] = registry_section
-                registry_map.set(txn, "scenarios", reg_updated)
-
-                # data.scenarios[scenario_id].catalog
-                data_scenarios_raw = data_map.get("scenarios")
-                data_scenarios = dict(data_scenarios_raw) if isinstance(data_scenarios_raw, Mapping) else {}
-                data_updated = dict(data_scenarios)
-                entry_raw = data_updated.get(scenario_id) or {}
-                entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
-                entry["catalog"] = catalog_section
-                data_updated[scenario_id] = entry
-                data_map.set(txn, "scenarios", data_updated)
-
-                # Optional root data overrides from scenario.json["data"].
-                # Do not overwrite runtime-managed keys such as ``installed``,
-                # otherwise switching scenarios would reset desktop icons/apps
-                # to their initial defaults and discard user choices.
-                if isinstance(data_section, dict):
-                    for key, value in data_section.items():
-                        if not isinstance(key, str):
-                            continue
-                        if key == "installed":
-                            continue
-                        try:
-                            payload_value = json.loads(json.dumps(value))
-                        except Exception:
-                            payload_value = value
-                        data_map.set(txn, key, payload_value)
-    except Exception:
-        _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
-        return
-
-    # Recompute effective UI for the webspace so that desktop/catalog
-    # reflect the selected scenario immediately.
-    ctx = get_ctx()
-    runtime = WebspaceScenarioRuntime(ctx)
-    await runtime.rebuild_webspace_async(webspace_id)
-
-    # Initialise workflow state/next_actions for the selected scenario.
-    try:
-        wf = ScenarioWorkflowRuntime(ctx)
-        await wf.sync_workflow_for_webspace(scenario_id, webspace_id)
-    except Exception:
-        _log.warning(
-            "failed to sync workflow for webspace=%s scenario=%s",
-            webspace_id,
-            scenario_id,
-            exc_info=True,
-        )
+    set_home = bool(payload.get("set_home") or payload.get("persist_home"))
+    await switch_webspace_scenario(webspace_id, scenario_id, set_home=set_home)
 
 
 __all__ = ["WebUIRegistryEntry", "WebspaceScenarioRuntime"]

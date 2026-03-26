@@ -602,15 +602,13 @@ export class AppComponent implements OnInit, OnDestroy {
 	async onClickHome(): Promise<void> {
 		try {
 			const ws = this.ydoc.getWebspaceId()
-			const homeScenario = this.readCurrentHomeScenario()
-			await this.adaos.sendEventsCommand('desktop.scenario.set', {
-				scenario_id: homeScenario,
+			await this.adaos.sendEventsCommand('desktop.webspace.go_home', {
 				webspace_id: ws || undefined,
 			})
 		} catch (err) {
 			// best-effort only; errors can be inspected in console
 			// eslint-disable-next-line no-console
-			console.warn('desktop.scenario.set failed', err)
+			console.warn('desktop.webspace.go_home failed', err)
 		}
 	}
 

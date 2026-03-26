@@ -246,11 +246,11 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	async fabHome(): Promise<void> {
 		try {
 			const ws = this.y.getWebspaceId()
-			await this.adaos.sendEventsCommand('desktop.scenario.set', {
-				scenario_id: this.currentHomeScenario(),
+			await this.adaos.sendEventsCommand('desktop.webspace.go_home', {
 				webspace_id: ws || undefined,
 			})
-		} catch {}
+		} catch {
+		}
 	}
 
 	async onFabAction(a: { id: string; cmd?: string; payload?: any }): Promise<void> {
@@ -562,12 +562,6 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		const items = Array.isArray(raw?.items) ? (raw.items as WebspaceEntry[]) : []
 		this.webspaces = items
 		this.activeWebspace = this.y.getWebspaceId()
-	}
-
-	private currentHomeScenario(): string {
-		const entry = this.webspaces.find(ws => ws.id === this.activeWebspace)
-		const scenarioId = String(entry?.home_scenario || '').trim()
-		return scenarioId || 'web_desktop'
 	}
 
 	private async syncToggleInstall(type: 'app' | 'widget', id: string) {

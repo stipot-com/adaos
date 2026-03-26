@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
 from adaos.sdk.core.decorators import tool
-from adaos.services.scenario.webspace_runtime import WebspaceInfo, WebspaceService
+from adaos.services.scenario.webspace_runtime import WebspaceInfo, WebspaceService, go_home_webspace
+from adaos.services.yjs.webspace import default_webspace_id
 
 
 @tool(
@@ -98,3 +99,31 @@ async def webspace_refresh() -> None:
     """
     svc = WebspaceService()
     await svc.refresh()
+
+
+@tool(
+    "web.webspace.set_home",
+    summary="Persist the home scenario for a webspace.",
+    stability="experimental",
+    examples=["await web.webspace.set_home('prompt-lab', 'prompt_engineer_scenario')"],
+)
+async def webspace_set_home(webspace_id: str, scenario_id: str) -> WebspaceInfo | None:
+    """
+    Update the persistent ``home_scenario`` for a webspace.
+    """
+    svc = WebspaceService()
+    return await svc.set_home_scenario(webspace_id, scenario_id)
+
+
+@tool(
+    "web.webspace.go_home",
+    summary="Switch a webspace back to its persistent home scenario.",
+    stability="experimental",
+    examples=["await web.webspace.go_home()", "await web.webspace.go_home('prompt-lab')"],
+)
+async def webspace_go_home(webspace_id: str | None = None) -> dict[str, Any]:
+    """
+    Switch the given webspace back to its manifest-defined ``home_scenario``.
+    """
+    target = str(webspace_id or "").strip() or default_webspace_id()
+    return await go_home_webspace(target)
