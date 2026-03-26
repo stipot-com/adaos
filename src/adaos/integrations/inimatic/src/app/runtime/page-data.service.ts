@@ -170,6 +170,16 @@ export class PageDataService {
       return [unsubscribe]
     }
 
+    // Infrastate projections are written as a plain JSON subtree under
+    // data.infrastate, not as nested Y.Maps. Observe the whole data map so
+    // modal widgets keep updating when the snapshot arrives or refreshes.
+    if (cfg.path && (cfg.path === 'data/infrastate' || cfg.path.startsWith('data/infrastate/'))) {
+      const node = this.ydoc.getPath('data')
+      if (!node) return [() => {}]
+      const unsubscribe = observeDeep(node, emit)
+      return [unsubscribe]
+    }
+
     const paths = this.pathsForYDoc(cfg)
     if (!paths.length) return [() => {}]
     return paths.map((path) => {
@@ -217,6 +227,16 @@ export class PageDataService {
           return cur
         }
         if (cfg.path && (cfg.path === 'data/nlu_teacher' || cfg.path.startsWith('data/nlu_teacher/'))) {
+          const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
+          const segs = cfg.path.split('/').filter(Boolean)
+          let cur: any = root
+          for (const s of segs.slice(1)) {
+            if (cur == null) return undefined
+            cur = cur?.[s]
+          }
+          return cur
+        }
+        if (cfg.path && (cfg.path === 'data/infrastate' || cfg.path.startsWith('data/infrastate/'))) {
           const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
           const segs = cfg.path.split('/').filter(Boolean)
           let cur: any = root
