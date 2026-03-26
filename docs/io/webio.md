@@ -2,6 +2,9 @@
 
 This note explains how the hub drives the browser-based desktop shell through Yjs, scenarios, and skills. It complements the existing IO docs by focusing on the current “webspace” implementation that powers the Inimatic desktop used in A2.
 
+For the target architecture and the agreed evolutionary path, see
+[Webspace Evolution Roadmap](../architecture/webspace-evolution-roadmap.md).
+
 ## Architecture Overview
 
 1. **Webspace** — each browser session attaches to a named Yjs document (default: `desktop`). The doc is stored in an SQLite YStore under `.adaos/state/ystores/<webspace>.sqlite3`.

@@ -117,6 +117,7 @@ nav:
       - "Hub-Root Protocol": architecture/hub-root-protocol.md
       - "Transport Ownership": architecture/transport-ownership.md
       - "Realtime Reliability Roadmap": architecture/realtime-reliability-roadmap.md
+      - "Webspace Evolution Roadmap": architecture/webspace-evolution-roadmap.md
       - "Realtime Sidecar": architecture/adaos-realtime-sidecar.md
   - "CLI":
       - "Обзор": cli/index.md
