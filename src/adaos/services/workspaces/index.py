@@ -266,6 +266,29 @@ def list_workspaces() -> List[WebspaceManifest]:
     return rows
 
 
+def normalize_workspaces() -> int:
+    """
+    Persist inferred manifest defaults for existing rows without changing
+    legacy ``home_scenario`` semantics.
+
+    Returns the number of rows that required normalization.
+    """
+    sql = get_ctx().sql
+    updated = 0
+    with sql.connect() as con:
+        _ensure_schema(con)
+        cur = con.execute(f"SELECT {_ROW_SELECT} FROM y_workspaces ORDER BY created_at")
+        for db_row in cur.fetchall():
+            manifest = _row_from_db(db_row, apply_defaults=False)
+            if not _manifest_needs_persisted_defaults(manifest):
+                continue
+            _persist_manifest_defaults(con, manifest)
+            updated += 1
+        if updated:
+            con.commit()
+    return updated
+
+
 def ensure_workspace(workspace_id: str) -> WebspaceManifest:
     """
     Ensure a workspace row exists and return it. The associated Yjs store
@@ -301,7 +324,7 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
                 created_at,
                 display_name,
                 inferred_kind,
-                None,
+                DEFAULT_HOME_SCENARIO,
                 _infer_source_mode(None, kind=inferred_kind),
                 None,
                 None,
@@ -315,7 +338,7 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
             created_at=created_at,
             display_name=display_name,
             kind=inferred_kind,
-            home_scenario=None,
+            home_scenario=DEFAULT_HOME_SCENARIO,
             source_mode=_infer_source_mode(None, kind=inferred_kind),
             owner_scope=None,
             profile_scope=None,

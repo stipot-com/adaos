@@ -15,7 +15,7 @@ if "ypy_websocket" not in sys.modules:
 
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
 from adaos.services.workspaces import index as workspace_index_module
-from adaos.services.workspaces import ensure_workspace, get_workspace, set_workspace_manifest
+from adaos.services.workspaces import ensure_workspace, get_workspace, normalize_workspaces, set_workspace_manifest
 
 
 class _FakeTxn:
@@ -256,3 +256,42 @@ def test_get_workspace_backfills_legacy_manifest_defaults() -> None:
         ).fetchone()
 
     assert stored == ("dev", "dev")
+
+
+def test_ensure_workspace_persists_default_home_scenario_for_new_rows() -> None:
+    webspace_id = "implicit-home-space"
+    row = ensure_workspace(webspace_id)
+
+    assert row.home_scenario == "web_desktop"
+    assert row.effective_home_scenario == "web_desktop"
+
+    ctx = get_ctx()
+    with ctx.sql.connect() as con:
+        stored = con.execute(
+            "SELECT home_scenario FROM y_workspaces WHERE workspace_id=?",
+            (webspace_id,),
+        ).fetchone()
+
+    assert stored == ("web_desktop",)
+
+
+def test_normalize_workspaces_backfills_manifest_defaults() -> None:
+    legacy_id = "legacy-normalize-space"
+    ctx = get_ctx()
+
+    with ctx.sql.connect() as con:
+        workspace_index_module._ensure_schema(con)
+        con.execute("DELETE FROM y_workspaces WHERE workspace_id=?", (legacy_id,))
+        con.execute(
+            "INSERT INTO y_workspaces(workspace_id, path, created_at, display_name) VALUES(?,?,?,?)",
+            (legacy_id, "state/ystores/legacy-normalize-space.sqlite3", 654321, "DEV: Normalize Me"),
+        )
+        con.commit()
+
+    updated = normalize_workspaces()
+
+    assert updated >= 1
+    row = get_workspace(legacy_id)
+    assert row is not None
+    assert row.kind == "dev"
+    assert row.source_mode == "dev"

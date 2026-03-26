@@ -586,7 +586,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	get showCloseToDesktop(): boolean {
 		const cur = String(this.currentScenario || '').trim()
-		return !!cur && cur !== 'web_desktop'
+		return !!cur && cur !== this.readCurrentHomeScenario()
 	}
 
 	private isLocalHubTrusted(): boolean {

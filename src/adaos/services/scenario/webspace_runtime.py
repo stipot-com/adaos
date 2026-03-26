@@ -950,6 +950,10 @@ class WebspaceService:
         return True
 
     async def refresh(self) -> None:
+        try:
+            workspace_index.normalize_workspaces()
+        except Exception:
+            _log.debug("failed to normalize webspace manifests before refresh", exc_info=True)
         await self._sync_listing()
 
 
