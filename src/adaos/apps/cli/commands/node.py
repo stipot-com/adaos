@@ -25,6 +25,23 @@ def _print(data: Any, *, json_output: bool) -> None:
         typer.echo(str(data))
 
 
+def _control_error_message(prefix: str, payload: Any) -> str:
+    if isinstance(payload, dict):
+        error = str(payload.get("error") or "").strip().lower()
+        detail = str(payload.get("detail") or "").strip()
+        if error == "timeout":
+            suffix = "local control API timed out"
+            if detail:
+                suffix += f" ({detail})"
+            return f"[AdaOS] {prefix} failed: {suffix}"
+        if error == "connection_error":
+            suffix = "local control API connection failed"
+            if detail:
+                suffix += f" ({detail})"
+            return f"[AdaOS] {prefix} failed: {suffix}"
+    return f"[AdaOS] {prefix} failed: local control API is unreachable"
+
+
 def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
     url = control.rstrip("/") + path
     headers = {"X-AdaOS-Token": token or resolve_control_token()}
@@ -35,8 +52,12 @@ def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2
         pass
     try:
         response = sess.get(url, headers=headers, timeout=timeout)
-    except Exception:
-        return None, None
+    except requests.Timeout as exc:
+        return None, {"error": "timeout", "detail": str(exc)}
+    except requests.ConnectionError as exc:
+        return None, {"error": "connection_error", "detail": str(exc)}
+    except Exception as exc:
+        return None, {"error": "request_error", "detail": str(exc)}
     try:
         payload = response.json()
     except Exception:
@@ -61,8 +82,12 @@ def _control_post_json(
         pass
     try:
         response = sess.post(url, headers=headers, json=body, timeout=timeout)
-    except Exception:
-        return None, None
+    except requests.Timeout as exc:
+        return None, {"error": "timeout", "detail": str(exc)}
+    except requests.ConnectionError as exc:
+        return None, {"error": "connection_error", "detail": str(exc)}
+    except Exception as exc:
+        return None, {"error": "request_error", "detail": str(exc)}
     try:
         payload = response.json()
     except Exception:
@@ -568,9 +593,10 @@ def node_reliability(
         control=control0,
         path="/api/node/reliability",
         token=resolve_control_token(explicit=cfg.token),
+        timeout=5.0,
     )
     if status_code is None:
-        typer.secho("[AdaOS] reliability probe failed: local control API is unreachable", fg=typer.colors.RED)
+        typer.secho(_control_error_message("reliability probe", payload), fg=typer.colors.RED)
         raise typer.Exit(code=2)
     if status_code != 200 or not isinstance(payload, dict):
         typer.secho(f"[AdaOS] reliability probe failed: HTTP {status_code}", fg=typer.colors.RED)

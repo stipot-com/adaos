@@ -5,6 +5,15 @@ import sys
 from types import SimpleNamespace
 import types
 
+if "nats" not in sys.modules:
+    sys.modules["nats"] = types.ModuleType("nats")
+if "y_py" not in sys.modules:
+    sys.modules["y_py"] = types.SimpleNamespace(YDoc=object)
+if "ypy_websocket" not in sys.modules:
+    ystore_mod = types.SimpleNamespace(BaseYStore=object, YDocNotFound=RuntimeError)
+    sys.modules["ypy_websocket"] = types.SimpleNamespace(ystore=ystore_mod)
+    sys.modules["ypy_websocket.ystore"] = ystore_mod
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -426,3 +435,18 @@ def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
     assert "integration.telegram: ready" in result.output
     assert "diag.root_control: flapping score=62 recent_non_ready_5m=2" in result.output
     assert "root_routed_browser_proxy: blocked" in result.output
+
+
+def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+    monkeypatch.setattr(
+        node_cli,
+        "_control_get_json",
+        lambda **kwargs: (None, {"error": "timeout", "detail": "Read timed out"}),
+    )
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 2
+    assert "timed out" in result.output
