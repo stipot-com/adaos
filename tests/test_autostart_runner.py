@@ -155,3 +155,109 @@ def test_autostart_runner_writes_failed_status_on_boot_exception(monkeypatch, tm
     assert captured[-1]["phase"] == "launch_active_slot"
     assert captured[-1]["error_type"] == "RuntimeError"
     assert "boom" in str(captured[-1]["error"])
+
+
+def test_validate_sidecar_runtime_payload_requires_listener_when_enabled() -> None:
+    ok, error, details = autostart_runner._validate_sidecar_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "enabled": True,
+                "status": "unknown",
+                "local_listener_state": "down",
+            },
+            "process": {
+                "listener_running": False,
+            },
+        }
+    )
+
+    assert ok is False
+    assert "listener" in str(error).lower()
+    assert details["enabled"] is True
+    assert details["listener_running"] is False
+
+
+def test_validate_yjs_runtime_payload_requires_server_ready() -> None:
+    ok, error, details = autostart_runner._validate_yjs_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "available": True,
+                "selected_webspace_id": "default",
+                "assessment": {
+                    "state": "degraded",
+                    "reason": "yjs_websocket_server_not_ready",
+                },
+                "transport": {
+                    "server_requested": True,
+                    "server_task_running": False,
+                    "server_ready": False,
+                    "server_error": "RuntimeError: bind failed",
+                },
+            },
+        },
+        expected_webspace_id="default",
+    )
+
+    assert ok is False
+    assert "bind failed" in str(error)
+    assert details["server_ready"] is False
+    assert details["selected_webspace_id"] == "default"
+
+
+def test_probe_update_runtime_fails_when_runtime_guard_fails(monkeypatch) -> None:
+    class _Response:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict:
+            return dict(self._payload)
+
+    def _fake_get(url: str, headers=None, timeout=None):
+        if url.endswith("/api/ping"):
+            return _Response(200, {"ok": True})
+        if url.endswith("/api/node/sidecar/status"):
+            return _Response(200, {"ok": True, "runtime": {"enabled": False}, "process": {}})
+        if "/api/node/yjs/webspaces/default/runtime" in url:
+            return _Response(
+                200,
+                {
+                    "ok": True,
+                    "runtime": {
+                        "available": True,
+                        "selected_webspace_id": "default",
+                        "assessment": {
+                            "state": "degraded",
+                            "reason": "yjs_websocket_server_not_ready",
+                        },
+                        "transport": {
+                            "server_requested": True,
+                            "server_task_running": False,
+                            "server_ready": False,
+                            "server_error": "RuntimeError: y server task crashed",
+                        },
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected url {url}")
+
+    time_values = iter([0.0, 0.0, 0.0, 1.0])
+    monkeypatch.setattr(autostart_runner.requests, "get", _fake_get)
+    monkeypatch.setattr(autostart_runner.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(autostart_runner.time, "sleep", lambda _: None)
+    monkeypatch.delenv("ADAOS_CORE_UPDATE_VALIDATE_STRICT", raising=False)
+    monkeypatch.delenv("ADAOS_CORE_UPDATE_VALIDATE_RUNTIME", raising=False)
+
+    ok, details = autostart_runner._probe_update_runtime(
+        host="127.0.0.1",
+        port=8777,
+        token="dev-local-token",
+        timeout_sec=0.5,
+        expected_slot=None,
+    )
+
+    assert ok is False
+    assert details["runtime_guards"] is True
+    assert "y server task crashed" in str(details["summary"])

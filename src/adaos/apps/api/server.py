@@ -424,7 +424,7 @@ async def lifespan(app: FastAPI):
     try:
         await start_y_server()
     except Exception:
-        pass
+        logging.getLogger("adaos.yjs.gateway").warning("failed to start Yjs websocket server", exc_info=True)
     # Start router early so ui.notify/ui.say from boot sequence are routed.
     try:
         await router_service.start()

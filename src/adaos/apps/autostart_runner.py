@@ -10,6 +10,7 @@ from http import HTTPStatus
 from pathlib import Path
 from string import Formatter
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import uvicorn
@@ -118,6 +119,18 @@ def _update_validation_strict() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _update_validation_runtime_guards_enabled() -> bool:
+    raw = os.getenv("ADAOS_CORE_UPDATE_VALIDATE_RUNTIME")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _update_validation_webspace_id() -> str:
+    value = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_WEBSPACE_ID") or "default").strip()
+    return value or "default"
+
+
 def _validation_headers(token: str | None) -> dict[str, str]:
     headers = {"Accept": "application/json"}
     if token:
@@ -132,6 +145,86 @@ def _required_update_checks(base_url: str) -> list[tuple[str, bool]]:
         (f"{base_url}/api/ping", False),
         (f"{base_url}/api/status", True),
         (f"{base_url}/api/admin/update/status", True),
+    ]
+
+
+def _validate_sidecar_runtime_payload(payload: dict[str, Any]) -> tuple[bool, str | None, dict[str, Any]]:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
+    enabled = bool(runtime.get("enabled"))
+    status = str(runtime.get("status") or "").strip().lower() or ("enabled" if enabled else "disabled")
+    listener_running = bool(process.get("listener_running") or str(runtime.get("local_listener_state") or "").strip().lower() == "ready")
+    details = {
+        "enabled": enabled,
+        "status": status,
+        "listener_running": listener_running,
+        "transport_ready": bool(runtime.get("transport_ready")),
+        "control_ready": runtime.get("control_ready"),
+    }
+    if not enabled:
+        return True, None, details
+    if listener_running:
+        return True, None, details
+    return False, "sidecar runtime is enabled but local listener is not running", details
+
+
+def _validate_yjs_runtime_payload(
+    payload: dict[str, Any],
+    *,
+    expected_webspace_id: str | None = None,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    assessment = runtime.get("assessment") if isinstance(runtime.get("assessment"), dict) else {}
+    transport = runtime.get("transport") if isinstance(runtime.get("transport"), dict) else {}
+    available = bool(runtime.get("available"))
+    assessment_state = str(assessment.get("state") or "").strip().lower()
+    selected_webspace_id = str(runtime.get("selected_webspace_id") or "").strip() or None
+    server_ready = transport.get("server_ready")
+    details = {
+        "available": available,
+        "assessment_state": assessment_state or None,
+        "assessment_reason": assessment.get("reason"),
+        "selected_webspace_id": selected_webspace_id,
+        "server_ready": bool(server_ready) if isinstance(server_ready, bool) else None,
+        "server_requested": bool(transport.get("server_requested")),
+        "server_task_running": bool(transport.get("server_task_running")),
+        "server_error": transport.get("server_error"),
+    }
+    if not available:
+        reason = str(assessment.get("reason") or "Yjs runtime is unavailable").strip() or "Yjs runtime is unavailable"
+        return False, reason, details
+    if assessment_state == "unavailable":
+        reason = str(assessment.get("reason") or "Yjs runtime is unavailable").strip() or "Yjs runtime is unavailable"
+        return False, reason, details
+    if isinstance(server_ready, bool) and not server_ready:
+        reason = str(transport.get("server_error") or assessment.get("reason") or "Yjs websocket server is not ready").strip()
+        return False, reason or "Yjs websocket server is not ready", details
+    if expected_webspace_id and selected_webspace_id and selected_webspace_id != expected_webspace_id:
+        return (
+            False,
+            f"Yjs runtime selected_webspace_id={selected_webspace_id}, expected {expected_webspace_id}",
+            details,
+        )
+    return True, None, details
+
+
+def _runtime_update_checks(base_url: str) -> list[tuple[str, bool, str, Any]]:
+    if not _update_validation_runtime_guards_enabled():
+        return []
+    webspace_id = _update_validation_webspace_id()
+    return [
+        (
+            f"{base_url}/api/node/sidecar/status",
+            True,
+            "sidecar_runtime",
+            _validate_sidecar_runtime_payload,
+        ),
+        (
+            f"{base_url}/api/node/yjs/webspaces/{quote(webspace_id, safe='')}/runtime",
+            True,
+            "yjs_runtime",
+            lambda payload: _validate_yjs_runtime_payload(payload, expected_webspace_id=webspace_id),
+        ),
     ]
 
 
@@ -280,6 +373,59 @@ def _probe_update_runtime(
                         attempt["warnings"].append(dict(check))
                         attempt["checks"].append(check)
                 else:
+                    runtime_checks = _runtime_update_checks(base_url)
+                    runtime_failed = False
+                    for runtime_url, runtime_need_token, runtime_check_id, runtime_validator in runtime_checks:
+                        check = {
+                            "url": runtime_url,
+                            "requires_token": bool(runtime_need_token),
+                            "check_id": runtime_check_id,
+                        }
+                        try:
+                            response = requests.get(
+                                runtime_url,
+                                headers=headers if runtime_need_token else {"Accept": "application/json"},
+                                timeout=1.5,
+                            )
+                            check["status_code"] = int(response.status_code)
+                            if response.status_code != HTTPStatus.OK:
+                                last_error = f"{runtime_url} returned {response.status_code}"
+                                check["ok"] = False
+                                check["error"] = last_error
+                                attempt["checks"].append(check)
+                                runtime_failed = True
+                                break
+                            payload = response.json()
+                            if not isinstance(payload, dict) or payload.get("ok") is False:
+                                last_error = f"{runtime_url} returned invalid payload"
+                                check["ok"] = False
+                                check["error"] = last_error
+                                attempt["checks"].append(check)
+                                runtime_failed = True
+                                break
+                            valid, error_text, details = runtime_validator(payload)
+                            check["ok"] = bool(valid)
+                            check["payload_keys"] = sorted(str(key) for key in payload.keys())
+                            if details:
+                                check["details"] = details
+                            if not valid:
+                                last_error = str(error_text or f"{runtime_url} failed runtime validation")
+                                check["error"] = last_error
+                                attempt["checks"].append(check)
+                                runtime_failed = True
+                                break
+                            attempt["checks"].append(check)
+                        except Exception as exc:
+                            last_error = f"{runtime_url} probe failed: {exc}"
+                            check["ok"] = False
+                            check["error"] = str(exc)
+                            attempt["checks"].append(check)
+                            runtime_failed = True
+                            break
+                    if runtime_failed:
+                        last_attempt = attempt
+                        time.sleep(0.5)
+                        continue
                     return True, {
                         "ok": True,
                         "summary": "ok" if not attempt["warnings"] else "ok_with_warnings",
@@ -287,6 +433,7 @@ def _probe_update_runtime(
                         "attempts": attempts,
                         "token_present": bool(token),
                         "strict": strict,
+                        "runtime_guards": bool(runtime_checks),
                         "last_attempt": attempt,
                     }
                 last_attempt = attempt
@@ -299,6 +446,7 @@ def _probe_update_runtime(
                 "attempts": attempts,
                 "token_present": bool(token),
                 "strict": strict,
+                "runtime_guards": bool(_runtime_update_checks(base_url)),
                 "last_attempt": attempt,
             }
         last_attempt = attempt
@@ -310,6 +458,7 @@ def _probe_update_runtime(
         "attempts": attempts,
         "token_present": bool(token),
         "strict": strict,
+        "runtime_guards": bool(_runtime_update_checks(base_url)),
         "last_attempt": last_attempt,
     }
 

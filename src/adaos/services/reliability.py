@@ -3715,6 +3715,8 @@ def yjs_sync_runtime_snapshot(
         gateway = {}
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+    servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
+    yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
 
     webspaces = store_runtime.get("webspaces") if isinstance(store_runtime.get("webspaces"), dict) else {}
     webspace_total = int(store_runtime.get("webspace_total") or len(webspaces))
@@ -3743,6 +3745,10 @@ def yjs_sync_runtime_snapshot(
         reasons.append("bounded_replay_window_near_limit")
     else:
         reasons.append("bounded_sync_runtime_observed")
+    if yws_server and not bool(yws_server.get("ready")):
+        if assessment_state == "nominal":
+            assessment_state = "degraded"
+        reasons.append("yjs_websocket_server_not_ready")
 
     if not selected_webspace_id:
         try:
@@ -3773,6 +3779,11 @@ def yjs_sync_runtime_snapshot(
         "transport": {
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
+            "server_requested": bool(yws_server.get("requested")),
+            "server_started_event": bool(yws_server.get("started_event")),
+            "server_task_running": bool(yws_server.get("task_running")),
+            "server_ready": bool(yws_server.get("ready")),
+            "server_error": yws_server.get("error"),
         },
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,

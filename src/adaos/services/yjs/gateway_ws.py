@@ -196,6 +196,34 @@ async def reset_live_webspace_room(
     }
 
 
+def _y_server_runtime_snapshot() -> dict[str, Any]:
+    task = _y_server_task
+    requested = bool(_y_server_started)
+    started_event = bool(getattr(y_server, "started", None) and y_server.started.is_set())
+    task_running = bool(task is not None and not task.done())
+    task_done = bool(task is not None and task.done())
+    task_cancelled = bool(task is not None and task.cancelled())
+    error: str | None = None
+    if task_done and not task_cancelled:
+        try:
+            exc = task.exception()
+        except Exception as exc:  # pragma: no cover - defensive runtime snapshot
+            error = f"{type(exc).__name__}: {exc}"
+        else:
+            if exc is not None:
+                error = f"{type(exc).__name__}: {exc}"
+    ready = bool(requested and started_event and task_running and not error)
+    return {
+        "requested": requested,
+        "started_event": started_event,
+        "task_running": task_running,
+        "task_done": task_done,
+        "task_cancelled": task_cancelled,
+        "ready": ready,
+        "error": error,
+    }
+
+
 def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
     with _TRANSPORT_LOCK:
@@ -215,7 +243,13 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             if isinstance(last_close_at, (int, float)) and float(last_close_at) > 0.0
             else None
         )
-    return {"transports": state, "updated_at": now}
+    return {
+        "transports": state,
+        "servers": {
+            "yws": _y_server_runtime_snapshot(),
+        },
+        "updated_at": now,
+    }
 
 
 def _ws_trace_enabled() -> bool:
