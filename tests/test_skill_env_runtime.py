@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from adaos.sdk.data.skill_memory import get as skill_memory_get, set as skill_memory_set
 from adaos.sdk.skill_env import get_env, read_env, set_env, skill_env_path
 from adaos.services.agent_context import get_ctx
+from adaos.services.skill import manager as skill_manager_module
 from adaos.services.skill.manager import SkillManager
 from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 
@@ -130,3 +133,65 @@ def test_skill_env_workspace_context_uses_runtime_store_without_prepared_runtime
             ctx.skill_ctx.clear()
         else:
             ctx.skill_ctx.set(previous.name, previous.path)
+
+
+def test_run_dev_tool_respects_timeout(monkeypatch, tmp_path: Path) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_dir = tmp_path / "skills" / "slow_skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = tmp_path / "resolved.manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source": str(skill_dir),
+                "version": "1.0.0",
+                "slot": "A",
+                "tools": {
+                    "slow_tool": {
+                        "callable": "slow_tool",
+                        "timeout_seconds": 0.01,
+                    }
+                },
+                "runtime": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeEnv:
+        def __init__(self, root: Path) -> None:
+            self._root = root
+
+        def data_root(self) -> Path:
+            return self._root / "data"
+
+        def build_slot_paths(self, _version: str | None, slot_name: str | None) -> SimpleNamespace:
+            runtime_root = self._root / "runtime" / str(slot_name or "A")
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            return SimpleNamespace(
+                skill_env_path=runtime_root / "skill_env.json",
+                skill_memory_path=runtime_root / "skill_memory.json",
+            )
+
+    monkeypatch.setattr(
+        mgr,
+        "dev_runtime_status",
+        lambda _name: {
+            "version": "1.0.0",
+            "active_slot": "A",
+            "resolved_manifest": str(manifest_path),
+            "ready": True,
+        },
+    )
+    monkeypatch.setattr(mgr, "_runtime_env_dev", lambda _name: _FakeEnv(tmp_path))
+    monkeypatch.setattr(mgr, "_persist_skill_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(skill_manager_module, "execute_tool", lambda *_args, **_kwargs: (time.sleep(0.05), {"ok": True})[1])
+
+    try:
+        mgr.run_dev_tool("slow_skill", "slow_tool", {})
+    except TimeoutError as exc:
+        assert "timed out" in str(exc)
+    else:  # pragma: no cover - regression guard
+        raise AssertionError("expected run_dev_tool() to respect timeout_seconds")

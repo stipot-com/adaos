@@ -1561,7 +1561,20 @@ class SkillManager:
         try:
             os.environ["ADAOS_SKILL_ENV_PATH"] = str(skill_env_path)
             os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(skill_memory_path)
-            result = _call_tool()
+            if execution_timeout:
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+                from contextvars import copy_context
+
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    ctxvars = copy_context()
+                    future = pool.submit(lambda: ctxvars.run(_call_tool))
+                    try:
+                        result = future.result(timeout=execution_timeout)
+                    except FuturesTimeoutError as exc:
+                        future.cancel()
+                        raise TimeoutError(f"tool '{target_tool}' timed out after {execution_timeout} seconds") from exc
+            else:
+                result = _call_tool()
         finally:
             if previous is None:
                 ctx.skill_ctx.clear()

@@ -1,23 +1,26 @@
 # src\adaos\api\tool_bridge.py
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
-from pydantic import BaseModel, Field
+import logging
+import time
 from typing import Any, Dict
-import requests, os
+
+import anyio
+import requests
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import require_token
 from adaos.services.observe import attach_http_trace_headers
-from adaos.services.agent_context import get_ctx, AgentContext
+from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.eventbus import emit
 from adaos.services.runtime_lifecycle import is_accepting_new_work
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.registry.subnet_directory import get_directory
-from adaos.services.agent_context import get_ctx
-from adaos.skills.runtime_runner import execute_tool
 from adaos.services.subnet.link_manager import get_hub_link_manager
 
 
 router = APIRouter()
+_log = logging.getLogger("adaos.api.tool_bridge")
 
 
 class ToolCall(BaseModel):
@@ -63,10 +66,22 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
     payload: Dict[str, Any] = body.arguments or {}
     # Пробуем локально; если навык отсутствует на узле-хабе — проксируем на member
     try:
-        if body.dev:
-            result = mgr.run_dev_tool(skill_name, public_tool, payload, timeout=body.timeout)
-        else:
-            result = mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+        started_at = time.perf_counter()
+
+        def _run_local_tool() -> Any:
+            if body.dev:
+                return mgr.run_dev_tool(skill_name, public_tool, payload, timeout=body.timeout)
+            return mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+
+        result = await anyio.to_thread.run_sync(_run_local_tool)
+        took_ms = (time.perf_counter() - started_at) * 1000.0
+        if took_ms >= 2000:
+            _log.warning(
+                "tools.call slow tool=%s dev=%s took_ms=%.1f",
+                body.tool,
+                body.dev,
+                took_ms,
+            )
     except (FileNotFoundError, RuntimeError, KeyError) as e:
         # Если локально не найден навык/слот — попробуем проксировать на участника подсети (только если роль hub)
         try:
@@ -118,7 +133,14 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
             forward["dev"] = True
         token = conf.token or request.headers.get("X-AdaOS-Token") or "dev-local-token"
         try:
-            r = requests.post(url, json=forward, headers={"X-AdaOS-Token": token, "Content-Type": "application/json"}, timeout=(body.timeout or 10) + 2)
+            r = await anyio.to_thread.run_sync(
+                lambda: requests.post(
+                    url,
+                    json=forward,
+                    headers={"X-AdaOS-Token": token, "Content-Type": "application/json"},
+                    timeout=(body.timeout or 10) + 2,
+                )
+            )
         except Exception as pe:
             raise HTTPException(status_code=502, detail=f"proxy failed: {pe}")
         if r.status_code != 200:
