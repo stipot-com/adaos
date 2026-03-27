@@ -12,7 +12,7 @@ import { ModalHostComponent } from '../modals/modal.component'
 import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { LoginComponent } from '../../features/login/login.component'
 import { PageStateService, PageState } from '../../runtime/page-state.service'
-import { Subscription } from 'rxjs'
+import { Subscription, firstValueFrom } from 'rxjs'
 import { QRCodeModule } from 'angularx-qrcode'
 import { PairingService } from '../../runtime/pairing.service'
 import { TPipe } from '../../runtime/t.pipe'
@@ -592,7 +592,19 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		try {
 			await this.adaos.sendEventsCommand('desktop.toggleInstall', { type, id })
 		} catch (err) {
-			console.warn('desktop.toggleInstall failed', err)
+			console.warn('desktop.toggleInstall failed, falling back to control API', err)
+			try {
+				const webspaceId = this.activeWebspace || this.y.getWebspaceId() || 'default'
+				const encodedWebspaceId = encodeURIComponent(webspaceId)
+				await firstValueFrom(
+					this.adaos.post(`/api/node/yjs/webspaces/${encodedWebspaceId}/toggle-install`, {
+						type,
+						id,
+					})
+				)
+			} catch (fallbackErr) {
+				console.warn('desktop.toggleInstall fallback failed', fallbackErr)
+			}
 		}
 	}
 

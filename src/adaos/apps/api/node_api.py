@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
+from adaos.services.io_web.desktop import WebDesktopService
 from adaos.services.media_library import (
     ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
     guess_media_type,
@@ -92,6 +93,11 @@ class WebspaceYjsActionRequest(BaseModel):
     set_home: bool | None = None
     requested_id: str | None = None
     title: str | None = None
+
+
+class WebspaceToggleInstallRequest(BaseModel):
+    type: str = Field(..., pattern="^(app|widget)$")
+    id: str = Field(..., min_length=1)
 
 
 def _raise_400(detail: str) -> None:
@@ -388,6 +394,34 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
         webspace_id=str(webspace_id or "default") or "default",
     )
     return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/toggle-install", dependencies=[Depends(require_token)])
+async def node_yjs_toggle_install(webspace_id: str, payload: WebspaceToggleInstallRequest) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    svc = WebDesktopService()
+    svc.toggle_install_with_live_room(str(payload.type), str(payload.id), target_webspace_id)
+    installed = await svc.get_installed_async(target_webspace_id)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "type": str(payload.type),
+        "id": str(payload.id),
+        "installed": installed.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
 
 
 @router.post("/yjs/webspaces/{webspace_id}/scenario", dependencies=[Depends(require_token)])
