@@ -18,6 +18,8 @@ jobs:
     permissions:
       contents: read
       packages: write # для push в GHCR
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/.docker
     outputs:
       short_sha: ${{ steps.meta.outputs.short_sha }}
       backend_rev: ${{ steps.tags.outputs.backend_rev }}
@@ -28,10 +30,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reset Docker Hub auth for BuildKit bootstrap
+      - name: Initialize clean Docker config
         run: |
-          docker logout docker.io || true
-          docker logout https://index.docker.io/v1/ || true
+          mkdir -p "${DOCKER_CONFIG}"
+          printf '{"auths":{}}\n' > "${DOCKER_CONFIG}/config.json"
 
       - name: Log in to Docker Hub for BuildKit bootstrap
         if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
