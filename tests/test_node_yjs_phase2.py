@@ -18,6 +18,10 @@ from adaos.apps.api import node_api as node_api_module
 from adaos.apps.cli.commands import node as node_cli_module
 
 
+async def _awaitable(value):
+    return value
+
+
 def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
 
@@ -311,6 +315,35 @@ def test_node_yjs_webspaces_endpoint_returns_manifest_listing(monkeypatch) -> No
     assert result["accepted"] is True
     assert result["items"][0]["id"] == "default"
     assert result["items"][1]["kind"] == "dev"
+
+
+def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_operational_state",
+        lambda webspace_id: _awaitable(
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "webspace_id": webspace_id,
+                    "kind": "dev",
+                    "source_mode": "dev",
+                    "home_scenario": "prompt_engineer_scenario",
+                    "current_scenario": "prompt_engineer_runtime",
+                    "current_matches_home": False,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(node_api_module.node_yjs_webspace_state("dev_prompt"))
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["webspace"]["webspace_id"] == "dev_prompt"
+    assert result["webspace"]["source_mode"] == "dev"
+    assert result["runtime"]["webspace_id"] == "dev_prompt"
 
 
 def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:

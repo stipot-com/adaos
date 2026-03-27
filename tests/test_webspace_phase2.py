@@ -53,6 +53,35 @@ class _FakeAsyncDoc:
         return False
 
 
+def test_describe_webspace_operational_state_exposes_manifest_and_current_scenario(monkeypatch) -> None:
+    webspace_id = "phase2-describe"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Prompt Lab",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_runtime"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    result = asyncio.run(webspace_runtime_module.describe_webspace_operational_state(webspace_id))
+
+    assert result.webspace_id == webspace_id
+    assert result.kind == "dev"
+    assert result.source_mode == "dev"
+    assert result.stored_home_scenario == "prompt_engineer_scenario"
+    assert result.effective_home_scenario == "prompt_engineer_scenario"
+    assert result.current_scenario == "prompt_engineer_runtime"
+    assert result.to_dict()["current_matches_home"] is False
+
+
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:
     fake_state = state or {"ui": _FakeMap(), "registry": _FakeMap(), "data": _FakeMap()}
     fake_ctx = get_ctx()
@@ -203,6 +232,9 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
 
     assert captured == [(webspace_id, "prompt_engineer_scenario", False)]
     assert result["scenario_id"] == "prompt_engineer_scenario"
+    assert result["action"] == "go_home"
+    assert result["source_of_truth"] == "manifest_home_scenario"
+    assert result["scenario_resolution"] == "manifest_home"
 
 
 def test_webspace_service_set_home_scenario_updates_manifest(monkeypatch) -> None:

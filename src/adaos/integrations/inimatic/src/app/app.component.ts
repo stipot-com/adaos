@@ -12,7 +12,7 @@ import { Platform } from '@ionic/angular'
 import { YDocService } from './y/ydoc.service'
 import { AdaosClient } from './core/adaos/adaos-client.service'
 import { CommonModule } from '@angular/common'
-import { Observable, combineLatest, of, timer, Subscription } from 'rxjs'
+import { Observable, combineLatest, of, timer, Subscription, firstValueFrom } from 'rxjs'
 import { catchError, distinctUntilChanged, filter, map, pairwise, startWith, switchMap, timeout } from 'rxjs/operators'
 import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
@@ -621,9 +621,15 @@ export class AppComponent implements OnInit, OnDestroy {
 				webspace_id: currentWebspaceId || undefined,
 			})
 		} catch (err) {
-			// best-effort only; errors can be inspected in console
-			// eslint-disable-next-line no-console
-			console.warn('desktop.webspace.go_home failed', err)
+			try {
+				await this.postNodeWebspaceAction(
+					`/api/node/yjs/webspaces/${encodeURIComponent(String(currentWebspaceId || 'default'))}/go-home`,
+					{},
+				)
+			} catch (fallbackErr) {
+				// eslint-disable-next-line no-console
+				console.warn('desktop.webspace.go_home failed', fallbackErr || err)
+			}
 		}
 	}
 
@@ -648,8 +654,30 @@ export class AppComponent implements OnInit, OnDestroy {
 			})
 			await toast.present()
 		} catch (err) {
-			console.warn('desktop.webspace.set_home failed', err)
+			try {
+				await this.postNodeWebspaceAction(
+					`/api/node/yjs/webspaces/${encodeURIComponent(String(this.ydoc.getWebspaceId() || 'default'))}/set-home`,
+					{ scenario_id: scenarioId },
+				)
+				const toast = await this.toastCtrl.create({
+					message: `Home scenario set to ${scenarioId}.`,
+					duration: 1800,
+					position: 'bottom',
+					color: 'success',
+				})
+				await toast.present()
+			} catch (fallbackErr) {
+				console.warn('desktop.webspace.set_home failed', fallbackErr || err)
+			}
 		}
+	}
+
+	private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {
+		const response = await firstValueFrom(this.adaos.post<any>(path, body))
+		if (response?.accepted === false || response?.ok === false) {
+			throw new Error(String(response?.error || 'host_action_rejected'))
+		}
+		return response
 	}
 
 	private readCurrentHomeScenario(): string {

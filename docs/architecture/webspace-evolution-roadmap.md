@@ -258,6 +258,90 @@ Compatibility rule:
 - existing `DEV:` display-name behavior can remain as a mirror during migration
 - metadata becomes the canonical source of `kind` and dev-mode behavior
 
+## Current Rebuild Status
+
+The current runtime already contains several recovery and rebuild paths, but
+they are not yet the same thing and should not be treated as interchangeable.
+
+Implemented today:
+
+- bootstrap seed:
+  `ensure_webspace_seeded_from_scenario()` seeds an empty room from
+  `scenario.json` through `ScenarioManager.sync_to_yjs*`
+- operator reload/reset:
+  `reload_webspace_from_scenario()` clears the live room and store, reseeds
+  from the selected scenario source, refreshes compatibility listing, and then
+  calls `WebspaceScenarioRuntime.rebuild_webspace_async()`
+- scenario switch:
+  `switch_webspace_scenario()` projects a new scenario payload into the room
+  and then rebuilds effective UI plus workflow state
+- snapshot restore:
+  `restore_webspace_from_snapshot()` restores persisted Yjs state, but does not
+  currently re-run the semantic rebuild pipeline
+- client resync:
+  browser-side Yjs resync reconnects transport and re-subscribes to the room,
+  but it is not a semantic rebuild of the webspace model
+
+The practical implication is important:
+
+- `YJS Resync` can recover transport
+- `desktop.webspace.reload` / `reset` can recover semantic state
+- snapshot restore can recover persisted state
+- none of these are yet formalized as a single authoritative rebuild contract
+
+## Required Semantic Rebuild Contract
+
+The target architecture needs one explicit backend-owned operation for
+"rebuild this webspace from authoritative sources".
+
+Its inputs should be:
+
+- `WebspaceManifest`
+- `manifest.home_scenario` or explicit scenario override
+- scenario base spec from `scenario.json`
+- skill UI contributions from `webui.json`
+- projection configuration from `scenario.yaml` / `skill.yaml`
+- optional live overlay/customization state
+
+Its steps should be:
+
+1. Resolve the authoritative rebuild source for the target webspace.
+2. Invalidate scenario/skill caches as needed.
+3. Reset live room and persisted Yjs store when the chosen action requires a
+   clean rebuild.
+4. Project base scenario data into Yjs.
+5. Refresh projection registry/loading for the active scenario and skills.
+6. Materialize effective UI through `WebspaceScenarioRuntime`:
+   `ui.application`, `data.catalog`, `registry.merged`, compatibility mirrors.
+7. Re-sync workflow/runtime state that depends on the active scenario.
+8. Refresh derived compatibility data such as `data.webspaces`.
+9. Emit a rebuild-complete event only after the semantic rebuild is actually
+   complete.
+
+The browser-facing rule should be explicit:
+
+- client Yjs resync is transport recovery only
+- semantic rebuild is a backend operation
+- frontend resync may follow rebuild, but must not substitute for it
+
+## Current Gaps Relative To That Contract
+
+The current codebase is close, but still fragmented:
+
+- bootstrap seeding relies on `scenarios.synced -> rebuild_webspace_async()`
+  as an event side effect rather than an explicit rebuild pipeline
+- reload/reset is the closest thing to the target contract, but it still
+  mixes room reset, scenario reseed, compatibility listing refresh, and UI
+  rebuild in one ad-hoc flow
+- scenario switch uses a different projection path than reload/reset instead of
+  reusing the same semantic rebuild primitive
+- snapshot restore restores persisted Yjs state without a follow-up semantic
+  reconcile step
+- projection loading is still partly hidden inside rebuild logic, which makes
+  recovery order hard to reason about
+- frontend `YJS Resync` and `YJS Reload` can currently be confused as two
+  variants of the same operation, while they solve different failure modes
+
 ### Future profile-aware personalization must be planned now
 
 The roadmap should not implement profile-aware overlays yet, but it must avoid
@@ -409,6 +493,11 @@ Additions:
   - `go_home`
   - `set_home`
   - `ensure_dev`
+- control surfaces should also expose operational introspection for:
+  - `home_scenario`
+  - `current_scenario`
+  - `kind`
+  - `source_mode`
 - default policy remains asymmetric:
   regular workspaces do not auto-persist switched scenarios as home, while
   dev webspaces may do so unless an explicit override is supplied
@@ -449,6 +538,11 @@ Additions:
   - skill `webui.json` contributions
   - overlay snapshot
   - live Yjs state
+- explicit semantic rebuild contract for:
+  - bootstrap seed
+  - reload/reset
+  - scenario switch
+  - snapshot restore reconcile
 - explicit resolver outputs:
   - effective application projection
   - effective catalog projection
@@ -489,6 +583,8 @@ Additions:
   - skill activation
   - scenario switch
   - webspace reseed/reset
+- explicit rebuild ordering so projection refresh is a declared rebuild step,
+  not a hidden side effect
 - documented boundary:
   UI resolve consumes UI sources, projection lifecycle consumes
   `data_projections`
@@ -540,6 +636,30 @@ Expected result:
 
 - customization state starts leaving the "everything lives in Yjs" trap
   without breaking the current frontend
+
+## Immediate Rebuild Follow-Up
+
+The next runtime hardening slice after the current Phase 2 work should be a
+single reusable backend primitive, for example:
+
+- `rebuild_webspace_from_sources(webspace_id, action, scenario_override=None)`
+
+The important point is not the exact function name, but that the same backend
+pipeline is reused by:
+
+- first-room bootstrap
+- `desktop.webspace.reload`
+- `desktop.webspace.reset`
+- scenario switch when a full semantic rebuild is required
+- snapshot restore reconcile
+
+This slice should also make the frontend contract explicit:
+
+- `YJS Resync` means reconnect transport only
+- `YJS Reload` means invoke semantic rebuild and then optionally resync
+
+That will remove the current ambiguity where several recovery buttons appear to
+do similar things while actually touching different layers of the system.
 
 ## First Implementation Slice
 

@@ -292,20 +292,36 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
       await this.adaos.sendEventsCommand('desktop.webspace.go_home', { webspace_id: id })
       await this.switchWorkspace(id)
     } catch {
-      await this.presentToast('Failed to go home in selected workspace')
+      try {
+        await this.postNodeWebspaceAction(
+          `/api/node/yjs/webspaces/${encodeURIComponent(id)}/go-home`,
+          {}
+        )
+        await this.switchWorkspace(id)
+      } catch {
+        await this.presentToast('Failed to go home in selected workspace')
+      }
     }
   }
 
   async setSelectedHomeToCurrentScenario(): Promise<void> {
     const id = (this.selectedWorkspaceId || '').trim()
     if (!this.canSetSelectedHomeToCurrentScenario() || !id) return
+    const scenarioId = this.readCurrentScenarioId()
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.set_home', {
         webspace_id: id,
-        scenario_id: this.readCurrentScenarioId(),
+        scenario_id: scenarioId,
       })
     } catch {
-      await this.presentToast('Failed to update home scenario')
+      try {
+        await this.postNodeWebspaceAction(
+          `/api/node/yjs/webspaces/${encodeURIComponent(id)}/set-home`,
+          { scenario_id: scenarioId }
+        )
+      } catch {
+        await this.presentToast('Failed to update home scenario')
+      }
     }
   }
 
@@ -352,6 +368,14 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     } catch {
       // best-effort fallback when current YDoc does not expose data.webspaces yet
     }
+  }
+
+  private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {
+    const response = await firstValueFrom(this.adaos.post<any>(path, body))
+    if (response?.accepted === false || response?.ok === false) {
+      throw new Error(String(response?.error || 'host_action_rejected'))
+    }
+    return response
   }
 
   formatWorkspaceKind(entry?: WebspaceEntry): string {

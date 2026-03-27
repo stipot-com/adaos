@@ -6,6 +6,7 @@ from adaos.sdk.core.decorators import tool
 from adaos.services.scenario.webspace_runtime import (
     WebspaceInfo,
     WebspaceService,
+    describe_webspace_operational_state,
     ensure_dev_webspace_for_scenario,
     go_home_webspace,
 )
@@ -29,6 +30,21 @@ def webspace_list(mode: str = "mixed") -> List[WebspaceInfo]:
     """
     svc = WebspaceService()
     return svc.list(mode=mode)
+
+
+@tool(
+    "web.webspace.describe",
+    summary="Return manifest plus live current-scenario state for a webspace.",
+    stability="experimental",
+    examples=["await web.webspace.describe()", "await web.webspace.describe('prompt-lab')"],
+)
+async def webspace_describe(webspace_id: str | None = None) -> dict[str, Any]:
+    """
+    Return the current operational state of a webspace, including
+    ``home_scenario``, ``current_scenario``, ``kind``, and ``source_mode``.
+    """
+    target = str(webspace_id or "").strip() or default_webspace_id()
+    return (await describe_webspace_operational_state(target)).to_dict()
 
 
 @tool(

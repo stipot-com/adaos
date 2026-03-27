@@ -204,6 +204,10 @@ def test_webspace_reload_defaults_to_manifest_home_scenario(monkeypatch) -> None
 
     assert captured == [(webspace_id, "prompt_engineer_scenario", None)]
     assert result["scenario_id"] == "prompt_engineer_scenario"
+    assert result["scenario_resolution"] == "manifest_home"
+    assert result["kind"] == "workspace"
+    assert result["source_mode"] == "workspace"
+    assert result["home_scenario"] == "prompt_engineer_scenario"
     assert emitted[-1][1]["scenario_id"] == "prompt_engineer_scenario"
 
 
@@ -226,6 +230,8 @@ def test_webspace_reload_falls_back_to_current_scenario_for_legacy_manifest(monk
 
     assert captured == [(webspace_id, "legacy_prompt_scenario", None)]
     assert result["scenario_id"] == "legacy_prompt_scenario"
+    assert result["scenario_resolution"] == "current_scenario"
+    assert result["current_scenario_before"] == "legacy_prompt_scenario"
     assert emitted[-1][1]["scenario_id"] == "legacy_prompt_scenario"
 
 

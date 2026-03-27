@@ -64,6 +64,41 @@ class WebspaceInfo:
     is_dev: bool = False
 
 
+@dataclass(slots=True)
+class WebspaceOperationalState:
+    """
+    Lightweight operational view of a webspace that combines persistent
+    manifest metadata with the current live scenario selection from Yjs.
+
+    ``stored_home_scenario`` preserves whether the manifest explicitly stores
+    a home scenario. This matters for legacy spaces, where reload/reset should
+    still be able to fall back to ``ui.current_scenario`` instead of forcing
+    ``web_desktop`` semantics too early.
+    """
+
+    webspace_id: str
+    title: str
+    kind: str
+    source_mode: str
+    is_dev: bool
+    stored_home_scenario: str | None
+    effective_home_scenario: str
+    current_scenario: str | None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "webspace_id": self.webspace_id,
+            "title": self.title,
+            "kind": self.kind,
+            "source_mode": self.source_mode,
+            "is_dev": self.is_dev,
+            "stored_home_scenario": self.stored_home_scenario,
+            "home_scenario": self.effective_home_scenario,
+            "current_scenario": self.current_scenario,
+            "current_matches_home": bool(self.current_scenario) and self.current_scenario == self.effective_home_scenario,
+        }
+
+
 def _mark_entry(entry: Dict[str, Any], *, source: str, dev: bool) -> Dict[str, Any]:
     """
     Attach provenance / dev flag to a catalog entry without overwriting its
@@ -817,6 +852,66 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
     )
 
 
+async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOperationalState:
+    """
+    Return the combined manifest + live scenario state for a webspace.
+
+    The helper intentionally keeps both the raw stored ``home_scenario`` and
+    the effective fallback value so Phase 2 callers can preserve legacy reload
+    behaviour while still exposing stable operational semantics to control
+    surfaces.
+    """
+    target_webspace_id = str(webspace_id or "").strip() or default_webspace_id()
+    row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
+
+    current_scenario: str | None = None
+    try:
+        async with async_get_ydoc(target_webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            raw_current = ui_map.get("current_scenario")
+            if raw_current is not None:
+                token = str(raw_current).strip()
+                current_scenario = token or None
+    except Exception:
+        current_scenario = None
+
+    return WebspaceOperationalState(
+        webspace_id=target_webspace_id,
+        title=row.title,
+        kind=row.effective_kind,
+        source_mode=row.effective_source_mode,
+        is_dev=row.is_dev,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
+
+
+async def _resolve_reload_scenario_target(
+    webspace_id: str,
+    requested_scenario_id: str | None,
+) -> tuple[WebspaceOperationalState, str, str]:
+    """
+    Resolve the scenario source for reload/reset.
+
+    Ordering intentionally preserves Phase 1 / Phase 2 compatibility:
+
+    1. explicit scenario override
+    2. explicit stored manifest home_scenario
+    3. current live scenario for legacy spaces without stored home
+    4. default ``web_desktop``
+    """
+    state = await describe_webspace_operational_state(webspace_id)
+    requested = str(requested_scenario_id or "").strip()
+    if requested:
+        return state, requested, "explicit"
+    if state.stored_home_scenario:
+        return state, state.stored_home_scenario, "manifest_home"
+    if state.current_scenario:
+        return state, state.current_scenario, "current_scenario"
+    return state, "web_desktop", "default"
+
+
 async def _sync_webspace_listing() -> None:
     listing = _webspace_listing()
     rows = workspace_index.list_workspaces()
@@ -1123,30 +1218,20 @@ async def reload_webspace_from_scenario(
     if not webspace_id:
         raise ValueError("webspace_id is required")
 
-    scenario_id = str(scenario_id or "").strip()
-    if not scenario_id:
-        try:
-            row = workspace_index.get_workspace(webspace_id)
-            if row and row.home_scenario:
-                scenario_id = row.effective_home_scenario
-        except Exception:
-            scenario_id = ""
-    if not scenario_id:
-        # Default to the webspace's active scenario to avoid reseeding the wrong
-        # package when the user is currently running a non-default desktop scenario.
-        try:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                ui_map = ydoc.get_map("ui")
-                current = ui_map.get("current_scenario")
-                if current:
-                    scenario_id = str(current)
-        except Exception:
-            scenario_id = ""
-    if not scenario_id:
-        scenario_id = "web_desktop"
+    state, scenario_id, scenario_resolution = await _resolve_reload_scenario_target(webspace_id, scenario_id)
 
     verb = "resetting" if str(action or "").strip().lower() == "reset" else "reloading"
-    _log.info("%s webspace %s from scenario %s", verb, webspace_id, scenario_id)
+    _log.info(
+        "%s webspace %s from scenario %s (resolution=%s kind=%s source_mode=%s current=%s home=%s)",
+        verb,
+        webspace_id,
+        scenario_id,
+        scenario_resolution,
+        state.kind,
+        state.source_mode,
+        state.current_scenario,
+        state.effective_home_scenario,
+    )
 
     # Ensure rebuild step uses the same scenario we are reseeding from.
     try:
@@ -1216,6 +1301,11 @@ async def reload_webspace_from_scenario(
         "source_of_truth": "scenario",
         "webspace_id": webspace_id,
         "scenario_id": scenario_id,
+        "scenario_resolution": scenario_resolution,
+        "kind": state.kind,
+        "source_mode": state.source_mode,
+        "home_scenario": state.effective_home_scenario,
+        "current_scenario_before": state.current_scenario,
     }
 
 
@@ -1275,6 +1365,7 @@ async def switch_webspace_scenario(
     if not scenario_id:
         raise ValueError("scenario_id is required")
 
+    state_before = await describe_webspace_operational_state(webspace_id)
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     resolved_set_home = bool(set_home) if set_home is not None else bool(row.is_dev or row.effective_source_mode == "dev")
 
@@ -1379,6 +1470,10 @@ async def switch_webspace_scenario(
         "accepted": True,
         "webspace_id": webspace_id,
         "scenario_id": scenario_id,
+        "kind": row.effective_kind,
+        "source_mode": row.effective_source_mode,
+        "current_scenario_before": state_before.current_scenario,
+        "home_scenario_before": state_before.effective_home_scenario,
         "home_scenario": row.effective_home_scenario,
         "set_home": resolved_set_home,
     }
@@ -1388,8 +1483,12 @@ async def go_home_webspace(webspace_id: str) -> dict[str, Any]:
     webspace_id = str(webspace_id or "").strip()
     if not webspace_id:
         raise ValueError("webspace_id is required")
-    row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
-    return await switch_webspace_scenario(webspace_id, row.effective_home_scenario, set_home=False)
+    state = await describe_webspace_operational_state(webspace_id)
+    result = await switch_webspace_scenario(webspace_id, state.effective_home_scenario, set_home=False)
+    result["action"] = "go_home"
+    result["source_of_truth"] = "manifest_home_scenario"
+    result["scenario_resolution"] = "manifest_home"
+    return result
 
 
 async def ensure_dev_webspace_for_scenario(
