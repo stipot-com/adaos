@@ -79,7 +79,7 @@ from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_
 from adaos.services.hub_root_outbox_store import load_outbox_items, outbox_store_path, save_outbox_items
 from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
-from adaos.services.scheduler import start_scheduler
+from adaos.services.scheduler import start_scheduler, stop_scheduler
 from adaos.services.scenario import (
     webspace_runtime as _scenario_ws_runtime,  # ensure core scenario subscriptions
 )
@@ -6287,6 +6287,10 @@ class BootstrapService:
             self._log.debug("control lifecycle report failed trigger=sys.stopping", exc_info=True)
         try:
             await get_service_supervisor().shutdown()
+        except Exception:
+            pass
+        try:
+            await stop_scheduler()
         except Exception:
             pass
         for t in list(self._boot_tasks):

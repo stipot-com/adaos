@@ -47,8 +47,16 @@ class Scheduler:
 
     async def stop(self) -> None:
         self._stopped.set()
-        if self._task and not self._task.done():
-            self._task.cancel()
+        task = self._task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - defensive logging
+                _log.warning("scheduler stop failed", exc_info=True)
+        self._task = None
 
     async def ensure_every(self, name: str, interval: float, topic: str, payload: dict | None = None) -> Job:
         """
@@ -132,4 +140,11 @@ async def start_scheduler() -> None:
     Public entrypoint used from bootstrap to start the background loop.
     """
     await get_scheduler().start()
+
+
+async def stop_scheduler() -> None:
+    """
+    Public entrypoint used from bootstrap to stop the background loop.
+    """
+    await get_scheduler().stop()
 
