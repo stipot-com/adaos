@@ -34,6 +34,20 @@ def _extract_token(websocket: WebSocket) -> str | None:
         return None
 
 
+async def _accept_websocket(websocket: WebSocket) -> bool:
+    try:
+        await websocket.accept()
+        return True
+    except WebSocketDisconnect:
+        return False
+    except RuntimeError as exc:
+        text = str(exc or "").strip().lower()
+        if ("websocket.accept" in text and "websocket.close" in text) or "close message has been sent" in text:
+            _log.info("subnet websocket accept skipped because handshake was already closed")
+            return False
+        raise
+
+
 @router.websocket("/ws/subnet")
 async def subnet_ws(websocket: WebSocket) -> None:
     """
@@ -48,7 +62,8 @@ async def subnet_ws(websocket: WebSocket) -> None:
         return
 
     # Accept first; we can still close with 1008 on auth failure.
-    await websocket.accept()
+    if not await _accept_websocket(websocket):
+        return
 
     token = _extract_token(websocket)
     expected = conf.token or "dev-local-token"

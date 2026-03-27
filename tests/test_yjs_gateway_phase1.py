@@ -327,3 +327,15 @@ def test_process_events_command_ensure_dev_returns_webspace_id(monkeypatch) -> N
         "kind": "dev",
         "source_mode": "dev",
     }
+
+
+def test_accept_websocket_returns_false_when_handshake_already_closed() -> None:
+    class _FakeWebSocket:
+        async def accept(self) -> None:
+            raise RuntimeError(
+                "Expected ASGI message 'websocket.send' or 'websocket.close', but got 'websocket.accept'."
+            )
+
+    accepted = asyncio.run(gateway_module._accept_websocket(_FakeWebSocket(), channel="events"))
+
+    assert accepted is False

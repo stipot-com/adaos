@@ -58,6 +58,33 @@ _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
 _ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 
+def _is_websocket_accept_race(exc: BaseException) -> bool:
+    text = str(exc or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "websocket.accept" in text
+        and "websocket.close" in text
+    ) or "close message has been sent" in text
+
+
+async def _accept_websocket(websocket: WebSocket, *, channel: str) -> bool:
+    try:
+        await websocket.accept()
+        return True
+    except WebSocketDisconnect:
+        return False
+    except RuntimeError as exc:
+        if _is_websocket_accept_race(exc):
+            _ylog.info(
+                "%s websocket accept skipped because handshake was already closed client=%s",
+                channel,
+                _ws_client_str(websocket),
+            )
+            return False
+        raise
+
+
 def _transport_mark_open(name: str) -> None:
     key = str(name or "").strip().lower()
     if not key:
@@ -534,7 +561,8 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
         except Exception:
             pass
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
-    await websocket.accept()
+    if not await _accept_websocket(websocket, channel="yws"):
+        return
     _track_yws_connection(webspace_id, websocket)
     _transport_mark_open("yws")
     await start_y_server()
@@ -876,7 +904,8 @@ async def events_ws(websocket: WebSocket):
     Implements device.register, desktop/voice/scenario commands, and WebRTC
     signaling (``rtc.offer``, ``rtc.ice``).
     """
-    await websocket.accept()
+    if not await _accept_websocket(websocket, channel="events"):
+        return
     _transport_mark_open("ws")
     if _ws_trace_enabled():
         try:
