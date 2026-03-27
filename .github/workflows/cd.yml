@@ -18,8 +18,6 @@ jobs:
     permissions:
       contents: read
       packages: write # для push в GHCR
-    env:
-      DOCKER_CONFIG: ${{ runner.temp }}/.docker
     outputs:
       short_sha: ${{ steps.meta.outputs.short_sha }}
       backend_rev: ${{ steps.tags.outputs.backend_rev }}
@@ -32,11 +30,25 @@ jobs:
 
       - name: Initialize clean Docker config
         run: |
+          export DOCKER_CONFIG="${RUNNER_TEMP}/.docker"
           mkdir -p "${DOCKER_CONFIG}"
           printf '{"auths":{}}\n' > "${DOCKER_CONFIG}/config.json"
+          echo "DOCKER_CONFIG=${DOCKER_CONFIG}" >> "$GITHUB_ENV"
+
+      - name: Detect Docker Hub credentials
+        id: dockerhub_creds
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Log in to Docker Hub for BuildKit bootstrap
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: steps.dockerhub_creds.outputs.present == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
