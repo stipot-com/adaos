@@ -145,6 +145,27 @@ function routeKeyTag(key?: string | null): string {
 	return s.length > 12 ? s.slice(-8) : s
 }
 
+function applyProxyResponseHeaders(req: express.Request, res: express.Response): void {
+	try {
+		const origin = String(req.headers?.origin || '').trim()
+		if (origin) {
+			res.setHeader('Access-Control-Allow-Origin', origin)
+			res.setHeader('Vary', 'Origin')
+			res.setHeader('Access-Control-Allow-Credentials', 'true')
+		}
+		res.setHeader(
+			'Access-Control-Expose-Headers',
+			[
+				'x-adaos-proxy-kind',
+				'x-adaos-proxy-error',
+				'x-adaos-proxy-timeout-ms',
+				'x-adaos-proxy-took-ms',
+				'x-adaos-proxy-truncated',
+			].join(', ')
+		)
+	} catch {}
+}
+
 function routePayloadMeta(payload: any): Record<string, unknown> {
 	try {
 		const t = String(payload?.t || '')
@@ -455,6 +476,7 @@ export function installHubRouteProxy(
 		let timeoutMsForLog: number | null = null
 		const reqStartedAt = Date.now()
 		try {
+			applyProxyResponseHeaders(req, res)
 			const hubId = String(req.params.hubId || '').trim()
 			hubIdForLog = hubId
 			if (!hubId) return res.status(400).json({ ok: false, error: 'hub_id_required' })
@@ -654,6 +676,11 @@ export function installHubRouteProxy(
 					res.setHeader('x-adaos-proxy-truncated', '1')
 				} catch {}
 			}
+			try {
+				res.setHeader('x-adaos-proxy-kind', kind)
+				res.setHeader('x-adaos-proxy-timeout-ms', String(timeoutMs))
+				res.setHeader('x-adaos-proxy-took-ms', String(Math.max(0, Date.now() - reqStartedAt)))
+			} catch {}
 			const buf = body ? Buffer.from(body, 'base64') : Buffer.from('')
 			return res.status(status).send(buf)
 		} catch (e) {
@@ -676,7 +703,28 @@ export function installHubRouteProxy(
 				},
 				'http proxy failed'
 			)
-			return res.status(502).json({ ok: false, error: 'hub_unreachable' })
+			try {
+				applyProxyResponseHeaders(req, res)
+				res.setHeader('x-adaos-proxy-kind', kindForLog || 'unknown')
+				if (timeoutMsForLog != null) {
+					res.setHeader('x-adaos-proxy-timeout-ms', String(timeoutMsForLog))
+				}
+				res.setHeader('x-adaos-proxy-took-ms', String(Math.max(0, Date.now() - reqStartedAt)))
+			} catch {}
+			const errMsg = String(e || '')
+			const isTimeout = /timeout/i.test(errMsg)
+			const status = isTimeout ? 504 : 502
+			const errorCode = isTimeout ? 'hub_route_timeout' : 'hub_unreachable'
+			try {
+				res.setHeader('x-adaos-proxy-error', errorCode)
+			} catch {}
+			return res.status(status).json({
+				ok: false,
+				error: errorCode,
+				kind: kindForLog || 'unknown',
+				timeout_ms: timeoutMsForLog,
+				took_ms: Math.max(0, Date.now() - reqStartedAt),
+			})
 		}
 	})
 

@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from adaos.services.reliability import (
     ReadinessStatus,
     assess_transport_diagnostics,
+    observe_hub_root_route_runtime,
     mark_root_control_down,
     mark_root_control_up,
     mark_route_ready,
@@ -200,6 +201,37 @@ def test_hub_reliability_marks_root_channel_unstable_after_reconnect_incident_wi
     assert any(item["status"] == "reconnect" for item in diag["recent_history"])
 
 
+def test_hub_reliability_snapshot_exposes_route_reset_runtime_details() -> None:
+    _reset_state()
+    observe_hub_root_route_runtime(
+        last_reset_at=1_774_017_180.0,
+        last_reset_reason="nats_reconnected",
+        last_reset_closed_tunnels=3,
+        last_reset_dropped_pending=11,
+        last_reset_notified_browser=2,
+        reset_total=4,
+    )
+
+    snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+
+    route_runtime = snapshot["runtime"]["hub_root_protocol"]["route_runtime"]
+    assert route_runtime["last_reset_reason"] == "nats_reconnected"
+    assert route_runtime["last_reset_closed_tunnels"] == 3
+    assert route_runtime["last_reset_dropped_pending"] == 11
+    assert route_runtime["last_reset_notified_browser"] == 2
+    assert route_runtime["reset_total"] == 4
+    assert route_runtime["last_reset_ago_s"] is not None
+
+
 def test_assess_transport_diagnostics_marks_unstable_on_reader_termination_and_tag_change() -> None:
     now_ts = 1_774_017_180.0
     assessment = assess_transport_diagnostics(
@@ -328,6 +360,7 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     fake_link_client_mod.get_member_link_client = lambda: SimpleNamespace(is_connected=lambda: False)
     monkeypatch.setitem(sys.modules, "adaos.services.subnet.link_client", fake_link_client_mod)
 
+    sys.modules.pop("adaos.apps.api.node_api", None)
     node_api = importlib.import_module("adaos.apps.api.node_api")
     require_token = importlib.import_module("adaos.apps.api.auth").require_token
 

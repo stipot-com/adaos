@@ -583,6 +583,12 @@ def _new_protocol_runtime() -> dict[str, Any]:
             "last_force_close_at": 0.0,
             "last_no_upstream_at": 0.0,
             "last_publish_fail_at": 0.0,
+            "last_reset_at": 0.0,
+            "last_reset_reason": "",
+            "last_reset_closed_tunnels": 0,
+            "last_reset_dropped_pending": 0,
+            "last_reset_notified_browser": 0,
+            "reset_total": 0,
             "flows": {
                 "control": _new_route_flow_state("control"),
                 "frame": _new_route_flow_state("frame"),
@@ -3442,6 +3448,7 @@ def hub_root_protocol_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
     route_runtime["last_force_close_ago_s"] = _round_age(now, route_runtime.get("last_force_close_at"))
     route_runtime["last_no_upstream_ago_s"] = _round_age(now, route_runtime.get("last_no_upstream_at"))
     route_runtime["last_publish_fail_ago_s"] = _round_age(now, route_runtime.get("last_publish_fail_at"))
+    route_runtime["last_reset_ago_s"] = _round_age(now, route_runtime.get("last_reset_at"))
     route_flows = route_runtime.get("flows")
     if not isinstance(route_flows, dict):
         route_flows = {

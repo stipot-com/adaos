@@ -280,9 +280,61 @@ class BootstrapService:
         self._log = logging.getLogger("adaos.hub-io")
         # Current hub-root NATS client (when connected). Used for forced reconnects without full process restart.
         self._hub_root_nc: Any = None
+        # Best-effort route relay reset hook installed by the hub-route runtime once subscriptions are live.
+        self._hub_root_route_reset: Any = None
 
     def is_ready(self) -> bool:
         return self._ready.is_set()
+
+    async def _reset_hub_root_route_runtime(
+        self,
+        *,
+        reason: str,
+        notify_browser: bool,
+    ) -> dict[str, Any]:
+        cb = getattr(self, "_hub_root_route_reset", None)
+        if not callable(cb):
+            return {
+                "ok": False,
+                "reason": str(reason or "").strip() or "route_reset",
+                "notify_browser": bool(notify_browser),
+                "skipped": "route_reset_unavailable",
+            }
+        try:
+            timeout_s = float(os.getenv("HUB_ROUTE_RESET_TIMEOUT_S", "2.5") or "2.5")
+        except Exception:
+            timeout_s = 2.5
+        if timeout_s < 0.2:
+            timeout_s = 0.2
+        try:
+            result = cb(
+                reason=str(reason or "").strip() or "route_reset",
+                notify_browser=bool(notify_browser),
+            )
+            if asyncio.iscoroutine(result):
+                result = await asyncio.wait_for(result, timeout=timeout_s)
+            if isinstance(result, dict):
+                return result
+            return {
+                "ok": True,
+                "reason": str(reason or "").strip() or "route_reset",
+                "notify_browser": bool(notify_browser),
+                "result": result,
+            }
+        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "reason": str(reason or "").strip() or "route_reset",
+                "notify_browser": bool(notify_browser),
+                "error": "TimeoutError: hub route reset timed out",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": str(reason or "").strip() or "route_reset",
+                "notify_browser": bool(notify_browser),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     async def request_hub_root_reconnect(
         self,
@@ -328,6 +380,13 @@ class BootstrapService:
                     server=override,
                     summary="manual hub-root reconnect requested",
                     details={"requested_transport": tr, "url_override": override},
+                )
+            except Exception:
+                pass
+            try:
+                close_diag["route_reset"] = await self._reset_hub_root_route_runtime(
+                    reason="manual_reconnect",
+                    notify_browser=True,
                 )
             except Exception:
                 pass
@@ -1484,6 +1543,15 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                     try:
+                                        asyncio.create_task(
+                                            self._reset_hub_root_route_runtime(
+                                                reason=f"nats_{kind}",
+                                                notify_browser=False,
+                                            )
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
                                         asyncio.create_task(_report_control_lifecycle(f"subnet.nats.down:{kind}"))
                                     except Exception:
                                         pass
@@ -1522,6 +1590,15 @@ class BootstrapService:
                                                 "server": log_server,
                                                 "ws_tag": ws_connect_tag if isinstance(ws_connect_tag, str) else None,
                                             },
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        asyncio.create_task(
+                                            self._reset_hub_root_route_runtime(
+                                                reason="nats_reconnected",
+                                                notify_browser=True,
+                                            )
                                         )
                                     except Exception:
                                         pass
@@ -3358,6 +3435,7 @@ class BootstrapService:
                             route_run_id = "route"
                         route_sub = None
                         route_sub_v2 = None
+                        route_reset_total = 0
                         # In WS-proxied NATS setups, route replies can sit in local buffers and root times out
                         # waiting for `route.to_browser.*`. Keep fast drain enabled by default.
                         _route_force_flush = os.getenv("HUB_ROUTE_FORCE_FLUSH", "1") == "1"
@@ -3571,6 +3649,13 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                        def _drop_pending_chunks_for_key(key: str) -> None:
+                            try:
+                                for pid in [pid for pid, st in list(pending_chunks.items()) if st.get("key") == key]:
+                                    pending_chunks.pop(pid, None)
+                            except Exception:
+                                pass
+
                         def _mark_pending(key: str) -> None:
                             try:
                                 st = pending_tunnel_meta.get(key)
@@ -3627,6 +3712,114 @@ class BootstrapService:
                                 _update_route_protocol_runtime()
                             except Exception:
                                 pass
+
+                        async def _reset_route_runtime(*, reason: str, notify_browser: bool) -> dict[str, Any]:
+                            nonlocal route_reset_total
+                            reason0 = str(reason or "").strip() or "route_reset"
+                            notify0 = bool(notify_browser)
+                            closed_tunnels = 0
+                            dropped_pending = 0
+                            notified_browser = 0
+                            keys: list[str] = []
+                            try:
+                                keys = list(
+                                    dict.fromkeys(
+                                        [
+                                            *[str(k) for k in tunnels.keys()],
+                                            *[str(k) for k in pending_tunnel_events.keys()],
+                                            *[str(k) for k in reply_subjects.keys()],
+                                            *[
+                                                str(st.get("key"))
+                                                for st in pending_chunks.values()
+                                                if isinstance(st, dict) and st.get("key")
+                                            ],
+                                        ]
+                                    )
+                                )
+                            except Exception:
+                                keys = []
+                            for key in keys:
+                                rec = tunnels.pop(key, None)
+                                ws = rec.get("ws") if isinstance(rec, dict) else None
+                                task = tunnel_tasks.pop(key, None)
+                                try:
+                                    if task:
+                                        task.cancel()
+                                except Exception:
+                                    pass
+                                try:
+                                    dropped_pending += len(pending_tunnel_events.get(key) or [])
+                                except Exception:
+                                    pass
+                                if notify0 and str(reply_subjects.get(key) or "").strip():
+                                    try:
+                                        await asyncio.wait_for(
+                                            _route_reply(key, {"t": "close", "err": reason0}),
+                                            timeout=0.5,
+                                        )
+                                        notified_browser += 1
+                                    except Exception:
+                                        pass
+                                try:
+                                    _drop_pending_chunks_for_key(key)
+                                except Exception:
+                                    pass
+                                try:
+                                    _clear_pending_tunnel_state(key, drop_events=True)
+                                except Exception:
+                                    pass
+                                if ws:
+                                    try:
+                                        await asyncio.wait_for(ws.close(), timeout=0.5)
+                                    except Exception:
+                                        pass
+                                    closed_tunnels += 1
+                            route_reset_total += 1
+                            try:
+                                _route_observe_flow("control", "runtime_reset", error=reason0)
+                            except Exception:
+                                pass
+                            try:
+                                _update_route_protocol_runtime(
+                                    last_reset_at=time.time(),
+                                    last_reset_reason=reason0,
+                                    last_reset_closed_tunnels=closed_tunnels,
+                                    last_reset_dropped_pending=dropped_pending,
+                                    last_reset_notified_browser=notified_browser,
+                                    reset_total=route_reset_total,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                note_route_incident(
+                                    status="runtime_reset",
+                                    summary="hub route relay runtime reset",
+                                    details={
+                                        "reason": reason0,
+                                        "closed_tunnels": closed_tunnels,
+                                        "dropped_pending": dropped_pending,
+                                        "notified_browser": notified_browser,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            if _route_trace or _route_verbose:
+                                try:
+                                    _route_log(
+                                        f"[hub-route] runtime reset reason={reason0} closed={closed_tunnels} "
+                                        f"pending={dropped_pending} notified={notified_browser}"
+                                    )
+                                except Exception:
+                                    pass
+                            return {
+                                "ok": True,
+                                "reason": reason0,
+                                "notify_browser": notify0,
+                                "closed_tunnels": closed_tunnels,
+                                "dropped_pending": dropped_pending,
+                                "notified_browser": notified_browser,
+                                "reset_total": route_reset_total,
+                            }
 
                         async def _maybe_force_close_no_upstream(key: str) -> None:
                             if _route_no_upstream_close_after_s <= 0:
@@ -3977,6 +4170,11 @@ class BootstrapService:
                                     except Exception:
                                         pass
 
+                        try:
+                            self._hub_root_route_reset = _reset_route_runtime
+                        except Exception:
+                            pass
+
                         def _hub_key_match(key: str) -> bool:
                             current_hub_id = hub_id
                             try:
@@ -4079,9 +4277,7 @@ class BootstrapService:
                                 except Exception:
                                     pass
                                 try:
-                                    # clear pending chunks for this connection
-                                    for pid in [pid for pid, st in list(pending_chunks.items()) if st.get("key") == key]:
-                                        pending_chunks.pop(pid, None)
+                                    _drop_pending_chunks_for_key(key)
                                 except Exception:
                                     pass
                                 try:
@@ -5133,6 +5329,12 @@ class BootstrapService:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
                         try:
+                            current_route_reset = getattr(self, "_hub_root_route_reset", None)
+                            if current_route_reset is _reset_route_runtime:
+                                setattr(self, "_hub_root_route_reset", None)
+                        except Exception:
+                            pass
+                        try:
                             if os.getenv("HUB_ROUTE_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                 print(f"[hub-io] NATS route proxy init failed: {type(e).__name__}: {e}")
                                 try:
@@ -5480,6 +5682,12 @@ class BootstrapService:
                                 pass
 
                         # On shutdown/cancel, close any live proxy tunnels and unsubscribe.
+                        try:
+                            current_route_reset = getattr(self, "_hub_root_route_reset", None)
+                            if current_route_reset is _reset_route_runtime:
+                                setattr(self, "_hub_root_route_reset", None)
+                        except Exception:
+                            pass
                         try:
                             for k, rec in list(tunnels.items()):
                                 try:

@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core'
 import { HttpClient } from '@angular/common/http'
 import { Observable, of } from 'rxjs'
-import { map } from 'rxjs/operators'
+import { catchError, map } from 'rxjs/operators'
 import {
   ApiDataSource,
   DataSourceConfig,
@@ -44,7 +44,9 @@ export class PageDataService {
     if (!skill || !method) return of(undefined)
     const body = this.resolveParams(cfg.params)
     // AdaosClient.callSkill currently returns an Observable<T>
-    return this.adaos.callSkill<T>(skill, method, body)
+    return this.adaos
+      .callSkill<T>(skill, method, body)
+      .pipe(catchError((err) => this.recoverLoadFailure<T>('skill', `${skill}.${method}`, err)))
   }
 
   private fromApi<T>(cfg: ApiDataSource): Observable<T | undefined> {
@@ -58,28 +60,39 @@ export class PageDataService {
     if (method === 'GET') {
       return this.http
         .get<T>(absUrl, { params: params as any, headers })
-        .pipe(map((v) => v as T))
+        .pipe(map((v) => v as T), catchError((err) => this.recoverLoadFailure<T>('api', absUrl, err)))
     }
     if (method === 'DELETE') {
       return this.http
         .delete<T>(absUrl, { params: params as any, headers })
-        .pipe(map((v) => v as T))
+        .pipe(map((v) => v as T), catchError((err) => this.recoverLoadFailure<T>('api', absUrl, err)))
     }
     if (method === 'POST') {
       return this.http
         .post<T>(absUrl, body, { params: params as any, headers })
-        .pipe(map((v) => v as T))
+        .pipe(map((v) => v as T), catchError((err) => this.recoverLoadFailure<T>('api', absUrl, err)))
     }
     if (method === 'PUT') {
       return this.http
         .put<T>(absUrl, body, { params: params as any, headers })
-        .pipe(map((v) => v as T))
+        .pipe(map((v) => v as T), catchError((err) => this.recoverLoadFailure<T>('api', absUrl, err)))
     }
     if (method === 'PATCH') {
       return this.http
         .patch<T>(absUrl, body, { params: params as any, headers })
-        .pipe(map((v) => v as T))
+        .pipe(map((v) => v as T), catchError((err) => this.recoverLoadFailure<T>('api', absUrl, err)))
     }
+    return of(undefined)
+  }
+
+  private recoverLoadFailure<T>(
+    kind: 'skill' | 'api',
+    target: string,
+    err: unknown
+  ): Observable<T | undefined> {
+    try {
+      console.warn(`PageDataService ${kind} load failed`, { target, err })
+    } catch {}
     return of(undefined)
   }
 
