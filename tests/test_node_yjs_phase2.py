@@ -92,6 +92,51 @@ def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     assert result["error"] == "scenario_id_required"
 
 
+def test_node_yjs_ensure_dev_endpoint_forwards_requested_id_and_title(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def _fake_ensure_dev(scenario_id: str, *, requested_id: str | None = None, title: str | None = None) -> dict[str, object]:
+        captured.append(
+            {
+                "scenario_id": scenario_id,
+                "requested_id": requested_id,
+                "title": title,
+            }
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "created": False,
+            "webspace_id": requested_id or "dev_prompt_engineer_scenario",
+            "scenario_id": scenario_id,
+            "home_scenario": scenario_id,
+        }
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "ensure_dev_webspace_for_scenario", _fake_ensure_dev)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_ensure_dev(
+            node_api_module.WebspaceYjsActionRequest(
+                scenario_id="prompt_engineer_scenario",
+                requested_id="dev_prompt",
+                title="Prompt IDE",
+            )
+        )
+    )
+
+    assert captured == [
+        {
+            "scenario_id": "prompt_engineer_scenario",
+            "requested_id": "dev_prompt",
+            "title": "Prompt IDE",
+        }
+    ]
+    assert result["ok"] is True
+    assert result["runtime"]["webspace_id"] == "dev_prompt"
+
+
 def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []
@@ -165,3 +210,52 @@ def test_node_cli_scenario_command_omits_set_home_when_flag_is_absent(monkeypatc
             "json_output": True,
         }
     ]
+
+
+def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            captured.append(
+                {
+                    "path": kwargs.get("path"),
+                    "body": dict(kwargs.get("body") or {}),
+                }
+            )
+            or (200, {"ok": True, "accepted": True, "created": False, "webspace_id": "dev_prompt", "scenario_id": "prompt_engineer_scenario"})
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_ensure_dev_action(
+        scenario_id="prompt_engineer_scenario",
+        requested_id="dev_prompt",
+        title="Prompt IDE",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == [
+        {
+            "path": "/api/node/yjs/dev-webspaces/ensure",
+            "body": {
+                "scenario_id": "prompt_engineer_scenario",
+                "requested_id": "dev_prompt",
+                "title": "Prompt IDE",
+            },
+        }
+    ]
+    assert rendered[-1][1] is True

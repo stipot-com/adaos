@@ -233,6 +233,16 @@ For dev webspaces:
 - `home_scenario` may point to the scenario currently under development
 - dev mode affects source resolution and mounted skill variants
 
+Operational policy for the current incremental implementation:
+
+- regular workspaces keep `home_scenario` stable unless an explicit
+  `set_home` / `set-home` action is requested
+- dev webspaces may update `home_scenario` automatically when scenario
+  switching happens without an explicit override
+- `ensure_dev` is the preferred orchestration primitive for
+  scenario-driven dev UX because it reuses or creates a dev webspace with a
+  consistent `home_scenario`
+
 ### Dev webspace is a first-class use case
 
 The current runtime already has separate dev semantics:
@@ -395,6 +405,13 @@ Additions:
 - `current_scenario` remains live Yjs state
 - explicit dev compatibility rule:
   metadata is canonical, `DEV:` title prefix remains a mirror
+- control surfaces should expose explicit operations for:
+  - `go_home`
+  - `set_home`
+  - `ensure_dev`
+- default policy remains asymmetric:
+  regular workspaces do not auto-persist switched scenarios as home, while
+  dev webspaces may do so unless an explicit override is supplied
 
 Intentionally untouched scope:
 

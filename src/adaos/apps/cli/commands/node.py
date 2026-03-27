@@ -764,6 +764,51 @@ def _node_yjs_control_action(
         _print_yjs_runtime_summary({"runtime": runtime})
 
 
+def _node_yjs_ensure_dev_action(
+    *,
+    scenario_id: str,
+    requested_id: str | None,
+    title: str | None,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path="/api/node/yjs/dev-webspaces/ensure",
+        token=resolve_control_token(explicit=cfg.token),
+        body={
+            "scenario_id": str(scenario_id or "").strip() or None,
+            "requested_id": str(requested_id or "").strip() or None,
+            "title": str(title or "").strip() or None,
+        },
+        timeout=20.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs ensure-dev failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs ensure-dev failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(
+        f"yjs ensure-dev: accepted={payload.get('accepted')} "
+        f"created={payload.get('created')} "
+        f"webspace={payload.get('webspace_id') or '-'} "
+        f"scenario={payload.get('scenario_id') or scenario_id}"
+    )
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
 @yjs_app.command("reload")
 def node_yjs_reload(
     webspace: str = typer.Option("default", "--webspace", help="Webspace id to reseed"),
@@ -860,6 +905,23 @@ def node_yjs_set_home(
         webspace=webspace,
         scenario_id=scenario_id,
         set_home=None,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("ensure-dev")
+def node_yjs_ensure_dev(
+    scenario_id: str = typer.Option(..., "--scenario-id", help="Scenario id to open in a dev webspace"),
+    webspace: str | None = typer.Option(None, "--webspace", help="Optional preferred dev webspace id"),
+    title: str | None = typer.Option(None, "--title", help="Optional preferred display title"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_ensure_dev_action(
+        scenario_id=scenario_id,
+        requested_id=webspace,
+        title=title,
         control=control,
         json_output=json_output,
     )

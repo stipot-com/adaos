@@ -60,6 +60,22 @@ type WebspaceEntry = {
               <div><strong>Home scenario:</strong> {{ ws.home_scenario || 'web_desktop' }}</div>
               <div><strong>Source mode:</strong> {{ ws.source_mode || 'workspace' }}</div>
             </div>
+            <ion-button
+              expand="block"
+              fill="outline"
+              (click)="goHomeSelected()"
+              [disabled]="!selectedWorkspaceId"
+            >
+              Go Home In Selected Space
+            </ion-button>
+            <ion-button
+              expand="block"
+              fill="outline"
+              (click)="setSelectedHomeToCurrentScenario()"
+              [disabled]="!canSetSelectedHomeToCurrentScenario()"
+            >
+              Make Current Scenario Home
+            </ion-button>
             <ion-button expand="block" (click)="renameSelected()">
               Save Title
             </ion-button>
@@ -250,6 +266,30 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
   }
 
+  async goHomeSelected(): Promise<void> {
+    const id = (this.selectedWorkspaceId || '').trim()
+    if (!id) return
+    try {
+      await this.adaos.sendEventsCommand('desktop.webspace.go_home', { webspace_id: id })
+      await this.switchWorkspace(id)
+    } catch {
+      await this.presentToast('Failed to go home in selected workspace')
+    }
+  }
+
+  async setSelectedHomeToCurrentScenario(): Promise<void> {
+    const id = (this.selectedWorkspaceId || '').trim()
+    if (!this.canSetSelectedHomeToCurrentScenario() || !id) return
+    try {
+      await this.adaos.sendEventsCommand('desktop.webspace.set_home', {
+        webspace_id: id,
+        scenario_id: this.readCurrentScenarioId(),
+      })
+    } catch {
+      await this.presentToast('Failed to update home scenario')
+    }
+  }
+
   get selectedWorkspace(): WebspaceEntry | undefined {
     return this.webspaces.find((ws) => ws.id === this.selectedWorkspaceId)
   }
@@ -279,6 +319,10 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
 
   formatWorkspaceKind(entry?: WebspaceEntry): string {
     return String(entry?.kind || '').trim() || 'workspace'
+  }
+
+  canSetSelectedHomeToCurrentScenario(): boolean {
+    return Boolean(this.selectedWorkspaceId) && this.selectedWorkspaceId === this.activeWebspace
   }
 
   previewHomeScenario(): string {

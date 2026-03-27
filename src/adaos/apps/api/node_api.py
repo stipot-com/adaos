@@ -21,6 +21,7 @@ from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
+    ensure_dev_webspace_for_scenario,
     go_home_webspace,
     reload_webspace_from_scenario,
     restore_webspace_from_snapshot,
@@ -89,6 +90,8 @@ class MemberUpdateRequest(BaseModel):
 class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
     set_home: bool | None = None
+    requested_id: str | None = None
+    title: str | None = None
 
 
 def _raise_400(detail: str) -> None:
@@ -404,6 +407,34 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/dev-webspaces/ensure", dependencies=[Depends(require_token)])
+async def node_yjs_ensure_dev(payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "hub_role_required",
+        }
+    scenario_id = str(payload.scenario_id or "").strip()
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "scenario_id_required",
+        }
+    result = await ensure_dev_webspace_for_scenario(
+        scenario_id,
+        requested_id=str(payload.requested_id or "").strip() or None,
+        title=str(payload.title or "").strip() or None,
+    )
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(result.get("webspace_id") or "default") or "default",
     )
     return result
 
