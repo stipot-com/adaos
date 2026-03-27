@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core'
 import { HttpClient } from '@angular/common/http'
 import { Observable, of } from 'rxjs'
-import { catchError, map } from 'rxjs/operators'
+import { catchError, map, shareReplay } from 'rxjs/operators'
 import {
   ApiDataSource,
   DataSourceConfig,
@@ -19,6 +19,9 @@ import { observeDeep } from '../y/y-helpers'
 
 @Injectable({ providedIn: 'root' })
 export class PageDataService {
+  private readonly infrastateSnapshotTtlMs = 1000
+  private readonly infrastateSnapshotCache = new Map<string, { at: number; stream: Observable<any | undefined> }>()
+
   constructor(
     private http: HttpClient,
     private state: PageStateService,
@@ -116,23 +119,30 @@ export class PageDataService {
     return !!path && (path === 'data/infrastate' || path.startsWith('data/infrastate/'))
   }
 
-  private hasMeaningfulInfrastateValue(value: any): boolean {
-    if (value == null) return false
-    if (Array.isArray(value)) return true
-    if (typeof value === 'object') return Object.keys(value).length > 0
-    return true
+  private loadInfrastateSnapshot(webspaceId: string): Observable<any | undefined> {
+    const now = Date.now()
+    const cached = this.infrastateSnapshotCache.get(webspaceId)
+    if (cached && now - cached.at <= this.infrastateSnapshotTtlMs) {
+      return cached.stream
+    }
+    const rel = `/api/node/infrastate/snapshot?webspace_id=${encodeURIComponent(webspaceId)}`
+    const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
+    const stream = this.http
+      .get<{ ok?: boolean; snapshot?: any }>(this.absUrl(rel), { headers })
+      .pipe(
+        map((res) => res?.snapshot),
+        catchError((err) => this.recoverLoadFailure<any>('api', rel, err)),
+        shareReplay({ bufferSize: 1, refCount: false }),
+      )
+    this.infrastateSnapshotCache.set(webspaceId, { at: now, stream })
+    return stream
   }
 
   private loadInfrastateFallback(path?: string): Observable<any | undefined> {
     const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
-    const rel = `/api/node/infrastate/snapshot?webspace_id=${encodeURIComponent(webspaceId)}`
-    const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
-    return this.http
-      .get<{ ok?: boolean; snapshot?: any }>(this.absUrl(rel), { headers })
-      .pipe(
-        map((res) => this.pickInfrastateSnapshotValue(res?.snapshot, path)),
-        catchError((err) => this.recoverLoadFailure<any>('api', rel, err)),
-      )
+    return this.loadInfrastateSnapshot(webspaceId).pipe(
+      map((snapshot) => this.pickInfrastateSnapshotValue(snapshot, path)),
+    )
   }
 
   private pickInfrastateSnapshotValue(snapshot: any, path?: string): any {
@@ -177,11 +187,7 @@ export class PageDataService {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
         subscriber.next(value)
-        if (
-          this.isInfrastatePath(cfg.path) &&
-          !this.hasMeaningfulInfrastateValue(value) &&
-          !infrastateFallbackRequested
-        ) {
+        if (this.isInfrastatePath(cfg.path) && !infrastateFallbackRequested) {
           infrastateFallbackRequested = true
           fallbackSubscription = this.loadInfrastateFallback(cfg.path).subscribe((fallback) => {
             if (fallback !== undefined) {
