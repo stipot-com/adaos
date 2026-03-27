@@ -83,6 +83,8 @@ export class YDocService {
   private awarenessTotalStateCount = 0
   private awarenessRemoteStateCount = 0
   private awarenessCleanup?: () => void
+  private providerFirstSyncTimer: ReturnType<typeof setTimeout> | null = null
+  private providerHasSynced = false
 
   constructor(
     private adaos: AdaosClient,
@@ -128,6 +130,47 @@ export class YDocService {
   private setSyncConnectionState(state: YDocSyncConnectionState): void {
     this.syncConnectionState$.next(state)
     this.publishSyncRuntime()
+  }
+
+  private clearProviderFirstSyncWatchdog(): void {
+    try {
+      if (this.providerFirstSyncTimer) {
+        clearTimeout(this.providerFirstSyncTimer)
+      }
+    } catch {}
+    this.providerFirstSyncTimer = null
+  }
+
+  private armProviderFirstSyncWatchdog(
+    provider: WebsocketProvider | DataChannelProvider | undefined,
+    timeoutMs = 9000,
+  ): void {
+    this.clearProviderFirstSyncWatchdog()
+    if (!provider || this.provider !== provider) return
+    try {
+      if ((provider as any)?.synced) return
+    } catch {}
+    this.providerFirstSyncTimer = setTimeout(() => {
+      if (!provider || this.provider !== provider) return
+      try {
+        if ((provider as any)?.synced) return
+      } catch {}
+      this.lastFirstSyncTimeoutAt = Date.now()
+      this.publishSyncRuntime()
+      const baseHttp = this.adaos.getBaseUrl().replace(/\/$/, '')
+      const serverUrl = `${baseHttp.replace(/^http/, 'ws')}/yws`
+      const room = this.currentWebspaceId || 'default'
+      const remoteProxy = baseHttp.includes('/hubs/')
+      if (this.currentSyncPath === 'yws') {
+        this.setSyncConnectionState('connecting')
+        this.channels.reportSyncPathState(this.currentSyncPath, 'connecting')
+        void this.attemptSemanticSyncRecovery('first_sync_timeout', {
+          serverUrl,
+          room,
+          remoteProxy,
+        })
+      }
+    }, Math.max(1000, timeoutMs))
   }
 
   private refreshAwarenessState(awareness: any | undefined | null): void {
@@ -341,10 +384,14 @@ export class YDocService {
     )
     this.currentSyncPath = syncPath.path as 'webrtc_data:yjs' | 'yws'
     this.provider = syncPath.provider
+    this.providerHasSynced = Boolean((this.provider as any)?.synced)
     this.lastProviderCreatedAt = Date.now()
-    this.setSyncConnectionState('connecting')
+    this.setSyncConnectionState(this.providerHasSynced ? 'connected' : 'connecting')
     this.attachAwarenessSignals(this.provider)
     this.attachProviderConnectionSignals(this.provider)
+    if (!this.providerHasSynced) {
+      this.armProviderFirstSyncWatchdog(this.provider)
+    }
     this.publishSyncRuntime()
     return {
       provider: syncPath.provider,
@@ -1070,6 +1117,12 @@ export class YDocService {
       p.on('sync', (synced: any) => {
         try {
           const connected = Boolean(synced)
+          this.providerHasSynced = connected
+          if (connected) {
+            this.clearProviderFirstSyncWatchdog()
+          } else {
+            this.armProviderFirstSyncWatchdog(provider)
+          }
           this.setSyncConnectionState(connected ? 'connected' : 'disconnected')
           this.channels.reportSyncPathState(
             this.currentSyncPath,
@@ -1081,11 +1134,20 @@ export class YDocService {
         try {
           const st = String(ev?.status || '').trim().toLowerCase()
           if (st === 'connected') {
-            this.setSyncConnectionState('connected')
-            this.channels.reportSyncPathState(this.currentSyncPath, 'connected')
+            const ready = this.providerHasSynced || Boolean(p?.synced)
+            if (ready) {
+              this.setSyncConnectionState('connected')
+              this.channels.reportSyncPathState(this.currentSyncPath, 'connected')
+              this.clearProviderFirstSyncWatchdog()
+            } else {
+              this.setSyncConnectionState('connecting')
+              this.channels.reportSyncPathState(this.currentSyncPath, 'connecting')
+              this.armProviderFirstSyncWatchdog(provider)
+            }
             return
           }
           if (st !== 'disconnected') return
+          this.clearProviderFirstSyncWatchdog()
           this.lastProviderDisconnectedAt = Date.now()
           this.setSyncConnectionState('disconnected')
           this.channels.reportSyncPathState(this.currentSyncPath, 'disconnected')
@@ -1125,6 +1187,8 @@ export class YDocService {
     this.awarenessCleanup = undefined
     this.provider = undefined
     this.currentSyncPath = null
+    this.providerHasSynced = false
+    this.clearProviderFirstSyncWatchdog()
     this.refreshAwarenessState(null)
     this.setSyncConnectionState('idle')
     this.channels.reportSyncPathState(lastPath, 'idle')

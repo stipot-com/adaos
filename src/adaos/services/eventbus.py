@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import time
 from collections import defaultdict
 from threading import RLock
@@ -13,6 +14,11 @@ from adaos.ports import EventBus
 Handler = Callable[[Event], Any] | Callable[[Event], Awaitable[Any]]
 
 _log = logging.getLogger("adaos.eventbus")
+
+
+def _trace_subscribe_enabled() -> bool:
+    raw = str(os.getenv("ADAOS_EVENTBUS_TRACE_SUBSCRIBE", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _handler_label(handler: Handler) -> str:
@@ -106,7 +112,8 @@ class LocalEventBus(EventBus):
     def subscribe(self, type_prefix: str, handler: Handler) -> None:
         with self._lock:
             self._subs[type_prefix].append(handler)
-        _log.debug("bus.subscribe prefix=%r handler=%s", type_prefix, _handler_label(handler))
+        if _trace_subscribe_enabled():
+            _log.debug("bus.subscribe prefix=%r handler=%s", type_prefix, _handler_label(handler))
 
     def publish(self, event: Event) -> None:
         with self._lock:
