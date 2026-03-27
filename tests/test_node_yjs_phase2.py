@@ -169,6 +169,60 @@ def test_node_infrastate_snapshot_endpoint_returns_fallback_on_tool_error(monkey
     assert result["snapshot"]["summary"]["label"] == "Infra State"
 
 
+def test_node_infrastate_action_endpoint_publishes_event_and_returns_snapshot(monkeypatch) -> None:
+    published: list[object] = []
+    wait_calls: list[float] = []
+    captured: list[tuple[str, str, dict[str, object]]] = []
+
+    class _FakeBus:
+        def publish(self, event) -> None:
+            published.append(event)
+
+        async def wait_for_idle(self, timeout: float = 0.0) -> bool:
+            wait_calls.append(timeout)
+            return True
+
+    class _FakeSkillManager:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object]) -> dict[str, object]:
+            captured.append((skill_name, tool_name, dict(payload)))
+            return {"summary": {"label": "Infra State", "value": "ready"}, "last_refresh_ts": 123.0}
+
+    async def _fake_run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "get_ctx",
+        lambda: SimpleNamespace(skills_repo=None, sql=None, git=None, paths=None, bus=_FakeBus(), caps=None, settings=None),
+    )
+    monkeypatch.setattr(node_api_module, "SkillManager", _FakeSkillManager)
+    monkeypatch.setattr(node_api_module, "SqliteSkillRegistry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(node_api_module.anyio.to_thread, "run_sync", _fake_run_sync)
+
+    result = asyncio.run(
+        node_api_module.node_infrastate_action(
+            node_api_module.InfrastateActionRequest(
+                id="select_node",
+                webspace_id="default",
+                node_id="member-1",
+            )
+        )
+    )
+
+    assert len(published) == 1
+    assert getattr(published[0], "type", "") == "infrastate.action"
+    assert getattr(published[0], "payload", {})["node_id"] == "member-1"
+    assert wait_calls == [2.5]
+    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "default"})]
+    assert result["ok"] is True
+    assert result["action"] == "select_node"
+    assert result["snapshot"]["summary"]["value"] == "ready"
+
+
 def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
 

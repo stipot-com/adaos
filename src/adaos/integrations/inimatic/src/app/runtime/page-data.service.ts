@@ -145,6 +145,19 @@ export class PageDataService {
     )
   }
 
+  private readInfrastateRootFromYDoc(): any {
+    const root = this.ydoc.toJSON(this.ydoc.getPath('data')) || {}
+    return root?.infrastate
+  }
+
+  private hasLiveInfrastateSnapshot(): boolean {
+    const root = this.readInfrastateRootFromYDoc()
+    if (!root || typeof root !== 'object' || Array.isArray(root)) return false
+    const lastRefresh = Number((root as any)?.last_refresh_ts || 0)
+    if (!Number.isFinite(lastRefresh) || lastRefresh <= 0) return false
+    return true
+  }
+
   private pickInfrastateSnapshotValue(snapshot: any, path?: string): any {
     if (!path || !this.isInfrastatePath(path)) return snapshot
     const segs = path.split('/').filter(Boolean)
@@ -195,7 +208,11 @@ export class PageDataService {
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
         subscriber.next(value)
-        if (this.isInfrastatePath(cfg.path) && !infrastateFallbackRequested) {
+        if (
+          this.isInfrastatePath(cfg.path) &&
+          !infrastateFallbackRequested &&
+          !this.hasLiveInfrastateSnapshot()
+        ) {
           infrastateFallbackRequested = true
           fallbackSubscription = this.loadInfrastateFallback(cfg.path).subscribe((fallback) => {
             if (fallback !== undefined) {

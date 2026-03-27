@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from adaos.domain import Event
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
 from adaos.services.agent_context import get_ctx
@@ -105,6 +106,13 @@ class WebspaceYjsActionRequest(BaseModel):
 class WebspaceToggleInstallRequest(BaseModel):
     type: str = Field(..., pattern="^(app|widget)$")
     id: str = Field(..., min_length=1)
+
+
+class InfrastateActionRequest(BaseModel):
+    id: str = Field(..., min_length=1)
+    webspace_id: str | None = None
+    node_id: str | None = None
+    value: str | None = None
 
 
 def _raise_400(detail: str) -> None:
@@ -415,6 +423,59 @@ async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, 
         "webspace_id": target_webspace_id,
         "degraded": bool(snapshot.get("fallback")) if isinstance(snapshot, dict) else False,
         "error": (snapshot.get("errors") or [None])[0] if isinstance(snapshot, dict) else None,
+        "snapshot": snapshot,
+    }
+
+
+@router.post("/infrastate/action", dependencies=[Depends(require_token)])
+async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(payload.webspace_id or "default").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    ctx = get_ctx()
+    mgr = SkillManager(
+        repo=ctx.skills_repo,
+        registry=SqliteSkillRegistry(ctx.sql),
+        git=ctx.git,
+        paths=ctx.paths,
+        bus=getattr(ctx, "bus", None),
+        caps=ctx.caps,
+        settings=ctx.settings,
+    )
+    event_payload: dict[str, Any] = {
+        "id": str(payload.id or "").strip(),
+        "webspace_id": target_webspace_id,
+    }
+    node_id = str(payload.node_id or "").strip()
+    value = payload.value
+    if node_id:
+        event_payload["node_id"] = node_id
+    if value is not None:
+        event_payload["value"] = value
+    ctx.bus.publish(Event(type="infrastate.action", payload=event_payload, source="api.node", ts=time.time()))
+    waiter = getattr(ctx.bus, "wait_for_idle", None)
+    if callable(waiter):
+        try:
+            await waiter(timeout=2.5)
+        except Exception:
+            _log.debug("wait_for_idle failed after infrastate.action", exc_info=True)
+
+    def _load_snapshot() -> dict[str, Any]:
+        result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
+        return result if isinstance(result, dict) else {"summary": {}, "raw": result}
+
+    snapshot = await anyio.to_thread.run_sync(_load_snapshot)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "action": event_payload["id"],
         "snapshot": snapshot,
     }
 

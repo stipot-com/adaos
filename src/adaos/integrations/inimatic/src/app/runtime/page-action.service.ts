@@ -185,7 +185,8 @@ export class PageActionService {
       normalized === 'desktop.webspace.reload' ||
       normalized === 'desktop.webspace.reset' ||
       normalized === 'desktop.webspace.go_home' ||
-      normalized === 'desktop.webspace.set_home'
+      normalized === 'desktop.webspace.set_home' ||
+      normalized === 'infrastate.action'
     ) {
       return 12_000
     }
@@ -251,6 +252,17 @@ export class PageActionService {
         path: `/api/node/yjs/webspaces/${encodedWebspaceId}/set-home`,
         body: {
           scenario_id: body?.['scenario_id'],
+        },
+      }
+    }
+    if (target === 'infrastate.action') {
+      return {
+        path: '/api/node/infrastate/action',
+        body: {
+          id: body?.['id'],
+          webspace_id: webspaceId,
+          node_id: body?.['node_id'],
+          value: body?.['value'],
         },
       }
     }
