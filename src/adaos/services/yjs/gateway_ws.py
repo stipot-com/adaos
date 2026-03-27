@@ -682,6 +682,33 @@ async def process_events_command(
             await _ack()
         return None
 
+    if kind == "desktop.webspace.ensure_dev":
+        target = str((payload or {}).get("scenario_id") or "").strip()
+        if not target:
+            await _ack(False, error="scenario_id required")
+            return None
+        try:
+            from adaos.services.scenario.webspace_runtime import ensure_dev_webspace_for_scenario
+
+            result = await ensure_dev_webspace_for_scenario(
+                target,
+                requested_id=str((payload or {}).get("id") or (payload or {}).get("requested_id") or "").strip() or None,
+                title=str((payload or {}).get("title") or "").strip() or None,
+            )
+            ensured_webspace_id = str(result.get("webspace_id") or "").strip() or None
+            if ensured_webspace_id:
+                await ensure_webspace_ready(
+                    ensured_webspace_id,
+                    scenario_id=str(result.get("home_scenario") or target).strip() or target,
+                )
+            await _ack(data=result)
+        except ValueError as exc:
+            await _ack(False, error=str(exc) or "scenario_id required")
+        except Exception:
+            _log.warning("desktop.webspace.ensure_dev failed scenario=%s", target, exc_info=True)
+            await _ack(False, error="dev_webspace_unavailable")
+        return None
+
     if kind == "desktop.webspace.use":
         target = payload.get("id") or payload.get("webspace_id")
         if not target:

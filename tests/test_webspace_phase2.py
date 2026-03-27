@@ -230,6 +230,46 @@ def test_webspace_service_set_home_scenario_updates_manifest(monkeypatch) -> Non
     assert info.home_scenario == "prompt_engineer_scenario"
 
 
+def test_ensure_dev_webspace_for_scenario_reuses_existing_dev_space() -> None:
+    webspace_id = "phase2-dev-existing"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Prompt IDE",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    result = asyncio.run(webspace_runtime_module.ensure_dev_webspace_for_scenario("prompt_engineer_scenario"))
+
+    assert result["ok"] is True
+    assert result["created"] is False
+    assert result["webspace_id"] == webspace_id
+    assert result["home_scenario"] == "prompt_engineer_scenario"
+
+
+def test_ensure_dev_webspace_for_scenario_creates_missing_dev_space(monkeypatch) -> None:
+    async def _fake_seed(webspace_id: str, scenario_id: str, *, dev=None) -> None:  # noqa: ARG001
+        return None
+
+    async def _fake_sync_listing() -> None:
+        return None
+
+    monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+
+    result = asyncio.run(webspace_runtime_module.ensure_dev_webspace_for_scenario("phase2_fresh_scenario"))
+
+    row = get_workspace(str(result["webspace_id"]))
+    assert row is not None
+    assert row.is_dev is True
+    assert row.home_scenario == "phase2_fresh_scenario"
+    assert result["created"] is True
+    assert result["kind"] == "dev"
+    assert result["source_mode"] == "dev"
+
+
 def test_desktop_scenario_set_forwards_set_home_flag(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
 

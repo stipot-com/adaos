@@ -140,6 +140,28 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   async onItemClick(item: any): Promise<void> {
     this.itemClick.emit(item)
     const cfg = this.widget
+    const hasExplicitScenarioSelect = Array.isArray(cfg?.actions)
+      && cfg.actions.some(
+        (act) =>
+          act.on === 'select'
+          && act.type === 'callHost'
+          && (act.target === 'desktop.scenario.set' || act.target === 'desktop.webspace.ensure_dev')
+      )
+    if (item?.scenario_id && !hasExplicitScenarioSelect) {
+      await this.actions.handle(
+        {
+          on: 'select',
+          type: 'callHost',
+          target: 'desktop.scenario.set',
+          params: {
+            scenario_id: '$event.scenario_id',
+            dev: '$event.dev',
+            title: '$event.title',
+          },
+        },
+        { event: item, widget: cfg }
+      )
+    }
     if (!cfg?.actions) return
     for (const act of cfg.actions) {
       if (act.on === 'select') {

@@ -116,7 +116,11 @@ export class DesktopSchemaService {
               on: 'select',
               type: 'callHost',
               target: 'desktop.scenario.set',
-              params: { scenario_id: '$event.scenario_id' },
+              params: {
+                scenario_id: '$event.scenario_id',
+                dev: '$event.dev',
+                title: '$event.title',
+              },
             },
             {
               on: 'select',

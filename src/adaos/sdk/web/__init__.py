@@ -18,6 +18,7 @@ from .webspace import (
     webspace_refresh,
     webspace_set_home,
     webspace_go_home,
+    webspace_ensure_dev,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "webspace_refresh",
     "webspace_set_home",
     "webspace_go_home",
+    "webspace_ensure_dev",
 ]

@@ -96,7 +96,29 @@ export class PageActionService {
       // best-effort only
     }
     try {
+      if (
+        target === 'desktop.scenario.set' &&
+        !!body.dev &&
+        typeof body.scenario_id === 'string' &&
+        body.scenario_id.trim()
+      ) {
+        const ensureAck = await this.adaos.sendEventsCommand('desktop.webspace.ensure_dev', {
+          scenario_id: body.scenario_id,
+          title: typeof body.title === 'string' ? body.title : undefined,
+        })
+        const ensuredWebspaceId = String(ensureAck?.data?.webspace_id || '').trim()
+        if (ensuredWebspaceId) {
+          await this.ydoc.switchWebspace(ensuredWebspaceId)
+        }
+        return ensureAck
+      }
       const ack = await this.adaos.sendEventsCommand(target, body)
+      if (target === 'desktop.webspace.ensure_dev') {
+        const ensuredWebspaceId = String(ack?.data?.webspace_id || '').trim()
+        if (ensuredWebspaceId && ensuredWebspaceId !== this.ydoc.getWebspaceId()) {
+          await this.ydoc.switchWebspace(ensuredWebspaceId)
+        }
+      }
       // If we just triggered a webspace reload/reset for the current
       // webspace, drop local IndexedDB snapshot so the next Yjs sync
       // does not re-apply stale ui/application state.

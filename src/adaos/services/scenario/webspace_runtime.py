@@ -921,6 +921,46 @@ class WebspaceService:
         await self._sync_listing()
         return _webspace_info_from_row(row)
 
+    async def ensure_dev_for_scenario(
+        self,
+        scenario_id: str,
+        *,
+        requested_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> tuple[WebspaceInfo, bool]:
+        scenario_id = str(scenario_id or "").strip()
+        requested_id = str(requested_id or "").strip() or None
+        title = str(title or "").strip() or None
+        if not scenario_id:
+            raise ValueError("scenario_id is required")
+
+        existing: Optional[workspace_index.WebspaceManifest] = None
+        if requested_id:
+            row = workspace_index.get_workspace(requested_id)
+            if row and not row.is_dev:
+                raise ValueError("requested webspace is not a dev webspace")
+            existing = row
+        if existing is None:
+            for row in workspace_index.list_workspaces():
+                if row.is_dev and row.effective_home_scenario == scenario_id:
+                    existing = row
+                    break
+
+        created = False
+        if existing is None:
+            preferred_id = requested_id or f"dev-{scenario_id}"
+            info = await self.create(
+                preferred_id,
+                title or scenario_id,
+                scenario_id=scenario_id,
+                dev=True,
+            )
+            created = True
+        else:
+            info = _webspace_info_from_row(existing)
+
+        return info, created
+
     async def delete(self, webspace_id: str) -> bool:
         webspace_id = (webspace_id or "").strip()
         if not webspace_id or webspace_id == default_webspace_id():
@@ -1350,6 +1390,33 @@ async def go_home_webspace(webspace_id: str) -> dict[str, Any]:
         raise ValueError("webspace_id is required")
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     return await switch_webspace_scenario(webspace_id, row.effective_home_scenario, set_home=False)
+
+
+async def ensure_dev_webspace_for_scenario(
+    scenario_id: str,
+    *,
+    requested_id: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    scenario_id = str(scenario_id or "").strip()
+    if not scenario_id:
+        raise ValueError("scenario_id is required")
+    svc = WebspaceService(get_ctx())
+    info, created = await svc.ensure_dev_for_scenario(
+        scenario_id,
+        requested_id=requested_id,
+        title=title,
+    )
+    return {
+        "ok": True,
+        "accepted": True,
+        "created": created,
+        "webspace_id": info.id,
+        "scenario_id": scenario_id,
+        "home_scenario": info.home_scenario,
+        "kind": info.kind,
+        "source_mode": info.source_mode,
+    }
 
 
 @subscribe("desktop.webspace.reload")

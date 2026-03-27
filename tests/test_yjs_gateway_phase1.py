@@ -268,3 +268,62 @@ def test_process_events_command_requires_scenario_id_for_set_home(monkeypatch) -
     assert published == []
     assert responses[-1]["ok"] is False
     assert responses[-1]["error"] == "scenario_id required"
+
+
+def test_process_events_command_ensure_dev_returns_webspace_id(monkeypatch) -> None:
+    from adaos.services.scenario import webspace_runtime as webspace_runtime_module
+
+    responses: list[dict[str, object]] = []
+    ensured: list[tuple[str, str]] = []
+
+    async def _fake_ensure_dev(
+        scenario_id: str,
+        *,
+        requested_id: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, object]:
+        assert requested_id is None
+        assert title == "Prompt IDE"
+        return {
+            "ok": True,
+            "accepted": True,
+            "created": True,
+            "webspace_id": "dev-prompt-engineer-scenario",
+            "scenario_id": scenario_id,
+            "home_scenario": scenario_id,
+            "kind": "dev",
+            "source_mode": "dev",
+        }
+
+    async def _fake_ready(webspace_id: str, scenario_id: str | None = None) -> None:
+        ensured.append((webspace_id, str(scenario_id or "")))
+
+    async def _send_response(msg: dict[str, object]) -> None:
+        responses.append(msg)
+
+    monkeypatch.setattr(webspace_runtime_module, "ensure_dev_webspace_for_scenario", _fake_ensure_dev)
+    monkeypatch.setattr(gateway_module, "ensure_webspace_ready", _fake_ready)
+
+    asyncio.run(
+        gateway_module.process_events_command(
+            kind="desktop.webspace.ensure_dev",
+            cmd_id="cmd-3",
+            payload={"scenario_id": "prompt_engineer_scenario", "title": "Prompt IDE"},
+            device_id="dev-1",
+            webspace_id="default",
+            send_response=_send_response,
+        )
+    )
+
+    assert ensured == [("dev-prompt-engineer-scenario", "prompt_engineer_scenario")]
+    assert responses[-1]["ok"] is True
+    assert responses[-1]["data"] == {
+        "ok": True,
+        "accepted": True,
+        "created": True,
+        "webspace_id": "dev-prompt-engineer-scenario",
+        "scenario_id": "prompt_engineer_scenario",
+        "home_scenario": "prompt_engineer_scenario",
+        "kind": "dev",
+        "source_mode": "dev",
+    }

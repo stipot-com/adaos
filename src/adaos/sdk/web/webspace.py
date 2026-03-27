@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any, List
 
 from adaos.sdk.core.decorators import tool
-from adaos.services.scenario.webspace_runtime import WebspaceInfo, WebspaceService, go_home_webspace
+from adaos.services.scenario.webspace_runtime import (
+    WebspaceInfo,
+    WebspaceService,
+    ensure_dev_webspace_for_scenario,
+    go_home_webspace,
+)
 from adaos.services.yjs.webspace import default_webspace_id
 
 
@@ -127,3 +132,25 @@ async def webspace_go_home(webspace_id: str | None = None) -> dict[str, Any]:
     """
     target = str(webspace_id or "").strip() or default_webspace_id()
     return await go_home_webspace(target)
+
+
+@tool(
+    "web.webspace.ensure_dev",
+    summary="Ensure a dev webspace exists for a scenario and return its identity.",
+    stability="experimental",
+    examples=["await web.webspace.ensure_dev('prompt_engineer_scenario')"],
+)
+async def webspace_ensure_dev(
+    scenario_id: str,
+    *,
+    webspace_id: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """
+    Reuse or create a dev webspace for the given base scenario.
+    """
+    return await ensure_dev_webspace_for_scenario(
+        scenario_id,
+        requested_id=webspace_id,
+        title=title,
+    )
