@@ -826,7 +826,7 @@ def node_yjs_scenario(
         action="scenario",
         webspace=webspace,
         scenario_id=scenario_id,
-        set_home=set_home,
+        set_home=True if set_home else None,
         control=control,
         json_output=json_output,
     )

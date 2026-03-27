@@ -41,6 +41,29 @@ def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> Non
     assert result["runtime"]["webspace_id"] == "phase2-node"
 
 
+def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypatch) -> None:
+    captured: list[tuple[str, str, bool | None]] = []
+
+    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool | None = None) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home))
+        return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "switch_webspace_scenario", _fake_switch)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_switch_scenario(
+            "phase2-node",
+            node_api_module.WebspaceYjsActionRequest(scenario_id="prompt_engineer_scenario"),
+        )
+    )
+
+    assert captured == [("phase2-node", "prompt_engineer_scenario", None)]
+    assert result["ok"] is True
+    assert result["set_home"] is None
+
+
 def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     captured: list[str] = []
 
@@ -113,3 +136,32 @@ def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:
         }
     ]
     assert rendered[-1][1] is True
+
+
+def test_node_cli_scenario_command_omits_set_home_when_flag_is_absent(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        node_cli_module,
+        "_node_yjs_control_action",
+        lambda **kwargs: captured.append(dict(kwargs)),
+    )
+
+    node_cli_module.node_yjs_scenario(
+        webspace="phase2-home",
+        scenario_id="prompt_engineer_scenario",
+        set_home=False,
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == [
+        {
+            "action": "scenario",
+            "webspace": "phase2-home",
+            "scenario_id": "prompt_engineer_scenario",
+            "set_home": None,
+            "control": "http://127.0.0.1:8080",
+            "json_output": True,
+        }
+    ]

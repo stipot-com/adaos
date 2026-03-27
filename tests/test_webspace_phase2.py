@@ -124,6 +124,62 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert result["home_scenario"] == "prompt_engineer_scenario"
 
 
+def test_switch_webspace_scenario_auto_persists_home_for_dev_webspace(monkeypatch) -> None:
+    webspace_id = "phase2-dev-auto-home"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Prompt Lab",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = _patch_switch_dependencies(monkeypatch)
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.home_scenario == "prompt_engineer_scenario"
+    assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert fake_state["_meta"]["listing_syncs"] == [True]
+    assert result["set_home"] is True
+    assert result["home_scenario"] == "prompt_engineer_scenario"
+
+
+def test_switch_webspace_scenario_keeps_home_unchanged_for_regular_workspace(monkeypatch) -> None:
+    webspace_id = "phase2-workspace-no-auto-home"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Workspace",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    _patch_switch_dependencies(monkeypatch)
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.home_scenario == "web_desktop"
+    assert result["set_home"] is False
+    assert result["home_scenario"] == "web_desktop"
+
+
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "phase2-go-home"
     ensure_workspace(webspace_id)
@@ -190,3 +246,21 @@ def test_desktop_scenario_set_forwards_set_home_flag(monkeypatch) -> None:
     )
 
     assert captured == [("phase2-forward", "prompt_engineer_scenario", True)]
+
+
+def test_desktop_scenario_set_preserves_explicit_false(monkeypatch) -> None:
+    captured: list[tuple[str, str, bool | None]] = []
+
+    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool | None = None) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home))
+        return {"ok": True}
+
+    monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
+
+    asyncio.run(
+        webspace_runtime_module._on_desktop_scenario_set(
+            {"webspace_id": "phase2-forward", "scenario_id": "prompt_engineer_scenario", "set_home": False}
+        )
+    )
+
+    assert captured == [("phase2-forward", "prompt_engineer_scenario", False)]

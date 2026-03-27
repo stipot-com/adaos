@@ -589,6 +589,11 @@ export class AppComponent implements OnInit, OnDestroy {
 		return !!cur && cur !== this.readCurrentHomeScenario()
 	}
 
+	get canSetCurrentScenarioHome(): boolean {
+		const cur = String(this.currentScenario || '').trim()
+		return !!cur && cur !== this.readCurrentHomeScenario()
+	}
+
 	private isLocalHubTrusted(): boolean {
 		try {
 			const base = this.adaos.getBaseUrl().replace(/\/+$/, '')
@@ -614,6 +619,27 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	async onClickCloseToDesktop(): Promise<void> {
 		return this.onClickHome()
+	}
+
+	async onClickSetCurrentScenarioHome(): Promise<void> {
+		const scenarioId = String(this.currentScenario || '').trim()
+		if (!scenarioId) return
+		try {
+			const ws = this.ydoc.getWebspaceId()
+			await this.adaos.sendEventsCommand('desktop.webspace.set_home', {
+				webspace_id: ws || undefined,
+				scenario_id: scenarioId,
+			})
+			const toast = await this.toastCtrl.create({
+				message: `Home scenario set to ${scenarioId}.`,
+				duration: 1800,
+				position: 'bottom',
+				color: 'success',
+			})
+			await toast.present()
+		} catch (err) {
+			console.warn('desktop.webspace.set_home failed', err)
+		}
 	}
 
 	private readCurrentHomeScenario(): string {

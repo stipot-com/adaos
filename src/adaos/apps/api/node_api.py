@@ -88,7 +88,7 @@ class MemberUpdateRequest(BaseModel):
 
 class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
-    set_home: bool = False
+    set_home: bool | None = None
 
 
 def _raise_400(detail: str) -> None:
@@ -381,7 +381,7 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
     result = await switch_webspace_scenario(
         str(webspace_id or "default") or "default",
         scenario_id,
-        set_home=bool(payload.set_home),
+        set_home=payload.set_home,
     )
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,

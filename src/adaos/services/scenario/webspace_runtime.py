@@ -1226,7 +1226,7 @@ async def switch_webspace_scenario(
     webspace_id: str,
     scenario_id: str,
     *,
-    set_home: bool = False,
+    set_home: bool | None = None,
 ) -> dict[str, Any]:
     webspace_id = str(webspace_id or "").strip()
     scenario_id = str(scenario_id or "").strip()
@@ -1235,13 +1235,21 @@ async def switch_webspace_scenario(
     if not scenario_id:
         raise ValueError("scenario_id is required")
 
-    _log.info("desktop.scenario.set webspace=%s scenario=%s set_home=%s", webspace_id, scenario_id, set_home)
+    row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
+    resolved_set_home = bool(set_home) if set_home is not None else bool(row.is_dev or row.effective_source_mode == "dev")
+
+    _log.info(
+        "desktop.scenario.set webspace=%s scenario=%s requested_set_home=%s resolved_set_home=%s",
+        webspace_id,
+        scenario_id,
+        set_home,
+        resolved_set_home,
+    )
 
     try:
         async with async_get_ydoc(webspace_id) as ydoc:
             space = "workspace"
             try:
-                row = workspace_index.get_workspace(webspace_id)
                 if row:
                     space = row.effective_source_mode
             except Exception:
@@ -1322,7 +1330,7 @@ async def switch_webspace_scenario(
         )
 
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
-    if set_home:
+    if resolved_set_home:
         row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
         await _sync_webspace_listing()
 
@@ -1332,7 +1340,7 @@ async def switch_webspace_scenario(
         "webspace_id": webspace_id,
         "scenario_id": scenario_id,
         "home_scenario": row.effective_home_scenario,
-        "set_home": bool(set_home),
+        "set_home": resolved_set_home,
     }
 
 
@@ -1415,7 +1423,11 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     if not scenario_id:
         return
     webspace_id = _webspace_id(payload)
-    set_home = bool(payload.get("set_home") or payload.get("persist_home"))
+    set_home: bool | None = None
+    if "set_home" in payload:
+        set_home = bool(payload.get("set_home"))
+    elif "persist_home" in payload:
+        set_home = bool(payload.get("persist_home"))
     await switch_webspace_scenario(webspace_id, scenario_id, set_home=set_home)
 
 

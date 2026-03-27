@@ -70,7 +70,15 @@
 					</ion-button>
 				</div>
 			</ion-title>
-				<ion-buttons slot="end">
+			<ion-buttons slot="end">
+				<ion-button
+					*ngIf="isAuthenticated && canSetCurrentScenarioHome"
+					(click)="onClickSetCurrentScenarioHome()"
+					title="Set current scenario as home"
+					aria-label="Set current scenario as home"
+				>
+					<ion-icon name="bookmark-outline"></ion-icon>
+				</ion-button>
 				<ion-button
 					*ngIf="isAuthenticated && showCloseToDesktop"
 					(click)="onClickCloseToDesktop()"
