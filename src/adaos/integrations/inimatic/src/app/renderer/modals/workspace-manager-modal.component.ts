@@ -55,6 +55,11 @@ type WebspaceEntry = {
                 [(ngModel)]="selectedWorkspaceTitle"
               ></ion-input>
             </ion-item>
+            <div class="workspace-meta" *ngIf="selectedWorkspace as ws">
+              <div><strong>Kind:</strong> {{ formatWorkspaceKind(ws) }}</div>
+              <div><strong>Home scenario:</strong> {{ ws.home_scenario || 'web_desktop' }}</div>
+              <div><strong>Source mode:</strong> {{ ws.source_mode || 'workspace' }}</div>
+            </div>
             <ion-button expand="block" (click)="renameSelected()">
               Save Title
             </ion-button>
@@ -90,6 +95,11 @@ type WebspaceEntry = {
                 Dev workspace
               </ion-checkbox>
             </ion-item>
+            <div class="workspace-meta workspace-meta-create">
+              <div><strong>Kind:</strong> {{ newWorkspaceDev ? 'dev' : 'workspace' }}</div>
+              <div><strong>Home scenario:</strong> {{ previewHomeScenario() }}</div>
+              <div><strong>Source mode:</strong> {{ newWorkspaceDev ? 'dev' : 'workspace' }}</div>
+            </div>
             <ion-button expand="block" (click)="createWorkspace()">Create</ion-button>
           </ion-card-content>
         </ion-card>
@@ -113,6 +123,19 @@ type WebspaceEntry = {
       }
       ion-card:last-child {
         margin-bottom: 0;
+      }
+      .workspace-meta {
+        padding: 8px 4px 12px;
+        display: grid;
+        gap: 4px;
+        font-size: 13px;
+        opacity: 0.82;
+      }
+      .workspace-meta strong {
+        opacity: 0.94;
+      }
+      .workspace-meta-create {
+        padding-top: 2px;
       }
     `,
   ],
@@ -227,6 +250,10 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
   }
 
+  get selectedWorkspace(): WebspaceEntry | undefined {
+    return this.webspaces.find((ws) => ws.id === this.selectedWorkspaceId)
+  }
+
   private applySelection(id?: string, updateTitle = true): void {
     this.selectedWorkspaceId = id || ''
     if (updateTitle) {
@@ -248,6 +275,14 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   private async presentToast(message: string): Promise<void> {
     const toast = await this.toast.create({ message, duration: 2000 })
     await toast.present()
+  }
+
+  formatWorkspaceKind(entry?: WebspaceEntry): string {
+    return String(entry?.kind || '').trim() || 'workspace'
+  }
+
+  previewHomeScenario(): string {
+    return this.newWorkspaceDev ? this.readCurrentScenarioId() : 'web_desktop'
   }
 
   private readCurrentScenarioId(): string {

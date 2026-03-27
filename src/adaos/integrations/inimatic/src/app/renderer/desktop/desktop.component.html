@@ -39,9 +39,12 @@
 			<select style="width: 100%; padding: 10px; border-radius: 10px;"
 				[value]="selectedApproveWebspace || activeWebspace"
 				(change)="selectedApproveWebspace = ($any($event.target).value)">
-				<option *ngFor="let ws of webspaces" [value]="ws.id">{{ ws.title || ws.id }}</option>
+				<option *ngFor="let ws of webspaces" [value]="ws.id">{{ describeWebspaceOption(ws) }}</option>
 				<option *ngIf="!webspaces.length" [value]="activeWebspace">{{ activeWebspace }}</option>
 			</select>
+			<p *ngIf="selectedApproveEntry as ws" style="opacity: 0.78; margin: 8px 0 0 0; font-size: 13px;">
+				{{ formatWebspaceKind(ws) }} · home {{ ws.home_scenario || 'web_desktop' }} · source {{ ws.source_mode || 'workspace' }}
+			</p>
 			<div style="margin-top: 12px; display: flex; gap: 8px;">
 				<ion-button (click)="approvePairing()">{{ 'pair.approve.button' | t }}</ion-button>
 			</div>

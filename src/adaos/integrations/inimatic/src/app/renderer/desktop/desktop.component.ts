@@ -557,6 +557,22 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		return entry?.title || this.activeWebspace
 	}
 
+	get selectedApproveEntry(): WebspaceEntry | undefined {
+		const targetId = this.selectedApproveWebspace || this.activeWebspace
+		return this.webspaces.find(ws => ws.id === targetId)
+	}
+
+	describeWebspaceOption(entry: WebspaceEntry): string {
+		const title = String(entry?.title || entry?.id || '').trim() || entry.id
+		const kind = this.formatWebspaceKind(entry)
+		if (kind === 'workspace') return title
+		return `${title} [${kind}]`
+	}
+
+	formatWebspaceKind(entry?: WebspaceEntry): string {
+		return String(entry?.kind || '').trim() || 'workspace'
+	}
+
 	private readWebspaces() {
 		const raw = this.y.toJSON(this.y.getPath('data/webspaces'))
 		const items = Array.isArray(raw?.items) ? (raw.items as WebspaceEntry[]) : []
