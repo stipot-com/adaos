@@ -141,6 +141,34 @@ def test_node_infrastate_snapshot_endpoint_runs_skill_tool(monkeypatch) -> None:
     assert result["snapshot"]["summary"]["value"] == "idle"
 
 
+def test_node_infrastate_snapshot_endpoint_returns_fallback_on_tool_error(monkeypatch) -> None:
+    class _FakeSkillManager:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object]) -> dict[str, object]:
+            raise RuntimeError(f"boom:{skill_name}:{tool_name}:{payload.get('webspace_id')}")
+
+    async def _fake_run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub", node_id="hub-1"))
+    monkeypatch.setattr(node_api_module, "runtime_lifecycle_snapshot", lambda: {"node_state": "ready", "reason": "ok"})
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"assessment": {"state": "nominal"}, "webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(node_api_module, "get_ctx", lambda: SimpleNamespace(skills_repo=None, sql=None, git=None, paths=None, bus=None, caps=None, settings=None))
+    monkeypatch.setattr(node_api_module, "SkillManager", _FakeSkillManager)
+    monkeypatch.setattr(node_api_module, "SqliteSkillRegistry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(node_api_module.anyio.to_thread, "run_sync", _fake_run_sync)
+
+    result = asyncio.run(node_api_module.node_infrastate_snapshot("default"))
+
+    assert result["ok"] is True
+    assert result["degraded"] is True
+    assert "RuntimeError" in str(result["error"])
+    assert result["snapshot"]["fallback"] is True
+    assert result["snapshot"]["summary"]["label"] == "Infra State"
+
+
 def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
 

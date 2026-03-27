@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any, Optional
 
 import anyio
@@ -41,6 +43,7 @@ from adaos.services.subnet.link_client import get_member_link_client
 from adaos.services.yjs.store import get_ystore_for_webspace
 
 router = APIRouter()
+_log = logging.getLogger("adaos.api.node_api")
 
 
 class NodeStatus(BaseModel):
@@ -338,15 +341,80 @@ async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, 
         settings=ctx.settings,
     )
 
+    def _fallback_snapshot(exc: Exception) -> dict[str, Any]:
+        lifecycle = runtime_lifecycle_snapshot()
+        yjs_runtime = yjs_sync_runtime_snapshot(
+            role=str(getattr(conf, "role", "") or ""),
+            webspace_id=target_webspace_id,
+        )
+        error_text = f"{type(exc).__name__}: {exc}"
+        return {
+            "summary": {
+                "label": "Infra State",
+                "value": str(lifecycle.get("node_state") or "degraded"),
+                "subtitle": f"webspace {target_webspace_id}",
+                "description": f"fallback snapshot: {error_text}",
+                "updated_at": time.time(),
+            },
+            "actions": [],
+            "update_actions": [],
+            "nodes": [],
+            "yjs_webspaces": [],
+            "node_editor": {"names_csv": "", "editable": False, "scope": "fallback"},
+            "build": [],
+            "steps": [
+                {
+                    "id": "lifecycle",
+                    "title": "Lifecycle",
+                    "status": str(lifecycle.get("node_state") or "degraded"),
+                    "description": str(lifecycle.get("reason") or "runtime fallback snapshot"),
+                },
+                {
+                    "id": "yjs_runtime",
+                    "title": "Yjs runtime",
+                    "status": "ok" if yjs_runtime else "idle",
+                    "description": str(
+                        (yjs_runtime.get("assessment") or {}).get("state")
+                        if isinstance(yjs_runtime, dict)
+                        else "unknown"
+                    ),
+                },
+            ],
+            "realtime": [],
+            "slots": [],
+            "skills": [],
+            "logs": [
+                {
+                    "id": "snapshot-error",
+                    "title": "snapshot-error",
+                    "status": "warn",
+                    "preview": error_text,
+                    "content": error_text,
+                }
+            ],
+            "events": [],
+            "lifecycle": lifecycle,
+            "yjs_runtime": yjs_runtime,
+            "last_refresh_ts": time.time(),
+            "fallback": True,
+            "errors": [error_text],
+        }
+
     def _load_snapshot() -> dict[str, Any]:
-        result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
-        return result if isinstance(result, dict) else {"summary": {}, "raw": result}
+        try:
+            result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
+            return result if isinstance(result, dict) else {"summary": {}, "raw": result}
+        except Exception as exc:
+            _log.warning("node infrastate snapshot fallback webspace=%s", target_webspace_id, exc_info=True)
+            return _fallback_snapshot(exc)
 
     snapshot = await anyio.to_thread.run_sync(_load_snapshot)
     return {
         "ok": True,
         "accepted": True,
         "webspace_id": target_webspace_id,
+        "degraded": bool(snapshot.get("fallback")) if isinstance(snapshot, dict) else False,
+        "error": (snapshot.get("errors") or [None])[0] if isinstance(snapshot, dict) else None,
         "snapshot": snapshot,
     }
 
