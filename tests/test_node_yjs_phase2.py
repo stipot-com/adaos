@@ -114,6 +114,33 @@ def test_node_yjs_toggle_install_endpoint_uses_desktop_service(monkeypatch) -> N
     assert result["runtime"]["webspace_id"] == "default"
 
 
+def test_node_infrastate_snapshot_endpoint_runs_skill_tool(monkeypatch) -> None:
+    captured: list[tuple[str, str, dict[str, object]]] = []
+
+    class _FakeSkillManager:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object]) -> dict[str, object]:
+            captured.append((skill_name, tool_name, dict(payload)))
+            return {"summary": {"label": "Core update", "value": "idle"}}
+
+    async def _fake_run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "get_ctx", lambda: SimpleNamespace(skills_repo=None, sql=None, git=None, paths=None, bus=None, caps=None, settings=None))
+    monkeypatch.setattr(node_api_module, "SkillManager", _FakeSkillManager)
+    monkeypatch.setattr(node_api_module, "SqliteSkillRegistry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(node_api_module.anyio.to_thread, "run_sync", _fake_run_sync)
+
+    result = asyncio.run(node_api_module.node_infrastate_snapshot("default"))
+
+    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "default"})]
+    assert result["ok"] is True
+    assert result["snapshot"]["summary"]["value"] == "idle"
+
+
 def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
 

@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
+from adaos.services.agent_context import get_ctx
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
 from adaos.services.io_web.desktop import WebDesktopService
 from adaos.services.media_library import (
@@ -28,6 +31,7 @@ from adaos.services.scenario.webspace_runtime import (
     restore_webspace_from_snapshot,
     switch_webspace_scenario,
 )
+from adaos.services.skill.manager import SkillManager
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
@@ -309,6 +313,41 @@ async def node_yjs_runtime(webspace_id: str | None = None) -> dict[str, Any]:
             role=conf.role,
             webspace_id=str(webspace_id or "").strip() or None,
         ),
+    }
+
+
+@router.get("/infrastate/snapshot", dependencies=[Depends(require_token)])
+async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    ctx = get_ctx()
+    mgr = SkillManager(
+        repo=ctx.skills_repo,
+        registry=SqliteSkillRegistry(ctx.sql),
+        git=ctx.git,
+        paths=ctx.paths,
+        bus=getattr(ctx, "bus", None),
+        caps=ctx.caps,
+        settings=ctx.settings,
+    )
+
+    def _load_snapshot() -> dict[str, Any]:
+        result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
+        return result if isinstance(result, dict) else {"summary": {}, "raw": result}
+
+    snapshot = await anyio.to_thread.run_sync(_load_snapshot)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "snapshot": snapshot,
     }
 
 

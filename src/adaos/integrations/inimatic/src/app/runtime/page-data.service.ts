@@ -42,7 +42,9 @@ export class PageDataService {
   private fromSkill<T>(cfg: SkillDataSource): Observable<T | undefined> {
     const [skill, method] = cfg.name.split('.', 2)
     if (!skill || !method) return of(undefined)
-    const body = this.resolveParams(cfg.params)
+    const bodyResolution = this.resolveParams(cfg.params)
+    if (bodyResolution.missingStateRefs.length) return of(undefined)
+    const body = bodyResolution.value
     // AdaosClient.callSkill currently returns an Observable<T>
     return this.adaos
       .callSkill<T>(skill, method, body)
@@ -52,8 +54,13 @@ export class PageDataService {
   private fromApi<T>(cfg: ApiDataSource): Observable<T | undefined> {
     const url = cfg.url
     if (!url) return of(undefined)
-    const body = this.resolveParams(cfg.body)
-    const params = this.resolveParams(cfg.params)
+    const bodyResolution = this.resolveParams(cfg.body)
+    const paramsResolution = this.resolveParams(cfg.params)
+    if (bodyResolution.missingStateRefs.length || paramsResolution.missingStateRefs.length) {
+      return of(undefined)
+    }
+    const body = bodyResolution.value
+    const params = paramsResolution.value
     const method = cfg.method || 'GET'
     const absUrl = this.absUrl(url)
     const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
@@ -105,30 +112,90 @@ export class PageDataService {
     return `${base}${rel}`
   }
 
-  private resolveParams(input: any): any {
-    if (!input || typeof input !== 'object') return input
+  private isInfrastatePath(path?: string): boolean {
+    return !!path && (path === 'data/infrastate' || path.startsWith('data/infrastate/'))
+  }
+
+  private hasMeaningfulInfrastateValue(value: any): boolean {
+    if (value == null) return false
+    if (Array.isArray(value)) return true
+    if (typeof value === 'object') return Object.keys(value).length > 0
+    return true
+  }
+
+  private loadInfrastateFallback(path?: string): Observable<any | undefined> {
+    const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
+    const rel = `/api/node/infrastate/snapshot?webspace_id=${encodeURIComponent(webspaceId)}`
+    const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
+    return this.http
+      .get<{ ok?: boolean; snapshot?: any }>(this.absUrl(rel), { headers })
+      .pipe(
+        map((res) => this.pickInfrastateSnapshotValue(res?.snapshot, path)),
+        catchError((err) => this.recoverLoadFailure<any>('api', rel, err)),
+      )
+  }
+
+  private pickInfrastateSnapshotValue(snapshot: any, path?: string): any {
+    if (!path || !this.isInfrastatePath(path)) return snapshot
+    const segs = path.split('/').filter(Boolean)
+    let cur: any = snapshot
+    for (const s of segs.slice(1)) {
+      if (cur == null) return undefined
+      cur = cur?.[s]
+    }
+    return cur
+  }
+
+  private resolveParams(input: any): { value: any; missingStateRefs: string[] } {
+    if (!input || typeof input !== 'object') {
+      return { value: input, missingStateRefs: [] }
+    }
     const state = this.state.getSnapshot()
     const out: any = {}
+    const missingStateRefs: string[] = []
     for (const [k, v] of Object.entries(input)) {
       if (typeof v === 'string' && v.startsWith('$state.')) {
         const key = v.slice('$state.'.length)
-        out[k] = state[key]
+        const resolved = state[key]
+        if (resolved === undefined || resolved === null || resolved === '') {
+          missingStateRefs.push(key)
+          continue
+        }
+        out[k] = resolved
       } else {
         out[k] = v
       }
     }
-    return out
+    return { value: out, missingStateRefs }
   }
 
   private fromYDoc<T>(cfg: YDocDataSource): Observable<T | undefined> {
     return new Observable<T | undefined>((subscriber) => {
+      let infrastateFallbackRequested = false
+      let fallbackSubscription: { unsubscribe(): void } | null = null
+
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
         subscriber.next(value)
+        if (
+          this.isInfrastatePath(cfg.path) &&
+          !this.hasMeaningfulInfrastateValue(value) &&
+          !infrastateFallbackRequested
+        ) {
+          infrastateFallbackRequested = true
+          fallbackSubscription = this.loadInfrastateFallback(cfg.path).subscribe((fallback) => {
+            if (fallback !== undefined) {
+              subscriber.next(fallback as T)
+            }
+          })
+        }
       }
       const unsubscribers = this.observeYDocPaths(cfg, emit)
       emit()
       return () => {
+        try {
+          fallbackSubscription?.unsubscribe()
+        } catch {}
         unsubscribers.forEach((fn) => {
           try {
             fn()
