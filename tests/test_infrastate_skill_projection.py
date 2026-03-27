@@ -47,6 +47,46 @@ def test_infrastate_yjs_tabs_do_not_self_reference_sync_runtime():
     assert items[0]["id"] == "default"
 
 
+def test_infrastate_node_label_skips_webspace_like_noise():
+    mod = _load_infrastate_module()
+
+    label = mod._node_label(["default", "desktop", {"WEBSPACE_ID": "DEFAULT"}, "TE1"], fallback="hub")
+
+    assert label == "TE1"
+
+
+def test_infrastate_node_tabs_keep_offline_member_selected():
+    mod = _load_infrastate_module()
+
+    class _Conf:
+        role = "hub"
+        node_id = "hub-1"
+        node_names = ["Hub"]
+
+    reliability = {
+        "runtime": {
+            "hub_member_connection_state": {
+                "known_members": [
+                    {
+                        "node_id": "member-1",
+                        "node_names": ["TE1"],
+                        "connected": False,
+                        "state": "offline",
+                        "observed_via": "subnet_directory",
+                    }
+                ]
+            }
+        }
+    }
+
+    tabs, selected = mod._node_tabs(_Conf(), {"selected_node_id": "member-1"}, reliability)
+
+    assert any(item["id"] == "member-1" for item in tabs)
+    assert selected["node_id"] == "member-1"
+    assert selected["kind"] == "member"
+    assert selected["connected"] is False
+
+
 def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeypatch):
     mod = _load_infrastate_module()
     projected: dict[str, object] = {}
