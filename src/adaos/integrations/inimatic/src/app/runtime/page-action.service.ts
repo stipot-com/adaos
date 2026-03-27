@@ -102,12 +102,16 @@ export class PageActionService {
         typeof body.scenario_id === 'string' &&
         body.scenario_id.trim()
       ) {
+        const sourceWebspaceId = this.ydoc.getWebspaceId()
         const ensureAck = await this.adaos.sendEventsCommand('desktop.webspace.ensure_dev', {
           scenario_id: body.scenario_id,
           title: typeof body.title === 'string' ? body.title : undefined,
         })
         const ensuredWebspaceId = String(ensureAck?.data?.webspace_id || '').trim()
         if (ensuredWebspaceId) {
+          if (sourceWebspaceId && ensuredWebspaceId !== sourceWebspaceId) {
+            this.ydoc.rememberReturnWebspace(ensuredWebspaceId, sourceWebspaceId)
+          }
           await this.ydoc.switchWebspace(ensuredWebspaceId)
         }
         return ensureAck
@@ -127,12 +131,12 @@ export class PageActionService {
         (!body.webspace_id || body.webspace_id === this.ydoc.getWebspaceId())
       ) {
         try {
-          await this.ydoc.clearStorage()
-          // The command ACK means the hub accepted the reload, not that the
-          // reseeded YDoc is already ready for the next browser connection.
-          await new Promise((resolve) => setTimeout(resolve, 1200))
-          // full page reload to re-init YDoc with fresh state
-          location.reload()
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+          await this.ydoc.resyncCurrentWebspace({
+            reason: 'manual',
+            clearLocalCache: true,
+            room: this.ydoc.getWebspaceId(),
+          })
         } catch {
           // best-effort
         }

@@ -6,6 +6,7 @@ import { FormsModule } from '@angular/forms'
 import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
 import { observeDeep } from '../../y/y-helpers'
+import { firstValueFrom } from 'rxjs'
 
 type WebspaceEntry = {
   id: string
@@ -190,6 +191,9 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
     this.dispose = observeDeep(node, recompute)
     recompute()
+    if (!this.webspaces.length) {
+      await this.loadWebspacesFallback()
+    }
   }
 
   ngOnDestroy(): void {
@@ -234,8 +238,12 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   async refresh(): Promise<void> {
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.refresh', {})
+      await this.loadWebspacesFallback()
     } catch {
-      await this.presentToast('Failed to refresh list')
+      await this.loadWebspacesFallback()
+      if (!this.webspaces.length) {
+        await this.presentToast('Failed to refresh list')
+      }
     }
   }
 
@@ -269,6 +277,17 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   async goHomeSelected(): Promise<void> {
     const id = (this.selectedWorkspaceId || '').trim()
     if (!id) return
+    const returnWebspaceId =
+      id === this.activeWebspace ? this.ydoc.getReturnWebspaceId(id) : undefined
+    if (returnWebspaceId && returnWebspaceId !== id) {
+      try {
+        await this.switchWorkspace(returnWebspaceId)
+        return
+      } catch {
+        await this.presentToast('Failed to switch to return workspace')
+        return
+      }
+    }
     try {
       await this.adaos.sendEventsCommand('desktop.webspace.go_home', { webspace_id: id })
       await this.switchWorkspace(id)
@@ -315,6 +334,24 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   private async presentToast(message: string): Promise<void> {
     const toast = await this.toast.create({ message, duration: 2000 })
     await toast.present()
+  }
+
+  private async loadWebspacesFallback(): Promise<void> {
+    try {
+      const response = await firstValueFrom(
+        this.adaos.get<{ ok?: boolean; accepted?: boolean; items?: WebspaceEntry[] }>('/api/node/yjs/webspaces')
+      )
+      const items = Array.isArray(response?.items) ? response.items : []
+      if (!items.length) return
+      this.webspaces = items
+      if (!this.selectedWorkspaceId || !this.webspaces.find((ws) => ws.id === this.selectedWorkspaceId)) {
+        this.applySelection(this.activeWebspace || this.webspaces[0]?.id)
+      } else {
+        this.applySelection(this.selectedWorkspaceId, false)
+      }
+    } catch {
+      // best-effort fallback when current YDoc does not expose data.webspaces yet
+    }
   }
 
   formatWorkspaceKind(entry?: WebspaceEntry): string {

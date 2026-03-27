@@ -585,6 +585,7 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	get showCloseToDesktop(): boolean {
+		if (this.ydoc.getReturnWebspaceId()) return true
 		const cur = String(this.currentScenario || '').trim()
 		return !!cur && cur !== this.readCurrentHomeScenario()
 	}
@@ -605,10 +606,19 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	async onClickHome(): Promise<void> {
+		const currentWebspaceId = this.ydoc.getWebspaceId()
+		const returnWebspaceId = this.ydoc.getReturnWebspaceId(currentWebspaceId)
+		if (returnWebspaceId && returnWebspaceId !== currentWebspaceId) {
+			try {
+				await this.ydoc.switchWebspace(returnWebspaceId)
+				return
+			} catch (err) {
+				console.warn('switch return webspace failed', err)
+			}
+		}
 		try {
-			const ws = this.ydoc.getWebspaceId()
 			await this.adaos.sendEventsCommand('desktop.webspace.go_home', {
-				webspace_id: ws || undefined,
+				webspace_id: currentWebspaceId || undefined,
 			})
 		} catch (err) {
 			// best-effort only; errors can be inspected in console
@@ -692,15 +702,21 @@ export class AppComponent implements OnInit, OnDestroy {
 			return
 		}
 		try {
-			await this.ydoc.clearStorage()
-		} catch { }
-		try {
-			// `desktop.webspace.reload` is acked when the command is accepted,
-			// not when the reseed has already finished on the hub.
-			await new Promise((resolve) => setTimeout(resolve, 1200))
-		} catch { }
-		try {
-			location.reload()
+			await new Promise((resolve) => setTimeout(resolve, 1500))
+			const ok = await this.ydoc.resyncCurrentWebspace({
+				reason: 'manual',
+				clearLocalCache: true,
+				room: webspaceId,
+			})
+			const toast = await this.toastCtrl.create({
+				message: ok
+					? 'Webspace reload complete.'
+					: 'Webspace reload accepted, but Yjs resync is still recovering.',
+				duration: ok ? 2200 : 3200,
+				position: 'bottom',
+				color: ok ? 'success' : 'warning',
+			})
+			await toast.present()
 		} catch { }
 	}
 

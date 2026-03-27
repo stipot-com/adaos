@@ -64,6 +64,7 @@ export class YDocService {
   private currentWebspaceId = 'default'
   private currentSyncPath: 'webrtc_data:yjs' | 'yws' | null = null
   private readonly webspaceKey = 'adaos_webspace_id'
+  private readonly webspaceReturnMapKey = 'adaos_webspace_return_map'
   private readonly hubIdKey = 'adaos_hub_id'
   private readonly sessionJwtKey = 'adaos_web_session_jwt'
   private readonly yjsPersistKey = 'adaos_yjs_persist'
@@ -920,6 +921,56 @@ export class YDocService {
 
   getWebspaceId(): string {
     return this.currentWebspaceId
+  }
+
+  private readReturnWebspaceMap(): Record<string, string> {
+    try {
+      const raw = localStorage.getItem(this.webspaceReturnMapKey)
+      const parsed = raw ? JSON.parse(raw) : {}
+      if (!parsed || typeof parsed !== 'object') return {}
+      const out: Record<string, string> = {}
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const target = String(key || '').trim()
+        const source = String(value || '').trim()
+        if (!target || !source || target === source) continue
+        out[target] = source
+      }
+      return out
+    } catch {
+      return {}
+    }
+  }
+
+  private writeReturnWebspaceMap(map: Record<string, string>): void {
+    try {
+      localStorage.setItem(this.webspaceReturnMapKey, JSON.stringify(map))
+    } catch {}
+  }
+
+  rememberReturnWebspace(targetWebspaceId: string, returnToWebspaceId: string): void {
+    const target = String(targetWebspaceId || '').trim()
+    const source = String(returnToWebspaceId || '').trim()
+    if (!target || !source || target === source) return
+    const map = this.readReturnWebspaceMap()
+    map[target] = source
+    this.writeReturnWebspaceMap(map)
+  }
+
+  getReturnWebspaceId(webspaceId?: string): string | undefined {
+    const key = String(webspaceId || this.currentWebspaceId || '').trim()
+    if (!key) return undefined
+    const map = this.readReturnWebspaceMap()
+    const value = String(map[key] || '').trim()
+    return value || undefined
+  }
+
+  clearReturnWebspaceId(webspaceId?: string): void {
+    const key = String(webspaceId || this.currentWebspaceId || '').trim()
+    if (!key) return
+    const map = this.readReturnWebspaceMap()
+    if (!(key in map)) return
+    delete map[key]
+    this.writeReturnWebspaceMap(map)
   }
 
   private getWebspaceFromUrl(): string | undefined {

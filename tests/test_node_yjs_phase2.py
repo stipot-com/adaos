@@ -137,6 +137,41 @@ def test_node_yjs_ensure_dev_endpoint_forwards_requested_id_and_title(monkeypatc
     assert result["runtime"]["webspace_id"] == "dev_prompt"
 
 
+def test_node_yjs_webspaces_endpoint_returns_manifest_listing(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "WebspaceService",
+        lambda: SimpleNamespace(
+            list=lambda mode="mixed": [
+                SimpleNamespace(
+                    id="default",
+                    title="Desktop",
+                    created_at=123.0,
+                    kind="workspace",
+                    home_scenario="web_desktop",
+                    source_mode="workspace",
+                ),
+                SimpleNamespace(
+                    id="dev_prompt",
+                    title="Prompt IDE",
+                    created_at=456.0,
+                    kind="dev",
+                    home_scenario="prompt_engineer_scenario",
+                    source_mode="dev",
+                ),
+            ]
+        ),
+    )
+
+    result = asyncio.run(node_api_module.node_yjs_webspaces())
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["items"][0]["id"] == "default"
+    assert result["items"][1]["kind"] == "dev"
+
+
 def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []

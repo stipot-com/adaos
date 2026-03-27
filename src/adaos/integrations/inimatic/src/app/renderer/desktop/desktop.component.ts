@@ -244,10 +244,18 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	}
 
 	async fabHome(): Promise<void> {
+		const currentWebspaceId = this.y.getWebspaceId()
+		const returnWebspaceId = this.y.getReturnWebspaceId(currentWebspaceId)
+		if (returnWebspaceId && returnWebspaceId !== currentWebspaceId) {
+			try {
+				await this.y.switchWebspace(returnWebspaceId)
+				return
+			} catch {
+			}
+		}
 		try {
-			const ws = this.y.getWebspaceId()
 			await this.adaos.sendEventsCommand('desktop.webspace.go_home', {
-				webspace_id: ws || undefined,
+				webspace_id: currentWebspaceId || undefined,
 			})
 		} catch {
 		}

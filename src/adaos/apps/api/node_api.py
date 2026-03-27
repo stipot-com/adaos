@@ -306,6 +306,33 @@ async def node_yjs_runtime(webspace_id: str | None = None) -> dict[str, Any]:
     }
 
 
+@router.get("/yjs/webspaces", dependencies=[Depends(require_token)])
+async def node_yjs_webspaces() -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "hub_role_required",
+        }
+    items = [
+        {
+            "id": item.id,
+            "title": item.title,
+            "created_at": item.created_at,
+            "kind": item.kind,
+            "home_scenario": item.home_scenario,
+            "source_mode": item.source_mode,
+        }
+        for item in WebspaceService().list(mode="mixed")
+    ]
+    return {
+        "ok": True,
+        "accepted": True,
+        "items": items,
+    }
+
+
 @router.get("/yjs/webspaces/{webspace_id}/runtime", dependencies=[Depends(require_token)])
 async def node_yjs_webspace_runtime(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
