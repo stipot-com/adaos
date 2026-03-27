@@ -148,8 +148,16 @@ export class PageDataService {
   private pickInfrastateSnapshotValue(snapshot: any, path?: string): any {
     if (!path || !this.isInfrastatePath(path)) return snapshot
     const segs = path.split('/').filter(Boolean)
-    let cur: any = snapshot
-    for (const s of segs.slice(1)) {
+    let cur: any =
+      snapshot && typeof snapshot === 'object' && 'infrastate' in snapshot
+        ? snapshot?.infrastate
+        : snapshot
+    const logicalSegs = segs[0] === 'data' ? segs.slice(1) : segs
+    const projectionSegs =
+      logicalSegs[0] === 'infrastate'
+        ? logicalSegs.slice(1)
+        : logicalSegs
+    for (const s of projectionSegs) {
       if (cur == null) return undefined
       cur = cur?.[s]
     }
