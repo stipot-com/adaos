@@ -694,12 +694,24 @@ export class AppComponent implements OnInit, OnDestroy {
 		command: 'desktop.webspace.reload' | 'desktop.webspace.reset',
 		webspaceId: string,
 	): Promise<void> {
+		const encodedWebspaceId = encodeURIComponent(String(webspaceId || 'default'))
 		try {
-			await this.adaos.sendEventsCommand(command, { webspace_id: webspaceId })
+			await this.adaos.sendEventsCommand(command, { webspace_id: webspaceId }, 12_000)
 		} catch (err) {
-			// eslint-disable-next-line no-console
-			console.warn(`${command} failed`, err)
-			return
+			try {
+				const fallbackPath =
+					command === 'desktop.webspace.reload'
+						? `/api/node/yjs/webspaces/${encodedWebspaceId}/reload`
+						: `/api/node/yjs/webspaces/${encodedWebspaceId}/reset`
+				const response = await this.adaos.post<any>(fallbackPath, {}).toPromise()
+				if (response?.accepted === false || response?.ok === false) {
+					throw new Error(String(response?.error || 'host_action_rejected'))
+				}
+			} catch (fallbackErr) {
+				// eslint-disable-next-line no-console
+				console.warn(`${command} failed`, fallbackErr || err)
+				return
+			}
 		}
 		try {
 			await new Promise((resolve) => setTimeout(resolve, 1500))
@@ -707,6 +719,7 @@ export class AppComponent implements OnInit, OnDestroy {
 				reason: 'manual',
 				clearLocalCache: true,
 				room: webspaceId,
+				waitForFirstSyncTimeoutMs: 10_000,
 			})
 			const toast = await this.toastCtrl.create({
 				message: ok

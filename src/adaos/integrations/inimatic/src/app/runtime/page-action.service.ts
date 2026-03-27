@@ -103,7 +103,7 @@ export class PageActionService {
         body.scenario_id.trim()
       ) {
         const sourceWebspaceId = this.ydoc.getWebspaceId()
-        const ensureAck = await this.adaos.sendEventsCommand('desktop.webspace.ensure_dev', {
+        const ensureAck = await this.sendHostCommandWithFallback('desktop.webspace.ensure_dev', {
           scenario_id: body.scenario_id,
           title: typeof body.title === 'string' ? body.title : undefined,
         })
@@ -116,7 +116,7 @@ export class PageActionService {
         }
         return ensureAck
       }
-      const ack = await this.adaos.sendEventsCommand(target, body)
+      const ack = await this.sendHostCommandWithFallback(target, body)
       if (target === 'desktop.webspace.ensure_dev') {
         const ensuredWebspaceId = String(ack?.data?.webspace_id || '').trim()
         if (ensuredWebspaceId && ensuredWebspaceId !== this.ydoc.getWebspaceId()) {
@@ -136,9 +136,28 @@ export class PageActionService {
             reason: 'manual',
             clearLocalCache: true,
             room: this.ydoc.getWebspaceId(),
+            waitForFirstSyncTimeoutMs: 10_000,
           })
         } catch {
           // best-effort
+        }
+      }
+      if (
+        (target === 'desktop.scenario.set' || target === 'desktop.webspace.go_home') &&
+        (!body.webspace_id || body.webspace_id === this.ydoc.getWebspaceId())
+      ) {
+        const syncRuntime = this.ydoc.getSyncRuntimeSnapshot()
+        if (syncRuntime.connectionState !== 'connected') {
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 500))
+            await this.ydoc.resyncCurrentWebspace({
+              reason: 'manual',
+              room: this.ydoc.getWebspaceId(),
+              waitForFirstSyncTimeoutMs: 9000,
+            })
+          } catch {
+            // best-effort
+          }
         }
       }
       return ack
@@ -154,6 +173,113 @@ export class PageActionService {
         await t.present()
       } catch {
         console.warn('callHost failed', err)
+      }
+    }
+  }
+
+  private hostCommandTimeoutMs(target: string): number {
+    const normalized = String(target || '').trim()
+    if (
+      normalized === 'desktop.scenario.set' ||
+      normalized === 'desktop.webspace.ensure_dev' ||
+      normalized === 'desktop.webspace.reload' ||
+      normalized === 'desktop.webspace.reset' ||
+      normalized === 'desktop.webspace.go_home' ||
+      normalized === 'desktop.webspace.set_home'
+    ) {
+      return 12_000
+    }
+    return 5000
+  }
+
+  private resolveHostCommandHttpFallback(
+    target: string,
+    body: Record<string, any>
+  ): { path: string; body?: Record<string, any> } | null {
+    const webspaceId = String(
+      body?.['webspace_id'] || body?.['workspace_id'] || this.ydoc.getWebspaceId() || 'default'
+    ).trim() || 'default'
+    const encodedWebspaceId = encodeURIComponent(webspaceId)
+    if (target === 'desktop.webspace.ensure_dev') {
+      return {
+        path: '/api/node/yjs/dev-webspaces/ensure',
+        body: {
+          scenario_id: body?.['scenario_id'],
+          title: body?.['title'],
+          requested_id: body?.['requested_id'],
+        },
+      }
+    }
+    if (target === 'desktop.scenario.set') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/scenario`,
+        body: {
+          scenario_id: body?.['scenario_id'],
+          set_home:
+            typeof body?.['set_home'] === 'boolean'
+              ? body['set_home']
+              : typeof body?.['persist_home'] === 'boolean'
+                ? body['persist_home']
+                : undefined,
+        },
+      }
+    }
+    if (target === 'desktop.webspace.reload') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/reload`,
+        body: {
+          scenario_id: body?.['scenario_id'],
+        },
+      }
+    }
+    if (target === 'desktop.webspace.reset') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/reset`,
+        body: {
+          scenario_id: body?.['scenario_id'],
+        },
+      }
+    }
+    if (target === 'desktop.webspace.go_home') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/go-home`,
+        body: {},
+      }
+    }
+    if (target === 'desktop.webspace.set_home') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/set-home`,
+        body: {
+          scenario_id: body?.['scenario_id'],
+        },
+      }
+    }
+    return null
+  }
+
+  private async sendHostCommandWithFallback(
+    target: string,
+    body: Record<string, any>
+  ): Promise<any> {
+    const timeoutMs = this.hostCommandTimeoutMs(target)
+    try {
+      return await this.adaos.sendEventsCommand(target, body, timeoutMs)
+    } catch (err) {
+      const fallback = this.resolveHostCommandHttpFallback(target, body)
+      if (!fallback) {
+        throw err
+      }
+      try {
+        const response = await this.adaos.post<any>(fallback.path, fallback.body ?? {}).toPromise()
+        if (response?.accepted === false || response?.ok === false) {
+          throw new Error(String(response?.error || 'host_action_rejected'))
+        }
+        return response
+      } catch (fallbackErr) {
+        try {
+          ;(fallbackErr as any).__adaosPrimaryError = err
+        } catch {}
+        throw fallbackErr
       }
     }
   }

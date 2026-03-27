@@ -218,6 +218,7 @@ export class HubMemberChannelsService {
 	private static readonly DIRECT_RECOVERY_DEBOUNCE_MS = 1_000
 	private static readonly DIRECT_RECOVERY_BACKOFF_BASE_MS = 15_000
 	private static readonly DIRECT_RECOVERY_BACKOFF_MAX_MS = 5 * 60_000
+	private static readonly DIRECT_RECOVERY_DC_OPEN_TIMEOUT_BACKOFF_MS = 2 * 60_000
 	private static readonly DIRECT_RECOVERY_ICE_RESTART_LIMIT = 3
 	private static readonly SYNC_RECOVERY_DEBOUNCE_MS = 1_500
 
@@ -430,7 +431,12 @@ export class HubMemberChannelsService {
 		}
 		const ok = await this.rtc.negotiate(sendCommand)
 		this.lastDirectNegotiationState = ok ? 'connected' : 'failed'
-		this.noteDirectRecoveryResult(ok, Date.now(), 'full_renegotiate')
+		this.noteDirectRecoveryResult(
+			ok,
+			Date.now(),
+			'full_renegotiate',
+			this.rtc.getRecoverySnapshot().lastFailureReason,
+		)
 		this.publishSnapshot()
 		return ok
 	}
@@ -743,7 +749,12 @@ export class HubMemberChannelsService {
 					? await this.rtc.restartIceTransport()
 					: await this.rtc.triggerFullRenegotiation()
 			this.lastDirectRecoveryState = ok ? 'recovered' : 'failed'
-			this.noteDirectRecoveryResult(ok, Date.now(), mode)
+			this.noteDirectRecoveryResult(
+				ok,
+				Date.now(),
+				mode,
+				this.rtc.getRecoverySnapshot().lastFailureReason,
+			)
 			this.publishSnapshot()
 			return ok
 		})()
@@ -762,6 +773,13 @@ export class HubMemberChannelsService {
 			return null
 		}
 		if (this.wsState !== 'connected') {
+			return null
+		}
+		if (
+			rtc.lastFailureReason === 'dc_open_timeout' &&
+			this.syncPathEvidence.path === 'yws' &&
+			this.syncPathEvidence.state === 'connected'
+		) {
 			return null
 		}
 		if (this.nextDirectRecoveryAt && nowMs < this.nextDirectRecoveryAt) {
@@ -854,17 +872,22 @@ export class HubMemberChannelsService {
 
 	shouldRecoverSyncProvider(
 		{
+			reason,
 			path,
 			remoteProxy,
 			hasSeededContent,
 		}: {
+			reason: HubMemberSyncRecoveryReason
 			path: HubMemberSemanticPath | null
 			remoteProxy: boolean
 			hasSeededContent: boolean
 		},
 		nowMs = Date.now(),
 	): boolean {
-		if (!remoteProxy || path !== 'yws' || hasSeededContent) {
+		if (!remoteProxy || path !== 'yws') {
+			return false
+		}
+		if (reason !== 'provider_disconnected' && hasSeededContent) {
 			return false
 		}
 		if (this.wsState !== 'connected') {
@@ -1093,6 +1116,7 @@ export class HubMemberChannelsService {
 			syncRecovery: {
 				eligible: this.shouldRecoverSyncProvider(
 					{
+						reason: this.lastSyncRecoveryReason || 'provider_disconnected',
 						path: this.currentSyncPath(),
 						remoteProxy: this.directRemoteProxyEligible,
 						hasSeededContent: false,
@@ -1243,6 +1267,7 @@ export class HubMemberChannelsService {
 		ok: boolean,
 		nowMs: number,
 		mode?: HubMemberDirectRecoveryMode | null,
+		failureReason?: string | null,
 	): void {
 		if (ok) {
 			if (mode === 'full_renegotiate') {
@@ -1258,11 +1283,15 @@ export class HubMemberChannelsService {
 			this.directRecoveryIceRestartCount = 0
 		}
 		this.directRecoveryFailureCount += 1
-		const backoffMs = Math.min(
-			HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_BASE_MS *
-				Math.pow(2, Math.max(0, this.directRecoveryFailureCount - 1)),
-			HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_MAX_MS,
-		)
+		const normalizedFailureReason = String(failureReason || '').trim().toLowerCase()
+		const backoffMs =
+			normalizedFailureReason === 'dc_open_timeout'
+				? HubMemberChannelsService.DIRECT_RECOVERY_DC_OPEN_TIMEOUT_BACKOFF_MS
+				: Math.min(
+						HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_BASE_MS *
+							Math.pow(2, Math.max(0, this.directRecoveryFailureCount - 1)),
+						HubMemberChannelsService.DIRECT_RECOVERY_BACKOFF_MAX_MS,
+				  )
 		this.nextDirectRecoveryAt = nowMs + backoffMs
 	}
 

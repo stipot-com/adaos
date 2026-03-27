@@ -460,6 +460,7 @@ export class YDocService {
   ): Promise<boolean> {
     if (
       !this.channels.shouldRecoverSyncProvider({
+        reason,
         path: this.currentSyncPath,
         remoteProxy,
         hasSeededContent: this.hasSeededDocContent(),
