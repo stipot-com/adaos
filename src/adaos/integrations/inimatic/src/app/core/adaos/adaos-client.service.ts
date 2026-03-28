@@ -362,10 +362,53 @@ export class AdaosClient {
 	}
 	callSkill<T = any>(skill: string, method: string, body?: any) {
 		const tool = `${skill}:${method}`
-		return this.post<{ ok: boolean; result: T }>(`/api/tools/call`, {
+		return this.post<{ ok?: boolean; result?: T; error?: any; detail?: any }>(`/api/tools/call`, {
 			tool,
 			arguments: body ?? {},
-		}).pipe(map((res) => res.result))
+		}).pipe(
+			map((res) => {
+				if (res?.ok === false) {
+					throw new Error(this.describeToolError(res))
+				}
+				const result: any = res?.result
+				if (result && typeof result === 'object' && result.ok === false) {
+					throw new Error(this.describeToolError(result))
+				}
+				return result as T
+			}),
+		)
+	}
+
+	private describeToolError(payload: any): string {
+		const direct =
+			this.firstNonEmptyString(
+				payload?.error,
+				payload?.detail,
+				payload?.message,
+				payload?.result?.error,
+				payload?.result?.detail,
+				payload?.result?.message,
+			) || ''
+		return direct || 'tool_call_failed'
+	}
+
+	private firstNonEmptyString(...values: any[]): string | undefined {
+		for (const value of values) {
+			if (typeof value === 'string') {
+				const trimmed = value.trim()
+				if (trimmed) return trimmed
+				continue
+			}
+			if (value && typeof value === 'object') {
+				try {
+					const rendered = JSON.stringify(value)
+					if (rendered && rendered !== '{}' && rendered !== '[]') {
+						return rendered
+					}
+				} catch {}
+			}
+		}
+		return undefined
 	}
 }
 

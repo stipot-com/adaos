@@ -1242,9 +1242,14 @@ async def _on_scenarios_synced(evt: Dict[str, Any]) -> None:
     into YDoc by ScenarioManager.sync_to_yjs*.
     """
     webspace_id = str(evt.get("webspace_id") or default_webspace_id())
-    ctx = get_ctx()
-    runtime = WebspaceScenarioRuntime(ctx)
-    await runtime.rebuild_webspace_async(webspace_id)
+    scenario_id = str(evt.get("scenario_id") or "").strip() or None
+    await rebuild_webspace_from_sources(
+        webspace_id,
+        action="scenario_projection_sync",
+        scenario_id=scenario_id,
+        scenario_resolution="projected_payload",
+        source_of_truth="scenario_projection",
+    )
 
 
 @subscribe("skills.activated")
@@ -1256,9 +1261,11 @@ async def _on_skill_activated(evt: Dict[str, Any]) -> None:
     (or the default webspace), not all workspaces.
     """
     webspace_id = str(evt.get("webspace_id") or default_webspace_id())
-    ctx = get_ctx()
-    runtime = WebspaceScenarioRuntime(ctx)
-    await runtime.rebuild_webspace_async(webspace_id)
+    await rebuild_webspace_from_sources(
+        webspace_id,
+        action="skill_activation_sync",
+        source_of_truth="skill_runtime",
+    )
 
 
 @subscribe("skills.rolledback")
@@ -1268,9 +1275,11 @@ async def _on_skill_rolled_back(evt: Dict[str, Any]) -> None:
     entries and registry contributions are removed from the target webspace.
     """
     webspace_id = str(evt.get("webspace_id") or default_webspace_id())
-    ctx = get_ctx()
-    runtime = WebspaceScenarioRuntime(ctx)
-    await runtime.rebuild_webspace_async(webspace_id)
+    await rebuild_webspace_from_sources(
+        webspace_id,
+        action="skill_rollback_sync",
+        source_of_truth="skill_runtime",
+    )
 
 
 @subscribe("desktop.webspace.create")

@@ -446,6 +446,35 @@ def test_reload_preview_webspaces_for_skill_dependency(monkeypatch) -> None:
     assert result["reloaded_webspaces"] == [preview]
 
 
+def test_scenarios_synced_routes_through_semantic_rebuild_helper(monkeypatch) -> None:
+    captured: list[tuple[str, str | None, str, str]] = []
+
+    async def _fake_rebuild(
+        webspace_id: str,
+        *,
+        action: str = "rebuild",
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+        source_of_truth: str = "current_runtime",
+        reseed_from_scenario: bool = False,
+        event_payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        assert reseed_from_scenario is False
+        assert event_payload is None
+        captured.append((webspace_id, scenario_id, action, source_of_truth))
+        return {"ok": True}
+
+    monkeypatch.setattr(webspace_runtime_module, "rebuild_webspace_from_sources", _fake_rebuild)
+
+    asyncio.run(
+        webspace_runtime_module._on_scenarios_synced(
+            {"webspace_id": "phase3-bootstrap", "scenario_id": "web_desktop"}
+        )
+    )
+
+    assert captured == [("phase3-bootstrap", "web_desktop", "scenario_projection_sync", "scenario_projection")]
+
+
 def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     resolved = runtime.resolve_webspace(

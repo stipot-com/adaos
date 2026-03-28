@@ -16,8 +16,6 @@ SEED: dict = {
                             "params": {"scenario_id": "web_desktop"},
                         },
                     },
-                    {"id": "btn_apps", "label": "Apps", "action": {"openModal": "apps_catalog"}},
-                    {"id": "btn_widgets", "label": "Widgets", "action": {"openModal": "widgets_catalog"}},
                 ],
                 "iconTemplate": {"icon": "apps-outline"},
                 "widgetTemplate": {"style": {"minWidth": 240}},
@@ -43,35 +41,6 @@ SEED: dict = {
                                     "type": "openModal",
                                     "params": {"modalId": "$event.action.openModal"},
                                 }
-                            ],
-                        },
-                        {
-                            "id": "workspace-tools",
-                            "type": "input.commandBar",
-                            "area": "main",
-                            "inputs": {
-                                "buttons": [
-                                    {"id": "apps", "label": "Apps"},
-                                    {"id": "widgets", "label": "Widgets"},
-                                    {"id": "workspace-manager", "label": "Workspaces"},
-                                ]
-                            },
-                            "actions": [
-                                {
-                                    "on": "click:apps",
-                                    "type": "openModal",
-                                    "params": {"modalId": "apps_catalog"},
-                                },
-                                {
-                                    "on": "click:widgets",
-                                    "type": "openModal",
-                                    "params": {"modalId": "widgets_catalog"},
-                                },
-                                {
-                                    "on": "click:workspace-manager",
-                                    "type": "openModal",
-                                    "params": {"modalId": "workspace_manager"},
-                                },
                             ],
                         },
                         {

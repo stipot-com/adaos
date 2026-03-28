@@ -218,18 +218,21 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
     const eventId = `click:${btn.id}`
     for (const act of cfg.actions) {
       if (act.on === eventId || act.on === 'click') {
-        await this.dispatchAction(act, event, cfg)
+        const ok = await this.dispatchAction(act, event, cfg)
+        if (ok === false) {
+          break
+        }
       }
     }
   }
 
-  private async dispatchAction(act: ActionConfig, event: any, widget: WidgetConfig): Promise<void> {
+  private async dispatchAction(act: ActionConfig, event: any, widget: WidgetConfig): Promise<boolean> {
     if (act.type === 'openModal') {
       const modalId = this.resolveValue(act.params?.['modalId'], event)
       await this.modals.openModalById(modalId)
-      return
+      return true
     }
-    await this.actions.handle(act, { event, widget })
+    return this.actions.handle(act, { event, widget })
   }
 
   private resolveValue(value: any, event: any): any {

@@ -19,65 +19,65 @@ export class PageActionService {
     private ydoc: YDocService
   ) {}
 
-  async handle(action: ActionConfig, ctx: ActionContext = {}): Promise<void> {
-    if (!action) return
+  async handle(action: ActionConfig, ctx: ActionContext = {}): Promise<boolean> {
+    if (!action) return false
     if (action.type === 'updateState') {
       const patch = this.resolveParams(action.params ?? {}, ctx)
       this.state.patch(patch)
-      return
+      return true
     }
     if (action.type === 'callSkill') {
-      await this.callSkill(action, ctx)
-      return
+      return this.callSkill(action, ctx)
     }
     if (action.type === 'openOverlay') {
-      await this.openOverlay(action, ctx)
-      return
+      return this.openOverlay(action, ctx)
     }
     if (action.type === 'callHost') {
-      await this.callHost(action, ctx)
-      return
+      return this.callHost(action, ctx)
     }
+    return false
   }
 
   private async callSkill(
     action: ActionConfig,
     ctx: ActionContext
-  ): Promise<void> {
+  ): Promise<boolean> {
     const target = action.target || ''
     const [skill, method] = target.split('.', 2)
-    if (!skill || !method) return
+    if (!skill || !method) return false
     const body = this.resolveParams(action.params ?? {}, ctx)
     try {
       await this.adaos.callSkill(skill, method, body).toPromise()
+      return true
     } catch (err) {
       try {
         const t = await this.toast.create({
-          message: 'Action failed',
-          duration: 1500,
+          message: this.describeSkillError(err),
+          duration: 2600,
         })
         await t.present()
       } catch {
         console.warn('callSkill failed', err)
       }
+      return false
     }
   }
 
   private async openOverlay(
     _action: ActionConfig,
     _ctx: ActionContext
-  ): Promise<void> {
+  ): Promise<boolean> {
     // For desktop pilot we model overlays through state flags and dedicated widgets.
     // This hook is kept for future extension where overlays are opened imperatively.
-    return
+    return true
   }
 
   private async callHost(
     action: ActionConfig,
     ctx: ActionContext
-  ): Promise<void> {
+  ): Promise<boolean> {
     const target = action.target || ''
-    if (!target) return
+    if (!target) return false
     const body = this.resolveParams(action.params ?? {}, ctx)
     // Ensure webspace_id is always present so that hub
     // can apply the command to the correct webspace even
@@ -122,7 +122,7 @@ export class PageActionService {
           }
           await this.ydoc.switchWebspace(ensuredWebspaceId)
         }
-        return ensureAck
+        return true
       }
       const ack = await this.sendHostCommandWithFallback(target, hostBody)
       if (target === 'desktop.webspace.ensure_dev') {
@@ -191,10 +191,10 @@ export class PageActionService {
           }
         }
       }
-      return ack
+      return true
     } catch (err) {
       if (await this.recoverKnownHostAction(target, body)) {
-        return
+        return true
       }
       try {
         const t = await this.toast.create({
@@ -205,7 +205,9 @@ export class PageActionService {
       } catch {
         console.warn('callHost failed', err)
       }
+      return false
     }
+    return true
   }
 
   private hostCommandTimeoutMs(target: string): number {
@@ -437,5 +439,37 @@ export class PageActionService {
     const raw = String(err?.message || err || '').trim()
     if (!raw) return 'Host action failed'
     return `Host action failed: ${raw}`
+  }
+
+  private describeSkillError(err: any): string {
+    const direct = this.extractErrorMessage(err)
+    if (!direct) return 'Action failed'
+    return `Action failed: ${direct}`
+  }
+
+  private extractErrorMessage(err: any): string {
+    const values = [
+      err?.error?.detail,
+      err?.error?.error,
+      err?.error?.message,
+      err?.message,
+      err,
+    ]
+    for (const value of values) {
+      if (typeof value === 'string') {
+        const trimmed = value.trim()
+        if (trimmed) return trimmed
+        continue
+      }
+      if (value && typeof value === 'object') {
+        try {
+          const rendered = JSON.stringify(value)
+          if (rendered && rendered !== '{}' && rendered !== '[]') {
+            return rendered
+          }
+        } catch {}
+      }
+    }
+    return ''
   }
 }

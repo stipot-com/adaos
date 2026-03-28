@@ -569,6 +569,8 @@ Additions:
   - `desktop.webspace.reset`
   - snapshot restore reconcile
   - scenario switch reconcile after scenario payload mutation
+  - `scenarios.synced` / bootstrap projection sync
+  - skill activation / rollback reconcile
 
 Intentionally untouched scope:
 
@@ -687,8 +689,11 @@ Current status:
 
 - a first reusable primitive is now in place under the current runtime
   (`rebuild_webspace_from_sources(...)`)
-- bootstrap seed is still the main remaining caller that does not yet flow
-  through the same semantic rebuild entry point
+- `scenarios.synced` now routes bootstrap/default projection sync through the
+  same semantic rebuild entry point instead of rebuilding via a separate
+  direct runtime call
+- the main remaining cleanup is no longer "bootstrap vs reload", but keeping
+  projection refresh ordering explicit as Phase 4 work
 
 ## First Implementation Slice
 
