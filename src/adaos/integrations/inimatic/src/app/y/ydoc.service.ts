@@ -1062,6 +1062,19 @@ export class YDocService {
     }
   }
 
+  openWebspaceInNewWindow(webspaceId: string): boolean {
+    const target = (webspaceId || '').trim()
+    if (!target) return false
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.set('webspace_id', target)
+      const opened = window.open(url.toString(), '_blank', 'noopener')
+      return !!opened
+    } catch {
+      return false
+    }
+  }
+
   getPath(path: string): any {
     const segs = path.split('/').filter(Boolean)
     let cur: any = this.doc.getMap(segs.shift()!)

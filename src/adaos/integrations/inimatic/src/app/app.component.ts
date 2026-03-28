@@ -21,6 +21,7 @@ import { HubMemberChannelsService } from './core/adaos/hub-member-channels.servi
 import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
+import { PageModalService } from './runtime/page-modal.service'
 import { HttpErrorResponse } from '@angular/common/http'
 import { observeDeep } from './y/y-helpers'
 import { HubMemberChannelHealth, HubMemberChannelSnapshot } from './core/adaos/hub-member-channels.service'
@@ -103,6 +104,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		private zone: NgZone,
 		private channels: HubMemberChannelsService,
 		private toastCtrl: ToastController,
+		private modals: PageModalService,
 	) {
 		this.isAndroid =
 			this.plt.platforms().includes('mobile') &&
@@ -670,6 +672,11 @@ export class AppComponent implements OnInit, OnDestroy {
 				console.warn('desktop.webspace.set_home failed', fallbackErr || err)
 			}
 		}
+	}
+
+	async onClickWorkspaces(): Promise<void> {
+		if (!this.isAuthenticated) return
+		await this.modals.openModalById('workspace_manager')
 	}
 
 	private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {

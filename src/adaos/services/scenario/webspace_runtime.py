@@ -1003,6 +1003,41 @@ class WebspaceService:
         await self._sync_listing()
         return _webspace_info_from_row(row)
 
+    async def update_metadata(
+        self,
+        webspace_id: str,
+        *,
+        title: str | None = None,
+        home_scenario: str | None = None,
+    ) -> Optional[WebspaceInfo]:
+        webspace_id = str(webspace_id or "").strip()
+        if not webspace_id:
+            return None
+        row = workspace_index.get_workspace(webspace_id)
+        if not row:
+            _log.warning("cannot update missing webspace %s", webspace_id)
+            return None
+
+        manifest_kwargs: Dict[str, Any] = {}
+        next_title = str(title or "").strip()
+        if next_title:
+            manifest_kwargs["display_name"] = _display_name_for_kind(
+                next_title,
+                webspace_id=webspace_id,
+                kind=row.effective_kind,
+            )
+
+        next_home_scenario = str(home_scenario or "").strip()
+        if next_home_scenario:
+            manifest_kwargs["home_scenario"] = next_home_scenario
+
+        if not manifest_kwargs:
+            return _webspace_info_from_row(row)
+
+        updated = workspace_index.set_workspace_manifest(webspace_id, **manifest_kwargs)
+        await self._sync_listing()
+        return _webspace_info_from_row(updated)
+
     async def set_home_scenario(self, webspace_id: str, scenario_id: str) -> Optional[WebspaceInfo]:
         webspace_id = (webspace_id or "").strip()
         scenario_id = (scenario_id or "").strip()
@@ -1185,6 +1220,22 @@ async def _on_webspace_rename(evt: Dict[str, Any]) -> None:
         return
     svc = WebspaceService(get_ctx())
     await svc.rename(webspace_id, title)
+
+
+@subscribe("desktop.webspace.update")
+async def _on_webspace_update(evt: Dict[str, Any]) -> None:
+    payload = _payload(evt)
+    webspace_id = str(payload.get("id") or payload.get("webspace_id") or "").strip()
+    if not webspace_id:
+        return
+    title = str(payload.get("title") or "").strip() or None
+    home_scenario = str(payload.get("home_scenario") or payload.get("scenario_id") or "").strip() or None
+    svc = WebspaceService(get_ctx())
+    await svc.update_metadata(
+        webspace_id,
+        title=title,
+        home_scenario=home_scenario,
+    )
 
 
 @subscribe("desktop.webspace.delete")

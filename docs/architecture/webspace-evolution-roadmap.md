@@ -493,11 +493,17 @@ Additions:
   - `go_home`
   - `set_home`
   - `ensure_dev`
+  - create/update of webspace metadata, including explicit scenario choice
 - control surfaces should also expose operational introspection for:
   - `home_scenario`
   - `current_scenario`
   - `kind`
   - `source_mode`
+- workspace management UI should stay reachable independently from the
+  currently active scenario or home shell
+- Prompt IDE and similar dev flows should be able to open a scenario-backed
+  dev preview webspace in a separate browser window, instead of always
+  hijacking the current shell
 - default policy remains asymmetric:
   regular workspaces do not auto-persist switched scenarios as home, while
   dev webspaces may do so unless an explicit override is supplied

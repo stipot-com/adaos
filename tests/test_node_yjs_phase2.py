@@ -317,6 +317,103 @@ def test_node_yjs_webspaces_endpoint_returns_manifest_listing(monkeypatch) -> No
     assert result["items"][1]["kind"] == "dev"
 
 
+def test_node_yjs_create_webspace_endpoint_uses_service(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _Svc:
+        async def create(self, requested_id, title, *, scenario_id="web_desktop", dev=False):
+            captured.append(
+                {
+                    "requested_id": requested_id,
+                    "title": title,
+                    "scenario_id": scenario_id,
+                    "dev": dev,
+                }
+            )
+            return SimpleNamespace(
+                id="preview-space",
+                title=title or "Preview Space",
+                created_at=123.0,
+                kind="dev" if dev else "workspace",
+                home_scenario=scenario_id,
+                source_mode="dev" if dev else "workspace",
+            )
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "WebspaceService", _Svc)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_create_webspace(
+            node_api_module.WebspaceCreateRequest(
+                id="preview-space",
+                title="Preview Space",
+                scenario_id="prompt_engineer_scenario",
+                dev=True,
+            )
+        )
+    )
+
+    assert captured == [
+        {
+            "requested_id": "preview-space",
+            "title": "Preview Space",
+            "scenario_id": "prompt_engineer_scenario",
+            "dev": True,
+        }
+    ]
+    assert result["ok"] is True
+    assert result["webspace"]["id"] == "preview-space"
+    assert result["runtime"]["webspace_id"] == "preview-space"
+
+
+def test_node_yjs_update_webspace_endpoint_uses_service(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _Svc:
+        async def update_metadata(self, webspace_id, *, title=None, home_scenario=None):
+            captured.append(
+                {
+                    "webspace_id": webspace_id,
+                    "title": title,
+                    "home_scenario": home_scenario,
+                }
+            )
+            return SimpleNamespace(
+                id=webspace_id,
+                title=title or "Desktop",
+                created_at=123.0,
+                kind="workspace",
+                home_scenario=home_scenario or "web_desktop",
+                source_mode="workspace",
+            )
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "WebspaceService", _Svc)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_update_webspace(
+            "default",
+            node_api_module.WebspaceUpdateRequest(
+                title="Desktop",
+                home_scenario="prompt_engineer_scenario",
+            ),
+        )
+    )
+
+    assert captured == [
+        {
+            "webspace_id": "default",
+            "title": "Desktop",
+            "home_scenario": "prompt_engineer_scenario",
+        }
+    ]
+    assert result["ok"] is True
+    assert result["webspace"]["home_scenario"] == "prompt_engineer_scenario"
+    assert result["runtime"]["webspace_id"] == "default"
+
+
 def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
     monkeypatch.setattr(

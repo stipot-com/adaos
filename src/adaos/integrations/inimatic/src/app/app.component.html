@@ -72,6 +72,14 @@
 			</ion-title>
 			<ion-buttons slot="end">
 				<ion-button
+					*ngIf="isAuthenticated"
+					(click)="onClickWorkspaces()"
+					title="Workspaces"
+					aria-label="Workspaces"
+				>
+					<ion-icon name="folder-open-outline"></ion-icon>
+				</ion-button>
+				<ion-button
 					*ngIf="isAuthenticated && canSetCurrentScenarioHome"
 					(click)="onClickSetCurrentScenarioHome()"
 					title="Set current scenario as home"

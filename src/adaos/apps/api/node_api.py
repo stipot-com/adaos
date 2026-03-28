@@ -104,6 +104,18 @@ class WebspaceYjsActionRequest(BaseModel):
     title: str | None = None
 
 
+class WebspaceCreateRequest(BaseModel):
+    id: str | None = None
+    title: str | None = None
+    scenario_id: str | None = None
+    dev: bool = False
+
+
+class WebspaceUpdateRequest(BaseModel):
+    title: str | None = None
+    home_scenario: str | None = None
+
+
 class WebspaceToggleInstallRequest(BaseModel):
     type: str = Field(..., pattern="^(app|widget)$")
     id: str = Field(..., min_length=1)
@@ -508,6 +520,40 @@ async def node_yjs_webspaces() -> dict[str, Any]:
     }
 
 
+@router.post("/yjs/webspaces", dependencies=[Depends(require_token)])
+async def node_yjs_create_webspace(payload: WebspaceCreateRequest) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "hub_role_required",
+        }
+    scenario_id = str(payload.scenario_id or "").strip() or "web_desktop"
+    info = await WebspaceService().create(
+        str(payload.id or "").strip() or None,
+        str(payload.title or "").strip() or None,
+        scenario_id=scenario_id,
+        dev=bool(payload.dev),
+    )
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace": {
+            "id": info.id,
+            "title": info.title,
+            "created_at": info.created_at,
+            "kind": info.kind,
+            "home_scenario": info.home_scenario,
+            "source_mode": info.source_mode,
+        },
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=info.id,
+        ),
+    }
+
+
 @router.get("/yjs/webspaces/{webspace_id}/runtime", dependencies=[Depends(require_token)])
 async def node_yjs_webspace_runtime(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
@@ -529,6 +575,47 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
         "ok": True,
         "accepted": True,
         "webspace": state.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
+@router.patch("/yjs/webspaces/{webspace_id}", dependencies=[Depends(require_token)])
+async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequest) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    info = await WebspaceService().update_metadata(
+        target_webspace_id,
+        title=str(payload.title or "").strip() or None,
+        home_scenario=str(payload.home_scenario or "").strip() or None,
+    )
+    if info is None:
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "webspace_not_found",
+        }
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace": {
+            "id": info.id,
+            "title": info.title,
+            "created_at": info.created_at,
+            "kind": info.kind,
+            "home_scenario": info.home_scenario,
+            "source_mode": info.source_mode,
+        },
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
             webspace_id=target_webspace_id,

@@ -286,6 +286,11 @@ export class AdaosClient {
 			headers: this.h(),
 		})
 	}
+	patch<T>(path: string, body?: any) {
+		return this.http.patch<T>(this.abs(path), body ?? {}, {
+			headers: this.h(),
+		})
+	}
 
 	private eventsUrl(): string {
 		const wsUrl = this.abs('/ws').replace(/^http/, 'ws')

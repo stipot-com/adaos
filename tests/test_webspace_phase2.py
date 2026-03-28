@@ -262,6 +262,39 @@ def test_webspace_service_set_home_scenario_updates_manifest(monkeypatch) -> Non
     assert info.home_scenario == "prompt_engineer_scenario"
 
 
+def test_webspace_service_update_metadata_updates_title_and_home(monkeypatch) -> None:
+    webspace_id = "phase2-update-metadata"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Workspace Before",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    async def _fake_sync_listing() -> None:
+        return None
+
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+
+    info = asyncio.run(
+        webspace_runtime_module.WebspaceService().update_metadata(
+            webspace_id,
+            title="Workspace After",
+            home_scenario="prompt_engineer_scenario",
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.title == "Workspace After"
+    assert row.home_scenario == "prompt_engineer_scenario"
+    assert info is not None
+    assert info.title == "Workspace After"
+    assert info.home_scenario == "prompt_engineer_scenario"
+
+
 def test_ensure_dev_webspace_for_scenario_reuses_existing_dev_space() -> None:
     webspace_id = "phase2-dev-existing"
     ensure_workspace(webspace_id)

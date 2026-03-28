@@ -96,16 +96,24 @@ export class PageActionService {
       // best-effort only
     }
     try {
+      const devTarget = this.resolveDevWebspaceTarget(body)
+      const hostBody =
+        target === 'desktop.webspace.ensure_dev'
+          ? {
+              ...body,
+              scenario_id: devTarget.scenarioId ?? body?.['scenario_id'],
+              title: devTarget.title ?? body?.['title'],
+            }
+          : body
       if (
         target === 'desktop.scenario.set' &&
         !!body.dev &&
-        typeof body.scenario_id === 'string' &&
-        body.scenario_id.trim()
+        !!devTarget.scenarioId
       ) {
         const sourceWebspaceId = this.ydoc.getWebspaceId()
         const ensureAck = await this.sendHostCommandWithFallback('desktop.webspace.ensure_dev', {
-          scenario_id: body.scenario_id,
-          title: typeof body.title === 'string' ? body.title : undefined,
+          scenario_id: devTarget.scenarioId,
+          title: devTarget.title,
         })
         const ensuredWebspaceId = String(ensureAck?.data?.webspace_id || '').trim()
         if (ensuredWebspaceId) {
@@ -116,11 +124,34 @@ export class PageActionService {
         }
         return ensureAck
       }
-      const ack = await this.sendHostCommandWithFallback(target, body)
+      const ack = await this.sendHostCommandWithFallback(target, hostBody)
       if (target === 'desktop.webspace.ensure_dev') {
-        const ensuredWebspaceId = String(ack?.data?.webspace_id || '').trim()
-        if (ensuredWebspaceId && ensuredWebspaceId !== this.ydoc.getWebspaceId()) {
-          await this.ydoc.switchWebspace(ensuredWebspaceId)
+        const sourceWebspaceId = this.ydoc.getWebspaceId()
+        const ensuredWebspaceId = this.readAckWebspaceId(ack)
+        if (ensuredWebspaceId) {
+          const ensuredScenarioId = devTarget.scenarioId
+          if (sourceWebspaceId && ensuredWebspaceId !== sourceWebspaceId) {
+            this.ydoc.rememberReturnWebspace(ensuredWebspaceId, sourceWebspaceId)
+          }
+          if (ensuredScenarioId) {
+            try {
+              await this.sendHostCommandWithFallback('desktop.scenario.set', {
+                webspace_id: ensuredWebspaceId,
+                scenario_id: ensuredScenarioId,
+                set_home: true,
+              })
+            } catch {
+              // best-effort: reuse/create succeeded, so preview can still open
+            }
+          }
+          if (devTarget.previewInNewWindow && ensuredWebspaceId !== sourceWebspaceId) {
+            const opened = this.ydoc.openWebspaceInNewWindow(ensuredWebspaceId)
+            if (!opened) {
+              await this.ydoc.switchWebspace(ensuredWebspaceId)
+            }
+          } else if (ensuredWebspaceId !== sourceWebspaceId) {
+            await this.ydoc.switchWebspace(ensuredWebspaceId)
+          }
         }
       }
       // If we just triggered a webspace reload/reset for the current
@@ -201,12 +232,33 @@ export class PageActionService {
       body?.['webspace_id'] || body?.['workspace_id'] || this.ydoc.getWebspaceId() || 'default'
     ).trim() || 'default'
     const encodedWebspaceId = encodeURIComponent(webspaceId)
+    const devTarget = this.resolveDevWebspaceTarget(body)
+    if (target === 'desktop.webspace.create') {
+      return {
+        path: '/api/node/yjs/webspaces',
+        body: {
+          id: body?.['id'],
+          title: body?.['title'],
+          scenario_id: body?.['scenario_id'],
+          dev: !!body?.['dev'],
+        },
+      }
+    }
+    if (target === 'desktop.webspace.update') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}`,
+        body: {
+          title: body?.['title'],
+          home_scenario: body?.['home_scenario'] || body?.['scenario_id'],
+        },
+      }
+    }
     if (target === 'desktop.webspace.ensure_dev') {
       return {
         path: '/api/node/yjs/dev-webspaces/ensure',
         body: {
-          scenario_id: body?.['scenario_id'],
-          title: body?.['title'],
+          scenario_id: devTarget.scenarioId,
+          title: devTarget.title,
           requested_id: body?.['requested_id'],
         },
       }
@@ -267,6 +319,34 @@ export class PageActionService {
       }
     }
     return null
+  }
+
+  private resolveDevWebspaceTarget(body: Record<string, any>): {
+    scenarioId?: string
+    title?: string
+    previewInNewWindow: boolean
+  } {
+    const explicitScenarioId = String(body?.['scenario_id'] || '').trim()
+    const objectType = String(body?.['object_type'] || body?.['project_type'] || '').trim().toLowerCase()
+    const objectId = String(body?.['object_id'] || body?.['project_id'] || '').trim()
+    const scenarioId =
+      explicitScenarioId ||
+      (objectType === 'scenario' && objectId ? objectId : '')
+    const title = String(body?.['title'] || '').trim() || (objectType === 'scenario' ? objectId : '')
+    const previewInNewWindow =
+      !!body?.['open_window'] ||
+      !!body?.['open_new_window'] ||
+      !!body?.['new_window'] ||
+      (objectType === 'scenario' && !!objectId)
+    return {
+      scenarioId: scenarioId || undefined,
+      title: title || undefined,
+      previewInNewWindow,
+    }
+  }
+
+  private readAckWebspaceId(ack: any): string {
+    return String(ack?.data?.webspace_id || ack?.webspace_id || '').trim()
   }
 
   private async sendHostCommandWithFallback(

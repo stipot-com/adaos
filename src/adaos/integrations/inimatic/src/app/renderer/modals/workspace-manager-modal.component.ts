@@ -17,6 +17,11 @@ type WebspaceEntry = {
   source_mode?: string
 }
 
+type ScenarioOption = {
+  id: string
+  title: string
+}
+
 @Component({
   selector: 'ada-workspace-manager-modal',
   standalone: true,
@@ -56,6 +61,18 @@ type WebspaceEntry = {
                 [(ngModel)]="selectedWorkspaceTitle"
               ></ion-input>
             </ion-item>
+            <ion-item>
+              <ion-select
+                label="Home scenario"
+                labelPlacement="floating"
+                [value]="selectedWorkspaceHomeScenario"
+                (ionChange)="selectedWorkspaceHomeScenario = normalizeScenarioId($event.detail.value)"
+              >
+                <ion-select-option *ngFor="let scenario of availableScenarios" [value]="scenario.id">
+                  {{ scenario.title }}
+                </ion-select-option>
+              </ion-select>
+            </ion-item>
             <div class="workspace-meta" *ngIf="selectedWorkspace as ws">
               <div><strong>Kind:</strong> {{ formatWorkspaceKind(ws) }}</div>
               <div><strong>Home scenario:</strong> {{ ws.home_scenario || 'web_desktop' }}</div>
@@ -77,8 +94,8 @@ type WebspaceEntry = {
             >
               Make Current Scenario Home
             </ion-button>
-            <ion-button expand="block" (click)="renameSelected()">
-              Save Title
+            <ion-button expand="block" (click)="saveSelectedMetadata()">
+              Save Metadata
             </ion-button>
             <ion-button
               expand="block"
@@ -103,6 +120,18 @@ type WebspaceEntry = {
             </ion-item>
             <ion-item>
               <ion-input label="Title" labelPlacement="floating" [(ngModel)]="newWorkspaceTitle"></ion-input>
+            </ion-item>
+            <ion-item>
+              <ion-select
+                label="Scenario"
+                labelPlacement="floating"
+                [value]="newWorkspaceScenarioId"
+                (ionChange)="newWorkspaceScenarioId = normalizeScenarioId($event.detail.value)"
+              >
+                <ion-select-option *ngFor="let scenario of availableScenarios" [value]="scenario.id">
+                  {{ scenario.title }}
+                </ion-select-option>
+              </ion-select>
             </ion-item>
             <ion-item lines="none">
               <ion-checkbox
@@ -159,12 +188,15 @@ type WebspaceEntry = {
 })
 export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   webspaces: WebspaceEntry[] = []
+  availableScenarios: ScenarioOption[] = []
   activeWebspace = ''
   newWorkspaceId = ''
   newWorkspaceTitle = ''
+  newWorkspaceScenarioId = ''
   newWorkspaceDev = false
   selectedWorkspaceId = ''
   selectedWorkspaceTitle = ''
+  selectedWorkspaceHomeScenario = ''
 
   private dispose?: () => void
 
@@ -194,6 +226,10 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     if (!this.webspaces.length) {
       await this.loadWebspacesFallback()
     }
+    await this.loadScenarioOptions()
+    if (!this.newWorkspaceScenarioId) {
+      this.newWorkspaceScenarioId = this.readCurrentScenarioId()
+    }
   }
 
   ngOnDestroy(): void {
@@ -216,22 +252,33 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
       return
     }
     const title = this.newWorkspaceTitle.trim() || id
+    const scenarioId = this.previewHomeScenario()
+    const payload: Record<string, any> = {
+      id,
+      title,
+      scenario_id: scenarioId,
+      dev: this.newWorkspaceDev,
+    }
     try {
-      const payload: Record<string, any> = {
-        id,
-        title,
-        dev: this.newWorkspaceDev,
-      }
-      if (this.newWorkspaceDev) {
-        payload['scenario_id'] = this.readCurrentScenarioId()
-      }
       await this.adaos.sendEventsCommand('desktop.webspace.create', payload)
       this.newWorkspaceId = ''
       this.newWorkspaceTitle = ''
+      this.newWorkspaceScenarioId = this.readCurrentScenarioId()
       this.newWorkspaceDev = false
       await this.switchWorkspace(id)
     } catch {
-      await this.presentToast('Failed to create workspace')
+      try {
+        const response = await this.postNode('/api/node/yjs/webspaces', payload)
+        const createdId = String(response?.webspace?.id || id).trim() || id
+        this.newWorkspaceId = ''
+        this.newWorkspaceTitle = ''
+        this.newWorkspaceScenarioId = this.readCurrentScenarioId()
+        this.newWorkspaceDev = false
+        await this.loadWebspacesFallback()
+        await this.switchWorkspace(createdId)
+      } catch {
+        await this.presentToast('Failed to create workspace')
+      }
     }
   }
 
@@ -247,14 +294,28 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
   }
 
-  async renameSelected(): Promise<void> {
+  async saveSelectedMetadata(): Promise<void> {
     const id = (this.selectedWorkspaceId || '').trim()
     if (!id) return
     const title = (this.selectedWorkspaceTitle || '').trim() || id
+    const homeScenario = this.normalizeScenarioId(this.selectedWorkspaceHomeScenario)
     try {
-      await this.adaos.sendEventsCommand('desktop.webspace.rename', { id, title })
+      await this.adaos.sendEventsCommand('desktop.webspace.update', {
+        id,
+        title,
+        home_scenario: homeScenario,
+      })
     } catch {
-      await this.presentToast('Failed to rename workspace')
+      try {
+        await this.postNode(`/api/node/yjs/webspaces/${encodeURIComponent(id)}`, {
+          title,
+          home_scenario: homeScenario,
+        }, 'patch')
+        await this.loadWebspacesFallback()
+        this.applySelection(id)
+      } catch {
+        await this.presentToast('Failed to update workspace')
+      }
     }
   }
 
@@ -319,6 +380,11 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
           `/api/node/yjs/webspaces/${encodeURIComponent(id)}/set-home`,
           { scenario_id: scenarioId }
         )
+        const entry = this.selectedWorkspace
+        if (entry) {
+          entry.home_scenario = scenarioId
+        }
+        this.selectedWorkspaceHomeScenario = scenarioId
       } catch {
         await this.presentToast('Failed to update home scenario')
       }
@@ -331,10 +397,12 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
 
   private applySelection(id?: string, updateTitle = true): void {
     this.selectedWorkspaceId = id || ''
+    const entry = this.webspaces.find((ws) => ws.id === id)
     if (updateTitle) {
-      const entry = this.webspaces.find((ws) => ws.id === id)
       this.selectedWorkspaceTitle = entry?.title || id || ''
     }
+    this.selectedWorkspaceHomeScenario = this.normalizeScenarioId(entry?.home_scenario || '') || 'web_desktop'
+    this.ensureScenarioOption(this.selectedWorkspaceHomeScenario)
   }
 
   private async switchWorkspace(id: string): Promise<void> {
@@ -370,12 +438,69 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {
-    const response = await firstValueFrom(this.adaos.post<any>(path, body))
+  private async postNode(path: string, body: Record<string, any>, method: 'post' | 'patch' = 'post'): Promise<any> {
+    const response =
+      method === 'patch'
+        ? await firstValueFrom(this.adaos.patch<any>(path, body))
+        : await firstValueFrom(this.adaos.post<any>(path, body))
     if (response?.accepted === false || response?.ok === false) {
       throw new Error(String(response?.error || 'host_action_rejected'))
     }
     return response
+  }
+
+  private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {
+    return this.postNode(path, body)
+  }
+
+  private async loadScenarioOptions(): Promise<void> {
+    const currentScenarioId = this.readCurrentScenarioId()
+    const options: ScenarioOption[] = []
+    const seen = new Set<string>()
+    const push = (rawId: unknown, rawTitle?: unknown) => {
+      const id = this.normalizeScenarioId(rawId)
+      if (!id || seen.has(id)) return
+      seen.add(id)
+      options.push({
+        id,
+        title: String(rawTitle || id).trim() || id,
+      })
+    }
+    push(currentScenarioId, currentScenarioId)
+    try {
+      const raw = this.ydoc.toJSON(this.ydoc.getPath('ui/scenarios'))
+      if (raw && typeof raw === 'object') {
+        for (const [id, value] of Object.entries(raw as Record<string, any>)) {
+          const title =
+            value?.application?.title ||
+            value?.application?.name ||
+            id
+          push(id, title)
+        }
+      }
+    } catch {}
+    try {
+      const response = await firstValueFrom(this.adaos.get<{ items?: Array<Record<string, any>> }>('/api/scenarios/list'))
+      const items = Array.isArray(response?.items) ? response.items : []
+      for (const item of items) {
+        push(item?.['name'] || item?.['id'], item?.['name'] || item?.['id'])
+      }
+    } catch {
+      // best-effort only
+    }
+    this.availableScenarios = options.sort((a, b) => a.title.localeCompare(b.title))
+    this.ensureScenarioOption(this.selectedWorkspaceHomeScenario)
+    this.ensureScenarioOption(this.newWorkspaceScenarioId || currentScenarioId)
+  }
+
+  private ensureScenarioOption(scenarioId?: string): void {
+    const normalized = this.normalizeScenarioId(scenarioId)
+    if (!normalized) return
+    if (this.availableScenarios.some((item) => item.id === normalized)) return
+    this.availableScenarios = [
+      ...this.availableScenarios,
+      { id: normalized, title: normalized },
+    ].sort((a, b) => a.title.localeCompare(b.title))
   }
 
   formatWorkspaceKind(entry?: WebspaceEntry): string {
@@ -387,7 +512,12 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   }
 
   previewHomeScenario(): string {
-    return this.newWorkspaceDev ? this.readCurrentScenarioId() : 'web_desktop'
+    return this.normalizeScenarioId(this.newWorkspaceScenarioId) || (this.newWorkspaceDev ? this.readCurrentScenarioId() : 'web_desktop')
+  }
+
+  normalizeScenarioId(value: any): string {
+    const scenarioId = String(value || '').trim()
+    return scenarioId || 'web_desktop'
   }
 
   private readCurrentScenarioId(): string {

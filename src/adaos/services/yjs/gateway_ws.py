@@ -720,6 +720,18 @@ async def process_events_command(
         await _ack()
         return None
 
+    if kind == "desktop.webspace.update":
+        _publish_bus(
+            "desktop.webspace.update",
+            {
+                "id": payload.get("id") or payload.get("webspace_id"),
+                "title": payload.get("title"),
+                "home_scenario": payload.get("home_scenario") or payload.get("scenario_id"),
+            },
+        )
+        await _ack()
+        return None
+
     if kind == "desktop.webspace.delete":
         _publish_bus("desktop.webspace.delete", {"id": payload.get("id")})
         await _ack()
