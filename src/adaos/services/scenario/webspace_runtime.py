@@ -875,6 +875,14 @@ async def _resolve_projection_refresh_target(
         return None
 
 
+def _resolve_projection_refresh_space(webspace_id: str) -> str:
+    try:
+        row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
+        return "dev" if str(getattr(row, "effective_source_mode", "") or "").strip().lower() == "dev" else "workspace"
+    except Exception:
+        return "workspace"
+
+
 async def _refresh_projection_rules_for_rebuild(
     ctx: AgentContext,
     webspace_id: str,
@@ -882,18 +890,21 @@ async def _refresh_projection_rules_for_rebuild(
     scenario_id: str | None = None,
 ) -> dict[str, Any]:
     target_scenario = await _resolve_projection_refresh_target(webspace_id, scenario_id=scenario_id)
+    target_space = _resolve_projection_refresh_space(webspace_id)
     if not target_scenario:
         return {
             "attempted": False,
             "scenario_id": None,
+            "space": target_space,
             "rules_loaded": 0,
             "source": "none",
         }
     try:
-        rules_loaded = int(ctx.projections.load_from_scenario(target_scenario) or 0)
+        rules_loaded = int(ctx.projections.load_from_scenario(target_scenario, space=target_space) or 0)
         return {
             "attempted": True,
             "scenario_id": target_scenario,
+            "space": target_space,
             "rules_loaded": rules_loaded,
             "source": "scenario_manifest",
         }
@@ -901,13 +912,14 @@ async def _refresh_projection_rules_for_rebuild(
         try:
             replace_scenario_entries = getattr(ctx.projections, "replace_scenario_entries", None)
             if callable(replace_scenario_entries):
-                replace_scenario_entries([], scenario_id=target_scenario)
+                replace_scenario_entries([], scenario_id=target_scenario, space=target_space)
         except Exception:
             _log.debug("failed to clear stale scenario data_projections for scenario=%s", target_scenario, exc_info=True)
         _log.debug("failed to refresh data_projections for scenario=%s", target_scenario, exc_info=True)
         return {
             "attempted": True,
             "scenario_id": target_scenario,
+            "space": target_space,
             "rules_loaded": 0,
             "source": "scenario_manifest",
             "error": f"{exc.__class__.__name__}: {exc}",
@@ -1043,11 +1055,17 @@ async def describe_webspace_projection_state(
         snapshot = {}
 
     active_scenario = str(snapshot.get("active_scenario_id") or "").strip() or None
+    active_space = str(snapshot.get("active_space") or "").strip() or "workspace"
+    target_space = "dev" if str(operational.source_mode or "").strip().lower() == "dev" else "workspace"
     return {
         "webspace_id": operational.webspace_id,
         "target_scenario": target_scenario,
+        "target_space": target_space,
         "active_scenario": active_scenario,
-        "active_matches_target": bool(target_scenario) and active_scenario == target_scenario,
+        "active_space": active_space,
+        "active_matches_target": bool(target_scenario)
+        and active_scenario == target_scenario
+        and active_space == target_space,
         "base_rule_count": int(snapshot.get("base_rule_count") or 0),
         "scenario_rule_count": int(snapshot.get("scenario_rule_count") or 0),
         "source": "projection_registry",

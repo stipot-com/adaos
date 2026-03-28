@@ -439,7 +439,9 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             {
                 "webspace_id": webspace_id,
                 "target_scenario": "prompt_engineer_runtime",
+                "target_space": "dev",
                 "active_scenario": "prompt_engineer_runtime",
+                "active_space": "dev",
                 "active_matches_target": True,
                 "base_rule_count": 2,
                 "scenario_rule_count": 1,
@@ -713,7 +715,9 @@ def test_node_cli_describe_reads_webspace_state(monkeypatch) -> None:
                     },
                     "projection": {
                         "target_scenario": "web_desktop",
+                        "target_space": "workspace",
                         "active_scenario": "web_desktop",
+                        "active_space": "workspace",
                         "active_matches_target": True,
                         "base_rule_count": 2,
                         "scenario_rule_count": 1,

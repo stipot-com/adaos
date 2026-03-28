@@ -103,6 +103,7 @@ def test_describe_webspace_projection_state_reports_active_layer(monkeypatch) ->
         def snapshot(self) -> dict[str, object]:
             return {
                 "active_scenario_id": "prompt_engineer_scenario",
+                "active_space": "workspace",
                 "base_rule_count": 2,
                 "scenario_rule_count": 1,
             }
@@ -114,10 +115,48 @@ def test_describe_webspace_projection_state_reports_active_layer(monkeypatch) ->
 
     assert result["webspace_id"] == webspace_id
     assert result["target_scenario"] == "prompt_engineer_scenario"
+    assert result["target_space"] == "workspace"
     assert result["active_scenario"] == "prompt_engineer_scenario"
+    assert result["active_space"] == "workspace"
     assert result["active_matches_target"] is True
     assert result["base_rule_count"] == 2
     assert result["scenario_rule_count"] == 1
+
+
+def test_describe_webspace_projection_state_detects_space_mismatch(monkeypatch) -> None:
+    webspace_id = "phase4-projection-dev-mismatch"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Prompt Lab",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+
+    class _Projections:
+        def snapshot(self) -> dict[str, object]:
+            return {
+                "active_scenario_id": "prompt_engineer_scenario",
+                "active_space": "workspace",
+                "base_rule_count": 2,
+                "scenario_rule_count": 1,
+            }
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: SimpleNamespace(projections=_Projections()))
+
+    result = asyncio.run(webspace_runtime_module.describe_webspace_projection_state(webspace_id))
+
+    assert result["target_space"] == "dev"
+    assert result["active_space"] == "workspace"
+    assert result["active_matches_target"] is False
 
 
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:
@@ -544,7 +583,7 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
 
     async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
         order.append("refresh")
-        return {"attempted": True, "scenario_id": scenario_id, "rules_loaded": 1}
+        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 1}
 
     async def _fake_rebuild(self, webspace_id: str):
         order.append("rebuild")
@@ -566,6 +605,43 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
     assert order == ["refresh", "rebuild"]
     assert result["accepted"] is True
     assert result["projection_refresh"]["rules_loaded"] == 1
+
+
+def test_phase4_projection_refresh_uses_dev_space_for_dev_webspace(monkeypatch) -> None:
+    webspace_id = "phase4-dev-refresh"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Prompt Lab",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    captured: list[tuple[str, str]] = []
+
+    class _Projections:
+        def load_from_scenario(self, scenario_id: str, *, space: str = "workspace") -> int:
+            captured.append((scenario_id, space))
+            return 2
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    result = asyncio.run(
+        webspace_runtime_module._refresh_projection_rules_for_rebuild(
+            SimpleNamespace(projections=_Projections()),
+            webspace_id,
+        )
+    )
+
+    assert captured == [("prompt_engineer_scenario", "dev")]
+    assert result["space"] == "dev"
+    assert result["rules_loaded"] == 2
 
 
 def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:

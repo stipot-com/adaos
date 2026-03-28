@@ -419,8 +419,8 @@ def _print_projection_summary(payload: dict[str, Any], *, key: str = "projection
         return
     typer.echo(
         "projection: "
-        f"target={projection.get('target_scenario') or '-'} "
-        f"active={projection.get('active_scenario') or '-'} "
+        f"target={projection.get('target_scenario') or '-'}@{projection.get('target_space') or 'workspace'} "
+        f"active={projection.get('active_scenario') or '-'}@{projection.get('active_space') or 'workspace'} "
         f"match={'yes' if projection.get('active_matches_target') else 'no'} "
         f"base_rules={projection.get('base_rule_count') if projection.get('base_rule_count') is not None else 0} "
         f"scenario_rules={projection.get('scenario_rule_count') if projection.get('scenario_rule_count') is not None else 0}"
@@ -434,7 +434,7 @@ def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
     typer.echo(
         "projection_refresh: "
         f"attempted={'yes' if refresh.get('attempted') else 'no'} "
-        f"scenario={refresh.get('scenario_id') or '-'} "
+        f"scenario={refresh.get('scenario_id') or '-'}@{refresh.get('space') or 'workspace'} "
         f"rules_loaded={refresh.get('rules_loaded') if refresh.get('rules_loaded') is not None else 0} "
         f"source={refresh.get('source') or '-'}"
     )

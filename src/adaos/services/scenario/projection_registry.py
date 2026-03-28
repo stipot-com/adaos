@@ -48,6 +48,7 @@ class ProjectionRegistry:
         self._rules: Dict[tuple[str, str], ProjectionRule] = {}
         self._scenario_rules: Dict[tuple[str, str], ProjectionRule] = {}
         self._active_scenario_id: Optional[str] = None
+        self._active_space: str = "workspace"
 
     def load_entries(self, entries: list[dict]) -> int:
         """
@@ -97,7 +98,13 @@ class ProjectionRegistry:
                 loaded += 1
         return loaded
 
-    def replace_scenario_entries(self, entries: list[dict], *, scenario_id: Optional[str] = None) -> int:
+    def replace_scenario_entries(
+        self,
+        entries: list[dict],
+        *,
+        scenario_id: Optional[str] = None,
+        space: str = "workspace",
+    ) -> int:
         """
         Replace the active scenario override layer.
 
@@ -108,6 +115,7 @@ class ProjectionRegistry:
         """
         self._scenario_rules = {}
         self._active_scenario_id = str(scenario_id or "").strip() or None
+        self._active_space = "dev" if str(space or "").strip().lower() == "dev" else "workspace"
 
         raw = entries or []
         if not isinstance(raw, list):
@@ -150,7 +158,7 @@ class ProjectionRegistry:
                 loaded += 1
         return loaded
 
-    def load_from_scenario(self, scenario_id: str) -> int:
+    def load_from_scenario(self, scenario_id: str, *, space: str = "workspace") -> int:
         """
         Load projection rules from scenario.yaml for the given scenario id.
 
@@ -164,9 +172,9 @@ class ProjectionRegistry:
                 webspace_id: desktop
                 path: data/skills/weather/global/snapshot
         """
-        manifest = read_manifest(scenario_id)
+        manifest = read_manifest(scenario_id, space=space)
         entries = manifest.get("data_projections") or []
-        return self.replace_scenario_entries(entries, scenario_id=scenario_id)
+        return self.replace_scenario_entries(entries, scenario_id=scenario_id, space=space)
 
     def resolve(self, scope: str, slot: str) -> List[ProjectionTarget]:
         """
@@ -182,9 +190,13 @@ class ProjectionRegistry:
     def active_scenario_id(self) -> Optional[str]:
         return self._active_scenario_id
 
+    def active_space(self) -> str:
+        return self._active_space
+
     def snapshot(self) -> dict[str, object]:
         return {
             "active_scenario_id": self._active_scenario_id,
+            "active_space": self._active_space,
             "base_rule_count": len(self._rules),
             "scenario_rule_count": len(self._scenario_rules),
         }
