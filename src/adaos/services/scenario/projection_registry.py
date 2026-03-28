@@ -182,5 +182,12 @@ class ProjectionRegistry:
     def active_scenario_id(self) -> Optional[str]:
         return self._active_scenario_id
 
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "active_scenario_id": self._active_scenario_id,
+            "base_rule_count": len(self._rules),
+            "scenario_rule_count": len(self._scenario_rules),
+        }
+
 
 __all__ = ["ProjectionBackend", "ProjectionTarget", "ProjectionRule", "ProjectionRegistry"]

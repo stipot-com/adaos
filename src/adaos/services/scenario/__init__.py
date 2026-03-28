@@ -7,6 +7,8 @@ __all__ = [
     "ScenarioManager",
     "WebUIRegistryEntry",
     "WebspaceScenarioRuntime",
+    "describe_webspace_operational_state",
+    "describe_webspace_projection_state",
     "ProjectionBackend",
     "ProjectionTarget",
     "ProjectionRule",
@@ -19,6 +21,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ScenarioManager": ("adaos.services.scenario.manager", "ScenarioManager"),
     "WebUIRegistryEntry": ("adaos.services.scenario.webspace_runtime", "WebUIRegistryEntry"),
     "WebspaceScenarioRuntime": ("adaos.services.scenario.webspace_runtime", "WebspaceScenarioRuntime"),
+    "describe_webspace_operational_state": ("adaos.services.scenario.webspace_runtime", "describe_webspace_operational_state"),
+    "describe_webspace_projection_state": ("adaos.services.scenario.webspace_runtime", "describe_webspace_projection_state"),
     "ProjectionBackend": ("adaos.services.scenario.projection_registry", "ProjectionBackend"),
     "ProjectionTarget": ("adaos.services.scenario.projection_registry", "ProjectionTarget"),
     "ProjectionRule": ("adaos.services.scenario.projection_registry", "ProjectionRule"),
@@ -33,4 +37,3 @@ def __getattr__(name: str):
         raise AttributeError(name)
     mod, attr = target
     return getattr(import_module(mod), attr)
-

@@ -413,6 +413,36 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         )
 
 
+def _print_projection_summary(payload: dict[str, Any], *, key: str = "projection") -> None:
+    projection = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not projection:
+        return
+    typer.echo(
+        "projection: "
+        f"target={projection.get('target_scenario') or '-'} "
+        f"active={projection.get('active_scenario') or '-'} "
+        f"match={'yes' if projection.get('active_matches_target') else 'no'} "
+        f"base_rules={projection.get('base_rule_count') if projection.get('base_rule_count') is not None else 0} "
+        f"scenario_rules={projection.get('scenario_rule_count') if projection.get('scenario_rule_count') is not None else 0}"
+    )
+
+
+def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
+    refresh = payload.get("projection_refresh") if isinstance(payload.get("projection_refresh"), dict) else {}
+    if not refresh:
+        return
+    typer.echo(
+        "projection_refresh: "
+        f"attempted={'yes' if refresh.get('attempted') else 'no'} "
+        f"scenario={refresh.get('scenario_id') or '-'} "
+        f"rules_loaded={refresh.get('rules_loaded') if refresh.get('rules_loaded') is not None else 0} "
+        f"source={refresh.get('source') or '-'}"
+    )
+    error = str(refresh.get("error") or "").strip()
+    if error:
+        typer.echo(f"  warn: {error}")
+
+
 def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
     """
     Root/hub join endpoints can sit behind TLS-terminating proxies and occasionally return
@@ -818,6 +848,7 @@ def _node_yjs_control_action(
         f"webspace={payload.get('webspace_id') or webspace} "
         f"scenario={payload.get('scenario_id') or '-'}"
     )
+    _print_projection_refresh_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})
@@ -960,6 +991,47 @@ def _node_yjs_update_action(
         _print_yjs_runtime_summary({"runtime": runtime})
 
 
+def _node_yjs_describe_action(
+    *,
+    webspace: str,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}",
+        token=resolve_control_token(explicit=cfg.token),
+        timeout=8.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs describe failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs describe failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    webspace_payload = payload.get("webspace") if isinstance(payload.get("webspace"), dict) else {}
+    typer.echo(
+        f"webspace: id={webspace_payload.get('webspace_id') or webspace} "
+        f"kind={webspace_payload.get('kind') or '-'} "
+        f"mode={webspace_payload.get('source_mode') or '-'} "
+        f"home={webspace_payload.get('home_scenario') or '-'} "
+        f"current={webspace_payload.get('current_scenario') or '-'}"
+    )
+    _print_projection_summary(payload)
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
 @yjs_app.command("create")
 def node_yjs_create(
     webspace: str | None = typer.Option(None, "--webspace", help="Preferred webspace id"),
@@ -991,6 +1063,19 @@ def node_yjs_update(
         webspace=webspace,
         title=title,
         home_scenario=home_scenario,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("describe")
+def node_yjs_describe(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to inspect"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_describe_action(
+        webspace=webspace,
         control=control,
         json_output=json_output,
     )

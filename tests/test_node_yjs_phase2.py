@@ -432,6 +432,20 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             )
         ),
     )
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_projection_state",
+        lambda webspace_id: _awaitable(
+            {
+                "webspace_id": webspace_id,
+                "target_scenario": "prompt_engineer_runtime",
+                "active_scenario": "prompt_engineer_runtime",
+                "active_matches_target": True,
+                "base_rule_count": 2,
+                "scenario_rule_count": 1,
+            }
+        ),
+    )
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
 
     result = asyncio.run(node_api_module.node_yjs_webspace_state("dev_prompt"))
@@ -440,6 +454,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["accepted"] is True
     assert result["webspace"]["webspace_id"] == "dev_prompt"
     assert result["webspace"]["source_mode"] == "dev"
+    assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
     assert result["runtime"]["webspace_id"] == "dev_prompt"
 
 
@@ -663,4 +678,58 @@ def test_node_cli_update_patches_metadata(monkeypatch) -> None:
             },
         }
     ]
+    assert rendered[-1][1] is True
+
+
+def test_node_cli_describe_reads_webspace_state(monkeypatch) -> None:
+    captured: list[str] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_get_json",
+        lambda **kwargs: (
+            captured.append(kwargs.get("path"))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace": {
+                        "webspace_id": "default",
+                        "kind": "workspace",
+                        "source_mode": "workspace",
+                        "home_scenario": "web_desktop",
+                        "current_scenario": "web_desktop",
+                    },
+                    "projection": {
+                        "target_scenario": "web_desktop",
+                        "active_scenario": "web_desktop",
+                        "active_matches_target": True,
+                        "base_rule_count": 2,
+                        "scenario_rule_count": 1,
+                    },
+                    "runtime": {"assessment": {"state": "nominal"}},
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_describe_action(
+        webspace="default",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == ["/api/node/yjs/webspaces/default"]
     assert rendered[-1][1] is True

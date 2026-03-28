@@ -615,6 +615,10 @@ Additions:
 - documented boundary:
   UI resolve consumes UI sources, projection lifecycle consumes
   `data_projections`
+- control-surface observability for:
+  - active scenario projection layer
+  - target scenario for a webspace rebuild
+  - whether the active layer matches the target
 
 Intentionally untouched scope:
 
@@ -701,6 +705,8 @@ Current status:
 - the active scenario projection layer now clears stale scenario overrides on
   scenario changes and falls back to skill defaults when a scenario has no
   `data_projections`
+- webspace/node control surfaces now expose projection-layer state so rebuild
+  ordering can be diagnosed without reading runtime logs
 - the main remaining cleanup is no longer "make projection refresh explicit",
   but expanding debug/introspection around projection ordering as deeper
   Phase 4 work

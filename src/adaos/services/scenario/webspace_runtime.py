@@ -1014,6 +1014,46 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     )
 
 
+async def describe_webspace_projection_state(
+    webspace_id: str,
+    *,
+    scenario_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Return a lightweight snapshot of the projection lifecycle for a webspace.
+
+    This is a read-only control-surface helper: it does not refresh or mutate
+    the active registry, it only explains which scenario the current layer is
+    targeting and whether that matches the active scenario layer in memory.
+    """
+    operational = await describe_webspace_operational_state(webspace_id)
+    target_scenario = (
+        str(scenario_id or "").strip()
+        or str(operational.current_scenario or "").strip()
+        or str(operational.effective_home_scenario or "").strip()
+        or None
+    )
+
+    registry = get_ctx().projections
+    snapshot: Dict[str, Any] = {}
+    try:
+        raw = registry.snapshot() if hasattr(registry, "snapshot") else {}
+        snapshot = dict(raw) if isinstance(raw, Mapping) else {}
+    except Exception:
+        snapshot = {}
+
+    active_scenario = str(snapshot.get("active_scenario_id") or "").strip() or None
+    return {
+        "webspace_id": operational.webspace_id,
+        "target_scenario": target_scenario,
+        "active_scenario": active_scenario,
+        "active_matches_target": bool(target_scenario) and active_scenario == target_scenario,
+        "base_rule_count": int(snapshot.get("base_rule_count") or 0),
+        "scenario_rule_count": int(snapshot.get("scenario_rule_count") or 0),
+        "source": "projection_registry",
+    }
+
+
 async def _resolve_reload_scenario_target(
     webspace_id: str,
     requested_scenario_id: str | None,
@@ -1967,5 +2007,7 @@ __all__ = [
     "WebspaceResolverInputs",
     "WebspaceResolverOutputs",
     "WebspaceScenarioRuntime",
+    "describe_webspace_operational_state",
+    "describe_webspace_projection_state",
     "rebuild_webspace_from_sources",
 ]

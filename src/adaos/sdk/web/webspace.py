@@ -7,6 +7,7 @@ from adaos.services.scenario.webspace_runtime import (
     WebspaceInfo,
     WebspaceService,
     describe_webspace_operational_state,
+    describe_webspace_projection_state,
     ensure_dev_webspace_for_scenario,
     go_home_webspace,
 )
@@ -41,10 +42,14 @@ def webspace_list(mode: str = "mixed") -> List[WebspaceInfo]:
 async def webspace_describe(webspace_id: str | None = None) -> dict[str, Any]:
     """
     Return the current operational state of a webspace, including
-    ``home_scenario``, ``current_scenario``, ``kind``, and ``source_mode``.
+    ``home_scenario``, ``current_scenario``, ``kind``, ``source_mode``,
+    and the current projection-layer target snapshot.
     """
     target = str(webspace_id or "").strip() or default_webspace_id()
-    return (await describe_webspace_operational_state(target)).to_dict()
+    return {
+        "webspace": (await describe_webspace_operational_state(target)).to_dict(),
+        "projection": await describe_webspace_projection_state(target),
+    }
 
 
 @tool(
