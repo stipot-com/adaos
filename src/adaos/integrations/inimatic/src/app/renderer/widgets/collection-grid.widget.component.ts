@@ -18,19 +18,45 @@ import { isVerboseDebugEnabled } from '../../debug-log'
     <div class="grid-section">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
       <div class="tiles" *ngIf="items$ | async as items" [style.--tile-min]="tileMinWidthPx">
-        <button
-          type="button"
+        <article
           class="tile"
           *ngFor="let item of items"
           (click)="onItemClick(item)"
+          (keydown.enter)="onItemClick(item)"
+          (keydown.space)="onTileKeydown($event, item)"
+          tabindex="0"
+          role="button"
           [class.selected]="isSelected(item)"
         >
           <ion-badge *ngIf="item.dev" color="warning" class="dev-badge">DEV</ion-badge>
+          <div class="tile-badges" *ngIf="itemBadges(item).length">
+            <span
+              class="tile-badge"
+              *ngFor="let badge of itemBadges(item)"
+              [class.is-active]="badge.tone === 'active'"
+              [class.is-accent]="badge.tone === 'accent'"
+            >
+              {{ badge.label }}
+            </span>
+          </div>
           <div class="icon-wrapper" *ngIf="item.icon">
             <ion-icon [name]="item.icon"></ion-icon>
           </div>
           <div class="label">{{ item.title || item.id }}</div>
-        </button>
+          <div class="subtitle" *ngIf="itemSubtitle(item) as subtitle">{{ subtitle }}</div>
+          <div class="tile-actions" *ngIf="quickActionButtons(item).length">
+            <ion-button
+              *ngFor="let btn of quickActionButtons(item)"
+              size="small"
+              [color]="btn.color"
+              [fill]="btn.fill || 'outline'"
+              (click)="onQuickAction(btn.action, item, $event)"
+            >
+              <ion-icon *ngIf="btn.icon" slot="start" [name]="btn.icon"></ion-icon>
+              {{ btn.label }}
+            </ion-button>
+          </div>
+        </article>
       </div>
     </div>
   `,
@@ -53,24 +79,33 @@ import { isVerboseDebugEnabled } from '../../debug-log'
       }
       .tile {
         position: relative;
-        border: none;
-        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
         color: inherit;
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 6px;
-        padding: 14px 8px;
+        padding: 14px 10px 12px;
         border-radius: 14px;
-        transition: background 0.2s, transform 0.15s ease;
+        transition: background 0.2s, transform 0.15s ease, border-color 0.2s ease;
         min-width: 0;
+        cursor: pointer;
+        text-align: center;
+        outline: none;
       }
       .tile:hover {
         background: rgba(255, 255, 255, 0.06);
         transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.14);
+      }
+      .tile:focus-visible {
+        border-color: var(--ion-color-primary, rgba(255, 255, 255, 0.4));
+        box-shadow: 0 0 0 2px rgba(var(--ion-color-primary-rgb, 56, 128, 255), 0.24);
       }
       .tile.selected {
         background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.18);
       }
       .icon-wrapper {
         font-size: 32px;
@@ -81,11 +116,62 @@ import { isVerboseDebugEnabled } from '../../debug-log'
         height: 48px;
       }
       .label {
-        font-size: 12px;
-        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.25;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
         overflow: hidden;
-        text-overflow: ellipsis;
         max-width: 100%;
+      }
+      .subtitle {
+        font-size: 11px;
+        opacity: 0.72;
+        line-height: 1.3;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        max-width: 100%;
+        min-height: 28px;
+      }
+      .tile-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: center;
+        min-height: 20px;
+      }
+      .tile-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        letter-spacing: 0.02em;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.05);
+        opacity: 0.82;
+      }
+      .tile-badge.is-active {
+        background: rgba(var(--ion-color-success-rgb, 45, 211, 111), 0.14);
+        border-color: rgba(var(--ion-color-success-rgb, 45, 211, 111), 0.35);
+      }
+      .tile-badge.is-accent {
+        background: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.12);
+        border-color: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.34);
+      }
+      .tile-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 2px;
+      }
+      .tile-actions ion-button {
+        margin: 0;
       }
       .dev-badge {
         position: absolute;
@@ -170,6 +256,11 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     }
   }
 
+  onTileKeydown(event: KeyboardEvent, item: any): void {
+    event.preventDefault()
+    void this.onItemClick(item)
+  }
+
   private updateItemsStream(): void {
     this.items$ = this.data.load<any[]>(this.widget?.dataSource)
   }
@@ -180,6 +271,74 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     const selected = this.state.get<string>(key)
     if (!selected) return false
     return item?.id === selected || item?.path === selected
+  }
+
+  itemSubtitle(item: any): string {
+    return String(item?.subtitle || item?.description || item?.source || item?.origin || '')
+      .trim()
+  }
+
+  itemBadges(item: any): Array<{ label: string; tone?: 'active' | 'accent' }> {
+    const badges: Array<{ label: string; tone?: 'active' | 'accent' }> = []
+    const kindLabel = String(item?.kindLabel || '').trim()
+    if (kindLabel) {
+      badges.push({ label: kindLabel })
+    }
+    if (item?.installed) {
+      badges.push({ label: 'Installed', tone: 'active' })
+    }
+    if (item?.pinned) {
+      badges.push({ label: 'Pinned', tone: 'accent' })
+    }
+    return badges
+  }
+
+  quickActionButtons(item: any): Array<{
+    action: 'install' | 'pin'
+    label: string
+    icon?: string
+    color?: string
+    fill?: 'outline' | 'solid' | 'clear'
+  }> {
+    const actions: Array<{
+      action: 'install' | 'pin'
+      label: string
+      icon?: string
+      color?: string
+      fill?: 'outline' | 'solid' | 'clear'
+    }> = []
+    if (item?.installable && (item?.installType === 'app' || item?.installType === 'widget')) {
+      actions.push({
+        action: 'install',
+        label: item?.installed ? 'Remove' : 'Install',
+        icon: item?.installed ? 'close-outline' : 'add-outline',
+        color: item?.installed ? 'danger' : 'primary',
+        fill: item?.installed ? 'outline' : 'solid',
+      })
+    }
+    if ((item?.pinnable || item?.pinned) && item?.installType === 'widget') {
+      actions.push({
+        action: 'pin',
+        label: item?.pinned ? 'Unpin' : 'Pin',
+        icon: 'bookmark-outline',
+        color: item?.pinned ? 'warning' : 'medium',
+        fill: item?.pinned ? 'solid' : 'outline',
+      })
+    }
+    return actions
+  }
+
+  async onQuickAction(action: 'install' | 'pin', item: any, event: Event): Promise<void> {
+    event.preventDefault()
+    event.stopPropagation()
+    if (action === 'install') {
+      const installType = item?.installType === 'app' ? 'app' : 'widget'
+      await this.actions.toggleDesktopInstall(installType, String(item?.id || ''))
+      return
+    }
+    if (action === 'pin') {
+      await this.actions.toggleDesktopPinnedWidget(item, !item?.pinned)
+    }
   }
 
   private recomputeStateDeps(): void {

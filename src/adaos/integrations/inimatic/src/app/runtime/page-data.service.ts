@@ -115,6 +115,10 @@ export class PageDataService {
     return `${base}${rel}`
   }
 
+  private isDesktopCatalogPath(path?: string): boolean {
+    return path === 'data/catalog/apps' || path === 'data/catalog/widgets'
+  }
+
   private isInfrastatePath(path?: string): boolean {
     return !!path && (path === 'data/infrastate' || path.startsWith('data/infrastate/'))
   }
@@ -291,6 +295,13 @@ export class PageDataService {
       return [unsubscribe]
     }
 
+    if (this.isDesktopCatalogPath(cfg.path)) {
+      const node = this.ydoc.getPath('data')
+      if (!node) return [() => {}]
+      const unsubscribe = observeDeep(node, emit)
+      return [unsubscribe]
+    }
+
     const paths = this.pathsForYDoc(cfg)
     if (!paths.length) return [() => {}]
     return paths.map((path) => {
@@ -318,6 +329,12 @@ export class PageDataService {
       case 'desktop.widgets':
         return this.resolveDesktopWidgets()
       default:
+        if (cfg.path === 'data/catalog/apps') {
+          return this.resolveDesktopCatalogItems('apps')
+        }
+        if (cfg.path === 'data/catalog/widgets') {
+          return this.resolveDesktopCatalogItems('widgets')
+        }
         if (cfg.path === 'data/weather/current') {
           // Weather snapshot is sometimes seeded as a plain dict under
           // data.weather, so YDoc.getPath('data/weather/current') may
@@ -387,15 +404,81 @@ export class PageDataService {
     return items
   }
 
+  private resolveDesktopCatalogItems(kind: 'apps' | 'widgets'): any[] {
+    const catalogRaw = this.ydoc.toJSON(this.ydoc.getPath(`data/catalog/${kind}`))
+    const catalog = Array.isArray(catalogRaw) ? catalogRaw : []
+    const installed = new Set(this.readInstalled(kind))
+    const dataDesktop: any = this.ydoc.toJSON(this.ydoc.getPath('data/desktop')) || {}
+    const app: any = this.ydoc.toJSON(this.ydoc.getPath('ui/application')) || {}
+    const pinnedRaw = Array.isArray(dataDesktop?.pinnedWidgets)
+      ? dataDesktop?.pinnedWidgets
+      : app?.desktop?.pinnedWidgets
+    const pinnedIds = new Set(
+      (Array.isArray(pinnedRaw) ? pinnedRaw : [])
+        .map((item) => String(item?.id || '').trim())
+        .filter(Boolean),
+    )
+    const defaultIcon =
+      kind === 'apps'
+        ? app?.desktop?.iconTemplate?.icon || 'apps-outline'
+        : 'layers-outline'
+    return catalog
+      .map((raw) => {
+        if (!raw || typeof raw !== 'object') return undefined
+        const item = { ...raw } as Record<string, any>
+        const id = String(item['id'] || '').trim()
+        if (!id) return undefined
+        const scenarioId = String(item['scenario_id'] || '').trim()
+        const launchModal = String(item['launchModal'] || '').trim()
+        const source = String(item['source'] || item['origin'] || '').trim()
+        const installedNow = installed.has(id)
+        const pinnedNow = kind === 'widgets' && pinnedIds.has(id)
+        let kindLabel = ''
+        if (scenarioId) {
+          kindLabel = 'Scenario'
+        } else if (launchModal) {
+          kindLabel = 'Modal'
+        } else if (kind === 'widgets') {
+          kindLabel = 'Widget'
+        }
+        const subtitle =
+          String(item['subtitle'] || '').trim() ||
+          scenarioId ||
+          launchModal ||
+          source ||
+          ''
+        return {
+          ...item,
+          id,
+          icon: String(item['icon'] || '').trim() || defaultIcon,
+          title: String(item['title'] || id).trim() || id,
+          subtitle,
+          kindLabel,
+          installType: kind === 'apps' ? 'app' : 'widget',
+          installable: true,
+          installed: installedNow,
+          pinnable: kind === 'widgets' && (installedNow || pinnedNow),
+          pinned: pinnedNow,
+        }
+      })
+      .filter(Boolean)
+  }
+
   private resolveDesktopWidgets(): WidgetConfig[] {
     const catalogWidgets: any[] = this.ydoc.toJSON(this.ydoc.getPath('data/catalog/widgets')) || []
     const installedWidgets = this.readInstalled('widgets')
+    const installedWidgetIds = new Set(installedWidgets)
     const dataDesktop: any = this.ydoc.toJSON(this.ydoc.getPath('data/desktop')) || {}
     const app: any = this.ydoc.toJSON(this.ydoc.getPath('ui/application')) || {}
     const pinnedRaw = Array.isArray(dataDesktop?.pinnedWidgets)
       ? dataDesktop?.pinnedWidgets
       : app?.desktop?.pinnedWidgets
     const pinnedWidgets: any[] = Array.isArray(pinnedRaw) ? pinnedRaw : []
+    const pinnedWidgetIds = new Set(
+      pinnedWidgets
+        .map((item) => String(item?.id || '').trim())
+        .filter(Boolean)
+    )
     const byId: Record<string, any> = {}
     for (const it of catalogWidgets) {
       if (it?.id) byId[it.id] = it
@@ -414,6 +497,13 @@ export class PageDataService {
       const type = String(merged.type || 'visual.metricTile') as WidgetType
       merged.id = id
       merged.type = type
+      merged.installed = installedWidgetIds.has(id)
+      merged.pinned = pinnedWidgetIds.has(id)
+      merged.installType = 'widget'
+      merged.pinnable = true
+      merged.subtitle =
+        String(merged.subtitle || '').trim() ||
+        String(merged.source || merged.origin || merged.type || '').trim()
       return merged as WidgetConfig
     }
 

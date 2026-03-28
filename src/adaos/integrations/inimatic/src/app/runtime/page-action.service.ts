@@ -38,6 +38,70 @@ export class PageActionService {
     return false
   }
 
+  async toggleDesktopInstall(itemType: 'app' | 'widget', id: string): Promise<boolean> {
+    const targetId = String(id || '').trim()
+    if (!targetId) return false
+    return this.callHost(
+      {
+        on: 'click',
+        type: 'callHost',
+        target: 'desktop.toggleInstall',
+        params: {
+          type: itemType,
+          id: targetId,
+        },
+      },
+      {},
+    )
+  }
+
+  async toggleDesktopPinnedWidget(
+    widget: Record<string, any>,
+    forcePinned?: boolean,
+  ): Promise<boolean> {
+    const itemId = String(widget?.['id'] || '').trim()
+    if (!itemId) return false
+    const current = this.readCurrentPinnedWidgets()
+    const currentById = new Map<string, Record<string, any>>()
+    for (const item of current) {
+      const currentId = String(item?.['id'] || '').trim()
+      if (!currentId) continue
+      currentById.set(currentId, item)
+    }
+    const shouldPin =
+      typeof forcePinned === 'boolean' ? forcePinned : !currentById.has(itemId)
+    if (shouldPin) {
+      currentById.set(itemId, this.sanitizePinnedWidget(widget))
+    } else {
+      currentById.delete(itemId)
+    }
+    return this.setDesktopPinnedWidgets(Array.from(currentById.values()))
+  }
+
+  async setDesktopPinnedWidgets(items: Array<Record<string, any>>): Promise<boolean> {
+    const targetWebspaceId = this.currentWebspaceId()
+    const encodedWebspaceId = encodeURIComponent(targetWebspaceId)
+    const pinnedWidgets = Array.isArray(items)
+      ? items
+          .map((item) => this.sanitizePinnedWidget(item))
+          .filter((item) => !!String(item?.['id'] || '').trim())
+      : []
+    try {
+      const response = await this.adaos
+        .post<any>(`/api/node/yjs/webspaces/${encodedWebspaceId}/desktop/pinned-widgets`, {
+          pinnedWidgets,
+        })
+        .toPromise()
+      if (response?.accepted === false || response?.ok === false) {
+        throw new Error(String(response?.error || 'desktop_pinned_widgets_rejected'))
+      }
+      return true
+    } catch (err) {
+      await this.presentToast(this.describeHostError(err), 2400)
+      return false
+    }
+  }
+
   private async callSkill(
     action: ActionConfig,
     ctx: ActionContext
@@ -309,6 +373,15 @@ export class PageActionService {
         },
       }
     }
+    if (target === 'desktop.toggleInstall') {
+      return {
+        path: `/api/node/yjs/webspaces/${encodedWebspaceId}/toggle-install`,
+        body: {
+          type: body?.['type'],
+          id: body?.['id'],
+        },
+      }
+    }
     if (target === 'infrastate.action') {
       return {
         path: '/api/node/infrastate/action',
@@ -471,5 +544,66 @@ export class PageActionService {
       }
     }
     return ''
+  }
+
+  private currentWebspaceId(): string {
+    return (
+      this.ydoc.getWebspaceId() ||
+      this.adaos.getCurrentWebspaceId?.() ||
+      'default'
+    )
+  }
+
+  private readCurrentPinnedWidgets(): Array<Record<string, any>> {
+    const dataDesktop = this.ydoc.toJSON(this.ydoc.getPath('data/desktop')) || {}
+    const application = this.ydoc.toJSON(this.ydoc.getPath('ui/application')) || {}
+    const raw = Array.isArray(dataDesktop?.pinnedWidgets)
+      ? dataDesktop.pinnedWidgets
+      : application?.desktop?.pinnedWidgets
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((item) => this.sanitizePinnedWidget(item))
+      .filter((item) => !!String(item?.['id'] || '').trim())
+  }
+
+  private sanitizePinnedWidget(item: any): Record<string, any> {
+    const itemId = String(item?.['id'] || '').trim()
+    if (!itemId) return {}
+    const out: Record<string, any> = { id: itemId }
+    for (const key of ['type', 'title', 'source', 'visibleIf', 'icon', 'origin']) {
+      if (item?.[key] !== undefined) {
+        out[key] = this.cloneJson(item[key])
+      }
+    }
+    if (typeof item?.['dev'] === 'boolean') {
+      out['dev'] = item.dev
+    }
+    if (item?.['dataSource'] && typeof item.dataSource === 'object') {
+      out['dataSource'] = this.cloneJson(item.dataSource)
+    }
+    if (item?.['inputs'] && typeof item.inputs === 'object') {
+      out['inputs'] = this.cloneJson(item.inputs)
+    }
+    if (Array.isArray(item?.['actions'])) {
+      out['actions'] = this.cloneJson(item.actions)
+    }
+    return out
+  }
+
+  private cloneJson<T>(value: T): T {
+    try {
+      return JSON.parse(JSON.stringify(value)) as T
+    } catch {
+      return value
+    }
+  }
+
+  private async presentToast(message: string, duration: number): Promise<void> {
+    try {
+      const t = await this.toast.create({ message, duration })
+      await t.present()
+    } catch {
+      console.warn('toast failed', message)
+    }
   }
 }
