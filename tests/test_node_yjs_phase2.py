@@ -565,3 +565,102 @@ def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
         }
     ]
     assert rendered[-1][1] is True
+
+
+def test_node_cli_create_posts_metadata(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            captured.append(
+                {
+                    "path": kwargs.get("path"),
+                    "body": dict(kwargs.get("body") or {}),
+                }
+            )
+            or (200, {"ok": True, "accepted": True, "webspace": {"id": "preview-space", "home_scenario": "prompt_engineer_scenario"}})
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_create_action(
+        webspace="preview-space",
+        title="Preview Space",
+        scenario_id="prompt_engineer_scenario",
+        dev=True,
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == [
+        {
+            "path": "/api/node/yjs/webspaces",
+            "body": {
+                "id": "preview-space",
+                "title": "Preview Space",
+                "scenario_id": "prompt_engineer_scenario",
+                "dev": True,
+            },
+        }
+    ]
+    assert rendered[-1][1] is True
+
+
+def test_node_cli_update_patches_metadata(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_patch_json",
+        lambda **kwargs: (
+            captured.append(
+                {
+                    "path": kwargs.get("path"),
+                    "body": dict(kwargs.get("body") or {}),
+                }
+            )
+            or (200, {"ok": True, "accepted": True, "webspace": {"id": "default", "home_scenario": "prompt_engineer_scenario"}})
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_update_action(
+        webspace="default",
+        title="Desktop",
+        home_scenario="prompt_engineer_scenario",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == [
+        {
+            "path": "/api/node/yjs/webspaces/default",
+            "body": {
+                "title": "Desktop",
+                "home_scenario": "prompt_engineer_scenario",
+            },
+        }
+    ]
+    assert rendered[-1][1] is True

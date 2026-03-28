@@ -369,3 +369,78 @@ def test_desktop_scenario_set_preserves_explicit_false(monkeypatch) -> None:
     )
 
     assert captured == [("phase2-forward", "prompt_engineer_scenario", False)]
+
+
+def test_reload_preview_webspaces_for_scenario_project(monkeypatch) -> None:
+    scenario_id = "prompt_engineer_scenario"
+    preview_a = "dev-prompt-a"
+    preview_b = "dev-prompt-b"
+    ensure_workspace(preview_a)
+    ensure_workspace(preview_b)
+    set_workspace_manifest(
+        preview_a,
+        display_name="DEV: Prompt A",
+        kind="dev",
+        source_mode="dev",
+        home_scenario=scenario_id,
+    )
+    set_workspace_manifest(
+        preview_b,
+        display_name="DEV: Prompt B",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="other_scenario",
+    )
+
+    captured: list[tuple[str, str, str]] = []
+
+    async def _fake_reload(webspace_id: str, *, scenario_id: str | None = None, action: str = "reload") -> dict[str, object]:
+        captured.append((webspace_id, str(scenario_id), action))
+        return {"ok": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "action": action}
+
+    monkeypatch.setattr(webspace_runtime_module, "reload_webspace_from_scenario", _fake_reload)
+
+    result = asyncio.run(
+        webspace_runtime_module.reload_preview_webspaces_for_project(
+            "scenario",
+            scenario_id,
+            reason="project_meta_updated",
+        )
+    )
+
+    assert captured == [(preview_a, scenario_id, "reload")]
+    assert result["accepted"] is True
+    assert result["reloaded_webspaces"] == [preview_a]
+
+
+def test_reload_preview_webspaces_for_skill_dependency(monkeypatch) -> None:
+    preview = "dev-scenario-preview"
+    ensure_workspace(preview)
+    set_workspace_manifest(
+        preview,
+        display_name="DEV: Scenario Preview",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="demo_scenario",
+    )
+
+    async def _fake_reload(webspace_id: str, *, scenario_id: str | None = None, action: str = "reload") -> dict[str, object]:
+        return {"ok": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "action": action}
+
+    monkeypatch.setattr(webspace_runtime_module, "reload_webspace_from_scenario", _fake_reload)
+    monkeypatch.setattr(
+        webspace_runtime_module.scenarios_loader,
+        "read_manifest",
+        lambda scenario_id, *, space="workspace": {"depends": ["weather_skill", "skill_alpha"]},
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.reload_preview_webspaces_for_project(
+            "skill",
+            "skill_alpha",
+            reason="git_updated",
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["reloaded_webspaces"] == [preview]

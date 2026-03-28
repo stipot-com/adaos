@@ -95,6 +95,36 @@ def _control_post_json(
     return response.status_code, payload
 
 
+def _control_patch_json(
+    *,
+    control: str,
+    path: str,
+    token: str,
+    body: dict[str, Any],
+    timeout: float = 2.5,
+) -> tuple[int | None, Any]:
+    url = control.rstrip("/") + path
+    headers = {"X-AdaOS-Token": token or resolve_control_token()}
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        response = sess.patch(url, headers=headers, json=body, timeout=timeout)
+    except requests.Timeout as exc:
+        return None, {"error": "timeout", "detail": str(exc)}
+    except requests.ConnectionError as exc:
+        return None, {"error": "connection_error", "detail": str(exc)}
+    except Exception as exc:
+        return None, {"error": "request_error", "detail": str(exc)}
+    try:
+        payload = response.json()
+    except Exception:
+        payload = (response.text or "").strip()
+    return response.status_code, payload
+
+
 def _print_reliability_summary(payload: dict[str, Any]) -> None:
     node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -836,6 +866,134 @@ def _node_yjs_ensure_dev_action(
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})
+
+
+def _node_yjs_create_action(
+    *,
+    webspace: str | None,
+    title: str | None,
+    scenario_id: str | None,
+    dev: bool,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_post_json(
+        control=control0,
+        path="/api/node/yjs/webspaces",
+        token=resolve_control_token(explicit=cfg.token),
+        body={
+            "id": str(webspace or "").strip() or None,
+            "title": str(title or "").strip() or None,
+            "scenario_id": str(scenario_id or "").strip() or None,
+            "dev": bool(dev),
+        },
+        timeout=20.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs create failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs create failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    webspace_payload = payload.get("webspace") if isinstance(payload.get("webspace"), dict) else {}
+    typer.echo(
+        f"yjs create: accepted={payload.get('accepted')} "
+        f"webspace={webspace_payload.get('id') or webspace or '-'} "
+        f"scenario={webspace_payload.get('home_scenario') or scenario_id or 'web_desktop'} "
+        f"kind={webspace_payload.get('kind') or ('dev' if dev else 'workspace')}"
+    )
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
+def _node_yjs_update_action(
+    *,
+    webspace: str,
+    title: str | None,
+    home_scenario: str | None,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_patch_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}",
+        token=resolve_control_token(explicit=cfg.token),
+        body={
+            "title": str(title or "").strip() or None,
+            "home_scenario": str(home_scenario or "").strip() or None,
+        },
+        timeout=20.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs update failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs update failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    webspace_payload = payload.get("webspace") if isinstance(payload.get("webspace"), dict) else {}
+    typer.echo(
+        f"yjs update: accepted={payload.get('accepted')} "
+        f"webspace={webspace_payload.get('id') or webspace} "
+        f"home={webspace_payload.get('home_scenario') or home_scenario or '-'}"
+    )
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
+@yjs_app.command("create")
+def node_yjs_create(
+    webspace: str | None = typer.Option(None, "--webspace", help="Preferred webspace id"),
+    title: str | None = typer.Option(None, "--title", help="Display title"),
+    scenario_id: str | None = typer.Option(None, "--scenario-id", help="Initial home scenario"),
+    dev: bool = typer.Option(False, "--dev", help="Create as dev webspace"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_create_action(
+        webspace=webspace,
+        title=title,
+        scenario_id=scenario_id,
+        dev=dev,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("update")
+def node_yjs_update(
+    webspace: str = typer.Option(..., "--webspace", help="Webspace id to update"),
+    title: str | None = typer.Option(None, "--title", help="Updated display title"),
+    home_scenario: str | None = typer.Option(None, "--home-scenario", help="Updated home scenario"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_update_action(
+        webspace=webspace,
+        title=title,
+        home_scenario=home_scenario,
+        control=control,
+        json_output=json_output,
+    )
 
 
 @yjs_app.command("reload")

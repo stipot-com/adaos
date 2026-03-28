@@ -504,6 +504,10 @@ Additions:
 - Prompt IDE and similar dev flows should be able to open a scenario-backed
   dev preview webspace in a separate browser window, instead of always
   hijacking the current shell
+- scenario- and dependency-driven dev preview webspaces should refresh
+  from dev sources when Prompt IDE mutates the underlying project
+- CLI control surfaces should stay roughly symmetric with node HTTP
+  control surfaces for create/update/home/dev operations
 - default policy remains asymmetric:
   regular workspaces do not auto-persist switched scenarios as home, while
   dev webspaces may do so unless an explicit override is supplied

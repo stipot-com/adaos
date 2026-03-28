@@ -1569,6 +1569,82 @@ async def ensure_dev_webspace_for_scenario(
     }
 
 
+async def reload_preview_webspaces_for_project(
+    object_type: str,
+    object_id: str,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    object_type = str(object_type or "").strip().lower()
+    object_id = str(object_id or "").strip()
+    if object_type not in {"scenario", "skill"} or not object_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "project_identity_required",
+        }
+
+    targets: list[tuple[str, str]] = []
+    for row in workspace_index.list_workspaces():
+        if not row.is_dev:
+            continue
+        home_scenario = str(row.effective_home_scenario or "").strip()
+        if not home_scenario:
+            continue
+        if object_type == "scenario":
+            if home_scenario == object_id:
+                targets.append((row.workspace_id, home_scenario))
+            continue
+        try:
+            manifest = scenarios_loader.read_manifest(home_scenario, space=row.effective_source_mode)
+            depends_raw = manifest.get("depends") or []
+            depends = {
+                str(item).strip()
+                for item in depends_raw
+                if str(item).strip()
+            }
+            if object_id in depends:
+                targets.append((row.workspace_id, home_scenario))
+        except Exception:
+            _log.debug(
+                "failed to resolve scenario depends for preview webspace=%s home=%s",
+                row.workspace_id,
+                home_scenario,
+                exc_info=True,
+            )
+
+    reloaded: list[str] = []
+    failed: list[str] = []
+    for webspace_id, scenario_id in targets:
+        try:
+            await reload_webspace_from_scenario(
+                webspace_id,
+                scenario_id=scenario_id,
+                action="reload",
+            )
+            reloaded.append(webspace_id)
+        except Exception:
+            failed.append(webspace_id)
+            _log.warning(
+                "failed to reload preview webspace=%s for %s:%s reason=%s",
+                webspace_id,
+                object_type,
+                object_id,
+                reason,
+                exc_info=True,
+            )
+
+    return {
+        "ok": not failed,
+        "accepted": bool(targets),
+        "object_type": object_type,
+        "object_id": object_id,
+        "reason": str(reason or "").strip() or None,
+        "reloaded_webspaces": reloaded,
+        "failed_webspaces": failed,
+    }
+
+
 @subscribe("desktop.webspace.reload")
 async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     """
@@ -1646,6 +1722,20 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     elif "persist_home" in payload:
         set_home = bool(payload.get("persist_home"))
     await switch_webspace_scenario(webspace_id, scenario_id, set_home=set_home)
+
+
+@subscribe("prompt.project.changed")
+async def _on_prompt_project_changed(evt: Dict[str, Any]) -> None:
+    payload = _payload(evt)
+    object_type = str(payload.get("object_type") or "").strip().lower()
+    object_id = str(payload.get("object_id") or "").strip()
+    if object_type not in {"scenario", "skill"} or not object_id:
+        return
+    await reload_preview_webspaces_for_project(
+        object_type,
+        object_id,
+        reason=str(payload.get("reason") or "").strip() or None,
+    )
 
 
 __all__ = ["WebUIRegistryEntry", "WebspaceScenarioRuntime"]
