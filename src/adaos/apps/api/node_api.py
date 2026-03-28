@@ -123,6 +123,10 @@ class WebspaceToggleInstallRequest(BaseModel):
     id: str = Field(..., min_length=1)
 
 
+class WebspacePinnedWidgetsRequest(BaseModel):
+    pinnedWidgets: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class InfrastateActionRequest(BaseModel):
     id: str = Field(..., min_length=1)
     webspace_id: str | None = None
@@ -575,11 +579,13 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     state = await describe_webspace_operational_state(target_webspace_id)
     overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
+    desktop = (await WebDesktopService().get_snapshot_async(target_webspace_id)).to_dict()
     return {
         "ok": True,
         "accepted": True,
         "webspace": state.to_dict(),
         "overlay": overlay,
+        "desktop": desktop,
         "projection": projection,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
@@ -688,6 +694,7 @@ async def node_yjs_toggle_install(webspace_id: str, payload: WebspaceToggleInsta
     svc = WebDesktopService()
     svc.toggle_install_with_live_room(str(payload.type), str(payload.id), target_webspace_id)
     installed = await svc.get_installed_async(target_webspace_id)
+    desktop = await svc.get_snapshot_async(target_webspace_id)
     return {
         "ok": True,
         "accepted": True,
@@ -695,6 +702,53 @@ async def node_yjs_toggle_install(webspace_id: str, payload: WebspaceToggleInsta
         "type": str(payload.type),
         "id": str(payload.id),
         "installed": installed.to_dict(),
+        "desktop": desktop.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
+@router.get("/yjs/webspaces/{webspace_id}/desktop", dependencies=[Depends(require_token)])
+async def node_yjs_desktop_state(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    desktop = await WebDesktopService().get_snapshot_async(target_webspace_id)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "desktop": desktop.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
+@router.post("/yjs/webspaces/{webspace_id}/desktop/pinned-widgets", dependencies=[Depends(require_token)])
+async def node_yjs_set_pinned_widgets(
+    webspace_id: str,
+    payload: WebspacePinnedWidgetsRequest,
+) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    svc = WebDesktopService()
+    svc.set_pinned_widgets_with_live_room(list(payload.pinnedWidgets or []), target_webspace_id)
+    desktop = await svc.get_snapshot_async(target_webspace_id)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "desktop": desktop.to_dict(),
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
             webspace_id=target_webspace_id,

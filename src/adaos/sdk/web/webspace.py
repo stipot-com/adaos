@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, List
 
 from adaos.sdk.core.decorators import tool
+from adaos.services.io_web.desktop import WebDesktopService
 from adaos.services.scenario.webspace_runtime import (
     WebspaceInfo,
     WebspaceService,
@@ -50,6 +51,7 @@ async def webspace_describe(webspace_id: str | None = None) -> dict[str, Any]:
     return {
         "webspace": (await describe_webspace_operational_state(target)).to_dict(),
         "overlay": describe_webspace_overlay_state(target),
+        "desktop": (await WebDesktopService().get_snapshot_async(target)).to_dict(),
         "projection": await describe_webspace_projection_state(target),
     }
 

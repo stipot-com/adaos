@@ -421,3 +421,26 @@ def test_web_desktop_service_set_pinned_widgets_updates_overlay_and_live_doc(mon
     assert fake_state["data"]["desktop"]["pinnedWidgets"] == [
         {"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}
     ]
+
+
+def test_web_desktop_service_get_snapshot_returns_overlay_state() -> None:
+    webspace_id = "phase5-desktop-snapshot"
+    ensure_workspace(webspace_id)
+    set_workspace_installed_overlay(
+        webspace_id,
+        {"apps": ["scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
+    )
+    set_workspace_pinned_widgets_overlay(
+        webspace_id,
+        [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+    )
+
+    snapshot = desktop_module.WebDesktopService().get_snapshot(webspace_id)
+
+    assert snapshot.to_dict() == {
+        "installed": {
+            "apps": ["scenario:prompt_engineer_scenario"],
+            "widgets": ["weather"],
+        },
+        "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+    }

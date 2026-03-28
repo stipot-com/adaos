@@ -87,6 +87,17 @@ def desktop_get_installed(webspace_id: Optional[str] = None) -> dict:
     return installed.to_dict()
 
 
+@tool(
+    "web.desktop.get_snapshot",
+    summary="Return canonical desktop customization state for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.get_snapshot()", "web.desktop.get_snapshot('default')"],
+)
+def desktop_get_snapshot(webspace_id: Optional[str] = None) -> dict:
+    svc = WebDesktopService()
+    return svc.get_snapshot(webspace_id).to_dict()
+
+
 async def desktop_get_installed_async(webspace_id: Optional[str] = None) -> dict:
     """
     Async helper for reading installed desktop items for a webspace.
@@ -97,6 +108,11 @@ async def desktop_get_installed_async(webspace_id: Optional[str] = None) -> dict
     svc = WebDesktopService()
     installed = await svc.get_installed_async(webspace_id)
     return installed.to_dict()
+
+
+async def desktop_get_snapshot_async(webspace_id: Optional[str] = None) -> dict:
+    svc = WebDesktopService()
+    return (await svc.get_snapshot_async(webspace_id)).to_dict()
 
 
 @tool(

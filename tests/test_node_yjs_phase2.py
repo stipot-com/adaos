@@ -101,6 +101,15 @@ def test_node_yjs_toggle_install_endpoint_uses_desktop_service(monkeypatch) -> N
             assert webspace_id == "default"
             return _Installed()
 
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "default"
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "installed": {"apps": ["scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
+                    "pinnedWidgets": [],
+                }
+            )
+
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
     monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
@@ -461,6 +470,17 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             }
         ),
     )
+    class _DesktopService:
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "dev_prompt"
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "installed": {"apps": ["scenario:prompt_engineer_runtime"], "widgets": []},
+                    "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                }
+            )
+
+    monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
 
     result = asyncio.run(node_api_module.node_yjs_webspace_state("dev_prompt"))
@@ -470,9 +490,74 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["webspace"]["webspace_id"] == "dev_prompt"
     assert result["overlay"]["has_pinned_widgets"] is True
     assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
+    assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
     assert result["webspace"]["source_mode"] == "dev"
     assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
     assert result["runtime"]["webspace_id"] == "dev_prompt"
+
+
+def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
+    class _DesktopService:
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "default"
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
+                    "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                }
+            )
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(node_api_module.node_yjs_desktop_state("default"))
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["desktop"]["installed"]["widgets"] == ["weather"]
+    assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
+    assert result["runtime"]["webspace_id"] == "default"
+
+
+def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) -> None:
+    captured: list[tuple[list[dict[str, object]], str]] = []
+
+    class _DesktopService:
+        def set_pinned_widgets_with_live_room(self, pinned_widgets: list[dict[str, object]], webspace_id: str | None = None) -> None:
+            captured.append((list(pinned_widgets), str(webspace_id or "")))
+
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "default"
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "installed": {"apps": [], "widgets": ["weather"]},
+                    "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                }
+            )
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_set_pinned_widgets(
+            "default",
+            node_api_module.WebspacePinnedWidgetsRequest(
+                pinnedWidgets=[{"id": "infra-status", "type": "visual.metricTile"}]
+            ),
+        )
+    )
+
+    assert captured == [
+        (
+            [{"id": "infra-status", "type": "visual.metricTile"}],
+            "default",
+        )
+    ]
+    assert result["ok"] is True
+    assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
+    assert result["runtime"]["webspace_id"] == "default"
 
 
 def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:
@@ -751,4 +836,49 @@ def test_node_cli_describe_reads_webspace_state(monkeypatch) -> None:
     )
 
     assert captured == ["/api/node/yjs/webspaces/default"]
+    assert rendered[-1][1] is True
+
+
+def test_node_cli_desktop_reads_desktop_state(monkeypatch) -> None:
+    captured: list[str] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_get_json",
+        lambda **kwargs: (
+            captured.append(kwargs.get("path"))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "desktop": {
+                        "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
+                        "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                    },
+                    "runtime": {"assessment": {"state": "nominal"}},
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_desktop_action(
+        webspace="default",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == ["/api/node/yjs/webspaces/default/desktop"]
     assert rendered[-1][1] is True

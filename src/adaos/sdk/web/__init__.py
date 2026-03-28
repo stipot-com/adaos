@@ -11,6 +11,7 @@ directly.
 
 from .desktop import (
     desktop_get_installed,
+    desktop_get_snapshot,
     desktop_get_pinned_widgets,
     desktop_set_installed,
     desktop_set_pinned_widgets,
@@ -35,6 +36,7 @@ __all__ = [
     "desktop_toggle_app",
     "desktop_toggle_widget",
     "desktop_get_installed",
+    "desktop_get_snapshot",
     "desktop_set_installed",
     "desktop_get_pinned_widgets",
     "desktop_set_pinned_widgets",

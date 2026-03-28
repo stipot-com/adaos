@@ -65,6 +65,18 @@ class WebDesktopInstalled:
         return {"apps": list(self.apps), "widgets": list(self.widgets)}
 
 
+@dataclass(slots=True)
+class WebDesktopSnapshot:
+    installed: WebDesktopInstalled
+    pinned_widgets: List[Dict[str, Any]]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "installed": self.installed.to_dict(),
+            "pinnedWidgets": _clone_pinned_widgets(self.pinned_widgets),
+        }
+
+
 def _clone_pinned_widgets(items: Any) -> List[Dict[str, Any]]:
     if not isinstance(items, list):
         return []
@@ -222,6 +234,17 @@ class WebDesktopService:
         if not has_overlay:
             return []
         return items
+
+    def get_snapshot(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
+        return WebDesktopSnapshot(
+            installed=self.get_installed(webspace_id),
+            pinned_widgets=self.get_pinned_widgets(webspace_id),
+        )
+
+    async def get_snapshot_async(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
+        installed = await self.get_installed_async(webspace_id)
+        pinned_widgets = await self.get_pinned_widgets_async(webspace_id)
+        return WebDesktopSnapshot(installed=installed, pinned_widgets=pinned_widgets)
 
     def set_installed(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
         """

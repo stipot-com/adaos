@@ -443,6 +443,20 @@ def _print_overlay_summary(payload: dict[str, Any], *, key: str = "overlay") -> 
     )
 
 
+def _print_desktop_summary(payload: dict[str, Any], *, key: str = "desktop") -> None:
+    desktop = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not desktop:
+        return
+    installed = desktop.get("installed") if isinstance(desktop.get("installed"), dict) else {}
+    pinned_widgets = desktop.get("pinnedWidgets") if isinstance(desktop.get("pinnedWidgets"), list) else []
+    typer.echo(
+        "desktop: "
+        f"installed_apps={len(installed.get('apps') or [])} "
+        f"installed_widgets={len(installed.get('widgets') or [])} "
+        f"pinned_widgets={len(pinned_widgets)}"
+    )
+
+
 def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
     refresh = payload.get("projection_refresh") if isinstance(payload.get("projection_refresh"), dict) else {}
     if not refresh:
@@ -1043,7 +1057,42 @@ def _node_yjs_describe_action(
         f"current={webspace_payload.get('current_scenario') or '-'}"
     )
     _print_overlay_summary(payload)
+    _print_desktop_summary(payload)
     _print_projection_summary(payload)
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
+def _node_yjs_desktop_action(
+    *,
+    webspace: str,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}/desktop",
+        token=resolve_control_token(explicit=cfg.token),
+        timeout=8.0,
+    )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs desktop failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs desktop failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(f"desktop: webspace={payload.get('webspace_id') or webspace}")
+    _print_desktop_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})
@@ -1092,6 +1141,19 @@ def node_yjs_describe(
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     _node_yjs_describe_action(
+        webspace=webspace,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("desktop")
+def node_yjs_desktop(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to inspect desktop state for"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_desktop_action(
         webspace=webspace,
         control=control,
         json_output=json_output,

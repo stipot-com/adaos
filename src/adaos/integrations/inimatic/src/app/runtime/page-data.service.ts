@@ -390,8 +390,11 @@ export class PageDataService {
   private resolveDesktopWidgets(): WidgetConfig[] {
     const catalogWidgets: any[] = this.ydoc.toJSON(this.ydoc.getPath('data/catalog/widgets')) || []
     const installedWidgets = this.readInstalled('widgets')
+    const dataDesktop: any = this.ydoc.toJSON(this.ydoc.getPath('data/desktop')) || {}
     const app: any = this.ydoc.toJSON(this.ydoc.getPath('ui/application')) || {}
-    const pinnedRaw = app?.desktop?.pinnedWidgets
+    const pinnedRaw = Array.isArray(dataDesktop?.pinnedWidgets)
+      ? dataDesktop?.pinnedWidgets
+      : app?.desktop?.pinnedWidgets
     const pinnedWidgets: any[] = Array.isArray(pinnedRaw) ? pinnedRaw : []
     const byId: Record<string, any> = {}
     for (const it of catalogWidgets) {

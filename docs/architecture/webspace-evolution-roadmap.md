@@ -685,6 +685,12 @@ Current status:
 - semantic rebuild now consumes persistent overlay state for desktop
   customization (`installed`, `pinnedWidgets`) and mirrors the materialized
   result back into Yjs compatibility paths for the current renderer
+- desktop customization is now inspectable as a first-class control-surface
+  snapshot (`installed`, `pinnedWidgets`) rather than only as raw overlay
+  metadata or ad-hoc Yjs paths
+- the desktop widget renderer path now prefers the canonical
+  `data.desktop.pinnedWidgets` mirror, with `ui.application.desktop` kept as
+  compatibility fallback
 - the old skill-memory restore workaround after `desktop.webspace.reloaded`
   is now obsolete for install state and has been removed from the desktop
   shell skill
