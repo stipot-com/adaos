@@ -285,7 +285,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     return `${value}px`
   }
 
-  onItemKeydown(event: KeyboardEvent, item: any): void {
+  onItemKeydown(event: Event, item: any): void {
     event.preventDefault()
     void this.onItemClick(item)
   }

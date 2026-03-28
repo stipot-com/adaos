@@ -24,10 +24,12 @@ RUN npm_config_ignore_scripts=false npm rebuild esbuild
 
 COPY ./ /inimatic
 
-# если ARG пустой или скрипта нет — упадём с понятной ошибкой
+# если ARG пустой или скрипта нет — упадём с понятной ошибкой,
+# но не замаскируем реальные ошибки самого build-скрипта.
 RUN test -n "$BUILD_SCRIPT" || (echo "BUILD_SCRIPT is empty" && exit 2) \
- && npm run "$BUILD_SCRIPT" --if-present \
- || (echo "npm script '$BUILD_SCRIPT' not found. Add it to package.json or pass a correct BUILD_SCRIPT." && exit 3)
+ && npm run | grep -Eq "^[[:space:]]+$BUILD_SCRIPT([[:space:]]|$)" \
+ || (echo "npm script '$BUILD_SCRIPT' not found. Add it to package.json or pass a correct BUILD_SCRIPT." && exit 3) \
+ && npm run "$BUILD_SCRIPT"
 
 # sanity-check: убедимся, что артефакт реально собран
 RUN test -d /inimatic/www -o -d /inimatic/dist || (echo "No build output (www/ or dist/) found" && exit 4)

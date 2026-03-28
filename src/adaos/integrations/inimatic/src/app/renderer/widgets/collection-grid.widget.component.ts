@@ -256,7 +256,7 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     }
   }
 
-  onTileKeydown(event: KeyboardEvent, item: any): void {
+  onTileKeydown(event: Event, item: any): void {
     event.preventDefault()
     void this.onItemClick(item)
   }
