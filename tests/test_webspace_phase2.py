@@ -444,3 +444,136 @@ def test_reload_preview_webspaces_for_skill_dependency(monkeypatch) -> None:
 
     assert result["accepted"] is True
     assert result["reloaded_webspaces"] == [preview]
+
+
+def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="phase3-explicit-resolver",
+            scenario_id="prompt_engineer_scenario",
+            source_mode="dev",
+            scenario_application={"id": "prompt-root", "modals": {"scenario_modal": {"title": "Scenario"}}},
+            scenario_catalog={
+                "apps": [{"id": "scenario-app", "title": "Scenario App"}],
+                "widgets": [{"id": "scenario-widget", "title": "Scenario Widget"}],
+            },
+            scenario_registry={"modals": ["scenario_modal"], "widgets": ["scenario_widget"]},
+            overlay_snapshot={"installed": {"apps": ["scenario-app"], "widgets": []}},
+            live_state={"desktop": {"installed": {}}, "routing": {}},
+            skill_decls=[
+                {
+                    "skill": "prompt_skill",
+                    "space": "dev",
+                    "apps": [{"id": "skill-app", "title": "Skill App"}],
+                    "widgets": [{"id": "skill-widget", "title": "Skill Widget"}],
+                    "registry": {
+                        "modals": {"skill_modal": {"title": "Skill Modal"}},
+                        "widgets": ["skill_widget"],
+                    },
+                    "contributions": [
+                        {
+                            "extensionPoint": "desktop.apps",
+                            "type": "app",
+                            "id": "skill-app",
+                            "autoInstall": True,
+                        }
+                    ],
+                    "ydoc_defaults": {"data/prompt": {"status": "idle"}},
+                }
+            ],
+            desktop_scenarios=[("other_scenario", "Other Scenario")],
+        )
+    )
+
+    assert resolved.scenario_id == "prompt_engineer_scenario"
+    assert [item["id"] for item in resolved.catalog["apps"]] == [
+        "scenario-app",
+        "scenario:other_scenario",
+        "skill-app",
+    ]
+    assert [item["id"] for item in resolved.catalog["widgets"]] == ["scenario-widget", "skill-widget"]
+    assert resolved.registry["modals"] == [
+        "scenario_modal",
+        "skill_modal",
+        "apps_catalog",
+        "widgets_catalog",
+        "scenario_switcher",
+    ]
+    assert resolved.registry["widgets"] == ["scenario_widget", "skill_widget"]
+    assert resolved.installed["apps"] == ["scenario-app", "scenario:other_scenario", "skill-app"]
+    assert resolved.application["modals"]["scenario_modal"]["title"] == "Scenario"
+    assert resolved.application["modals"]["skill_modal"]["title"] == "Skill Modal"
+    assert resolved.desktop["installed"]["apps"] == ["scenario-app", "scenario:other_scenario", "skill-app"]
+    assert resolved.routing["routes"] == {}
+
+
+def test_restore_webspace_from_snapshot_reconciles_runtime(monkeypatch) -> None:
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "restored_prompt_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    rebuilds: list[str] = []
+    workflows: list[tuple[str, str]] = []
+    emitted: list[tuple[str, dict[str, object], str]] = []
+
+    class _Bus:
+        def publish(self, _event) -> None:
+            return None
+
+    fake_ctx = SimpleNamespace(bus=_Bus())
+
+    async def _fake_rebuild(self, webspace_id: str):
+        rebuilds.append(webspace_id)
+        return SimpleNamespace(scenario_id="restored_prompt_scenario", apps=[{"id": "app-1"}], widgets=[])
+
+    async def _fake_workflow_sync(self, scenario_id: str, webspace_id: str):
+        workflows.append((scenario_id, webspace_id))
+        return None
+
+    async def _fake_restore_ystore(_webspace_id: str) -> dict[str, object]:
+        return {"ok": True, "accepted": True, "snapshot_path": "state/ystores/default.snapshot"}
+
+    async def _fake_reset_live_room(_webspace_id: str, close_reason: str = "webspace_restore") -> dict[str, object]:
+        return {"accepted": True, "close_reason": close_reason}
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+    monkeypatch.setattr(webspace_runtime_module.ScenarioWorkflowRuntime, "sync_workflow_for_webspace", _fake_workflow_sync)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "emit",
+        lambda bus, topic, payload, source: emitted.append((topic, dict(payload), source)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway",
+        types.SimpleNamespace(reset_live_webspace_room=_fake_reset_live_room),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        types.SimpleNamespace(restore_ystore_for_webspace=_fake_restore_ystore),
+    )
+
+    result = asyncio.run(webspace_runtime_module.restore_webspace_from_snapshot("phase3-restore"))
+
+    assert rebuilds == ["phase3-restore"]
+    assert workflows == [("restored_prompt_scenario", "phase3-restore")]
+    assert emitted == [
+        (
+            "desktop.webspace.restored",
+            {
+                "webspace_id": "phase3-restore",
+                "action": "restore",
+                "scenario_id": "restored_prompt_scenario",
+                "snapshot_path": "state/ystores/default.snapshot",
+            },
+            "scenario.webspace_runtime",
+        )
+    ]
+    assert result["accepted"] is True
+    assert result["scenario_id"] == "restored_prompt_scenario"
+    assert result["source_of_truth"] == "snapshot"

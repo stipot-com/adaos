@@ -99,6 +99,63 @@ class WebspaceOperationalState:
         }
 
 
+@dataclass(slots=True)
+class WebspaceResolverInputs:
+    """
+    Explicit resolver inputs for the current light-weight Phase 3 contract.
+
+    `overlay_snapshot` is still sourced from live Yjs compatibility state for
+    now (`data.installed`). This keeps the future overlay boundary explicit
+    without introducing a new persistence layer yet.
+    """
+
+    webspace_id: str
+    scenario_id: str
+    source_mode: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    scenario_application: Dict[str, Any] = field(default_factory=dict)
+    scenario_catalog: Dict[str, Any] = field(default_factory=dict)
+    scenario_registry: Dict[str, Any] = field(default_factory=dict)
+    overlay_snapshot: Dict[str, Any] = field(default_factory=dict)
+    live_state: Dict[str, Any] = field(default_factory=dict)
+    skill_decls: List[Dict[str, Any]] = field(default_factory=list)
+    desktop_scenarios: List[Tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class WebspaceResolverOutputs:
+    """
+    Materialized effective UI state computed from resolver inputs.
+
+    These values are still written to the existing Yjs compatibility paths,
+    but the merge result itself is now an explicit architectural layer.
+    """
+
+    webspace_id: str
+    scenario_id: str
+    source_mode: str
+    application: Dict[str, Any] = field(default_factory=dict)
+    catalog: Dict[str, List[Dict[str, Any]]] = field(default_factory=lambda: {"apps": [], "widgets": []})
+    registry: Dict[str, List[str]] = field(default_factory=lambda: {"modals": [], "widgets": []})
+    installed: Dict[str, List[str]] = field(default_factory=lambda: {"apps": [], "widgets": []})
+    desktop: Dict[str, Any] = field(default_factory=dict)
+    routing: Dict[str, Any] = field(default_factory=dict)
+    skill_decls: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_registry_entry(self) -> "WebUIRegistryEntry":
+        return WebUIRegistryEntry(
+            scenario_id=self.scenario_id,
+            apps=[dict(it) for it in (self.catalog.get("apps") or []) if isinstance(it, Mapping)],
+            widgets=[dict(it) for it in (self.catalog.get("widgets") or []) if isinstance(it, Mapping)],
+            registry_modals=list(self.registry.get("modals") or []),
+            registry_widgets=list(self.registry.get("widgets") or []),
+            installed={
+                "apps": list(self.installed.get("apps") or []),
+                "widgets": list(self.installed.get("widgets") or []),
+            },
+        )
+
+
 def _mark_entry(entry: Dict[str, Any], *, source: str, dev: bool) -> Dict[str, Any]:
     """
     Attach provenance / dev flag to a catalog entry without overwriting its
@@ -441,52 +498,73 @@ class WebspaceScenarioRuntime:
                 value = default
             root.set(txn, key, value)
 
-    def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
+    def _collect_resolver_inputs_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverInputs:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
         registry_map = ydoc.get_map("registry")
 
         scenario_id = ui_map.get("current_scenario") or "web_desktop"
-        scenarios_ui = ui_map.get("scenarios") or {}
-        scenario_ui_entry = scenarios_ui.get(scenario_id) if isinstance(scenarios_ui, dict) else {}
-        scenario_app_ui = scenario_ui_entry.get("application") if isinstance(scenario_ui_entry, dict) else {}
-        if not isinstance(scenario_app_ui, dict):
-            scenario_app_ui = {}
+        scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
+        scenario_ui_entry = _coerce_dict(scenarios_ui.get(scenario_id) or {})
+        scenario_app_ui = _coerce_dict(scenario_ui_entry.get("application") or {})
 
-        scenarios_data = data_map.get("scenarios") or {}
-        scenario_entry = scenarios_data.get(scenario_id) if isinstance(scenarios_data, dict) else {}
-        base_catalog = scenario_entry.get("catalog") if isinstance(scenario_entry, dict) else {}
-        if not isinstance(base_catalog, dict):
-            base_catalog = {}
-        # Load/refresh data_projections for this scenario into the shared
-        # ProjectionRegistry so that ctx.* writes can be routed correctly.
+        scenarios_data = _coerce_dict(data_map.get("scenarios") or {})
+        scenario_entry = _coerce_dict(scenarios_data.get(scenario_id) or {})
+        base_catalog = _coerce_dict(scenario_entry.get("catalog") or {})
         try:
             self.ctx.projections.load_from_scenario(str(scenario_id))
         except Exception:
             _log.debug("failed to load data_projections for scenario=%s", scenario_id, exc_info=True)
-        scenario_apps = [it for it in (base_catalog.get("apps") or []) if isinstance(it, Mapping)]
-        scenario_widgets = [it for it in (base_catalog.get("widgets") or []) if isinstance(it, Mapping)]
 
-        scenario_registry = registry_map.get("scenarios") or {}
-        raw_registry_entry = scenario_registry.get(scenario_id) if isinstance(scenario_registry, dict) else {}
-        registry_entry = raw_registry_entry if isinstance(raw_registry_entry, dict) else {}
-        registry_entry = registry_entry or {}
-        base_registry_modals = [str(x) for x in (registry_entry.get("modals") or [])]
-        base_registry_widgets = [str(x) for x in (registry_entry.get("widgets") or [])]
+        scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
+        registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
 
-        # Decide which skills to project based on webspace type:
-        # - dev webspaces: only dev skills (mode="dev"),
-        # - regular webspaces: only non-dev skills (mode="workspace"),
-        # - fallback: mixed.
         mode = "mixed"
+        metadata: Dict[str, Any] = {}
         try:
             row = workspace_index.get_workspace(webspace_id)
             if row:
                 mode = row.effective_source_mode
+                metadata = {
+                    "title": row.title,
+                    "kind": row.effective_kind,
+                    "source_mode": row.effective_source_mode,
+                    "home_scenario": row.effective_home_scenario,
+                    "is_dev": row.is_dev,
+                }
         except Exception:
             mode = "mixed"
+            metadata = {}
 
-        skill_decls = self._collect_skill_decls(mode=mode)
+        return WebspaceResolverInputs(
+            webspace_id=webspace_id,
+            scenario_id=str(scenario_id),
+            source_mode=mode,
+            metadata=metadata,
+            scenario_application=scenario_app_ui,
+            scenario_catalog=base_catalog,
+            scenario_registry=registry_entry,
+            overlay_snapshot={"installed": _coerce_dict(data_map.get("installed") or {})},
+            live_state={
+                "desktop": _coerce_dict(data_map.get("desktop") or {}),
+                "routing": _coerce_dict(data_map.get("routing") or {}),
+            },
+            skill_decls=self._collect_skill_decls(mode=mode),
+            desktop_scenarios=self._list_desktop_scenarios(space=mode),
+        )
+
+    def resolve_webspace(self, inputs: WebspaceResolverInputs) -> WebspaceResolverOutputs:
+        scenario_id = str(inputs.scenario_id or "").strip() or "web_desktop"
+        source_mode = str(inputs.source_mode or "").strip() or "mixed"
+        scenario_application = _coerce_dict(inputs.scenario_application or {})
+        scenario_catalog = _coerce_dict(inputs.scenario_catalog or {})
+        scenario_registry = _coerce_dict(inputs.scenario_registry or {})
+        scenario_apps = [it for it in (scenario_catalog.get("apps") or []) if isinstance(it, Mapping)]
+        scenario_widgets = [it for it in (scenario_catalog.get("widgets") or []) if isinstance(it, Mapping)]
+        base_registry_modals = [str(x) for x in (scenario_registry.get("modals") or [])]
+        base_registry_widgets = [str(x) for x in (scenario_registry.get("widgets") or [])]
+
+        skill_decls = list(inputs.skill_decls or [])
         skill_apps: List[Dict[str, Any]] = []
         skill_widgets: List[Dict[str, Any]] = []
         skill_registry_modals: List[List[str]] = []
@@ -530,18 +608,11 @@ class WebspaceScenarioRuntime:
                 if ep == "desktop.apps" and ctype == "app":
                     auto_app_ids.add(cid)
 
-        # Scenario-defined apps and widgets (base desktop scenario content).
         merged_apps = [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_apps]
         merged_widgets = [_mark_entry(it, source=f"scenario:{scenario_id}", dev=False) for it in scenario_widgets]
 
-        # Inject desktop scenario launchers as pseudo-apps into the global
-        # catalog so that the Apps catalog can expose them as icons. These
-        # are not auto-installed; users can pin them to the desktop using
-        # the standard desktop.toggleInstall flow.
         extra_apps: List[Dict[str, Any]] = []
-        for sid, title in self._list_desktop_scenarios(space=mode):
-            # Avoid creating a launcher for the currently active scenario and
-            # only add one entry per logical id.
+        for sid, title in inputs.desktop_scenarios:
             if sid == scenario_id:
                 continue
             app_id = f"scenario:{sid}"
@@ -553,12 +624,9 @@ class WebspaceScenarioRuntime:
                     "scenario_id": sid,
                 }
             )
-            # Keep launchers visible after reloads by auto-installing them when
-            # rebuilding the effective catalog.
             auto_app_ids.add(app_id)
 
         merged_apps = _merge_by_id(merged_apps + extra_apps + skill_apps)
-
         merged_widgets = _merge_by_id(merged_widgets + skill_widgets)
         merged_registry = {
             "modals": _merge_registry_lists(
@@ -568,25 +636,16 @@ class WebspaceScenarioRuntime:
             "widgets": _merge_registry_lists(base_registry_widgets, skill_registry_widgets),
         }
 
-        installed_current_raw = data_map.get("installed") or {}
-        installed_current: Dict[str, Any] = _coerce_dict(installed_current_raw)
+        installed_current = _coerce_dict((inputs.overlay_snapshot or {}).get("installed") or {})
         installed_with_auto = _merge_installed_with_auto(
             installed_current,
             auto_apps=auto_app_ids,
             auto_widgets=auto_widget_ids,
         )
 
-        # Merge scenario-defined modals with skill-provided modal schemas and
-        # ensure the generic desktop catalogs (apps/widgets) remain available.
         merged_modals_map: Dict[str, Any] = {}
-        base_modals_map: Dict[str, Any] = {}
-        try:
-            raw = scenario_app_ui.get("modals") if isinstance(scenario_app_ui, dict) else None
-            if isinstance(raw, dict):
-                base_modals_map = raw
-        except Exception:
-            base_modals_map = {}
-        for key, value in (base_modals_map or {}).items():
+        base_modals_map = _coerce_dict(scenario_application.get("modals") or {})
+        for key, value in base_modals_map.items():
             merged_modals_map[str(key)] = value
         for decl in skill_decls:
             reg = decl.get("registry") or {}
@@ -598,9 +657,6 @@ class WebspaceScenarioRuntime:
                 if token and token not in merged_modals_map:
                     merged_modals_map[token] = value
 
-        # Ensure generic desktop catalog modals exist so that apps/widgets
-        # (including scenario launchers) can be managed even if the base
-        # scenario UI is minimal.
         if "apps_catalog" not in merged_modals_map:
             merged_modals_map["apps_catalog"] = {
                 "title": "Available Apps",
@@ -670,65 +726,83 @@ class WebspaceScenarioRuntime:
                 },
             }
 
-        app_with_modals: Dict[str, Any] = dict(scenario_app_ui)
+        app_with_modals: Dict[str, Any] = dict(scenario_application)
         if merged_modals_map:
             app_with_modals["modals"] = merged_modals_map
 
-        entry = WebUIRegistryEntry(
-            scenario_id=str(scenario_id),
-            apps=[dict(it) for it in merged_apps],
-            widgets=[dict(it) for it in merged_widgets],
-            registry_modals=list(merged_registry.get("modals") or []),
-            registry_widgets=list(merged_registry.get("widgets") or []),
-            installed={"apps": list(installed_with_auto.get("apps") or []), "widgets": list(installed_with_auto.get("widgets") or [])},
+        desktop_next = _coerce_dict((inputs.live_state or {}).get("desktop") or {})
+        desktop_installed = _coerce_dict(desktop_next.get("installed") or {})
+        desktop_installed["apps"] = list(installed_with_auto.get("apps") or [])
+        desktop_installed["widgets"] = list(installed_with_auto.get("widgets") or [])
+        desktop_next["installed"] = desktop_installed
+
+        routing_dict = _coerce_dict((inputs.live_state or {}).get("routing") or {})
+        routes = routing_dict.get("routes")
+        routing_dict = {**routing_dict, "routes": _coerce_dict(routes)}
+
+        return WebspaceResolverOutputs(
+            webspace_id=inputs.webspace_id,
+            scenario_id=scenario_id,
+            source_mode=source_mode,
+            application=app_with_modals,
+            catalog={
+                "apps": [dict(it) for it in merged_apps],
+                "widgets": [dict(it) for it in merged_widgets],
+            },
+            registry={
+                "modals": list(merged_registry.get("modals") or []),
+                "widgets": list(merged_registry.get("widgets") or []),
+            },
+            installed={
+                "apps": list(installed_with_auto.get("apps") or []),
+                "widgets": list(installed_with_auto.get("widgets") or []),
+            },
+            desktop=desktop_next,
+            routing=routing_dict,
+            skill_decls=skill_decls,
         )
 
+    def _apply_resolved_state_in_doc(self, ydoc: Y.YDoc, webspace_id: str, resolved: WebspaceResolverOutputs) -> None:
+        ui_map = ydoc.get_map("ui")
+        data_map = ydoc.get_map("data")
+        registry_map = ydoc.get_map("registry")
+
         with ydoc.begin_transaction() as txn:
-            # Apply YDoc defaults from skills first so that data paths
-            # referenced by widgets/modals exist.
             try:
-                self._apply_ydoc_defaults_in_txn(ydoc, txn, skill_decls)
+                self._apply_ydoc_defaults_in_txn(ydoc, txn, resolved.skill_decls)
             except Exception:
                 _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
 
-            ui_map.set(txn, "application", app_with_modals)
-            data_map.set(txn, "catalog", {"apps": merged_apps, "widgets": merged_widgets})
-            data_map.set(txn, "installed", installed_with_auto)
-            # Keep `data.desktop.installed` in sync for clients that read it.
+            ui_map.set(txn, "application", resolved.application)
+            data_map.set(txn, "catalog", resolved.catalog)
+            data_map.set(txn, "installed", resolved.installed)
             try:
-                desktop_current = data_map.get("desktop")
-                desktop_next: Dict[str, Any] = _coerce_dict(desktop_current)
-                desktop_installed_raw = desktop_next.get("installed") or {}
-                desktop_installed = _coerce_dict(desktop_installed_raw)
-                desktop_installed["apps"] = list(installed_with_auto.get("apps") or [])
-                desktop_installed["widgets"] = list(installed_with_auto.get("widgets") or [])
-                desktop_next["installed"] = desktop_installed
-                data_map.set(txn, "desktop", desktop_next)
+                data_map.set(txn, "desktop", resolved.desktop)
             except Exception:
                 pass
-            # Ensure routing config scaffold exists for runtime-configured routing
-            # (RouterService can consult data.routing.routes via _meta.route_id).
             try:
-                routing_current = data_map.get("routing")
-                routing_dict: Dict[str, Any] = _coerce_dict(routing_current)
-                routes = routing_dict.get("routes")
-                routes = _coerce_dict(routes)
-                routing_dict = {**routing_dict, "routes": routes}
-                data_map.set(txn, "routing", routing_dict)
+                data_map.set(txn, "routing", resolved.routing)
             except Exception:
                 pass
-            registry_map.set(txn, "merged", merged_registry)
+            registry_map.set(txn, "merged", resolved.registry)
+
+    def _resolve_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverOutputs:
+        return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
+
+    def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
+        resolved = self._resolve_in_doc(ydoc, webspace_id)
+        self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved)
+        entry = resolved.to_registry_entry()
 
         try:
             _log.debug(
                 "rebuilt webspace=%s scenario=%s apps=%d widgets=%d",
                 webspace_id,
-                scenario_id,
+                resolved.scenario_id,
                 len(entry.apps),
                 len(entry.widgets),
             )
         except Exception:
-            # Debug logging should never break callers.
             pass
 
         return entry
@@ -1252,6 +1326,146 @@ async def _on_webspace_refresh(evt: Dict[str, Any]) -> None:  # noqa: ARG001
     await svc.refresh()
 
 
+async def rebuild_webspace_from_sources(
+    webspace_id: str,
+    *,
+    action: str = "rebuild",
+    scenario_id: str | None = None,
+    scenario_resolution: str | None = None,
+    source_of_truth: str = "current_runtime",
+    reseed_from_scenario: bool = False,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Single semantic rebuild primitive for the current runtime.
+
+    Phase 3 keeps the existing storage and frontend contracts intact, but
+    routes reload/reset/restore-style operations through one backend-owned
+    materialization step so reconcile behaviour is explicit.
+    """
+    webspace_id = str(webspace_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+
+    requested_action = str(action or "").strip().lower() or "rebuild"
+    target_scenario = str(scenario_id or "").strip() or None
+
+    if reseed_from_scenario:
+        if not target_scenario:
+            raise ValueError("scenario_id is required when reseed_from_scenario is enabled")
+        try:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                ui_map = ydoc.get_map("ui")
+                with ydoc.begin_transaction() as txn:
+                    ui_map.set(txn, "current_scenario", target_scenario)
+        except Exception:
+            pass
+
+        try:
+            scenarios_loader.invalidate_cache(scenario_id=target_scenario, space="workspace")
+            scenarios_loader.invalidate_cache(scenario_id=target_scenario, space="dev")
+        except Exception:
+            pass
+        try:
+            from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
+            from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
+
+            try:
+                await reset_live_webspace_room(
+                    webspace_id,
+                    close_reason="webspace_reset" if requested_action == "reset" else "webspace_reload",
+                )
+            except Exception:
+                pass
+            try:
+                reset_ystore_for_webspace(webspace_id)
+            except Exception:
+                pass
+        except Exception:
+            _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
+
+        await _seed_webspace_from_scenario(webspace_id, target_scenario)
+        await _sync_webspace_listing()
+
+    ctx = get_ctx()
+    runtime = WebspaceScenarioRuntime(ctx)
+    try:
+        entry = await runtime.rebuild_webspace_async(webspace_id)
+    except Exception:
+        _log.warning(
+            "failed to rebuild webspace from sources webspace=%s action=%s scenario=%s",
+            webspace_id,
+            requested_action,
+            target_scenario,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": requested_action,
+            "source_of_truth": source_of_truth,
+            "webspace_id": webspace_id,
+            "scenario_id": target_scenario,
+            "scenario_resolution": scenario_resolution,
+            "error": "webspace_rebuild_failed",
+        }
+
+    if not target_scenario:
+        try:
+            state_after = await describe_webspace_operational_state(webspace_id)
+            target_scenario = state_after.current_scenario or state_after.effective_home_scenario
+        except Exception:
+            target_scenario = None
+
+    should_sync_workflow = requested_action in {"scenario_switch_rebuild", "restore"}
+    if target_scenario and should_sync_workflow:
+        try:
+            wf = ScenarioWorkflowRuntime(ctx)
+            await wf.sync_workflow_for_webspace(target_scenario, webspace_id)
+        except Exception:
+            _log.warning(
+                "failed to sync workflow during semantic rebuild webspace=%s scenario=%s action=%s",
+                webspace_id,
+                target_scenario,
+                requested_action,
+                exc_info=True,
+            )
+
+    event_topic = None
+    if requested_action in {"reload", "reset"}:
+        event_topic = "desktop.webspace.reloaded"
+    elif requested_action == "restore":
+        event_topic = "desktop.webspace.restored"
+    if event_topic:
+        try:
+            payload: dict[str, Any] = {
+                "webspace_id": webspace_id,
+                "action": requested_action,
+            }
+            if target_scenario:
+                payload["scenario_id"] = target_scenario
+            if isinstance(event_payload, dict):
+                payload.update(event_payload)
+            emit(ctx.bus, event_topic, payload, "scenario.webspace_runtime")
+        except Exception:
+            _log.debug("failed to emit %s for webspace=%s", event_topic, webspace_id, exc_info=True)
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "action": requested_action,
+        "source_of_truth": source_of_truth,
+        "webspace_id": webspace_id,
+        "scenario_id": target_scenario,
+        "scenario_resolution": scenario_resolution,
+        "registry_summary": {
+            "scenario_id": str(getattr(entry, "scenario_id", target_scenario) or ""),
+            "apps": len(getattr(entry, "apps", []) or []),
+            "widgets": len(getattr(entry, "widgets", []) or []),
+        },
+    }
+
+
 async def reload_webspace_from_scenario(
     webspace_id: str,
     *,
@@ -1284,86 +1498,29 @@ async def reload_webspace_from_scenario(
         state.effective_home_scenario,
     )
 
-    # Ensure rebuild step uses the same scenario we are reseeding from.
-    try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            ui_map = ydoc.get_map("ui")
-            with ydoc.begin_transaction() as txn:
-                ui_map.set(txn, "current_scenario", scenario_id)
-    except Exception:
-        pass
-
-    # Ensure scenario.json changes are picked up (loader caches content in-memory).
-    try:
-        scenarios_loader.invalidate_cache(scenario_id=scenario_id, space="workspace")
-        scenarios_loader.invalidate_cache(scenario_id=scenario_id, space="dev")
-    except Exception:
-        pass
-    try:
-        from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
-        from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
-
-        try:
-            await reset_live_webspace_room(
-                webspace_id,
-                close_reason="webspace_reset" if verb == "resetting" else "webspace_reload",
-            )
-        except Exception:
-            pass
-        try:
-            reset_ystore_for_webspace(webspace_id)
-        except Exception:
-            pass
-    except Exception:
-        _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
-
-    await _seed_webspace_from_scenario(webspace_id, scenario_id)
-    await _sync_webspace_listing()
-
-    # After reseeding the webspace from scenario sources, rebuild the
-    # effective UI (application + catalog + installed) so that the
-    # desktop reflects the current scenario and skill contributions.
-    try:
-        ctx = get_ctx()
-        runtime = WebspaceScenarioRuntime(ctx)
-        await runtime.rebuild_webspace_async(webspace_id)
-        emit(
-            ctx.bus,
-            "desktop.webspace.reloaded",
-            {
-                "webspace_id": webspace_id,
-                "scenario_id": scenario_id,
-                "action": "reset" if verb == "resetting" else "reload",
-            },
-            "scenario.webspace_runtime",
-        )
-    except Exception:
-        _log.warning(
-            "failed to rebuild webspace after reload webspace=%s scenario=%s",
-            webspace_id,
-            scenario_id,
-            exc_info=True,
-        )
-
-    return {
-        "ok": True,
-        "accepted": True,
-        "action": "reset" if verb == "resetting" else "reload",
-        "source_of_truth": "scenario",
-        "webspace_id": webspace_id,
-        "scenario_id": scenario_id,
-        "scenario_resolution": scenario_resolution,
-        "kind": state.kind,
-        "source_mode": state.source_mode,
-        "home_scenario": state.effective_home_scenario,
-        "current_scenario_before": state.current_scenario,
-    }
+    result = await rebuild_webspace_from_sources(
+        webspace_id,
+        action="reset" if verb == "resetting" else "reload",
+        scenario_id=scenario_id,
+        scenario_resolution=scenario_resolution,
+        source_of_truth="scenario",
+        reseed_from_scenario=True,
+    )
+    result.update(
+        {
+            "kind": state.kind,
+            "source_mode": state.source_mode,
+            "home_scenario": state.effective_home_scenario,
+            "current_scenario_before": state.current_scenario,
+        }
+    )
+    return result
 
 
 async def restore_webspace_from_snapshot(webspace_id: str) -> dict[str, Any]:
     """
-    Restore a webspace from its latest persisted YStore snapshot without
-    reseeding from scenario sources.
+    Restore a webspace from its latest persisted YStore snapshot and reconcile
+    its materialized effective UI/runtime projection.
     """
     webspace_id = str(webspace_id or "").strip()
     if not webspace_id:
@@ -1382,21 +1539,17 @@ async def restore_webspace_from_snapshot(webspace_id: str) -> dict[str, Any]:
     except Exception:
         _log.warning("failed to reset live room before restore for webspace=%s", webspace_id, exc_info=True)
 
-    try:
-        emit(
-            get_ctx().bus,
-            "desktop.webspace.restored",
-            {
-                "webspace_id": webspace_id,
-                "snapshot_path": str(restore_result.get("snapshot_path") or ""),
-            },
-            "scenario.webspace_runtime",
-        )
-    except Exception:
-        _log.debug("failed to emit desktop.webspace.restored for webspace=%s", webspace_id, exc_info=True)
+    rebuild_result = await rebuild_webspace_from_sources(
+        webspace_id,
+        action="restore",
+        source_of_truth="snapshot",
+        reseed_from_scenario=False,
+        event_payload={"snapshot_path": str(restore_result.get("snapshot_path") or "")},
+    )
 
     return {
         **restore_result,
+        **rebuild_result,
         "action": "restore",
         "source_of_truth": "snapshot",
         "reset_room": reset_result,
@@ -1496,20 +1649,22 @@ async def switch_webspace_scenario(
         _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
         return {"ok": False, "accepted": False, "error": "scenario_switch_failed", "webspace_id": webspace_id, "scenario_id": scenario_id}
 
-    ctx = get_ctx()
-    runtime = WebspaceScenarioRuntime(ctx)
-    await runtime.rebuild_webspace_async(webspace_id)
-
-    try:
-        wf = ScenarioWorkflowRuntime(ctx)
-        await wf.sync_workflow_for_webspace(scenario_id, webspace_id)
-    except Exception:
-        _log.warning(
-            "failed to sync workflow for webspace=%s scenario=%s",
-            webspace_id,
-            scenario_id,
-            exc_info=True,
-        )
+    rebuild_result = await rebuild_webspace_from_sources(
+        webspace_id,
+        action="scenario_switch_rebuild",
+        scenario_id=scenario_id,
+        scenario_resolution="explicit",
+        source_of_truth="scenario_switch",
+        reseed_from_scenario=False,
+    )
+    if not bool(rebuild_result.get("accepted")):
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": str(rebuild_result.get("error") or "scenario_switch_rebuild_failed"),
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+        }
 
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     if resolved_set_home:
@@ -1738,4 +1893,10 @@ async def _on_prompt_project_changed(evt: Dict[str, Any]) -> None:
     )
 
 
-__all__ = ["WebUIRegistryEntry", "WebspaceScenarioRuntime"]
+__all__ = [
+    "WebUIRegistryEntry",
+    "WebspaceResolverInputs",
+    "WebspaceResolverOutputs",
+    "WebspaceScenarioRuntime",
+    "rebuild_webspace_from_sources",
+]

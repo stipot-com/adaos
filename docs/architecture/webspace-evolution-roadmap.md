@@ -557,6 +557,18 @@ Additions:
   - effective application projection
   - effective catalog projection
   - effective registry projection
+- extracted runtime DTOs:
+  - `WebspaceResolverInputs`
+  - `WebspaceResolverOutputs`
+- current `WebspaceScenarioRuntime` now follows an explicit three-step shape:
+  - collect resolver inputs from Yjs + metadata
+  - resolve effective materialized UI state
+  - apply resolved outputs back into compatibility Yjs paths
+- semantic rebuild helper now exists and is already reused by:
+  - `desktop.webspace.reload`
+  - `desktop.webspace.reset`
+  - snapshot restore reconcile
+  - scenario switch reconcile after scenario payload mutation
 
 Intentionally untouched scope:
 
@@ -670,6 +682,13 @@ This slice should also make the frontend contract explicit:
 
 That will remove the current ambiguity where several recovery buttons appear to
 do similar things while actually touching different layers of the system.
+
+Current status:
+
+- a first reusable primitive is now in place under the current runtime
+  (`rebuild_webspace_from_sources(...)`)
+- bootstrap seed is still the main remaining caller that does not yet flow
+  through the same semantic rebuild entry point
 
 ## First Implementation Slice
 
