@@ -679,6 +679,16 @@ export class AppComponent implements OnInit, OnDestroy {
 		await this.modals.openModalById('workspace_manager')
 	}
 
+	async onClickAppsCatalog(): Promise<void> {
+		if (!this.isAuthenticated) return
+		await this.modals.openModalById('apps_catalog')
+	}
+
+	async onClickWidgetsCatalog(): Promise<void> {
+		if (!this.isAuthenticated) return
+		await this.modals.openModalById('widgets_catalog')
+	}
+
 	private async postNodeWebspaceAction(path: string, body: Record<string, any>): Promise<any> {
 		const response = await firstValueFrom(this.adaos.post<any>(path, body))
 		if (response?.accepted === false || response?.ok === false) {

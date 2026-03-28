@@ -91,6 +91,18 @@ export class PageModalService {
     if (modalId === 'workspace_manager') {
       return { type: 'workspace-manager', title: 'Workspaces' }
     }
+    if (modalId === 'apps_catalog') {
+      return {
+        title: 'Apps',
+        schema: this.buildDesktopCatalogSchema('apps'),
+      }
+    }
+    if (modalId === 'widgets_catalog') {
+      return {
+        title: 'Widgets',
+        schema: this.buildDesktopCatalogSchema('widgets'),
+      }
+    }
     return undefined
   }
 
@@ -100,5 +112,32 @@ export class PageModalService {
       title: modalCfg.title,
       schema: modalCfg.schema,
     })
+  }
+
+  private buildDesktopCatalogSchema(kind: 'apps' | 'widgets'): PageSchema {
+    const title = kind === 'apps' ? 'Apps' : 'Widgets'
+    return {
+      id: `${kind}_catalog`,
+      title,
+      layout: {
+        type: 'single',
+        areas: [{ id: 'main', role: 'main' }],
+      },
+      widgets: [
+        {
+          id: `${kind}-catalog-grid`,
+          type: 'collection.grid',
+          area: 'main',
+          title,
+          dataSource: {
+            kind: 'y',
+            path: `data/catalog/${kind}`,
+          },
+          inputs: {
+            tileMinWidth: kind === 'apps' ? 164 : 186,
+          },
+        },
+      ],
+    }
   }
 }

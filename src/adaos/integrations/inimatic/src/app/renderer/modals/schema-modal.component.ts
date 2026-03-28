@@ -8,8 +8,6 @@ import { Observable } from 'rxjs'
 import { PageSchema, WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
-import { YDocService } from '../../y/ydoc.service'
-import { observeDeep } from '../../y/y-helpers'
 import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { MetricTileWidgetComponent } from '../widgets/metric-tile.widget.component'
 import { SelectorWidgetComponent } from '../widgets/selector.widget.component'
@@ -61,29 +59,45 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
 
         <!-- Default layout for apps/widgets catalogs and other grids -->
         <ng-template #standardGrid>
-          <ion-grid>
-            <ion-row>
-              <ion-col
-                *ngFor="let item of items"
-                size="12"
-                class="collection-grid-item"
-              >
-                <ion-item lines="none">
-                  <ion-toggle
-                    slot="start"
-                    [checked]="isInstalled(item)"
-                    (ionChange)="onToggleChange($event, item)"
-                  ></ion-toggle>
-                  <div class="icon-wrapper" *ngIf="item.icon">
-                    <ion-icon [name]="item.icon"></ion-icon>
-                  </div>
-                  <ion-label>
-                    <div class="label">{{ item.title || item.id }}</div>
-                  </ion-label>
-                </ion-item>
-              </ion-col>
-            </ion-row>
-          </ion-grid>
+          <div class="tiles" [style.--tile-min]="tileMinWidthPx">
+            <article
+              *ngFor="let item of items"
+              class="tile"
+              tabindex="0"
+              role="button"
+              (click)="onItemClick(item)"
+              (keydown.enter)="onItemClick(item)"
+              (keydown.space)="onItemKeydown($event, item)"
+            >
+              <div class="tile-badges" *ngIf="itemBadges(item).length">
+                <span
+                  class="tile-badge"
+                  *ngFor="let badge of itemBadges(item)"
+                  [class.is-active]="badge.tone === 'active'"
+                  [class.is-accent]="badge.tone === 'accent'"
+                >
+                  {{ badge.label }}
+                </span>
+              </div>
+              <div class="icon-wrapper" *ngIf="item.icon">
+                <ion-icon [name]="item.icon"></ion-icon>
+              </div>
+              <div class="label">{{ item.title || item.id }}</div>
+              <div class="subtitle" *ngIf="itemSubtitle(item) as subtitle">{{ subtitle }}</div>
+              <div class="tile-actions" *ngIf="quickActionButtons(item).length">
+                <ion-button
+                  *ngFor="let btn of quickActionButtons(item)"
+                  size="small"
+                  [color]="btn.color"
+                  [fill]="btn.fill || 'outline'"
+                  (click)="onQuickAction(btn.action, item, $event)"
+                >
+                  <ion-icon *ngIf="btn.icon" slot="start" [name]="btn.icon"></ion-icon>
+                  {{ btn.label }}
+                </ion-button>
+              </div>
+            </article>
+          </div>
         </ng-template>
       </ng-container>
     </div>
@@ -99,19 +113,96 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
         margin: 0 0 8px;
         text-transform: uppercase;
       }
-      .collection-grid-item {
-        padding: 4px 0;
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
+        gap: 12px;
       }
-      /* Default apps/widgets layout */
+      .tile {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        padding: 14px 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+        text-align: center;
+        cursor: pointer;
+        outline: none;
+        transition: background 0.2s, transform 0.15s ease, border-color 0.2s ease;
+      }
+      .tile:hover {
+        background: rgba(255, 255, 255, 0.06);
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.14);
+      }
+      .tile:focus-visible {
+        border-color: var(--ion-color-primary, rgba(255, 255, 255, 0.4));
+        box-shadow: 0 0 0 2px rgba(var(--ion-color-primary-rgb, 56, 128, 255), 0.24);
+      }
       .icon-wrapper {
-        font-size: 24px;
+        font-size: 28px;
       }
       .icon-wrapper ion-icon {
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
       }
       .label {
-        font-size: 14px;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.25;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .subtitle {
+        font-size: 11px;
+        opacity: 0.72;
+        line-height: 1.3;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        min-height: 28px;
+      }
+      .tile-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: center;
+        min-height: 20px;
+      }
+      .tile-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.05);
+        opacity: 0.82;
+      }
+      .tile-badge.is-active {
+        background: rgba(var(--ion-color-success-rgb, 45, 211, 111), 0.14);
+        border-color: rgba(var(--ion-color-success-rgb, 45, 211, 111), 0.35);
+      }
+      .tile-badge.is-accent {
+        background: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.12);
+        border-color: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.34);
+      }
+      .tile-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: center;
+      }
+      .tile-actions ion-button {
+        margin: 0;
       }
       .project-name {
         font-weight: 600;
@@ -136,24 +227,19 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   @Input() widget!: WidgetConfig
 
   items$?: Observable<any[] | undefined>
-  private installed = new Set<string>()
-  private installedUnsub?: () => void
   private kind: 'app' | 'widget' | undefined
 
   constructor(
     private data: PageDataService,
     private actions: PageActionService,
-    private ydoc: YDocService
   ) {}
 
   ngOnInit(): void {
     this.items$ = this.data.load<any[]>(this.widget?.dataSource)
     this.kind = this.inferKind()
-    this.observeInstalled()
   }
 
   ngOnDestroy(): void {
-    this.installedUnsub?.()
   }
 
   async onItemClick(item: any): Promise<void> {
@@ -174,9 +260,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   }
 
   isInstalled(item: any): boolean {
-    const id = item?.id
-    if (!id) return false
-    return this.installed.has(String(id))
+    return !!item?.installed
   }
 
   private inferKind(): 'app' | 'widget' | undefined {
@@ -195,32 +279,81 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     return this.widget?.id === 'project-select-list'
   }
 
-  private observeInstalled(): void {
-    this.installedUnsub?.()
-    if (!this.kind) return
-    const path =
-      this.kind === 'app'
-        ? 'data/installed/apps'
-        : 'data/installed/widgets'
-    const node: any = this.ydoc.getPath(path)
-    const recompute = () => {
-      try {
-        const raw = this.ydoc.toJSON(node)
-        const list: any[] = Array.isArray(raw) ? raw : []
-        this.installed = new Set(list.map((v) => String(v)))
-      } catch {
-        this.installed = new Set()
-      }
-    }
-    this.installedUnsub = observeDeep(node, recompute)
-    recompute()
+  get tileMinWidthPx(): string {
+    const raw = Number(this.widget?.inputs?.['tileMinWidth'] ?? 160)
+    const value = !raw || raw < 120 ? 120 : Math.min(220, Math.floor(raw))
+    return `${value}px`
   }
 
-  async onToggleChange(_ev: CustomEvent, item: any): Promise<void> {
-    const cfg = this.widget
-    if (!cfg?.actions) return
-    for (const act of cfg.actions) {
-      await this.dispatchAction(act, item, cfg)
+  onItemKeydown(event: KeyboardEvent, item: any): void {
+    event.preventDefault()
+    void this.onItemClick(item)
+  }
+
+  itemSubtitle(item: any): string {
+    return String(item?.subtitle || item?.description || item?.source || item?.origin || '').trim()
+  }
+
+  itemBadges(item: any): Array<{ label: string; tone?: 'active' | 'accent' }> {
+    const badges: Array<{ label: string; tone?: 'active' | 'accent' }> = []
+    const kindLabel = String(item?.kindLabel || '').trim()
+    if (kindLabel) {
+      badges.push({ label: kindLabel })
+    }
+    if (item?.installed) {
+      badges.push({ label: 'Installed', tone: 'active' })
+    }
+    if (item?.pinned) {
+      badges.push({ label: 'Pinned', tone: 'accent' })
+    }
+    return badges
+  }
+
+  quickActionButtons(item: any): Array<{
+    action: 'install' | 'pin'
+    label: string
+    icon?: string
+    color?: string
+    fill?: 'outline' | 'solid' | 'clear'
+  }> {
+    const actions: Array<{
+      action: 'install' | 'pin'
+      label: string
+      icon?: string
+      color?: string
+      fill?: 'outline' | 'solid' | 'clear'
+    }> = []
+    if (item?.installable && (item?.installType === 'app' || item?.installType === 'widget')) {
+      actions.push({
+        action: 'install',
+        label: item?.installed ? 'Remove' : 'Install',
+        icon: item?.installed ? 'close-outline' : 'add-outline',
+        color: item?.installed ? 'danger' : 'primary',
+        fill: item?.installed ? 'outline' : 'solid',
+      })
+    }
+    if ((item?.pinnable || item?.pinned) && item?.installType === 'widget') {
+      actions.push({
+        action: 'pin',
+        label: item?.pinned ? 'Unpin' : 'Pin',
+        icon: 'bookmark-outline',
+        color: item?.pinned ? 'warning' : 'medium',
+        fill: item?.pinned ? 'solid' : 'outline',
+      })
+    }
+    return actions
+  }
+
+  async onQuickAction(action: 'install' | 'pin', item: any, event: Event): Promise<void> {
+    event.preventDefault()
+    event.stopPropagation()
+    if (action === 'install') {
+      const installType = item?.installType === 'app' ? 'app' : 'widget'
+      await this.actions.toggleDesktopInstall(installType, String(item?.id || ''))
+      return
+    }
+    if (action === 'pin') {
+      await this.actions.toggleDesktopPinnedWidget(item, !item?.pinned)
     }
   }
 }

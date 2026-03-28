@@ -73,6 +73,22 @@
 			<ion-buttons slot="end">
 				<ion-button
 					*ngIf="isAuthenticated"
+					(click)="onClickAppsCatalog()"
+					title="Apps"
+					aria-label="Apps"
+				>
+					<ion-icon name="apps-outline"></ion-icon>
+				</ion-button>
+				<ion-button
+					*ngIf="isAuthenticated"
+					(click)="onClickWidgetsCatalog()"
+					title="Widgets"
+					aria-label="Widgets"
+				>
+					<ion-icon name="layers-outline"></ion-icon>
+				</ion-button>
+				<ion-button
+					*ngIf="isAuthenticated"
 					(click)="onClickWorkspaces()"
 					title="Workspaces"
 					aria-label="Workspaces"
