@@ -15,7 +15,7 @@ from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
 from adaos.services.agent_context import get_ctx
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
-from adaos.services.io_web.desktop import WebDesktopService
+from adaos.services.io_web.desktop import WebDesktopInstalled, WebDesktopService, WebDesktopSnapshot
 from adaos.services.media_library import (
     ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
     guess_media_type,
@@ -125,6 +125,13 @@ class WebspaceToggleInstallRequest(BaseModel):
 
 class WebspacePinnedWidgetsRequest(BaseModel):
     pinnedWidgets: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WebspaceDesktopUpdateRequest(BaseModel):
+    installed: dict[str, Any] | None = None
+    pinnedWidgets: list[dict[str, Any]] | None = None
+    topbar: list[Any] | None = None
+    pageSchema: dict[str, Any] | None = None
 
 
 class InfrastateActionRequest(BaseModel):
@@ -743,6 +750,54 @@ async def node_yjs_set_pinned_widgets(
         }
     svc = WebDesktopService()
     svc.set_pinned_widgets_with_live_room(list(payload.pinnedWidgets or []), target_webspace_id)
+    desktop = await svc.get_snapshot_async(target_webspace_id)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "desktop": desktop.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
+@router.patch("/yjs/webspaces/{webspace_id}/desktop", dependencies=[Depends(require_token)])
+async def node_yjs_update_desktop(
+    webspace_id: str,
+    payload: WebspaceDesktopUpdateRequest,
+) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    svc = WebDesktopService()
+    current = await svc.get_snapshot_async(target_webspace_id)
+    next_snapshot = WebDesktopSnapshot(
+        installed=current.installed,
+        pinned_widgets=current.pinned_widgets,
+        topbar=current.topbar,
+        page_schema=current.page_schema,
+    )
+    if payload.installed is not None:
+        installed = payload.installed if isinstance(payload.installed, dict) else {}
+        next_snapshot.installed = WebDesktopInstalled(
+            apps=list(installed.get("apps") or []),
+            widgets=list(installed.get("widgets") or []),
+        )
+    if payload.pinnedWidgets is not None:
+        next_snapshot.pinned_widgets = list(payload.pinnedWidgets or [])
+    if payload.topbar is not None:
+        next_snapshot.topbar = list(payload.topbar or [])
+    if payload.pageSchema is not None:
+        next_snapshot.page_schema = dict(payload.pageSchema or {})
+    svc.set_snapshot_with_live_room(next_snapshot, target_webspace_id)
     desktop = await svc.get_snapshot_async(target_webspace_id)
     return {
         "ok": True,

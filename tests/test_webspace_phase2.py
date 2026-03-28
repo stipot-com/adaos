@@ -21,6 +21,8 @@ from adaos.services.workspaces import (
     set_workspace_installed_overlay,
     set_workspace_manifest,
     set_workspace_pinned_widgets_overlay,
+    set_workspace_topbar_overlay,
+    set_workspace_page_schema_overlay,
 )
 
 
@@ -602,6 +604,14 @@ def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) 
         webspace_id,
         [{"id": "infra-status", "type": "visual.metricTile"}],
     )
+    set_workspace_topbar_overlay(
+        webspace_id,
+        [{"id": "home", "label": "Home"}],
+    )
+    set_workspace_page_schema_overlay(
+        webspace_id,
+        {"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]}, "widgets": []},
+    )
 
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
@@ -629,6 +639,8 @@ def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) 
     assert inputs.overlay_snapshot["pinnedWidgets"] == [
         {"id": "infra-status", "type": "visual.metricTile"}
     ]
+    assert inputs.overlay_snapshot["topbar"] == [{"id": "home", "label": "Home"}]
+    assert inputs.overlay_snapshot["pageSchema"]["id"] == "desktop"
     assert inputs.overlay_snapshot["source"] == "workspace_manifest_overlay"
 
 
@@ -663,6 +675,46 @@ def test_phase5_resolver_prefers_pinned_widgets_from_overlay_over_scenario_defau
     assert resolved.desktop["pinnedWidgets"] == [
         {"id": "overlay-pin", "type": "visual.metricTile", "title": "Overlay Pin"}
     ]
+
+
+def test_phase5_resolver_prefers_page_schema_and_topbar_from_overlay() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="phase5-layout-overlay",
+            scenario_id="web_desktop",
+            source_mode="workspace",
+            scenario_application={
+                "desktop": {
+                    "topbar": [{"id": "scenario-home", "label": "Home"}],
+                    "pageSchema": {
+                        "id": "desktop",
+                        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                        "widgets": [{"id": "scenario-widget", "type": "desktop.widgets", "area": "main"}],
+                    },
+                }
+            },
+            scenario_catalog={"apps": [], "widgets": []},
+            scenario_registry={},
+            overlay_snapshot={
+                "installed": {"apps": [], "widgets": []},
+                "topbar": [{"id": "overlay-home", "label": "Overlay Home"}],
+                "pageSchema": {
+                    "id": "desktop-custom",
+                    "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                    "widgets": [{"id": "overlay-widget", "type": "desktop.widgets", "area": "main"}],
+                },
+            },
+            live_state={"desktop": {}, "routing": {}},
+            skill_decls=[],
+            desktop_scenarios=[],
+        )
+    )
+
+    assert resolved.application["desktop"]["topbar"] == [{"id": "overlay-home", "label": "Overlay Home"}]
+    assert resolved.application["desktop"]["pageSchema"]["id"] == "desktop-custom"
+    assert resolved.desktop["topbar"] == [{"id": "overlay-home", "label": "Overlay Home"}]
+    assert resolved.desktop["pageSchema"]["widgets"][0]["id"] == "overlay-widget"
 
 
 def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:

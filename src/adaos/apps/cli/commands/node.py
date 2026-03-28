@@ -433,13 +433,18 @@ def _print_overlay_summary(payload: dict[str, Any], *, key: str = "overlay") -> 
         return
     installed = overlay.get("installed") if isinstance(overlay.get("installed"), dict) else {}
     pinned_widgets = overlay.get("pinned_widgets") if isinstance(overlay.get("pinned_widgets"), list) else []
+    topbar = overlay.get("topbar") if isinstance(overlay.get("topbar"), list) else []
+    page_schema = overlay.get("page_schema") if isinstance(overlay.get("page_schema"), dict) else {}
+    page_widgets = page_schema.get("widgets") if isinstance(page_schema.get("widgets"), list) else []
     typer.echo(
         "overlay: "
         f"source={overlay.get('source') or '-'} "
         f"has_overlay={'yes' if overlay.get('has_overlay') else 'no'} "
         f"installed_apps={len(installed.get('apps') or [])} "
         f"installed_widgets={len(installed.get('widgets') or [])} "
-        f"pinned_widgets={len(pinned_widgets)}"
+        f"pinned_widgets={len(pinned_widgets)} "
+        f"topbar={len(topbar)} "
+        f"page_widgets={len(page_widgets)}"
     )
 
 
@@ -449,11 +454,18 @@ def _print_desktop_summary(payload: dict[str, Any], *, key: str = "desktop") -> 
         return
     installed = desktop.get("installed") if isinstance(desktop.get("installed"), dict) else {}
     pinned_widgets = desktop.get("pinnedWidgets") if isinstance(desktop.get("pinnedWidgets"), list) else []
+    topbar = desktop.get("topbar") if isinstance(desktop.get("topbar"), list) else []
+    page_schema = desktop.get("pageSchema") if isinstance(desktop.get("pageSchema"), dict) else {}
+    page_widgets = page_schema.get("widgets") if isinstance(page_schema.get("widgets"), list) else []
+    layout = page_schema.get("layout") if isinstance(page_schema.get("layout"), dict) else {}
     typer.echo(
         "desktop: "
         f"installed_apps={len(installed.get('apps') or [])} "
         f"installed_widgets={len(installed.get('widgets') or [])} "
-        f"pinned_widgets={len(pinned_widgets)}"
+        f"pinned_widgets={len(pinned_widgets)} "
+        f"topbar={len(topbar)} "
+        f"page_widgets={len(page_widgets)} "
+        f"layout={layout.get('type') or '-'}"
     )
 
 

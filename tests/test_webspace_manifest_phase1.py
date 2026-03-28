@@ -23,10 +23,14 @@ from adaos.services.workspaces import (
     get_workspace_installed_overlay,
     get_workspace_overlay,
     get_workspace_pinned_widgets_overlay,
+    get_workspace_topbar_overlay,
+    get_workspace_page_schema_overlay,
     has_workspace_overlay,
     normalize_workspaces,
     set_workspace_installed_overlay,
     set_workspace_pinned_widgets_overlay,
+    set_workspace_topbar_overlay,
+    set_workspace_page_schema_overlay,
     set_workspace_manifest,
 )
 
@@ -339,6 +343,14 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
         webspace_id,
         [{"id": "infra-status", "type": "visual.metricTile"}, {"id": "infra-status", "type": "visual.metricTile"}],
     )
+    set_workspace_topbar_overlay(
+        webspace_id,
+        [{"id": "home", "label": "Home"}, {"id": "home", "label": "Home"}],
+    )
+    set_workspace_page_schema_overlay(
+        webspace_id,
+        {"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]}, "widgets": []},
+    )
 
     row = get_workspace(webspace_id)
     assert row is not None
@@ -350,6 +362,12 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
             "widgets": ["weather"],
         },
         "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+        "topbar": [{"id": "home", "label": "Home"}, {"id": "home", "label": "Home"}],
+        "pageSchema": {
+            "id": "desktop",
+            "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+            "widgets": [],
+        },
     }
     assert get_workspace_overlay(webspace_id) == {
         "desktop": {
@@ -358,6 +376,12 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
                 "widgets": ["weather"],
             },
             "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+            "topbar": [{"id": "home", "label": "Home"}, {"id": "home", "label": "Home"}],
+            "pageSchema": {
+                "id": "desktop",
+                "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                "widgets": [],
+            },
         }
     }
     assert get_workspace_installed_overlay(webspace_id) == {
@@ -367,6 +391,15 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
     assert get_workspace_pinned_widgets_overlay(webspace_id) == [
         {"id": "infra-status", "type": "visual.metricTile"}
     ]
+    assert get_workspace_topbar_overlay(webspace_id) == [
+        {"id": "home", "label": "Home"},
+        {"id": "home", "label": "Home"},
+    ]
+    assert get_workspace_page_schema_overlay(webspace_id) == {
+        "id": "desktop",
+        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+        "widgets": [],
+    }
 
 
 def test_web_desktop_service_ignores_legacy_yjs_installed_without_overlay(monkeypatch) -> None:
@@ -423,7 +456,7 @@ def test_web_desktop_service_set_pinned_widgets_updates_overlay_and_live_doc(mon
     ]
 
 
-def test_web_desktop_service_get_snapshot_returns_overlay_state() -> None:
+def test_web_desktop_service_get_snapshot_returns_overlay_state(monkeypatch) -> None:
     webspace_id = "phase5-desktop-snapshot"
     ensure_workspace(webspace_id)
     set_workspace_installed_overlay(
@@ -434,6 +467,19 @@ def test_web_desktop_service_get_snapshot_returns_overlay_state() -> None:
         webspace_id,
         [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
     )
+    set_workspace_topbar_overlay(
+        webspace_id,
+        [{"id": "home", "label": "Home"}],
+    )
+    set_workspace_page_schema_overlay(
+        webspace_id,
+        {"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]}, "widgets": []},
+    )
+    fake_state = {
+        "ui": _FakeMap({"application": {"desktop": {}}}),
+        "data": _FakeMap({"desktop": {}, "installed": {}}),
+    }
+    monkeypatch.setattr(desktop_module, "get_ydoc", lambda _webspace_id: _FakeSyncDoc(fake_state))
 
     snapshot = desktop_module.WebDesktopService().get_snapshot(webspace_id)
 
@@ -443,4 +489,40 @@ def test_web_desktop_service_get_snapshot_returns_overlay_state() -> None:
             "widgets": ["weather"],
         },
         "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+        "topbar": [{"id": "home", "label": "Home"}],
+        "pageSchema": {
+            "id": "desktop",
+            "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+            "widgets": [],
+        },
     }
+
+
+def test_web_desktop_service_set_snapshot_updates_overlay_and_live_doc(monkeypatch) -> None:
+    webspace_id = "phase5-shell-snapshot"
+    ensure_workspace(webspace_id)
+    fake_state = {
+        "ui": _FakeMap({"application": {"desktop": {}}}),
+        "data": _FakeMap({"desktop": {}, "installed": {}}),
+    }
+    monkeypatch.setattr(desktop_module, "get_ydoc", lambda _webspace_id: _FakeSyncDoc(fake_state))
+
+    snapshot = desktop_module.WebDesktopSnapshot(
+        installed=desktop_module.WebDesktopInstalled(apps=["scenario:web_desktop"], widgets=["weather"]),
+        pinned_widgets=[{"id": "infra-status", "type": "visual.metricTile"}],
+        topbar=[{"id": "home", "label": "Home"}],
+        page_schema={
+            "id": "desktop",
+            "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+            "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}],
+        },
+    )
+
+    desktop_module.WebDesktopService().set_snapshot(snapshot, webspace_id)
+
+    assert get_workspace_topbar_overlay(webspace_id) == [{"id": "home", "label": "Home"}]
+    assert get_workspace_page_schema_overlay(webspace_id)["id"] == "desktop"
+    assert fake_state["ui"]["application"]["desktop"]["topbar"] == [{"id": "home", "label": "Home"}]
+    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["widgets"][0]["id"] == "desktop-widgets"
+    assert fake_state["data"]["desktop"]["topbar"] == [{"id": "home", "label": "Home"}]
+    assert fake_state["data"]["desktop"]["pageSchema"]["widgets"][0]["id"] == "desktop-widgets"

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from adaos.sdk.core.decorators import tool
-from adaos.services.io_web.desktop import WebDesktopService, WebDesktopInstalled
+from adaos.services.io_web.desktop import WebDesktopService, WebDesktopInstalled, WebDesktopSnapshot
 
 
 @tool(
@@ -89,7 +89,7 @@ def desktop_get_installed(webspace_id: Optional[str] = None) -> dict:
 
 @tool(
     "web.desktop.get_snapshot",
-    summary="Return canonical desktop customization state for a webspace.",
+    summary="Return materialized desktop state for a webspace.",
     stability="experimental",
     examples=["web.desktop.get_snapshot()", "web.desktop.get_snapshot('default')"],
 )
@@ -129,6 +129,38 @@ def desktop_get_pinned_widgets(webspace_id: Optional[str] = None) -> list[dict[s
 async def desktop_get_pinned_widgets_async(webspace_id: Optional[str] = None) -> list[dict[str, Any]]:
     svc = WebDesktopService()
     return await svc.get_pinned_widgets_async(webspace_id)
+
+
+@tool(
+    "web.desktop.get_topbar",
+    summary="Return the persistent/customized desktop topbar for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.get_topbar()", "web.desktop.get_topbar('default')"],
+)
+def desktop_get_topbar(webspace_id: Optional[str] = None) -> list[Any]:
+    svc = WebDesktopService()
+    return svc.get_topbar(webspace_id)
+
+
+async def desktop_get_topbar_async(webspace_id: Optional[str] = None) -> list[Any]:
+    svc = WebDesktopService()
+    return await svc.get_topbar_async(webspace_id)
+
+
+@tool(
+    "web.desktop.get_page_schema",
+    summary="Return the persistent/customized desktop pageSchema for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.get_page_schema()", "web.desktop.get_page_schema('default')"],
+)
+def desktop_get_page_schema(webspace_id: Optional[str] = None) -> dict[str, Any]:
+    svc = WebDesktopService()
+    return svc.get_page_schema(webspace_id)
+
+
+async def desktop_get_page_schema_async(webspace_id: Optional[str] = None) -> dict[str, Any]:
+    svc = WebDesktopService()
+    return await svc.get_page_schema_async(webspace_id)
 
 
 @tool(
@@ -175,3 +207,71 @@ def desktop_set_pinned_widgets(
         svc.set_pinned_widgets_with_live_room(list(pinned_widgets or []), webspace_id)
     else:
         svc.set_pinned_widgets(list(pinned_widgets or []), webspace_id)
+
+
+@tool(
+    "web.desktop.set_topbar",
+    summary="Replace desktop topbar items for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.set_topbar([{'id':'home','label':'Home'}])"],
+)
+def desktop_set_topbar(
+    topbar: list[Any],
+    webspace_id: Optional[str] = None,
+    *,
+    live: bool = True,
+) -> None:
+    svc = WebDesktopService()
+    if live:
+        svc.set_topbar_with_live_room(list(topbar or []), webspace_id)
+    else:
+        svc.set_topbar(list(topbar or []), webspace_id)
+
+
+@tool(
+    "web.desktop.set_page_schema",
+    summary="Replace desktop pageSchema for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.set_page_schema({'id':'desktop','layout':{'type':'single','areas':[{'id':'main','role':'main'}]},'widgets':[]})"],
+)
+def desktop_set_page_schema(
+    page_schema: dict[str, Any],
+    webspace_id: Optional[str] = None,
+    *,
+    live: bool = True,
+) -> None:
+    svc = WebDesktopService()
+    if live:
+        svc.set_page_schema_with_live_room(dict(page_schema or {}), webspace_id)
+    else:
+        svc.set_page_schema(dict(page_schema or {}), webspace_id)
+
+
+@tool(
+    "web.desktop.set_snapshot",
+    summary="Replace materialized desktop customization state for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.set_snapshot({'installed': {'apps': [], 'widgets': []}, 'pinnedWidgets': [], 'topbar': [], 'pageSchema': {}})"],
+)
+def desktop_set_snapshot(
+    snapshot: dict[str, Any],
+    webspace_id: Optional[str] = None,
+    *,
+    live: bool = True,
+) -> None:
+    payload = dict(snapshot or {})
+    installed_raw = payload.get("installed") if isinstance(payload.get("installed"), dict) else {}
+    next_snapshot = WebDesktopSnapshot(
+        installed=WebDesktopInstalled(
+            apps=list(installed_raw.get("apps") or []),
+            widgets=list(installed_raw.get("widgets") or []),
+        ),
+        pinned_widgets=list(payload.get("pinnedWidgets") or []),
+        topbar=list(payload.get("topbar") or []),
+        page_schema=dict(payload.get("pageSchema") or {}),
+    )
+    svc = WebDesktopService()
+    if live:
+        svc.set_snapshot_with_live_room(next_snapshot, webspace_id)
+    else:
+        svc.set_snapshot(next_snapshot, webspace_id)

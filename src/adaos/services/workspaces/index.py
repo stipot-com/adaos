@@ -75,6 +75,26 @@ def _normalize_overlay_widget_list(values: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _clone_overlay_json_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        payload = json.loads(json.dumps(value, ensure_ascii=True))
+    except Exception:
+        payload = {str(k): v for k, v in value.items()}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _clone_overlay_json_list(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    try:
+        payload = json.loads(json.dumps(value, ensure_ascii=True))
+    except Exception:
+        payload = list(value)
+    return payload if isinstance(payload, list) else []
+
+
 def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -88,18 +108,26 @@ def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     legacy_pinned_raw = value.get("pinnedWidgets")
     has_installed = "installed" in desktop_raw or "installed" in value
     has_pinned_widgets = "pinnedWidgets" in desktop_raw or "pinnedWidgets" in value
+    has_topbar = "topbar" in desktop_raw
+    has_page_schema = "pageSchema" in desktop_raw
     installed = {
         "apps": _dedupe_text_list(installed_source.get("apps") if isinstance(installed_source, dict) else []),
         "widgets": _dedupe_text_list(installed_source.get("widgets") if isinstance(installed_source, dict) else []),
     }
     pinned_widgets_source = desktop_raw.get("pinnedWidgets") if "pinnedWidgets" in desktop_raw else legacy_pinned_raw
     pinned_widgets = _normalize_overlay_widget_list(pinned_widgets_source)
+    topbar = _clone_overlay_json_list(desktop_raw.get("topbar"))
+    page_schema = _clone_overlay_json_dict(desktop_raw.get("pageSchema"))
     overlay: dict[str, Any] = {}
     desktop: dict[str, Any] = {}
     if has_installed or installed["apps"] or installed["widgets"]:
         desktop["installed"] = installed
     if has_pinned_widgets or pinned_widgets:
         desktop["pinnedWidgets"] = pinned_widgets
+    if has_topbar or topbar:
+        desktop["topbar"] = topbar
+    if has_page_schema or page_schema:
+        desktop["pageSchema"] = page_schema
     if desktop:
         overlay["desktop"] = desktop
     return overlay
@@ -231,6 +259,10 @@ class WebspaceManifest:
             }
         if "pinnedWidgets" in desktop:
             out["pinnedWidgets"] = _normalize_overlay_widget_list(desktop.get("pinnedWidgets"))
+        if "topbar" in desktop:
+            out["topbar"] = _clone_overlay_json_list(desktop.get("topbar"))
+        if "pageSchema" in desktop:
+            out["pageSchema"] = _clone_overlay_json_dict(desktop.get("pageSchema"))
         return out
 
     @property
@@ -246,12 +278,28 @@ class WebspaceManifest:
         return _normalize_overlay_widget_list(self.desktop_overlay.get("pinnedWidgets"))
 
     @property
+    def topbar_overlay(self) -> list[Any]:
+        return _clone_overlay_json_list(self.desktop_overlay.get("topbar"))
+
+    @property
+    def page_schema_overlay(self) -> dict[str, Any]:
+        return _clone_overlay_json_dict(self.desktop_overlay.get("pageSchema"))
+
+    @property
     def has_installed_overlay(self) -> bool:
         return "installed" in self.desktop_overlay
 
     @property
     def has_pinned_widgets_overlay(self) -> bool:
         return "pinnedWidgets" in self.desktop_overlay
+
+    @property
+    def has_topbar_overlay(self) -> bool:
+        return "topbar" in self.desktop_overlay
+
+    @property
+    def has_page_schema_overlay(self) -> bool:
+        return "pageSchema" in self.desktop_overlay
 
     @property
     def has_ui_overlay(self) -> bool:
@@ -620,6 +668,20 @@ def get_workspace_pinned_widgets_overlay(workspace_id: str) -> list[dict[str, An
     return row.pinned_widgets_overlay
 
 
+def get_workspace_topbar_overlay(workspace_id: str) -> list[Any]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return []
+    return row.topbar_overlay
+
+
+def get_workspace_page_schema_overlay(workspace_id: str) -> dict[str, Any]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return {}
+    return row.page_schema_overlay
+
+
 def set_workspace_overlay(workspace_id: str, overlay: Any) -> WebspaceManifest:
     return set_workspace_manifest(workspace_id, ui_overlay_json=overlay)
 
@@ -645,4 +707,18 @@ def set_workspace_pinned_widgets_overlay(workspace_id: str, pinned_widgets: Any)
     current = get_workspace_desktop_overlay(workspace_id)
     desktop = dict(current) if isinstance(current, dict) else {}
     desktop["pinnedWidgets"] = _normalize_overlay_widget_list(pinned_widgets)
+    return set_workspace_desktop_overlay(workspace_id, desktop)
+
+
+def set_workspace_topbar_overlay(workspace_id: str, topbar: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["topbar"] = _clone_overlay_json_list(topbar)
+    return set_workspace_desktop_overlay(workspace_id, desktop)
+
+
+def set_workspace_page_schema_overlay(workspace_id: str, page_schema: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["pageSchema"] = _clone_overlay_json_dict(page_schema)
     return set_workspace_desktop_overlay(workspace_id, desktop)

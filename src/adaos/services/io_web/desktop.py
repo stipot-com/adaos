@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -69,11 +70,15 @@ class WebDesktopInstalled:
 class WebDesktopSnapshot:
     installed: WebDesktopInstalled
     pinned_widgets: List[Dict[str, Any]]
+    topbar: List[Any]
+    page_schema: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "installed": self.installed.to_dict(),
             "pinnedWidgets": _clone_pinned_widgets(self.pinned_widgets),
+            "topbar": _clone_json_list(self.topbar),
+            "pageSchema": _clone_json_dict(self.page_schema),
         }
 
 
@@ -96,6 +101,26 @@ def _clone_pinned_widgets(items: Any) -> List[Dict[str, Any]]:
             payload["type"] = str(item_type)
         out.append(payload)
     return out
+
+
+def _clone_json_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        payload = json.loads(json.dumps(value, ensure_ascii=True))
+    except Exception:
+        payload = dict(value)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _clone_json_list(value: Any) -> List[Any]:
+    if not isinstance(value, list):
+        return []
+    try:
+        payload = json.loads(json.dumps(value, ensure_ascii=True))
+    except Exception:
+        payload = list(value)
+    return payload if isinstance(payload, list) else []
 
 
 class WebDesktopService:
@@ -181,6 +206,28 @@ class WebDesktopService:
         workspace_index.set_workspace_pinned_widgets_overlay(webspace_id, _clone_pinned_widgets(items))
 
     @staticmethod
+    def _read_overlay_topbar(webspace_id: str) -> tuple[List[Any], bool]:
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_topbar_overlay", False):
+            return [], False
+        return _clone_json_list(getattr(row, "topbar_overlay", []) or []), True
+
+    @staticmethod
+    def _persist_overlay_topbar(webspace_id: str, topbar: List[Any]) -> None:
+        workspace_index.set_workspace_topbar_overlay(webspace_id, _clone_json_list(topbar))
+
+    @staticmethod
+    def _read_overlay_page_schema(webspace_id: str) -> tuple[Dict[str, Any], bool]:
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_page_schema_overlay", False):
+            return {}, False
+        return _clone_json_dict(getattr(row, "page_schema_overlay", {}) or {}), True
+
+    @staticmethod
+    def _persist_overlay_page_schema(webspace_id: str, page_schema: Dict[str, Any]) -> None:
+        workspace_index.set_workspace_page_schema_overlay(webspace_id, _clone_json_dict(page_schema))
+
+    @staticmethod
     def _apply_pinned_widgets_state(ydoc: Any, txn: Any, pinned_widgets: List[Dict[str, Any]]) -> None:
         next_pinned = _clone_pinned_widgets(pinned_widgets)
         ui_map = ydoc.get_map("ui")
@@ -197,6 +244,93 @@ class WebDesktopService:
         desktop_next = _coerce_dict(desktop_raw)
         desktop_next["pinnedWidgets"] = next_pinned
         data_map.set(txn, "desktop", desktop_next)
+
+    @staticmethod
+    def _apply_topbar_state(ydoc: Any, txn: Any, topbar: List[Any]) -> None:
+        next_topbar = _clone_json_list(topbar)
+        ui_map = ydoc.get_map("ui")
+        application_raw = ui_map.get("application") or {}
+        application_next = _coerce_dict(application_raw)
+        app_desktop_raw = application_next.get("desktop") or {}
+        app_desktop = _coerce_dict(app_desktop_raw)
+        app_desktop["topbar"] = next_topbar
+        application_next["desktop"] = app_desktop
+        ui_map.set(txn, "application", application_next)
+
+        data_map = ydoc.get_map("data")
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_next["topbar"] = next_topbar
+        data_map.set(txn, "desktop", desktop_next)
+
+    @staticmethod
+    def _apply_page_schema_state(ydoc: Any, txn: Any, page_schema: Dict[str, Any]) -> None:
+        next_schema = _clone_json_dict(page_schema)
+        ui_map = ydoc.get_map("ui")
+        application_raw = ui_map.get("application") or {}
+        application_next = _coerce_dict(application_raw)
+        app_desktop_raw = application_next.get("desktop") or {}
+        app_desktop = _coerce_dict(app_desktop_raw)
+        app_desktop["pageSchema"] = next_schema
+        application_next["desktop"] = app_desktop
+        ui_map.set(txn, "application", application_next)
+
+        data_map = ydoc.get_map("data")
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_next["pageSchema"] = next_schema
+        data_map.set(txn, "desktop", desktop_next)
+
+    @staticmethod
+    def _apply_snapshot_state(ydoc: Any, txn: Any, snapshot: WebDesktopSnapshot) -> None:
+        WebDesktopService._apply_installed_state(ydoc, txn, snapshot.installed)
+        WebDesktopService._apply_pinned_widgets_state(ydoc, txn, snapshot.pinned_widgets)
+        WebDesktopService._apply_topbar_state(ydoc, txn, snapshot.topbar)
+        WebDesktopService._apply_page_schema_state(ydoc, txn, snapshot.page_schema)
+
+    @staticmethod
+    def _read_materialized_snapshot_from_doc(
+        ydoc: Any,
+        *,
+        installed: WebDesktopInstalled,
+        pinned_widgets: List[Dict[str, Any]],
+        topbar: List[Any],
+        page_schema: Dict[str, Any],
+    ) -> WebDesktopSnapshot:
+        data_map = ydoc.get_map("data")
+        ui_map = ydoc.get_map("ui")
+
+        installed_raw = _coerce_dict(data_map.get("installed") or {})
+        installed_next = WebDesktopInstalled(
+            apps=_iter_ids(installed_raw.get("apps")) or list(installed.apps),
+            widgets=_iter_ids(installed_raw.get("widgets")) or list(installed.widgets),
+        )
+
+        desktop_raw = _coerce_dict(data_map.get("desktop") or {})
+        pinned_next = _clone_pinned_widgets(desktop_raw.get("pinnedWidgets"))
+        if not pinned_next:
+            pinned_next = _clone_pinned_widgets(pinned_widgets)
+
+        application_raw = _coerce_dict(ui_map.get("application") or {})
+        app_desktop = _coerce_dict(application_raw.get("desktop") or {})
+        topbar_next = _clone_json_list(app_desktop.get("topbar"))
+        if not topbar_next:
+            topbar_next = _clone_json_list(desktop_raw.get("topbar"))
+        if not topbar_next:
+            topbar_next = _clone_json_list(topbar)
+
+        page_schema_next = _clone_json_dict(app_desktop.get("pageSchema"))
+        if not page_schema_next:
+            page_schema_next = _clone_json_dict(desktop_raw.get("pageSchema"))
+        if not page_schema_next:
+            page_schema_next = _clone_json_dict(page_schema)
+
+        return WebDesktopSnapshot(
+            installed=installed_next,
+            pinned_widgets=pinned_next,
+            topbar=topbar_next,
+            page_schema=page_schema_next,
+        )
 
     def get_installed(self, webspace_id: Optional[str] = None) -> WebDesktopInstalled:
         """
@@ -235,16 +369,79 @@ class WebDesktopService:
             return []
         return items
 
+    def get_topbar(self, webspace_id: Optional[str] = None) -> List[Any]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_topbar(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    async def get_topbar_async(self, webspace_id: Optional[str] = None) -> List[Any]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_topbar(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    def get_page_schema(self, webspace_id: Optional[str] = None) -> Dict[str, Any]:
+        webspace = self._resolve_webspace(webspace_id)
+        page_schema, has_overlay = self._read_overlay_page_schema(webspace)
+        if not has_overlay:
+            return {}
+        return page_schema
+
+    async def get_page_schema_async(self, webspace_id: Optional[str] = None) -> Dict[str, Any]:
+        webspace = self._resolve_webspace(webspace_id)
+        page_schema, has_overlay = self._read_overlay_page_schema(webspace)
+        if not has_overlay:
+            return {}
+        return page_schema
+
     def get_snapshot(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
-        return WebDesktopSnapshot(
-            installed=self.get_installed(webspace_id),
-            pinned_widgets=self.get_pinned_widgets(webspace_id),
-        )
+        webspace = self._resolve_webspace(webspace_id)
+        installed = self.get_installed(webspace)
+        pinned_widgets = self.get_pinned_widgets(webspace)
+        topbar = self.get_topbar(webspace)
+        page_schema = self.get_page_schema(webspace)
+        try:
+            with get_ydoc(webspace) as ydoc:
+                return self._read_materialized_snapshot_from_doc(
+                    ydoc,
+                    installed=installed,
+                    pinned_widgets=pinned_widgets,
+                    topbar=topbar,
+                    page_schema=page_schema,
+                )
+        except Exception:
+            return WebDesktopSnapshot(
+                installed=installed,
+                pinned_widgets=pinned_widgets,
+                topbar=topbar,
+                page_schema=page_schema,
+            )
 
     async def get_snapshot_async(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
-        installed = await self.get_installed_async(webspace_id)
-        pinned_widgets = await self.get_pinned_widgets_async(webspace_id)
-        return WebDesktopSnapshot(installed=installed, pinned_widgets=pinned_widgets)
+        webspace = self._resolve_webspace(webspace_id)
+        installed = await self.get_installed_async(webspace)
+        pinned_widgets = await self.get_pinned_widgets_async(webspace)
+        topbar = await self.get_topbar_async(webspace)
+        page_schema = await self.get_page_schema_async(webspace)
+        try:
+            async with async_get_ydoc(webspace) as ydoc:
+                return self._read_materialized_snapshot_from_doc(
+                    ydoc,
+                    installed=installed,
+                    pinned_widgets=pinned_widgets,
+                    topbar=topbar,
+                    page_schema=page_schema,
+                )
+        except Exception:
+            return WebDesktopSnapshot(
+                installed=installed,
+                pinned_widgets=pinned_widgets,
+                topbar=topbar,
+                page_schema=page_schema,
+            )
 
     def set_installed(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
         """
@@ -311,6 +508,72 @@ class WebDesktopService:
             webspace,
             len(next_pinned),
         )
+
+    def set_topbar(self, topbar: List[Any], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_topbar = _clone_json_list(topbar)
+        self._persist_overlay_topbar(webspace, next_topbar)
+        with get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_topbar_state(ydoc, txn, next_topbar)
+        _log.debug("set topbar webspace=%s count=%s", webspace, len(next_topbar))
+
+    async def set_topbar_async(self, topbar: List[Any], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_topbar = _clone_json_list(topbar)
+        self._persist_overlay_topbar(webspace, next_topbar)
+        async with async_get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_topbar_state(ydoc, txn, next_topbar)
+        _log.debug("set topbar (async) webspace=%s count=%s", webspace, len(next_topbar))
+
+    def set_page_schema(self, page_schema: Dict[str, Any], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_page_schema = _clone_json_dict(page_schema)
+        self._persist_overlay_page_schema(webspace, next_page_schema)
+        with get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_page_schema_state(ydoc, txn, next_page_schema)
+        _log.debug(
+            "set page schema webspace=%s widgets=%s",
+            webspace,
+            len(_clone_json_list(next_page_schema.get("widgets"))),
+        )
+
+    async def set_page_schema_async(self, page_schema: Dict[str, Any], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_page_schema = _clone_json_dict(page_schema)
+        self._persist_overlay_page_schema(webspace, next_page_schema)
+        async with async_get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_page_schema_state(ydoc, txn, next_page_schema)
+        _log.debug(
+            "set page schema (async) webspace=%s widgets=%s",
+            webspace,
+            len(_clone_json_list(next_page_schema.get("widgets"))),
+        )
+
+    def set_snapshot(self, snapshot: WebDesktopSnapshot, webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        self._persist_overlay_installed(webspace, snapshot.installed)
+        self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
+        self._persist_overlay_topbar(webspace, snapshot.topbar)
+        self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+        with get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_snapshot_state(ydoc, txn, snapshot)
+        _log.debug("set desktop snapshot webspace=%s", webspace)
+
+    async def set_snapshot_async(self, snapshot: WebDesktopSnapshot, webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        self._persist_overlay_installed(webspace, snapshot.installed)
+        self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
+        self._persist_overlay_topbar(webspace, snapshot.topbar)
+        self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+        async with async_get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_snapshot_state(ydoc, txn, snapshot)
+        _log.debug("set desktop snapshot (async) webspace=%s", webspace)
 
     def toggle_install(self, item_type: str, target_id: str, webspace_id: Optional[str] = None) -> None:
         """
@@ -433,4 +696,84 @@ class WebDesktopService:
             loop.create_task(
                 self.set_pinned_widgets_async(next_pinned, webspace),
                 name=f"web-desktop-set-pinned-{webspace}",
+            )
+
+    def set_topbar_with_live_room(
+        self,
+        topbar: List[Any],
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_topbar = _clone_json_list(topbar)
+        self._persist_overlay_topbar(webspace, next_topbar)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_topbar_state(doc, txn, next_topbar)
+
+        live_applied = mutate_live_room(webspace, _mutator)
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_topbar webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_topbar_async(next_topbar, webspace))
+        else:
+            loop.create_task(
+                self.set_topbar_async(next_topbar, webspace),
+                name=f"web-desktop-set-topbar-{webspace}",
+            )
+
+    def set_page_schema_with_live_room(
+        self,
+        page_schema: Dict[str, Any],
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_page_schema = _clone_json_dict(page_schema)
+        self._persist_overlay_page_schema(webspace, next_page_schema)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_page_schema_state(doc, txn, next_page_schema)
+
+        live_applied = mutate_live_room(webspace, _mutator)
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_page_schema webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_page_schema_async(next_page_schema, webspace))
+        else:
+            loop.create_task(
+                self.set_page_schema_async(next_page_schema, webspace),
+                name=f"web-desktop-set-page-schema-{webspace}",
+            )
+
+    def set_snapshot_with_live_room(
+        self,
+        snapshot: WebDesktopSnapshot,
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        self._persist_overlay_installed(webspace, snapshot.installed)
+        self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
+        self._persist_overlay_topbar(webspace, snapshot.topbar)
+        self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_snapshot_state(doc, txn, snapshot)
+
+        live_applied = mutate_live_room(webspace, _mutator)
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_snapshot webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_snapshot_async(snapshot, webspace))
+        else:
+            loop.create_task(
+                self.set_snapshot_async(snapshot, webspace),
+                name=f"web-desktop-set-snapshot-{webspace}",
             )

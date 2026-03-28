@@ -450,8 +450,16 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             "has_overlay": True,
             "has_installed": True,
             "has_pinned_widgets": True,
+            "has_topbar": True,
+            "has_page_schema": True,
             "installed": {"apps": ["scenario:prompt_engineer_runtime"], "widgets": []},
             "pinned_widgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+            "topbar": [{"id": "home", "label": "Home"}],
+            "page_schema": {
+                "id": "desktop-custom",
+                "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                "widgets": [],
+            },
         },
     )
     monkeypatch.setattr(
@@ -477,6 +485,12 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
                 to_dict=lambda: {
                     "installed": {"apps": ["scenario:prompt_engineer_runtime"], "widgets": []},
                     "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                    "topbar": [{"id": "home", "label": "Home"}],
+                    "pageSchema": {
+                        "id": "desktop-custom",
+                        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                        "widgets": [],
+                    },
                 }
             )
 
@@ -490,7 +504,9 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["webspace"]["webspace_id"] == "dev_prompt"
     assert result["overlay"]["has_pinned_widgets"] is True
     assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
+    assert result["overlay"]["topbar"][0]["id"] == "home"
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
+    assert result["desktop"]["pageSchema"]["id"] == "desktop-custom"
     assert result["webspace"]["source_mode"] == "dev"
     assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
     assert result["runtime"]["webspace_id"] == "dev_prompt"
@@ -504,6 +520,12 @@ def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
                 to_dict=lambda: {
                     "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
                     "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                    "topbar": [{"id": "home", "label": "Home"}],
+                    "pageSchema": {
+                        "id": "desktop",
+                        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                        "widgets": [],
+                    },
                 }
             )
 
@@ -517,6 +539,8 @@ def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
     assert result["accepted"] is True
     assert result["desktop"]["installed"]["widgets"] == ["weather"]
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
+    assert result["desktop"]["topbar"][0]["id"] == "home"
+    assert result["desktop"]["pageSchema"]["id"] == "desktop"
     assert result["runtime"]["webspace_id"] == "default"
 
 
@@ -533,6 +557,12 @@ def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) 
                 to_dict=lambda: {
                     "installed": {"apps": [], "widgets": ["weather"]},
                     "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+                    "topbar": [{"id": "home", "label": "Home"}],
+                    "pageSchema": {
+                        "id": "desktop",
+                        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                        "widgets": [],
+                    },
                 }
             )
 
@@ -557,6 +587,65 @@ def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) 
     ]
     assert result["ok"] is True
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
+    assert result["runtime"]["webspace_id"] == "default"
+
+
+def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _DesktopService:
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "default"
+            return node_api_module.WebDesktopSnapshot(
+                installed=node_api_module.WebDesktopInstalled(apps=["scenario:web_desktop"], widgets=["weather"]),
+                pinned_widgets=[{"id": "infra-status", "type": "visual.metricTile"}],
+                topbar=[{"id": "home", "label": "Home"}],
+                page_schema={"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]}, "widgets": []},
+            )
+
+        def set_snapshot_with_live_room(self, snapshot, webspace_id: str | None = None) -> None:
+            captured.append(
+                {
+                    "webspace_id": str(webspace_id or ""),
+                    "installed": snapshot.installed.to_dict(),
+                    "pinnedWidgets": list(snapshot.pinned_widgets),
+                    "topbar": list(snapshot.topbar),
+                    "pageSchema": dict(snapshot.page_schema),
+                }
+            )
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(
+        node_api_module.node_yjs_update_desktop(
+            "default",
+            node_api_module.WebspaceDesktopUpdateRequest(
+                topbar=[{"id": "overlay-home", "label": "Overlay Home"}],
+                pageSchema={
+                    "id": "desktop-custom",
+                    "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                    "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}],
+                },
+            ),
+        )
+    )
+
+    assert captured == [
+        {
+            "webspace_id": "default",
+            "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
+            "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+            "topbar": [{"id": "overlay-home", "label": "Overlay Home"}],
+            "pageSchema": {
+                "id": "desktop-custom",
+                "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
+                "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}],
+            },
+        }
+    ]
+    assert result["ok"] is True
     assert result["runtime"]["webspace_id"] == "default"
 
 
