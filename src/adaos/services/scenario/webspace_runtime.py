@@ -511,10 +511,6 @@ class WebspaceScenarioRuntime:
         scenarios_data = _coerce_dict(data_map.get("scenarios") or {})
         scenario_entry = _coerce_dict(scenarios_data.get(scenario_id) or {})
         base_catalog = _coerce_dict(scenario_entry.get("catalog") or {})
-        try:
-            self.ctx.projections.load_from_scenario(str(scenario_id))
-        except Exception:
-            _log.debug("failed to load data_projections for scenario=%s", scenario_id, exc_info=True)
 
         scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
         registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
@@ -859,6 +855,63 @@ def _webspace_id(payload: Dict[str, Any]) -> str:
             if token:
                 return str(token)
     return default_webspace_id()
+
+
+async def _resolve_projection_refresh_target(
+    webspace_id: str,
+    *,
+    scenario_id: str | None = None,
+) -> str | None:
+    explicit = str(scenario_id or "").strip()
+    if explicit:
+        return explicit
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            current = str(ui_map.get("current_scenario") or "").strip()
+            return current or None
+    except Exception:
+        _log.debug("failed to resolve projection refresh target for webspace=%s", webspace_id, exc_info=True)
+        return None
+
+
+async def _refresh_projection_rules_for_rebuild(
+    ctx: AgentContext,
+    webspace_id: str,
+    *,
+    scenario_id: str | None = None,
+) -> dict[str, Any]:
+    target_scenario = await _resolve_projection_refresh_target(webspace_id, scenario_id=scenario_id)
+    if not target_scenario:
+        return {
+            "attempted": False,
+            "scenario_id": None,
+            "rules_loaded": 0,
+            "source": "none",
+        }
+    try:
+        rules_loaded = int(ctx.projections.load_from_scenario(target_scenario) or 0)
+        return {
+            "attempted": True,
+            "scenario_id": target_scenario,
+            "rules_loaded": rules_loaded,
+            "source": "scenario_manifest",
+        }
+    except Exception as exc:
+        try:
+            replace_scenario_entries = getattr(ctx.projections, "replace_scenario_entries", None)
+            if callable(replace_scenario_entries):
+                replace_scenario_entries([], scenario_id=target_scenario)
+        except Exception:
+            _log.debug("failed to clear stale scenario data_projections for scenario=%s", target_scenario, exc_info=True)
+        _log.debug("failed to refresh data_projections for scenario=%s", target_scenario, exc_info=True)
+        return {
+            "attempted": True,
+            "scenario_id": target_scenario,
+            "rules_loaded": 0,
+            "source": "scenario_manifest",
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
 
 
 def _slugify_webspace_id(raw: str | None) -> str:
@@ -1397,6 +1450,11 @@ async def rebuild_webspace_from_sources(
         await _sync_webspace_listing()
 
     ctx = get_ctx()
+    projection_refresh = await _refresh_projection_rules_for_rebuild(
+        ctx,
+        webspace_id,
+        scenario_id=target_scenario,
+    )
     runtime = WebspaceScenarioRuntime(ctx)
     try:
         entry = await runtime.rebuild_webspace_async(webspace_id)
@@ -1416,6 +1474,7 @@ async def rebuild_webspace_from_sources(
             "webspace_id": webspace_id,
             "scenario_id": target_scenario,
             "scenario_resolution": scenario_resolution,
+            "projection_refresh": projection_refresh,
             "error": "webspace_rebuild_failed",
         }
 
@@ -1467,6 +1526,7 @@ async def rebuild_webspace_from_sources(
         "webspace_id": webspace_id,
         "scenario_id": target_scenario,
         "scenario_resolution": scenario_resolution,
+        "projection_refresh": projection_refresh,
         "registry_summary": {
             "scenario_id": str(getattr(entry, "scenario_id", target_scenario) or ""),
             "apps": len(getattr(entry, "apps", []) or []),

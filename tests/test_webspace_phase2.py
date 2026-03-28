@@ -475,6 +475,61 @@ def test_scenarios_synced_routes_through_semantic_rebuild_helper(monkeypatch) ->
     assert captured == [("phase3-bootstrap", "web_desktop", "scenario_projection_sync", "scenario_projection")]
 
 
+def test_phase4_collect_resolver_inputs_does_not_refresh_projection_registry(monkeypatch) -> None:
+    projection_calls: list[str] = []
+
+    class _Projections:
+        def load_from_scenario(self, scenario_id: str) -> int:
+            projection_calls.append(scenario_id)
+            return 1
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(SimpleNamespace(projections=_Projections()))
+    monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
+    monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
+
+    fake_doc = _FakeDoc(
+        {
+            "ui": _FakeMap({"current_scenario": "web_desktop", "scenarios": {"web_desktop": {"application": {}}}}),
+            "data": _FakeMap({"scenarios": {"web_desktop": {"catalog": {}}}}),
+            "registry": _FakeMap({"scenarios": {"web_desktop": {}}}),
+        }
+    )
+
+    inputs = runtime._collect_resolver_inputs_in_doc(fake_doc, "phase4-collect")
+
+    assert inputs.scenario_id == "web_desktop"
+    assert projection_calls == []
+
+
+def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
+        order.append("refresh")
+        return {"attempted": True, "scenario_id": scenario_id, "rules_loaded": 1}
+
+    async def _fake_rebuild(self, webspace_id: str):
+        order.append("rebuild")
+        return SimpleNamespace(scenario_id="web_desktop", apps=[], widgets=[])
+
+    monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: get_ctx())
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+
+    result = asyncio.run(
+        webspace_runtime_module.rebuild_webspace_from_sources(
+            "phase4-ordered-rebuild",
+            action="rebuild",
+            scenario_id="web_desktop",
+            source_of_truth="scenario_projection",
+        )
+    )
+
+    assert order == ["refresh", "rebuild"]
+    assert result["accepted"] is True
+    assert result["projection_refresh"]["rules_loaded"] == 1
+
+
 def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     resolved = runtime.resolve_webspace(

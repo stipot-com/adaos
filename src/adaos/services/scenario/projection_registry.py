@@ -46,8 +46,10 @@ class ProjectionRegistry:
 
     def __init__(self) -> None:
         self._rules: Dict[tuple[str, str], ProjectionRule] = {}
+        self._scenario_rules: Dict[tuple[str, str], ProjectionRule] = {}
+        self._active_scenario_id: Optional[str] = None
 
-    def load_entries(self, entries: list[dict]) -> None:
+    def load_entries(self, entries: list[dict]) -> int:
         """
         Load projection rules from a generic ``data_projections``-like list.
 
@@ -57,8 +59,9 @@ class ProjectionRegistry:
         """
         raw = entries or []
         if not isinstance(raw, list):
-            return
+            return 0
 
+        loaded = 0
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -91,8 +94,63 @@ class ProjectionRegistry:
             key = (scope, slot)
             if targets:
                 self._rules[key] = ProjectionRule(scope=scope, slot=slot, targets=targets)
+                loaded += 1
+        return loaded
 
-    def load_from_scenario(self, scenario_id: str) -> None:
+    def replace_scenario_entries(self, entries: list[dict], *, scenario_id: Optional[str] = None) -> int:
+        """
+        Replace the active scenario override layer.
+
+        Skill-level defaults are stored in ``_rules`` and remain intact.
+        Scenario manifests act as a single active override layer so switching
+        to a scenario without ``data_projections`` correctly clears stale rules
+        from the previous scenario.
+        """
+        self._scenario_rules = {}
+        self._active_scenario_id = str(scenario_id or "").strip() or None
+
+        raw = entries or []
+        if not isinstance(raw, list):
+            return 0
+
+        loaded = 0
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+
+            scope = str(item.get("scope") or "").strip()
+            slot = str(item.get("slot") or "").strip()
+            if not scope or not slot:
+                continue
+
+            targets_raw = item.get("targets") or []
+            if not isinstance(targets_raw, list):
+                continue
+
+            targets: List[ProjectionTarget] = []
+            for t in targets_raw:
+                if not isinstance(t, dict):
+                    continue
+                backend = str(t.get("backend") or "").strip().lower()
+                if backend not in ("yjs", "kv", "sql"):
+                    continue
+                targets.append(
+                    ProjectionTarget(
+                        backend=backend,  # type: ignore[arg-type]
+                        webspace_id=str(t.get("webspace_id") or "") or None,
+                        path=str(t.get("path") or "") or None,
+                        table=str(t.get("table") or "") or None,
+                        column=str(t.get("column") or "") or None,
+                    )
+                )
+
+            key = (scope, slot)
+            if targets:
+                self._scenario_rules[key] = ProjectionRule(scope=scope, slot=slot, targets=targets)
+                loaded += 1
+        return loaded
+
+    def load_from_scenario(self, scenario_id: str) -> int:
         """
         Load projection rules from scenario.yaml for the given scenario id.
 
@@ -108,7 +166,7 @@ class ProjectionRegistry:
         """
         manifest = read_manifest(scenario_id)
         entries = manifest.get("data_projections") or []
-        self.load_entries(entries)
+        return self.replace_scenario_entries(entries, scenario_id=scenario_id)
 
     def resolve(self, scope: str, slot: str) -> List[ProjectionTarget]:
         """
@@ -118,8 +176,11 @@ class ProjectionRegistry:
         this as "no projections configured".
         """
         key = (str(scope).strip(), str(slot).strip())
-        rule = self._rules.get(key)
+        rule = self._scenario_rules.get(key) or self._rules.get(key)
         return list(rule.targets) if rule else []
+
+    def active_scenario_id(self) -> Optional[str]:
+        return self._active_scenario_id
 
 
 __all__ = ["ProjectionBackend", "ProjectionTarget", "ProjectionRule", "ProjectionRegistry"]

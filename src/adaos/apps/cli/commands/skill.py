@@ -38,7 +38,7 @@ from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.eventbus import emit as bus_emit
-from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.yjs.webspace import default_webspace_id
 
 app = typer.Typer(help=_("cli.help_skill"))
@@ -158,8 +158,13 @@ def _emit_local_skill_updated(name: str, *, webspace_id: str | None = None) -> N
 
 def _rebuild_local_webspace(*, webspace_id: str | None = None) -> None:
     try:
-        ctx = get_ctx()
-        asyncio.run(WebspaceScenarioRuntime(ctx).rebuild_webspace_async(webspace_id or default_webspace_id()))
+        asyncio.run(
+            rebuild_webspace_from_sources(
+                webspace_id or default_webspace_id(),
+                action="cli_skill_runtime_sync",
+                source_of_truth="skill_runtime",
+            )
+        )
     except Exception:
         pass
 

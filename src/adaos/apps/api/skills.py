@@ -13,7 +13,7 @@ from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
-from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.yjs.webspace import default_webspace_id
 
 import yaml
@@ -431,7 +431,11 @@ async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
                 "api.skills",
             )
         try:
-            await WebspaceScenarioRuntime(ctx).rebuild_webspace_async(webspace_id)
+            await rebuild_webspace_from_sources(
+                webspace_id,
+                action="skill_update_sync",
+                source_of_truth="skill_runtime",
+            )
         except Exception:
             log.exception("webspace rebuild failed after skill update: %s", body.name)
     return {"ok": True, "updated": result.updated, "version": result.version}

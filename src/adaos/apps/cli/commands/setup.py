@@ -23,7 +23,7 @@ from adaos.services.autostart import disable as autostart_disable
 from adaos.services.autostart import enable as autostart_enable
 from adaos.services.autostart import status as autostart_status
 from adaos.services.scenario.manager import ScenarioManager
-from adaos.services.scenario.webspace_runtime import WebspaceScenarioRuntime
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.setup.presets import get_preset
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
@@ -259,7 +259,13 @@ def install(
     # CLI does not necessarily have runtime event subscribers loaded; rebuild
     # effective UI explicitly so ui.application/data.catalog are populated.
     try:
-        asyncio.run(WebspaceScenarioRuntime(ctx).rebuild_webspace_async(target_webspace))
+        asyncio.run(
+            rebuild_webspace_from_sources(
+                target_webspace,
+                action="cli_setup_install_sync",
+                source_of_truth="scenario_projection",
+            )
+        )
     except Exception as exc:
         installed["warnings"].append(f"webspace rebuild: {exc}")
 
@@ -412,7 +418,13 @@ def update(
                 out["yjs_synced"].append({"scenario": str(name), "ok": False, "error": str(exc)})
         # Same as install(): do not rely on event bus subscriptions in CLI.
         try:
-            asyncio.run(WebspaceScenarioRuntime(ctx).rebuild_webspace_async(target_webspace))
+            asyncio.run(
+                rebuild_webspace_from_sources(
+                    target_webspace,
+                    action="cli_setup_update_sync",
+                    source_of_truth="scenario_projection",
+                )
+            )
         except Exception as exc:
             out["warnings"].append(f"webspace rebuild: {exc}")
 

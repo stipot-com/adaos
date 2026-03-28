@@ -609,6 +609,9 @@ Additions:
   - webspace reseed/reset
 - explicit rebuild ordering so projection refresh is a declared rebuild step,
   not a hidden side effect
+- active scenario override layer in `ProjectionRegistry`, so scenario-specific
+  `data_projections` can replace prior scenario rules without leaving stale
+  routes behind
 - documented boundary:
   UI resolve consumes UI sources, projection lifecycle consumes
   `data_projections`
@@ -692,8 +695,15 @@ Current status:
 - `scenarios.synced` now routes bootstrap/default projection sync through the
   same semantic rebuild entry point instead of rebuilding via a separate
   direct runtime call
-- the main remaining cleanup is no longer "bootstrap vs reload", but keeping
-  projection refresh ordering explicit as Phase 4 work
+- projection refresh is now an explicit ordered rebuild step before semantic
+  resolve/apply, instead of a hidden side effect inside resolver input
+  collection
+- the active scenario projection layer now clears stale scenario overrides on
+  scenario changes and falls back to skill defaults when a scenario has no
+  `data_projections`
+- the main remaining cleanup is no longer "make projection refresh explicit",
+  but expanding debug/introspection around projection ordering as deeper
+  Phase 4 work
 
 ## First Implementation Slice
 
