@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Iterable, List, Any
 import sqlite3
+import json
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.yjs.store import ystore_path_for_webspace
@@ -17,7 +18,7 @@ SOURCE_MODE_DEV = "dev"
 
 _ROW_SELECT = (
     "workspace_id, path, created_at, display_name, "
-    "kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding"
+    "kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding, ui_overlay_json"
 )
 
 _UNSET = object()
@@ -34,6 +35,52 @@ def _normalize_optional_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _dedupe_text_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    installed_raw = value.get("installed") if isinstance(value.get("installed"), dict) else {}
+    installed = {
+        "apps": _dedupe_text_list(installed_raw.get("apps")),
+        "widgets": _dedupe_text_list(installed_raw.get("widgets")),
+    }
+    overlay: dict[str, Any] = {}
+    if installed["apps"] or installed["widgets"]:
+        overlay["installed"] = installed
+    return overlay
+
+
+def _encode_ui_overlay_json(value: Any) -> Optional[str]:
+    overlay = _normalize_ui_overlay_payload(value)
+    if not overlay:
+        return None
+    return json.dumps(overlay, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _decode_ui_overlay_json(value: Any) -> dict[str, Any]:
+    token = _normalize_optional_text(value)
+    if not token:
+        return {}
+    try:
+        payload = json.loads(token)
+    except Exception:
+        return {}
+    return _normalize_ui_overlay_payload(payload)
 
 
 def _normalize_kind(value: Any) -> Optional[str]:
@@ -87,6 +134,7 @@ class WebspaceManifest:
     owner_scope: Optional[str] = None
     profile_scope: Optional[str] = None
     device_binding: Optional[str] = None
+    ui_overlay_json: Optional[str] = None
 
     @property
     def effective_kind(self) -> str:
@@ -124,7 +172,24 @@ class WebspaceManifest:
             owner_scope=_normalize_optional_text(self.owner_scope),
             profile_scope=_normalize_optional_text(self.profile_scope),
             device_binding=_normalize_optional_text(self.device_binding),
+            ui_overlay_json=_encode_ui_overlay_json(_decode_ui_overlay_json(self.ui_overlay_json)),
         )
+
+    @property
+    def ui_overlay(self) -> dict[str, Any]:
+        return _decode_ui_overlay_json(self.ui_overlay_json)
+
+    @property
+    def installed_overlay(self) -> dict[str, list[str]]:
+        installed = self.ui_overlay.get("installed") if isinstance(self.ui_overlay.get("installed"), dict) else {}
+        return {
+            "apps": _dedupe_text_list(installed.get("apps")),
+            "widgets": _dedupe_text_list(installed.get("widgets")),
+        }
+
+    @property
+    def has_ui_overlay(self) -> bool:
+        return self.ui_overlay_json is not None
 
 
 # Backward-compatible name used by current callers.
@@ -143,6 +208,7 @@ def _row_from_db(row: tuple[Any, ...], *, apply_defaults: bool = True) -> Webspa
         owner_scope=_normalize_optional_text(row[7]),
         profile_scope=_normalize_optional_text(row[8]),
         device_binding=_normalize_optional_text(row[9]),
+        ui_overlay_json=_encode_ui_overlay_json(_decode_ui_overlay_json(row[10])),
     )
     return manifest.with_defaults() if apply_defaults else manifest
 
@@ -157,6 +223,7 @@ def _manifest_needs_persisted_defaults(manifest: WebspaceManifest) -> bool:
             manifest.owner_scope != normalized.owner_scope,
             manifest.profile_scope != normalized.profile_scope,
             manifest.device_binding != normalized.device_binding,
+            manifest.ui_overlay_json != normalized.ui_overlay_json,
         )
     )
 
@@ -169,7 +236,7 @@ def _persist_manifest_defaults(con, manifest: WebspaceManifest) -> WebspaceManif
         """
         UPDATE y_workspaces
         SET display_name=?, kind=?, home_scenario=?, source_mode=?,
-            owner_scope=?, profile_scope=?, device_binding=?
+            owner_scope=?, profile_scope=?, device_binding=?, ui_overlay_json=?
         WHERE workspace_id=?
         """,
         (
@@ -180,6 +247,7 @@ def _persist_manifest_defaults(con, manifest: WebspaceManifest) -> WebspaceManif
             normalized.owner_scope,
             normalized.profile_scope,
             normalized.device_binding,
+            normalized.ui_overlay_json,
             manifest.workspace_id,
         ),
     )
@@ -199,7 +267,8 @@ def _ensure_schema(con) -> None:
             source_mode TEXT,
             owner_scope TEXT,
             profile_scope TEXT,
-            device_binding TEXT
+            device_binding TEXT,
+            ui_overlay_json TEXT
         )
         """
     )
@@ -215,6 +284,7 @@ def _ensure_schema(con) -> None:
         ("owner_scope", "TEXT"),
         ("profile_scope", "TEXT"),
         ("device_binding", "TEXT"),
+        ("ui_overlay_json", "TEXT"),
     ):
         if name in cols:
             continue
@@ -315,8 +385,8 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
             """
             INSERT INTO y_workspaces(
                 workspace_id, path, created_at, display_name,
-                kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding, ui_overlay_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 workspace_id,
@@ -326,6 +396,7 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
                 inferred_kind,
                 DEFAULT_HOME_SCENARIO,
                 _infer_source_mode(None, kind=inferred_kind),
+                None,
                 None,
                 None,
                 None,
@@ -343,6 +414,7 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
             owner_scope=None,
             profile_scope=None,
             device_binding=None,
+            ui_overlay_json=None,
         )
 
 
@@ -356,6 +428,7 @@ def set_workspace_manifest(
     owner_scope: Any = _UNSET,
     profile_scope: Any = _UNSET,
     device_binding: Any = _UNSET,
+    ui_overlay_json: Any = _UNSET,
 ) -> WebspaceManifest:
     current = ensure_workspace(workspace_id)
     next_display_name = current.display_name if display_name is _UNSET else _normalize_optional_text(display_name)
@@ -367,6 +440,7 @@ def set_workspace_manifest(
     next_owner_scope = current.owner_scope if owner_scope is _UNSET else _normalize_optional_text(owner_scope)
     next_profile_scope = current.profile_scope if profile_scope is _UNSET else _normalize_optional_text(profile_scope)
     next_device_binding = current.device_binding if device_binding is _UNSET else _normalize_optional_text(device_binding)
+    next_ui_overlay_json = current.ui_overlay_json if ui_overlay_json is _UNSET else _encode_ui_overlay_json(ui_overlay_json)
 
     sql = get_ctx().sql
     with sql.connect() as con:
@@ -375,7 +449,7 @@ def set_workspace_manifest(
             """
             UPDATE y_workspaces
             SET display_name=?, kind=?, home_scenario=?, source_mode=?,
-                owner_scope=?, profile_scope=?, device_binding=?
+                owner_scope=?, profile_scope=?, device_binding=?, ui_overlay_json=?
             WHERE workspace_id=?
             """,
             (
@@ -386,6 +460,7 @@ def set_workspace_manifest(
                 next_owner_scope,
                 next_profile_scope,
                 next_device_binding,
+                next_ui_overlay_json,
                 workspace_id,
             ),
         )
@@ -423,8 +498,8 @@ def reset_webspaces(rows: Iterable[WorkspaceRow]) -> None:
             """
             INSERT INTO y_workspaces(
                 workspace_id, path, created_at, display_name,
-                kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                kind, home_scenario, source_mode, owner_scope, profile_scope, device_binding, ui_overlay_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 (
@@ -438,8 +513,42 @@ def reset_webspaces(rows: Iterable[WorkspaceRow]) -> None:
                     row.owner_scope,
                     row.profile_scope,
                     row.device_binding,
+                    row.ui_overlay_json,
                 )
                 for row in rows
             ],
         )
         con.commit()
+
+
+def get_workspace_overlay(workspace_id: str) -> dict[str, Any]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return {}
+    return row.ui_overlay
+
+
+def has_workspace_overlay(workspace_id: str) -> bool:
+    row = get_workspace(workspace_id)
+    return bool(row and row.has_ui_overlay)
+
+
+def get_workspace_installed_overlay(workspace_id: str) -> dict[str, list[str]]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return {"apps": [], "widgets": []}
+    return row.installed_overlay
+
+
+def set_workspace_overlay(workspace_id: str, overlay: Any) -> WebspaceManifest:
+    return set_workspace_manifest(workspace_id, ui_overlay_json=overlay)
+
+
+def set_workspace_installed_overlay(workspace_id: str, installed: Any) -> WebspaceManifest:
+    current = get_workspace_overlay(workspace_id)
+    overlay = dict(current) if isinstance(current, dict) else {}
+    overlay["installed"] = {
+        "apps": _dedupe_text_list((installed or {}).get("apps") if isinstance(installed, dict) else []),
+        "widgets": _dedupe_text_list((installed or {}).get("widgets") if isinstance(installed, dict) else []),
+    }
+    return set_workspace_overlay(workspace_id, overlay)

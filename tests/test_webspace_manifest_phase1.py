@@ -14,8 +14,18 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket.ystore"] = ystore_mod
 
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
+from adaos.services.io_web import desktop as desktop_module
 from adaos.services.workspaces import index as workspace_index_module
-from adaos.services.workspaces import ensure_workspace, get_workspace, normalize_workspaces, set_workspace_manifest
+from adaos.services.workspaces import (
+    ensure_workspace,
+    get_workspace,
+    get_workspace_installed_overlay,
+    get_workspace_overlay,
+    has_workspace_overlay,
+    normalize_workspaces,
+    set_workspace_installed_overlay,
+    set_workspace_manifest,
+)
 
 
 class _FakeTxn:
@@ -50,6 +60,17 @@ class _FakeAsyncDoc:
         return _FakeDoc(self._state)
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class _FakeSyncDoc:
+    def __init__(self, state: dict[str, _FakeMap]) -> None:
+        self._state = state
+
+    def __enter__(self) -> _FakeDoc:
+        return _FakeDoc(self._state)
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
         return False
 
 
@@ -301,3 +322,56 @@ def test_normalize_workspaces_backfills_manifest_defaults() -> None:
     assert row is not None
     assert row.kind == "dev"
     assert row.source_mode == "dev"
+
+
+def test_workspace_installed_overlay_roundtrip() -> None:
+    webspace_id = "phase5-overlay-roundtrip"
+    ensure_workspace(webspace_id)
+
+    set_workspace_installed_overlay(
+        webspace_id,
+        {"apps": ["scenario:prompt_engineer_scenario", "scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.has_ui_overlay is True
+    assert has_workspace_overlay(webspace_id) is True
+    assert get_workspace_overlay(webspace_id) == {
+        "installed": {
+            "apps": ["scenario:prompt_engineer_scenario"],
+            "widgets": ["weather"],
+        }
+    }
+    assert get_workspace_installed_overlay(webspace_id) == {
+        "apps": ["scenario:prompt_engineer_scenario"],
+        "widgets": ["weather"],
+    }
+
+
+def test_web_desktop_service_migrates_legacy_yjs_installed_to_overlay(monkeypatch) -> None:
+    webspace_id = "phase5-legacy-installed"
+    ensure_workspace(webspace_id)
+    fake_state = {
+        "data": _FakeMap(
+            {
+                "installed": {
+                    "apps": ["legacy-app"],
+                    "widgets": ["legacy-widget"],
+                }
+            }
+        )
+    }
+    monkeypatch.setattr(desktop_module, "get_ydoc", lambda _webspace_id: _FakeSyncDoc(fake_state))
+
+    service = desktop_module.WebDesktopService()
+    installed = service.get_installed(webspace_id)
+
+    assert installed.to_dict() == {
+        "apps": ["legacy-app"],
+        "widgets": ["legacy-widget"],
+    }
+    assert get_workspace_installed_overlay(webspace_id) == {
+        "apps": ["legacy-app"],
+        "widgets": ["legacy-widget"],
+    }

@@ -517,6 +517,7 @@ class WebspaceScenarioRuntime:
 
         mode = "mixed"
         metadata: Dict[str, Any] = {}
+        overlay_snapshot: Dict[str, Any] = {"installed": _coerce_dict(data_map.get("installed") or {})}
         try:
             row = workspace_index.get_workspace(webspace_id)
             if row:
@@ -528,6 +529,11 @@ class WebspaceScenarioRuntime:
                     "home_scenario": row.effective_home_scenario,
                     "is_dev": row.is_dev,
                 }
+                if getattr(row, "has_ui_overlay", False):
+                    overlay_snapshot = {
+                        "installed": _coerce_dict(getattr(row, "installed_overlay", {}) or {}),
+                        "source": "workspace_manifest_overlay",
+                    }
         except Exception:
             mode = "mixed"
             metadata = {}
@@ -540,7 +546,7 @@ class WebspaceScenarioRuntime:
             scenario_application=scenario_app_ui,
             scenario_catalog=base_catalog,
             scenario_registry=registry_entry,
-            overlay_snapshot={"installed": _coerce_dict(data_map.get("installed") or {})},
+            overlay_snapshot=overlay_snapshot,
             live_state={
                 "desktop": _coerce_dict(data_map.get("desktop") or {}),
                 "routing": _coerce_dict(data_map.get("routing") or {}),

@@ -15,7 +15,7 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket.ystore"] = ystore_mod
 
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
-from adaos.services.workspaces import ensure_workspace, get_workspace, set_workspace_manifest
+from adaos.services.workspaces import ensure_workspace, get_workspace, set_workspace_installed_overlay, set_workspace_manifest
 
 
 class _FakeTxn:
@@ -576,6 +576,47 @@ def test_phase4_collect_resolver_inputs_does_not_refresh_projection_registry(mon
 
     assert inputs.scenario_id == "web_desktop"
     assert projection_calls == []
+
+
+def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) -> None:
+    webspace_id = "phase5-overlay-collect"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Overlay Collect",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+    set_workspace_installed_overlay(
+        webspace_id,
+        {"apps": ["overlay-app"], "widgets": ["overlay-widget"]},
+    )
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
+    monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
+
+    fake_doc = _FakeDoc(
+        {
+            "ui": _FakeMap({"current_scenario": "web_desktop", "scenarios": {"web_desktop": {"application": {}}}}),
+            "data": _FakeMap(
+                {
+                    "installed": {"apps": ["ydoc-app"], "widgets": ["ydoc-widget"]},
+                    "scenarios": {"web_desktop": {"catalog": {}}},
+                }
+            ),
+            "registry": _FakeMap({"scenarios": {"web_desktop": {}}}),
+        }
+    )
+
+    inputs = runtime._collect_resolver_inputs_in_doc(fake_doc, webspace_id)
+
+    assert inputs.overlay_snapshot["installed"] == {
+        "apps": ["overlay-app"],
+        "widgets": ["overlay-widget"],
+    }
+    assert inputs.overlay_snapshot["source"] == "workspace_manifest_overlay"
 
 
 def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:

@@ -655,6 +655,8 @@ Additions:
 - thin overlay adapter for install/pin state
 - schema reserved for future user/profile/device scopes
 - Yjs mirrors remain for renderer compatibility
+- compatibility migration path where legacy `data.installed` state can be
+  adopted into the persistent overlay on first read/write
 
 Intentionally untouched scope:
 
@@ -670,6 +672,14 @@ Expected result:
 
 - customization state starts leaving the "everything lives in Yjs" trap
   without breaking the current frontend
+
+Current status:
+
+- install state now has a thin persistent overlay adapter in webspace
+  metadata, while `data.installed` and `data.desktop.installed` remain
+  compatibility mirrors for the current renderer
+- semantic rebuild now consumes the persistent overlay first and only falls
+  back to legacy Yjs-installed state when no overlay has been established yet
 
 ## Immediate Rebuild Follow-Up
 
