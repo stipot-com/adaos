@@ -1,7 +1,8 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule, ModalController } from '@ionic/angular'
+import { IonicModule } from '@ionic/angular'
+import { ModalController } from '@ionic/angular/standalone'
 import { addIcons } from 'ionicons'
 import { Observable } from 'rxjs'
 import { PageSchema, WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'

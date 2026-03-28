@@ -1,7 +1,8 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\workspace-manager-modal.component.ts
 import { Component, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule, ToastController, ModalController } from '@ionic/angular'
+import { IonicModule } from '@ionic/angular'
+import { ModalController, ToastController } from '@ionic/angular/standalone'
 import { FormsModule } from '@angular/forms'
 import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'

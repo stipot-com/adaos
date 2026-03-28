@@ -1,7 +1,8 @@
 // src\adaos\integrations\inimatic\src\app\renderer\desktop\desktop.component.ts
 import { Component, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule, ModalController } from '@ionic/angular'
+import { IonicModule } from '@ionic/angular'
+import { ModalController } from '@ionic/angular/standalone'
 import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
 import { observeDeep } from '../../y/y-helpers'

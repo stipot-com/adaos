@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core'
-import { ToastController } from '@ionic/angular'
+import { ToastController } from '@ionic/angular/standalone'
 import { ActionConfig } from './page-schema.model'
 import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'

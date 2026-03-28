@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core'
-import { ModalController } from '@ionic/angular'
+import { ModalController } from '@ionic/angular/standalone'
 import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
