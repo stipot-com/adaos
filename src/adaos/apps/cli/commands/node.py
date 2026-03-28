@@ -427,6 +427,22 @@ def _print_projection_summary(payload: dict[str, Any], *, key: str = "projection
     )
 
 
+def _print_overlay_summary(payload: dict[str, Any], *, key: str = "overlay") -> None:
+    overlay = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not overlay:
+        return
+    installed = overlay.get("installed") if isinstance(overlay.get("installed"), dict) else {}
+    pinned_widgets = overlay.get("pinned_widgets") if isinstance(overlay.get("pinned_widgets"), list) else []
+    typer.echo(
+        "overlay: "
+        f"source={overlay.get('source') or '-'} "
+        f"has_overlay={'yes' if overlay.get('has_overlay') else 'no'} "
+        f"installed_apps={len(installed.get('apps') or [])} "
+        f"installed_widgets={len(installed.get('widgets') or [])} "
+        f"pinned_widgets={len(pinned_widgets)}"
+    )
+
+
 def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
     refresh = payload.get("projection_refresh") if isinstance(payload.get("projection_refresh"), dict) else {}
     if not refresh:
@@ -1026,6 +1042,7 @@ def _node_yjs_describe_action(
         f"home={webspace_payload.get('home_scenario') or '-'} "
         f"current={webspace_payload.get('current_scenario') or '-'}"
     )
+    _print_overlay_summary(payload)
     _print_projection_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:

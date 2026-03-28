@@ -29,6 +29,7 @@ from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_sn
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
+    describe_webspace_overlay_state,
     describe_webspace_projection_state,
     ensure_dev_webspace_for_scenario,
     go_home_webspace,
@@ -572,11 +573,13 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "").strip() or "default"
     state = await describe_webspace_operational_state(target_webspace_id)
+    overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
     return {
         "ok": True,
         "accepted": True,
         "webspace": state.to_dict(),
+        "overlay": overlay,
         "projection": projection,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,

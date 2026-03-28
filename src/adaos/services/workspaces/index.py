@@ -51,17 +51,57 @@ def _dedupe_text_list(values: Any) -> list[str]:
     return out
 
 
+def _normalize_overlay_widget_list(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        item_id = _normalize_optional_text(value.get("id"))
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        try:
+            payload = json.loads(json.dumps(value, ensure_ascii=True))
+        except Exception:
+            payload = {str(k): v for k, v in value.items()}
+        payload["id"] = item_id
+        item_type = _normalize_optional_text(payload.get("type"))
+        if item_type is not None:
+            payload["type"] = item_type
+        out.append(payload)
+    return out
+
+
 def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    installed_raw = value.get("installed") if isinstance(value.get("installed"), dict) else {}
+    desktop_raw = value.get("desktop") if isinstance(value.get("desktop"), dict) else {}
+    legacy_installed_raw = value.get("installed") if isinstance(value.get("installed"), dict) else {}
+    installed_source = (
+        desktop_raw.get("installed")
+        if isinstance(desktop_raw.get("installed"), dict)
+        else legacy_installed_raw
+    )
+    legacy_pinned_raw = value.get("pinnedWidgets")
+    has_installed = "installed" in desktop_raw or "installed" in value
+    has_pinned_widgets = "pinnedWidgets" in desktop_raw or "pinnedWidgets" in value
     installed = {
-        "apps": _dedupe_text_list(installed_raw.get("apps")),
-        "widgets": _dedupe_text_list(installed_raw.get("widgets")),
+        "apps": _dedupe_text_list(installed_source.get("apps") if isinstance(installed_source, dict) else []),
+        "widgets": _dedupe_text_list(installed_source.get("widgets") if isinstance(installed_source, dict) else []),
     }
+    pinned_widgets_source = desktop_raw.get("pinnedWidgets") if "pinnedWidgets" in desktop_raw else legacy_pinned_raw
+    pinned_widgets = _normalize_overlay_widget_list(pinned_widgets_source)
     overlay: dict[str, Any] = {}
-    if installed["apps"] or installed["widgets"]:
-        overlay["installed"] = installed
+    desktop: dict[str, Any] = {}
+    if has_installed or installed["apps"] or installed["widgets"]:
+        desktop["installed"] = installed
+    if has_pinned_widgets or pinned_widgets:
+        desktop["pinnedWidgets"] = pinned_widgets
+    if desktop:
+        overlay["desktop"] = desktop
     return overlay
 
 
@@ -180,16 +220,42 @@ class WebspaceManifest:
         return _decode_ui_overlay_json(self.ui_overlay_json)
 
     @property
+    def desktop_overlay(self) -> dict[str, Any]:
+        desktop = self.ui_overlay.get("desktop") if isinstance(self.ui_overlay.get("desktop"), dict) else {}
+        out: dict[str, Any] = {}
+        if "installed" in desktop:
+            installed = desktop.get("installed") if isinstance(desktop.get("installed"), dict) else {}
+            out["installed"] = {
+                "apps": _dedupe_text_list(installed.get("apps")),
+                "widgets": _dedupe_text_list(installed.get("widgets")),
+            }
+        if "pinnedWidgets" in desktop:
+            out["pinnedWidgets"] = _normalize_overlay_widget_list(desktop.get("pinnedWidgets"))
+        return out
+
+    @property
     def installed_overlay(self) -> dict[str, list[str]]:
-        installed = self.ui_overlay.get("installed") if isinstance(self.ui_overlay.get("installed"), dict) else {}
+        installed = self.desktop_overlay.get("installed") if isinstance(self.desktop_overlay.get("installed"), dict) else {}
         return {
             "apps": _dedupe_text_list(installed.get("apps")),
             "widgets": _dedupe_text_list(installed.get("widgets")),
         }
 
     @property
+    def pinned_widgets_overlay(self) -> list[dict[str, Any]]:
+        return _normalize_overlay_widget_list(self.desktop_overlay.get("pinnedWidgets"))
+
+    @property
+    def has_installed_overlay(self) -> bool:
+        return "installed" in self.desktop_overlay
+
+    @property
+    def has_pinned_widgets_overlay(self) -> bool:
+        return "pinnedWidgets" in self.desktop_overlay
+
+    @property
     def has_ui_overlay(self) -> bool:
-        return self.ui_overlay_json is not None
+        return bool(self.ui_overlay)
 
 
 # Backward-compatible name used by current callers.
@@ -528,6 +594,13 @@ def get_workspace_overlay(workspace_id: str) -> dict[str, Any]:
     return row.ui_overlay
 
 
+def get_workspace_desktop_overlay(workspace_id: str) -> dict[str, Any]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return {}
+    return row.desktop_overlay
+
+
 def has_workspace_overlay(workspace_id: str) -> bool:
     row = get_workspace(workspace_id)
     return bool(row and row.has_ui_overlay)
@@ -540,15 +613,36 @@ def get_workspace_installed_overlay(workspace_id: str) -> dict[str, list[str]]:
     return row.installed_overlay
 
 
+def get_workspace_pinned_widgets_overlay(workspace_id: str) -> list[dict[str, Any]]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return []
+    return row.pinned_widgets_overlay
+
+
 def set_workspace_overlay(workspace_id: str, overlay: Any) -> WebspaceManifest:
     return set_workspace_manifest(workspace_id, ui_overlay_json=overlay)
 
 
-def set_workspace_installed_overlay(workspace_id: str, installed: Any) -> WebspaceManifest:
+def set_workspace_desktop_overlay(workspace_id: str, desktop: Any) -> WebspaceManifest:
     current = get_workspace_overlay(workspace_id)
     overlay = dict(current) if isinstance(current, dict) else {}
-    overlay["installed"] = {
+    overlay["desktop"] = desktop
+    return set_workspace_overlay(workspace_id, overlay)
+
+
+def set_workspace_installed_overlay(workspace_id: str, installed: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["installed"] = {
         "apps": _dedupe_text_list((installed or {}).get("apps") if isinstance(installed, dict) else []),
         "widgets": _dedupe_text_list((installed or {}).get("widgets") if isinstance(installed, dict) else []),
     }
-    return set_workspace_overlay(workspace_id, overlay)
+    return set_workspace_desktop_overlay(workspace_id, desktop)
+
+
+def set_workspace_pinned_widgets_overlay(workspace_id: str, pinned_widgets: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["pinnedWidgets"] = _normalize_overlay_widget_list(pinned_widgets)
+    return set_workspace_desktop_overlay(workspace_id, desktop)

@@ -9,7 +9,15 @@ Skills should use this layer instead of touching YDoc or Yjs APIs
 directly.
 """
 
-from .desktop import desktop_toggle_install, desktop_toggle_app, desktop_toggle_widget
+from .desktop import (
+    desktop_get_installed,
+    desktop_get_pinned_widgets,
+    desktop_set_installed,
+    desktop_set_pinned_widgets,
+    desktop_toggle_install,
+    desktop_toggle_app,
+    desktop_toggle_widget,
+)
 from .webspace import (
     webspace_list,
     webspace_describe,
@@ -26,6 +34,10 @@ __all__ = [
     "desktop_toggle_install",
     "desktop_toggle_app",
     "desktop_toggle_widget",
+    "desktop_get_installed",
+    "desktop_set_installed",
+    "desktop_get_pinned_widgets",
+    "desktop_set_pinned_widgets",
     "webspace_list",
     "webspace_describe",
     "webspace_create",

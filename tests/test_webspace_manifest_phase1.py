@@ -18,12 +18,15 @@ from adaos.services.io_web import desktop as desktop_module
 from adaos.services.workspaces import index as workspace_index_module
 from adaos.services.workspaces import (
     ensure_workspace,
+    get_workspace_desktop_overlay,
     get_workspace,
     get_workspace_installed_overlay,
     get_workspace_overlay,
+    get_workspace_pinned_widgets_overlay,
     has_workspace_overlay,
     normalize_workspaces,
     set_workspace_installed_overlay,
+    set_workspace_pinned_widgets_overlay,
     set_workspace_manifest,
 )
 
@@ -324,7 +327,7 @@ def test_normalize_workspaces_backfills_manifest_defaults() -> None:
     assert row.source_mode == "dev"
 
 
-def test_workspace_installed_overlay_roundtrip() -> None:
+def test_workspace_desktop_overlay_roundtrip() -> None:
     webspace_id = "phase5-overlay-roundtrip"
     ensure_workspace(webspace_id)
 
@@ -332,24 +335,41 @@ def test_workspace_installed_overlay_roundtrip() -> None:
         webspace_id,
         {"apps": ["scenario:prompt_engineer_scenario", "scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
     )
+    set_workspace_pinned_widgets_overlay(
+        webspace_id,
+        [{"id": "infra-status", "type": "visual.metricTile"}, {"id": "infra-status", "type": "visual.metricTile"}],
+    )
 
     row = get_workspace(webspace_id)
     assert row is not None
     assert row.has_ui_overlay is True
     assert has_workspace_overlay(webspace_id) is True
-    assert get_workspace_overlay(webspace_id) == {
+    assert get_workspace_desktop_overlay(webspace_id) == {
         "installed": {
             "apps": ["scenario:prompt_engineer_scenario"],
             "widgets": ["weather"],
+        },
+        "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+    }
+    assert get_workspace_overlay(webspace_id) == {
+        "desktop": {
+            "installed": {
+                "apps": ["scenario:prompt_engineer_scenario"],
+                "widgets": ["weather"],
+            },
+            "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
         }
     }
     assert get_workspace_installed_overlay(webspace_id) == {
         "apps": ["scenario:prompt_engineer_scenario"],
         "widgets": ["weather"],
     }
+    assert get_workspace_pinned_widgets_overlay(webspace_id) == [
+        {"id": "infra-status", "type": "visual.metricTile"}
+    ]
 
 
-def test_web_desktop_service_migrates_legacy_yjs_installed_to_overlay(monkeypatch) -> None:
+def test_web_desktop_service_ignores_legacy_yjs_installed_without_overlay(monkeypatch) -> None:
     webspace_id = "phase5-legacy-installed"
     ensure_workspace(webspace_id)
     fake_state = {
@@ -368,10 +388,36 @@ def test_web_desktop_service_migrates_legacy_yjs_installed_to_overlay(monkeypatc
     installed = service.get_installed(webspace_id)
 
     assert installed.to_dict() == {
-        "apps": ["legacy-app"],
-        "widgets": ["legacy-widget"],
+        "apps": [],
+        "widgets": [],
     }
     assert get_workspace_installed_overlay(webspace_id) == {
-        "apps": ["legacy-app"],
-        "widgets": ["legacy-widget"],
+        "apps": [],
+        "widgets": [],
     }
+
+
+def test_web_desktop_service_set_pinned_widgets_updates_overlay_and_live_doc(monkeypatch) -> None:
+    webspace_id = "phase5-pinned-widgets"
+    ensure_workspace(webspace_id)
+    fake_state = {
+        "ui": _FakeMap({"application": {"desktop": {"topbar": []}}}),
+        "data": _FakeMap({"desktop": {}}),
+    }
+    monkeypatch.setattr(desktop_module, "get_ydoc", lambda _webspace_id: _FakeSyncDoc(fake_state))
+
+    service = desktop_module.WebDesktopService()
+    service.set_pinned_widgets(
+        [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+        webspace_id,
+    )
+
+    assert get_workspace_pinned_widgets_overlay(webspace_id) == [
+        {"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}
+    ]
+    assert fake_state["ui"]["application"]["desktop"]["pinnedWidgets"] == [
+        {"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}
+    ]
+    assert fake_state["data"]["desktop"]["pinnedWidgets"] == [
+        {"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}
+    ]

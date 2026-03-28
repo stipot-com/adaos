@@ -434,6 +434,19 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     )
     monkeypatch.setattr(
         node_api_module,
+        "describe_webspace_overlay_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "source": "workspace_manifest_overlay",
+            "has_overlay": True,
+            "has_installed": True,
+            "has_pinned_widgets": True,
+            "installed": {"apps": ["scenario:prompt_engineer_runtime"], "widgets": []},
+            "pinned_widgets": [{"id": "infra-status", "type": "visual.metricTile"}],
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
         "describe_webspace_projection_state",
         lambda webspace_id: _awaitable(
             {
@@ -455,6 +468,8 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["ok"] is True
     assert result["accepted"] is True
     assert result["webspace"]["webspace_id"] == "dev_prompt"
+    assert result["overlay"]["has_pinned_widgets"] is True
+    assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
     assert result["webspace"]["source_mode"] == "dev"
     assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
     assert result["runtime"]["webspace_id"] == "dev_prompt"

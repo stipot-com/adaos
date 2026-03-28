@@ -15,7 +15,13 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket.ystore"] = ystore_mod
 
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
-from adaos.services.workspaces import ensure_workspace, get_workspace, set_workspace_installed_overlay, set_workspace_manifest
+from adaos.services.workspaces import (
+    ensure_workspace,
+    get_workspace,
+    set_workspace_installed_overlay,
+    set_workspace_manifest,
+    set_workspace_pinned_widgets_overlay,
+)
 
 
 class _FakeTxn:
@@ -592,6 +598,10 @@ def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) 
         webspace_id,
         {"apps": ["overlay-app"], "widgets": ["overlay-widget"]},
     )
+    set_workspace_pinned_widgets_overlay(
+        webspace_id,
+        [{"id": "infra-status", "type": "visual.metricTile"}],
+    )
 
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
@@ -616,7 +626,43 @@ def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) 
         "apps": ["overlay-app"],
         "widgets": ["overlay-widget"],
     }
+    assert inputs.overlay_snapshot["pinnedWidgets"] == [
+        {"id": "infra-status", "type": "visual.metricTile"}
+    ]
     assert inputs.overlay_snapshot["source"] == "workspace_manifest_overlay"
+
+
+def test_phase5_resolver_prefers_pinned_widgets_from_overlay_over_scenario_defaults() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="phase5-pinned-overlay",
+            scenario_id="web_desktop",
+            source_mode="workspace",
+            scenario_application={
+                "desktop": {
+                    "topbar": [],
+                    "pinnedWidgets": [{"id": "scenario-pin", "type": "visual.metricTile"}],
+                }
+            },
+            scenario_catalog={"apps": [], "widgets": [{"id": "overlay-pin", "type": "visual.metricTile"}]},
+            scenario_registry={},
+            overlay_snapshot={
+                "installed": {"apps": [], "widgets": []},
+                "pinnedWidgets": [{"id": "overlay-pin", "type": "visual.metricTile", "title": "Overlay Pin"}],
+            },
+            live_state={"desktop": {}, "routing": {}},
+            skill_decls=[],
+            desktop_scenarios=[],
+        )
+    )
+
+    assert resolved.application["desktop"]["pinnedWidgets"] == [
+        {"id": "overlay-pin", "type": "visual.metricTile", "title": "Overlay Pin"}
+    ]
+    assert resolved.desktop["pinnedWidgets"] == [
+        {"id": "overlay-pin", "type": "visual.metricTile", "title": "Overlay Pin"}
+    ]
 
 
 def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:

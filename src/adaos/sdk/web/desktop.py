@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from adaos.sdk.core.decorators import tool
 from adaos.services.io_web.desktop import WebDesktopService, WebDesktopInstalled
@@ -100,6 +100,22 @@ async def desktop_get_installed_async(webspace_id: Optional[str] = None) -> dict
 
 
 @tool(
+    "web.desktop.get_pinned_widgets",
+    summary="Return pinned desktop widgets for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.get_pinned_widgets()", "web.desktop.get_pinned_widgets('default')"],
+)
+def desktop_get_pinned_widgets(webspace_id: Optional[str] = None) -> list[dict[str, Any]]:
+    svc = WebDesktopService()
+    return svc.get_pinned_widgets(webspace_id)
+
+
+async def desktop_get_pinned_widgets_async(webspace_id: Optional[str] = None) -> list[dict[str, Any]]:
+    svc = WebDesktopService()
+    return await svc.get_pinned_widgets_async(webspace_id)
+
+
+@tool(
     "web.desktop.set_installed",
     summary="Replace installed desktop apps/widgets for a webspace.",
     stability="experimental",
@@ -124,3 +140,22 @@ def desktop_set_installed(
         svc.set_installed_with_live_room(installed, webspace_id)
     else:
         svc.set_installed(installed, webspace_id)
+
+
+@tool(
+    "web.desktop.set_pinned_widgets",
+    summary="Replace pinned desktop widgets for a webspace.",
+    stability="experimental",
+    examples=["web.desktop.set_pinned_widgets([{'id': 'infra-status', 'type': 'visual.metricTile'}])"],
+)
+def desktop_set_pinned_widgets(
+    pinned_widgets: list[dict[str, Any]],
+    webspace_id: Optional[str] = None,
+    *,
+    live: bool = True,
+) -> None:
+    svc = WebDesktopService()
+    if live:
+        svc.set_pinned_widgets_with_live_room(list(pinned_widgets or []), webspace_id)
+    else:
+        svc.set_pinned_widgets(list(pinned_widgets or []), webspace_id)

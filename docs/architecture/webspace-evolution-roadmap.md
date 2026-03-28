@@ -652,11 +652,12 @@ Touched components:
 
 Additions:
 
-- thin overlay adapter for install/pin state
+- thin desktop-scoped overlay adapter for install/pin state
 - schema reserved for future user/profile/device scopes
 - Yjs mirrors remain for renderer compatibility
-- compatibility migration path where legacy `data.installed` state can be
-  adopted into the persistent overlay on first read/write
+- desktop-scoped canonical state for:
+  - installed apps/widgets
+  - pinned widgets
 
 Intentionally untouched scope:
 
@@ -666,20 +667,27 @@ Intentionally untouched scope:
 
 Key risks:
 
-- temporary dual-write drift between overlay storage and Yjs mirrors
+- temporary dual-write drift between canonical overlay storage and Yjs mirrors
 
 Expected result:
 
 - customization state starts leaving the "everything lives in Yjs" trap
-  without breaking the current frontend
+  while the current frontend still consumes compatibility projections
 
 Current status:
 
-- install state now has a thin persistent overlay adapter in webspace
-  metadata, while `data.installed` and `data.desktop.installed` remain
-  compatibility mirrors for the current renderer
-- semantic rebuild now consumes the persistent overlay first and only falls
-  back to legacy Yjs-installed state when no overlay has been established yet
+- webspace metadata now stores a canonical desktop-scoped overlay payload
+  under `ui_overlay_json.desktop`
+- installed apps/widgets are now overlay-first canonical state and are no
+  longer read back from legacy Yjs paths during normal service reads
+- pinned widgets now also participate in the same overlay boundary instead of
+  living only as scenario-owned `ui.application.desktop.pinnedWidgets`
+- semantic rebuild now consumes persistent overlay state for desktop
+  customization (`installed`, `pinnedWidgets`) and mirrors the materialized
+  result back into Yjs compatibility paths for the current renderer
+- the old skill-memory restore workaround after `desktop.webspace.reloaded`
+  is now obsolete for install state and has been removed from the desktop
+  shell skill
 
 ## Immediate Rebuild Follow-Up
 

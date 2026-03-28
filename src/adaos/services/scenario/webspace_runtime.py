@@ -36,7 +36,7 @@ class WebUIRegistryEntry:
 
       - scenario-projected catalog/registry,
       - skill contributions from webui.json,
-      - auto-installed items and current data.installed.
+      - auto-installed items and current desktop overlay state.
     """
 
     scenario_id: str
@@ -104,9 +104,9 @@ class WebspaceResolverInputs:
     """
     Explicit resolver inputs for the current light-weight Phase 3 contract.
 
-    `overlay_snapshot` is still sourced from live Yjs compatibility state for
-    now (`data.installed`). This keeps the future overlay boundary explicit
-    without introducing a new persistence layer yet.
+    `overlay_snapshot` is sourced from persistent webspace metadata and
+    represents canonical desktop customization state for the current MVP
+    Phase 5 boundary.
     """
 
     webspace_id: str
@@ -272,6 +272,26 @@ def _merge_installed_with_auto(installed: Dict[str, Any], *, auto_apps: set[str]
     return {"apps": apps, "widgets": widgets}
 
 
+def _normalize_overlay_widget_entries(values: Any) -> List[Dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        item = dict(value)
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        item["id"] = item_id
+        if item.get("type") is not None:
+            item["type"] = str(item.get("type"))
+        out.append(item)
+    return out
+
+
 def _built_in_scenario_content(scenario_id: str) -> Dict[str, Any]:
     if str(scenario_id or "").strip() != "web_desktop":
         return {}
@@ -314,11 +334,12 @@ class WebspaceScenarioRuntime:
       - data.scenarios[scenario_id].catalog,
       - registry.scenarios[scenario_id],
       - skill webui.json declarations (apps/widgets/registry/contributions),
-      - data.installed,
+      - persistent webspace desktop overlay,
     and writes:
       - ui.application,
       - data.catalog,
       - data.installed,
+      - data.desktop,
       - registry.merged.
     """
 
@@ -517,7 +538,7 @@ class WebspaceScenarioRuntime:
 
         mode = "mixed"
         metadata: Dict[str, Any] = {}
-        overlay_snapshot: Dict[str, Any] = {"installed": _coerce_dict(data_map.get("installed") or {})}
+        overlay_snapshot: Dict[str, Any] = {}
         try:
             row = workspace_index.get_workspace(webspace_id)
             if row:
@@ -532,6 +553,9 @@ class WebspaceScenarioRuntime:
                 if getattr(row, "has_ui_overlay", False):
                     overlay_snapshot = {
                         "installed": _coerce_dict(getattr(row, "installed_overlay", {}) or {}),
+                        "pinnedWidgets": _normalize_overlay_widget_entries(
+                            getattr(row, "pinned_widgets_overlay", []) or []
+                        ),
                         "source": "workspace_manifest_overlay",
                     }
         except Exception:
@@ -559,6 +583,7 @@ class WebspaceScenarioRuntime:
         scenario_id = str(inputs.scenario_id or "").strip() or "web_desktop"
         source_mode = str(inputs.source_mode or "").strip() or "mixed"
         scenario_application = _coerce_dict(inputs.scenario_application or {})
+        scenario_desktop = _coerce_dict(scenario_application.get("desktop") or {})
         scenario_catalog = _coerce_dict(inputs.scenario_catalog or {})
         scenario_registry = _coerce_dict(inputs.scenario_registry or {})
         scenario_apps = [it for it in (scenario_catalog.get("apps") or []) if isinstance(it, Mapping)]
@@ -639,6 +664,9 @@ class WebspaceScenarioRuntime:
         }
 
         installed_current = _coerce_dict((inputs.overlay_snapshot or {}).get("installed") or {})
+        overlay_has_pinned_widgets = "pinnedWidgets" in (inputs.overlay_snapshot or {})
+        overlay_pinned_widgets = _normalize_overlay_widget_entries((inputs.overlay_snapshot or {}).get("pinnedWidgets"))
+        scenario_pinned_widgets = _normalize_overlay_widget_entries(scenario_desktop.get("pinnedWidgets"))
         installed_with_auto = _merge_installed_with_auto(
             installed_current,
             auto_apps=auto_app_ids,
@@ -731,12 +759,18 @@ class WebspaceScenarioRuntime:
         app_with_modals: Dict[str, Any] = dict(scenario_application)
         if merged_modals_map:
             app_with_modals["modals"] = merged_modals_map
+        desktop_config = _coerce_dict(app_with_modals.get("desktop") or {})
+        desktop_config["pinnedWidgets"] = (
+            overlay_pinned_widgets if overlay_has_pinned_widgets else scenario_pinned_widgets
+        )
+        app_with_modals["desktop"] = desktop_config
 
         desktop_next = _coerce_dict((inputs.live_state or {}).get("desktop") or {})
         desktop_installed = _coerce_dict(desktop_next.get("installed") or {})
         desktop_installed["apps"] = list(installed_with_auto.get("apps") or [])
         desktop_installed["widgets"] = list(installed_with_auto.get("widgets") or [])
         desktop_next["installed"] = desktop_installed
+        desktop_next["pinnedWidgets"] = list(desktop_config.get("pinnedWidgets") or [])
 
         routing_dict = _coerce_dict((inputs.live_state or {}).get("routing") or {})
         routes = routing_dict.get("routes")
@@ -1030,6 +1064,21 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
         effective_home_scenario=row.effective_home_scenario,
         current_scenario=current_scenario,
     )
+
+
+def describe_webspace_overlay_state(webspace_id: str) -> dict[str, Any]:
+    target_webspace_id = str(webspace_id or "").strip() or default_webspace_id()
+    row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
+    return {
+        "webspace_id": target_webspace_id,
+        "source": "workspace_manifest_overlay",
+        "has_overlay": bool(getattr(row, "has_ui_overlay", False)),
+        "has_installed": bool(getattr(row, "has_installed_overlay", False)),
+        "has_pinned_widgets": bool(getattr(row, "has_pinned_widgets_overlay", False)),
+        "desktop": dict(getattr(row, "desktop_overlay", {}) or {}),
+        "installed": _coerce_dict(getattr(row, "installed_overlay", {}) or {}),
+        "pinned_widgets": _normalize_overlay_widget_entries(getattr(row, "pinned_widgets_overlay", []) or []),
+    }
 
 
 async def describe_webspace_projection_state(
@@ -2032,6 +2081,7 @@ __all__ = [
     "WebspaceResolverOutputs",
     "WebspaceScenarioRuntime",
     "describe_webspace_operational_state",
+    "describe_webspace_overlay_state",
     "describe_webspace_projection_state",
     "rebuild_webspace_from_sources",
 ]

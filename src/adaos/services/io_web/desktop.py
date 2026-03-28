@@ -65,6 +65,27 @@ class WebDesktopInstalled:
         return {"apps": list(self.apps), "widgets": list(self.widgets)}
 
 
+def _clone_pinned_widgets(items: Any) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        payload = dict(item)
+        payload["id"] = item_id
+        item_type = payload.get("type")
+        if item_type is not None:
+            payload["type"] = str(item_type)
+        out.append(payload)
+    return out
+
+
 class WebDesktopService:
     """
     High-level helper for manipulating desktop state in a webspace.
@@ -120,9 +141,10 @@ class WebDesktopService:
 
     @staticmethod
     def _read_overlay_installed(webspace_id: str) -> tuple[WebDesktopInstalled, bool]:
-        if not workspace_index.has_workspace_overlay(webspace_id):
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_installed_overlay", False):
             return WebDesktopInstalled(apps=[], widgets=[]), False
-        installed = workspace_index.get_workspace_installed_overlay(webspace_id)
+        installed = getattr(row, "installed_overlay", {}) or {}
         return (
             WebDesktopInstalled(
                 apps=_iter_ids(installed.get("apps")),
@@ -136,41 +158,33 @@ class WebDesktopService:
         workspace_index.set_workspace_installed_overlay(webspace_id, installed.to_dict())
 
     @staticmethod
-    def _read_installed(data_map: Any) -> WebDesktopInstalled:
-        """
-        Helper to normalise the installed structure from YDoc into a
-        WebDesktopInstalled instance.
-        """
-        raw = data_map.get("installed") or {}
-        raw_dict = _coerce_dict(raw)
-        apps = _iter_ids(raw_dict.get("apps"))
-        widgets = _iter_ids(raw_dict.get("widgets"))
-        return WebDesktopInstalled(apps=apps, widgets=widgets)
+    def _read_overlay_pinned_widgets(webspace_id: str) -> tuple[List[Dict[str, Any]], bool]:
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_pinned_widgets_overlay", False):
+            return [], False
+        return _clone_pinned_widgets(getattr(row, "pinned_widgets_overlay", []) or []), True
 
     @staticmethod
-    def _apply_install_toggle(
-        webspace_id: str,
-        ydoc: Any,
-        txn: Any,
-        item_type: str,
-        target_id: str,
-    ) -> None:
+    def _persist_overlay_pinned_widgets(webspace_id: str, items: List[Dict[str, Any]]) -> None:
+        workspace_index.set_workspace_pinned_widgets_overlay(webspace_id, _clone_pinned_widgets(items))
+
+    @staticmethod
+    def _apply_pinned_widgets_state(ydoc: Any, txn: Any, pinned_widgets: List[Dict[str, Any]]) -> None:
+        next_pinned = _clone_pinned_widgets(pinned_widgets)
+        ui_map = ydoc.get_map("ui")
+        application_raw = ui_map.get("application") or {}
+        application_next = _coerce_dict(application_raw)
+        app_desktop_raw = application_next.get("desktop") or {}
+        app_desktop = _coerce_dict(app_desktop_raw)
+        app_desktop["pinnedWidgets"] = next_pinned
+        application_next["desktop"] = app_desktop
+        ui_map.set(txn, "application", application_next)
+
         data_map = ydoc.get_map("data")
-        installed_raw = data_map.get("installed") or {}
-        installed = WebDesktopInstalled(
-            apps=_iter_ids(_coerce_dict(installed_raw).get("apps")),
-            widgets=_iter_ids(_coerce_dict(installed_raw).get("widgets")),
-        )
-        next_installed = WebDesktopService._next_installed_state(installed, item_type, target_id)
-        WebDesktopService._apply_installed_state(ydoc, txn, next_installed)
-        _log.debug(
-            "toggle install webspace=%s type=%s target=%s apps=%s widgets=%s",
-            webspace_id,
-            item_type,
-            target_id,
-            next_installed.apps,
-            next_installed.widgets,
-        )
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_next["pinnedWidgets"] = next_pinned
+        data_map.set(txn, "desktop", desktop_next)
 
     def get_installed(self, webspace_id: Optional[str] = None) -> WebDesktopInstalled:
         """
@@ -181,32 +195,33 @@ class WebDesktopService:
         """
         webspace = self._resolve_webspace(webspace_id)
         overlay_installed, has_overlay = self._read_overlay_installed(webspace)
-        if has_overlay:
-            return overlay_installed
-        with get_ydoc(webspace) as ydoc:
-            data_map = ydoc.get_map("data")
-            installed = self._read_installed(data_map)
-        if installed.apps or installed.widgets:
-            self._persist_overlay_installed(webspace, installed)
-        return installed
+        if not has_overlay:
+            return WebDesktopInstalled(apps=[], widgets=[])
+        return overlay_installed
 
     async def get_installed_async(self, webspace_id: Optional[str] = None) -> WebDesktopInstalled:
         """
         Async variant of ``get_installed`` for use from async runtimes.
-
-        This avoids calling the synchronous get_ydoc() helper from inside an
-        active event loop and uses async_get_ydoc() instead.
         """
         webspace = self._resolve_webspace(webspace_id)
         overlay_installed, has_overlay = self._read_overlay_installed(webspace)
-        if has_overlay:
-            return overlay_installed
-        async with async_get_ydoc(webspace) as ydoc:
-            data_map = ydoc.get_map("data")
-            installed = self._read_installed(data_map)
-        if installed.apps or installed.widgets:
-            self._persist_overlay_installed(webspace, installed)
-        return installed
+        if not has_overlay:
+            return WebDesktopInstalled(apps=[], widgets=[])
+        return overlay_installed
+
+    def get_pinned_widgets(self, webspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_pinned_widgets(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    async def get_pinned_widgets_async(self, webspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_pinned_widgets(webspace)
+        if not has_overlay:
+            return []
+        return items
 
     def set_installed(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
         """
@@ -246,6 +261,32 @@ class WebDesktopService:
             webspace,
             apps,
             widgets,
+        )
+
+    def set_pinned_widgets(self, pinned_widgets: List[Dict[str, Any]], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_pinned = _clone_pinned_widgets(pinned_widgets)
+        self._persist_overlay_pinned_widgets(webspace, next_pinned)
+        with get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
+        _log.debug(
+            "set pinned widgets webspace=%s count=%s",
+            webspace,
+            len(next_pinned),
+        )
+
+    async def set_pinned_widgets_async(self, pinned_widgets: List[Dict[str, Any]], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_pinned = _clone_pinned_widgets(pinned_widgets)
+        self._persist_overlay_pinned_widgets(webspace, next_pinned)
+        async with async_get_ydoc(webspace) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
+        _log.debug(
+            "set pinned widgets (async) webspace=%s count=%s",
+            webspace,
+            len(next_pinned),
         )
 
     def toggle_install(self, item_type: str, target_id: str, webspace_id: Optional[str] = None) -> None:
@@ -343,4 +384,30 @@ class WebDesktopService:
             loop.create_task(
                 self.set_installed_async(next_installed, webspace),
                 name=f"web-desktop-set-installed-{webspace}",
+            )
+
+    def set_pinned_widgets_with_live_room(
+        self,
+        pinned_widgets: List[Dict[str, Any]],
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_pinned = _clone_pinned_widgets(pinned_widgets)
+        self._persist_overlay_pinned_widgets(webspace, next_pinned)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_pinned_widgets_state(doc, txn, next_pinned)
+
+        live_applied = mutate_live_room(webspace, _mutator)
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_pinned_widgets webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_pinned_widgets_async(next_pinned, webspace))
+        else:
+            loop.create_task(
+                self.set_pinned_widgets_async(next_pinned, webspace),
+                name=f"web-desktop-set-pinned-{webspace}",
             )
