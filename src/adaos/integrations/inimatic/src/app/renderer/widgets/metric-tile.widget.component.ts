@@ -28,6 +28,9 @@ import { PageActionService } from '../../runtime/page-action.service'
         <div class="metric-desc" *ngIf="data?.description">
           {{ data.description }}
         </div>
+        <div class="metric-notice" *ngIf="data?.warning || data?.error">
+          {{ data.warning || data.error }}
+        </div>
         <div class="metric-actions" *ngIf="buttonItems(data).length">
           <ion-button
             *ngFor="let btn of buttonItems(data)"
@@ -62,6 +65,15 @@ import { PageActionService } from '../../runtime/page-action.service'
         flex-wrap: wrap;
         gap: 8px;
         margin-top: 12px;
+      }
+      .metric-notice {
+        margin-top: 8px;
+        font-size: 12px;
+        line-height: 1.4;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.12);
+        border: 1px solid rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.26);
       }
     `,
   ],

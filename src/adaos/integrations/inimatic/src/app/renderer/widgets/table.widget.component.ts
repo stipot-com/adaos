@@ -30,6 +30,7 @@ type TableButton = {
   template: `
     <div class="table-widget">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
+      <div class="table-notice" *ngIf="dataNotice">{{ dataNotice }}</div>
 
       <div class="table-wrap">
         <table class="t">
@@ -126,6 +127,15 @@ type TableButton = {
         font-size: 12px;
         padding: 12px;
       }
+      .table-notice {
+        margin: 0 0 8px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        background: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.12);
+        border: 1px solid rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.26);
+      }
     `,
   ],
 })
@@ -137,6 +147,7 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
   emptyText = ''
 
   rows: any[] = []
+  dataNotice = ''
   private dataSub?: Subscription
 
   constructor(
@@ -197,6 +208,7 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
     this.dataSub?.unsubscribe()
     const stream = this.data.load<any>(this.widget?.dataSource)
     this.dataSub = stream.subscribe((payload) => {
+      this.dataNotice = this.readNotice(payload)
       // API often returns { ok, items }.
       const items = Array.isArray((payload as any)?.items)
         ? (payload as any).items
@@ -205,6 +217,14 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
           : []
       this.rows = items
     })
+  }
+
+  private readNotice(payload: any): string {
+    const warning = typeof payload?.warning === 'string' ? payload.warning.trim() : ''
+    const error = typeof payload?.error === 'string' ? payload.error.trim() : ''
+    if (warning) return warning
+    if (error) return error
+    return ''
   }
 
   cellOf(row: any, key: string): string {

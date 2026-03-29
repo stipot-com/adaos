@@ -2528,6 +2528,8 @@ def _hub_member_transport_evidence_snapshot(
                 "available": int(yws_entry.get("active_connections") or 0) > 0,
                 "active_connections": int(yws_entry.get("active_connections") or 0),
                 "last_open_ago_s": yws_entry.get("last_open_ago_s"),
+                "recent_open_10s": int(yws_entry.get("recent_open_10s") or 0),
+                "storm_detected": bool(yws_entry.get("storm_detected")),
             }
         )
 
@@ -3786,6 +3788,10 @@ def yjs_sync_runtime_snapshot(
         "transport": {
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
+            "recent_open_10s": int(yws_transport.get("recent_open_10s") or 0),
+            "recent_open_60s": int(yws_transport.get("recent_open_60s") or 0),
+            "storm_detected": bool(yws_transport.get("storm_detected")),
+            "hot_clients": list(yws_transport.get("hot_clients") or []),
             "server_requested": bool(yws_server.get("requested")),
             "server_started_event": bool(yws_server.get("started_event")),
             "server_task_running": bool(yws_server.get("task_running")),

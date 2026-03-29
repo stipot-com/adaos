@@ -196,6 +196,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"updates={sync_runtime.get('update_log_total') or 0} "
             f"replay={sync_runtime.get('replay_window_total') or 0} "
             f"yws={transport.get('active_yws_connections') or 0} "
+            f"yws10s={transport.get('recent_open_10s') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
         )
@@ -381,6 +382,7 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"updates={runtime.get('update_log_total') or 0} "
         f"replay={runtime.get('replay_window_total') or 0} "
         f"yws={transport.get('active_yws_connections') or 0} "
+        f"yws10s={transport.get('recent_open_10s') or 0} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
         f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "

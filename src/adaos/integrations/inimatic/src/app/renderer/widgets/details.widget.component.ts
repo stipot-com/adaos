@@ -16,10 +16,31 @@ import { PageStateService } from '../../runtime/page-state.service'
         <ion-card-title>{{ widget.title }}</ion-card-title>
       </ion-card-header>
       <ion-card-content>
-        <pre *ngIf="data$ | async as value">{{ value | json }}</pre>
+        <ng-container *ngIf="data$ | async as value">
+          <div class="details-notice" *ngIf="readNotice(value) as notice">{{ notice }}</div>
+          <pre>{{ value | json }}</pre>
+        </ng-container>
       </ion-card-content>
     </ion-card>
   `,
+  styles: [
+    `
+      .details-notice {
+        margin-bottom: 10px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        background: rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.12);
+        border: 1px solid rgba(var(--ion-color-warning-rgb, 255, 196, 9), 0.26);
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        user-select: text;
+      }
+    `,
+  ],
 })
 export class DetailsWidgetComponent implements OnInit, OnChanges, OnDestroy {
   @Input() widget!: WidgetConfig
@@ -109,5 +130,11 @@ export class DetailsWidgetComponent implements OnInit, OnChanges, OnDestroy {
         break
       }
     }
+  }
+
+  readNotice(value: any): string {
+    const warning = typeof value?.warning === 'string' ? value.warning.trim() : ''
+    const error = typeof value?.error === 'string' ? value.error.trim() : ''
+    return warning || error || ''
   }
 }

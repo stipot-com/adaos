@@ -1751,6 +1751,47 @@ async function buildRootMgmntSnapshot(): Promise<Record<string, unknown>> {
 	}
 }
 
+const ROOT_MGMNT_SNAPSHOT_TTL_MS = Number(process.env['ROOT_MGMNT_SNAPSHOT_TTL_MS'] || 4000)
+let rootMgmntSnapshotCache:
+	| {
+			at: number
+			value: Record<string, unknown>
+	  }
+	| null = null
+let rootMgmntSnapshotInFlight: Promise<Record<string, unknown>> | null = null
+
+function invalidateRootMgmntSnapshotCache(): void {
+	rootMgmntSnapshotCache = null
+}
+
+async function getRootMgmntSnapshotCached(options?: {
+	force?: boolean
+}): Promise<Record<string, unknown>> {
+	const force = Boolean(options?.force)
+	const now = Date.now()
+	if (
+		!force &&
+		rootMgmntSnapshotCache &&
+		now - rootMgmntSnapshotCache.at <= ROOT_MGMNT_SNAPSHOT_TTL_MS
+	) {
+		return rootMgmntSnapshotCache.value
+	}
+	if (!force && rootMgmntSnapshotInFlight) {
+		return rootMgmntSnapshotInFlight
+	}
+	rootMgmntSnapshotInFlight = (async () => {
+		const value = await buildRootMgmntSnapshot()
+		rootMgmntSnapshotCache = {
+			at: Date.now(),
+			value,
+		}
+		return value
+	})().finally(() => {
+		rootMgmntSnapshotInFlight = null
+	})
+	return rootMgmntSnapshotInFlight
+}
+
 function generateToken(prefix: string): string {
 	return `${prefix}_${randomBytes(24).toString('hex')}`
 }
@@ -2051,7 +2092,11 @@ app.get('/v1/health', (_req, res) => {
 app.get('/v1/root_mgmnt/snapshot', async (req, res) => {
 	if (!requireRootMgmntToken(req, res)) return
 	try {
-		return res.json(await buildRootMgmntSnapshot())
+		return res.json(
+			await getRootMgmntSnapshotCached({
+				force: String(req.query['force'] || '').trim() === '1',
+			}),
+		)
 	} catch (error) {
 		console.error('root_mgmnt snapshot failed', error)
 		return handleError(req, res, error, {
@@ -2084,6 +2129,7 @@ app.post('/v1/root_mgmnt/policy', async (req, res) => {
 			allowed_models: Array.isArray((body as any).allowed_models) ? (body as any).allowed_models : undefined,
 			allowed_subnets: Array.isArray((body as any).allowed_subnets) ? (body as any).allowed_subnets : undefined,
 		})
+		invalidateRootMgmntSnapshotCache()
 		return res.json({ ok: true, policy })
 	} catch (error) {
 		return handleError(req, res, error, {
@@ -2116,20 +2162,20 @@ app.post('/v1/root_mgmnt/subnets/:subnetId/action', async (req, res) => {
 			(typeof (body as any).actor === 'string' && String((body as any).actor).trim()) ||
 			'root_mgmnt'
 		const note = typeof (body as any).note === 'string' ? String((body as any).note).trim() : undefined
-		return res.json(
-			await applyRootMgmntSubnetAction({
-				subnetId,
-				action: action as
-					| 'freeze_llm'
-					| 'unfreeze_llm'
-					| 'mark_dormant'
-					| 'reactivate'
-					| 'archive_dev_space'
-					| 'retire_subnet',
-				actor,
-				note,
-			}),
-		)
+		const result = await applyRootMgmntSubnetAction({
+			subnetId,
+			action: action as
+				| 'freeze_llm'
+				| 'unfreeze_llm'
+				| 'mark_dormant'
+				| 'reactivate'
+				| 'archive_dev_space'
+				| 'retire_subnet',
+			actor,
+			note,
+		})
+		invalidateRootMgmntSnapshotCache()
+		return res.json(result)
 	} catch (error) {
 		return handleError(req, res, error, {
 			status: 400,

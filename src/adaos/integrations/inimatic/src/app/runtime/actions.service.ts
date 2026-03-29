@@ -1,9 +1,9 @@
 import { Injectable } from '@angular/core'
-import { ModalController, ToastController } from '@ionic/angular/standalone'
+import { NotificationLogService } from './notification-log.service'
 
 @Injectable({ providedIn: 'root' })
 export class ActionsService {
-  constructor(private modal: ModalController, private toast: ToastController) {}
+  constructor(private notifications: NotificationLogService) {}
 
   async run(action: any, ctx: any = {}) {
     if (!action) return
@@ -12,8 +12,10 @@ export class ActionsService {
       return
     }
     if (action.toast) {
-      const t = await this.toast.create({ message: action.toast, duration: 1500 })
-      await t.present()
+      await this.notifications.show(String(action.toast || ''), {
+        duration: 1500,
+        source: 'action.schema',
+      })
       return
     }
   }

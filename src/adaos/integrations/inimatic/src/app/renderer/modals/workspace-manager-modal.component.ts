@@ -2,12 +2,13 @@
 import { Component, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule } from '@ionic/angular'
-import { ModalController, ToastController } from '@ionic/angular/standalone'
+import { ModalController } from '@ionic/angular/standalone'
 import { FormsModule } from '@angular/forms'
 import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
 import { observeDeep } from '../../y/y-helpers'
 import { firstValueFrom } from 'rxjs'
+import { NotificationLogService } from '../../runtime/notification-log.service'
 
 type WebspaceEntry = {
   id: string
@@ -204,7 +205,7 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   constructor(
     private ydoc: YDocService,
     private adaos: AdaosClient,
-    private toast: ToastController,
+    private notifications: NotificationLogService,
     private modalCtrl: ModalController
   ) {}
 
@@ -417,8 +418,10 @@ export class WorkspaceManagerModalComponent implements OnInit, OnDestroy {
   }
 
   private async presentToast(message: string): Promise<void> {
-    const toast = await this.toast.create({ message, duration: 2000 })
-    await toast.present()
+    await this.notifications.show(message, {
+      duration: 2000,
+      source: 'workspace-manager',
+    })
   }
 
   private async loadWebspacesFallback(): Promise<void> {

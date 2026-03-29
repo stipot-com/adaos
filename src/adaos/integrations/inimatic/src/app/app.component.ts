@@ -18,7 +18,6 @@ import { buildId } from '../environments/build'
 import { HttpClient, HttpHeaders } from '@angular/common/http'
 import { PairingService } from './runtime/pairing.service'
 import { HubMemberChannelsService } from './core/adaos/hub-member-channels.service'
-import { ToastController } from '@ionic/angular/standalone'
 import { IonRouterOutlet } from '@ionic/angular/standalone'
 import { TPipe } from './runtime/t.pipe'
 import { PageModalService } from './runtime/page-modal.service'
@@ -26,6 +25,7 @@ import { HttpErrorResponse } from '@angular/common/http'
 import { observeDeep } from './y/y-helpers'
 import { HubMemberChannelHealth, HubMemberChannelSnapshot } from './core/adaos/hub-member-channels.service'
 import { YDocSyncRuntimeSnapshot } from './y/ydoc.service'
+import { NotificationLogService } from './runtime/notification-log.service'
 
 type SemanticStatusView = {
 	label: string
@@ -105,7 +105,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		private pairing: PairingService,
 		private zone: NgZone,
 		private channels: HubMemberChannelsService,
-		private toastCtrl: ToastController,
+		private notifications: NotificationLogService,
 		private modals: PageModalService,
 	) {
 		this.isAndroid =
@@ -236,13 +236,12 @@ export class AppComponent implements OnInit, OnDestroy {
 			}
 
 			if (message) {
-				const toast = await this.toastCtrl.create({
-					message,
+				await this.notifications.show(message, {
 					duration: 4000,
 					position: 'bottom',
 					color,
+					source: 'transport',
 				})
-				await toast.present()
 			}
 		})
 	}
@@ -667,26 +666,24 @@ export class AppComponent implements OnInit, OnDestroy {
 				webspace_id: ws || undefined,
 				scenario_id: scenarioId,
 			})
-			const toast = await this.toastCtrl.create({
-				message: `Home scenario set to ${scenarioId}.`,
+			await this.notifications.show(`Home scenario set to ${scenarioId}.`, {
 				duration: 1800,
 				position: 'bottom',
 				color: 'success',
+				source: 'header',
 			})
-			await toast.present()
 		} catch (err) {
 			try {
 				await this.postNodeWebspaceAction(
 					`/api/node/yjs/webspaces/${encodeURIComponent(String(this.ydoc.getWebspaceId() || 'default'))}/set-home`,
 					{ scenario_id: scenarioId },
 				)
-				const toast = await this.toastCtrl.create({
-					message: `Home scenario set to ${scenarioId}.`,
+				await this.notifications.show(`Home scenario set to ${scenarioId}.`, {
 					duration: 1800,
 					position: 'bottom',
 					color: 'success',
+					source: 'header',
 				})
-				await toast.present()
 			} catch (fallbackErr) {
 				console.warn('desktop.webspace.set_home failed', fallbackErr || err)
 			}
@@ -696,6 +693,11 @@ export class AppComponent implements OnInit, OnDestroy {
 	async onClickWorkspaces(): Promise<void> {
 		if (!this.isAuthenticated) return
 		await this.modals.openModalById('workspace_manager')
+	}
+
+	async onClickNotifications(): Promise<void> {
+		if (!this.isAuthenticated) return
+		await this.modals.openModalById('notification_history')
 	}
 
 	async onClickAppsCatalog(): Promise<void> {
@@ -743,15 +745,17 @@ export class AppComponent implements OnInit, OnDestroy {
 			reason: 'manual',
 			clearLocalCache,
 		})
-		const toast = await this.toastCtrl.create({
-			message: ok
+		await this.notifications.show(
+			ok
 				? `Yjs resync complete${clearLocalCache ? ' (local cache reset)' : ''}.`
 				: `Yjs resync timed out${clearLocalCache ? ' after local cache reset' : ''}; background recovery continues.`,
-			duration: ok ? 2200 : 3200,
-			position: 'bottom',
-			color: ok ? 'success' : 'warning',
-		})
-		await toast.present()
+			{
+				duration: ok ? 2200 : 3200,
+				position: 'bottom',
+				color: ok ? 'success' : 'warning',
+				source: 'yjs',
+			},
+		)
 	}
 
 	private async runWebspaceYjsAction(
@@ -795,13 +799,12 @@ export class AppComponent implements OnInit, OnDestroy {
 				ok && materialized
 					? 'Webspace reload complete.'
 					: this.describeYjsReloadIssue(webspaceId, ok, diagnostics, actionResponse)
-			const toast = await this.toastCtrl.create({
-				message,
+			await this.notifications.show(message, {
 				duration: ok && materialized ? 2200 : 4200,
 				position: 'bottom',
 				color: ok && materialized ? 'success' : diagnostics?.materialization?.ready ? 'warning' : 'danger',
+				source: 'yjs',
 			})
-			await toast.present()
 		} catch { }
 	}
 

@@ -5,6 +5,7 @@ Yjs websocket gateway implementation (service layer).
 """
 
 import asyncio
+from collections import deque
 import inspect
 import json
 import time
@@ -39,6 +40,7 @@ _log = logging.getLogger("adaos.events_ws")
 _ylog = logging.getLogger("adaos.yjs.gateway")
 _TRANSPORT_LOCK = threading.RLock()
 _ACTIVE_YWS_LOCK = threading.RLock()
+_YWS_STORM_LOCK = threading.RLock()
 _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
     "ws": {
         "active_connections": 0,
@@ -56,6 +58,8 @@ _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
     },
 }
 _ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
+_YWS_OPEN_HISTORY: deque[float] = deque(maxlen=512)
+_YWS_CLIENT_OPEN_HISTORY: dict[str, deque[float]] = {}
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -134,6 +138,58 @@ def _track_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
         items = _ACTIVE_YWS_CONNECTIONS.setdefault(key, [])
         if websocket not in items:
             items.append(websocket)
+
+
+def _record_yws_open(webspace_id: str, dev_id: str) -> None:
+    now = time.time()
+    key = f"{str(webspace_id or '').strip() or 'default'}::{str(dev_id or '').strip() or 'unknown'}"
+    with _YWS_STORM_LOCK:
+        _YWS_OPEN_HISTORY.append(now)
+        items = _YWS_CLIENT_OPEN_HISTORY.setdefault(key, deque(maxlen=64))
+        items.append(now)
+        cutoff = now - 60.0
+        stale_keys: list[str] = []
+        for client_key, queue in _YWS_CLIENT_OPEN_HISTORY.items():
+            while queue and queue[0] < cutoff:
+                queue.popleft()
+            if not queue:
+                stale_keys.append(client_key)
+        for client_key in stale_keys:
+            _YWS_CLIENT_OPEN_HISTORY.pop(client_key, None)
+        recent_15s = sum(1 for ts in items if ts >= now - 15.0)
+    if recent_15s >= 8:
+        _ylog.warning(
+            "yws reconnect storm detected webspace=%s dev=%s opens_15s=%s",
+            str(webspace_id or "").strip() or "default",
+            str(dev_id or "").strip() or "unknown",
+            recent_15s,
+        )
+
+
+def _yws_storm_snapshot(now: float) -> dict[str, Any]:
+    with _YWS_STORM_LOCK:
+        recent_10s = sum(1 for ts in _YWS_OPEN_HISTORY if ts >= now - 10.0)
+        recent_60s = sum(1 for ts in _YWS_OPEN_HISTORY if ts >= now - 60.0)
+        hot_clients: list[dict[str, Any]] = []
+        for key, queue in _YWS_CLIENT_OPEN_HISTORY.items():
+            recent_15s = sum(1 for ts in queue if ts >= now - 15.0)
+            if recent_15s <= 0:
+                continue
+            webspace_id, _, dev_id = key.partition("::")
+            hot_clients.append(
+                {
+                    "webspace_id": webspace_id or "default",
+                    "dev_id": dev_id or "unknown",
+                    "open_15s": recent_15s,
+                }
+            )
+    hot_clients.sort(key=lambda item: (-int(item.get("open_15s") or 0), str(item.get("dev_id") or "")))
+    return {
+        "recent_open_10s": recent_10s,
+        "recent_open_60s": recent_60s,
+        "storm_detected": recent_10s >= 8,
+        "hot_clients": hot_clients[:3],
+    }
 
 
 def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
@@ -270,6 +326,9 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             if isinstance(last_close_at, (int, float)) and float(last_close_at) > 0.0
             else None
         )
+    yws_state = state.get("yws") if isinstance(state.get("yws"), dict) else None
+    if yws_state is not None:
+        yws_state.update(_yws_storm_snapshot(now))
     return {
         "transports": state,
         "servers": {
@@ -563,6 +622,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
     if not await _accept_websocket(websocket, channel="yws"):
         return
+    _record_yws_open(webspace_id, dev_id)
     _track_yws_connection(webspace_id, websocket)
     _transport_mark_open("yws")
     await start_y_server()

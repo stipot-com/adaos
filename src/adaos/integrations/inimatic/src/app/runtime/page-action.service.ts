@@ -1,9 +1,9 @@
 import { Injectable } from '@angular/core'
-import { ToastController } from '@ionic/angular/standalone'
 import { ActionConfig } from './page-schema.model'
 import { PageStateService } from './page-state.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { YDocService } from '../y/ydoc.service'
+import { NotificationLogService } from './notification-log.service'
 
 export interface ActionContext {
   event?: any
@@ -15,7 +15,7 @@ export class PageActionService {
   constructor(
     private state: PageStateService,
     private adaos: AdaosClient,
-    private toast: ToastController,
+    private notifications: NotificationLogService,
     private ydoc: YDocService
   ) {}
 
@@ -114,15 +114,11 @@ export class PageActionService {
       await this.adaos.callSkill(skill, method, body).toPromise()
       return true
     } catch (err) {
-      try {
-        const t = await this.toast.create({
-          message: this.describeSkillError(err),
-          duration: 2600,
-        })
-        await t.present()
-      } catch {
-        console.warn('callSkill failed', err)
-      }
+      await this.notifications.show(this.describeSkillError(err), {
+        duration: 2600,
+        color: 'warning',
+        source: 'action.skill',
+      })
       return false
     }
   }
@@ -260,15 +256,11 @@ export class PageActionService {
       if (await this.recoverKnownHostAction(target, body)) {
         return true
       }
-      try {
-        const t = await this.toast.create({
-          message: this.describeHostError(err),
-          duration: 2200,
-        })
-        await t.present()
-      } catch {
-        console.warn('callHost failed', err)
-      }
+      await this.notifications.show(this.describeHostError(err), {
+        duration: 2200,
+        color: 'warning',
+        source: 'action.host',
+      })
       return false
     }
     return true
@@ -599,11 +591,9 @@ export class PageActionService {
   }
 
   private async presentToast(message: string, duration: number): Promise<void> {
-    try {
-      const t = await this.toast.create({ message, duration })
-      await t.present()
-    } catch {
-      console.warn('toast failed', message)
-    }
+    await this.notifications.show(message, {
+      duration,
+      source: 'action',
+    })
   }
 }

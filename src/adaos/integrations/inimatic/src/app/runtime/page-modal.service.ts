@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core'
-import { ModalController, ToastController } from '@ionic/angular/standalone'
+import { ModalController } from '@ionic/angular/standalone'
 import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
@@ -7,6 +7,7 @@ import type { AdaModalConfig } from './dsl-types'
 import type { PageSchema } from './page-schema.model'
 import { catchError } from 'rxjs/operators'
 import { firstValueFrom, of } from 'rxjs'
+import { NotificationLogService } from './notification-log.service'
 
 type ModalConfig = AdaModalConfig
 
@@ -18,7 +19,7 @@ export class PageModalService {
     private modalCtrl: ModalController,
     private ydoc: YDocService,
     private adaos: AdaosClient,
-    private toastCtrl: ToastController,
+    private notifications: NotificationLogService,
   ) {}
 
   async openModalById(modalId?: string): Promise<void> {
@@ -86,6 +87,9 @@ export class PageModalService {
   private resolveStaticModal(modalId: string): ModalConfig | undefined {
     if (modalId === 'workspace_manager') {
       return { type: 'workspace-manager', title: 'Workspaces' }
+    }
+    if (modalId === 'notification_history') {
+      return { type: 'notification-history', title: 'Notifications' }
     }
     if (modalId === 'apps_catalog') {
       return {
@@ -197,8 +201,8 @@ export class PageModalService {
     const catalogCount = Number(remoteMaterialization?.catalog_counts?.[kind] || 0)
     const currentScenario = after.currentScenario || remoteMaterialization?.current_scenario || '-'
     const unsupportedByScenario = !localModalAvailable && !localReady && catalogCount <= 0
-    const toast = await this.toastCtrl.create({
-      message: unsupportedByScenario
+    await this.notifications.show(
+      unsupportedByScenario
         ? `${kind === 'apps' ? 'Apps' : 'Widgets'} is not exposed by the current scenario (${currentScenario}).`
         : `${kind === 'apps' ? 'Apps' : 'Widgets'} catalog is opening in degraded mode. ` +
           `Yjs materialization is incomplete: scenario=${currentScenario}, ` +
@@ -207,10 +211,12 @@ export class PageModalService {
           (remoteReady
             ? `Using control API fallback (${catalogCount} items visible on hub).`
             : 'Hub diagnostics also report incomplete materialization.'),
-      duration: 3600,
-      position: 'bottom',
-      color: unsupportedByScenario ? 'medium' : remoteReady ? 'warning' : 'danger',
-    })
-    await toast.present()
+      {
+        duration: 3600,
+        position: 'bottom',
+        color: unsupportedByScenario ? 'medium' : remoteReady ? 'warning' : 'danger',
+        source: 'modal.catalog',
+      },
+    )
   }
 }
