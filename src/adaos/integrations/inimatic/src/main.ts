@@ -63,7 +63,10 @@ bootstrapApplication(AppComponent, {
 	.then(() => {
 		try {
 			boot?.note?.('main.ts: bootstrap complete')
-			boot?.hide?.()
+			boot?.update?.(
+				'Loading Inimatic...',
+				'Angular bootstrap completed. Waiting for app UI state...'
+			)
 		} catch {}
 	})
 	.catch((err) => {

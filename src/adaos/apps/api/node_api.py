@@ -31,6 +31,7 @@ from adaos.services.scenario.webspace_runtime import (
     describe_webspace_operational_state,
     describe_webspace_overlay_state,
     describe_webspace_projection_state,
+    describe_webspace_rebuild_state,
     ensure_dev_webspace_for_scenario,
     go_home_webspace,
     reload_webspace_from_scenario,
@@ -735,6 +736,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     state = await describe_webspace_operational_state(target_webspace_id)
     overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
+    rebuild = describe_webspace_rebuild_state(target_webspace_id)
     desktop = (await WebDesktopService().get_snapshot_async(target_webspace_id)).to_dict()
     materialization = await _describe_yjs_materialization(target_webspace_id)
     return {
@@ -744,6 +746,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
         "overlay": overlay,
         "desktop": desktop,
         "projection": projection,
+        "rebuild": rebuild,
         "materialization": materialization,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,

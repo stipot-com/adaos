@@ -487,6 +487,23 @@ def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
         typer.echo(f"  warn: {error}")
 
 
+def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> None:
+    rebuild = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not rebuild:
+        return
+    typer.echo(
+        "rebuild: "
+        f"status={rebuild.get('status') or '-'} "
+        f"pending={'yes' if rebuild.get('pending') else 'no'} "
+        f"background={'yes' if rebuild.get('background') else 'no'} "
+        f"action={rebuild.get('action') or '-'} "
+        f"scenario={rebuild.get('scenario_id') or '-'}"
+    )
+    error = str(rebuild.get("error") or "").strip()
+    if error:
+        typer.echo(f"  warn: {error}")
+
+
 def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
     """
     Root/hub join endpoints can sit behind TLS-terminating proxies and occasionally return
@@ -1073,6 +1090,7 @@ def _node_yjs_describe_action(
     _print_overlay_summary(payload)
     _print_desktop_summary(payload)
     _print_projection_summary(payload)
+    _print_rebuild_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})

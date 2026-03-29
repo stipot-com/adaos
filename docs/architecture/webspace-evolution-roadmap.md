@@ -741,6 +741,9 @@ Current status:
   of silently falling back to workspace semantics
 - webspace/node control surfaces now expose projection-layer state so rebuild
   ordering can be diagnosed without reading runtime logs
+- rebuild execution state is now a first-class observable snapshot (`idle /
+  scheduled / running / ready / failed`) so fast-accept background reconcile
+  paths can still be diagnosed from control surfaces without tailing logs
 - the main remaining cleanup is no longer "make projection refresh explicit",
   but expanding debug/introspection around projection ordering as deeper
   Phase 4 work

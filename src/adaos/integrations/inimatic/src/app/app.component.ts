@@ -115,6 +115,13 @@ export class AppComponent implements OnInit, OnDestroy {
 	}
 
 	ngOnInit(): void {
+		try {
+			;(window as any).__INIMATIC_BOOT__?.note?.('app: ngOnInit')
+			;(window as any).__INIMATIC_BOOT__?.update?.(
+				'Loading Inimatic...',
+				'AppComponent initialized. Waiting for desktop route...'
+			)
+		} catch {}
 		this.applyLayoutVars()
 		this.maybeHardReloadOnBuildChange()
 		this.ensureNarrowMedia()

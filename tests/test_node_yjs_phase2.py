@@ -488,6 +488,18 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     )
     monkeypatch.setattr(
         node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "ready",
+            "pending": False,
+            "background": False,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "prompt_engineer_runtime",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
         "_describe_yjs_materialization",
         lambda webspace_id: _awaitable(
             {
@@ -532,6 +544,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["desktop"]["pageSchema"]["id"] == "desktop-custom"
     assert result["webspace"]["source_mode"] == "dev"
     assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
+    assert result["rebuild"]["status"] == "ready"
     assert result["materialization"]["ready"] is True
     assert result["materialization"]["catalog_counts"]["apps"] == 3
     assert result["runtime"]["webspace_id"] == "dev_prompt"

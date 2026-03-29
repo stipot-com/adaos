@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import secrets
+import time
 
 import y_py as Y
 
@@ -28,6 +29,7 @@ from .workflow_runtime import ScenarioWorkflowRuntime
 _log = logging.getLogger("adaos.scenario.webspace_runtime")
 _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
+_WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 
 
 @dataclass(slots=True)
@@ -358,6 +360,50 @@ def _scenario_supports_catalog_controls(
             if modal_id in {"apps_catalog", "widgets_catalog"}:
                 return True
     return False
+
+
+def _set_webspace_rebuild_status(webspace_id: str, **fields: Any) -> dict[str, Any]:
+    target = str(webspace_id or "").strip()
+    current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
+    current.update(fields)
+    current["webspace_id"] = target
+    current["updated_at"] = time.time()
+    _WEBSPACE_REBUILD_STATUS[target] = current
+    return dict(current)
+
+
+def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
+    target = str(webspace_id or "").strip()
+    current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
+    if not current:
+        return {
+            "webspace_id": target,
+            "status": "idle",
+            "pending": False,
+            "background": False,
+            "updated_at": None,
+        }
+    return {
+        "webspace_id": target,
+        "status": str(current.get("status") or "idle"),
+        "pending": bool(current.get("pending")),
+        "background": bool(current.get("background")),
+        "action": str(current.get("action") or "") or None,
+        "source_of_truth": str(current.get("source_of_truth") or "") or None,
+        "scenario_id": str(current.get("scenario_id") or "") or None,
+        "scenario_resolution": str(current.get("scenario_resolution") or "") or None,
+        "requested_at": current.get("requested_at"),
+        "started_at": current.get("started_at"),
+        "finished_at": current.get("finished_at"),
+        "updated_at": current.get("updated_at"),
+        "projection_refresh": dict(current.get("projection_refresh") or {})
+        if isinstance(current.get("projection_refresh"), Mapping)
+        else None,
+        "registry_summary": dict(current.get("registry_summary") or {})
+        if isinstance(current.get("registry_summary"), Mapping)
+        else None,
+        "error": str(current.get("error") or "") or None,
+    }
 
 
 class WebspaceScenarioRuntime:
@@ -1580,6 +1626,24 @@ async def rebuild_webspace_from_sources(
 
     requested_action = str(action or "").strip().lower() or "rebuild"
     target_scenario = str(scenario_id or "").strip() or None
+    status_started_at = time.time()
+    previous_status = describe_webspace_rebuild_state(webspace_id)
+    _set_webspace_rebuild_status(
+        webspace_id,
+        status="running",
+        pending=True,
+        background=bool(previous_status.get("background")),
+        action=requested_action,
+        source_of_truth=source_of_truth,
+        scenario_id=target_scenario,
+        scenario_resolution=scenario_resolution,
+        requested_at=previous_status.get("requested_at") or status_started_at,
+        started_at=status_started_at,
+        finished_at=None,
+        error=None,
+        projection_refresh=None,
+        registry_summary=None,
+    )
 
     if reseed_from_scenario:
         if not target_scenario:
@@ -1628,6 +1692,14 @@ async def rebuild_webspace_from_sources(
     try:
         entry = await runtime.rebuild_webspace_async(webspace_id)
     except Exception:
+        _set_webspace_rebuild_status(
+            webspace_id,
+            status="failed",
+            pending=False,
+            finished_at=time.time(),
+            error="webspace_rebuild_failed",
+            projection_refresh=projection_refresh,
+        )
         _log.warning(
             "failed to rebuild webspace from sources webspace=%s action=%s scenario=%s",
             webspace_id,
@@ -1687,7 +1759,7 @@ async def rebuild_webspace_from_sources(
         except Exception:
             _log.debug("failed to emit %s for webspace=%s", event_topic, webspace_id, exc_info=True)
 
-    return {
+    result = {
         "ok": True,
         "accepted": True,
         "action": requested_action,
@@ -1702,6 +1774,17 @@ async def rebuild_webspace_from_sources(
             "widgets": len(getattr(entry, "widgets", []) or []),
         },
     }
+    _set_webspace_rebuild_status(
+        webspace_id,
+        status="ready",
+        pending=False,
+        finished_at=time.time(),
+        error=None,
+        scenario_id=target_scenario,
+        projection_refresh=projection_refresh,
+        registry_summary=result.get("registry_summary"),
+    )
+    return result
 
 
 async def _complete_scenario_switch_rebuild(
@@ -1726,18 +1809,50 @@ def _schedule_scenario_switch_rebuild(
     scenario_id: str,
     scenario_resolution: str | None,
 ) -> None:
+    _set_webspace_rebuild_status(
+        webspace_id,
+        status="scheduled",
+        pending=True,
+        background=True,
+        action="scenario_switch_rebuild",
+        source_of_truth="scenario_switch",
+        scenario_id=scenario_id,
+        scenario_resolution=scenario_resolution,
+        requested_at=time.time(),
+        started_at=None,
+        finished_at=None,
+        error=None,
+    )
     existing = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
     if existing and not existing.done():
         existing.cancel()
 
     async def _runner() -> None:
         try:
+            _set_webspace_rebuild_status(
+                webspace_id,
+                status="running",
+                pending=True,
+                background=True,
+                started_at=time.time(),
+                finished_at=None,
+                error=None,
+            )
             result = await _complete_scenario_switch_rebuild(
                 webspace_id,
                 scenario_id=scenario_id,
                 scenario_resolution=scenario_resolution,
             )
             if not bool(result.get("accepted")):
+                _set_webspace_rebuild_status(
+                    webspace_id,
+                    status="failed",
+                    pending=False,
+                    background=True,
+                    finished_at=time.time(),
+                    error=str(result.get("error") or "scenario_switch_rebuild_failed"),
+                    projection_refresh=result.get("projection_refresh"),
+                )
                 _log.warning(
                     "background scenario switch rebuild rejected webspace=%s scenario=%s error=%s",
                     webspace_id,
@@ -1745,8 +1860,24 @@ def _schedule_scenario_switch_rebuild(
                     result.get("error"),
                 )
         except asyncio.CancelledError:
+            _set_webspace_rebuild_status(
+                webspace_id,
+                status="cancelled",
+                pending=False,
+                background=True,
+                finished_at=time.time(),
+                error="cancelled",
+            )
             raise
         except Exception:
+            _set_webspace_rebuild_status(
+                webspace_id,
+                status="failed",
+                pending=False,
+                background=True,
+                finished_at=time.time(),
+                error="background_scenario_switch_rebuild_failed",
+            )
             _log.warning(
                 "background scenario switch rebuild failed webspace=%s scenario=%s",
                 webspace_id,
@@ -1893,6 +2024,19 @@ async def switch_webspace_scenario(
             content = _load_scenario_switch_content(scenario_id, space=space)
             if not isinstance(content, dict) or not content:
                 _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
+                _set_webspace_rebuild_status(
+                    webspace_id,
+                    status="failed",
+                    pending=False,
+                    background=not wait_for_rebuild,
+                    action="scenario_switch_rebuild",
+                    source_of_truth="scenario_switch",
+                    scenario_id=scenario_id,
+                    scenario_resolution="explicit",
+                    requested_at=time.time(),
+                    finished_at=time.time(),
+                    error="scenario_not_found",
+                )
                 return {"ok": False, "accepted": False, "error": "scenario_not_found", "webspace_id": webspace_id, "scenario_id": scenario_id}
             ui_section = ((content.get("ui") or {}).get("application")) or {}
             if not isinstance(ui_section, dict):
@@ -1949,6 +2093,19 @@ async def switch_webspace_scenario(
                             payload_value = value
                         data_map.set(txn, key, payload_value)
     except Exception:
+        _set_webspace_rebuild_status(
+            webspace_id,
+            status="failed",
+            pending=False,
+            background=not wait_for_rebuild,
+            action="scenario_switch_rebuild",
+            source_of_truth="scenario_switch",
+            scenario_id=scenario_id,
+            scenario_resolution="explicit",
+            requested_at=time.time(),
+            finished_at=time.time(),
+            error="scenario_switch_failed",
+        )
         _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
         return {"ok": False, "accepted": False, "error": "scenario_switch_failed", "webspace_id": webspace_id, "scenario_id": scenario_id}
 
@@ -2226,5 +2383,6 @@ __all__ = [
     "describe_webspace_operational_state",
     "describe_webspace_overlay_state",
     "describe_webspace_projection_state",
+    "describe_webspace_rebuild_state",
     "rebuild_webspace_from_sources",
 ]

@@ -80,6 +80,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.publishBootState('desktop: ngOnInit')
 		this.startStartupPhase('Preparing renderer')
 		addIcons({ menuOutline, closeOutline, homeOutline, ellipsisHorizontalOutline })
 		this.ensureMediaQueries()
@@ -90,22 +91,26 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		const registrationIntent = this.hasRegistrationIntent()
 		this.ownerAuthenticated = this.hasOwnerSession()
 		this.isAuthenticated = this.ownerAuthenticated
+		this.publishBootState('desktop: auth state prepared')
 		this.startStartupPhase('Connecting to hub')
 		try {
 			await this.y.initFromHub()
 			// Local hub mode: no owner session required, but we still consider the user "authenticated" for the UI.
 			this.isAuthenticated = true
+			this.publishBootState('desktop: initFromHub resolved')
 			this.startStartupPhase('Loading desktop schema')
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
 			this.initError = msg
 			this.clearStartupTimer()
+			this.publishBootState('desktop: initFromHub failed')
 			if (registrationIntent) {
 				this.ownerAuthenticated = false
 				this.isAuthenticated = false
 				this.needsPairing = false
 				this.needsLogin = true
 				this.initError = ''
+				this.publishBootState('desktop: registration requires login')
 				return
 			}
 			if (
@@ -117,9 +122,11 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				this.needsPairing = !this.ownerAuthenticated && !this.pendingApproveCode
 				if (this.needsPairing) this.ensurePairing()
 				this.needsLogin = !this.needsPairing
+				this.publishBootState('desktop: session state resolved')
 				return
 			}
 			// Do not crash the renderer; show a retry UI instead.
+			this.publishBootState('desktop: init error shown')
 			return
 		}
 		const uiNode = this.y.getPath('ui')
@@ -133,6 +140,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				this.startupState = 'Desktop ready'
 				this.clearStartupTimer()
 			}
+			this.publishBootState('desktop: recompute')
 			this.rebuildAreaWidgetCounts()
 			this.emitSidebarAvailability()
 			this.emitScenarioChanged()
@@ -181,6 +189,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		this.startupState = label
 		try {
 			boot?.note?.(`desktop: ${label}`)
+			boot?.update?.('Starting Inimatic', label)
 		} catch {}
 		this.clearStartupTimer()
 		this.startupTimer = setTimeout(() => {
@@ -188,6 +197,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.startupState = `${label} is taking longer than expected (${elapsed}s)`
 			try {
 				boot?.note?.(`desktop: slow phase ${label}`)
+				boot?.update?.('Starting Inimatic', this.startupState)
 			} catch {}
 		}, 5000)
 	}
@@ -197,6 +207,35 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			clearTimeout(this.startupTimer)
 			this.startupTimer = undefined
 		}
+	}
+
+	private publishBootState(reason: string): void {
+		const boot = (window as any).__INIMATIC_BOOT__
+		try {
+			boot?.note?.(reason)
+			if (this.pageSchema) {
+				boot?.note?.('desktop: page schema ready')
+				boot?.hide?.()
+				return
+			}
+			if (this.initError) {
+				boot?.fail?.('Desktop init failed', this.initError)
+				return
+			}
+			if (this.pendingApproveCode && !this.needsPairing) {
+				boot?.update?.('Pairing approval needed', this.pendingApproveCode)
+				return
+			}
+			if (this.needsPairing) {
+				boot?.update?.('Pairing required', this.pairingId || 'Open the pairing flow on another device.')
+				return
+			}
+			if (this.needsLogin) {
+				boot?.update?.('Login required', 'Hub session is unavailable. Owner login is required.')
+				return
+			}
+			boot?.update?.('Starting Inimatic', this.startupState || 'Waiting for desktop UI...')
+		} catch {}
 	}
 
 	private ensureMediaQueries(): void {
