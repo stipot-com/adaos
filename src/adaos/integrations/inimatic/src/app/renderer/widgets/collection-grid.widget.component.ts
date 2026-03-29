@@ -401,16 +401,21 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     event.preventDefault()
     event.stopPropagation()
     if (item?.uiSkeleton) return
-    item = this.unwrapItem(item)
+    const displayItem = item
+    const rawItem = this.unwrapItem(item)
     if (action === 'install') {
-      const installType = item?.installType === 'app' ? 'app' : 'widget'
-      await this.actions.toggleDesktopInstall(installType, String(item?.id || ''))
-      this.applyLocalQuickActionResult(item, 'install')
+      const installType = rawItem?.installType === 'app' ? 'app' : 'widget'
+      const ok = await this.actions.toggleDesktopInstall(installType, String(rawItem?.id || ''))
+      if (ok) {
+        this.applyLocalQuickActionResult(displayItem, rawItem, 'install')
+      }
       return
     }
     if (action === 'pin') {
-      await this.actions.toggleDesktopPinnedWidget(item, !item?.pinned)
-      this.applyLocalQuickActionResult(item, 'pin')
+      const ok = await this.actions.toggleDesktopPinnedWidget(rawItem, !rawItem?.pinned)
+      if (ok) {
+        this.applyLocalQuickActionResult(displayItem, rawItem, 'pin')
+      }
     }
   }
 
@@ -489,7 +494,32 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
     })
   }
 
-  private applyLocalQuickActionResult(item: any, action: 'install' | 'pin'): void {
+  private applyLocalQuickActionResult(displayItem: any, rawItem: any, action: 'install' | 'pin'): void {
+    const targets = new Set<any>()
+    if (displayItem && typeof displayItem === 'object') {
+      targets.add(displayItem)
+    }
+    if (rawItem && typeof rawItem === 'object') {
+      targets.add(rawItem)
+    }
+    if (!targets.size) return
+    for (const item of targets) {
+      this.updateLocalQuickActionTarget(item, action)
+    }
+    if (displayItem && rawItem && displayItem !== rawItem) {
+      displayItem.installType = rawItem.installType
+      displayItem.installable = rawItem.installable
+      displayItem.installed = rawItem.installed
+      displayItem.pinned = rawItem.pinned
+      displayItem.pinnable = rawItem.pinnable
+      displayItem.uiRaw = rawItem
+      displayItem.uiSubtitle = this.itemSubtitle(rawItem)
+      displayItem.uiBadges = this.itemBadges(rawItem)
+      displayItem.uiQuickActions = this.quickActionButtons(rawItem)
+    }
+  }
+
+  private updateLocalQuickActionTarget(item: any, action: 'install' | 'pin'): void {
     if (!item || typeof item !== 'object') return
     if (action === 'install') {
       item.installed = !item.installed

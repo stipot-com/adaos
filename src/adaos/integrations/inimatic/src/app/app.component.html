@@ -72,7 +72,7 @@
 			</ion-title>
 			<ion-buttons slot="end">
 				<ion-button
-					*ngIf="isAuthenticated"
+					*ngIf="isAuthenticated && showAppsCatalogButton"
 					(click)="onClickAppsCatalog()"
 					title="Apps"
 					aria-label="Apps"
@@ -80,7 +80,7 @@
 					<ion-icon name="apps-outline"></ion-icon>
 				</ion-button>
 				<ion-button
-					*ngIf="isAuthenticated"
+					*ngIf="isAuthenticated && showWidgetsCatalogButton"
 					(click)="onClickWidgetsCatalog()"
 					title="Widgets"
 					aria-label="Widgets"

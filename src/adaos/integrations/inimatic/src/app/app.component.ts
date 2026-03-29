@@ -76,6 +76,8 @@ export class AppComponent implements OnInit, OnDestroy {
 	private sessionInvalidated = false
 	private transportSub?: Subscription
 	private scenarioDocDispose?: () => void
+	showAppsCatalogButton = true
+	showWidgetsCatalogButton = true
 	sidebarAvailable = false
 	private sidebarAvailabilityHandler = (ev: any) => {
 		try {
@@ -391,14 +393,31 @@ export class AppComponent implements OnInit, OnDestroy {
 
 	private syncCurrentScenarioFromDoc(): void {
 		let scenario = 'web_desktop'
+		let showAppsCatalogButton = true
+		let showWidgetsCatalogButton = true
 		try {
 			const raw = this.ydoc.toJSON(this.ydoc.getPath('ui/current_scenario'))
 			if (typeof raw === 'string' && raw.trim()) {
 				scenario = raw.trim()
 			}
 		} catch { }
+		try {
+			const materialization = this.ydoc.getMaterializationSnapshot()
+			const scenarioOwnsCatalogControls =
+				scenario === 'web_desktop' ||
+				materialization.hasAppsCatalogModal ||
+				materialization.hasWidgetsCatalogModal
+			showAppsCatalogButton =
+				scenarioOwnsCatalogControls &&
+				(scenario === 'web_desktop' || materialization.hasAppsCatalogModal || materialization.hasCatalogApps)
+			showWidgetsCatalogButton =
+				scenarioOwnsCatalogControls &&
+				(scenario === 'web_desktop' || materialization.hasWidgetsCatalogModal || materialization.hasCatalogWidgets)
+		} catch { }
 		this.zone.run(() => {
 			this.currentScenario = scenario
+			this.showAppsCatalogButton = showAppsCatalogButton
+			this.showWidgetsCatalogButton = showWidgetsCatalogButton
 		})
 	}
 

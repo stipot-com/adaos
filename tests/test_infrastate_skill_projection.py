@@ -119,3 +119,48 @@ def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeyp
     assert projected["webspace_id"] == "default"
     assert isinstance(projected["snapshot"], dict)
     assert projected["snapshot"]["fallback"] is True
+
+
+def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
+    mod = _load_infrastate_module()
+
+    class _ScenarioRecord:
+        def __init__(self, name: str, active_version: str, last_updated: float | None = None):
+            self.name = name
+            self.active_version = active_version
+            self.last_updated = last_updated
+
+    class _MetaId:
+        def __init__(self, value: str):
+            self.value = value
+
+    repo_metas = [
+        SimpleNamespace(id=_MetaId("alpha"), version="1.2.3"),
+        SimpleNamespace(id=_MetaId("beta"), version="2.0.0"),
+    ]
+
+    monkeypatch.setattr(
+        mod,
+        "get_ctx",
+        lambda: SimpleNamespace(
+            sql=object(),
+            scenarios_repo=SimpleNamespace(list=lambda: repo_metas),
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "SqliteScenarioRegistry",
+        lambda sql: SimpleNamespace(
+            list=lambda: [
+                _ScenarioRecord("alpha", "1.0.0", 1.0),
+                _ScenarioRecord("gamma", "3.0.0", 2.0),
+            ]
+        ),
+    )
+
+    items = mod._scenario_items()
+
+    assert items == [
+        {"name": "alpha", "version": "1.2.3", "updated_at": 1.0},
+        {"name": "gamma", "version": "3.0.0", "updated_at": 2.0},
+    ]

@@ -173,16 +173,17 @@ export class PageModalService {
     const before = this.ydoc.getMaterializationSnapshot()
     const localReady = kind === 'apps' ? before.hasCatalogApps : before.hasCatalogWidgets
     if (before.ready && localReady) return
+    const localModalAvailable = kind === 'apps' ? before.hasAppsCatalogModal : before.hasWidgetsCatalogModal
 
     const webspaceId = this.adaos.getCurrentWebspaceId?.() || this.ydoc.getWebspaceId() || 'default'
     try {
-      await this.ydoc.resyncCurrentWebspace({
-        reason: 'manual',
-        room: webspaceId,
-        waitForFirstSyncTimeoutMs: 5000,
-      })
-      const recovered = await this.ydoc.waitForMaterializedDesktopContent(2500)
-      if (recovered) return
+      const recovered = await this.ydoc.waitForMaterializedDesktopContent(2200)
+      if (recovered) {
+        const afterRecovered = this.ydoc.getMaterializationSnapshot()
+        const recoveredLocalReady =
+          kind === 'apps' ? afterRecovered.hasCatalogApps : afterRecovered.hasCatalogWidgets
+        if (recoveredLocalReady) return
+      }
     } catch {}
 
     const remote = await firstValueFrom(
@@ -195,18 +196,20 @@ export class PageModalService {
     const remoteReady = !!remoteMaterialization?.ready
     const catalogCount = Number(remoteMaterialization?.catalog_counts?.[kind] || 0)
     const currentScenario = after.currentScenario || remoteMaterialization?.current_scenario || '-'
+    const unsupportedByScenario = !localModalAvailable && !localReady && catalogCount <= 0
     const toast = await this.toastCtrl.create({
-      message:
-        `${kind === 'apps' ? 'Apps' : 'Widgets'} catalog is opening in degraded mode. ` +
-        `Yjs materialization is incomplete: scenario=${currentScenario}, ` +
-        `pageSchema=${after.hasDesktopPageSchema ? 'yes' : 'no'}, ` +
-        `catalog.${kind}=${kind === 'apps' ? (after.hasCatalogApps ? 'yes' : 'no') : (after.hasCatalogWidgets ? 'yes' : 'no')}. ` +
-        (remoteReady
-          ? `Using control API fallback (${catalogCount} items visible on hub).`
-          : 'Hub diagnostics also report incomplete materialization.'),
+      message: unsupportedByScenario
+        ? `${kind === 'apps' ? 'Apps' : 'Widgets'} is not exposed by the current scenario (${currentScenario}).`
+        : `${kind === 'apps' ? 'Apps' : 'Widgets'} catalog is opening in degraded mode. ` +
+          `Yjs materialization is incomplete: scenario=${currentScenario}, ` +
+          `pageSchema=${after.hasDesktopPageSchema ? 'yes' : 'no'}, ` +
+          `catalog.${kind}=${kind === 'apps' ? (after.hasCatalogApps ? 'yes' : 'no') : (after.hasCatalogWidgets ? 'yes' : 'no')}. ` +
+          (remoteReady
+            ? `Using control API fallback (${catalogCount} items visible on hub).`
+            : 'Hub diagnostics also report incomplete materialization.'),
       duration: 3600,
       position: 'bottom',
-      color: remoteReady ? 'warning' : 'danger',
+      color: unsupportedByScenario ? 'medium' : remoteReady ? 'warning' : 'danger',
     })
     await toast.present()
   }

@@ -103,6 +103,8 @@ export class YDocService {
   private awarenessCleanup?: () => void
   private providerFirstSyncTimer: ReturnType<typeof setTimeout> | null = null
   private providerHasSynced = false
+  private resyncInFlight?: Promise<boolean>
+  private resyncInFlightKey: string | null = null
 
   constructor(
     private adaos: AdaosClient,
@@ -588,48 +590,74 @@ export class YDocService {
     const resolvedRoom = room || this.currentWebspaceId || 'default'
     const resolvedRemoteProxy =
       typeof remoteProxy === 'boolean' ? remoteProxy : baseHttp.includes('/hubs/')
+    const requestKey = JSON.stringify({
+      reason,
+      clearLocalCache: !!clearLocalCache,
+      room: resolvedRoom,
+      serverUrl: resolvedServerUrl,
+      remoteProxy: resolvedRemoteProxy,
+    })
 
-    this.lastResyncAt = Date.now()
-    this.lastResyncReason = reason
-    this.lastResyncClearLocalCache = !!clearLocalCache
-    this.lastResyncOk = null
-    this.publishSyncRuntime()
-
-    if (clearLocalCache && this.isPersistenceEnabled()) {
-      await this.clearStorage()
+    if (this.resyncInFlight) {
+      if (this.resyncInFlightKey === requestKey || this.syncConnectionState$.value === 'connecting') {
+        return this.resyncInFlight
+      }
     }
 
-    this.destroyCurrentProvider()
-    await new Promise<void>((resolve) => setTimeout(resolve, 250))
-    try {
-      const syncPath = this.createSyncProvider(resolvedServerUrl, resolvedRoom, {
-        recoveryReason: reason,
-      })
-      if (isDebugEnabled()) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[YDocService] resyncing provider via ${syncPath.path} reason=${reason} remoteProxy=${resolvedRemoteProxy}`,
-        )
+    const run = (async (): Promise<boolean> => {
+      this.lastResyncAt = Date.now()
+      this.lastResyncReason = reason
+      this.lastResyncClearLocalCache = !!clearLocalCache
+      this.lastResyncOk = null
+      this.publishSyncRuntime()
+
+      if (clearLocalCache && this.isPersistenceEnabled()) {
+        await this.clearStorage()
       }
-      const ok = await this.waitForFirstSync(waitForFirstSyncTimeoutMs)
-      this.lastResyncOk = ok
-      if (!ok) {
+
+      this.destroyCurrentProvider()
+      await new Promise<void>((resolve) => setTimeout(resolve, 250))
+      try {
+        const syncPath = this.createSyncProvider(resolvedServerUrl, resolvedRoom, {
+          recoveryReason: reason,
+        })
+        if (isDebugEnabled()) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[YDocService] resyncing provider via ${syncPath.path} reason=${reason} remoteProxy=${resolvedRemoteProxy}`,
+          )
+        }
+        const ok = await this.waitForFirstSync(waitForFirstSyncTimeoutMs)
+        this.lastResyncOk = ok
+        if (!ok) {
+          this.channels.recordSyncRecoveryFailed(reason)
+        }
+        this.publishSyncRuntime()
+        return ok
+      } catch (err) {
+        this.lastResyncOk = false
         this.channels.recordSyncRecoveryFailed(reason)
+        this.publishSyncRuntime()
+        if (isDebugEnabled()) {
+          // eslint-disable-next-line no-console
+          console.warn('[YDocService] sync provider resync failed', err)
+        }
+        return false
+      } finally {
+        this.resyncCount += 1
+        this.publishSyncRuntime()
       }
-      this.publishSyncRuntime()
-      return ok
-    } catch (err) {
-      this.lastResyncOk = false
-      this.channels.recordSyncRecoveryFailed(reason)
-      this.publishSyncRuntime()
-      if (isDebugEnabled()) {
-        // eslint-disable-next-line no-console
-        console.warn('[YDocService] sync provider resync failed', err)
-      }
-      return false
+    })()
+
+    this.resyncInFlight = run
+    this.resyncInFlightKey = requestKey
+    try {
+      return await run
     } finally {
-      this.resyncCount += 1
-      this.publishSyncRuntime()
+      if (this.resyncInFlight === run) {
+        this.resyncInFlight = undefined
+        this.resyncInFlightKey = null
+      }
     }
   }
 
