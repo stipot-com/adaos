@@ -35,6 +35,79 @@
 			}
 		})(window);
 	</script>
+	<script>
+		(function (window, document) {
+			var boot = {
+				overlayId: 'inimatic-boot-overlay',
+				statusId: 'inimatic-boot-status',
+				detailId: 'inimatic-boot-detail',
+				hide: function () {
+					var node = document.getElementById(this.overlayId);
+					if (node && node.parentNode) {
+						node.parentNode.removeChild(node);
+					}
+				},
+				update: function (status, detail, failed) {
+					var statusNode = document.getElementById(this.statusId);
+					var detailNode = document.getElementById(this.detailId);
+					var overlay = document.getElementById(this.overlayId);
+					if (!statusNode || !detailNode || !overlay) return;
+					statusNode.textContent = status || 'Loading Inimatic...';
+					detailNode.textContent = detail || '';
+					overlay.setAttribute('data-failed', failed ? '1' : '0');
+				},
+				fail: function (status, detail) {
+					this.update(status || 'App failed to start', detail || '', true);
+				}
+			};
+			window.__INIMATIC_BOOT__ = boot;
+			document.addEventListener('DOMContentLoaded', function () {
+				var body = document.body || document.getElementsByTagName('body')[0];
+				var overlay = document.createElement('div');
+				overlay.id = boot.overlayId;
+				overlay.setAttribute('data-failed', '0');
+				overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#f7f5ef;color:#1f2933;font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;';
+				overlay.innerHTML =
+					'<div style="max-width:680px;background:#ffffff;border:1px solid #d9e2ec;border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(15,23,42,0.08)">' +
+						'<div style="font-size:24px;line-height:1.2;margin-bottom:12px">Inimatic</div>' +
+						'<div id="' + boot.statusId + '" style="font-size:18px;margin-bottom:8px">Loading Inimatic...</div>' +
+						'<pre id="' + boot.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:#52606d;font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
+					'</div>';
+				if (body) {
+					body.insertBefore(overlay, body.firstChild);
+				}
+				window.setTimeout(function () {
+					var node = document.getElementById(boot.overlayId);
+					if (node && node.getAttribute('data-failed') !== '1') {
+						boot.update(
+							'Still loading...',
+							'If this screen stays visible on a SmartTV, the browser likely accepts TLS but cannot execute the web app bundle.'
+						);
+					}
+				}, 8000);
+			});
+			window.addEventListener('error', function (event) {
+				var target = event && event.target;
+				if (target && target.tagName === 'SCRIPT') {
+					boot.fail('Failed to load app script', target.src || 'script load error');
+					return;
+				}
+				boot.fail('JavaScript error', (event && event.message) || 'unknown error');
+			}, true);
+			window.addEventListener('unhandledrejection', function (event) {
+				var reason = event && event.reason;
+				var detail = '';
+				if (reason && typeof reason === 'object' && reason.message) {
+					detail = String(reason.message);
+				} else if (typeof reason === 'string') {
+					detail = reason;
+				} else {
+					detail = 'unhandled promise rejection';
+				}
+				boot.fail('Unhandled promise rejection', detail);
+			});
+		})(window, document);
+	</script>
 	<!-- <meta name="color-scheme" content="light dark"/> -->
 	<meta name="viewport"
 		content="viewport-fit=cover, width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />

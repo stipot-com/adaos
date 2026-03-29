@@ -21,6 +21,8 @@ if (environment.production) {
 registerIcons()
 initDebugConsole()
 
+const boot = (window as any).__INIMATIC_BOOT__
+
 bootstrapApplication(AppComponent, {
 	providers: [
 		{ provide: RouteReuseStrategy, useClass: IonicRouteStrategy },
@@ -33,3 +35,18 @@ bootstrapApplication(AppComponent, {
 		}),
 	],
 })
+	.then(() => {
+		try {
+			boot?.hide?.()
+		} catch {}
+	})
+	.catch((err) => {
+		try {
+			const message =
+				(typeof err?.message === 'string' && err.message) ||
+				(typeof err === 'string' && err) ||
+				'bootstrap failed'
+			boot?.fail?.('Angular bootstrap failed', message)
+		} catch {}
+		throw err
+	})
