@@ -29,6 +29,7 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
       <h2 *ngIf="widget.title">{{ widget.title }}</h2>
 
       <ng-container *ngIf="items$ | async as items">
+        <ng-container *ngIf="items.length; else emptyState">
         <!-- Dev projects: simple vertical list with one item per project -->
         <ng-container *ngIf="isProjectSelector; else standardGrid">
           <ion-list>
@@ -97,6 +98,15 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
                 </ion-button>
               </div>
             </article>
+          </div>
+        </ng-template>
+        </ng-container>
+        <ng-template #emptyState>
+          <div class="empty-hint">
+            <div class="empty-hint__title">No items available yet</div>
+            <div class="empty-hint__body">
+              If this catalog just disappeared after Yjs reload, the webspace may still be rebuilding or the client may be using degraded fallback mode.
+            </div>
           </div>
         </ng-template>
       </ng-container>
@@ -219,6 +229,21 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
       .project-updated {
         font-size: 11px;
         opacity: 0.7;
+      }
+      .empty-hint {
+        padding: 18px 14px;
+        border-radius: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .empty-hint__title {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .empty-hint__body {
+        font-size: 12px;
+        opacity: 0.8;
+        line-height: 1.45;
       }
     `,
   ],

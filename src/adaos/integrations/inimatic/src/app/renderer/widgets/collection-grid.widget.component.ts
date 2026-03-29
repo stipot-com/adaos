@@ -17,7 +17,8 @@ import { isVerboseDebugEnabled } from '../../debug-log'
   template: `
     <div class="grid-section">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>
-      <div class="tiles" *ngIf="items$ | async as items" [style.--tile-min]="tileMinWidthPx">
+      <ng-container *ngIf="items$ | async as items">
+      <div class="tiles" *ngIf="items.length; else emptyState" [style.--tile-min]="tileMinWidthPx">
         <article
           class="tile"
           *ngFor="let item of items"
@@ -58,6 +59,15 @@ import { isVerboseDebugEnabled } from '../../debug-log'
           </div>
         </article>
       </div>
+      <ng-template #emptyState>
+        <div class="empty-hint">
+          <div class="empty-hint__title">No items available yet</div>
+          <div class="empty-hint__body">
+            This section is empty right now. If this happened right after Yjs reload, the webspace may still be rebuilding.
+          </div>
+        </div>
+      </ng-template>
+      </ng-container>
     </div>
   `,
   styles: [
@@ -178,6 +188,21 @@ import { isVerboseDebugEnabled } from '../../debug-log'
         top: 4px;
         right: 4px;
         z-index: 1;
+      }
+      .empty-hint {
+        padding: 16px 14px;
+        border-radius: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .empty-hint__title {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .empty-hint__body {
+        font-size: 12px;
+        opacity: 0.8;
+        line-height: 1.45;
       }
     `,
   ],

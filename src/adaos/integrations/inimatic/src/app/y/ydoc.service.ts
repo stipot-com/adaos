@@ -47,6 +47,24 @@ export type YDocSyncRuntimeSnapshot = {
   }
 }
 
+export type YDocMaterializationSnapshot = {
+  updatedAt: number
+  webspaceId: string
+  currentScenario: string | null
+  hasUiApplication: boolean
+  hasDesktopConfig: boolean
+  hasDesktopPageSchema: boolean
+  hasAppsCatalogModal: boolean
+  hasWidgetsCatalogModal: boolean
+  hasCatalogApps: boolean
+  hasCatalogWidgets: boolean
+  catalogAppsCount: number
+  catalogWidgetsCount: number
+  topbarCount: number
+  pageWidgetCount: number
+  ready: boolean
+}
+
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
@@ -237,6 +255,74 @@ export class YDocService {
 
   getSyncRuntimeSnapshot(): YDocSyncRuntimeSnapshot {
     return this.buildSyncRuntimeSnapshot()
+  }
+
+  getMaterializationSnapshot(): YDocMaterializationSnapshot {
+    const webspaceId = this.currentWebspaceId || 'default'
+    const currentScenarioRaw = this.toJSON(this.getPath('ui/current_scenario'))
+    const currentScenario =
+      typeof currentScenarioRaw === 'string' && currentScenarioRaw.trim()
+        ? currentScenarioRaw.trim()
+        : null
+
+    const application = this.toJSON(this.getPath('ui/application')) || {}
+    const desktop = application?.desktop || {}
+    const modals = application?.modals || {}
+    const catalog = this.toJSON(this.getPath('data/catalog')) || {}
+    const apps = Array.isArray(catalog?.apps) ? catalog.apps : null
+    const widgets = Array.isArray(catalog?.widgets) ? catalog.widgets : null
+    const pageSchema = desktop?.pageSchema
+    const topbar = Array.isArray(desktop?.topbar) ? desktop.topbar : []
+    const pageWidgets = Array.isArray(pageSchema?.widgets) ? pageSchema.widgets : []
+
+    const hasUiApplication = !!application && typeof application === 'object' && !Array.isArray(application)
+    const hasDesktopConfig = !!desktop && typeof desktop === 'object' && !Array.isArray(desktop)
+    const hasDesktopPageSchema =
+      !!pageSchema && typeof pageSchema === 'object' && !Array.isArray(pageSchema)
+    const hasAppsCatalogModal = !!modals && typeof modals === 'object' && 'apps_catalog' in modals
+    const hasWidgetsCatalogModal =
+      !!modals && typeof modals === 'object' && 'widgets_catalog' in modals
+    const hasCatalogApps = Array.isArray(apps)
+    const hasCatalogWidgets = Array.isArray(widgets)
+
+    return {
+      updatedAt: Date.now(),
+      webspaceId,
+      currentScenario,
+      hasUiApplication,
+      hasDesktopConfig,
+      hasDesktopPageSchema,
+      hasAppsCatalogModal,
+      hasWidgetsCatalogModal,
+      hasCatalogApps,
+      hasCatalogWidgets,
+      catalogAppsCount: hasCatalogApps ? apps.length : 0,
+      catalogWidgetsCount: hasCatalogWidgets ? widgets.length : 0,
+      topbarCount: topbar.length,
+      pageWidgetCount: pageWidgets.length,
+      ready:
+        hasUiApplication &&
+        hasDesktopConfig &&
+        hasDesktopPageSchema &&
+        hasAppsCatalogModal &&
+        hasWidgetsCatalogModal &&
+        hasCatalogApps &&
+        hasCatalogWidgets,
+    }
+  }
+
+  hasMaterializedDesktopContent(): boolean {
+    return this.getMaterializationSnapshot().ready
+  }
+
+  async waitForMaterializedDesktopContent(timeoutMs = 6000): Promise<boolean> {
+    if (this.hasMaterializedDesktopContent()) return true
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < Math.max(250, timeoutMs)) {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      if (this.hasMaterializedDesktopContent()) return true
+    }
+    return this.hasMaterializedDesktopContent()
   }
 
   private isPersistenceEnabled(): boolean {

@@ -740,8 +740,9 @@ export class AppComponent implements OnInit, OnDestroy {
 		webspaceId: string,
 	): Promise<void> {
 		const encodedWebspaceId = encodeURIComponent(String(webspaceId || 'default'))
+		let actionResponse: any
 		try {
-			await this.adaos.sendEventsCommand(command, { webspace_id: webspaceId }, 12_000)
+			actionResponse = await this.adaos.sendEventsCommand(command, { webspace_id: webspaceId }, 12_000)
 		} catch (err) {
 			try {
 				const fallbackPath =
@@ -752,6 +753,7 @@ export class AppComponent implements OnInit, OnDestroy {
 				if (response?.accepted === false || response?.ok === false) {
 					throw new Error(String(response?.error || 'host_action_rejected'))
 				}
+				actionResponse = response
 			} catch (fallbackErr) {
 				// eslint-disable-next-line no-console
 				console.warn(`${command} failed`, fallbackErr || err)
@@ -766,16 +768,59 @@ export class AppComponent implements OnInit, OnDestroy {
 				room: webspaceId,
 				waitForFirstSyncTimeoutMs: 10_000,
 			})
-			const toast = await this.toastCtrl.create({
-				message: ok
+			const materialized = await this.ydoc.waitForMaterializedDesktopContent(4500)
+			const diagnostics = !materialized
+				? await this.readWebspaceDiagnostics(webspaceId)
+				: undefined
+			const message =
+				ok && materialized
 					? 'Webspace reload complete.'
-					: 'Webspace reload accepted, but Yjs resync is still recovering.',
-				duration: ok ? 2200 : 3200,
+					: this.describeYjsReloadIssue(webspaceId, ok, diagnostics, actionResponse)
+			const toast = await this.toastCtrl.create({
+				message,
+				duration: ok && materialized ? 2200 : 4200,
 				position: 'bottom',
-				color: ok ? 'success' : 'warning',
+				color: ok && materialized ? 'success' : diagnostics?.materialization?.ready ? 'warning' : 'danger',
 			})
 			await toast.present()
 		} catch { }
+	}
+
+	private async readWebspaceDiagnostics(webspaceId: string): Promise<any | undefined> {
+		try {
+			return await firstValueFrom(
+				this.adaos.get<any>(`/api/node/yjs/webspaces/${encodeURIComponent(String(webspaceId || 'default'))}`).pipe(
+					catchError(() => of(undefined)),
+				),
+			)
+		} catch {
+			return undefined
+		}
+	}
+
+	private describeYjsReloadIssue(
+		webspaceId: string,
+		syncOk: boolean,
+		diagnostics: any,
+		actionResponse: any,
+	): string {
+		const local = this.ydoc.getMaterializationSnapshot()
+		const remote = diagnostics?.materialization
+		const registryApps = Number(actionResponse?.registry_summary?.apps || 0)
+		const registryWidgets = Number(actionResponse?.registry_summary?.widgets || 0)
+		const currentScenario =
+			local.currentScenario ||
+			remote?.current_scenario ||
+			diagnostics?.webspace?.current_scenario ||
+			diagnostics?.webspace?.effective_home_scenario ||
+			'-'
+		const localCatalogState = `local pageSchema=${local.hasDesktopPageSchema ? 'yes' : 'no'}, apps=${local.hasCatalogApps ? 'yes' : 'no'}, widgets=${local.hasCatalogWidgets ? 'yes' : 'no'}`
+		if (remote?.ready) {
+			return `Webspace reload finished on hub, but local Yjs is still incomplete for "${webspaceId}" (${localCatalogState}; scenario=${currentScenario}). Hub sees apps=${remote.catalog_counts?.apps ?? registryApps}, widgets=${remote.catalog_counts?.widgets ?? registryWidgets}.`
+		}
+		return syncOk
+			? `Yjs transport reconnected, but desktop content is still missing for "${webspaceId}" (${localCatalogState}; scenario=${currentScenario}).`
+			: `Webspace reload accepted, but Yjs resync is still recovering for "${webspaceId}" (${localCatalogState}; scenario=${currentScenario}).`
 	}
 
 	onClickLogout(): void {

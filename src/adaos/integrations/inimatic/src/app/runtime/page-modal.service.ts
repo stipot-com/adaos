@@ -1,10 +1,12 @@
 import { Injectable } from '@angular/core'
-import { ModalController } from '@ionic/angular/standalone'
+import { ModalController, ToastController } from '@ionic/angular/standalone'
 import { YDocService } from '../y/ydoc.service'
 import { AdaosClient } from '../core/adaos/adaos-client.service'
 import { ModalHostComponent } from '../renderer/modals/modal.component'
 import type { AdaModalConfig } from './dsl-types'
 import type { PageSchema } from './page-schema.model'
+import { catchError } from 'rxjs/operators'
+import { firstValueFrom, of } from 'rxjs'
 
 type ModalConfig = AdaModalConfig
 
@@ -13,11 +15,15 @@ export class PageModalService {
   constructor(
     private modalCtrl: ModalController,
     private ydoc: YDocService,
-    private adaos: AdaosClient
+    private adaos: AdaosClient,
+    private toastCtrl: ToastController,
   ) {}
 
   async openModalById(modalId?: string): Promise<void> {
     if (!modalId) return
+    if (modalId === 'apps_catalog' || modalId === 'widgets_catalog') {
+      await this.prepareDesktopCatalogModal(modalId)
+    }
     // 1) Primary source: projected application modals
     const appModals = this.ydoc.toJSON(this.ydoc.getPath('ui/application/modals')) || {}
 
@@ -139,5 +145,48 @@ export class PageModalService {
         },
       ],
     }
+  }
+
+  private async prepareDesktopCatalogModal(modalId: 'apps_catalog' | 'widgets_catalog'): Promise<void> {
+    const kind = modalId === 'apps_catalog' ? 'apps' : 'widgets'
+    const before = this.ydoc.getMaterializationSnapshot()
+    const localReady = kind === 'apps' ? before.hasCatalogApps : before.hasCatalogWidgets
+    if (before.ready && localReady) return
+
+    const webspaceId = this.adaos.getCurrentWebspaceId?.() || this.ydoc.getWebspaceId() || 'default'
+    try {
+      await this.ydoc.resyncCurrentWebspace({
+        reason: 'manual',
+        room: webspaceId,
+        waitForFirstSyncTimeoutMs: 5000,
+      })
+      const recovered = await this.ydoc.waitForMaterializedDesktopContent(2500)
+      if (recovered) return
+    } catch {}
+
+    const remote = await firstValueFrom(
+      this.adaos.get<any>(`/api/node/yjs/webspaces/${encodeURIComponent(webspaceId)}`).pipe(
+        catchError(() => of(undefined)),
+      ),
+    )
+    const after = this.ydoc.getMaterializationSnapshot()
+    const remoteMaterialization = remote?.materialization
+    const remoteReady = !!remoteMaterialization?.ready
+    const catalogCount = Number(remoteMaterialization?.catalog_counts?.[kind] || 0)
+    const currentScenario = after.currentScenario || remoteMaterialization?.current_scenario || '-'
+    const toast = await this.toastCtrl.create({
+      message:
+        `${kind === 'apps' ? 'Apps' : 'Widgets'} catalog is opening in degraded mode. ` +
+        `Yjs materialization is incomplete: scenario=${currentScenario}, ` +
+        `pageSchema=${after.hasDesktopPageSchema ? 'yes' : 'no'}, ` +
+        `catalog.${kind}=${kind === 'apps' ? (after.hasCatalogApps ? 'yes' : 'no') : (after.hasCatalogWidgets ? 'yes' : 'no')}. ` +
+        (remoteReady
+          ? `Using control API fallback (${catalogCount} items visible on hub).`
+          : 'Hub diagnostics also report incomplete materialization.'),
+      duration: 3600,
+      position: 'bottom',
+      color: remoteReady ? 'warning' : 'danger',
+    })
+    await toast.present()
   }
 }

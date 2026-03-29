@@ -546,11 +546,25 @@ async def _llm_call(messages: list[dict[str, str]], *, request_id: str | None = 
     ctx = get_ctx()
     http = RootHttpClient.from_settings(ctx.settings)
     body = {"model": _MODEL, "messages": messages, "max_tokens": _MAX_TOKENS, "temperature": 0.2}
+    headers: dict[str, str] = {}
+    subnet_id = str(getattr(getattr(ctx, "config", None), "subnet_id", "") or "").strip()
+    node_id = str(getattr(getattr(ctx, "config", None), "node_id", "") or "").strip()
+    if subnet_id:
+        headers["X-AdaOS-Subnet-Id"] = subnet_id
+    if node_id:
+        headers["X-AdaOS-Node-Id"] = node_id
     req_id = str(request_id or "").strip()
     if req_id:
         body["request_id"] = req_id
     try:
-        result = await asyncio.to_thread(http.request, "POST", "/v1/llm/response", json=body, timeout=_TIMEOUT_S)
+        result = await asyncio.to_thread(
+            http.request,
+            "POST",
+            "/v1/llm/response",
+            json=body,
+            headers=headers or None,
+            timeout=_TIMEOUT_S,
+        )
     except Exception as exc:
         try:
             observe_hub_root_integration_outbox(

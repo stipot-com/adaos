@@ -478,6 +478,21 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             }
         ),
     )
+    monkeypatch.setattr(
+        node_api_module,
+        "_describe_yjs_materialization",
+        lambda webspace_id: _awaitable(
+            {
+                "ready": True,
+                "webspace_id": webspace_id,
+                "current_scenario": "prompt_engineer_runtime",
+                "has_desktop_page_schema": True,
+                "has_catalog_apps": True,
+                "has_catalog_widgets": True,
+                "catalog_counts": {"apps": 3, "widgets": 2},
+            }
+        ),
+    )
     class _DesktopService:
         async def get_snapshot_async(self, webspace_id: str | None = None):
             assert webspace_id == "dev_prompt"
@@ -509,6 +524,8 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["desktop"]["pageSchema"]["id"] == "desktop-custom"
     assert result["webspace"]["source_mode"] == "dev"
     assert result["projection"]["active_scenario"] == "prompt_engineer_runtime"
+    assert result["materialization"]["ready"] is True
+    assert result["materialization"]["catalog_counts"]["apps"] == 3
     assert result["runtime"]["webspace_id"] == "dev_prompt"
 
 
@@ -541,6 +558,42 @@ def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
     assert result["desktop"]["topbar"][0]["id"] == "home"
     assert result["desktop"]["pageSchema"]["id"] == "desktop"
+    assert result["runtime"]["webspace_id"] == "default"
+
+
+def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "_describe_yjs_materialization",
+        lambda webspace_id: _awaitable(
+            {
+                "ready": False,
+                "webspace_id": webspace_id,
+                "current_scenario": "web_desktop",
+                "has_desktop_page_schema": False,
+                "has_catalog_apps": False,
+                "has_catalog_widgets": True,
+                "catalog_counts": {"apps": 0, "widgets": 2},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "_read_live_catalog_items",
+        lambda webspace_id, kind: _awaitable(
+            [{"id": "weather", "title": "Weather"}] if kind == "widgets" else []
+        ),
+    )
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(node_api_module.node_yjs_catalog_state("default", "widgets"))
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["kind"] == "widgets"
+    assert result["items"] == [{"id": "weather", "title": "Weather"}]
+    assert result["materialization"]["ready"] is False
     assert result["runtime"]["webspace_id"] == "default"
 
 

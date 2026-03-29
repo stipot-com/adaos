@@ -36,10 +36,28 @@ def _llm_models_endpoint() -> str:
 
 def _auth_headers() -> Dict[str, str]:
     token = os.getenv("ADAOS_LLM_TOKEN") or os.getenv("ADAOS_ROOT_TOKEN") or os.getenv("ADAOS_TOKEN") or "dev-local-token"
-    return {
+    headers = {
         "X-AdaOS-Token": token,
         "Content-Type": "application/json",
     }
+    try:
+        ctx = get_ctx()
+    except Exception:
+        ctx = None
+    settings = getattr(ctx, "settings", None) if ctx is not None else None
+    config = getattr(ctx, "config", None) if ctx is not None else None
+    subnet_id = str(
+        os.getenv("ADAOS_SUBNET_ID")
+        or getattr(settings, "subnet_id", None)
+        or getattr(config, "subnet_id", None)
+        or ""
+    ).strip()
+    node_id = str(getattr(config, "node_id", None) or "").strip()
+    if subnet_id:
+        headers["X-AdaOS-Subnet-Id"] = subnet_id
+    if node_id:
+        headers["X-AdaOS-Node-Id"] = node_id
+    return headers
 
 
 def list_llm_models(*, timeout: float | None = None) -> Dict[str, Any]:

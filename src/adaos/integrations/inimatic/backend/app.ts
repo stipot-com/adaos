@@ -119,6 +119,88 @@ type DeviceAuthorization = {
 	approved: boolean
 }
 
+type RootMgmntAccessMode = 'open' | 'allowlist' | 'denyall'
+type RootMgmntLifecycleState =
+	| 'active'
+	| 'warm'
+	| 'stale'
+	| 'dormant'
+	| 'retired'
+	| 'retire_candidate'
+type RootMgmntLlmAccess = 'default' | 'frozen' | 'blocked'
+
+type RootMgmntPolicyState = {
+	llm_enabled: boolean
+	access_mode: RootMgmntAccessMode
+	default_model: string
+	allowed_models: string[]
+	allowed_subnets: string[]
+	updated_at: string
+	updated_by: string
+}
+
+type RootMgmntSubnetOverride = {
+	lifecycle_state?: RootMgmntLifecycleState
+	llm_access?: RootMgmntLlmAccess
+	note?: string
+	archived_at?: string
+	updated_at: string
+	updated_by: string
+}
+
+type RootMgmntState = {
+	version: 1
+	updated_at: string
+	policy: RootMgmntPolicyState
+	subnets: Record<string, RootMgmntSubnetOverride>
+}
+
+type RootMgmntAuditEvent = {
+	id: string
+	created_at: string
+	kind: string
+	action?: string
+	subnet_id?: string | null
+	node_id?: string | null
+	actor?: string
+	status?: string
+	summary?: string
+	detail?: Record<string, unknown>
+}
+
+type RootMgmntForgeStats = {
+	dev_nodes: number
+	uploads: number
+	draft_artifacts: number
+	registry_artifacts: number
+	skill_drafts: number
+	scenario_drafts: number
+	skill_registry_versions: number
+	scenario_registry_versions: number
+}
+
+type RootMgmntLlmLastSeen = {
+	last_request_at?: string
+	last_model?: string
+	last_status?: string
+}
+
+type RootMgmntCaller = {
+	subnetId: string | null
+	nodeId: string | null
+	source: 'mtls' | 'header' | 'unknown'
+}
+
+type RootMgmntLlmDecision = {
+	allowed: boolean
+	status: number
+	code?: string
+	reason?: string
+	state: RootMgmntState
+	caller: RootMgmntCaller
+	model: string
+}
+
 class HttpError extends Error {
 	status: number
 	code: string
@@ -258,6 +340,493 @@ const CORE_UPDATE_GITHUB_COUNTDOWN_SEC =
 	Number.parseFloat(process.env['CORE_UPDATE_GITHUB_COUNTDOWN_SEC'] || '60') || 60
 const ROOT_LLM_REQUEST_DEDUPE_TTL_S =
 	Number.parseInt(process.env['ROOT_LLM_REQUEST_DEDUPE_TTL_S'] || '600', 10) || 600
+const ROOT_MGMNT_TOKEN =
+	(String(process.env['ROOT_MGMNT_TOKEN'] ?? '').trim() ||
+		String(process.env['ROOT_TOKEN'] ?? '').trim() ||
+		ROOT_TOKEN)
+const ROOT_MGMNT_STATE_KEY = 'root:mgmnt:state:v1'
+const ROOT_MGMNT_AUDIT_KEY = 'root:mgmnt:audit:v1'
+const ROOT_MGMNT_AUDIT_LIMIT = 200
+const ROOT_MGMNT_LLM_USAGE_DAY_PREFIX = 'root:mgmnt:llm:usage:day'
+const ROOT_MGMNT_LLM_DENY_DAY_PREFIX = 'root:mgmnt:llm:deny:day'
+const ROOT_MGMNT_LLM_LAST_HASH = 'root:mgmnt:llm:last:v1'
+const ROOT_MGMNT_LLM_STATS_TTL_S = 45 * 24 * 60 * 60
+
+function rootMgmntTokenFromReq(req: express.Request): string {
+	return String(req.header('X-Root-Mgmnt-Token') ?? req.header('X-Root-Token') ?? '').trim()
+}
+
+function requireRootMgmntToken(req: express.Request, res: express.Response): boolean {
+	const token = rootMgmntTokenFromReq(req)
+	if (!token || (token !== ROOT_MGMNT_TOKEN && token !== ROOT_TOKEN)) {
+		respondError(req, res, 401, 'unauthorized')
+		return false
+	}
+	return true
+}
+
+function nowIso(): string {
+	return new Date().toISOString()
+}
+
+function normalizeStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return []
+	return Array.from(
+		new Set(
+			value
+				.map((item) => String(item ?? '').trim())
+				.filter(Boolean),
+		),
+	).sort()
+}
+
+function defaultRootMgmntState(): RootMgmntState {
+	const now = nowIso()
+	return {
+		version: 1,
+		updated_at: now,
+		policy: {
+			llm_enabled: true,
+			access_mode: 'open',
+			default_model: (process.env['OPENAI_RESPONSES_MODEL'] ?? 'gpt-4o-mini').trim() || 'gpt-4o-mini',
+			allowed_models: [],
+			allowed_subnets: [],
+			updated_at: now,
+			updated_by: 'system.default',
+		},
+		subnets: {},
+	}
+}
+
+function sanitizeRootMgmntState(raw: unknown): RootMgmntState {
+	const fallback = defaultRootMgmntState()
+	const payload = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+	const rawPolicy =
+		payload['policy'] && typeof payload['policy'] === 'object'
+			? (payload['policy'] as Record<string, unknown>)
+			: {}
+	const rawSubnets =
+		payload['subnets'] && typeof payload['subnets'] === 'object'
+			? (payload['subnets'] as Record<string, unknown>)
+			: {}
+	const subnets: Record<string, RootMgmntSubnetOverride> = {}
+	for (const [subnetId, value] of Object.entries(rawSubnets)) {
+		if (!subnetId) continue
+		if (!value || typeof value !== 'object') continue
+		const item = value as Record<string, unknown>
+		const lifecycle =
+			typeof item['lifecycle_state'] === 'string'
+				? (String(item['lifecycle_state']).trim() as RootMgmntLifecycleState)
+				: undefined
+		const llmAccess =
+			typeof item['llm_access'] === 'string'
+				? (String(item['llm_access']).trim() as RootMgmntLlmAccess)
+				: undefined
+		subnets[subnetId] = {
+			lifecycle_state: lifecycle,
+			llm_access: llmAccess,
+			note: typeof item['note'] === 'string' ? String(item['note']) : undefined,
+			archived_at: typeof item['archived_at'] === 'string' ? String(item['archived_at']) : undefined,
+			updated_at: typeof item['updated_at'] === 'string' ? String(item['updated_at']) : fallback.updated_at,
+			updated_by: typeof item['updated_by'] === 'string' ? String(item['updated_by']) : 'system.default',
+		}
+	}
+	return {
+		version: 1,
+		updated_at: typeof payload['updated_at'] === 'string' ? String(payload['updated_at']) : fallback.updated_at,
+		policy: {
+			llm_enabled:
+				typeof rawPolicy['llm_enabled'] === 'boolean'
+					? Boolean(rawPolicy['llm_enabled'])
+					: fallback.policy.llm_enabled,
+			access_mode:
+				rawPolicy['access_mode'] === 'allowlist' || rawPolicy['access_mode'] === 'denyall'
+					? (rawPolicy['access_mode'] as RootMgmntAccessMode)
+					: 'open',
+			default_model:
+				typeof rawPolicy['default_model'] === 'string' && String(rawPolicy['default_model']).trim()
+					? String(rawPolicy['default_model']).trim()
+					: fallback.policy.default_model,
+			allowed_models: normalizeStringArray(rawPolicy['allowed_models']),
+			allowed_subnets: normalizeStringArray(rawPolicy['allowed_subnets']),
+			updated_at:
+				typeof rawPolicy['updated_at'] === 'string' ? String(rawPolicy['updated_at']) : fallback.policy.updated_at,
+			updated_by:
+				typeof rawPolicy['updated_by'] === 'string' ? String(rawPolicy['updated_by']) : fallback.policy.updated_by,
+		},
+		subnets,
+	}
+}
+
+async function loadRootMgmntState(): Promise<RootMgmntState> {
+	const raw = await redisClient.get(ROOT_MGMNT_STATE_KEY)
+	if (!raw) return defaultRootMgmntState()
+	try {
+		return sanitizeRootMgmntState(JSON.parse(raw))
+	} catch {
+		return defaultRootMgmntState()
+	}
+}
+
+async function saveRootMgmntState(state: RootMgmntState): Promise<RootMgmntState> {
+	const now = nowIso()
+	const normalized = sanitizeRootMgmntState({
+		...state,
+		updated_at: now,
+		policy: {
+			...state.policy,
+			updated_at: typeof state.policy?.updated_at === 'string' ? state.policy.updated_at : now,
+		},
+	})
+	await redisClient.set(ROOT_MGMNT_STATE_KEY, JSON.stringify(normalized))
+	return normalized
+}
+
+async function appendRootMgmntAudit(event: Omit<RootMgmntAuditEvent, 'id' | 'created_at'>): Promise<RootMgmntAuditEvent> {
+	const entry: RootMgmntAuditEvent = {
+		id: uuidv4(),
+		created_at: nowIso(),
+		...event,
+	}
+	await redisClient.rPush(ROOT_MGMNT_AUDIT_KEY, JSON.stringify(entry))
+	await redisClient.lTrim(ROOT_MGMNT_AUDIT_KEY, -ROOT_MGMNT_AUDIT_LIMIT, -1)
+	return entry
+}
+
+async function readRootMgmntAudit(limit = 80): Promise<RootMgmntAuditEvent[]> {
+	const count = Math.max(1, Math.min(200, Math.trunc(limit)))
+	const raw = await redisClient.lRange(ROOT_MGMNT_AUDIT_KEY, -count, -1)
+	return raw
+		.map((item) => {
+			try {
+				const parsed = JSON.parse(item)
+				return parsed && typeof parsed === 'object' ? (parsed as RootMgmntAuditEvent) : null
+			} catch {
+				return null
+			}
+		})
+		.filter((item): item is RootMgmntAuditEvent => Boolean(item))
+		.reverse()
+}
+
+function counterDayKey(ts = Date.now()): string {
+	return new Date(ts).toISOString().slice(0, 10)
+}
+
+async function incrementRootMgmntCounter(prefix: string, field: string, amount = 1, ts = Date.now()): Promise<void> {
+	if (!field) return
+	const key = `${prefix}:${counterDayKey(ts)}`
+	await redisClient.hIncrBy(key, field, Math.trunc(amount))
+	await redisClient.expire(key, ROOT_MGMNT_LLM_STATS_TTL_S)
+}
+
+async function recordRootMgmntLlmEvent(options: {
+	subnetId?: string | null
+	model: string
+	status: 'allowed' | 'denied'
+}): Promise<void> {
+	const subnetId = String(options.subnetId ?? '').trim()
+	if (subnetId) {
+		await incrementRootMgmntCounter(
+			options.status === 'denied' ? ROOT_MGMNT_LLM_DENY_DAY_PREFIX : ROOT_MGMNT_LLM_USAGE_DAY_PREFIX,
+			subnetId,
+			1,
+		)
+		await redisClient.hSet(
+			ROOT_MGMNT_LLM_LAST_HASH,
+			subnetId,
+			JSON.stringify({
+				last_request_at: nowIso(),
+				last_model: options.model,
+				last_status: options.status,
+			}),
+		)
+	}
+}
+
+async function aggregateRootMgmntCounter(prefix: string, days: number): Promise<Map<string, number>> {
+	const limit = Math.max(1, Math.min(45, Math.trunc(days)))
+	const totals = new Map<string, number>()
+	for (let index = 0; index < limit; index += 1) {
+		const ts = Date.now() - index * 24 * 60 * 60 * 1000
+		const bucket = await redisClient.hGetAll(`${prefix}:${counterDayKey(ts)}`)
+		for (const [field, rawValue] of Object.entries(bucket)) {
+			const value = Number.parseInt(String(rawValue ?? '0'), 10)
+			if (!Number.isFinite(value) || value <= 0) continue
+			totals.set(field, (totals.get(field) ?? 0) + value)
+		}
+	}
+	return totals
+}
+
+async function readRootMgmntLlmLastSeen(): Promise<Map<string, RootMgmntLlmLastSeen>> {
+	const raw = await redisClient.hGetAll(ROOT_MGMNT_LLM_LAST_HASH)
+	const out = new Map<string, RootMgmntLlmLastSeen>()
+	for (const [subnetId, value] of Object.entries(raw)) {
+		try {
+			const parsed = JSON.parse(value)
+			if (parsed && typeof parsed === 'object') {
+				out.set(subnetId, parsed as RootMgmntLlmLastSeen)
+			}
+		} catch {
+			// ignore malformed item
+		}
+	}
+	return out
+}
+
+function numberFromUnknown(value: unknown): number | null {
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return value > 10_000_000_000 ? value : value * 1000
+	}
+	if (typeof value === 'string') {
+		const trimmed = value.trim()
+		if (!trimmed) return null
+		const numeric = Number(trimmed)
+		if (Number.isFinite(numeric)) {
+			return numeric > 10_000_000_000 ? numeric : numeric * 1000
+		}
+		const parsed = Date.parse(trimmed)
+		return Number.isFinite(parsed) ? parsed : null
+	}
+	return null
+}
+
+function maxTimestamp(...values: Array<number | null | undefined>): number | null {
+	let max: number | null = null
+	for (const value of values) {
+		if (!Number.isFinite(value as number)) continue
+		const current = Math.trunc(value as number)
+		if (max === null || current > max) max = current
+	}
+	return max
+}
+
+function relativeAgeLabel(ts: number | null | undefined): string {
+	if (!Number.isFinite(ts as number)) return 'never'
+	const delta = Math.max(0, Date.now() - Number(ts))
+	const hours = Math.floor(delta / (60 * 60 * 1000))
+	if (hours < 1) return '<1h'
+	if (hours < 24) return `${hours}h`
+	const days = Math.floor(hours / 24)
+	if (days < 30) return `${days}d`
+	const months = Math.floor(days / 30)
+	return `${months}mo`
+}
+
+function listChildDirectories(dirPath: string): string[] {
+	try {
+		if (!fs.existsSync(dirPath)) return []
+		return fs
+			.readdirSync(dirPath, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort()
+	} catch {
+		return []
+	}
+}
+
+function readForgeStatsForSubnet(subnetId: string): RootMgmntForgeStats {
+	const baseDir = path.join(forgeManagerWorkdir(), 'subnets', subnetId)
+	const nodesRoot = path.join(baseDir, 'nodes')
+	const nodeIds = listChildDirectories(nodesRoot)
+	let skillDrafts = 0
+	let scenarioDrafts = 0
+	let uploads = 0
+	for (const nodeId of nodeIds) {
+		skillDrafts += listChildDirectories(path.join(nodesRoot, nodeId, 'skills')).length
+		scenarioDrafts += listChildDirectories(path.join(nodesRoot, nodeId, 'scenarios')).length
+		try {
+			const uploadDir = path.join(nodesRoot, nodeId, 'uploads')
+			if (fs.existsSync(uploadDir)) {
+				uploads += fs
+					.readdirSync(uploadDir, { withFileTypes: true })
+					.filter((entry) => entry.isFile())
+					.length
+			}
+		} catch {
+			// ignore upload scan failures
+		}
+	}
+	let skillRegistryVersions = 0
+	let scenarioRegistryVersions = 0
+	for (const itemName of listChildDirectories(path.join(baseDir, 'registry', 'skills'))) {
+		skillRegistryVersions += listChildDirectories(path.join(baseDir, 'registry', 'skills', itemName)).length
+	}
+	for (const itemName of listChildDirectories(path.join(baseDir, 'registry', 'scenarios'))) {
+		scenarioRegistryVersions += listChildDirectories(path.join(baseDir, 'registry', 'scenarios', itemName)).length
+	}
+	return {
+		dev_nodes: nodeIds.length,
+		uploads,
+		draft_artifacts: skillDrafts + scenarioDrafts,
+		registry_artifacts: skillRegistryVersions + scenarioRegistryVersions,
+		skill_drafts: skillDrafts,
+		scenario_drafts: scenarioDrafts,
+		skill_registry_versions: skillRegistryVersions,
+		scenario_registry_versions: scenarioRegistryVersions,
+	}
+}
+
+function rootMgmntCallerFromReq(req: express.Request): RootMgmntCaller {
+	const identity = getClientIdentity(req) ?? req.auth ?? null
+	if (identity) {
+		return {
+			subnetId: identity.subnetId,
+			nodeId: identity.type === 'node' ? identity.nodeId : null,
+			source: 'mtls',
+		}
+	}
+	const subnetHeader = String(req.header('X-AdaOS-Subnet-Id') ?? '').trim()
+	const nodeHeader = String(req.header('X-AdaOS-Node-Id') ?? '').trim()
+	if (subnetHeader) {
+		return {
+			subnetId: subnetHeader,
+			nodeId: nodeHeader || null,
+			source: 'header',
+		}
+	}
+	return { subnetId: null, nodeId: null, source: 'unknown' }
+}
+
+function effectiveSubnetLlmAccess(
+	override: RootMgmntSubnetOverride | undefined,
+): RootMgmntLlmAccess {
+	if (!override) return 'default'
+	return override.llm_access === 'frozen' || override.llm_access === 'blocked'
+		? override.llm_access
+		: 'default'
+}
+
+async function evaluateRootLlmAccess(
+	req: express.Request,
+	options: { model: string; state?: RootMgmntState },
+): Promise<RootMgmntLlmDecision> {
+	const state = options.state ?? (await loadRootMgmntState())
+	const caller = rootMgmntCallerFromReq(req)
+	const subnetId = caller.subnetId
+	const override = subnetId ? state.subnets[subnetId] : undefined
+	const llmAccess = effectiveSubnetLlmAccess(override)
+	if (!state.policy.llm_enabled) {
+		return {
+			allowed: false,
+			status: 403,
+			code: 'llm_disabled',
+			reason: 'LLM access is disabled by root policy',
+			state,
+			caller,
+			model: options.model,
+		}
+	}
+	if (state.policy.access_mode === 'denyall') {
+		return {
+			allowed: false,
+			status: 403,
+			code: 'llm_denyall',
+			reason: 'LLM access is in deny-all mode',
+			state,
+			caller,
+			model: options.model,
+		}
+	}
+	if (llmAccess === 'frozen' || llmAccess === 'blocked') {
+		return {
+			allowed: false,
+			status: 403,
+			code: llmAccess === 'blocked' ? 'subnet_blocked' : 'subnet_frozen',
+			reason: `Subnet ${subnetId} is ${llmAccess}`,
+			state,
+			caller,
+			model: options.model,
+		}
+	}
+	if (override?.lifecycle_state === 'retired') {
+		return {
+			allowed: false,
+			status: 403,
+			code: 'subnet_retired',
+			reason: `Subnet ${subnetId} is retired`,
+			state,
+			caller,
+			model: options.model,
+		}
+	}
+	if (state.policy.access_mode === 'allowlist') {
+		if (!subnetId) {
+			return {
+				allowed: false,
+				status: 401,
+				code: 'subnet_identity_required',
+				reason: 'Subnet identity is required in allowlist mode',
+				state,
+				caller,
+				model: options.model,
+			}
+		}
+		if (!state.policy.allowed_subnets.includes(subnetId)) {
+			return {
+				allowed: false,
+				status: 403,
+				code: 'subnet_not_allowed',
+				reason: `Subnet ${subnetId} is not in the LLM allowlist`,
+				state,
+				caller,
+				model: options.model,
+			}
+		}
+	}
+	if (state.policy.allowed_models.length && !state.policy.allowed_models.includes(options.model)) {
+		return {
+			allowed: false,
+			status: 403,
+			code: 'model_not_allowed',
+			reason: `Model ${options.model} is not in the allowlist`,
+			state,
+			caller,
+			model: options.model,
+		}
+	}
+	return {
+		allowed: true,
+		status: 200,
+		state,
+		caller,
+		model: options.model,
+	}
+}
+
+async function rejectRootLlmRequest(
+	req: express.Request,
+	res: express.Response,
+	decision: RootMgmntLlmDecision,
+): Promise<void> {
+	await recordRootMgmntLlmEvent({
+		subnetId: decision.caller.subnetId,
+		model: decision.model,
+		status: 'denied',
+	})
+	await appendRootMgmntAudit({
+		kind: 'llm_denied',
+		action: 'llm_request',
+		subnet_id: decision.caller.subnetId,
+		node_id: decision.caller.nodeId,
+		actor: `runtime.${decision.caller.source}`,
+		status: 'denied',
+		summary: decision.code ?? 'llm_denied',
+		detail: {
+			model: decision.model,
+			reason: decision.reason ?? '',
+		},
+	})
+	res.status(decision.status).json({
+		ok: false,
+		error: decision.code ?? 'llm_denied',
+		reason: decision.reason ?? 'request denied by root policy',
+		subnet_id: decision.caller.subnetId,
+		model: decision.model,
+	})
+}
 
 // Capture Root stdout/stderr for on-demand debugging via /v1/dev/logs.
 try {
@@ -745,6 +1314,443 @@ const accessIndex = new Map<string, string>()
 const refreshIndex = new Map<string, string>()
 const deviceAuthorizations = new Map<string, DeviceAuthorization>()
 
+function ownerHubSnapshot(): Map<string, { owner_id: string; last_seen_at: string; revoked: boolean }> {
+	const result = new Map<string, { owner_id: string; last_seen_at: string; revoked: boolean }>()
+	for (const owner of owners.values()) {
+		for (const hub of owner.hubs.values()) {
+			const existing = result.get(hub.hubId)
+			const nextTs = hub.lastSeen.toISOString()
+			if (!existing || Date.parse(existing.last_seen_at) < hub.lastSeen.getTime()) {
+				result.set(hub.hubId, {
+					owner_id: owner.ownerId,
+					last_seen_at: nextTs,
+					revoked: hub.revoked,
+				})
+			}
+		}
+	}
+	return result
+}
+
+function activityScoreForSubnet(options: {
+	liveNow: boolean
+	lastSeenTs: number | null
+	controlTs: number | null
+	coreTs: number | null
+	llmRequests7d: number
+	llmRequests30d: number
+	forge: RootMgmntForgeStats
+}): number {
+	let score = 0
+	if (options.liveNow) score += 40
+	const ageDays = Number.isFinite(options.lastSeenTs as number)
+		? (Date.now() - Number(options.lastSeenTs)) / (24 * 60 * 60 * 1000)
+		: Number.POSITIVE_INFINITY
+	if (ageDays <= 1) score += 20
+	else if (ageDays <= 7) score += 12
+	else if (ageDays <= 30) score += 6
+	const controlAgeDays = Number.isFinite(options.controlTs as number)
+		? (Date.now() - Number(options.controlTs)) / (24 * 60 * 60 * 1000)
+		: Number.POSITIVE_INFINITY
+	if (controlAgeDays <= 1) score += 15
+	else if (controlAgeDays <= 7) score += 8
+	const coreAgeDays = Number.isFinite(options.coreTs as number)
+		? (Date.now() - Number(options.coreTs)) / (24 * 60 * 60 * 1000)
+		: Number.POSITIVE_INFINITY
+	if (coreAgeDays <= 7) score += 6
+	if (options.llmRequests7d >= 100) score += 14
+	else if (options.llmRequests7d > 0) score += 8
+	else if (options.llmRequests30d > 0) score += 4
+	if (options.forge.dev_nodes > 0) score += 5
+	if (options.forge.draft_artifacts > 0) score += 5
+	if (options.forge.registry_artifacts > 0) score += 3
+	return Math.max(0, Math.min(100, score))
+}
+
+function autoLifecycleStateForSubnet(options: {
+	score: number
+	liveNow: boolean
+	lastSeenTs: number | null
+	llmRequests30d: number
+	forge: RootMgmntForgeStats
+}): { state: RootMgmntLifecycleState; reason: string } {
+	const ageDays = Number.isFinite(options.lastSeenTs as number)
+		? (Date.now() - Number(options.lastSeenTs)) / (24 * 60 * 60 * 1000)
+		: Number.POSITIVE_INFINITY
+	if (!options.liveNow && ageDays >= 60 && options.llmRequests30d === 0) {
+		return {
+			state:
+				options.forge.draft_artifacts > 0 || options.forge.registry_artifacts > 0 || options.forge.uploads > 0
+					? 'retire_candidate'
+					: 'dormant',
+			reason: `idle ${Math.floor(ageDays)}d`,
+		}
+	}
+	if (options.score >= 55) return { state: 'active', reason: 'recent activity' }
+	if (options.score >= 30) return { state: 'warm', reason: 'intermittent activity' }
+	if (options.score >= 15) return { state: 'stale', reason: 'old activity only' }
+	return { state: 'dormant', reason: `low score ${options.score}` }
+}
+
+async function archiveSubnetDevSpace(subnetId: string): Promise<Record<string, unknown>> {
+	const baseDir = path.join(forgeManagerWorkdir(), 'subnets', subnetId)
+	if (!fs.existsSync(baseDir)) {
+		return {
+			ok: true,
+			subnet_id: subnetId,
+			archived: false,
+			reason: 'forge_subnet_not_found',
+			deleted: {
+				drafts: 0,
+				registry: 0,
+			},
+		}
+	}
+
+	const deletedDrafts: Array<Record<string, unknown>> = []
+	const deletedRegistry: Array<Record<string, unknown>> = []
+
+	for (const kind of ['skills', 'scenarios'] as DraftKind[]) {
+		const names = new Set<string>()
+		const nodesRoot = path.join(baseDir, 'nodes')
+		for (const nodeId of listChildDirectories(nodesRoot)) {
+			for (const name of listChildDirectories(path.join(nodesRoot, nodeId, kind))) {
+				names.add(name)
+			}
+		}
+		for (const name of Array.from(names).sort()) {
+			try {
+				const result = await forgeManager.deleteDraft({
+					kind,
+					subnetId,
+					name,
+					allNodes: true,
+				})
+				deletedDrafts.push({
+					kind,
+					name,
+					deleted: result.deleted.length,
+					audit_id: result.auditId,
+				})
+				if (result.redisKeys?.length) {
+					await redisClient.del(result.redisKeys)
+				}
+			} catch (error: any) {
+				if (error?.code !== 'not_found') throw error
+			}
+		}
+	}
+
+	for (const kind of ['skills', 'scenarios'] as DraftKind[]) {
+		const registryRoot = path.join(baseDir, 'registry', kind)
+		for (const name of listChildDirectories(registryRoot)) {
+			try {
+				const result = await forgeManager.deleteRegistry({
+					kind,
+					subnetId,
+					name,
+					allVersions: true,
+					force: true,
+				})
+				deletedRegistry.push({
+					kind,
+					name,
+					deleted: result.deleted.length,
+					tombstoned: Boolean(result.tombstoned),
+					audit_id: result.auditId,
+				})
+			} catch (error: any) {
+				if (error?.code !== 'not_found') throw error
+			}
+		}
+	}
+
+	return {
+		ok: true,
+		subnet_id: subnetId,
+		archived: deletedDrafts.length > 0 || deletedRegistry.length > 0,
+		deleted: {
+			drafts: deletedDrafts.length,
+			registry: deletedRegistry.length,
+			draft_items: deletedDrafts,
+			registry_items: deletedRegistry,
+		},
+	}
+}
+
+async function applyRootMgmntSubnetAction(options: {
+	subnetId: string
+	action: 'freeze_llm' | 'unfreeze_llm' | 'mark_dormant' | 'reactivate' | 'archive_dev_space' | 'retire_subnet'
+	actor: string
+	note?: string
+}): Promise<Record<string, unknown>> {
+	const subnetId = String(options.subnetId || '').trim()
+	if (!subnetId) {
+		throw new HttpError(400, 'invalid_request', undefined, 'subnet_id is required')
+	}
+	const state = await loadRootMgmntState()
+	const nextState = sanitizeRootMgmntState(state)
+	const now = nowIso()
+	const current = { ...(nextState.subnets[subnetId] ?? { updated_at: now, updated_by: options.actor }) }
+	let archiveResult: Record<string, unknown> | null = null
+
+	if (options.action === 'freeze_llm') {
+		current.llm_access = 'frozen'
+	}
+	if (options.action === 'unfreeze_llm') {
+		delete current.llm_access
+	}
+	if (options.action === 'mark_dormant') {
+		current.lifecycle_state = 'dormant'
+	}
+	if (options.action === 'reactivate') {
+		delete current.lifecycle_state
+		delete current.llm_access
+		delete current.archived_at
+	}
+	if (options.action === 'archive_dev_space') {
+		archiveResult = await archiveSubnetDevSpace(subnetId)
+		current.archived_at = now
+	}
+	if (options.action === 'retire_subnet') {
+		archiveResult = await archiveSubnetDevSpace(subnetId)
+		current.lifecycle_state = 'retired'
+		current.llm_access = 'blocked'
+		current.archived_at = now
+	}
+
+	current.updated_at = now
+	current.updated_by = options.actor
+	if (options.note) current.note = options.note
+	nextState.subnets[subnetId] = current
+	await saveRootMgmntState(nextState)
+	await appendRootMgmntAudit({
+		kind: 'subnet_action',
+		action: options.action,
+		subnet_id: subnetId,
+		actor: options.actor,
+		status: 'ok',
+		summary: `${options.action}:${subnetId}`,
+		detail: archiveResult ? { archive: archiveResult } : undefined,
+	})
+	return {
+		ok: true,
+		subnet_id: subnetId,
+		action: options.action,
+		override: current,
+		archive: archiveResult,
+	}
+}
+
+async function updateRootMgmntPolicy(options: {
+	actor: string
+	llm_enabled?: boolean
+	access_mode?: RootMgmntAccessMode
+	default_model?: string
+	allowed_models?: string[]
+	allowed_subnets?: string[]
+}): Promise<RootMgmntPolicyState> {
+	const state = await loadRootMgmntState()
+	const nextState = sanitizeRootMgmntState(state)
+	const nextPolicy: RootMgmntPolicyState = {
+		...nextState.policy,
+		updated_at: nowIso(),
+		updated_by: options.actor,
+	}
+	if (typeof options.llm_enabled === 'boolean') {
+		nextPolicy.llm_enabled = options.llm_enabled
+	}
+	if (options.access_mode) {
+		nextPolicy.access_mode = options.access_mode
+	}
+	if (typeof options.default_model === 'string' && options.default_model.trim()) {
+		nextPolicy.default_model = options.default_model.trim()
+	}
+	if (options.allowed_models) {
+		nextPolicy.allowed_models = normalizeStringArray(options.allowed_models)
+	}
+	if (options.allowed_subnets) {
+		nextPolicy.allowed_subnets = normalizeStringArray(options.allowed_subnets)
+	}
+	nextState.policy = nextPolicy
+	await saveRootMgmntState(nextState)
+	await appendRootMgmntAudit({
+		kind: 'policy_update',
+		action: 'update_policy',
+		actor: options.actor,
+		status: 'ok',
+		summary: `mode=${nextPolicy.access_mode}, enabled=${nextPolicy.llm_enabled}`,
+		detail: {
+			default_model: nextPolicy.default_model,
+			allowed_models: nextPolicy.allowed_models,
+			allowed_subnets: nextPolicy.allowed_subnets,
+		},
+	})
+	return nextPolicy
+}
+
+async function buildRootMgmntSnapshot(): Promise<Record<string, unknown>> {
+	const state = await loadRootMgmntState()
+	const registeredRaw = await redisClient.hGetAll('root:subnets')
+	const controlRaw = await redisClient.hGetAll(ROOT_HUB_CONTROL_REPORTS_HASH)
+	const coreRaw = await redisClient.hGetAll(ROOT_CORE_UPDATE_REPORTS_HASH)
+	const llmUsage24h = await aggregateRootMgmntCounter(ROOT_MGMNT_LLM_USAGE_DAY_PREFIX, 1)
+	const llmUsage7d = await aggregateRootMgmntCounter(ROOT_MGMNT_LLM_USAGE_DAY_PREFIX, 7)
+	const llmUsage30d = await aggregateRootMgmntCounter(ROOT_MGMNT_LLM_USAGE_DAY_PREFIX, 30)
+	const llmDenied30d = await aggregateRootMgmntCounter(ROOT_MGMNT_LLM_DENY_DAY_PREFIX, 30)
+	const llmLastSeen = await readRootMgmntLlmLastSeen()
+	const ownerSnapshot = ownerHubSnapshot()
+	const connectedHubIds = new Set(listActiveHubIds())
+	const subnetIds = new Set<string>()
+
+	for (const subnetId of Object.keys(registeredRaw)) subnetIds.add(subnetId)
+	for (const subnetId of Object.keys(controlRaw)) subnetIds.add(subnetId)
+	for (const subnetId of Object.keys(coreRaw)) subnetIds.add(subnetId)
+	for (const subnetId of ownerSnapshot.keys()) subnetIds.add(subnetId)
+	for (const subnetId of connectedHubIds.values()) subnetIds.add(subnetId)
+	for (const subnetId of Object.keys(state.subnets)) subnetIds.add(subnetId)
+
+	const fleet: Array<Record<string, unknown>> = []
+	let totalRequests24h = 0
+	let totalDenied30d = 0
+	let totalDormant = 0
+	let totalRetireCandidates = 0
+
+	for (const subnetId of Array.from(subnetIds).sort()) {
+		const registered = parseStoredHubReport(registeredRaw[subnetId])
+		const control = parseStoredHubReport(controlRaw[subnetId])
+		const core = parseStoredHubReport(coreRaw[subnetId])
+		const owner = ownerSnapshot.get(subnetId)
+		const forge = readForgeStatsForSubnet(subnetId)
+		const llmLast = llmLastSeen.get(subnetId)
+		const llm24 = llmUsage24h.get(subnetId) ?? 0
+		const llm7 = llmUsage7d.get(subnetId) ?? 0
+		const llm30 = llmUsage30d.get(subnetId) ?? 0
+		const deny30 = llmDenied30d.get(subnetId) ?? 0
+		const registeredTs = numberFromUnknown(registered?.created_at)
+		const ownerTs = numberFromUnknown(owner?.last_seen_at)
+		const controlTs = maxTimestamp(
+			numberFromUnknown(control?.root_received_at),
+			numberFromUnknown(control?.reported_at),
+		)
+		const coreTs = maxTimestamp(
+			numberFromUnknown(core?.root_received_at),
+			numberFromUnknown(core?.reported_at),
+			numberFromUnknown((core?.status as Record<string, unknown> | undefined)?.['finished_at']),
+		)
+		const llmTs = numberFromUnknown(llmLast?.last_request_at)
+		const lastSeenTs = maxTimestamp(registeredTs, ownerTs, controlTs, coreTs, llmTs)
+		const liveNow = connectedHubIds.has(subnetId)
+		const score = activityScoreForSubnet({
+			liveNow,
+			lastSeenTs,
+			controlTs,
+			coreTs,
+			llmRequests7d: llm7,
+			llmRequests30d: llm30,
+			forge,
+		})
+		const autoState = autoLifecycleStateForSubnet({
+			score,
+			liveNow,
+			lastSeenTs,
+			llmRequests30d: llm30,
+			forge,
+		})
+		const override = state.subnets[subnetId]
+		const lifecycleState = override?.lifecycle_state || autoState.state
+		const llmAccess = effectiveSubnetLlmAccess(override)
+		const retireCandidate =
+			lifecycleState === 'retire_candidate' ||
+			(autoState.state === 'retire_candidate' && lifecycleState !== 'retired')
+		if (lifecycleState === 'dormant') totalDormant += 1
+		if (retireCandidate) totalRetireCandidates += 1
+		totalRequests24h += llm24
+		totalDenied30d += deny30
+		const ageDays = Number.isFinite(lastSeenTs as number)
+			? Math.floor((Date.now() - Number(lastSeenTs)) / (24 * 60 * 60 * 1000))
+			: null
+		const reasonParts = [
+			autoState.reason,
+			llm30 === 0 ? 'no llm 30d' : '',
+			forge.draft_artifacts > 0 ? `${forge.draft_artifacts} drafts` : '',
+			forge.registry_artifacts > 0 ? `${forge.registry_artifacts} registry` : '',
+			owner?.revoked ? 'owner revoked' : '',
+		].filter(Boolean)
+
+		fleet.push({
+			subnet_id: subnetId,
+			owner_id: owner?.owner_id ?? '',
+			owner_revoked: Boolean(owner?.revoked),
+			live_now: liveNow ? 'yes' : 'no',
+			last_seen: relativeAgeLabel(lastSeenTs),
+			last_seen_at: lastSeenTs ? new Date(lastSeenTs).toISOString() : '',
+			idle_days: ageDays ?? '',
+			activity_score: score,
+			auto_state: autoState.state,
+			lifecycle_state: lifecycleState,
+			llm_access: llmAccess,
+			llm_requests_24h: llm24,
+			llm_requests_7d: llm7,
+			llm_requests_30d: llm30,
+			llm_denied_30d: deny30,
+			llm_last_seen_at: llmLast?.last_request_at ?? '',
+			llm_last_model: llmLast?.last_model ?? '',
+			dev_nodes: forge.dev_nodes,
+			draft_artifacts: forge.draft_artifacts,
+			registry_artifacts: forge.registry_artifacts,
+			uploads: forge.uploads,
+			retire_candidate: retireCandidate,
+			candidate_reason: reasonParts.join('; '),
+			note: override?.note ?? '',
+			can_freeze: llmAccess === 'default',
+			can_unfreeze: llmAccess !== 'default',
+			can_mark_dormant: lifecycleState !== 'dormant' && lifecycleState !== 'retired',
+			can_reactivate: lifecycleState === 'dormant' || lifecycleState === 'retired' || llmAccess !== 'default',
+			can_archive: forge.draft_artifacts + forge.registry_artifacts + forge.uploads > 0,
+			can_retire: lifecycleState !== 'retired',
+			control_status:
+				typeof (control?.lifecycle as Record<string, unknown> | undefined)?.['node_state'] === 'string'
+					? String((control?.lifecycle as Record<string, unknown>)['node_state'])
+					: '',
+			route_status:
+				typeof (control?.route as Record<string, unknown> | undefined)?.['status'] === 'string'
+					? String((control?.route as Record<string, unknown>)['status'])
+					: '',
+		})
+	}
+
+	const liveSubnets = fleet.filter((item) => item['live_now'] === 'yes').length
+	const archiveCandidates = fleet.filter(
+		(item) =>
+			Number(item['draft_artifacts'] ?? 0) + Number(item['registry_artifacts'] ?? 0) + Number(item['uploads'] ?? 0) >
+			0,
+	).length
+	const audit = await readRootMgmntAudit(80)
+	const topCandidates = fleet
+		.filter((item) => Boolean(item['retire_candidate']))
+		.sort((left, right) => Number(right['idle_days'] ?? 0) - Number(left['idle_days'] ?? 0))
+		.slice(0, 8)
+
+	return {
+		ok: true,
+		generated_at: nowIso(),
+		overview: {
+			total_subnets: fleet.length,
+			live_subnets: liveSubnets,
+			dormant_subnets: totalDormant,
+			retire_candidates: totalRetireCandidates,
+			archive_candidates: archiveCandidates,
+			llm_requests_24h: totalRequests24h,
+			llm_denied_30d: totalDenied30d,
+		},
+		policy: state.policy,
+		fleet,
+		lifecycle_candidates: topCandidates,
+		audit,
+	}
+}
+
 function generateToken(prefix: string): string {
 	return `${prefix}_${randomBytes(24).toString('hex')}`
 }
@@ -1042,13 +2048,109 @@ app.get('/v1/health', (_req, res) => {
 	})
 })
 
-app.get('/v1/llm/models', async (_req, res) => {
+app.get('/v1/root_mgmnt/snapshot', async (req, res) => {
+	if (!requireRootMgmntToken(req, res)) return
+	try {
+		return res.json(await buildRootMgmntSnapshot())
+	} catch (error) {
+		console.error('root_mgmnt snapshot failed', error)
+		return handleError(req, res, error, {
+			status: 500,
+			code: 'internal_error',
+		})
+	}
+})
+
+app.post('/v1/root_mgmnt/policy', async (req, res) => {
+	if (!requireRootMgmntToken(req, res)) return
+	try {
+		const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+		const actor =
+			(typeof req.header('X-Root-Mgmnt-Actor') === 'string' && String(req.header('X-Root-Mgmnt-Actor')).trim()) ||
+			(typeof (body as any).actor === 'string' && String((body as any).actor).trim()) ||
+			'root_mgmnt'
+		const policy = await updateRootMgmntPolicy({
+			actor,
+			llm_enabled:
+				typeof (body as any).llm_enabled === 'boolean' ? Boolean((body as any).llm_enabled) : undefined,
+			access_mode:
+				(body as any).access_mode === 'allowlist' || (body as any).access_mode === 'denyall'
+					? ((body as any).access_mode as RootMgmntAccessMode)
+					: (body as any).access_mode === 'open'
+						? 'open'
+						: undefined,
+			default_model:
+				typeof (body as any).default_model === 'string' ? String((body as any).default_model) : undefined,
+			allowed_models: Array.isArray((body as any).allowed_models) ? (body as any).allowed_models : undefined,
+			allowed_subnets: Array.isArray((body as any).allowed_subnets) ? (body as any).allowed_subnets : undefined,
+		})
+		return res.json({ ok: true, policy })
+	} catch (error) {
+		return handleError(req, res, error, {
+			status: 400,
+			code: 'invalid_request',
+		})
+	}
+})
+
+app.post('/v1/root_mgmnt/subnets/:subnetId/action', async (req, res) => {
+	if (!requireRootMgmntToken(req, res)) return
+	try {
+		const subnetId = String(req.params['subnetId'] || '').trim()
+		const body = typeof req.body === 'object' && req.body !== null ? req.body : {}
+		const action = String((body as any).action || '').trim()
+		if (
+			![
+				'freeze_llm',
+				'unfreeze_llm',
+				'mark_dormant',
+				'reactivate',
+				'archive_dev_space',
+				'retire_subnet',
+			].includes(action)
+		) {
+			return respondError(req, res, 400, 'invalid_request')
+		}
+		const actor =
+			(typeof req.header('X-Root-Mgmnt-Actor') === 'string' && String(req.header('X-Root-Mgmnt-Actor')).trim()) ||
+			(typeof (body as any).actor === 'string' && String((body as any).actor).trim()) ||
+			'root_mgmnt'
+		const note = typeof (body as any).note === 'string' ? String((body as any).note).trim() : undefined
+		return res.json(
+			await applyRootMgmntSubnetAction({
+				subnetId,
+				action: action as
+					| 'freeze_llm'
+					| 'unfreeze_llm'
+					| 'mark_dormant'
+					| 'reactivate'
+					| 'archive_dev_space'
+					| 'retire_subnet',
+				actor,
+				note,
+			}),
+		)
+	} catch (error) {
+		return handleError(req, res, error, {
+			status: 400,
+			code: 'invalid_request',
+		})
+	}
+})
+
+app.get('/v1/llm/models', async (req, res) => {
 	const apiKey = (process.env['OPENAI_API_KEY'] ?? '').trim()
 	if (!apiKey) {
 		return res.status(503).json({ ok: false, error: 'openai_api_key_missing' })
 	}
 
 	try {
+		const state = await loadRootMgmntState()
+		const model = state.policy.default_model || (process.env['OPENAI_RESPONSES_MODEL'] ?? 'gpt-4o-mini')
+		const decision = await evaluateRootLlmAccess(req, { model, state })
+		if (!decision.allowed) {
+			return await rejectRootLlmRequest(req, res, decision)
+		}
 		const r = await fetch('https://api.openai.com/v1/models', {
 			method: 'GET',
 			headers: {
@@ -1070,6 +2172,14 @@ app.get('/v1/llm/models', async (_req, res) => {
 			return res
 				.status(r.status)
 				.json(data ?? { ok: false, error: 'llm_models_upstream_failed', status: r.status })
+		}
+
+		if (Array.isArray(data?.data) && decision.state.policy.allowed_models.length) {
+			const allow = new Set(decision.state.policy.allowed_models)
+			data = {
+				...data,
+				data: data.data.filter((item: any) => allow.has(String(item?.id ?? ''))),
+			}
 		}
 
 		return res.json(data ?? { ok: true })
@@ -1110,10 +2220,16 @@ app.post('/v1/llm/response', async (req, res) => {
 	}
 
 	try {
+		const state = await loadRootMgmntState()
 		const body = req.body ?? {}
 		const model =
 			(typeof body.model === 'string' && body.model.trim()) ||
+			state.policy.default_model ||
 			(process.env['OPENAI_RESPONSES_MODEL'] ?? 'gpt-4o-mini')
+		const decision = await evaluateRootLlmAccess(req, { model, state })
+		if (!decision.allowed) {
+			return await rejectRootLlmRequest(req, res, decision)
+		}
 		const messages = Array.isArray(body.messages) ? body.messages : []
 		const requestId = llmRequestId(body)
 
@@ -1192,6 +2308,12 @@ app.post('/v1/llm/response', async (req, res) => {
 				.status(r.status)
 				.json(data ?? { ok: false, error: 'llm_upstream_failed', status: r.status })
 		}
+
+		await recordRootMgmntLlmEvent({
+			subnetId: decision.caller.subnetId,
+			model,
+			status: 'allowed',
+		})
 
 		if (requestId) {
 			await redisClient.setEx(

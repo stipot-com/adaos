@@ -21,6 +21,8 @@ import { observeDeep } from '../y/y-helpers'
 export class PageDataService {
   private readonly infrastateSnapshotTtlMs = 1000
   private readonly infrastateSnapshotCache = new Map<string, { at: number; stream: Observable<any | undefined> }>()
+  private readonly desktopCatalogTtlMs = 1000
+  private readonly desktopCatalogCache = new Map<string, { at: number; stream: Observable<any[] | undefined> }>()
 
   constructor(
     private http: HttpClient,
@@ -119,6 +121,12 @@ export class PageDataService {
     return path === 'data/catalog/apps' || path === 'data/catalog/widgets'
   }
 
+  private desktopCatalogKind(path?: string): 'apps' | 'widgets' | null {
+    if (path === 'data/catalog/apps') return 'apps'
+    if (path === 'data/catalog/widgets') return 'widgets'
+    return null
+  }
+
   private isInfrastatePath(path?: string): boolean {
     return !!path && (path === 'data/infrastate' || path.startsWith('data/infrastate/'))
   }
@@ -147,6 +155,39 @@ export class PageDataService {
     return this.loadInfrastateSnapshot(webspaceId).pipe(
       map((snapshot) => this.pickInfrastateSnapshotValue(snapshot, path)),
     )
+  }
+
+  private loadDesktopCatalogSnapshot(
+    kind: 'apps' | 'widgets',
+    webspaceId: string,
+  ): Observable<any[] | undefined> {
+    const cacheKey = `${webspaceId}:${kind}`
+    const now = Date.now()
+    const cached = this.desktopCatalogCache.get(cacheKey)
+    if (cached && now - cached.at <= this.desktopCatalogTtlMs) {
+      return cached.stream
+    }
+    const rel = `/api/node/yjs/webspaces/${encodeURIComponent(webspaceId)}/catalog/${kind}`
+    const headers: any = this.adaos.getAuthHeaders ? this.adaos.getAuthHeaders() : {}
+    const stream = this.http
+      .get<{ ok?: boolean; items?: any[] }>(this.absUrl(rel), { headers })
+      .pipe(
+        map((res) => (Array.isArray(res?.items) ? res.items : [])),
+        catchError((err) => this.recoverLoadFailure<any[]>('api', rel, err)),
+        shareReplay({ bufferSize: 1, refCount: false }),
+      )
+    this.desktopCatalogCache.set(cacheKey, { at: now, stream })
+    return stream
+  }
+
+  private shouldUseDesktopCatalogFallback(path: string | undefined, value: unknown): boolean {
+    const kind = this.desktopCatalogKind(path)
+    if (!kind) return false
+    if (Array.isArray(value) && value.length > 0) return false
+    const materialization = this.ydoc.getMaterializationSnapshot()
+    return kind === 'apps'
+      ? !materialization.hasCatalogApps || !materialization.ready
+      : !materialization.hasCatalogWidgets || !materialization.ready
   }
 
   private readInfrastateRootFromYDoc(): any {
@@ -208,6 +249,7 @@ export class PageDataService {
     return new Observable<T | undefined>((subscriber) => {
       let infrastateFallbackRequested = false
       let fallbackSubscription: { unsubscribe(): void } | null = null
+      let desktopCatalogFallbackRequested = false
 
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
@@ -219,6 +261,20 @@ export class PageDataService {
         ) {
           infrastateFallbackRequested = true
           fallbackSubscription = this.loadInfrastateFallback(cfg.path).subscribe((fallback) => {
+            if (fallback !== undefined) {
+              subscriber.next(fallback as T)
+            }
+          })
+        }
+        const catalogKind = this.desktopCatalogKind(cfg.path)
+        if (
+          catalogKind &&
+          !desktopCatalogFallbackRequested &&
+          this.shouldUseDesktopCatalogFallback(cfg.path, value)
+        ) {
+          desktopCatalogFallbackRequested = true
+          const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
+          fallbackSubscription = this.loadDesktopCatalogSnapshot(catalogKind, webspaceId).subscribe((fallback) => {
             if (fallback !== undefined) {
               subscriber.next(fallback as T)
             }

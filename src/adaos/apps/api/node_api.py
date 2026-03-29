@@ -44,10 +44,103 @@ from adaos.services.realtime_sidecar import (
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
+from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace
 
 router = APIRouter()
 _log = logging.getLogger("adaos.api.node_api")
+
+
+def _coerce_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _coerce_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
+async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    try:
+        async with async_get_ydoc(target_webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            data_map = ydoc.get_map("data")
+            application = _coerce_dict(ui_map.get("application") or {})
+            desktop = _coerce_dict(application.get("desktop") or {})
+            modals = _coerce_dict(application.get("modals") or {})
+            catalog = _coerce_dict(data_map.get("catalog") or {})
+            apps = _coerce_list(catalog.get("apps"))
+            widgets = _coerce_list(catalog.get("widgets"))
+            page_schema = _coerce_dict(desktop.get("pageSchema") or {})
+            page_widgets = _coerce_list(page_schema.get("widgets"))
+            topbar = _coerce_list(desktop.get("topbar"))
+            current_scenario = str(ui_map.get("current_scenario") or "").strip() or None
+
+            has_ui_application = bool(application)
+            has_desktop_config = bool(desktop)
+            has_desktop_page_schema = bool(page_schema)
+            has_apps_catalog_modal = "apps_catalog" in modals
+            has_widgets_catalog_modal = "widgets_catalog" in modals
+            has_catalog_apps = isinstance(catalog.get("apps"), list)
+            has_catalog_widgets = isinstance(catalog.get("widgets"), list)
+            ready = (
+                has_ui_application
+                and has_desktop_config
+                and has_desktop_page_schema
+                and has_apps_catalog_modal
+                and has_widgets_catalog_modal
+                and has_catalog_apps
+                and has_catalog_widgets
+            )
+
+            return {
+                "ready": ready,
+                "webspace_id": target_webspace_id,
+                "current_scenario": current_scenario,
+                "has_ui_application": has_ui_application,
+                "has_desktop_config": has_desktop_config,
+                "has_desktop_page_schema": has_desktop_page_schema,
+                "has_apps_catalog_modal": has_apps_catalog_modal,
+                "has_widgets_catalog_modal": has_widgets_catalog_modal,
+                "has_catalog_apps": has_catalog_apps,
+                "has_catalog_widgets": has_catalog_widgets,
+                "catalog_counts": {
+                    "apps": len(apps),
+                    "widgets": len(widgets),
+                },
+                "topbar_count": len(topbar),
+                "page_widget_count": len(page_widgets),
+            }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "webspace_id": target_webspace_id,
+            "current_scenario": None,
+            "has_ui_application": False,
+            "has_desktop_config": False,
+            "has_desktop_page_schema": False,
+            "has_apps_catalog_modal": False,
+            "has_widgets_catalog_modal": False,
+            "has_catalog_apps": False,
+            "has_catalog_widgets": False,
+            "catalog_counts": {"apps": 0, "widgets": 0},
+            "topbar_count": 0,
+            "page_widget_count": 0,
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+
+async def _read_live_catalog_items(webspace_id: str, kind: str) -> list[dict[str, Any]]:
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    bucket = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
+    try:
+        async with async_get_ydoc(target_webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            catalog = _coerce_dict(data_map.get("catalog") or {})
+            items = catalog.get(bucket)
+            return [dict(it) for it in _coerce_list(items) if isinstance(it, dict)]
+    except Exception:
+        return []
 
 
 class NodeStatus(BaseModel):
@@ -587,6 +680,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
     desktop = (await WebDesktopService().get_snapshot_async(target_webspace_id)).to_dict()
+    materialization = await _describe_yjs_materialization(target_webspace_id)
     return {
         "ok": True,
         "accepted": True,
@@ -594,6 +688,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
         "overlay": overlay,
         "desktop": desktop,
         "projection": projection,
+        "materialization": materialization,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
             webspace_id=target_webspace_id,
@@ -727,6 +822,27 @@ async def node_yjs_desktop_state(webspace_id: str) -> dict[str, Any]:
         "accepted": True,
         "webspace_id": target_webspace_id,
         "desktop": desktop.to_dict(),
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
+@router.get("/yjs/webspaces/{webspace_id}/catalog/{kind}", dependencies=[Depends(require_token)])
+async def node_yjs_catalog_state(webspace_id: str, kind: str) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    normalized_kind = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
+    materialization = await _describe_yjs_materialization(target_webspace_id)
+    items = await _read_live_catalog_items(target_webspace_id, normalized_kind)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "kind": normalized_kind,
+        "items": items,
+        "materialization": materialization,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
             webspace_id=target_webspace_id,
