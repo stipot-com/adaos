@@ -67,6 +67,9 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	selectedApproveWebspace = ''
 	private pairPollTimer?: any
 	private pairRecreateInFlight = false
+	startupState = 'Starting app...'
+	private startupTimer?: ReturnType<typeof setTimeout>
+	private startupStartedAt = 0
 	constructor(
 		private y: YDocService,
 		private modal: ModalController,
@@ -77,6 +80,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.startStartupPhase('Preparing renderer')
 		addIcons({ menuOutline, closeOutline, homeOutline, ellipsisHorizontalOutline })
 		this.ensureMediaQueries()
 		try {
@@ -86,13 +90,16 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		const registrationIntent = this.hasRegistrationIntent()
 		this.ownerAuthenticated = this.hasOwnerSession()
 		this.isAuthenticated = this.ownerAuthenticated
+		this.startStartupPhase('Connecting to hub')
 		try {
 			await this.y.initFromHub()
 			// Local hub mode: no owner session required, but we still consider the user "authenticated" for the UI.
 			this.isAuthenticated = true
+			this.startStartupPhase('Loading desktop schema')
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
 			this.initError = msg
+			this.clearStartupTimer()
 			if (registrationIntent) {
 				this.ownerAuthenticated = false
 				this.isAuthenticated = false
@@ -122,6 +129,10 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.readFabActions()
 			this.readWebspaces()
 			this.pageSchema = this.desktopSchema.loadSchema()
+			if (this.pageSchema) {
+				this.startupState = 'Desktop ready'
+				this.clearStartupTimer()
+			}
 			this.rebuildAreaWidgetCounts()
 			this.emitSidebarAvailability()
 			this.emitScenarioChanged()
@@ -140,6 +151,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			un1?.()
 			un2?.()
 			this.stateSub?.unsubscribe()
+			this.clearStartupTimer()
 			try { clearInterval(this.pairPollTimer) } catch {}
 			this.teardownMediaQueries()
 			try {
@@ -157,7 +169,34 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	}
 	ngOnDestroy() {
 		try { this.teardownMediaQueries() } catch {}
+		this.clearStartupTimer()
 		this.dispose?.()
+	}
+
+	private startStartupPhase(label: string): void {
+		const boot = (window as any).__INIMATIC_BOOT__
+		if (!this.startupStartedAt) {
+			this.startupStartedAt = Date.now()
+		}
+		this.startupState = label
+		try {
+			boot?.note?.(`desktop: ${label}`)
+		} catch {}
+		this.clearStartupTimer()
+		this.startupTimer = setTimeout(() => {
+			const elapsed = Math.max(1, Math.round((Date.now() - this.startupStartedAt) / 1000))
+			this.startupState = `${label} is taking longer than expected (${elapsed}s)`
+			try {
+				boot?.note?.(`desktop: slow phase ${label}`)
+			} catch {}
+		}, 5000)
+	}
+
+	private clearStartupTimer(): void {
+		if (this.startupTimer) {
+			clearTimeout(this.startupTimer)
+			this.startupTimer = undefined
+		}
 	}
 
 	private ensureMediaQueries(): void {
