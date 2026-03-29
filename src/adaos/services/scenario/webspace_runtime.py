@@ -27,6 +27,7 @@ from .workflow_runtime import ScenarioWorkflowRuntime
 
 _log = logging.getLogger("adaos.scenario.webspace_runtime")
 _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
+_SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 
 @dataclass(slots=True)
@@ -321,6 +322,42 @@ def _load_scenario_switch_content(scenario_id: str, *, space: str) -> Dict[str, 
         _log.info("desktop.scenario.set: using built-in fallback content for scenario=%s", scenario_id)
         return fallback
     return {}
+
+
+def _scenario_supports_catalog_controls(
+    scenario_id: str,
+    scenario_application: Mapping[str, Any] | None,
+) -> bool:
+    scenario_token = str(scenario_id or "").strip()
+    if scenario_token == "web_desktop":
+        return True
+    app = _coerce_dict(scenario_application or {})
+    desktop = _coerce_dict(app.get("desktop") or {})
+    page_schema = _coerce_dict(desktop.get("pageSchema") or {})
+    widgets = page_schema.get("widgets") or []
+    if isinstance(widgets, list):
+        for raw in widgets:
+            if not isinstance(raw, Mapping):
+                continue
+            widget_type = str(raw.get("type") or "").strip()
+            if widget_type == "desktop.widgets":
+                return True
+            data_source = _coerce_dict(raw.get("dataSource") or {})
+            if (
+                widget_type == "collection.grid"
+                and str(data_source.get("transform") or "").strip() == "desktop.icons"
+            ):
+                return True
+    topbar = desktop.get("topbar") or []
+    if isinstance(topbar, list):
+        for raw in topbar:
+            if not isinstance(raw, Mapping):
+                continue
+            action = _coerce_dict(raw.get("action") or {})
+            modal_id = str(action.get("openModal") or action.get("modalId") or "").strip()
+            if modal_id in {"apps_catalog", "widgets_catalog"}:
+                return True
+    return False
 
 
 class WebspaceScenarioRuntime:
@@ -657,10 +694,17 @@ class WebspaceScenarioRuntime:
 
         merged_apps = _merge_by_id(merged_apps + extra_apps + skill_apps)
         merged_widgets = _merge_by_id(merged_widgets + skill_widgets)
+        supports_catalog_controls = _scenario_supports_catalog_controls(
+            scenario_id,
+            scenario_application,
+        )
+        default_modal_ids = ["scenario_switcher"]
+        if supports_catalog_controls:
+            default_modal_ids = ["apps_catalog", "widgets_catalog", *default_modal_ids]
         merged_registry = {
             "modals": _merge_registry_lists(
                 base_registry_modals,
-                skill_registry_modals + [["apps_catalog", "widgets_catalog", "scenario_switcher"]],
+                skill_registry_modals + [default_modal_ids],
             ),
             "widgets": _merge_registry_lists(base_registry_widgets, skill_registry_widgets),
         }
@@ -691,7 +735,7 @@ class WebspaceScenarioRuntime:
                 if token and token not in merged_modals_map:
                     merged_modals_map[token] = value
 
-        if "apps_catalog" not in merged_modals_map:
+        if supports_catalog_controls and "apps_catalog" not in merged_modals_map:
             merged_modals_map["apps_catalog"] = {
                 "title": "Available Apps",
                 "schema": {
@@ -725,7 +769,7 @@ class WebspaceScenarioRuntime:
                     ],
                 },
             }
-        if "widgets_catalog" not in merged_modals_map:
+        if supports_catalog_controls and "widgets_catalog" not in merged_modals_map:
             merged_modals_map["widgets_catalog"] = {
                 "title": "Available Widgets",
                 "schema": {
@@ -1660,6 +1704,67 @@ async def rebuild_webspace_from_sources(
     }
 
 
+async def _complete_scenario_switch_rebuild(
+    webspace_id: str,
+    *,
+    scenario_id: str,
+    scenario_resolution: str | None,
+) -> dict[str, Any]:
+    return await rebuild_webspace_from_sources(
+        webspace_id,
+        action="scenario_switch_rebuild",
+        scenario_id=scenario_id,
+        scenario_resolution=scenario_resolution,
+        source_of_truth="scenario_switch",
+        reseed_from_scenario=False,
+    )
+
+
+def _schedule_scenario_switch_rebuild(
+    webspace_id: str,
+    *,
+    scenario_id: str,
+    scenario_resolution: str | None,
+) -> None:
+    existing = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def _runner() -> None:
+        try:
+            result = await _complete_scenario_switch_rebuild(
+                webspace_id,
+                scenario_id=scenario_id,
+                scenario_resolution=scenario_resolution,
+            )
+            if not bool(result.get("accepted")):
+                _log.warning(
+                    "background scenario switch rebuild rejected webspace=%s scenario=%s error=%s",
+                    webspace_id,
+                    scenario_id,
+                    result.get("error"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.warning(
+                "background scenario switch rebuild failed webspace=%s scenario=%s",
+                webspace_id,
+                scenario_id,
+                exc_info=True,
+            )
+        finally:
+            current = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
+            if current is task:
+                _SCENARIO_SWITCH_REBUILD_TASKS.pop(webspace_id, None)
+
+    task = asyncio.create_task(
+        _runner(),
+        name=f"webspace-scenario-switch:{webspace_id}:{scenario_id}",
+    )
+    _SCENARIO_SWITCH_REBUILD_TASKS[webspace_id] = task
+
+
 async def reload_webspace_from_scenario(
     webspace_id: str,
     *,
@@ -1755,6 +1860,7 @@ async def switch_webspace_scenario(
     scenario_id: str,
     *,
     set_home: bool | None = None,
+    wait_for_rebuild: bool = True,
 ) -> dict[str, Any]:
     webspace_id = str(webspace_id or "").strip()
     scenario_id = str(scenario_id or "").strip()
@@ -1812,12 +1918,14 @@ async def switch_webspace_scenario(
                 updated_ui[scenario_id] = {"application": ui_section}
                 ui_map.set(txn, "scenarios", updated_ui)
                 ui_map.set(txn, "current_scenario", scenario_id)
+                ui_map.set(txn, "application", ui_section)
 
                 reg_scenarios_raw = registry_map.get("scenarios")
                 reg_scenarios = dict(reg_scenarios_raw) if isinstance(reg_scenarios_raw, Mapping) else {}
                 reg_updated = dict(reg_scenarios)
                 reg_updated[scenario_id] = registry_section
                 registry_map.set(txn, "scenarios", reg_updated)
+                registry_map.set(txn, "merged", registry_section)
 
                 data_scenarios_raw = data_map.get("scenarios")
                 data_scenarios = dict(data_scenarios_raw) if isinstance(data_scenarios_raw, Mapping) else {}
@@ -1827,6 +1935,7 @@ async def switch_webspace_scenario(
                 entry["catalog"] = catalog_section
                 data_updated[scenario_id] = entry
                 data_map.set(txn, "scenarios", data_updated)
+                data_map.set(txn, "catalog", catalog_section)
 
                 if isinstance(data_section, dict):
                     for key, value in data_section.items():
@@ -1843,27 +1952,38 @@ async def switch_webspace_scenario(
         _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
         return {"ok": False, "accepted": False, "error": "scenario_switch_failed", "webspace_id": webspace_id, "scenario_id": scenario_id}
 
-    rebuild_result = await rebuild_webspace_from_sources(
-        webspace_id,
-        action="scenario_switch_rebuild",
-        scenario_id=scenario_id,
-        scenario_resolution="explicit",
-        source_of_truth="scenario_switch",
-        reseed_from_scenario=False,
-    )
-    if not bool(rebuild_result.get("accepted")):
-        return {
-            "ok": False,
-            "accepted": False,
-            "error": str(rebuild_result.get("error") or "scenario_switch_rebuild_failed"),
-            "webspace_id": webspace_id,
-            "scenario_id": scenario_id,
-        }
-
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     if resolved_set_home:
         row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
         await _sync_webspace_listing()
+
+    if not wait_for_rebuild:
+        _schedule_scenario_switch_rebuild(
+            webspace_id,
+            scenario_id=scenario_id,
+            scenario_resolution="explicit",
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "kind": row.effective_kind,
+            "source_mode": row.effective_source_mode,
+            "current_scenario_before": state_before.current_scenario,
+            "home_scenario_before": state_before.effective_home_scenario,
+            "home_scenario": row.effective_home_scenario,
+            "set_home": resolved_set_home,
+            "background_rebuild": True,
+        }
+
+    rebuild_result = await _complete_scenario_switch_rebuild(
+        webspace_id,
+        scenario_id=scenario_id,
+        scenario_resolution="explicit",
+    )
+    if not bool(rebuild_result.get("accepted")):
+        return rebuild_result
 
     return {
         "ok": True,
@@ -1876,15 +1996,21 @@ async def switch_webspace_scenario(
         "home_scenario_before": state_before.effective_home_scenario,
         "home_scenario": row.effective_home_scenario,
         "set_home": resolved_set_home,
+        "background_rebuild": False,
     }
 
 
-async def go_home_webspace(webspace_id: str) -> dict[str, Any]:
+async def go_home_webspace(webspace_id: str, *, wait_for_rebuild: bool = True) -> dict[str, Any]:
     webspace_id = str(webspace_id or "").strip()
     if not webspace_id:
         raise ValueError("webspace_id is required")
     state = await describe_webspace_operational_state(webspace_id)
-    result = await switch_webspace_scenario(webspace_id, state.effective_home_scenario, set_home=False)
+    result = await switch_webspace_scenario(
+        webspace_id,
+        state.effective_home_scenario,
+        set_home=False,
+        wait_for_rebuild=wait_for_rebuild,
+    )
     result["action"] = "go_home"
     result["source_of_truth"] = "manifest_home_scenario"
     result["scenario_resolution"] = "manifest_home"
@@ -2036,7 +2162,7 @@ async def _on_webspace_go_home(evt: Dict[str, Any]) -> None:
     webspace_id = _webspace_id(payload)
     if not webspace_id:
         return
-    await go_home_webspace(webspace_id)
+    await go_home_webspace(webspace_id, wait_for_rebuild=False)
 
 
 @subscribe("desktop.webspace.set_home")
@@ -2070,7 +2196,12 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
         set_home = bool(payload.get("set_home"))
     elif "persist_home" in payload:
         set_home = bool(payload.get("persist_home"))
-    await switch_webspace_scenario(webspace_id, scenario_id, set_home=set_home)
+    await switch_webspace_scenario(
+        webspace_id,
+        scenario_id,
+        set_home=set_home,
+        wait_for_rebuild=False,
+    )
 
 
 @subscribe("prompt.project.changed")

@@ -25,8 +25,14 @@ async def _awaitable(value):
 def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
 
-    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool = False) -> dict[str, object]:
-        captured.append((webspace_id, scenario_id, set_home))
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool = False,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
         return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
 
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
@@ -40,7 +46,7 @@ def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> Non
         )
     )
 
-    assert captured == [("phase2-node", "prompt_engineer_scenario", True)]
+    assert captured == [("phase2-node", "prompt_engineer_scenario", True, False)]
     assert result["ok"] is True
     assert result["runtime"]["webspace_id"] == "phase2-node"
 
@@ -48,8 +54,14 @@ def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> Non
 def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool | None]] = []
 
-    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool | None = None) -> dict[str, object]:
-        captured.append((webspace_id, scenario_id, set_home))
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool | None = None,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
         return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
 
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
@@ -63,7 +75,7 @@ def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypat
         )
     )
 
-    assert captured == [("phase2-node", "prompt_engineer_scenario", None)]
+    assert captured == [("phase2-node", "prompt_engineer_scenario", None, False)]
     assert result["ok"] is True
     assert result["set_home"] is None
 
@@ -71,8 +83,8 @@ def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypat
 def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     captured: list[str] = []
 
-    async def _fake_go_home(webspace_id: str) -> dict[str, object]:
-        captured.append(webspace_id)
+    async def _fake_go_home(webspace_id: str, *, wait_for_rebuild: bool = True) -> dict[str, object]:
+        captured.append((webspace_id, wait_for_rebuild))
         return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": "prompt_engineer_scenario"}
 
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
@@ -81,7 +93,7 @@ def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
 
     result = asyncio.run(node_api_module.node_yjs_go_home("phase2-home"))
 
-    assert captured == ["phase2-home"]
+    assert captured == [("phase2-home", False)]
     assert result["scenario_id"] == "prompt_engineer_scenario"
     assert result["runtime"]["webspace_id"] == "phase2-home"
 

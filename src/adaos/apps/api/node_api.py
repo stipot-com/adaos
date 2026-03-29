@@ -1005,6 +1005,7 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
         str(webspace_id or "default") or "default",
         scenario_id,
         set_home=payload.set_home,
+        wait_for_rebuild=False,
     )
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
@@ -1023,7 +1024,10 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
             "webspace_id": webspace_id,
             "error": "hub_role_required",
         }
-    result = await go_home_webspace(str(webspace_id or "default") or "default")
+    result = await go_home_webspace(
+        str(webspace_id or "default") or "default",
+        wait_for_rebuild=False,
+    )
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",

@@ -294,6 +294,45 @@ def test_switch_webspace_scenario_keeps_home_unchanged_for_regular_workspace(mon
     assert result["home_scenario"] == "web_desktop"
 
 
+def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -> None:
+    webspace_id = "phase2-scenario-fast"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Fast",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = _patch_switch_dependencies(monkeypatch)
+    scheduled: list[tuple[str, str, str | None]] = []
+
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_scenario_switch_rebuild",
+        lambda webspace_id, *, scenario_id, scenario_resolution: scheduled.append(
+            (webspace_id, scenario_id, scenario_resolution)
+        ),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["background_rebuild"] is True
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit")]
+    assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
+    assert fake_state["registry"]["merged"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
+    assert fake_state["data"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
+
+
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "phase2-go-home"
     ensure_workspace(webspace_id)
@@ -307,7 +346,13 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
 
     captured: list[tuple[str, str, bool]] = []
 
-    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool = False) -> dict[str, object]:
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool = False,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
         captured.append((webspace_id, scenario_id, set_home))
         return {"ok": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
 
@@ -423,8 +468,14 @@ def test_ensure_dev_webspace_for_scenario_creates_missing_dev_space(monkeypatch)
 def test_desktop_scenario_set_forwards_set_home_flag(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
 
-    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool = False) -> dict[str, object]:
-        captured.append((webspace_id, scenario_id, set_home))
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool = False,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
         return {"ok": True}
 
     monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
@@ -435,14 +486,20 @@ def test_desktop_scenario_set_forwards_set_home_flag(monkeypatch) -> None:
         )
     )
 
-    assert captured == [("phase2-forward", "prompt_engineer_scenario", True)]
+    assert captured == [("phase2-forward", "prompt_engineer_scenario", True, False)]
 
 
 def test_desktop_scenario_set_preserves_explicit_false(monkeypatch) -> None:
     captured: list[tuple[str, str, bool | None]] = []
 
-    async def _fake_switch(webspace_id: str, scenario_id: str, *, set_home: bool | None = None) -> dict[str, object]:
-        captured.append((webspace_id, scenario_id, set_home))
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool | None = None,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
         return {"ok": True}
 
     monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
@@ -453,7 +510,7 @@ def test_desktop_scenario_set_preserves_explicit_false(monkeypatch) -> None:
         )
     )
 
-    assert captured == [("phase2-forward", "prompt_engineer_scenario", False)]
+    assert captured == [("phase2-forward", "prompt_engineer_scenario", False, False)]
 
 
 def test_reload_preview_webspaces_for_scenario_project(monkeypatch) -> None:
@@ -780,7 +837,15 @@ def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
             webspace_id="phase3-explicit-resolver",
             scenario_id="prompt_engineer_scenario",
             source_mode="dev",
-            scenario_application={"id": "prompt-root", "modals": {"scenario_modal": {"title": "Scenario"}}},
+            scenario_application={
+                "id": "prompt-root",
+                "modals": {"scenario_modal": {"title": "Scenario"}},
+                "desktop": {
+                    "pageSchema": {
+                        "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}]
+                    }
+                },
+            },
             scenario_catalog={
                 "apps": [{"id": "scenario-app", "title": "Scenario App"}],
                 "widgets": [{"id": "scenario-widget", "title": "Scenario Widget"}],
@@ -833,6 +898,28 @@ def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     assert resolved.application["modals"]["skill_modal"]["title"] == "Skill Modal"
     assert resolved.desktop["installed"]["apps"] == ["scenario-app", "scenario:other_scenario", "skill-app"]
     assert resolved.routing["routes"] == {}
+
+
+def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="phase5-no-library",
+            scenario_id="prompt_engineer_scenario",
+            source_mode="workspace",
+            scenario_application={"id": "prompt-root", "modals": {"scenario_modal": {"title": "Scenario"}}},
+            scenario_catalog={"apps": [{"id": "scenario-app", "title": "Scenario App"}]},
+            scenario_registry={"modals": ["scenario_modal"], "widgets": []},
+            overlay_snapshot={"installed": {"apps": [], "widgets": []}},
+            live_state={"desktop": {"installed": {}}, "routing": {}},
+            skill_decls=[],
+            desktop_scenarios=[],
+        )
+    )
+
+    assert resolved.registry["modals"] == ["scenario_modal", "scenario_switcher"]
+    assert "apps_catalog" not in (resolved.application.get("modals") or {})
+    assert "widgets_catalog" not in (resolved.application.get("modals") or {})
 
 
 def test_restore_webspace_from_snapshot_reconciles_runtime(monkeypatch) -> None:

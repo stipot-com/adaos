@@ -43,6 +43,18 @@ import { folderOpenOutline } from 'ionicons/icons'
           {{ primaryButton.label }}
         </ion-button>
       </div>
+      <div *ngSwitchCase="'stack'" class="stackbar" [ngClass]="segmentClass">
+        <ion-button
+          *ngFor="let btn of buttons"
+          expand="block"
+          [size]="buttonSize"
+          [color]="btn['kind'] === 'danger' ? 'danger' : 'primary'"
+          [fill]="btn['kind'] === 'danger' ? 'solid' : 'outline'"
+          (click)="onClick(btn)"
+        >
+          {{ btn.label }}
+        </ion-button>
+      </div>
       <ion-segment *ngSwitchDefault mode="md" [ngClass]="segmentClass">
         <ion-segment-button
           *ngFor="let btn of buttons"
@@ -78,6 +90,11 @@ import { folderOpenOutline } from 'ionicons/icons'
         --indicator-color: var(--ion-color-danger);
       }
       .headerbar {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .stackbar {
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -128,6 +145,7 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   selectionValue = ''
   hasSelection = false
   primaryButton?: { id: string; label: string; icon?: string; [k: string]: any }
+  buttonSize: 'small' | 'default' = 'default'
 
   constructor(
     private data: PageDataService,
@@ -140,6 +158,7 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
     addIcons({ folderOpenOutline })
     this.segmentClass = this.resolveSegmentClass()
     this.variant = this.resolveVariant()
+    this.buttonSize = this.resolveButtonSize()
     this.loadButtons()
     this.stateSub = this.state.selectAll().subscribe(() => {
       this.recomputeLabelsFromState()
@@ -154,6 +173,7 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   ngOnChanges(_changes: SimpleChanges): void {
     this.segmentClass = this.resolveSegmentClass()
     this.variant = this.resolveVariant()
+    this.buttonSize = this.resolveButtonSize()
     this.loadButtons()
   }
 
@@ -253,5 +273,10 @@ export class CommandBarWidgetComponent implements OnInit, OnDestroy, OnChanges {
   private resolveVariant(): string {
     const v = (this.widget?.inputs as any)?.['variant']
     return typeof v === 'string' ? v : ''
+  }
+
+  private resolveButtonSize(): 'small' | 'default' {
+    const size = this.widget?.inputs?.['size']
+    return size === 'small' ? 'small' : 'default'
   }
 }

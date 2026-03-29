@@ -1,10 +1,11 @@
-import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
+import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule } from '@ionic/angular'
-import { Observable } from 'rxjs'
+import { Observable, Subscription } from 'rxjs'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
+import { PageStateService } from '../../runtime/page-state.service'
 
 @Component({
   selector: 'ada-metric-tile-widget',
@@ -78,24 +79,35 @@ import { PageActionService } from '../../runtime/page-action.service'
     `,
   ],
 })
-export class MetricTileWidgetComponent implements OnInit, OnChanges {
+export class MetricTileWidgetComponent implements OnInit, OnChanges, OnDestroy {
   @Input() widget!: WidgetConfig
 
   data$?: Observable<any>
+  private stateSub?: Subscription
+  private stateDeps: string[] = []
+  private lastState: Record<string, any> = {}
 
   constructor(
     private data: PageDataService,
-    private actions: PageActionService
+    private actions: PageActionService,
+    private state: PageStateService,
   ) {}
 
   ngOnInit(): void {
+    this.recomputeStateDeps()
     this.updateStream()
+    this.stateSub = this.state.selectAll().subscribe(() => this.onStateChanged())
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['widget']) {
+      this.recomputeStateDeps()
       this.updateStream()
     }
+  }
+
+  ngOnDestroy(): void {
+    this.stateSub?.unsubscribe()
   }
 
   async onClick(): Promise<void> {
@@ -128,5 +140,36 @@ export class MetricTileWidgetComponent implements OnInit, OnChanges {
 
   private updateStream(): void {
     this.data$ = this.data.load<any>(this.widget?.dataSource)
+  }
+
+  private recomputeStateDeps(): void {
+    this.stateDeps = []
+    const params = this.widget?.dataSource && (this.widget.dataSource as any).params
+    if (!params || typeof params !== 'object') {
+      this.lastState = this.state.getSnapshot()
+      return
+    }
+    for (const value of Object.values(params)) {
+      if (typeof value === 'string' && value.startsWith('$state.')) {
+        const key = value.slice('$state.'.length)
+        if (key && !this.stateDeps.includes(key)) {
+          this.stateDeps.push(key)
+        }
+      }
+    }
+    this.lastState = this.state.getSnapshot()
+  }
+
+  private onStateChanged(): void {
+    if (!this.stateDeps.length) return
+    const next = this.state.getSnapshot()
+    const prev = this.lastState
+    this.lastState = next
+    for (const key of this.stateDeps) {
+      if (prev[key] !== next[key]) {
+        this.updateStream()
+        break
+      }
+    }
   }
 }

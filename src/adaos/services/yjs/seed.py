@@ -5,18 +5,7 @@ SEED: dict = {
         "application": {
             "version": "0.2",
             "desktop": {
-                "topbar": [
-                    {
-                        "id": "btn_home",
-                        "label": "Home",
-                        "icon": "home-outline",
-                        "action": {
-                            "type": "callHost",
-                            "target": "desktop.scenario.set",
-                            "params": {"scenario_id": "web_desktop"},
-                        },
-                    },
-                ],
+                "topbar": [],
                 "iconTemplate": {"icon": "apps-outline"},
                 "widgetTemplate": {"style": {"minWidth": 240}},
                 "pageSchema": {
@@ -27,22 +16,6 @@ SEED: dict = {
                         "areas": [{"id": "main", "role": "main"}],
                     },
                     "widgets": [
-                        {
-                            "id": "topbar",
-                            "type": "input.commandBar",
-                            "area": "main",
-                            "dataSource": {
-                                "kind": "y",
-                                "path": "ui/application/desktop/topbar",
-                            },
-                            "actions": [
-                                {
-                                    "on": "click",
-                                    "type": "openModal",
-                                    "params": {"modalId": "$event.action.openModal"},
-                                }
-                            ],
-                        },
                         {
                             "id": "desktop-icons",
                             "type": "collection.grid",

@@ -5,6 +5,7 @@ import { Subscription } from 'rxjs'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
 import { PageModalService } from '../../runtime/page-modal.service'
+import { PageStateService } from '../../runtime/page-state.service'
 import { ActionConfig, WidgetConfig } from '../../runtime/page-schema.model'
 
 type TableColumn = {
@@ -149,25 +150,33 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
   rows: any[] = []
   dataNotice = ''
   private dataSub?: Subscription
+  private stateSub?: Subscription
+  private stateDeps: string[] = []
+  private lastState: Record<string, any> = {}
 
   constructor(
     private data: PageDataService,
     private actions: PageActionService,
     private modals: PageModalService,
+    private state: PageStateService,
   ) {}
 
   ngOnInit(): void {
     this.applyInputs()
+    this.recomputeStateDeps()
     this.reload()
+    this.stateSub = this.state.selectAll().subscribe(() => this.onStateChanged())
   }
 
   ngOnChanges(_changes: SimpleChanges): void {
     this.applyInputs()
+    this.recomputeStateDeps()
     this.reload()
   }
 
   ngOnDestroy(): void {
     this.dataSub?.unsubscribe()
+    this.stateSub?.unsubscribe()
   }
 
   private applyInputs(): void {
@@ -217,6 +226,37 @@ export class TableWidgetComponent implements OnInit, OnChanges, OnDestroy {
           : []
       this.rows = items
     })
+  }
+
+  private recomputeStateDeps(): void {
+    this.stateDeps = []
+    const params = this.widget?.dataSource && (this.widget.dataSource as any).params
+    if (!params || typeof params !== 'object') {
+      this.lastState = this.state.getSnapshot()
+      return
+    }
+    for (const value of Object.values(params)) {
+      if (typeof value === 'string' && value.startsWith('$state.')) {
+        const key = value.slice('$state.'.length)
+        if (key && !this.stateDeps.includes(key)) {
+          this.stateDeps.push(key)
+        }
+      }
+    }
+    this.lastState = this.state.getSnapshot()
+  }
+
+  private onStateChanged(): void {
+    if (!this.stateDeps.length) return
+    const next = this.state.getSnapshot()
+    const prev = this.lastState
+    this.lastState = next
+    for (const key of this.stateDeps) {
+      if (prev[key] !== next[key]) {
+        this.reload()
+        break
+      }
+    }
   }
 
   private readNotice(payload: any): string {
