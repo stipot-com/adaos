@@ -7,8 +7,33 @@
 
 	<base href="/" />
 	<script>
-		window.__ADAOS_BASE__ = 'http://127.0.0.1:8777';
-		window.__ADAOS_TOKEN__ = 'dev-local-token';
+		(function (window) {
+			var request;
+			var host;
+			var isLocal;
+			try {
+				request = new XMLHttpRequest();
+				request.open('GET', '/runtime-config.json', false);
+				request.send(null);
+				if (request.status >= 200 && request.status < 300 && request.responseText) {
+					var cfg = JSON.parse(request.responseText);
+					if (cfg && typeof cfg.rootBase === 'string' && cfg.rootBase) {
+						window.__ADAOS_ROOT_BASE__ = cfg.rootBase;
+					}
+					if (cfg && typeof cfg.adaosBase === 'string' && cfg.adaosBase) {
+						window.__ADAOS_BASE__ = cfg.adaosBase;
+					}
+					if (cfg && typeof cfg.adaosToken === 'string' && cfg.adaosToken) {
+						window.__ADAOS_TOKEN__ = cfg.adaosToken;
+					}
+				}
+			} catch (err) {}
+			if (!window.__ADAOS_ROOT_BASE__) {
+				host = String((window.location && window.location.hostname) || '').toLowerCase();
+				isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+				window.__ADAOS_ROOT_BASE__ = isLocal ? 'http://127.0.0.1:3030' : 'https://api.inimatic.com';
+			}
+		})(window);
 	</script>
 	<!-- <meta name="color-scheme" content="light dark"/> -->
 	<meta name="viewport"
@@ -30,6 +55,7 @@
 <body>
 	<app-root></app-root>
 	<noscript>Please enable JavaScript to continue using this application.</noscript>
+	<script nomodule src="assets/legacy-browser.js"></script>
 </body>
 
 </html>

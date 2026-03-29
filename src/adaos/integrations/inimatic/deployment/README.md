@@ -1,78 +1,106 @@
 # inimatic deployment
 
-This directory contains the production and development deployment assets for the inimatic integration.  The stack is based on Docker Compose with Traefik acting as the reverse proxy and Let's Encrypt certificate manager.
+This directory contains the Docker Compose deployment assets for `app.inimatic.com`, `api.inimatic.com`, and the related NATS/Redis/Postgres services.
 
-## Prerequisites
+The public edge is built on:
 
-* A host with Docker Engine 24+ and Docker Compose v2.
-* Public DNS records that point `api.inimatic.com` and `app.inimatic.com` to the deployment host.
-* TCP ports 80 and 443 reachable from the internet (Traefik requires them for the ACME HTTP-01 challenge).
-* TLS and CA material placed on the server under `deployment/secrets/` (not committed to git).
+- `nginxproxy/nginx-proxy`
+- `nginxproxy/acme-companion`
+- Let's Encrypt HTTP-01
+- blue/green frontend and backend slots
 
-## Production deployment
+## Key files
 
-1. Copy `deployment/.env.example` to `deployment/.env` and adjust the values to your environment (Git forge settings, contact e-mail, optional forge credentials, etc.).
-2. Upload the TLS bundle to the server:
-   * `deployment/secrets/ca.key`
-   * `deployment/secrets/ca.crt`
-   * `deployment/secrets/server.key`
-   * `deployment/secrets/server.crt`
-   Ensure each file is owned by the deployment user and has permissions `600`.
-3. On the target host, run `docker compose --project-directory . -f deployment/docker-compose.yaml --profile prod up -d --wait` from the root of the inimatic repository or simply execute `deployment/deploy.sh`.
-4. Validate the rollout:
-   * `https://api.inimatic.com/health` should return `200 OK`.
-   * `https://app.inimatic.com/` should render the frontend with a valid Let's Encrypt certificate.
+- `docker-compose.yml`: public stack
+- `.env.example`: required deployment variables
+- `scripts/deploy.sh`: blue/green deploy entrypoint
+- `scripts/render_tls_overrides.sh`: renders per-host TLS compatibility snippets
+- `vhost.d/`: nginx-proxy server snippets
+- `nginx/40-generate-runtime-config.sh`: injects frontend runtime config on container start
 
-Traefik stores the ACME account data and issued certificates in the `traefik_letsencrypt` Docker volume (`/letsencrypt/acme.json` inside the container).  Renewal is automatic; make sure the host has persistent Docker volumes so the store is not lost between restarts.
+## Baseline rollout
 
-Use the helper `Makefile` in this directory for common tasks (set `PROFILE=prod` to target production):
+1. Copy `.env.example` to `.env` and fill in the real secrets.
+2. Keep `NGINX_SSL_POLICY=Mozilla-Intermediate` unless you have a very specific reason to relax the entire proxy.
+3. Run `bash scripts/deploy.sh`.
+4. Validate:
+   - `https://app.inimatic.com/`
+   - `https://api.inimatic.com/healthz`
+   - `docker exec reverse-proxy nginx -t`
 
-```bash
-cd deployment
-make PROFILE=prod pull
-make PROFILE=prod up
+## SmartTV / old browser testing
+
+The deployment now supports targeted legacy TLS overrides per host instead of weakening the whole reverse proxy.
+
+Relevant variables in `.env`:
+
+- `NGINX_SSL_POLICY`: global default TLS policy for nginx-proxy
+- `LEGACY_TLS_HOSTS`: comma-separated hostnames that should get an old-client TLS profile
+- `LEGACY_TLS_PROTOCOLS`: server-level override, default `TLSv1 TLSv1.1 TLSv1.2 TLSv1.3`
+- `LEGACY_TLS_CIPHERS`: server-level override with legacy RSA/CBC suites added
+
+Example:
+
+```env
+NGINX_SSL_POLICY=Mozilla-Intermediate
+LEGACY_TLS_HOSTS=app.inimatic.com,api.inimatic.com
 ```
 
-## Local development (dev profile)
-
-The dev profile runs Redis, the backend, and the frontend without Traefik.  TLS assets are provided via bind mounts.  Place development certificates under `deployment/dev-secrets/` (the defaults referenced in `.env.example`) or adjust the `DEV_*` variables in `.env` to point to local files.
-
-Start the stack with:
+Then deploy:
 
 ```bash
-docker compose --project-directory . -f deployment/docker-compose.yaml -f deployment/docker-compose.pg.override.yml --profile dev up -d
+bash scripts/deploy.sh
 ```
 
-This exposes the backend on `http://localhost:3030` and the frontend on `http://localhost:8080`. The override file adds a PostgreSQL service and wires `PG_URL` into the backend for Telegram multi-hub routing.
+`scripts/deploy.sh` calls `scripts/render_tls_overrides.sh`, then reloads nginx inside `reverse-proxy`.
 
-## CI/CD pipeline
+## Interpreting the result on a TV
 
-The GitHub Actions workflow `.github/workflows/cd.yml` builds backend and frontend images for every push to the `rev2026` branch touching inimatic sources or deployment assets.  Images are published to GHCR with the tags `latest` and `rev2026-<shortsha>` and then deployed to the production host through SSH.
+There are now two separate diagnostics paths:
 
-Configure the following repository secrets for deployment:
+1. TLS compatibility:
+   - If the TV still cannot open the page at all, TLS/SNI/cipher compatibility is still the likely issue.
+2. Frontend compatibility:
+   - If the TV opens the page and shows a plain "Browser update needed" message, TLS is already working and the blocker is the JS engine / ES module support.
 
-* `DEPLOY_HOST` – public hostname or IP of the target server.
-* `DEPLOY_USER` – SSH user with permissions to pull and run the stack.
-* `DEPLOY_KEY` – private SSH key for the deployment user.
-* Optional: `DEPLOY_PORT` – non-default SSH port.
-* Optional: define `REPO_DIR` in the remote environment to override the default clone directory (`~/adaos`).
+## Frontend runtime config
 
-The remote script fetches the latest `rev2026` branch, runs `deployment/deploy.sh`, and prints service status via `docker compose ps`.
+The frontend container writes `/runtime-config.json` on startup from these env vars:
 
-## Certificate rotation
+- `PUBLIC_ROOT_BASE`
+- `PUBLIC_ADAOS_BASE`
+- `PUBLIC_ADAOS_TOKEN`
 
-Traefik performs automatic certificate issuance and renewal via Let's Encrypt.  The ACME data (`acme.json`) resides inside the `traefik_letsencrypt` volume.  Back up this volume if the host is re-provisioned.  Manual intervention is only required when the contact e-mail or domains change.
+`/runtime-config.json` is served with `Cache-Control: no-store`, so changing these values does not fight the service worker cache.
 
-## Optional hardening
+For production, the normal setting is:
 
-For additional protection of administrative API endpoints you can enable Traefik's [basic authentication middleware](https://doc.traefik.io/traefik/middlewares/http/basicauth/) by adding a label such as `traefik.http.middlewares.api-basic.basicauth.users=<user>:<hashed-password>` to the backend service and referencing it from the router (`traefik.http.routers.api.middlewares=api-sec@docker,api-rl@docker,api-basic@docker`).
+```env
+PUBLIC_ROOT_BASE=https://api.inimatic.com
+PUBLIC_ADAOS_BASE=
+PUBLIC_ADAOS_TOKEN=
+```
 
-## Troubleshooting
+## Frontend browser floor
 
-| Symptom | Possible cause | Suggested action |
-| ------- | -------------- | ---------------- |
-| Let's Encrypt fails to issue certificates | Ports 80/443 blocked, DNS not pointing at host, or previous certificates exhausted the rate limit | Ensure DNS is correct, open ports on firewalls, and wait before retrying when LE rate limits hit. |
-| Frontend/API unreachable | Containers unhealthy or Traefik not running | Check `docker compose ps`, inspect logs with `docker compose logs <service>`; validate secrets and `.env` values. |
-| `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` on SmartTV browsers | TLS 1.2 disabled (TLS 1.3-only policy) | Set `reverse-proxy` `SSL_POLICY` to `Mozilla-Intermediate` (enables TLSv1.2 + TLSv1.3). |
-| ACME storage errors | `traefik_letsencrypt` volume missing or not writable | Remove the container and recreate, ensuring the volume is intact. |
-| Port conflicts on startup | Other services listening on 80/443 | Stop conflicting services or adjust host port mappings in the compose file (not recommended for production). |
+The current Angular app targets modern browsers only. See `.browserslistrc` in the frontend:
+
+- `Chrome >=79`
+- `ChromeAndroid >=79`
+- `Firefox >=70`
+- `Edge >=79`
+- `Safari >=14`
+- `iOS >=14`
+
+That means some older SmartTV browsers can pass TLS and still remain incompatible with the frontend bundle.
+
+## Practical action plan
+
+1. Deploy with the current default policy and confirm the baseline behavior.
+2. Enable `LEGACY_TLS_HOSTS=app.inimatic.com,api.inimatic.com` and redeploy.
+3. Test the TV again.
+4. If the TV now reaches the page but shows the legacy-browser notice, stop changing TLS and treat this as a frontend/browser-support issue.
+5. If the TV still does not reach the page, check whether the device is missing SNI support or still rejects the offered ciphers.
+6. Once the hypothesis is confirmed, either:
+   - keep the legacy TLS override only on the required host(s), or
+   - move legacy clients to a separate hostname / endpoint so the main site can stay stricter.

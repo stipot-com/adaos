@@ -1,6 +1,7 @@
 import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http'
 import { Injectable } from '@angular/core'
 import { Observable } from 'rxjs'
+import { ROOT_BASE } from '../core/adaos/adaos-client.service'
 
 type PairCreateResponse = { ok: boolean; pair_code?: string; expires_at?: number }
 type PairStatusResponse = {
@@ -22,18 +23,7 @@ export class PairingService {
 			const hinted = ((window as any).__ADAOS_ROOT_BASE__ || '').trim()
 			if (hinted) return hinted.replace(/\/+$/, '')
 		} catch {}
-		// For production, keep the API base constant to make QR URLs short and stable.
-		// For local/dev, allow using current origin (or __ADAOS_ROOT_BASE__ override above).
-		try {
-			const origin = String(window.location.origin || '').trim()
-			if (origin) {
-				const host = String(window.location.host || '').toLowerCase()
-				if (host === 'app.inimatic.com' || host === 'v1.app.inimatic.com') return 'https://api.inimatic.com'
-				if (host === 'localhost' || host.startsWith('127.') || host === '[::1]') return origin.replace(/\/+$/, '')
-				return 'https://api.inimatic.com'
-			}
-		} catch {}
-		return 'https://api.inimatic.com'
+		return ROOT_BASE
 	}
 
 	constructor(private http: HttpClient) {

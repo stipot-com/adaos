@@ -40,5 +40,7 @@ COPY --from=build /inimatic/www /usr/share/nginx/html
 # если у тебя Angular выводит в dist/<app>, можно заменить на dist
 # COPY --from=build /inimatic/dist /usr/share/nginx/html
 
+COPY ./deployment/nginx/40-generate-runtime-config.sh /docker-entrypoint.d/40-generate-runtime-config.sh
 COPY ./deployment/nginx/default.conf /etc/nginx/conf.d/default.conf
+RUN chmod +x /docker-entrypoint.d/40-generate-runtime-config.sh
 EXPOSE 8080

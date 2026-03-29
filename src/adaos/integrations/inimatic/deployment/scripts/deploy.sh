@@ -2,13 +2,22 @@
 # scripts/deploy.sh
 set -euo pipefail
 
-PROJECT_DIR="/opt/inimatic/docker/compose"
-STATE_DIR="/opt/inimatic"
-ACTIVE_FILE="$STATE_DIR/.active_slot"
-ENVF="${ENVF:-/opt/inimatic/.env}"
-BASE="${BASE:-/opt/inimatic/docker/compose/docker-compose.yml}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="${STATE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ACTIVE_FILE="${ACTIVE_FILE:-$STATE_DIR/.active_slot}"
+ENVF="${ENVF:-$STATE_DIR/.env}"
 
-source "$(dirname "$0")/utils.sh"
+DEFAULT_PROJECT_DIR="$STATE_DIR"
+DEFAULT_BASE="$DEFAULT_PROJECT_DIR/docker-compose.yml"
+if [[ ! -f "$DEFAULT_BASE" && -f "$STATE_DIR/docker/compose/docker-compose.yml" ]]; then
+  DEFAULT_PROJECT_DIR="$STATE_DIR/docker/compose"
+  DEFAULT_BASE="$DEFAULT_PROJECT_DIR/docker-compose.yml"
+fi
+
+PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
+BASE="${BASE:-$DEFAULT_BASE}"
+
+source "$SCRIPT_DIR/utils.sh"
 
 echo "[deploy] ENVF = $ENVF"
 require_file "$ENVF" ".env not found"
@@ -27,8 +36,10 @@ require_var API_DOMAIN
 require_var DEFAULT_EMAIL
 require_var COMPOSE_PROJECT_NAME
 
+bash "$SCRIPT_DIR/render_tls_overrides.sh"
+
 # secrets that must exist inside the host (as mounted in compose)
-require_file /opt/inimatic/secrets /opt/inimatic/secrets "secrets folder missing?"
+require_file /opt/inimatic/secrets "secrets folder missing"
 require_file /opt/inimatic/runtime/ssh/forge_ssh_key "forge ssh key missing"
 require_file /opt/inimatic/runtime/ssh/known_hosts "known_hosts missing"
 
@@ -77,6 +88,8 @@ bash /opt/inimatic/scripts/ghcr_login_via_app.sh
 # 0) ensure reverse-proxy & acme are up-to-date
 docker compose --env-file "$ENVF" -f "$BASE" up -d reverse-proxy acme redis postgres nats nats_init logtap
 wait_healthy reverse-proxy || { echo "[deploy] reverse-proxy not healthy"; exit 1; }
+docker exec reverse-proxy nginx -t
+docker exec reverse-proxy nginx -s reload || true
 
 # 1) pull new images first
 docker compose --env-file "$ENVF" -f "$BASE" pull "$NEW_FRONT" "$NEW_BACK" || true

@@ -36,12 +36,16 @@ export type AdaosEventsConnectionState =
 	| 'connecting'
 	| 'connected'
 
-const ROOT_BASE = (() => {
+export const ROOT_BASE = (() => {
 	const value = (window as any).__ADAOS_ROOT_BASE__ ?? 'http://127.0.0.1:3030'
 	return typeof value === 'string'
 		? value.replace(/\/$/, '')
 		: 'http://127.0.0.1:3030'
 })()
+
+export function rootHubBaseUrl(hubId: string): string {
+	return `${ROOT_BASE}/hubs/${String(hubId || '').trim()}`
+}
 
 function isLoopbackHost(host: string): boolean {
 	const normalized = String(host || '').trim().toLowerCase()
@@ -135,7 +139,7 @@ function getStoredBoundSubnetSession(): {
 			String(payload?.hub_id || payload?.subnet_id || payload?.owner_id || '').trim()
 		if (!hubId) return null
 		return {
-			baseUrl: `https://api.inimatic.com/hubs/${hubId}`,
+			baseUrl: rootHubBaseUrl(hubId),
 			sessionJwt,
 		}
 	} catch {
@@ -421,11 +425,11 @@ export class RootClient {
 	constructor(private http: HttpClient) {}
 
 	get<T>(path: string) {
-		return this.http.get<T>(`https://api.inimatic.com${path}`)
+		return this.http.get<T>(`${ROOT_BASE}${path}`)
 	}
 
 	post<T>(path: string, body?: any) {
-		return this.http.post<T>(`https://api.inimatic.com${path}`, body ?? {})
+		return this.http.post<T>(`${ROOT_BASE}${path}`, body ?? {})
 	}
 }
 

@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core'
 import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { WebsocketProvider } from 'y-websocket'
-import { AdaosClient } from '../core/adaos/adaos-client.service'
+import { AdaosClient, rootHubBaseUrl } from '../core/adaos/adaos-client.service'
 import { DataChannelProvider } from './datachannel-provider'
 import { isDebugEnabled } from '../debug-log'
 import { LoginService } from '../features/login/login.service'
@@ -711,7 +711,7 @@ export class YDocService {
         this.invalidateWebSession()
         return false
       }
-      this.adaos.setBase(`https://api.inimatic.com/hubs/${hubId}`)
+      this.adaos.setBase(rootHubBaseUrl(hubId))
       this.adaos.setAuthBearer(sessionJwt)
       return true
     }

@@ -26,8 +26,9 @@ services:
         ports: ['80:80', '443:443']
         networks: [proxy]
         environment:
-            # Mozilla-Modern disables TLSv1.2 (TLSv1.3-only). Some SmartTV browsers (e.g. LG) still require TLSv1.2.
-            SSL_POLICY: Mozilla-Intermediate
+            # Keep the global policy reasonably modern; use per-host vhost overrides
+            # from scripts/render_tls_overrides.sh when a legacy browser really needs more.
+            SSL_POLICY: ${NGINX_SSL_POLICY:-Mozilla-Intermediate}
             TRUST_DOWNSTREAM_PROXY: 'false'
             # включаем логи ошибок в stdout для быстрой диагностики TLS/mTLS
             ENABLE_IPV6: 'false'
@@ -183,6 +184,9 @@ services:
             VIRTUAL_PORT: 8080
             LETSENCRYPT_HOST: app.inimatic.com,v1.app.inimatic.com
             LETSENCRYPT_EMAIL: connect@stipot.com
+            PUBLIC_ROOT_BASE: ${PUBLIC_ROOT_BASE:-https://api.inimatic.com}
+            PUBLIC_ADAOS_BASE: ${PUBLIC_ADAOS_BASE:-}
+            PUBLIC_ADAOS_TOKEN: ${PUBLIC_ADAOS_TOKEN:-}
         healthcheck:
             test:
                 [
@@ -271,6 +275,9 @@ services:
             VIRTUAL_PORT: 8080
             LETSENCRYPT_HOST: app.inimatic.com,v1.app.inimatic.com
             LETSENCRYPT_EMAIL: connect@stipot.com
+            PUBLIC_ROOT_BASE: ${PUBLIC_ROOT_BASE:-https://api.inimatic.com}
+            PUBLIC_ADAOS_BASE: ${PUBLIC_ADAOS_BASE:-}
+            PUBLIC_ADAOS_TOKEN: ${PUBLIC_ADAOS_TOKEN:-}
         healthcheck:
             test:
                 [
