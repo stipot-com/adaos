@@ -68,10 +68,7 @@
 									"with": "src/environments/build.prod.ts"
 								}
 							],
-							"optimization": {
-								"scripts": false,
-								"styles": false
-							},
+							"optimization": true,
 							"outputHashing": "all"
 						},
 						"development": {
