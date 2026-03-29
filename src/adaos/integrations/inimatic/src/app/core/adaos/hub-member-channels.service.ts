@@ -221,6 +221,7 @@ export class HubMemberChannelsService {
 	private static readonly DIRECT_RECOVERY_DC_OPEN_TIMEOUT_BACKOFF_MS = 2 * 60_000
 	private static readonly DIRECT_RECOVERY_ICE_RESTART_LIMIT = 3
 	private static readonly SYNC_RECOVERY_DEBOUNCE_MS = 1_500
+	private static readonly YWS_RECONNECT_MAX_BACKOFF_MS = 10_000
 
 	private readonly states = new Map<HubMemberSemanticChannelId, ChannelState>()
 	private readonly controlSubscriptions = new Set<string>()
@@ -863,9 +864,15 @@ export class HubMemberChannelsService {
 		}
 		this.reportSyncPathState('yws', 'connecting')
 		return {
-			provider: new WebsocketProvider(serverUrl, room, doc, {
-				params,
-			}),
+			provider: new WebsocketProvider(
+				serverUrl,
+				room,
+				doc,
+				{
+					params,
+					maxBackoffTime: HubMemberChannelsService.YWS_RECONNECT_MAX_BACKOFF_MS,
+				} as any,
+			),
 			path: 'yws',
 		}
 	}
@@ -887,7 +894,7 @@ export class HubMemberChannelsService {
 		if (!remoteProxy || path !== 'yws') {
 			return false
 		}
-		if (reason !== 'provider_disconnected' && hasSeededContent) {
+		if (hasSeededContent) {
 			return false
 		}
 		if (this.wsState !== 'connected') {

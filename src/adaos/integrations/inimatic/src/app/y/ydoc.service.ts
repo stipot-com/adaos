@@ -532,6 +532,10 @@ export class YDocService {
     return false
   }
 
+  private hasRecoverableDocContent(): boolean {
+    return this.getMaterializationSnapshot().ready
+  }
+
   private async attemptSemanticSyncRecovery(
     reason: HubMemberSyncRecoveryReason,
     {
@@ -549,7 +553,7 @@ export class YDocService {
         reason,
         path: this.currentSyncPath,
         remoteProxy,
-        hasSeededContent: this.hasSeededDocContent(),
+        hasSeededContent: this.hasRecoverableDocContent(),
       })
     ) {
       this.channels.recordSyncRecoverySkipped(reason)
@@ -1216,6 +1220,7 @@ export class YDocService {
       if (!p || typeof p.on !== 'function') return
       p.on('sync', (synced: any) => {
         try {
+          if (this.provider !== provider) return
           const connected = Boolean(synced)
           this.providerHasSynced = connected
           if (connected) {
@@ -1232,6 +1237,7 @@ export class YDocService {
       })
       p.on('status', (ev: any) => {
         try {
+          if (this.provider !== provider) return
           const st = String(ev?.status || '').trim().toLowerCase()
           if (st === 'connected') {
             const ready = this.providerHasSynced || Boolean(p?.synced)
