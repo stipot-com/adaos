@@ -3,7 +3,6 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
-		"@nats-io/jwt": "^0.0.10-5",
 		"fluent-ffmpeg": "^2.1.3",
 		"ioredis": "^5.4.1",
 		"jose": "^5.9.6",
@@ -18,6 +17,16 @@
 	},
 	"devDependencies": {
 		"@types/node": "20",
+		"tsx": "^4.21.0",
 		"typescript": "5.6.3"
-	}
+	},	
+	"scripts": {
+		"dev": "tsx ./app.ts",
+		"health": "curl.exe -sk https://localhost:3030/v1/health",
+		"bootstrap": "curl.exe -sk -X POST https://localhost:3030/v1/bootstrap_token -H \"X-Root-Token: dev-root-token\" -H \"Content-Type: application/json\" -d \"{}\"",
+		"meta": "curl.exe -sk https://localhost:3030/v1/meta -H \"X-Root-Token: dev-root-token\"",
+		"code_map": "curl.exe -sk https://localhost:3030/v1/meta/code-map?format=json -H \"X-Root-Token: dev-root-token\"",
+		"source": "curl.exe -sk \"https://localhost:3030/v1/meta/source?path=src/adaos/integrations/inimatic/backend/app.ts\" -H \"X-Root-Token: dev-root-token\""
+
+	  }
 }
