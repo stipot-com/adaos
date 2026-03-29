@@ -69,7 +69,8 @@ export class AppComponent implements OnInit, OnDestroy {
 	logoSrc = 'assets/icon/favicon.svg'
 	currentScenario = 'web_desktop'
 	private colorSchemeMedia?: MediaQueryList
-	private colorSchemeListener = (e: MediaQueryListEvent) => this.applyTheme(e.matches)
+	private colorSchemeListener = (e: MediaQueryListEvent | MediaQueryList) =>
+		this.applyTheme(!!(e as MediaQueryListEvent | MediaQueryList)?.matches)
 	private narrowMedia?: MediaQueryList
 	private narrowListener = () => this.applyNarrow()
 	isNarrow = false
@@ -117,9 +118,7 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.applyLayoutVars()
 		this.maybeHardReloadOnBuildChange()
 		this.ensureNarrowMedia()
-		this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
-		this.applyTheme(this.colorSchemeMedia.matches)
-		this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener)
+		this.ensureColorSchemeMedia()
 
 		// Initialize semantic member-channel runtime and underlying transport visibility handling.
 		this.channels.initRuntime()
@@ -334,7 +333,14 @@ export class AppComponent implements OnInit, OnDestroy {
 		this.transportSub?.unsubscribe()
 		this.scenarioDocDispose?.()
 		this.scenarioDocDispose = undefined
-		this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener)
+		try {
+			const any: any = this.colorSchemeMedia as any
+			if (typeof any?.removeEventListener === 'function') {
+				this.colorSchemeMedia?.removeEventListener('change', this.colorSchemeListener as any)
+			} else if (typeof any?.removeListener === 'function') {
+				any.removeListener(this.colorSchemeListener)
+			}
+		} catch {}
 		try {
 			window.removeEventListener('adaos:sidebarAvailability', this.sidebarAvailabilityHandler as any)
 		} catch { }
@@ -356,6 +362,25 @@ export class AppComponent implements OnInit, OnDestroy {
 			const h = this.isAndroid ? '80px' : '56px'
 			document.documentElement.style.setProperty('--ada-app-header-height', h)
 		} catch { }
+	}
+
+	private ensureColorSchemeMedia(): void {
+		try {
+			if (typeof window.matchMedia !== 'function') {
+				this.applyTheme(false)
+				return
+			}
+			this.colorSchemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
+			this.applyTheme(!!this.colorSchemeMedia?.matches)
+			const any: any = this.colorSchemeMedia as any
+			if (typeof any?.addEventListener === 'function') {
+				this.colorSchemeMedia.addEventListener('change', this.colorSchemeListener as any)
+			} else if (typeof any?.addListener === 'function') {
+				any.addListener(this.colorSchemeListener)
+			}
+		} catch {
+			this.applyTheme(false)
+		}
 	}
 
 	private ensureNarrowMedia(): void {

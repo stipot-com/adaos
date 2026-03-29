@@ -11,9 +11,23 @@ const LOG_BUFFER_KEY = '__ADAOS_DEBUG_LOGS__'
 const DEBUG_FLAG_KEY = 'adaos.debug'
 const VERBOSE_DEBUG_FLAG_KEY = 'adaos.debug.verbose'
 
+function getGlobalScope(): any {
+  if (typeof globalThis !== 'undefined') {
+    return globalThis as any
+  }
+  if (typeof window !== 'undefined') {
+    return window as any
+  }
+  if (typeof self !== 'undefined') {
+    return self as any
+  }
+  return {} as any
+}
+
 export function isDebugEnabled(): boolean {
   try {
-    return (globalThis?.localStorage?.getItem(DEBUG_FLAG_KEY) || '') === '1'
+    const g = getGlobalScope()
+    return (g.localStorage?.getItem(DEBUG_FLAG_KEY) || '') === '1'
   } catch {
     return false
   }
@@ -21,14 +35,15 @@ export function isDebugEnabled(): boolean {
 
 export function isVerboseDebugEnabled(): boolean {
   try {
-    return (globalThis?.localStorage?.getItem(VERBOSE_DEBUG_FLAG_KEY) || '') === '1'
+    const g = getGlobalScope()
+    return (g.localStorage?.getItem(VERBOSE_DEBUG_FLAG_KEY) || '') === '1'
   } catch {
     return false
   }
 }
 
 export function initDebugConsole(): void {
-  const g: any = (globalThis as any) || (window as any)
+  const g: any = getGlobalScope()
   const original = {
     log: console.log.bind(console),
     info: console.info.bind(console),

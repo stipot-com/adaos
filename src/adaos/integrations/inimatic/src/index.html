@@ -7,6 +7,58 @@
 
 	<base href="/" />
 	<script>
+		(function (window, document) {
+			try {
+				if (typeof window.globalThis === 'undefined') {
+					window.globalThis = window;
+				}
+			} catch (err) {}
+			try {
+				window.global = window;
+			} catch (err) {}
+			try {
+				if (typeof window.matchMedia !== 'function') {
+					window.matchMedia = function (query) {
+						return {
+							matches: false,
+							media: String(query || ''),
+							onchange: null,
+							addListener: function () {},
+							removeListener: function () {},
+							addEventListener: function () {},
+							removeEventListener: function () {},
+							dispatchEvent: function () { return false; },
+						};
+					};
+				}
+			} catch (err) {}
+			try {
+				if (typeof window.CustomEvent !== 'function' && document && typeof document.createEvent === 'function') {
+					var CustomEventPolyfill = function (event, params) {
+						var init = params || { bubbles: false, cancelable: false, detail: null };
+						var evt = document.createEvent('CustomEvent');
+						evt.initCustomEvent(event, !!init.bubbles, !!init.cancelable, init.detail);
+						return evt;
+					};
+					CustomEventPolyfill.prototype = window.Event ? window.Event.prototype : {};
+					window.CustomEvent = CustomEventPolyfill;
+				}
+			} catch (err) {}
+			try {
+				if (typeof window.requestAnimationFrame !== 'function') {
+					window.requestAnimationFrame = function (cb) {
+						return window.setTimeout(function () { cb(Date.now()); }, 16);
+					};
+				}
+				if (typeof window.cancelAnimationFrame !== 'function') {
+					window.cancelAnimationFrame = function (id) {
+						window.clearTimeout(id);
+					};
+				}
+			} catch (err) {}
+		})(window, document);
+	</script>
+	<script>
 		(function (window) {
 			var request;
 			var host;
@@ -69,6 +121,9 @@
 				done: false,
 				failed: false,
 				timer: null,
+				lines: [],
+				lastStatus: '',
+				lastDetail: '',
 				ensureOverlay: function () {
 					var body = document.body || document.getElementsByTagName('body')[0];
 					var overlay;
@@ -86,6 +141,29 @@
 							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:#52606d;font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
 						'</div>';
 					body.insertBefore(overlay, body.firstChild);
+				},
+				note: function (message) {
+					if (!message) return;
+					this.lines.push(String(message));
+					if (this.lines.length > 12) {
+						this.lines.splice(0, this.lines.length - 12);
+					}
+					if (this.failed) {
+						this.update(this.lastStatus || 'App failed to start', this.lastDetail || '', true);
+					}
+				},
+				renderDetail: function (detail) {
+					var out = [];
+					var i;
+					if (detail) out.push(String(detail));
+					if (this.lines.length) {
+						if (out.length) out.push('');
+						out.push('Boot log:');
+						for (i = 0; i < this.lines.length; i += 1) {
+							out.push('- ' + this.lines[i]);
+						}
+					}
+					return out.join('\n');
 				},
 				startSlowTimer: function () {
 					var self = this;
@@ -119,35 +197,87 @@
 					var statusNode = document.getElementById(this.statusId);
 					var detailNode = document.getElementById(this.detailId);
 					var overlay = document.getElementById(this.overlayId);
+					this.lastStatus = status || 'Loading Inimatic...';
+					this.lastDetail = detail || '';
 					if (!statusNode || !detailNode || !overlay) return;
-					statusNode.textContent = status || 'Loading Inimatic...';
-					detailNode.textContent = detail || '';
+					statusNode.textContent = this.lastStatus;
+					detailNode.textContent = this.renderDetail(this.lastDetail);
 					overlay.setAttribute('data-failed', failed ? '1' : '0');
 				},
 				fail: function (status, detail) {
 					this.failed = true;
 					this.stopSlowTimer();
 					this.update(status || 'App failed to start', detail || '', true);
+				},
+				describeTarget: function (target) {
+					var tag;
+					if (!target) return '';
+					tag = String(target.tagName || '').toUpperCase();
+					if (tag === 'SCRIPT') {
+						return 'script ' + String(target.src || target.getAttribute && target.getAttribute('src') || '(inline)');
+					}
+					if (tag === 'LINK') {
+						return 'link ' + String(target.href || target.getAttribute && target.getAttribute('href') || '(inline)');
+					}
+					return tag || 'unknown target';
+				},
+				describeErrorEvent: function (event) {
+					var bits = [];
+					var target = event && event.target;
+					var err = event && event.error;
+					var filename = event && event.filename;
+					var lineno = event && event.lineno;
+					var colno = event && event.colno;
+					if (target && target !== window) {
+						bits.push(this.describeTarget(target));
+					}
+					if (event && event.message) {
+						bits.push(String(event.message));
+					}
+					if (filename) {
+						bits.push(String(filename) + (lineno ? ':' + lineno : '') + (colno ? ':' + colno : ''));
+					}
+					if (err && err.name && err.message) {
+						bits.push(String(err.name) + ': ' + String(err.message));
+					} else if (err && err.message) {
+						bits.push(String(err.message));
+					}
+					if (err && err.stack) {
+						bits.push(String(err.stack));
+					}
+					return bits.join('\n') || 'unknown error';
 				}
 			};
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
+				boot.note('DOMContentLoaded');
 				boot.ensureOverlay();
 				boot.startSlowTimer();
 			});
+			window.addEventListener('load', function () {
+				boot.note('window.load');
+			});
+			boot.note(
+				'compat globalThis=' + (typeof window.globalThis !== 'undefined' ? 'yes' : 'no') +
+				', matchMedia=' + (typeof window.matchMedia === 'function' ? 'yes' : 'no') +
+				', CustomEvent=' + (typeof window.CustomEvent === 'function' ? 'yes' : 'no')
+			);
 			window.addEventListener('error', function (event) {
 				var target = event && event.target;
 				if (target && target.tagName === 'SCRIPT') {
 					boot.fail('Failed to load app script', target.src || 'script load error');
 					return;
 				}
-				boot.fail('JavaScript error', (event && event.message) || 'unknown error');
+				boot.fail('JavaScript error', boot.describeErrorEvent(event));
 			}, true);
 			window.addEventListener('unhandledrejection', function (event) {
 				var reason = event && event.reason;
 				var detail = '';
 				if (reason && typeof reason === 'object' && reason.message) {
 					detail = String(reason.message);
+					if (reason.stack) {
+						detail += '\n' + String(reason.stack);
+					}
 				} else if (typeof reason === 'string') {
 					detail = reason;
 				} else {

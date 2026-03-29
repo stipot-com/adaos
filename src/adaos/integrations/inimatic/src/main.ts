@@ -18,11 +18,36 @@ if (environment.production) {
 	enableProdMode()
 }
 
-registerIcons()
-initDebugConsole()
-
 const boot = (window as any).__INIMATIC_BOOT__
+boot?.note?.('main.ts: module evaluated')
 
+try {
+	registerIcons()
+	boot?.note?.('main.ts: icons registered')
+} catch (err) {
+	try {
+		const message =
+			(typeof (err as any)?.message === 'string' && (err as any).message) ||
+			'registerIcons failed'
+		boot?.fail?.('Bootstrap preparation failed', `registerIcons: ${message}`)
+	} catch {}
+	throw err
+}
+
+try {
+	initDebugConsole()
+	boot?.note?.('main.ts: debug console ready')
+} catch (err) {
+	try {
+		const message =
+			(typeof (err as any)?.message === 'string' && (err as any).message) ||
+			'initDebugConsole failed'
+		boot?.fail?.('Bootstrap preparation failed', `initDebugConsole: ${message}`)
+	} catch {}
+	throw err
+}
+
+boot?.note?.('main.ts: bootstrapApplication()')
 bootstrapApplication(AppComponent, {
 	providers: [
 		{ provide: RouteReuseStrategy, useClass: IonicRouteStrategy },
@@ -37,6 +62,7 @@ bootstrapApplication(AppComponent, {
 })
 	.then(() => {
 		try {
+			boot?.note?.('main.ts: bootstrap complete')
 			boot?.hide?.()
 		} catch {}
 	})
@@ -46,6 +72,7 @@ bootstrapApplication(AppComponent, {
 				(typeof err?.message === 'string' && err.message) ||
 				(typeof err === 'string' && err) ||
 				'bootstrap failed'
+			boot?.note?.(`main.ts: bootstrap failed: ${message}`)
 			boot?.fail?.('Angular bootstrap failed', message)
 		} catch {}
 		throw err

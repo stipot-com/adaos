@@ -65,6 +65,13 @@ export type YDocMaterializationSnapshot = {
   ready: boolean
 }
 
+function getGlobalScope(): any {
+  if (typeof globalThis !== 'undefined') return globalThis as any
+  if (typeof window !== 'undefined') return window as any
+  if (typeof self !== 'undefined') return self as any
+  return {} as any
+}
+
 @Injectable({ providedIn: 'root' })
 export class YDocService {
   public readonly doc = new Y.Doc()
@@ -347,7 +354,13 @@ export class YDocService {
     try {
       const existing = localStorage.getItem(key)
       if (existing) return existing
-      const raw = (globalThis.crypto && (crypto as any).randomUUID?.()) || Math.random().toString(36).slice(2)
+      const g = getGlobalScope()
+      const cryptoApi = g.crypto as Crypto | undefined
+      const raw =
+        (cryptoApi && typeof (cryptoApi as any).randomUUID === 'function'
+          ? (cryptoApi as any).randomUUID()
+          : null) ||
+        Math.random().toString(36).slice(2)
       const id = `dev_${raw}`
       localStorage.setItem(key, id)
       return id
@@ -878,7 +891,7 @@ export class YDocService {
           }
         })()
         const token = (() => {
-          const globalToken = (globalThis as any)?.__ADAOS_TOKEN__ ?? null
+          const globalToken = getGlobalScope().__ADAOS_TOKEN__ ?? null
           if (globalToken) return globalToken
           try {
             const v = (localStorage.getItem('adaos_hub_token') || '').trim()
@@ -1004,7 +1017,7 @@ export class YDocService {
       // Best-effort: Yjs room can still be joined without device.register;
       // the hub will lazily create/seed the webspace on first yws join.
       try {
-        if ((globalThis as any).__ADAOS_DEBUG__ === true) {
+        if (getGlobalScope().__ADAOS_DEBUG__ === true) {
           // eslint-disable-next-line no-console
           console.warn('[YDocService] device.register failed; continuing', err)
         }

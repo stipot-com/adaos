@@ -6,6 +6,13 @@ import type { AdaUiDictionary, AdaUiLang, AdaUiLanguageSource } from './dsl-type
 export type UiLang = AdaUiLang
 type Dict = AdaUiDictionary
 
+function getGlobalScope(): any {
+	if (typeof globalThis !== 'undefined') return globalThis as any
+	if (typeof window !== 'undefined') return window as any
+	if (typeof self !== 'undefined') return self as any
+	return {} as any
+}
+
 function normalizeLang(raw: string | null | undefined): UiLang {
 	const v = String(raw || '').toLowerCase()
 	if (v.startsWith('ru')) return 'ru'
@@ -47,7 +54,7 @@ export class I18nService {
 		}
 
 		try {
-			const maybe = (globalThis as any).__ADAOS_LANGUAGE_SOURCE__ as AdaUiLanguageSource | undefined
+			const maybe = getGlobalScope().__ADAOS_LANGUAGE_SOURCE__ as AdaUiLanguageSource | undefined
 			if (maybe && typeof maybe === 'object') this.registerSource(maybe)
 		} catch {}
 
@@ -116,4 +123,3 @@ export class I18nService {
 		this.activeDict = Object.assign({}, baseEn, baseLang, ...sourceDicts)
 	}
 }
-
