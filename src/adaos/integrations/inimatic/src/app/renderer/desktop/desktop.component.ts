@@ -676,6 +676,11 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		return this.pageSchema?.widgets.find(w => w.id === id)
 	}
 
+	getPageAreas(page?: PageSchema): Array<{ id: string; role?: string }> {
+		const areas = Array.isArray(page?.layout?.areas) ? page!.layout.areas : []
+		return areas.filter((area) => !!String(area?.id || '').trim())
+	}
+
 	getWidgetsInArea(areaId: string): WidgetConfig[] {
 		return (this.pageSchema?.widgets || []).filter(w => w.area === areaId)
 	}
@@ -686,7 +691,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	desktopLayoutClass(page: PageSchema): Record<string, boolean> {
 		const roles = new Map<string, boolean>()
-		for (const area of page.layout.areas || []) {
+		for (const area of this.getPageAreas(page)) {
 			if (!area?.role) continue
 			if (this.areaHasWidgets(area.id)) roles.set(area.role, true)
 		}

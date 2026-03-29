@@ -98,7 +98,7 @@
 
 		<div class="desktop-grid" [ngClass]="desktopLayoutClass(page)"
 			[class.is-compact]="isCompact" [class.sidebar-open]="sidebarOpen">
-			<ng-container *ngFor="let area of page.layout.areas">
+			<ng-container *ngFor="let area of getPageAreas(page)">
 				<ng-container>
 					<div class="area" [ngClass]="['area-' + area.id, area.role ? 'area-role-' + area.role : '']"
 						[class.is-empty]="!areaHasWidgets(area.id)">

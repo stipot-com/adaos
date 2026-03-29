@@ -18,7 +18,7 @@ export class DesktopSchemaService {
   loadSchema(): PageSchema {
     const fromYDoc = this.loadSchemaFromYDoc()
     if (fromYDoc) {
-      return fromYDoc
+      return this.normalizeSchema(fromYDoc)
     }
     return this.buildDefaultSchema()
   }
@@ -142,5 +142,39 @@ export class DesktopSchemaService {
       ],
     }
     return schema
+  }
+
+  private normalizeSchema(raw: any): PageSchema {
+    const fallback = this.buildDefaultSchema()
+    if (!raw || typeof raw !== 'object') {
+      return fallback
+    }
+
+    const layoutRaw = raw.layout
+    const areas = Array.isArray(layoutRaw?.areas)
+      ? layoutRaw.areas.filter((area: any) => area && typeof area === 'object' && String(area.id || '').trim())
+      : []
+    const widgets = Array.isArray(raw.widgets)
+      ? raw.widgets.filter((widget: any) => widget && typeof widget === 'object' && String(widget.id || '').trim())
+      : []
+
+    const normalized: PageSchema = {
+      id: String(raw.id || fallback.id || 'desktop').trim() || 'desktop',
+      title: typeof raw.title === 'string' ? raw.title : fallback.title,
+      layout: {
+        type:
+          layoutRaw?.type === 'split' || layoutRaw?.type === 'custom' || layoutRaw?.type === 'single'
+            ? layoutRaw.type
+            : fallback.layout.type,
+        areas: areas.length ? areas : fallback.layout.areas,
+      },
+      widgets: widgets.length ? widgets : fallback.widgets,
+    }
+
+    if (raw.initialState && typeof raw.initialState === 'object' && !Array.isArray(raw.initialState)) {
+      normalized.initialState = raw.initialState
+    }
+
+    return normalized
   }
 }
