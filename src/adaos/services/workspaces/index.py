@@ -108,26 +108,18 @@ def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     legacy_pinned_raw = value.get("pinnedWidgets")
     has_installed = "installed" in desktop_raw or "installed" in value
     has_pinned_widgets = "pinnedWidgets" in desktop_raw or "pinnedWidgets" in value
-    has_topbar = "topbar" in desktop_raw
-    has_page_schema = "pageSchema" in desktop_raw
     installed = {
         "apps": _dedupe_text_list(installed_source.get("apps") if isinstance(installed_source, dict) else []),
         "widgets": _dedupe_text_list(installed_source.get("widgets") if isinstance(installed_source, dict) else []),
     }
     pinned_widgets_source = desktop_raw.get("pinnedWidgets") if "pinnedWidgets" in desktop_raw else legacy_pinned_raw
     pinned_widgets = _normalize_overlay_widget_list(pinned_widgets_source)
-    topbar = _clone_overlay_json_list(desktop_raw.get("topbar"))
-    page_schema = _clone_overlay_json_dict(desktop_raw.get("pageSchema"))
     overlay: dict[str, Any] = {}
     desktop: dict[str, Any] = {}
     if has_installed or installed["apps"] or installed["widgets"]:
         desktop["installed"] = installed
     if has_pinned_widgets or pinned_widgets:
         desktop["pinnedWidgets"] = pinned_widgets
-    if has_topbar or topbar:
-        desktop["topbar"] = topbar
-    if has_page_schema or page_schema:
-        desktop["pageSchema"] = page_schema
     if desktop:
         overlay["desktop"] = desktop
     return overlay

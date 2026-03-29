@@ -362,12 +362,6 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
             "widgets": ["weather"],
         },
         "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
-        "topbar": [{"id": "home", "label": "Home"}, {"id": "home", "label": "Home"}],
-        "pageSchema": {
-            "id": "desktop",
-            "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-            "widgets": [],
-        },
     }
     assert get_workspace_overlay(webspace_id) == {
         "desktop": {
@@ -376,12 +370,6 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
                 "widgets": ["weather"],
             },
             "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
-            "topbar": [{"id": "home", "label": "Home"}, {"id": "home", "label": "Home"}],
-            "pageSchema": {
-                "id": "desktop",
-                "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-                "widgets": [],
-            },
         }
     }
     assert get_workspace_installed_overlay(webspace_id) == {
@@ -391,15 +379,8 @@ def test_workspace_desktop_overlay_roundtrip() -> None:
     assert get_workspace_pinned_widgets_overlay(webspace_id) == [
         {"id": "infra-status", "type": "visual.metricTile"}
     ]
-    assert get_workspace_topbar_overlay(webspace_id) == [
-        {"id": "home", "label": "Home"},
-        {"id": "home", "label": "Home"},
-    ]
-    assert get_workspace_page_schema_overlay(webspace_id) == {
-        "id": "desktop",
-        "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-        "widgets": [],
-    }
+    assert get_workspace_topbar_overlay(webspace_id) == []
+    assert get_workspace_page_schema_overlay(webspace_id) == {}
 
 
 def test_web_desktop_service_ignores_legacy_yjs_installed_without_overlay(monkeypatch) -> None:
@@ -489,12 +470,8 @@ def test_web_desktop_service_get_snapshot_returns_overlay_state(monkeypatch) -> 
             "widgets": ["weather"],
         },
         "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
-        "topbar": [{"id": "home", "label": "Home"}],
-        "pageSchema": {
-            "id": "desktop",
-            "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-            "widgets": [],
-        },
+        "topbar": [],
+        "pageSchema": {},
     }
 
 
@@ -520,8 +497,8 @@ def test_web_desktop_service_set_snapshot_updates_overlay_and_live_doc(monkeypat
 
     desktop_module.WebDesktopService().set_snapshot(snapshot, webspace_id)
 
-    assert get_workspace_topbar_overlay(webspace_id) == [{"id": "home", "label": "Home"}]
-    assert get_workspace_page_schema_overlay(webspace_id)["id"] == "desktop"
+    assert get_workspace_topbar_overlay(webspace_id) == []
+    assert get_workspace_page_schema_overlay(webspace_id) == {}
     assert fake_state["ui"]["application"]["desktop"]["topbar"] == [{"id": "home", "label": "Home"}]
     assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["widgets"][0]["id"] == "desktop-widgets"
     assert fake_state["data"]["desktop"]["topbar"] == [{"id": "home", "label": "Home"}]

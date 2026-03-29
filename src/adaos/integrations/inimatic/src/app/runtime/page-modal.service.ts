@@ -12,6 +12,8 @@ type ModalConfig = AdaModalConfig
 
 @Injectable({ providedIn: 'root' })
 export class PageModalService {
+  private readonly catalogPreparationTasks = new Map<'apps_catalog' | 'widgets_catalog', Promise<void>>()
+
   constructor(
     private modalCtrl: ModalController,
     private ydoc: YDocService,
@@ -21,33 +23,21 @@ export class PageModalService {
 
   async openModalById(modalId?: string): Promise<void> {
     if (!modalId) return
-    if (modalId === 'apps_catalog' || modalId === 'widgets_catalog') {
-      await this.prepareDesktopCatalogModal(modalId)
-    }
-    // 1) Primary source: projected application modals
-    const appModals = this.ydoc.toJSON(this.ydoc.getPath('ui/application/modals')) || {}
-
-    // 2) Fallback: modals defined inside the current scenario section
-    let scenarioModals: Record<string, any> = {}
-    try {
-      const currentScenario = this.ydoc.toJSON(
-        this.ydoc.getPath('ui/current_scenario')
-      ) as string | undefined
-      const scenarioId = currentScenario || 'web_desktop'
-      const scenNode: any = this.ydoc.getPath(`ui/scenarios/${scenarioId}`)
-      const scenRaw = this.ydoc.toJSON(scenNode) as any
-      if (scenRaw && typeof scenRaw === 'object') {
-        scenarioModals =
-          (scenRaw.application && scenRaw.application.modals) ||
-          scenRaw.modals ||
-          {}
+    const staticModal = this.resolveStaticModal(modalId)
+    if (staticModal) {
+      if (modalId === 'apps_catalog' || modalId === 'widgets_catalog') {
+        this.queueDesktopCatalogPreparation(modalId)
       }
-    } catch {
-      scenarioModals = {}
+      if (staticModal.schema) {
+        await this.openSchemaModal(staticModal)
+        return
+      }
+      await this.openSimpleModal(staticModal)
+      return
     }
-
-    const modalCfg: ModalConfig | undefined =
-      appModals[modalId] || scenarioModals[modalId] || this.resolveStaticModal(modalId)
+    const modalCfg =
+      this.readModalConfig(`ui/application/modals/${modalId}`)
+      || this.readScenarioModalConfig(modalId)
     if (!modalCfg) return
     if (modalCfg.schema) {
       await this.openSchemaModal(modalCfg)
@@ -112,6 +102,27 @@ export class PageModalService {
     return undefined
   }
 
+  private readModalConfig(path: string): ModalConfig | undefined {
+    const raw = this.ydoc.toJSON(this.ydoc.getPath(path))
+    if (!raw || typeof raw !== 'object') return undefined
+    return raw as ModalConfig
+  }
+
+  private readScenarioModalConfig(modalId: string): ModalConfig | undefined {
+    try {
+      const currentScenario = this.ydoc.toJSON(
+        this.ydoc.getPath('ui/current_scenario')
+      ) as string | undefined
+      const scenarioId = String(currentScenario || 'web_desktop').trim() || 'web_desktop'
+      return (
+        this.readModalConfig(`ui/scenarios/${scenarioId}/application/modals/${modalId}`)
+        || this.readModalConfig(`ui/scenarios/${scenarioId}/modals/${modalId}`)
+      )
+    } catch {
+      return undefined
+    }
+  }
+
   private async openSchemaModal(modalCfg: ModalConfig): Promise<void> {
     if (!modalCfg.schema) return
     await this.openTransientSchemaModal({
@@ -145,6 +156,16 @@ export class PageModalService {
         },
       ],
     }
+  }
+
+  private queueDesktopCatalogPreparation(modalId: 'apps_catalog' | 'widgets_catalog'): void {
+    if (this.catalogPreparationTasks.has(modalId)) return
+    const task = this.prepareDesktopCatalogModal(modalId)
+      .catch(() => {})
+      .finally(() => {
+        this.catalogPreparationTasks.delete(modalId)
+      })
+    this.catalogPreparationTasks.set(modalId, task)
   }
 
   private async prepareDesktopCatalogModal(modalId: 'apps_catalog' | 'widgets_catalog'): Promise<void> {

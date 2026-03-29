@@ -658,8 +658,6 @@ Additions:
 - desktop-scoped canonical state for:
   - installed apps/widgets
   - pinned widgets
-  - topbar items
-  - desktop `pageSchema` / layout shell overrides
 
 Intentionally untouched scope:
 
@@ -684,12 +682,13 @@ Current status:
   longer read back from legacy Yjs paths during normal service reads
 - pinned widgets now also participate in the same overlay boundary instead of
   living only as scenario-owned `ui.application.desktop.pinnedWidgets`
-- desktop shell-level state (`topbar`, `pageSchema`) now also participates in
-  the same persistent desktop overlay boundary instead of being only
-  scenario-owned materialized runtime state
-- semantic rebuild now consumes persistent overlay state for desktop
-  customization (`installed`, `pinnedWidgets`, `topbar`, `pageSchema`) and mirrors the materialized
-  result back into Yjs compatibility paths for the current renderer
+- shell composition (`topbar`, `pageSchema`) is intentionally still
+  scenario-driven in the MVP; stale shell overlays are stripped during
+  manifest normalization so scenario switch keeps changing the visible page
+- semantic rebuild now consumes persistent overlay state only for desktop
+  customization that already has a stable UX contract (`installed`,
+  `pinnedWidgets`) and mirrors the materialized result back into Yjs
+  compatibility paths for the current renderer
 - desktop customization is now inspectable as a first-class control-surface
   snapshot (`installed`, `pinnedWidgets`, `topbar`, `pageSchema`) rather than only as raw overlay
   metadata or ad-hoc Yjs paths

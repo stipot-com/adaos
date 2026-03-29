@@ -450,16 +450,12 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
             "has_overlay": True,
             "has_installed": True,
             "has_pinned_widgets": True,
-            "has_topbar": True,
-            "has_page_schema": True,
+            "has_topbar": False,
+            "has_page_schema": False,
             "installed": {"apps": ["scenario:prompt_engineer_runtime"], "widgets": []},
             "pinned_widgets": [{"id": "infra-status", "type": "visual.metricTile"}],
-            "topbar": [{"id": "home", "label": "Home"}],
-            "page_schema": {
-                "id": "desktop-custom",
-                "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-                "widgets": [],
-            },
+            "topbar": [],
+            "page_schema": {},
         },
     )
     monkeypatch.setattr(
@@ -519,7 +515,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["webspace"]["webspace_id"] == "dev_prompt"
     assert result["overlay"]["has_pinned_widgets"] is True
     assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
-    assert result["overlay"]["topbar"][0]["id"] == "home"
+    assert result["overlay"]["topbar"] == []
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
     assert result["desktop"]["pageSchema"]["id"] == "desktop-custom"
     assert result["webspace"]["source_mode"] == "dev"

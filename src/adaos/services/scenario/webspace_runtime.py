@@ -669,11 +669,7 @@ class WebspaceScenarioRuntime:
         overlay_has_pinned_widgets = "pinnedWidgets" in (inputs.overlay_snapshot or {})
         overlay_pinned_widgets = _normalize_overlay_widget_entries((inputs.overlay_snapshot or {}).get("pinnedWidgets"))
         scenario_pinned_widgets = _normalize_overlay_widget_entries(scenario_desktop.get("pinnedWidgets"))
-        overlay_has_topbar = "topbar" in (inputs.overlay_snapshot or {})
-        overlay_topbar = list((inputs.overlay_snapshot or {}).get("topbar") or []) if isinstance((inputs.overlay_snapshot or {}).get("topbar"), list) else []
         scenario_topbar = list(scenario_desktop.get("topbar") or []) if isinstance(scenario_desktop.get("topbar"), list) else []
-        overlay_has_page_schema = "pageSchema" in (inputs.overlay_snapshot or {})
-        overlay_page_schema = _coerce_dict((inputs.overlay_snapshot or {}).get("pageSchema") or {})
         scenario_page_schema = _coerce_dict(scenario_desktop.get("pageSchema") or {})
         installed_with_auto = _merge_installed_with_auto(
             installed_current,
@@ -768,8 +764,8 @@ class WebspaceScenarioRuntime:
         if merged_modals_map:
             app_with_modals["modals"] = merged_modals_map
         desktop_config = _coerce_dict(app_with_modals.get("desktop") or {})
-        desktop_config["topbar"] = overlay_topbar if overlay_has_topbar else scenario_topbar
-        desktop_config["pageSchema"] = overlay_page_schema if overlay_has_page_schema else scenario_page_schema
+        desktop_config["topbar"] = scenario_topbar
+        desktop_config["pageSchema"] = scenario_page_schema
         desktop_config["pinnedWidgets"] = (
             overlay_pinned_widgets if overlay_has_pinned_widgets else scenario_pinned_widgets
         )

@@ -639,8 +639,6 @@ def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) 
     assert inputs.overlay_snapshot["pinnedWidgets"] == [
         {"id": "infra-status", "type": "visual.metricTile"}
     ]
-    assert inputs.overlay_snapshot["topbar"] == [{"id": "home", "label": "Home"}]
-    assert inputs.overlay_snapshot["pageSchema"]["id"] == "desktop"
     assert inputs.overlay_snapshot["source"] == "workspace_manifest_overlay"
 
 
@@ -677,7 +675,7 @@ def test_phase5_resolver_prefers_pinned_widgets_from_overlay_over_scenario_defau
     ]
 
 
-def test_phase5_resolver_prefers_page_schema_and_topbar_from_overlay() -> None:
+def test_phase5_resolver_prefers_scenario_page_schema_and_topbar_over_overlay() -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     resolved = runtime.resolve_webspace(
         webspace_runtime_module.WebspaceResolverInputs(
@@ -696,25 +694,17 @@ def test_phase5_resolver_prefers_page_schema_and_topbar_from_overlay() -> None:
             },
             scenario_catalog={"apps": [], "widgets": []},
             scenario_registry={},
-            overlay_snapshot={
-                "installed": {"apps": [], "widgets": []},
-                "topbar": [{"id": "overlay-home", "label": "Overlay Home"}],
-                "pageSchema": {
-                    "id": "desktop-custom",
-                    "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
-                    "widgets": [{"id": "overlay-widget", "type": "desktop.widgets", "area": "main"}],
-                },
-            },
+            overlay_snapshot={"installed": {"apps": [], "widgets": []}},
             live_state={"desktop": {}, "routing": {}},
             skill_decls=[],
             desktop_scenarios=[],
         )
     )
 
-    assert resolved.application["desktop"]["topbar"] == [{"id": "overlay-home", "label": "Overlay Home"}]
-    assert resolved.application["desktop"]["pageSchema"]["id"] == "desktop-custom"
-    assert resolved.desktop["topbar"] == [{"id": "overlay-home", "label": "Overlay Home"}]
-    assert resolved.desktop["pageSchema"]["widgets"][0]["id"] == "overlay-widget"
+    assert resolved.application["desktop"]["topbar"] == [{"id": "scenario-home", "label": "Home"}]
+    assert resolved.application["desktop"]["pageSchema"]["id"] == "desktop"
+    assert resolved.desktop["topbar"] == [{"id": "scenario-home", "label": "Home"}]
+    assert resolved.desktop["pageSchema"]["widgets"][0]["id"] == "scenario-widget"
 
 
 def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:
