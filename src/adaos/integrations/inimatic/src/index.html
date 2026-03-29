@@ -6,6 +6,11 @@
 	<title>Inimatic App</title>
 
 	<base href="/" />
+	<style>
+		html:not(.hydrated) body[data-inimatic-force-visible="1"] {
+			display: block !important;
+		}
+	</style>
 	<script>
 		(function (window, document) {
 			try {
@@ -114,6 +119,7 @@
 	</script>
 	<script>
 		(function (window, document) {
+			var hydrationLogged = false;
 			var boot = {
 				overlayId: 'inimatic-boot-overlay',
 				statusId: 'inimatic-boot-status',
@@ -128,6 +134,9 @@
 					var body = document.body || document.getElementsByTagName('body')[0];
 					var overlay;
 					if (!body || this.done) return;
+					try {
+						body.setAttribute('data-inimatic-force-visible', '1');
+					} catch (err) {}
 					overlay = document.getElementById(this.overlayId);
 					if (overlay) return;
 					overlay = document.createElement('div');
@@ -250,13 +259,27 @@
 			};
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
+				try {
+					if (document.body) {
+						document.body.setAttribute('data-inimatic-force-visible', '1');
+					}
+				} catch (err) {}
 				boot.note('DOMContentLoaded');
+				boot.note('html.hydrated=' + (document.documentElement.classList.contains('hydrated') ? 'yes' : 'no'));
 				boot.ensureOverlay();
 				boot.startSlowTimer();
 			});
 			window.addEventListener('load', function () {
 				boot.note('window.load');
 			});
+			window.setInterval(function () {
+				try {
+					if (document.documentElement.classList.contains('hydrated') && !hydrationLogged) {
+						hydrationLogged = true;
+						boot.note('html.hydrated=yes');
+					}
+				} catch (err) {}
+			}, 3000);
 			boot.note(
 				'compat globalThis=' + (typeof window.globalThis !== 'undefined' ? 'yes' : 'no') +
 				', matchMedia=' + (typeof window.matchMedia === 'function' ? 'yes' : 'no') +

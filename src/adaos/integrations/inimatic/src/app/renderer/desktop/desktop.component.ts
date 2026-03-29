@@ -214,8 +214,20 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 		try {
 			boot?.note?.(reason)
 			if (this.pageSchema) {
-				boot?.note?.('desktop: page schema ready')
-				boot?.hide?.()
+				const hydrated =
+					typeof document !== 'undefined' &&
+					document.documentElement.classList.contains('hydrated')
+				if (hydrated) {
+					boot?.note?.('desktop: page schema ready')
+					boot?.note?.('desktop: html hydrated')
+					boot?.hide?.()
+				} else {
+					boot?.note?.('desktop: page schema ready, waiting for html.hydrated')
+					boot?.update?.(
+						'Finalizing UI...',
+						'Desktop schema is ready. Waiting for Ionic hydration...'
+					)
+				}
 				return
 			}
 			if (this.initError) {
