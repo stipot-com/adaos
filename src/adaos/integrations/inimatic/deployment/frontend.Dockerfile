@@ -1,14 +1,12 @@
 FROM node:20.18.0 AS build
 WORKDIR /inimatic
 
-# имя npm-скрипта, которое будем выполнять
 ARG BUILD_SCRIPT=buildprod
 ARG BUILD_VERSION=prod
 ENV BUILD_VERSION=$BUILD_VERSION
 
 COPY package*.json ./
 
-# подавляем postinstall, ускоряем CI
 ENV npm_config_ignore_scripts=true \
     npm_config_legacy_peer_deps=true \
     npm_config_audit=false \
@@ -18,27 +16,23 @@ ENV npm_config_ignore_scripts=true \
     CI=1
 
 RUN (npm ci) || (echo "npm ci failed, fallback to npm install" && npm install)
-
-# точечно достраиваем esbuild
 RUN npm_config_ignore_scripts=false npm rebuild esbuild
 
 COPY ./ /inimatic
 
-# если ARG пустой или скрипта нет — упадём с понятной ошибкой,
-# но не замаскируем реальные ошибки самого build-скрипта.
 RUN test -n "$BUILD_SCRIPT" || (echo "BUILD_SCRIPT is empty" && exit 2) \
  && npm run | grep -Eq "^[[:space:]]+$BUILD_SCRIPT([[:space:]]|$)" \
  || (echo "npm script '$BUILD_SCRIPT' not found. Add it to package.json or pass a correct BUILD_SCRIPT." && exit 3) \
  && npm run "$BUILD_SCRIPT"
 
-# sanity-check: убедимся, что артефакт реально собран
 RUN test -d /inimatic/www -o -d /inimatic/dist || (echo "No build output (www/ or dist/) found" && exit 4)
 
-# --- runtime stage ---
 FROM nginx:latest
 COPY --from=build /inimatic/www /usr/share/nginx/html
-# если у тебя Angular выводит в dist/<app>, можно заменить на dist
-# COPY --from=build /inimatic/dist /usr/share/nginx/html
+RUN rm -f /usr/share/nginx/html/ngsw.json \
+    /usr/share/nginx/html/ngsw-worker.js \
+    /usr/share/nginx/html/worker-basic.min.js \
+    /usr/share/nginx/html/safety-worker.js
 
 COPY ./deployment/nginx/40-generate-runtime-config.sh /docker-entrypoint.d/40-generate-runtime-config.sh
 COPY ./deployment/nginx/default.conf /etc/nginx/conf.d/default.conf

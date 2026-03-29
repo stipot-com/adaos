@@ -41,7 +41,7 @@
 							"streamsaver",
 							"long"
 						],
-						"serviceWorker": true,
+						"serviceWorker": false,
 						"ngswConfigPath": "ngsw-config.json"
 					},
 					"configurations": {
