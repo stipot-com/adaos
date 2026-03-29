@@ -30,7 +30,7 @@ bootstrapApplication(AppComponent, {
 		provideHttpClient(withInterceptorsFromDi()),
 		provideRouter(routes),
 		provideServiceWorker('ngsw-worker.js', {
-			enabled: !isDevMode(),
+			enabled: false,
 			registrationStrategy: 'registerWhenStable:30000',
 		}),
 	],
