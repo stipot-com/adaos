@@ -143,6 +143,62 @@ async def _read_live_catalog_items(webspace_id: str, kind: str) -> list[dict[str
         return []
 
 
+async def _materialize_catalog_items(webspace_id: str, kind: str) -> list[dict[str, Any]]:
+    bucket = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
+    raw_items = await _read_live_catalog_items(webspace_id, bucket)
+    desktop_snapshot = await WebDesktopService().get_snapshot_async(webspace_id)
+    installed_ids = set(
+        list(getattr(getattr(desktop_snapshot, "installed", None), "apps", []) or [])
+        if bucket == "apps"
+        else list(getattr(getattr(desktop_snapshot, "installed", None), "widgets", []) or [])
+    )
+    pinned_ids = {
+        str(item.get("id") or "").strip()
+        for item in list(getattr(desktop_snapshot, "pinned_widgets", []) or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    default_icon = "apps-outline" if bucket == "apps" else "layers-outline"
+    materialized: list[dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id") or "").strip()
+        if not item_id:
+            continue
+        scenario_id = str(raw.get("scenario_id") or "").strip()
+        launch_modal = str(raw.get("launchModal") or "").strip()
+        source = str(raw.get("source") or raw.get("origin") or "").strip()
+        installed_now = item_id in installed_ids
+        pinned_now = bucket == "widgets" and item_id in pinned_ids
+        kind_label = ""
+        if scenario_id:
+            kind_label = "Scenario"
+        elif launch_modal:
+            kind_label = "Modal"
+        elif bucket == "widgets":
+            kind_label = "Widget"
+        materialized.append(
+            {
+                "id": item_id,
+                "title": str(raw.get("title") or item_id).strip() or item_id,
+                "icon": str(raw.get("icon") or "").strip() or default_icon,
+                "subtitle": str(raw.get("subtitle") or "").strip() or scenario_id or launch_modal or source or "",
+                "kindLabel": kind_label,
+                "installType": "app" if bucket == "apps" else "widget",
+                "installable": True,
+                "installed": installed_now,
+                "pinnable": bucket == "widgets" and (installed_now or pinned_now),
+                "pinned": pinned_now,
+                "scenario_id": scenario_id or None,
+                "launchModal": launch_modal or None,
+                "source": source or None,
+                "origin": str(raw.get("origin") or "").strip() or None,
+                "dev": bool(raw.get("dev")),
+            }
+        )
+    return materialized
+
+
 class NodeStatus(BaseModel):
     node_id: str
     subnet_id: str
@@ -835,7 +891,7 @@ async def node_yjs_catalog_state(webspace_id: str, kind: str) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
     normalized_kind = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
     materialization = await _describe_yjs_materialization(target_webspace_id)
-    items = await _read_live_catalog_items(target_webspace_id, normalized_kind)
+    items = await _materialize_catalog_items(target_webspace_id, normalized_kind)
     return {
         "ok": True,
         "accepted": True,

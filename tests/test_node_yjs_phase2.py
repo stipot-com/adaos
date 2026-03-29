@@ -581,6 +581,15 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
             [{"id": "weather", "title": "Weather"}] if kind == "widgets" else []
         ),
     )
+    class _DesktopService:
+        async def get_snapshot_async(self, webspace_id: str | None = None):
+            assert webspace_id == "default"
+            return SimpleNamespace(
+                installed=SimpleNamespace(apps=[], widgets=["weather"]),
+                pinned_widgets=[{"id": "weather", "type": "visual.metricTile"}],
+            )
+
+    monkeypatch.setattr(node_api_module, "WebDesktopService", _DesktopService)
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
 
     result = asyncio.run(node_api_module.node_yjs_catalog_state("default", "widgets"))
@@ -588,7 +597,10 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
     assert result["ok"] is True
     assert result["accepted"] is True
     assert result["kind"] == "widgets"
-    assert result["items"] == [{"id": "weather", "title": "Weather"}]
+    assert result["items"][0]["id"] == "weather"
+    assert result["items"][0]["installType"] == "widget"
+    assert result["items"][0]["installed"] is True
+    assert result["items"][0]["pinned"] is True
     assert result["materialization"]["ready"] is False
     assert result["runtime"]["webspace_id"] == "default"
 

@@ -246,10 +246,14 @@ export class PageDataService {
   }
 
   private fromYDoc<T>(cfg: YDocDataSource): Observable<T | undefined> {
+    const catalogKind = this.desktopCatalogKind(cfg.path)
+    if (catalogKind) {
+      const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
+      return this.loadDesktopCatalogSnapshot(catalogKind, webspaceId) as Observable<T | undefined>
+    }
     return new Observable<T | undefined>((subscriber) => {
       let infrastateFallbackRequested = false
       let fallbackSubscription: { unsubscribe(): void } | null = null
-      let desktopCatalogFallbackRequested = false
 
       const emit = () => {
         const value = this.computeYDocValue(cfg) as T
@@ -261,20 +265,6 @@ export class PageDataService {
         ) {
           infrastateFallbackRequested = true
           fallbackSubscription = this.loadInfrastateFallback(cfg.path).subscribe((fallback) => {
-            if (fallback !== undefined) {
-              subscriber.next(fallback as T)
-            }
-          })
-        }
-        const catalogKind = this.desktopCatalogKind(cfg.path)
-        if (
-          catalogKind &&
-          !desktopCatalogFallbackRequested &&
-          this.shouldUseDesktopCatalogFallback(cfg.path, value)
-        ) {
-          desktopCatalogFallbackRequested = true
-          const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
-          fallbackSubscription = this.loadDesktopCatalogSnapshot(catalogKind, webspaceId).subscribe((fallback) => {
             if (fallback !== undefined) {
               subscriber.next(fallback as T)
             }
@@ -352,10 +342,13 @@ export class PageDataService {
     }
 
     if (this.isDesktopCatalogPath(cfg.path)) {
-      const node = this.ydoc.getPath('data')
-      if (!node) return [() => {}]
-      const unsubscribe = observeDeep(node, emit)
-      return [unsubscribe]
+      const unsubscribers: Array<() => void> = []
+      for (const path of ['data/catalog', 'data/installed', 'data/desktop', 'ui/application']) {
+        const node = this.ydoc.getPath(path)
+        if (!node) continue
+        unsubscribers.push(observeDeep(node, emit))
+      }
+      return unsubscribers.length ? unsubscribers : [() => {}]
     }
 
     const paths = this.pathsForYDoc(cfg)

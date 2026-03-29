@@ -1,10 +1,11 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
-import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
+import { ChangeDetectionStrategy, Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
 import { IonicModule } from '@ionic/angular'
 import { ModalController } from '@ionic/angular/standalone'
 import { addIcons } from 'ionicons'
 import { Observable } from 'rxjs'
+import { map } from 'rxjs/operators'
 import { PageSchema, WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageActionService } from '../../runtime/page-action.service'
@@ -23,6 +24,7 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
 @Component({
   selector: 'ada-schema-collection-grid',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CommonModule, IonicModule],
   template: `
     <div class="grid-section" *ngIf="widget">
@@ -62,7 +64,7 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
         <ng-template #standardGrid>
           <div class="tiles" [style.--tile-min]="tileMinWidthPx">
             <article
-              *ngFor="let item of items"
+              *ngFor="let item of items; trackBy: trackByItemId"
               class="tile"
               tabindex="0"
               role="button"
@@ -70,10 +72,10 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
               (keydown.enter)="onItemClick(item)"
               (keydown.space)="onItemKeydown($event, item)"
             >
-              <div class="tile-badges" *ngIf="itemBadges(item).length">
+              <div class="tile-badges" *ngIf="item.uiBadges.length">
                 <span
                   class="tile-badge"
-                  *ngFor="let badge of itemBadges(item)"
+                  *ngFor="let badge of item.uiBadges; trackBy: trackByBadge"
                   [class.is-active]="badge.tone === 'active'"
                   [class.is-accent]="badge.tone === 'accent'"
                 >
@@ -84,10 +86,10 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
                 <ion-icon [name]="item.icon"></ion-icon>
               </div>
               <div class="label">{{ item.title || item.id }}</div>
-              <div class="subtitle" *ngIf="itemSubtitle(item) as subtitle">{{ subtitle }}</div>
-              <div class="tile-actions" *ngIf="quickActionButtons(item).length">
+              <div class="subtitle" *ngIf="item.uiSubtitle as subtitle">{{ subtitle }}</div>
+              <div class="tile-actions" *ngIf="item.uiQuickActions.length">
                 <ion-button
-                  *ngFor="let btn of quickActionButtons(item)"
+                  *ngFor="let btn of item.uiQuickActions; trackBy: trackByAction"
                   size="small"
                   [color]="btn.color"
                   [fill]="btn.fill || 'outline'"
@@ -260,7 +262,9 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    this.items$ = this.data.load<any[]>(this.widget?.dataSource)
+    this.items$ = this.data.load<any[]>(this.widget?.dataSource).pipe(
+      map((items) => this.decorateItems(items)),
+    )
     this.kind = this.inferKind()
   }
 
@@ -268,6 +272,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   }
 
   async onItemClick(item: any): Promise<void> {
+    item = this.unwrapItem(item)
     const cfg = this.widget
     if (!cfg?.actions) return
     for (const act of cfg.actions) {
@@ -315,11 +320,11 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     void this.onItemClick(item)
   }
 
-  itemSubtitle(item: any): string {
+  private itemSubtitle(item: any): string {
     return String(item?.subtitle || item?.description || item?.source || item?.origin || '').trim()
   }
 
-  itemBadges(item: any): Array<{ label: string; tone?: 'active' | 'accent' }> {
+  private itemBadges(item: any): Array<{ label: string; tone?: 'active' | 'accent' }> {
     const badges: Array<{ label: string; tone?: 'active' | 'accent' }> = []
     const kindLabel = String(item?.kindLabel || '').trim()
     if (kindLabel) {
@@ -334,7 +339,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     return badges
   }
 
-  quickActionButtons(item: any): Array<{
+  private quickActionButtons(item: any): Array<{
     action: 'install' | 'pin'
     label: string
     icon?: string
@@ -372,14 +377,64 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   async onQuickAction(action: 'install' | 'pin', item: any, event: Event): Promise<void> {
     event.preventDefault()
     event.stopPropagation()
+    item = this.unwrapItem(item)
     if (action === 'install') {
       const installType = item?.installType === 'app' ? 'app' : 'widget'
       await this.actions.toggleDesktopInstall(installType, String(item?.id || ''))
+      this.applyLocalQuickActionResult(item, 'install')
       return
     }
     if (action === 'pin') {
       await this.actions.toggleDesktopPinnedWidget(item, !item?.pinned)
+      this.applyLocalQuickActionResult(item, 'pin')
     }
+  }
+
+  trackByItemId = (index: number, item: any): string => {
+    const raw = this.unwrapItem(item)
+    return String(raw?.id || raw?.path || index)
+  }
+
+  trackByBadge = (_index: number, badge: { label: string; tone?: string }): string =>
+    `${badge.tone || 'default'}:${badge.label}`
+
+  trackByAction = (_index: number, action: { action: string; label: string }): string =>
+    `${action.action}:${action.label}`
+
+  private unwrapItem(item: any): any {
+    return item?.uiRaw ?? item
+  }
+
+  private decorateItems(items: any[] | undefined): any[] | undefined {
+    if (!Array.isArray(items)) return items
+    return items.map((item) => {
+      const raw = item && typeof item === 'object' ? item : {}
+      return {
+        ...raw,
+        uiRaw: raw,
+        uiSubtitle: this.itemSubtitle(raw),
+        uiBadges: this.itemBadges(raw),
+        uiQuickActions: this.quickActionButtons(raw),
+      }
+    })
+  }
+
+  private applyLocalQuickActionResult(item: any, action: 'install' | 'pin'): void {
+    if (!item || typeof item !== 'object') return
+    if (action === 'install') {
+      item.installed = !item.installed
+      if (item.installType === 'widget') {
+        item.pinnable = !!item.installed || !!item.pinned
+      }
+    } else if (action === 'pin') {
+      item.pinned = !item.pinned
+      if (item.installType === 'widget') {
+        item.pinnable = !!item.installed || !!item.pinned
+      }
+    }
+    item.uiSubtitle = this.itemSubtitle(item)
+    item.uiBadges = this.itemBadges(item)
+    item.uiQuickActions = this.quickActionButtons(item)
   }
 }
 
