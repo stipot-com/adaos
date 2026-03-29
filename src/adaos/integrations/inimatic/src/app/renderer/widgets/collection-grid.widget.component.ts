@@ -30,35 +30,47 @@ import { isVerboseDebugEnabled } from '../../debug-log'
           tabindex="0"
           role="button"
           [class.selected]="isSelected(item)"
+          [class.is-skeleton]="item.uiSkeleton"
         >
-          <ion-badge *ngIf="item.dev" color="warning" class="dev-badge">DEV</ion-badge>
-          <div class="tile-badges" *ngIf="item.uiBadges.length">
-            <span
-              class="tile-badge"
-              *ngFor="let badge of item.uiBadges; trackBy: trackByBadge"
-              [class.is-active]="badge.tone === 'active'"
-              [class.is-accent]="badge.tone === 'accent'"
-            >
-              {{ badge.label }}
-            </span>
-          </div>
-          <div class="icon-wrapper" *ngIf="item.icon">
-            <ion-icon [name]="item.icon"></ion-icon>
-          </div>
-          <div class="label">{{ item.title || item.id }}</div>
-          <div class="subtitle" *ngIf="item.uiSubtitle as subtitle">{{ subtitle }}</div>
-          <div class="tile-actions" *ngIf="item.uiQuickActions.length">
-            <ion-button
-              *ngFor="let btn of item.uiQuickActions; trackBy: trackByAction"
-              size="small"
-              [color]="btn.color"
-              [fill]="btn.fill || 'outline'"
-              (click)="onQuickAction(btn.action, item, $event)"
-            >
-              <ion-icon *ngIf="btn.icon" slot="start" [name]="btn.icon"></ion-icon>
-              {{ btn.label }}
-            </ion-button>
-          </div>
+          <ng-container *ngIf="!item.uiSkeleton; else skeletonTile">
+            <ion-badge *ngIf="item.dev" color="warning" class="dev-badge">DEV</ion-badge>
+            <div class="tile-badges" *ngIf="item.uiBadges.length">
+              <span
+                class="tile-badge"
+                *ngFor="let badge of item.uiBadges; trackBy: trackByBadge"
+                [class.is-active]="badge.tone === 'active'"
+                [class.is-accent]="badge.tone === 'accent'"
+              >
+                {{ badge.label }}
+              </span>
+            </div>
+            <div class="icon-wrapper" *ngIf="item.icon">
+              <ion-icon [name]="item.icon"></ion-icon>
+            </div>
+            <div class="label">{{ item.title || item.id }}</div>
+            <div class="subtitle" *ngIf="item.uiSubtitle as subtitle">{{ subtitle }}</div>
+            <div class="tile-actions" *ngIf="item.uiQuickActions.length">
+              <ion-button
+                *ngFor="let btn of item.uiQuickActions; trackBy: trackByAction"
+                size="small"
+                [color]="btn.color"
+                [fill]="btn.fill || 'outline'"
+                (click)="onQuickAction(btn.action, item, $event)"
+              >
+                <ion-icon *ngIf="btn.icon" slot="start" [name]="btn.icon"></ion-icon>
+                {{ btn.label }}
+              </ion-button>
+            </div>
+          </ng-container>
+          <ng-template #skeletonTile>
+            <div class="icon-wrapper skeleton-icon">
+              <ion-skeleton-text animated></ion-skeleton-text>
+            </div>
+            <div class="tile-skeleton-lines">
+              <ion-skeleton-text animated style="width: 72%"></ion-skeleton-text>
+              <ion-skeleton-text animated style="width: 58%"></ion-skeleton-text>
+            </div>
+          </ng-template>
         </article>
       </div>
       <ng-template #emptyState>
@@ -118,6 +130,10 @@ import { isVerboseDebugEnabled } from '../../debug-log'
       .tile.selected {
         background: rgba(255, 255, 255, 0.12);
         border-color: rgba(255, 255, 255, 0.18);
+      }
+      .tile.is-skeleton {
+        cursor: default;
+        pointer-events: none;
       }
       .icon-wrapper {
         font-size: 32px;
@@ -185,6 +201,26 @@ import { isVerboseDebugEnabled } from '../../debug-log'
       .tile-actions ion-button {
         margin: 0;
       }
+      .tile-skeleton-lines {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+      }
+      .tile.is-skeleton ion-skeleton-text {
+        --background: rgba(255, 255, 255, 0.18);
+        --background-rgb: 255, 255, 255;
+        width: 100%;
+        height: 12px;
+        border-radius: 999px;
+        margin: 0;
+      }
+      .tile.is-skeleton .skeleton-icon ion-skeleton-text {
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+      }
       .dev-badge {
         position: absolute;
         top: 4px;
@@ -251,6 +287,7 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   }
 
   async onItemClick(item: any): Promise<void> {
+    if (item?.uiSkeleton) return
     item = this.unwrapItem(item)
     this.itemClick.emit(item)
     const cfg = this.widget
@@ -286,6 +323,7 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
 
   onTileKeydown(event: Event, item: any): void {
     event.preventDefault()
+    if (item?.uiSkeleton) return
     void this.onItemClick(item)
   }
 
@@ -362,6 +400,7 @@ export class CollectionGridWidgetComponent implements OnInit, OnChanges {
   async onQuickAction(action: 'install' | 'pin', item: any, event: Event): Promise<void> {
     event.preventDefault()
     event.stopPropagation()
+    if (item?.uiSkeleton) return
     item = this.unwrapItem(item)
     if (action === 'install') {
       const installType = item?.installType === 'app' ? 'app' : 'widget'

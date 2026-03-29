@@ -22,6 +22,7 @@ export class PageDataService {
   private readonly infrastateSnapshotTtlMs = 1000
   private readonly infrastateSnapshotCache = new Map<string, { at: number; stream: Observable<any | undefined> }>()
   private readonly desktopCatalogTtlMs = 1000
+  private readonly desktopCatalogFallbackDelayMs = 1800
   private readonly desktopCatalogCache = new Map<string, { at: number; stream: Observable<any[] | undefined> }>()
 
   constructor(
@@ -248,8 +249,7 @@ export class PageDataService {
   private fromYDoc<T>(cfg: YDocDataSource): Observable<T | undefined> {
     const catalogKind = this.desktopCatalogKind(cfg.path)
     if (catalogKind) {
-      const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
-      return this.loadDesktopCatalogSnapshot(catalogKind, webspaceId) as Observable<T | undefined>
+      return this.fromDesktopCatalogYDoc<T>(cfg, catalogKind)
     }
     return new Observable<T | undefined>((subscriber) => {
       let infrastateFallbackRequested = false
@@ -274,6 +274,73 @@ export class PageDataService {
       const unsubscribers = this.observeYDocPaths(cfg, emit)
       emit()
       return () => {
+        try {
+          fallbackSubscription?.unsubscribe()
+        } catch {}
+        unsubscribers.forEach((fn) => {
+          try {
+            fn()
+          } catch {}
+        })
+      }
+    })
+  }
+
+  private fromDesktopCatalogYDoc<T>(
+    cfg: YDocDataSource,
+    kind: 'apps' | 'widgets',
+  ): Observable<T | undefined> {
+    return new Observable<T | undefined>((subscriber) => {
+      let fallbackSubscription: { unsubscribe(): void } | null = null
+      let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+      let fallbackRequested = false
+
+      const clearFallbackTimer = () => {
+        if (fallbackTimer) {
+          clearTimeout(fallbackTimer)
+          fallbackTimer = null
+        }
+      }
+
+      const requestFallback = () => {
+        if (fallbackRequested) return
+        fallbackRequested = true
+        const webspaceId = this.adaos.getCurrentWebspaceId?.() || 'default'
+        fallbackSubscription = this.loadDesktopCatalogSnapshot(kind, webspaceId).subscribe((fallback) => {
+          if (fallback !== undefined) {
+            subscriber.next(fallback as T)
+          }
+        })
+      }
+
+      const scheduleFallback = () => {
+        if (fallbackRequested || fallbackTimer) return
+        fallbackTimer = setTimeout(() => {
+          fallbackTimer = null
+          requestFallback()
+        }, this.desktopCatalogFallbackDelayMs)
+      }
+
+      const emit = () => {
+        const value = this.computeYDocValue(cfg) as T
+        if (Array.isArray(value) && value.length > 0) {
+          clearFallbackTimer()
+          subscriber.next(value)
+          return
+        }
+        if (this.shouldUseDesktopCatalogFallback(cfg.path, value)) {
+          subscriber.next(this.buildDesktopCatalogSkeleton(kind) as T)
+          scheduleFallback()
+          return
+        }
+        clearFallbackTimer()
+        subscriber.next(value)
+      }
+
+      const unsubscribers = this.observeYDocPaths(cfg, emit)
+      emit()
+      return () => {
+        clearFallbackTimer()
         try {
           fallbackSubscription?.unsubscribe()
         } catch {}
@@ -511,6 +578,21 @@ export class PageDataService {
         }
       })
       .filter(Boolean)
+  }
+
+  private buildDesktopCatalogSkeleton(kind: 'apps' | 'widgets'): any[] {
+    const count = kind === 'apps' ? 8 : 10
+    return Array.from({ length: count }, (_unused, index) => ({
+      id: `skeleton-${kind}-${index}`,
+      title: '',
+      subtitle: '',
+      installType: kind === 'apps' ? 'app' : 'widget',
+      installable: false,
+      pinnable: false,
+      installed: false,
+      pinned: false,
+      uiSkeleton: true,
+    }))
   }
 
   private resolveDesktopWidgets(): WidgetConfig[] {
