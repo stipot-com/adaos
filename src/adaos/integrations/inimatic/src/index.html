@@ -126,6 +126,8 @@
 				overlayId: 'inimatic-boot-overlay',
 				statusId: 'inimatic-boot-status',
 				detailId: 'inimatic-boot-detail',
+				copyId: 'inimatic-boot-copy',
+				closeId: 'inimatic-boot-close',
 				debugEnabled: bootDebugEnabled,
 				done: false,
 				failed: false,
@@ -137,6 +139,56 @@
 					var node = document.getElementById(this.overlayId);
 					if (node && node.parentNode) {
 						node.parentNode.removeChild(node);
+					}
+				},
+				dismiss: function () {
+					this.done = true;
+					this.stopSlowTimer();
+					this.removeOverlay();
+				},
+				copyLog: function () {
+					var payload = (this.lastStatus || 'Loading Inimatic...') + '\n' + this.renderDetail(this.lastDetail || '');
+					var textarea;
+					var self = this;
+					try {
+						if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+							navigator.clipboard.writeText(payload).then(function () {
+								self.note('overlay log copied');
+								self.update(self.lastStatus, self.lastDetail, self.failed);
+							}).catch(function () {});
+							return;
+						}
+					} catch (err) {}
+					try {
+						textarea = document.createElement('textarea');
+						textarea.value = payload;
+						textarea.setAttribute('readonly', 'readonly');
+						textarea.style.position = 'fixed';
+						textarea.style.top = '-1000px';
+						textarea.style.opacity = '0';
+						document.body.appendChild(textarea);
+						textarea.select();
+						document.execCommand('copy');
+						document.body.removeChild(textarea);
+						this.note('overlay log copied');
+						this.update(this.lastStatus, this.lastDetail, this.failed);
+					} catch (err) {}
+				},
+				bindOverlayActions: function () {
+					var copyBtn = document.getElementById(this.copyId);
+					var closeBtn = document.getElementById(this.closeId);
+					var self = this;
+					if (copyBtn && !copyBtn.__inimaticBound) {
+						copyBtn.__inimaticBound = true;
+						copyBtn.addEventListener('click', function () {
+							self.copyLog();
+						});
+					}
+					if (closeBtn && !closeBtn.__inimaticBound) {
+						closeBtn.__inimaticBound = true;
+						closeBtn.addEventListener('click', function () {
+							self.dismiss();
+						});
 					}
 				},
 				ensureOverlay: function () {
@@ -177,9 +229,16 @@
 						'<div style="max-width:680px;background:' + surface + ';border:1px solid ' + border + ';border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(15,23,42,0.16)">' +
 							'<div style="font-size:24px;line-height:1.2;margin-bottom:12px">Inimatic</div>' +
 							'<div id="' + this.statusId + '" style="font-size:18px;margin-bottom:8px">Loading Inimatic...</div>' +
+							(this.debugEnabled
+								? '<div style="display:flex;gap:8px;justify-content:flex-end;margin:0 0 12px 0;">' +
+									'<button id="' + this.copyId + '" style="appearance:none;border:1px solid ' + border + ';background:transparent;color:' + text + ';border-radius:10px;padding:6px 10px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;cursor:pointer;">Copy Log</button>' +
+									'<button id="' + this.closeId + '" style="appearance:none;border:1px solid ' + border + ';background:transparent;color:' + text + ';border-radius:10px;padding:6px 10px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;cursor:pointer;">Close Overlay</button>' +
+								'</div>'
+								: '') +
 							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:' + detail + ';font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
 						'</div>';
 					root.appendChild(overlay);
+					this.bindOverlayActions();
 				},
 				note: function (message) {
 					if (!message) return;
@@ -226,6 +285,16 @@
 				hide: function () {
 					this.done = true;
 					this.stopSlowTimer();
+					if (this.debugEnabled) {
+						this.update(
+							this.failed ? (this.lastStatus || 'App failed to start') : 'Debug overlay pinned',
+							this.failed
+								? (this.lastDetail || '')
+								: 'The app UI is ready. Overlay stays open because boot_debug=1. Use Copy Log or Close Overlay.',
+							this.failed
+						);
+						return;
+					}
 					this.removeOverlay();
 				},
 				recover: function (status, detail) {
