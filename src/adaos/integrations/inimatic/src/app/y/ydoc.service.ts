@@ -758,8 +758,8 @@ export class YDocService {
                 return url
               }
             })()
-            const resp = await fetch(finalUrl, { method: 'GET', signal: ctrl.signal, headers })
-            const st = resp.status || 0
+            const resp = await fetch(finalUrl, { method: 'GET', signal: ctrl.signal, headers }).catch(() => null)
+            const st = resp?.status || 0
             // 404 means "reachable but endpoint missing" – keep trying other probes.
             if (st === 404) continue
             return st

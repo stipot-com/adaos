@@ -94,12 +94,16 @@ docker exec reverse-proxy nginx -s reload || true
 # 1) pull new images first
 docker compose --env-file "$ENVF" -f "$BASE" pull "$NEW_FRONT" "$NEW_BACK" || true
 
-# 2) start new slot
-docker compose --env-file "$ENVF" -f "$BASE" up -d "$NEW_FRONT" "$NEW_BACK"
-
-# 3) wait for health
-wait_healthy "$NEW_FRONT"
+# 2) start new backend first and wait for health.
+# Frontend uses hashed bundles, so exposing old+new frontend on the same VIRTUAL_HOST
+# can produce mixed index/assets during the overlap window and poison browser caches.
+docker compose --env-file "$ENVF" -f "$BASE" up -d "$NEW_BACK"
 wait_healthy "$NEW_BACK"
+
+# 3) cut over frontend without overlap to avoid index/hash mismatches.
+docker compose --env-file "$ENVF" -f "$BASE" rm -sf "$OLD_FRONT" || true
+docker compose --env-file "$ENVF" -f "$BASE" up -d "$NEW_FRONT"
+wait_healthy "$NEW_FRONT"
 
 # 4) optional: sync Telegram webhooks (if backend doesn't auto-register, or to force refresh)
 if [[ "${TG_SYNC_WEBHOOKS:-0}" == "1" ]] && [[ -n "${TG_BOTS:-}" ]]; then
@@ -107,8 +111,8 @@ if [[ "${TG_SYNC_WEBHOOKS:-0}" == "1" ]] && [[ -n "${TG_BOTS:-}" ]]; then
   sync_telegram_webhooks
 fi
 
-# 5) stop & remove old slot
-docker compose --env-file "$ENVF" -f "$BASE" rm -sf "$OLD_FRONT" "$OLD_BACK" || true
+# 5) stop & remove old backend after the frontend switch.
+docker compose --env-file "$ENVF" -f "$BASE" rm -sf "$OLD_BACK" || true
 
 # 6) set new active slot
 echo "$new" | tee "$ACTIVE_FILE" >/dev/null

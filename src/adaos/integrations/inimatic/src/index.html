@@ -310,6 +310,14 @@
 				} else {
 					detail = 'unhandled promise rejection';
 				}
+				if (
+					(reason && reason.name === 'AbortError') ||
+					/signal is aborted without reason/i.test(detail) ||
+					/\bAbortError\b/i.test(detail)
+				) {
+					boot.note('ignored abort rejection: ' + detail.split('\n')[0]);
+					return;
+				}
 				boot.fail('Unhandled promise rejection', detail);
 			});
 		})(window, document);
