@@ -309,12 +309,20 @@
 					var ionApp = 'missing';
 					var outlet = 'missing';
 					var content = 'missing';
+					var ceApp = 'no';
+					var ceContent = 'no';
+					var ceSegment = 'no';
+					var ceButton = 'no';
 					var ionAppNode;
 					var outletNode;
 					var contentNode;
 					try {
 						htmlHydrated = document.documentElement.classList.contains('hydrated') ? 'yes' : 'no';
 						htmlIonCe = document.documentElement.classList.contains('ion-ce') ? 'yes' : 'no';
+						ceApp = (window.customElements && window.customElements.get('ion-app')) ? 'yes' : 'no';
+						ceContent = (window.customElements && window.customElements.get('ion-content')) ? 'yes' : 'no';
+						ceSegment = (window.customElements && window.customElements.get('ion-segment')) ? 'yes' : 'no';
+						ceButton = (window.customElements && window.customElements.get('ion-button')) ? 'yes' : 'no';
 						ionAppNode = document.querySelector('ion-app');
 						outletNode = document.querySelector('ion-router-outlet');
 						contentNode = document.querySelector('ion-content');
@@ -324,6 +332,7 @@
 					} catch (err) {}
 					return 'html.hydrated=' + htmlHydrated +
 						', html.ion-ce=' + htmlIonCe +
+						', ce(ion-app/content/segment/button)=' + ceApp + '/' + ceContent + '/' + ceSegment + '/' + ceButton +
 						', ion-app.hydrated=' + ionApp +
 						', ion-router-outlet.hydrated=' + outlet +
 						', ion-content.hydrated=' + content;
