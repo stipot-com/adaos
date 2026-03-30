@@ -101,15 +101,14 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 			this.startStartupPhase('Loading desktop schema')
 		} catch (e) {
 			const msg = String((e as any)?.message || e || '')
-			this.initError = msg
 			this.clearStartupTimer()
-			this.publishBootState('desktop: initFromHub failed')
 			if (registrationIntent) {
+				this.initError = ''
+				this.publishBootState('desktop: initFromHub failed')
 				this.ownerAuthenticated = false
 				this.isAuthenticated = false
 				this.needsPairing = false
 				this.needsLogin = true
-				this.initError = ''
 				this.publishBootState('desktop: registration requires login')
 				return
 			}
@@ -118,6 +117,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				msg.includes('session_invalid')
 			) {
 				this.initError = ''
+				this.publishBootState('desktop: initFromHub failed')
 				this.ownerAuthenticated = this.hasOwnerSession()
 				this.isAuthenticated = this.ownerAuthenticated
 				this.needsPairing = !this.ownerAuthenticated && !this.pendingApproveCode
@@ -127,6 +127,8 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				return
 			}
 			// Do not crash the renderer; show a retry UI instead.
+			this.initError = msg
+			this.publishBootState('desktop: initFromHub failed')
 			this.publishBootState('desktop: init error shown')
 			return
 		}
@@ -212,6 +214,15 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	private publishBootState(reason: string): void {
 		const boot = (window as any).__INIMATIC_BOOT__
+		const recover = (status: string, detail: string): void => {
+			try {
+				if (typeof boot?.recover === 'function') {
+					boot.recover(status, detail)
+					return
+				}
+				boot?.update?.(status, detail, false)
+			} catch {}
+		}
 		try {
 			boot?.note?.(reason)
 			if (this.pageSchema) {
@@ -224,7 +235,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 					boot?.hide?.()
 				} else {
 					boot?.note?.('desktop: page schema ready, waiting for html.hydrated')
-					boot?.update?.(
+					recover(
 						'Finalizing UI...',
 						'Desktop schema is ready. Waiting for Ionic hydration...'
 					)
@@ -236,18 +247,18 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				return
 			}
 			if (this.pendingApproveCode && !this.needsPairing) {
-				boot?.update?.('Pairing approval needed', this.pendingApproveCode)
+				recover('Pairing approval needed', this.pendingApproveCode)
 				return
 			}
 			if (this.needsPairing) {
-				boot?.update?.('Pairing required', this.pairingId || 'Open the pairing flow on another device.')
+				recover('Pairing required', this.pairingId || 'Open the pairing flow on another device.')
 				return
 			}
 			if (this.needsLogin) {
-				boot?.update?.('Login required', 'Hub session is unavailable. Owner login is required.')
+				recover('Login required', 'Hub session is unavailable. Owner login is required.')
 				return
 			}
-			boot?.update?.('Starting Inimatic', this.startupState || 'Waiting for desktop UI...')
+			recover('Starting Inimatic', this.startupState || 'Waiting for desktop UI...')
 		} catch {}
 	}
 

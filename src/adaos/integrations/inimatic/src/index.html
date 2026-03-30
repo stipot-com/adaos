@@ -6,11 +6,6 @@
 	<title>Inimatic App</title>
 
 	<base href="/" />
-	<style>
-		html:not(.hydrated) body[data-inimatic-force-visible="1"] {
-			display: block !important;
-		}
-	</style>
 	<script>
 		(function (window, document) {
 			try {
@@ -138,26 +133,53 @@
 				lines: [],
 				lastStatus: '',
 				lastDetail: '',
+				removeOverlay: function () {
+					var node = document.getElementById(this.overlayId);
+					if (node && node.parentNode) {
+						node.parentNode.removeChild(node);
+					}
+				},
 				ensureOverlay: function () {
-					var body = document.body || document.getElementsByTagName('body')[0];
+					var root = document.documentElement || document.getElementsByTagName('html')[0];
 					var overlay;
-					if (!body || this.done || (!this.debugEnabled && !this.failed)) return;
-					try {
-						body.setAttribute('data-inimatic-force-visible', '1');
-					} catch (err) {}
+					var prefersDark = false;
+					var rootStyles;
+					var backdrop = 'rgba(100, 116, 139, 0.38)';
+					var surface = 'rgba(255, 255, 255, 0.94)';
+					var text = '#111827';
+					var detail = '#475569';
+					var border = 'rgba(148, 163, 184, 0.28)';
+					if (!root || this.done || (!this.debugEnabled && !this.failed)) return;
 					overlay = document.getElementById(this.overlayId);
 					if (overlay) return;
+					try {
+						prefersDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+					} catch (err) {}
+					if (prefersDark) {
+						backdrop = 'rgba(15, 23, 42, 0.58)';
+						surface = 'rgba(15, 23, 42, 0.92)';
+						text = '#e5eef7';
+						detail = '#cbd5e1';
+						border = 'rgba(148, 163, 184, 0.24)';
+					}
+					try {
+						rootStyles = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
+						if (rootStyles) {
+							surface = (rootStyles.getPropertyValue('--ion-background-color') || surface).trim() || surface;
+							text = (rootStyles.getPropertyValue('--ion-text-color') || text).trim() || text;
+						}
+					} catch (err) {}
 					overlay = document.createElement('div');
 					overlay.id = this.overlayId;
 					overlay.setAttribute('data-failed', this.failed ? '1' : '0');
-					overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#f7f5ef;color:#1f2933;font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;';
+					overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:' + backdrop + ';backdrop-filter:blur(6px);color:' + text + ';font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;';
 					overlay.innerHTML =
-						'<div style="max-width:680px;background:#ffffff;border:1px solid #d9e2ec;border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(15,23,42,0.08)">' +
+						'<div style="max-width:680px;background:' + surface + ';border:1px solid ' + border + ';border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(15,23,42,0.16)">' +
 							'<div style="font-size:24px;line-height:1.2;margin-bottom:12px">Inimatic</div>' +
 							'<div id="' + this.statusId + '" style="font-size:18px;margin-bottom:8px">Loading Inimatic...</div>' +
-							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:#52606d;font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
+							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:' + detail + ';font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
 						'</div>';
-					body.insertBefore(overlay, body.firstChild);
+					root.appendChild(overlay);
 				},
 				note: function (message) {
 					if (!message) return;
@@ -204,10 +226,16 @@
 				hide: function () {
 					this.done = true;
 					this.stopSlowTimer();
-					var node = document.getElementById(this.overlayId);
-					if (node && node.parentNode) {
-						node.parentNode.removeChild(node);
+					this.removeOverlay();
+				},
+				recover: function (status, detail) {
+					this.failed = false;
+					this.stopSlowTimer();
+					if (!this.debugEnabled) {
+						this.removeOverlay();
+						return;
 					}
+					this.update(status || 'Loading Inimatic...', detail || '', false);
 				},
 				update: function (status, detail, failed) {
 					if (!this.debugEnabled && !failed) return;
@@ -217,6 +245,9 @@
 					var overlay = document.getElementById(this.overlayId);
 					this.lastStatus = status || 'Loading Inimatic...';
 					this.lastDetail = detail || '';
+					if (typeof failed === 'boolean') {
+						this.failed = failed;
+					}
 					if (!statusNode || !detailNode || !overlay) return;
 					statusNode.textContent = this.lastStatus;
 					detailNode.textContent = this.renderDetail(this.lastDetail);
@@ -268,11 +299,6 @@
 			};
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
-				try {
-					if (document.body) {
-						document.body.setAttribute('data-inimatic-force-visible', '1');
-					}
-				} catch (err) {}
 				boot.note('DOMContentLoaded');
 				boot.note('html.hydrated=' + (document.documentElement.classList.contains('hydrated') ? 'yes' : 'no'));
 				boot.startSlowTimer();
