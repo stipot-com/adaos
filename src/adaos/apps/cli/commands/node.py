@@ -367,11 +367,16 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     action_overrides = runtime.get("action_overrides") if isinstance(runtime.get("action_overrides"), dict) else {}
     recovery_playbook = runtime.get("recovery_playbook") if isinstance(runtime.get("recovery_playbook"), dict) else {}
     recovery_guidance = runtime.get("recovery_guidance") if isinstance(runtime.get("recovery_guidance"), dict) else {}
+    selected_webspace = runtime.get("selected_webspace") if isinstance(runtime.get("selected_webspace"), dict) else {}
+    webspace_guidance = runtime.get("webspace_guidance") if isinstance(runtime.get("webspace_guidance"), dict) else {}
     reload_override = action_overrides.get("reload") if isinstance(action_overrides.get("reload"), dict) else {}
     restore_override = action_overrides.get("restore") if isinstance(action_overrides.get("restore"), dict) else {}
+    go_home_override = action_overrides.get("go_home") if isinstance(action_overrides.get("go_home"), dict) else {}
     recovery_order = recovery_playbook.get("action_order") if isinstance(recovery_playbook.get("action_order"), list) else []
     recommended_action = str(recovery_guidance.get("recommended_action") or "").strip() or "-"
     risk_level = str(recovery_guidance.get("risk_level") or "").strip() or "-"
+    recommended_webspace_action = str(webspace_guidance.get("recommended_action") or "").strip() or "-"
+    rebuild = selected_webspace.get("rebuild") if isinstance(selected_webspace.get("rebuild"), dict) else {}
     typer.echo(
         "yjs_runtime: "
         f"state={assessment.get('state') or 'unknown'} "
@@ -389,6 +394,18 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"next={recommended_action} "
         f"risk={risk_level}"
     )
+    if selected_webspace:
+        typer.echo(
+            "  webspace: "
+            f"title={selected_webspace.get('title') or selected or '-'} "
+            f"kind={selected_webspace.get('kind') or '-'} "
+            f"mode={selected_webspace.get('source_mode') or '-'} "
+            f"home={selected_webspace.get('home_scenario') or '-'} "
+            f"projection={'match' if selected_webspace.get('projection_matches_home') is True else 'drift' if selected_webspace.get('projection_matches_home') is False else 'unknown'} "
+            f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
+            f"next={recommended_webspace_action} "
+            f"rebuild={rebuild.get('status') or '-'}"
+        )
     operator_summary = str(recovery_guidance.get("operator_summary") or "").strip()
     if operator_summary:
         typer.echo(f"  recovery: {operator_summary}")
@@ -397,6 +414,14 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         text = str(warning or "").strip()
         if text:
             typer.echo(f"  warn: {text}")
+    ws_operator_summary = str(webspace_guidance.get("operator_summary") or "").strip()
+    if ws_operator_summary:
+        typer.echo(f"  webspace_guidance: {ws_operator_summary}")
+    ws_warnings = webspace_guidance.get("warnings") if isinstance(webspace_guidance.get("warnings"), list) else []
+    for warning in ws_warnings:
+        text = str(warning or "").strip()
+        if text:
+            typer.echo(f"  webspace_warn: {text}")
     webspaces = runtime.get("webspaces") if isinstance(runtime.get("webspaces"), dict) else {}
     for webspace_id, item in sorted(webspaces.items()):
         if not isinstance(item, dict):

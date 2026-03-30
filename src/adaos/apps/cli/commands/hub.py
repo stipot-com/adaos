@@ -147,10 +147,15 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     sync_action_overrides = sync_runtime.get("action_overrides") if isinstance(sync_runtime.get("action_overrides"), dict) else {}
     sync_recovery_playbook = sync_runtime.get("recovery_playbook") if isinstance(sync_runtime.get("recovery_playbook"), dict) else {}
     sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
+    sync_selected_webspace = sync_runtime.get("selected_webspace") if isinstance(sync_runtime.get("selected_webspace"), dict) else {}
+    sync_webspace_guidance = sync_runtime.get("webspace_guidance") if isinstance(sync_runtime.get("webspace_guidance"), dict) else {}
     reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
     restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
+    go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
     recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
     recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
+    recommended_webspace_action = str(sync_webspace_guidance.get("recommended_action") or "").strip() or "-"
+    sync_rebuild = sync_selected_webspace.get("rebuild") if isinstance(sync_selected_webspace.get("rebuild"), dict) else {}
     typer.echo(
         f"hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} | "
         f"hub_root_browser={route.get('effective_status') or 'unknown'}/{route.get('effective_state') or 'unknown'} | "
@@ -197,10 +202,16 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"yws={sync_transport.get('active_yws_connections') or 0} "
         f"selected={sync_selected}:{selected_sync.get('log_mode') or '-'}:{selected_sync.get('update_log_entries') or 0}/{selected_sync.get('max_update_log_entries') or 0} "
         f"snapshot={'yes' if selected_sync.get('snapshot_file_exists') else 'no'} "
+        f"ws_mode={sync_selected_webspace.get('source_mode') or '-'} "
+        f"ws_home={sync_selected_webspace.get('home_scenario') or '-'} "
+        f"ws_proj={'match' if sync_selected_webspace.get('projection_matches_home') is True else 'drift' if sync_selected_webspace.get('projection_matches_home') is False else 'unknown'} "
+        f"ws_rebuild={sync_rebuild.get('status') or '-'} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
         f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
-        f"next={recommended_action} | "
+        f"next={recommended_action} "
+        f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
+        f"ws_next={recommended_webspace_action} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
@@ -284,10 +295,15 @@ def hub_root_watch(
             sync_action_overrides = sync_runtime.get("action_overrides") if isinstance(sync_runtime.get("action_overrides"), dict) else {}
             sync_recovery_playbook = sync_runtime.get("recovery_playbook") if isinstance(sync_runtime.get("recovery_playbook"), dict) else {}
             sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
+            sync_selected_webspace = sync_runtime.get("selected_webspace") if isinstance(sync_runtime.get("selected_webspace"), dict) else {}
+            sync_webspace_guidance = sync_runtime.get("webspace_guidance") if isinstance(sync_runtime.get("webspace_guidance"), dict) else {}
             reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
             restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
+            go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
             recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
             recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
+            recommended_webspace_action = str(sync_webspace_guidance.get("recommended_action") or "").strip() or "-"
+            sync_rebuild = sync_selected_webspace.get("rebuild") if isinstance(sync_selected_webspace.get("rebuild"), dict) else {}
             ts = _time.strftime("%H:%M:%S")
             typer.echo(
                 f"{ts} hub_root={root.get('effective_status') or 'unknown'}/{root.get('effective_state') or 'unknown'} "
@@ -328,10 +344,16 @@ def hub_root_watch(
                 f"yws={sync_transport.get('active_yws_connections') or 0} "
                 f"selected={sync_selected}:{selected_sync.get('log_mode') or '-'}:{selected_sync.get('update_log_entries') or 0}/{selected_sync.get('max_update_log_entries') or 0} "
                 f"snapshot={'yes' if selected_sync.get('snapshot_file_exists') else 'no'} "
+                f"ws_mode={sync_selected_webspace.get('source_mode') or '-'} "
+                f"ws_home={sync_selected_webspace.get('home_scenario') or '-'} "
+                f"ws_proj={'match' if sync_selected_webspace.get('projection_matches_home') is True else 'drift' if sync_selected_webspace.get('projection_matches_home') is False else 'unknown'} "
+                f"ws_rebuild={sync_rebuild.get('status') or '-'} "
                 f"reload={reload_override.get('source_of_truth') or 'scenario'} "
                 f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
                 f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
                 f"next={recommended_action} "
+                f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
+                f"ws_next={recommended_webspace_action} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

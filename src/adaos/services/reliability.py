@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from adaos.services.agent_context import get_ctx
 from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
 
 
@@ -3673,6 +3674,8 @@ def yjs_sync_runtime_snapshot(
     action_overrides: dict[str, Any] = {}
     recovery_playbook: dict[str, Any] = {}
     recovery_guidance: dict[str, Any] = {}
+    selected_webspace: dict[str, Any] = {}
+    webspace_guidance: dict[str, Any] = {}
     if role_norm != "hub":
         return {
             "available": False,
@@ -3686,6 +3689,8 @@ def yjs_sync_runtime_snapshot(
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
             "recovery_guidance": recovery_guidance,
+            "selected_webspace": selected_webspace,
+            "webspace_guidance": webspace_guidance,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3711,6 +3716,8 @@ def yjs_sync_runtime_snapshot(
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
             "recovery_guidance": recovery_guidance,
+            "selected_webspace": selected_webspace,
+            "webspace_guidance": webspace_guidance,
             "webspace_total": 0,
             "active_webspace_total": 0,
             "webspaces": {},
@@ -3771,11 +3778,13 @@ def yjs_sync_runtime_snapshot(
         elif webspaces:
             selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
     selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
+    selected_webspace = _build_yjs_selected_webspace_snapshot(selected_webspace_id)
     (
         action_overrides,
         recovery_playbook,
         recovery_guidance,
-    ) = _build_yjs_recovery_policy(selected_entry)
+    ) = _build_yjs_recovery_policy(selected_entry, selected_webspace)
+    webspace_guidance = _build_yjs_webspace_guidance(selected_webspace)
 
     return {
         "available": True,
@@ -3801,6 +3810,8 @@ def yjs_sync_runtime_snapshot(
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
         "recovery_guidance": recovery_guidance,
+        "selected_webspace": selected_webspace,
+        "webspace_guidance": webspace_guidance,
         "webspace_total": webspace_total,
         "active_webspace_total": active_webspace_total,
         "compacted_webspace_total": compacted_total,
@@ -3810,7 +3821,67 @@ def yjs_sync_runtime_snapshot(
     }
 
 
-def _build_yjs_recovery_policy(selected_entry: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _build_yjs_selected_webspace_snapshot(webspace_id: str | None) -> dict[str, Any]:
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    try:
+        from adaos.services.scenario.webspace_runtime import describe_webspace_rebuild_state
+        from adaos.services.workspaces import index as workspace_index
+
+        row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
+        target_space = "dev" if bool(getattr(row, "is_dev", False)) else "workspace"
+        active_scenario = None
+        active_space = None
+        active_matches_target = None
+        try:
+            registry = get_ctx().projections
+            raw_snapshot = registry.snapshot() if hasattr(registry, "snapshot") else {}
+            registry_snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else {}
+            token = str(registry_snapshot.get("active_scenario_id") or "").strip()
+            active_scenario = token or None
+            token = str(registry_snapshot.get("active_space") or "").strip()
+            active_space = token or None
+            if active_scenario and active_space:
+                active_matches_target = (
+                    active_scenario == str(getattr(row, "effective_home_scenario", "") or "").strip()
+                    and active_space == target_space
+                )
+        except Exception:
+            pass
+        rebuild = describe_webspace_rebuild_state(target_webspace_id)
+        return {
+            "webspace_id": target_webspace_id,
+            "title": str(getattr(row, "title", "") or target_webspace_id),
+            "kind": str(getattr(row, "effective_kind", "") or "workspace"),
+            "source_mode": str(getattr(row, "effective_source_mode", "") or target_space),
+            "is_dev": bool(getattr(row, "is_dev", False)),
+            "home_scenario": str(getattr(row, "effective_home_scenario", "") or "") or None,
+            "projection_target_space": target_space,
+            "projection_active_scenario": active_scenario,
+            "projection_active_space": active_space,
+            "projection_matches_home": active_matches_target,
+            "rebuild": rebuild if isinstance(rebuild, dict) else {},
+        }
+    except Exception as exc:
+        return {
+            "webspace_id": target_webspace_id,
+            "title": target_webspace_id,
+            "kind": "workspace",
+            "source_mode": "workspace",
+            "is_dev": False,
+            "home_scenario": None,
+            "projection_target_space": "workspace",
+            "projection_active_scenario": None,
+            "projection_active_space": None,
+            "projection_matches_home": None,
+            "rebuild": {"status": "unknown", "error": f"{type(exc).__name__}: {exc}"},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _build_yjs_recovery_policy(
+    selected_entry: dict[str, Any] | None,
+    selected_webspace: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     entry = selected_entry if isinstance(selected_entry, dict) else {}
     snapshot_exists = bool(entry.get("snapshot_file_exists")) if entry else False
     selected_update_entries = int(entry.get("update_log_entries") or 0) if entry else 0
@@ -3818,6 +3889,9 @@ def _build_yjs_recovery_policy(selected_entry: dict[str, Any] | None) -> tuple[d
     selected_replay_limit = int(entry.get("replay_window_limit") or 0) if entry else 0
     selected_backup_total = int(entry.get("backup_total") or 0) if entry else 0
     selected_log_mode = str(entry.get("log_mode") or "") if entry else ""
+    selected_ws = selected_webspace if isinstance(selected_webspace, dict) else {}
+    projection_matches_home = selected_ws.get("projection_matches_home")
+    home_scenario = str(selected_ws.get("home_scenario") or "").strip() or None
     backup_first = selected_update_entries > 0 and (
         not snapshot_exists or selected_backup_total <= 0 or selected_replay_entries > 0
     )
@@ -3844,6 +3918,17 @@ def _build_yjs_recovery_policy(selected_entry: dict[str, Any] | None) -> tuple[d
                 "restore the selected webspace from its last persisted disk snapshot"
                 if snapshot_exists
                 else "disk snapshot is missing for the selected webspace"
+            ),
+        },
+        "go_home": {
+            "enabled": bool(home_scenario) and projection_matches_home is not True,
+            "source_of_truth": "manifest_home_scenario",
+            "reason": (
+                "switch the selected webspace back to its persisted home scenario"
+                if bool(home_scenario) and projection_matches_home is not True
+                else "selected webspace already aligns with its manifest home scenario"
+                if projection_matches_home is True
+                else "selected webspace has no persisted home scenario"
             ),
         },
     }
@@ -3894,6 +3979,37 @@ def _build_yjs_recovery_policy(selected_entry: dict[str, Any] | None) -> tuple[d
         "action_order": recovery_order,
     }
     return action_overrides, recovery_playbook, recovery_guidance
+
+
+def _build_yjs_webspace_guidance(selected_webspace: dict[str, Any] | None) -> dict[str, Any]:
+    selected = selected_webspace if isinstance(selected_webspace, dict) else {}
+    projection_matches_home = selected.get("projection_matches_home")
+    rebuild = selected.get("rebuild") if isinstance(selected.get("rebuild"), dict) else {}
+    home_scenario = str(selected.get("home_scenario") or "").strip() or None
+    rebuild_status = str(rebuild.get("status") or "").strip() or None
+    warnings: list[str] = []
+    recommended_action: str | None = None
+    recommended_reason: str | None = None
+    if rebuild_status in {"running", "failed"}:
+        warnings.append(f"webspace rebuild state is {rebuild_status}")
+    if projection_matches_home is False and home_scenario:
+        recommended_action = "go_home"
+        recommended_reason = "projection target diverges from the persisted home scenario"
+    risk_level = "warn" if warnings or recommended_action else "ok"
+    operator_summary = (
+        f"{recommended_action} to return the webspace to home scenario"
+        if recommended_action
+        else "webspace projection already follows its persisted home scenario"
+        if projection_matches_home is True
+        else "webspace scenario guidance unavailable"
+    )
+    return {
+        "recommended_action": recommended_action,
+        "recommended_reason": recommended_reason,
+        "risk_level": risk_level,
+        "warnings": warnings,
+        "operator_summary": operator_summary,
+    }
 
 
 def reliability_snapshot(
