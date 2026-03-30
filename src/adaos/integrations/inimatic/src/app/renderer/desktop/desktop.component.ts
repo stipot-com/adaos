@@ -117,6 +117,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				msg.includes('hub_unreachable_no_session') ||
 				msg.includes('session_invalid')
 			) {
+				this.initError = ''
 				this.ownerAuthenticated = this.hasOwnerSession()
 				this.isAuthenticated = this.ownerAuthenticated
 				this.needsPairing = !this.ownerAuthenticated && !this.pendingApproveCode

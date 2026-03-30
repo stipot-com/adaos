@@ -120,10 +120,18 @@
 	<script>
 		(function (window, document) {
 			var hydrationLogged = false;
+			var bootDebugEnabled = false;
+			try {
+				bootDebugEnabled = /(?:\?|&)boot_debug=1(?:&|$)/.test(String(window.location.search || ''));
+				if (!bootDebugEnabled && window.localStorage) {
+					bootDebugEnabled = String(window.localStorage.getItem('inimatic_boot_debug') || '') === '1';
+				}
+			} catch (err) {}
 			var boot = {
 				overlayId: 'inimatic-boot-overlay',
 				statusId: 'inimatic-boot-status',
 				detailId: 'inimatic-boot-detail',
+				debugEnabled: bootDebugEnabled,
 				done: false,
 				failed: false,
 				timer: null,
@@ -133,7 +141,7 @@
 				ensureOverlay: function () {
 					var body = document.body || document.getElementsByTagName('body')[0];
 					var overlay;
-					if (!body || this.done) return;
+					if (!body || this.done || (!this.debugEnabled && !this.failed)) return;
 					try {
 						body.setAttribute('data-inimatic-force-visible', '1');
 					} catch (err) {}
@@ -176,7 +184,7 @@
 				},
 				startSlowTimer: function () {
 					var self = this;
-					if (this.timer || this.done || this.failed) return;
+					if (!this.debugEnabled || this.timer || this.done || this.failed) return;
 					this.timer = window.setTimeout(function () {
 						var node = document.getElementById(self.overlayId);
 						if (node && node.getAttribute('data-failed') !== '1' && !self.done) {
@@ -202,6 +210,7 @@
 					}
 				},
 				update: function (status, detail, failed) {
+					if (!this.debugEnabled && !failed) return;
 					this.ensureOverlay();
 					var statusNode = document.getElementById(this.statusId);
 					var detailNode = document.getElementById(this.detailId);
@@ -266,7 +275,6 @@
 				} catch (err) {}
 				boot.note('DOMContentLoaded');
 				boot.note('html.hydrated=' + (document.documentElement.classList.contains('hydrated') ? 'yes' : 'no'));
-				boot.ensureOverlay();
 				boot.startSlowTimer();
 			});
 			window.addEventListener('load', function () {
