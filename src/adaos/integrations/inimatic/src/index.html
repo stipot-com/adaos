@@ -296,63 +296,85 @@
 					}
 					return bits.join('\n') || 'unknown error';
 				},
-				isUiHydrated: function () {
+				describeElementUpgrade: function (tagName) {
+					var node = null;
+					var ctor = null;
+					var present = 'no';
+					var defined = 'no';
+					var upgraded = 'no';
+					var shadow = 'no';
 					try {
-						return !!document.querySelector('ion-app.hydrated, ion-router-outlet.hydrated, ion-content.hydrated, ion-header.hydrated');
+						node = document.querySelector(tagName);
+						ctor = window.customElements && window.customElements.get ? window.customElements.get(tagName) : null;
+						present = node ? 'yes' : 'no';
+						defined = ctor ? 'yes' : 'no';
+						upgraded = node && ctor && node instanceof ctor ? 'yes' : 'no';
+						shadow = node && node.shadowRoot ? 'yes' : 'no';
 					} catch (err) {
-						return false;
+						return tagName + '=error';
+					}
+					return tagName + '(present/defined/upgraded/shadow)=' + present + '/' + defined + '/' + upgraded + '/' + shadow;
+				},
+				isUiReady: function () {
+					var appNode;
+					var appCtor;
+					var contentNode;
+					var contentCtor;
+					try {
+						appNode = document.querySelector('ion-app');
+						appCtor = window.customElements && window.customElements.get ? window.customElements.get('ion-app') : null;
+						contentNode = document.querySelector('ion-content');
+						contentCtor = window.customElements && window.customElements.get ? window.customElements.get('ion-content') : null;
+						if (appNode && appCtor && appNode instanceof appCtor) return true;
+						if (contentNode && contentCtor && contentNode instanceof contentCtor) return true;
+					} catch (err) {}
+					return false;
+				},
+				tryUpgradeUi: function (reason) {
+					try {
+						if (!window.customElements || typeof window.customElements.upgrade !== 'function') return;
+						window.customElements.upgrade(document.documentElement);
+						this.note('customElements.upgrade: ' + reason);
+					} catch (err) {
+						this.note('customElements.upgrade failed: ' + ((err && err.message) || err || 'unknown'));
 					}
 				},
 				describeUiHydration: function () {
 					var htmlHydrated = 'no';
 					var htmlIonCe = 'no';
-					var ionApp = 'missing';
-					var outlet = 'missing';
-					var content = 'missing';
-					var ceApp = 'no';
-					var ceContent = 'no';
-					var ceSegment = 'no';
-					var ceButton = 'no';
-					var ionAppNode;
-					var outletNode;
-					var contentNode;
 					try {
 						htmlHydrated = document.documentElement.classList.contains('hydrated') ? 'yes' : 'no';
 						htmlIonCe = document.documentElement.classList.contains('ion-ce') ? 'yes' : 'no';
-						ceApp = (window.customElements && window.customElements.get('ion-app')) ? 'yes' : 'no';
-						ceContent = (window.customElements && window.customElements.get('ion-content')) ? 'yes' : 'no';
-						ceSegment = (window.customElements && window.customElements.get('ion-segment')) ? 'yes' : 'no';
-						ceButton = (window.customElements && window.customElements.get('ion-button')) ? 'yes' : 'no';
-						ionAppNode = document.querySelector('ion-app');
-						outletNode = document.querySelector('ion-router-outlet');
-						contentNode = document.querySelector('ion-content');
-						if (ionAppNode) ionApp = ionAppNode.classList.contains('hydrated') ? 'yes' : 'no';
-						if (outletNode) outlet = outletNode.classList.contains('hydrated') ? 'yes' : 'no';
-						if (contentNode) content = contentNode.classList.contains('hydrated') ? 'yes' : 'no';
 					} catch (err) {}
 					return 'html.hydrated=' + htmlHydrated +
 						', html.ion-ce=' + htmlIonCe +
-						', ce(ion-app/content/segment/button)=' + ceApp + '/' + ceContent + '/' + ceSegment + '/' + ceButton +
-						', ion-app.hydrated=' + ionApp +
-						', ion-router-outlet.hydrated=' + outlet +
-						', ion-content.hydrated=' + content;
+						', ' + this.describeElementUpgrade('ion-app') +
+						', ' + this.describeElementUpgrade('ion-router-outlet') +
+						', ' + this.describeElementUpgrade('ion-content') +
+						', ' + this.describeElementUpgrade('ion-button');
 				}
 			};
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
 				boot.note('DOMContentLoaded');
 				boot.note(boot.describeUiHydration());
+				boot.tryUpgradeUi('DOMContentLoaded');
 				boot.startSlowTimer();
 			});
 			window.addEventListener('load', function () {
 				boot.note('window.load');
+				boot.note(boot.describeUiHydration());
+				boot.tryUpgradeUi('window.load');
 			});
 			window.setInterval(function () {
 				try {
-					if (boot.isUiHydrated() && !hydrationLogged) {
+					if (boot.isUiReady() && !hydrationLogged) {
 						hydrationLogged = true;
-						boot.note('ionic.hydrated=yes');
+						boot.note('ionic.ce.ready=yes');
 						boot.note(boot.describeUiHydration());
+					} else if (!hydrationLogged) {
+						boot.note(boot.describeUiHydration());
+						boot.tryUpgradeUi('poll');
 					}
 				} catch (err) {}
 			}, 3000);
