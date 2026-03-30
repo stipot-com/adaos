@@ -1,62 +1,50 @@
-# API CLI
+# API Service
 
-`adaos api serve` starts the local FastAPI hub/member API.
+## Start and stop
 
-`adaos api serve` remains the developer entrypoint. Production OS autostart uses a separate runner path and should be treated as the long-lived service lifecycle.
+```bash
+adaos api serve --host 127.0.0.1 --port 8777
+adaos api stop
+adaos api restart
+```
 
-`adaos api stop` resolves the active local hub address from `node.yaml` (`hub_url`) and performs a graceful shutdown first.
+The API command manages a local FastAPI process and keeps a pidfile in runtime state. On restart and stop it attempts graceful shutdown first, then falls back to process termination when necessary.
 
-## Shutdown flow
+## Health and status
 
-When you run `adaos api stop`, AdaOS uses this sequence:
+Unauthenticated endpoints:
 
-1. Read `hub_url` from the active `node.yaml`.
-2. Verify that the URL is local and has an explicit `host:port`.
-3. Call `POST /api/admin/shutdown` with the local AdaOS token.
-4. Inside the server:
-   - publish `subnet.stopping` on the local event bus;
-   - wait until async event handlers drain;
-   - request uvicorn graceful shutdown.
-5. During FastAPI lifespan teardown:
-   - send `subnet.stopped` to Telegram if Telegram routing is active;
-   - publish `subnet.stopped` on the local event bus;
-   - wait again for local async handlers to drain;
-   - stop router / Yjs / subnet services and finish bootstrap shutdown.
-6. If the process does not exit in time, CLI falls back to force termination.
+- `GET /health/live`
+- `GET /health/ready`
 
-## Event contract
+Authenticated examples:
 
-Graceful shutdown emits two local runtime events:
+- `GET /api/status`
+- `GET /api/services`
+- `GET /api/node/status`
+- `GET /api/observe/stream`
 
-- `subnet.stopping`
-- `subnet.stopped`
+## Authentication
 
-Payload fields:
+Most operational endpoints require:
 
-- `subnet_id`
-- `reason`
+```http
+X-AdaOS-Token: <token>
+```
 
-These events are intended for in-process skills and scenario runtime components that need to flush state, update UI, or persist telemetry before the node exits.
+The CLI resolves this token automatically for local control operations.
 
-## Drain mode
+## Major API areas
 
-`POST /api/admin/drain` marks the node as `draining` without stopping it immediately.
+- `/api/services/*`: service skill supervision
+- `/api/skills/*`: skill listing, install/update, runtime prepare/activate, uninstall
+- `/api/scenarios/*`: scenario install, sync, push, uninstall
+- `/api/node/*`: node status, reliability, role, members, media, Yjs webspaces
+- `/api/observe/*`: ingest, tail, and SSE stream
+- `/api/subnet/*`: register, heartbeat, context, nodes, deregister
+- `/api/admin/*`: drain, shutdown, lifecycle, and core-update orchestration
 
-While draining:
+## Notes
 
-- `/health/ready` returns `503`;
-- `/api/node/status` exposes `node_state=draining`;
-- new `/api/tools/call` requests are rejected with `503`;
-- member heartbeats publish `node_state=draining` so the hub can stop selecting that node for routed tool calls.
-
-## Core update flow
-
-Production `autostart` can now participate in a core-update lifecycle:
-
-- `POST /api/admin/update/start` schedules an update countdown;
-- `POST /api/admin/update/cancel` aborts the countdown;
-- `GET /api/admin/update/status` returns the persisted state and pending plan;
-- after countdown, the node writes a pending update plan, enters drain mode, and shuts down gracefully;
-- on next `autostart` launch, the runner applies `ADAOS_CORE_UPDATE_CMD` before importing the API server.
-
-`ADAOS_CORE_UPDATE_CMD` is intentionally explicit. AdaOS does not yet assume one deploy layout; the command can point to your repo pull/bootstrap/install script and may use placeholders such as `{target_rev}`, `{target_version}`, `{base_dir}`, `{python}`, and `{repo_root}`.
+- `/api/say` and `/api/io/console/print` still exist, but the code marks them as deprecated in favor of bus-driven flows.
+- The API server also mounts additional routers for join flows, STT, NLU teacher functions, and external IO webhooks.

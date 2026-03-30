@@ -1,94 +1,39 @@
-# Сценарии (Scenarios)
+# Scenarios
 
-**Сценарий** (scenario) — декларативное описание того, как AdaOS должна вести себя
-в заданном контексте: какие навыки участвуют, как между ними течёт данные и
-какой UI (если нужен) должен быть отрисован.
+## What a scenario is
 
-Сценарии описываются манифестами `scenarios/<id>/scenario.yaml` и, для desktop‑UI,
-соответствующими файлами `scenario.json`, которые содержат модель UI на базе Yjs.
+A scenario is a managed workflow artifact that can be installed into the workspace, validated, executed, and tested.
 
----
+## Common commands
 
-## Расположение в workspace
-
-В workspace сценарии лежат под `.adaos/workspace/scenarios/` (см. также `docs/dev-notes/workspace.md`):
-
-```text
-.adaos/workspace/scenarios/
-  web_desktop/
-    scenario.yaml
-    scenario.json      # исходный UI для web_desktop
-  prompt_engineer_scenario/
-    scenario.yaml
-    scenario.json      # UI и workflow для Prompt IDE
-  ...
+```bash
+adaos scenario list
+adaos scenario install my_scenario
+adaos scenario validate my_scenario
+adaos scenario run my_scenario
+adaos scenario test my_scenario
+adaos scenario status
 ```
 
-`scenario.yaml` — редактируемый человеком источник правды для идентичности,
-зависимостей и high‑level‑метаданных сценария.
-`scenario.json` — более богатый UI‑seed, который может генерироваться или
-редактироваться инструментами.
+## Workspace versus dev space
 
----
+The current implementation supports status comparison in two modes:
 
-## Манифест (`scenario.yaml`)
+- `workspace`: compare against the workspace registry repository
+- `dev`: compare local drafts against Root-backed draft state
 
-Структура `scenario.yaml` описана схемой:
+Examples:
 
-- `src/adaos/abi/scenario.schema.json` — публичная ABI‑схема для IDE и LLM‑инструментов.
-
-### Минимальные примеры
-
-#### Web Desktop
-
-```yaml
-id: web_desktop
-version: 0.0.1
-title: Web Desktop
-description: Desktop shell scenario that defines the main UI layout, registry and base catalog.
-type: desktop
-depends:
-  - web_desktop_skill
-updated_at: "2025-11-14T18:14:36+00:00"
-data_projections:
-  - scope: current_user
-    slot: profile.settings
-    targets:
-      - backend: kv
-      - backend: yjs
-        path: data/skills/profile/{user_id}/settings
-  - scope: subnet
-    slot: weather.snapshot
-    targets:
-      - backend: yjs
-        path: data/weather
+```bash
+adaos scenario status
+adaos scenario status my_scenario --fetch --diff
+adaos scenario status --space dev
 ```
 
-#### Prompt IDE
+## Relation to webspaces
 
-```yaml
-id: prompt_engineer_scenario
-version: "0.1.0"
-title: Prompt IDE
-description: Prompt engineering IDE workspace for dev skills and scenarios.
-type: desktop
-depends:
-  - prompt_engineer_skill
-updated_at: "2025-11-14T18:14:36+00:00"
-```
+Scenarios are also used by the Yjs webspace runtime:
 
-Детальный workflow Prompt IDE (TZ / TZ addenda) и desktop‑UI описаны
-в соответствующем `scenario.json` и используются
-`ScenarioWorkflowRuntime` и веб‑клиентом.
-
----
-
-## `data_projections`
-
-Секция `data_projections` в `scenario.yaml` описывает, как логические пары
-`(scope, slot)` сопоставляются с конкретными backend’ами хранения
-(Yjs, KV, SQL). На рантайме это загружается `ProjectionRegistry`
-и используется высокоуровневыми SDK‑хелперами (`ctx.*`) для маршрутизации чтения/записи.
-
-Подробнее — в `docs/concepts/scenario-first-launch.md`.
-
+- a webspace can have a home scenario
+- operators can switch the active scenario for a webspace
+- desktop state and scenario state are tied together in the node Yjs control surface

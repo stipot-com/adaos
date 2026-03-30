@@ -1,52 +1,37 @@
 # AdaOS
 
-> «Мультиагентная многопользовательская ОС навыков и сценариев» — минимализм ядра, максимум гибкости на краях.
+AdaOS is a Python platform for building distributed assistant systems out of skills, scenarios, node services, and local control APIs.
 
-!!! tip "зачем читать"
-    Быстро понять архитектуру, запустить демо, написать первый навык/сценарий и подключить LLM как разработчика.
+The current repository is the developer and runtime core of the project. It includes:
 
-## Что такое AdaOS
+- a local CLI exposed as `adaos`
+- a FastAPI-based control API
+- runtime services for node, skill, scenario, and webspace management
+- SDK modules for skills, data access, events, and control-plane integration
+- bootstrap scripts, tests, and MkDocs documentation
 
-AdaOS — это платформа для управления **навыками** (skills) и **сценариями** (scenarios) с упором на DevOps, интерпретируемость и кросс-ОС.
+## What AdaOS does today
 
-## Архитектура одним взглядом
+The current implementation is centered around local and private deployments:
 
-```dot
-digraph G {
-  rankdir=LR;
-  node [shape=box, style=rounded];
+- run a node as a `hub` or `member`
+- manage skills and scenarios from the CLI
+- expose runtime control over HTTP with token-based local authentication
+- operate service-type skills through a supervisor and `/api/services/*`
+- manage Yjs-backed webspaces and desktop state through `adaos node yjs ...`
+- support subnet onboarding with join codes and member updates
+- provide developer workflows for Root and Forge-style publishing
 
-  subgraph cluster_core {
-    label="Core";
-    Agent; Runtime; Scheduler;
-    Agent -> Runtime -> Scheduler;
-  }
+## Main areas
 
-  subgraph cluster_devops {
-    label="DevOps";
-    CLI; API; Tests; Docs;
-    CLI -> Agent;
-    API -> Agent;
-    Tests -> Runtime;
-    Docs -> CLI;
-  }
+- [Quickstart](quickstart.md): installation, bootstrap, and first commands
+- [Architecture](architecture/index.md): how the runtime is organized
+- [CLI](cli/index.md): command groups and operational workflows
+- [SDK](sdk/index.md): public Python-facing building blocks
+- [Skills](skills.md): skill lifecycle and runtime behavior
+- [Scenarios](scenarios.md): scenario lifecycle and execution model
+- [DevPortal](devportal.md): developer workflows for Root-backed environments
 
-  Runtime -> Skills [label="uses"];
-  Runtime -> Scenarios [label="uses"];
+## Current scope
 
-  Skills [shape=component];
-  Scenarios [shape=component];
-}
-````
-
-## Установка
-
-```bash
-pip install -e ".[dev]"
-```
-
-## Первый запуск
-
-```bash
-adaos api serve
-```
+AdaOS already includes real operational features such as node roles, autostart, core update orchestration, service supervision, monitoring, and Yjs webspace control. At the same time, some documents in this repository still describe target-state ideas. The pages outside `Roadmap` and `Concepts` are focused here on the implementation that exists in `src/adaos` today.

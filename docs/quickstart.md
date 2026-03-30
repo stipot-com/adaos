@@ -1,61 +1,119 @@
-# Быстрый старт
+# Quickstart
 
-## Установка
+## Requirements
+
+- Python `3.11`
+- Git
+- PowerShell on Windows, or Bash on Linux/macOS
+
+Optional components:
+
+- `uv` for the Windows bootstrap flow
+- private submodules if you also work on the client, backend, or infrastructure repositories
+
+## Clone the repository
 
 ```bash
-git clone -b rev2026 https://github.com/stipot/adaos.git
+git clone -b rev2026 https://github.com/stipot-com/adaos.git
 cd adaos
+```
 
-# Опционально: приватные модули для web/backend/infra разработки
+Optional submodules:
+
+```bash
 git submodule update --init --recursive \
   src/adaos/integrations/adaos-client \
   src/adaos/integrations/adaos-backend \
   src/adaos/integrations/infra-inimatic
-
-# установка в режиме разработки
-pip install -e ".[dev]"
-
-# mac/linux:
-bash tools/bootstrap.sh
-# windows (PowerShell):
-./tools/bootstrap.ps1
-. .\.venv\Scripts\Activate.ps1
 ```
 
-Core bootstrap не зависит от приватных submodule. Они нужны только если вы локально разрабатываете клиент, backend или infra.
+## Bootstrap
 
-## Запуск
+### Linux / macOS
 
 ```bash
-# API
-make api
-# API: http://127.0.0.1:8777
-
-# Backend (опционально, нужен submodule adaos-backend)
-make backend
-
-# Frontend (опционально, нужен submodule adaos-client)
-make web
+bash tools/bootstrap.sh
+source .venv/bin/activate
 ```
 
-## CLI
+### Windows PowerShell with `uv`
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1
+.\.venv\Scripts\Activate.ps1
+```
+
+### Windows PowerShell with `pip`
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1
+.\.venv\Scripts\Activate.ps1
+```
+
+### Manual editable install
+
+```bash
+pip install -e ".[dev]"
+```
+
+## First commands
 
 ```bash
 adaos --help
-
-# запустить API отдельно
+adaos where
 adaos api serve --host 127.0.0.1 --port 8777
-
-# запустить тесты в песочнице
-adaos tests run
 ```
 
-## Install default content
+In a second terminal:
 
 ```bash
-# Install default scenarios/skills into the local webspace (idempotent).
-adaos install
+curl -i http://127.0.0.1:8777/health/live
+curl -i http://127.0.0.1:8777/health/ready
+```
 
-# Pull workspace + refresh runtimes + sync scenarios into Yjs.
+## Common local workflows
+
+Install default local content:
+
+```bash
+adaos install
 adaos update
 ```
+
+Inspect local assets:
+
+```bash
+adaos skill list
+adaos scenario list
+adaos node status --json
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
+## Init scripts for node bootstrap
+
+AdaOS also supports one-line bootstrap flows used by hosted onboarding:
+
+### Linux
+
+```bash
+curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s --
+```
+
+### Windows PowerShell
+
+```powershell
+iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1
+```
+
+### Windows CMD
+
+```bat
+curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat
+```
+
+These scripts can optionally receive a join code for member-node onboarding.

@@ -1,21 +1,16 @@
-# Адаптеры SDK
+# SDK Adapters
 
-SDK включает вспомогательные адаптеры, используемые при разработке и тестировании.
+The SDK sits above concrete adapters. In the current implementation, adapters provide the actual filesystem, database, git, audio, secrets, and SDK bridge behavior used by services.
 
-## Примеры
+## Examples in the repository
 
-- **FsSkillRepository** — файловая реализация репозитория навыков (используется в тестах).  
-- **MonoSkillRepository** — реализация для монорепозитория (runtime).  
+- filesystem path providers
+- SQLite registries and stores
+- secure git and workspace helpers
+- TTS and STT adapters
+- secret backends
+- in-process skill context adapters
 
----
+## Guidance
 
-## Пример использования FsSkillRepository
-
-```python
-from adaos.adapters.skills.fs_repo import FsSkillRepository
-from pathlib import Path
-
-repo = FsSkillRepository(Path("./skills"))
-skills = repo.list()
-print(skills)
-```
+If you extend AdaOS, prefer adding new infrastructure behavior under `adapters/` and then exposing it through services or SDK helpers rather than coupling new code directly to a command entry point.

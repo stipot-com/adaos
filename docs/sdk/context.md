@@ -1,23 +1,13 @@
-# Контекст SDK
+# SDK Context
 
-SDK предоставляет упрощённый доступ к `AgentContext`.
+SDK code works against a runtime context instead of assuming global process state.
 
-## Пример
+## Current pattern
 
-```python
-from adaos.apps.bootstrap import AgentContext
+- runtime code initializes context during CLI or API startup
+- SDK helpers read from that context when they need paths, capabilities, bus access, or environment data
+- validation raises explicit runtime errors when the context is unavailable
 
-ctx = AgentContext()
+## Why it matters
 
-# использовать git
-repo = ctx.git.clone("https://github.com/example/skill.git")
-
-# работать с secrets
-ctx.secrets.write("openai/api_key", "sk-...")
-````
-
-## Зачем нужен
-
-* Для тестов и отладки.
-* Для разработки навыков без необходимости писать интеграции руками.
-* Для унификации доступа к сервисам.
+This makes skill execution and internal tooling more predictable and easier to validate than a free-form global import model.

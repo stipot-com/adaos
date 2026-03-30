@@ -1,27 +1,14 @@
-# Событийная шина (bus)
+# SDK Bus
 
-Модуль: `adaos.sdk.bus`
+AdaOS uses an internal event bus for runtime coordination. SDK-facing helpers expose bus and event utilities through `adaos.sdk.data.bus` and related modules.
 
-## Основные функции
+## What it is used for
 
-```python
-from adaos.sdk import bus
+- notifying runtime components about skill or scenario changes
+- routing local events between services
+- supporting observe and monitoring flows
+- bridging some local control actions into event-driven behavior
 
-await bus.emit("topic", {"key": "value"})
-await bus.on("topic", handler)
-````
+## Practical guidance
 
-* \*\*emit(topic, payload, **kw)** — публикует событие.
-* **on(topic, handler)** — подписка на события.
-
-## Пример
-
-```python
-from adaos.sdk.bus import emit, on
-
-async def on_boot(event):
-    print("boot event:", event)
-
-await on("sys.boot.start", on_boot)
-await emit("demo.hello", {"msg": "world"})
-```
+The event bus is part of the current implementation, but most application code should interact with it through existing services or SDK helpers instead of depending on bus internals directly.

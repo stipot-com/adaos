@@ -1,16 +1,16 @@
 strict: true
 site_name: AdaOS
-site_description: "документация проекта AdaOS — агентная OS навыков и сценариев"
-site_url: https://github.com/stipot/adaos
-repo_url: https://github.com/stipot/adaos
-repo_name: stipot/adaos
-edit_uri: edit/main/
+site_description: "AdaOS developer and runtime documentation"
+site_url: https://stipot-com.github.io/adaos/
+repo_url: https://github.com/stipot-com/adaos
+repo_name: stipot-com/adaos
+edit_uri: edit/main/docs/
 
 theme:
   name: material
   logo: assets/adaos_wb.svg
   favicon: assets/ADAOS_32_light.png
-  language: ru
+  language: en
   features:
     - navigation.tabs
     - navigation.sections
@@ -39,10 +39,10 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/stipot/adaos
+      link: https://github.com/stipot-com/adaos
   alternate:
     - name: English
-      link: /en/
+      link: /
       lang: en
     - name: Русский
       link: /ru/
@@ -50,26 +50,58 @@ extra:
 
 plugins:
   - search:
-      lang: [ru, en]
+      lang: [en, ru]
   - i18n:
       docs_structure: folder
       languages:
-        - locale: ru
-          name: Русский
-          default: true
         - locale: en
           name: English
+          default: true
+        - locale: ru
+          name: Русский
           nav_translations:
-            "Главная": "Home"
-            "Быстрый старт": "Quickstart"
-            "Архитектура": "Architecture"
-            "CLI": "CLI"
-            "SDK": "SDK"
-            "Навыки": "Skills"
-            "Сценарии": "Scenarios"
-            "DevPortal": "DevPortal"
-            "Дорожная карта": "Roadmap"
-            "Концепции": "Concepts"
+            Home: Главная
+            Quickstart: Быстрый старт
+            Architecture: Архитектура
+            Overview: Обзор
+            Runtime Overview: Обзор runtime
+            Layers: Слои
+            Agent Context: Agent Context
+            Security: Безопасность
+            CLI: CLI
+            API Service: API-сервис
+            Runtime And Operations: Runtime и операции
+            SDK: SDK
+            Bus: Bus
+            Context: Context
+            Decorators: Decorators
+            Adapters: Adapters
+            Control Plane: Control Plane
+            Skills: Навыки
+            Scenarios: Сценарии
+            DevPortal: DevPortal
+            Roadmap: Дорожная карта
+            Concepts: Концепции
+            Codebase: Кодовая база
+            Web Client: Веб клиент
+            User Interface: Интерфейс пользователя
+            Personalization: Профиль пользователя
+            LLM DevOps Stages: Этапы LLM DevOps
+            LLM DevOps Preparation: Этапы LLM DevOps - подготовка
+            NLU: Интерпретация намерений
+            NLU Teacher: NLU Teacher
+            Device Initialization: Инициализация устройства
+            Event Management: Управление событиями
+            Data Management: Управление данными
+            AdaOS Resource Locator: AdaOS Resource Locator
+            Context Compression: Компрессия контекста
+            Scenario Concepts: Сценарии
+            Skills And Scenarios: Навыки и сценарии
+            Dev Scenarios: Dev-сценарии
+            Scenario Start: Старт сценария
+            Scenario Runtime: Runtime сценария
+            First Launch Scenario: Первый запуск сценария
+            Scenario Target State: Сценарии и целевое состояние
   - git-revision-date-localized:
       enable_creation_date: true
       enable_git_follow: false
@@ -93,7 +125,7 @@ markdown_extensions:
   - def_list
   - pymdownx.details
   - pymdownx.mark
-  - mkdocs_graphviz # ← СТАВИМ РАНО, до подсветки и superfences
+  - mkdocs_graphviz
   - pymdownx.inlinehilite
   - pymdownx.highlight:
       anchor_linenums: true
@@ -105,60 +137,50 @@ markdown_extensions:
   - pymdownx.superfences
 
 nav:
-  - "Главная": index.md
-  - "Быстрый старт": quickstart.md
-  - "Архитектура":
-      - "Обзор": architecture/index.md
-      - "Слои": architecture/layers.md
-      - "AgentContext": architecture/context.md
-      - "Безопасность": architecture/security.md
-      - "Channel Semantics": architecture/channel-semantics.md
-      - "Authority And Degraded Mode": architecture/authority-and-degraded-mode.md
-      - "Hub-Root Protocol": architecture/hub-root-protocol.md
-      - "Transport Ownership": architecture/transport-ownership.md
-      - "Realtime Reliability Roadmap": architecture/realtime-reliability-roadmap.md
-      - "Webspace Evolution Roadmap": architecture/webspace-evolution-roadmap.md
-      - "Realtime Sidecar": architecture/adaos-realtime-sidecar.md
-  - "CLI":
-      - "Обзор": cli/index.md
-      - "Интерпретатор": cli/interpreter.md
-  - "SDK":
-      - "Обзор": sdk/index.md
-      - "Bus": sdk/bus.md
-      - "Decorators": sdk/decorators.md
-      - "Context": sdk/context.md
-      - "Adapters": sdk/adapters.md
-      - "Control Plane": sdk_control_plane.md
-  - "Навыки": skills.md
-  - "Сценарии":
-      - "Сценарии": scenarios.md
-      - "Первоначальный запуск": concepts/scenario-first-launch.md
-      - "Доброе утро": concepts/scenario-goodmorning.md
-      - "Планирование дня": concepts/scenario-planning-the-day.md
-  - "DevPortal": devportal.md
-  - "Дорожная карта": roadmap.md
-  - "Концепции":
-      - "Кодовая база": concepts/codeflow.md
-      - "Веб клиент": concepts/web-client.md
-      - "Интерфейс пользователя": concepts/ui.md
-      - "Профиль пользователя": concepts/personalization.md
-      - "Этапы LLM DevOps": concepts/dev_stages.md
-      - "Этапы LLM DevOps - подготовка": concepts/dev_stage_prepare.md
-      - "Интерпретация намерений": concepts/nlu.md
-      - "NLU Teacher (LLM)": concepts/nlu-teacher-llm.md
-      - "Инициализация устройства": concepts/init_device.md
-      - "Управление событиями": concepts/event_mgmnt.md
-      - "Управление данными": concepts/data_mgmnt.md
-      - "AdaOS Resource Locator": concepts/arl.md
-      - "Компрессия контекста": concepts/context_compression.md
-      - "Безопасность": concepts/security.md
-      - "Сценарии":
-          - "Навыки и сценарии": concepts/skills-and-scenarios.md
-          - "Dev-сценарии": concepts/dev-scenarios.md
-          - "Старт сценария": concepts/start_scenario.md
-          - "Runtime сценария": concepts/scenario-procedural-runtime.md
-          - "Первый запуск сценария": concepts/scenario-first-launch.md
-          - "Сценарии и целевое состояние": concepts/scenarios-target-state.md
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Runtime Overview: architecture/overview.md
+      - Layers: architecture/layers.md
+      - Agent Context: architecture/context.md
+      - Security: architecture/security.md
+  - CLI:
+      - Overview: cli/index.md
+      - API Service: cli/api.md
+      - Runtime And Operations: cli/runtime.md
+  - SDK:
+      - Overview: sdk/index.md
+      - Bus: sdk/bus.md
+      - Context: sdk/context.md
+      - Decorators: sdk/decorators.md
+      - Adapters: sdk/adapters.md
+      - Control Plane: sdk_control_plane.md
+  - Skills: skills.md
+  - Scenarios: scenarios.md
+  - DevPortal: devportal.md
+  - Roadmap: roadmap.md
+  - Concepts:
+      - Codebase: concepts/codeflow.md
+      - Web Client: concepts/web-client.md
+      - User Interface: concepts/ui.md
+      - Personalization: concepts/personalization.md
+      - LLM DevOps Stages: concepts/dev_stages.md
+      - LLM DevOps Preparation: concepts/dev_stage_prepare.md
+      - NLU: concepts/nlu.md
+      - NLU Teacher: concepts/nlu-teacher-llm.md
+      - Device Initialization: concepts/init_device.md
+      - Event Management: concepts/event_mgmnt.md
+      - Data Management: concepts/data_mgmnt.md
+      - AdaOS Resource Locator: concepts/arl.md
+      - Context Compression: concepts/context_compression.md
+      - Scenario Concepts:
+          - Skills And Scenarios: concepts/skills-and-scenarios.md
+          - Dev Scenarios: concepts/dev-scenarios.md
+          - Scenario Start: concepts/start_scenario.md
+          - Scenario Runtime: concepts/scenario-procedural-runtime.md
+          - First Launch Scenario: concepts/scenario-first-launch.md
+          - Scenario Target State: concepts/scenarios-target-state.md
 
 copyright: |
-  &copy; 2025 AdaOS
+  &copy; 2026 AdaOS

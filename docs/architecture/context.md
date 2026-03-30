@@ -1,75 +1,31 @@
-# AgentContext
+# Agent Context
 
-`AgentContext` — это точка сборки ядра AdaOS.  
-Он создаётся в `apps/bootstrap.py` и инкапсулирует все основные сервисы и политики.
+## Purpose
 
----
+`AgentContext` is the shared runtime container used by the CLI and API server. It gives commands and services a single source of truth for paths, settings, repositories, event bus access, and capability checks.
 
-## Назначение
+## How it is initialized
 
-- Централизовать доступ к портам и сервисам.  
-- Исключить глобальные singletons и магические зависимости.  
-- Давать сервисам **только нужные порты**, а не весь контекст.  
+- the CLI initializes or reloads the context in `src/adaos/apps/cli/app.py`
+- the API server initializes it during startup before routers are mounted
+- environment variables and `.env` are applied before runtime services start
 
----
+## What it provides
 
-## Состав AgentContext
+Typical context members include:
 
-### Настройки и пути
+- resolved paths for workspace, state, and runtime directories
+- settings loaded from files and environment
+- repositories for skills and scenarios
+- SQLite access
+- git helpers
+- event bus access
+- capability and security helpers
 
-- **settings** — параметры запуска (profile, base_dir, monorepo, режим тестирования).  
-- **paths** — `PathProvider`, формирует директории:  
-  - skills_dir  
-  - scenarios_dir  
-  - state  
-  - cache  
-  - logs  
+## Why this design is useful
 
-### Системные компоненты
+This keeps local commands and API operations aligned:
 
-- **bus** — событийная шина.  
-- **proc** — процесс-менеджер (управление sandbox-процессами).  
-
-### Политики
-
-- **caps** — Capabilities (права на действия).  
-- **net** — NetPolicy (разрешённые домены/сети).  
-- **fs** — FSPolicy (разрешённые корни в файловой системе).  
-
-### Хранилища
-
-- **sql** — SQLite (основные таблицы).  
-- **kv** — SQLiteKV (ключ-значение).  
-
-### Внешние сервисы
-
-- **git** — SecureGitClient (поверх CLI Git).  
-- **secrets** — SecretsService (OS keyring или FileVault с шифрованием Fernet).  
-- **sandbox** — SandboxService (изоляция выполнения).  
-
----
-
-## Пример использования
-
-```python
-from adaos.apps.bootstrap import AgentContext
-
-ctx = AgentContext()
-skill = ctx.services.skills.get("example")
-
-# подписка на события
-async def handler(event):
-    print("got event", event)
-
-await ctx.bus.subscribe("sys.boot.start", handler)
-````
-
----
-
-## Принцип проектирования
-
-- **Изоляция**: сервисы не получают весь `AgentContext`, а только свои зависимости.
-- **Безопасность**: политики (net, fs, secrets) навешиваются в контексте, а не в самих навыках.
-- **Тестируемость**: в тестах можно подменять отдельные порты (например, fake GitClient).
-
----
+- the same repositories and registries are reused
+- operational commands can switch between direct execution and API-backed execution
+- bootstrapping and environment preparation happen in one place

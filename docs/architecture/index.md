@@ -1,85 +1,29 @@
-# Архитектура AdaOS
+# Architecture
 
-Архитектура AdaOS построена по слоям и ориентирована на принцип **«минимальное ядро, максимум на краях»**.  
-Сервисы используют только необходимые **порты**, а интеграции выносятся в адаптеры.
+AdaOS is built as a local-first runtime with a layered Python codebase and a small control surface:
 
----
+- the CLI builds and uses a shared `AgentContext`
+- the FastAPI server exposes the same runtime over HTTP
+- services manage skills, scenarios, node state, Yjs webspaces, and runtime lifecycle
+- adapters isolate filesystem, database, git, audio, secret, and integration-specific IO
 
-## Слои одним взглядом
+## Main runtime building blocks
 
-- **Domain** — базовые сущности (SkillId, SkillMeta).  
-- **Ports** — протоколы интерфейсов (Git, FS, Sandbox, Policy, Skills, Scenarios).  
-- **Services** — бизнес-логика (SkillManager, ScenarioManager, политики, sandbox).  
-- **Adapters** — реализации портов (git, sqlite, keyring, fs, runtime).  
-- **Apps** — CLI, API и bootstrap.  
-- **SDK** — интерфейс для LLM программиста.  
-- **Integrations** — внешние проекты (Inimatic, Rhasspy, OVOS).  
+- `src/adaos/apps`: CLI, API server, launchers, and process entry points
+- `src/adaos/services`: orchestration and runtime logic
+- `src/adaos/sdk`: public helpers for skills, scenarios, data access, and decorators
+- `src/adaos/adapters`: filesystem, database, git, audio, secrets, and SDK bridge implementations
+- `src/adaos/ports`: contracts for infrastructure-facing behavior
+- `src/adaos/domain`: core types and registries
 
----
+## Runtime model
 
-## Общая схема
+In the current implementation:
 
-```dot
-digraph Layers {
-  rankdir=LR; node [shape=box, style=rounded];
+- a node can operate as `hub` or `member`
+- the local API exposes node, skill, scenario, observe, subnet, join, and service endpoints
+- service-type skills are managed through a supervisor and health-aware status API
+- Yjs-backed webspaces provide synchronized scenario and desktop state
+- autostart and core-update flows are integrated with the runtime lifecycle
 
-  subgraph cluster_domain { label="Domain"; SkillId; SkillMeta; }
-
-  subgraph cluster_ports { label="Ports";
-    Git; FS; Skills; Scenarios; Secrets; Policy; Sandbox;
-  }
-
-  subgraph cluster_services { label="Services";
-    SkillManager; ScenarioManager; SandboxService;
-  }
-
-  subgraph cluster_adapters { label="Adapters";
-    GitAdapter; SQLite; FileVault; MonoRepo;
-  }
-
-  subgraph cluster_apps { label="Apps"; CLI; API; }
-
-  SkillId -> Skills [style=invis]; // для ровной раскладки
-  SkillMeta -> Skills [style=invis];
-
-  {SkillId SkillMeta} -> {Git FS Skills Scenarios Secrets Policy Sandbox};
-  {Git FS Skills Scenarios Secrets Policy Sandbox} -> {SkillManager ScenarioManager SandboxService};
-  {SkillManager ScenarioManager SandboxService} -> {GitAdapter SQLite FileVault MonoRepo};
-  {CLI API} -> {SkillManager ScenarioManager SandboxService};
-}
-```
-
-## Realtime Reliability
-
-- [Channel Semantics](channel-semantics.md)
-- [Authority And Degraded Mode](authority-and-degraded-mode.md)
-- [Hub-Root Protocol](hub-root-protocol.md)
-- [Transport Ownership](transport-ownership.md)
-- [Realtime Reliability Roadmap](realtime-reliability-roadmap.md)
-- [AdaOS Realtime Sidecar](adaos-realtime-sidecar.md)
-- [Webspace Evolution Roadmap](webspace-evolution-roadmap.md)
-
----
-
-## AgentContext
-
-Собирается в `apps/bootstrap.py` и включает:
-
-- **settings** — параметры запуска (profile, base\_dir, монорепо).
-- **paths** — провайдер путей (skills, scenarios, cache, logs).
-- **bus, proc** — событийная шина и процесс-менеджер.
-- **caps, net, fs** — политики (Capabilities, сетевые, файловые).
-- **sql, kv** — хранилища SQLite/KeyValue.
-- **git** — SecureGitClient.
-- **secrets** — SecretsService (keyring + файловый фолбэк).
-- **sandbox** — SandboxService.
-
----
-
-## Документация по слоям
-
-- [Слои и контракты](layers.md)
-- [AgentContext](context.md)
-- [Безопасность и доверие](security.md)
-
-```
+The following pages summarize the implemented architecture rather than the target-state research material.

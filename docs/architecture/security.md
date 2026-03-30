@@ -1,85 +1,27 @@
-# Безопасность и доверие
+# Security
 
-Архитектура AdaOS изначально проектируется с упором на безопасность:  
-минимальные права по умолчанию, явные политики и централизованная система доверия.
+## Local control API
 
----
+The local API is protected with the `X-AdaOS-Token` header. The token is typically read from environment or node configuration and is used by CLI commands when they call the control API.
 
-## Политики (Policies)
+## Node and subnet controls
 
-### Capabilities
+Current runtime security features include:
 
-- Управление правами на действия (например, доступ к сетевым запросам или файловой системе).  
-- Выдаются сервисам и навыкам в момент инициализации.  
-- Пример: `caps: ["skills.install", "scenarios.run"]`.
+- role-aware node configuration
+- join-code based member onboarding
+- explicit shutdown and drain flows
+- member update requests through the hub
+- local service and runtime controls gated behind the local API token
 
-### NetPolicy
+## Secret handling
 
-- Белый список доменов и сетей.  
-- Навыки могут обращаться только к разрешённым адресам.  
-- Пример: `allow = ["*.github.com", "api.openai.com"]`.
+AdaOS includes secret-management commands and adapters for storing secrets outside ordinary source files. The runtime also keeps environment-derived settings separate from repository content where possible.
 
-### FSPolicy
+## Git and workspace safety
 
-- Определяет разрешённые корни файловой системы.  
-- Навыки не могут читать/писать за пределами этих директорий.  
-- Пример: `skills_dir`, `scenarios_dir`, `cache`.
+Operational commands are designed around managed workspaces and explicit install/update flows instead of arbitrary repository mutation. In practice this reduces the amount of ad hoc filesystem editing required during runtime operations.
 
----
+## Scope
 
-## Secrets
-
-### Основные принципы
-
-- Секреты никогда не пишутся в события или логи.  
-- CLI выводит секреты только по явному `--show`.
-
-### Реализация
-
-- **OS keyring** — основной бэкенд.  
-- **FileVault** — фолбэк, если keyring недоступен (например, в CI или на минимальной ОС).  
-  - Шифрование через Fernet.  
-  - Мастер-ключ хранится в keyring или передаётся через ENV.  
-
----
-
-## Модель доверия
-
-### Root ↔ Hub ↔ Agent
-
-- **Root** — центральный сервер управления сертификатами.  
-- **Hub** — регистрируется в Root, получает доверенный сертификат.  
-- **Agent** — присоединяется к Hub, наследует его доверие.  
-
-### Принципы
-
-- Регистрация хостов только через Root.  
-- Двухфакторная аутентификация (например, email + телефон, или QR-код при инициализации).  
-- Изолированные подсети без Root-доверия **не поддерживаются**.  
-
-### Поток
-
-1. Hub инициирует регистрацию в Root.  
-2. Root выдаёт сертификат (X.509) для Hub.  
-3. Hub развёртывает сертификат на своих агентах.  
-4. Вся коммуникация (CLI/API/LLM) идёт по защищённому каналу.  
-
----
-
-## Пример использования SecretsService
-
-```python
-from adaos.services.crypto.secrets_service import SecretsService
-
-secrets = SecretsService()
-secrets.write("openai/api_key", "sk-...")
-print(secrets.read("openai/api_key"))
-````
-
----
-
-## Будущие шаги
-
-- Гранулированные политики доступа к секретам: `subject="skill:<id>"`.
-- Поддержка аппаратных хранилищ (TPM, HSM).
-- Централизованное управление отозванными сертификатами (CRL).
+Some broader trust, PKI, and hosted-service concerns are documented elsewhere in the repository, but the pages outside `Roadmap` and `Concepts` focus on the security model that exists in the current Python runtime and local control surface.

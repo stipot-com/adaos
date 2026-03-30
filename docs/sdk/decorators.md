@@ -1,21 +1,21 @@
-# Декораторы
+# SDK Decorators
 
-Модуль: `adaos.sdk.decorators`
+AdaOS uses decorators from `adaos.sdk.core.decorators` to attach machine-readable metadata to tool functions.
 
-## Подписки
+## Current role
 
-```python
-from adaos.sdk.decorators import subscribe
+The decorator layer is used to:
 
-@subscribe("demo.hello")
-async def handler(event):
-    print("получено:", event)
-````
+- define tool input and output schemas
+- attach summaries and stability metadata
+- support export for LLM-facing or control-plane descriptions
 
-Все подписки собираются в глобальном реестре `_SUBSCRIPTIONS`
-и активируются при загрузке навыка.
+## Related commands
 
-## Инструменты
+The CLI exposes SDK export helpers through:
 
-SDK поддерживает регистрацию "tools" (утилит) с публичными именами,
-чтобы навыки могли объявлять API-интерфейсы для сценариев.
+```bash
+adaos sdk export
+adaos sdk export-all
+adaos sdk check
+```

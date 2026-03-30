@@ -1,77 +1,38 @@
-# Архитектура
+# Runtime Overview
 
-## Обзор слоёв
+## Request flow
 
-* **Ports** (`src/adaos/ports/*`) — минимальные протоколы интерфейсов (Git, SQL, KV, Paths, Secrets, Policy, FS, Skills/Scenarios).
-* **Adapters** (`src/adaos/adapters/*`) — реализации портов (CLI Git, SecureGit, SQLite, SQLiteKV, Keyring/FileVault, PathProvider, Mono-репозитории).
-* **Services** (`src/adaos/services/*`) — бизнес-логика и политики: менеджеры навыков/сценариев, Capabilities, NetPolicy, FSPolicy, SecretsService, безопасные FS-утилиты.
-* **Apps** (`src/adaos/apps/*`) — bootstrap (сборка `AgentContext`) и CLI (Typer).
-* **SDK** (`src/adaos/sdk/*`) — тонкие обёртки для совместимости старых скриптов и dev-утилит (часть команд временно помечена как deferred).
+The usual control path is:
 
-## AgentContext (состав)
+1. `adaos` CLI loads settings, prepares the `AgentContext`, and ensures the local environment exists.
+2. Commands either work directly through local services or call the local control API.
+3. The API server exposes the same runtime state through FastAPI routers.
+4. Services coordinate persistence, git workspaces, runtime slots, event delivery, and external integration behavior.
 
-Собирается в `apps/bootstrap.py`. Содержит:
+## Implemented subsystems
 
-* `settings` — параметры запуска (base\_dir, profile, монорепо…)
-* `paths` — провайдер путей (base, skills\_dir, scenarios\_dir, state, cache, logs)
-* `bus`, `proc` — событийная шина и процесс-менеджер (локальные реализации)
-* `caps` — Capabilities (выдача/проверка прав)
-* `net` — NetPolicy (allow-list доменов)
-* `fs` — FSPolicy (разрешённые корни в ФС)
-* `sql`, `kv` — SQLite + SQLiteKV
-* `git` — SecureGitClient (поверх CLI Git)
-* `secrets` — SecretsService (keyring + файловый фолбэк)
+- `api server`: health checks, status, shutdown/drain, services, skills, scenarios, node operations, observe stream, STT, join flows
+- `node runtime`: role management, hub/member coordination, reliability reporting, member updates, join codes
+- `skill runtime`: install, validate, update, activate, rollback, service supervision
+- `scenario runtime`: install, validate, run, and test scenarios
+- `webspace runtime`: Yjs-backed webspaces, desktop state, scenario switching, home scenario control
+- `developer workflows`: Root login/bootstrap, Forge-style push and publish commands
 
-> Принцип: сервисам передаются **только нужные порты**, а не весь контекст.
+## Storage and state
 
-## Ключевые порты и адаптеры
+AdaOS stores most local state under the active base directory, including:
 
-* Git: `ports/git` → `adapters/git/cli_git.py`, `adapters/git/secure_git.py`
-* Политики: `ports/policy` → `services/policy/{capabilities,net}.py`
-* ФС: `ports/fs` → `services/policy/fs.py`, безопасные операции `services/fs/safe_io.py`
-* Секреты: `ports/secrets` → `adapters/secrets/{keyring_vault,file_vault}.py` + `services/crypto/secrets_service.py`
-* Навыки: `ports/skills` → `adapters/skills/mono_repo.py` + `services/skill/manager.py`
-* Сценарии: `ports/scenarios` → `adapters/scenarios/mono_repo.py` + `services/scenario/manager.py`
-* БД: `adapters/db/sqlite_store.py` (SQLite/SQLiteKV), `adapters/db/sqlite_skill_registry.py` (реестры)
+- workspace copies for skills and scenarios
+- SQLite registry data
+- runtime state and logs
+- Yjs and webspace state
+- service diagnostics and doctor reports
 
-## Репозитории и реестры
+## Networking model
 
-* **Skills** и **Scenarios** — каждый в своём **моно-репозитории** (один git working tree на категорию).
-* Источник истины: **SQLite** таблички `skills` / `scenarios` (+ версии).
-* Рабочее дерево подтягивается **через git sparse-checkout** по списку из БД.
+The repository currently assumes a local control API plus optional subnet communication:
 
-```mermaid
-flowchart LR
-  Agent((Agent))
-  Runtime[[Runtime]]
-  Scheduler[[Scheduler]]
-  CLI[/CLI/]
-  API[/API/]
-  Tests[/Tests/]
-  Docs[/Docs/]
-  Skills[(Skills)]
-  Scenarios[(Scenarios)]
-
-  Agent --> Runtime --> Scheduler
-  CLI --> Agent
-  API --> Agent
-  Tests --> Runtime
-  Docs --> CLI
-  Runtime --> Skills
-  Runtime --> Scenarios
-```
-
-## Политики/безопасность — как это работает
-
-По умолчанию core получает secrets.read/secrets.write. Если потом появятся скиллы, которым нельзя читать все секреты — заведём subject="skill:<id>" и выдадим ограниченный набор ключей (это легко расширить в SecretsService).
-
-CLI никогда не пишет значения секретов в логи/события; только в stdout по --show.
-
-Основной бэкенд — OS keyring; если он недоступен (CI/минимальная ОС), падаем в FileVault с шифрованием Fernet и мастер-ключом из keyring/ENV.
-
-## Правило для MVP
-
-* Вся исполнение и состояние — в services.
-* Вся интеграция — в adapters.
-* CLI и автотесты — поверх services.
-* sdk — удобные фасады и утилиты для разработчиков навыков/сценариев, никаких прямых зависимостей на хранилища/гит/секреты.
+- local API uses `X-AdaOS-Token`
+- hub/member coordination uses node config plus subnet endpoints
+- join-code onboarding is available through hub and API flows
+- some features integrate with Root-hosted infrastructure when configured
