@@ -1,7 +1,7 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\schema-modal.component.ts
 import { ChangeDetectionStrategy, Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { ModalController } from '@ionic/angular/standalone'
 import { addIcons } from 'ionicons'
 import { Observable } from 'rxjs'
@@ -25,7 +25,7 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
   selector: 'ada-schema-collection-grid',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <div class="grid-section" *ngIf="widget">
       <h2 *ngIf="widget.title">{{ widget.title }}</h2>
@@ -47,7 +47,7 @@ import { contractOutline, expandOutline } from 'ionicons/icons'
                 </div>
                 <div class="project-type">
                   {{ item.object_type || item.type }}
-                  <span *ngIf="item.version">&nbsp;· v{{ item.version }}</span>
+                  <span *ngIf="item.version">&nbsp;В· v{{ item.version }}</span>
                 </div>
                 <div class="project-description" *ngIf="item.description">
                   {{ item.description }}
@@ -322,7 +322,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
     event: any,
     widget: WidgetConfig
   ): Promise<void> {
-    // В schema-модалках опираемся на декларативные действия (callHost и др.)
+    // Р’ schema-РјРѕРґР°Р»РєР°С… РѕРїРёСЂР°РµРјСЃСЏ РЅР° РґРµРєР»Р°СЂР°С‚РёРІРЅС‹Рµ РґРµР№СЃС‚РІРёСЏ (callHost Рё РґСЂ.)
     await this.actions.handle(act, { event, widget })
   }
 
@@ -512,7 +512,7 @@ export class SchemaCollectionGridComponent implements OnInit, OnDestroy {
   standalone: true,
   imports: [
     CommonModule,
-    IonicModule,
+    IonicStandaloneImports,
     SchemaCollectionGridComponent,
     PageWidgetHostComponent,
   ],

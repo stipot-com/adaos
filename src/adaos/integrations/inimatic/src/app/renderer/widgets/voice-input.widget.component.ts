@@ -1,6 +1,6 @@
 import { Component, Input, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { addIcons } from 'ionicons'
 import { micOutline, stopCircleOutline } from 'ionicons/icons'
 import { WidgetConfig } from '../../runtime/page-schema.model'
@@ -13,7 +13,7 @@ import { SttEvent, SttProvider } from '../../runtime/stt/stt.types'
 @Component({
   selector: 'ada-voice-input-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <div class="voice-input">
       <ion-button
@@ -45,11 +45,11 @@ import { SttEvent, SttProvider } from '../../runtime/stt/stt.types'
     </div>
 
     <div class="confirm" *ngIf="pendingText">
-      <div class="confirm__label">Распознано:</div>
+      <div class="confirm__label">Р Р°СЃРїРѕР·РЅР°РЅРѕ:</div>
       <div class="confirm__text">{{ pendingText }}</div>
       <div class="confirm__actions">
-        <ion-button size="small" (click)="confirmSend()" [disabled]="sending">Отправить</ion-button>
-        <ion-button size="small" fill="outline" (click)="discard()" [disabled]="sending">Отмена</ion-button>
+        <ion-button size="small" (click)="confirmSend()" [disabled]="sending">РћС‚РїСЂР°РІРёС‚СЊ</ion-button>
+        <ion-button size="small" fill="outline" (click)="discard()" [disabled]="sending">РћС‚РјРµРЅР°</ion-button>
       </div>
     </div>
   `,
@@ -185,7 +185,7 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
   private onSttEvent(ev: SttEvent): void {
     if (ev.type === 'state') {
       this.listening = ev.state === 'listening'
-      if (ev.state === 'processing') this.status = 'Обработка…'
+      if (ev.state === 'processing') this.status = 'РћР±СЂР°Р±РѕС‚РєР°вЂ¦'
       if (ev.state === 'idle' && !this.pendingText && !this.stickyStatus) this.status = ''
       return
     }
@@ -198,13 +198,13 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
       const text = String(ev.text || '').trim()
       if (!text) return
       this.pendingText = text
-      this.status = this.autoSend ? 'Отправка…' : ''
+      this.status = this.autoSend ? 'РћС‚РїСЂР°РІРєР°вЂ¦' : ''
       this.stickyStatus = false
       if (this.autoSend) void this.sendRecognized(text)
       return
     }
     if (ev.type === 'error') {
-      this.status = String(ev.message || 'Ошибка STT')
+      this.status = String(ev.message || 'РћС€РёР±РєР° STT')
       this.stickyStatus = true
       this.listening = false
       try {
@@ -264,11 +264,11 @@ export class VoiceInputWidgetComponent implements OnInit, OnDestroy {
       if (this.sendMeta) payload._meta = { ...this.sendMeta }
       await this.adaos.sendEventsCommand(this.sendCommand, payload, 15000)
       setTimeout(() => {
-        if (this.status === 'Отправка…') this.status = ''
+        if (this.status === 'РћС‚РїСЂР°РІРєР°вЂ¦') this.status = ''
       }, 1200)
       this.pendingText = ''
     } catch {
-      this.status = 'Не удалось отправить сообщение.'
+      this.status = 'РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ.'
       this.stickyStatus = true
     } finally {
       this.sending = false

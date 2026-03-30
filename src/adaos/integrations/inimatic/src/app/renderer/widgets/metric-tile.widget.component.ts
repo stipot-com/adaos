@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { Observable, Subscription } from 'rxjs'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -10,7 +10,7 @@ import { PageStateService } from '../../runtime/page-state.service'
 @Component({
   selector: 'ada-metric-tile-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <ion-card (click)="onClick()">
       <ion-card-header>

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, EventEmitter, Input, OnChanges, OnInit, Output, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { Observable, Subscription } from 'rxjs'
 import { map } from 'rxjs/operators'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -14,7 +14,7 @@ import { isVerboseDebugEnabled } from '../../debug-log'
   selector: 'ada-collection-grid-widget',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   providers: [PageModalService],
   template: `
     <div class="grid-section">

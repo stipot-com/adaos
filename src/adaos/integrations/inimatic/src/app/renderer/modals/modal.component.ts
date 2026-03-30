@@ -1,13 +1,13 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\modal.component.ts
 import { Component, Input, OnChanges, OnInit, ViewChild, ViewContainerRef, ComponentRef } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { ModalRegistry } from '../../runtime/registry'
 
 @Component({
   selector: 'ada-modal-host',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `<ng-template #vc></ng-template>`,
   styles: [
     `:host{display:block;height:100%;}`

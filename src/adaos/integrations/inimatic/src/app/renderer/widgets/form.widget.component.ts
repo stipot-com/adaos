@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { FormsModule } from '@angular/forms'
 import { ActionConfig, WidgetConfig } from '../../runtime/page-schema.model'
 import { PageActionService } from '../../runtime/page-action.service'
@@ -16,7 +16,7 @@ type Field =
 @Component({
   selector: 'ada-form-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule, FormsModule],
+  imports: [CommonModule, IonicStandaloneImports, FormsModule],
   providers: [PageModalService],
   template: `
     <div class="form-widget">

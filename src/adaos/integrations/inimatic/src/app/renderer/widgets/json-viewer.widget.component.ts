@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common'
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { Observable, Subscription, of } from 'rxjs'
 import { PageDataService } from '../../runtime/page-data.service'
 import { PageStateService } from '../../runtime/page-state.service'
@@ -9,7 +9,7 @@ import { WidgetConfig } from '../../runtime/page-schema.model'
 @Component({
   selector: 'ada-json-viewer-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <div class="json-viewer">
       <h2 *ngIf="widget?.title">{{ widget.title }}</h2>

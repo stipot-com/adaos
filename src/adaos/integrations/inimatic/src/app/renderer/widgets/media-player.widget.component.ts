@@ -16,7 +16,7 @@ import {
   HttpHeaders,
 } from '@angular/common/http'
 import { FormsModule } from '@angular/forms'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { firstValueFrom, Subscription } from 'rxjs'
 import {
   HubMemberChannelSnapshot,
@@ -56,7 +56,7 @@ type MediaLibraryResponse = {
 @Component({
   selector: 'ada-media-player-widget',
   standalone: true,
-  imports: [CommonModule, FormsModule, IonicModule],
+  imports: [CommonModule, FormsModule, IonicStandaloneImports],
   providers: [PageModalService],
   template: `
     <div class="media-widget" [class.compact]="compact">
@@ -139,7 +139,7 @@ type MediaLibraryResponse = {
             (ionChange)="onSelectName($event.detail.value)"
           >
             <ion-select-option *ngFor="let item of items" [value]="item.name">
-              {{ item.name }} · {{ formatBytes(item.size_bytes) }}
+              {{ item.name }} В· {{ formatBytes(item.size_bytes) }}
             </ion-select-option>
           </ion-select>
         </ion-item>

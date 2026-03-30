@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { FormsModule } from '@angular/forms'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageActionService } from '../../runtime/page-action.service'
@@ -10,7 +10,7 @@ import { Subscription } from 'rxjs'
 @Component({
   selector: 'ada-text-input-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule, FormsModule],
+  imports: [CommonModule, IonicStandaloneImports, FormsModule],
   template: `
     <ion-item lines="full">
       <ion-label position="stacked">

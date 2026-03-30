@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { ModalController, ToastController } from '@ionic/angular/standalone'
 import { NotificationHistoryEntry, NotificationLogService } from '../../runtime/notification-log.service'
 
@@ -8,7 +8,7 @@ import { NotificationHistoryEntry, NotificationLogService } from '../../runtime/
   selector: 'ada-notification-history-modal',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <ion-header>
       <ion-toolbar>

@@ -1,6 +1,6 @@
 import { Component, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { PageSchema, WidgetConfig } from '../../runtime/page-schema.model'
 import { PageWidgetHostComponent } from '../widgets/page-widget-host.component'
 import { YDocService } from '../../y/ydoc.service'
@@ -12,7 +12,7 @@ import { isVerboseDebugEnabled } from '../../debug-log'
 @Component({
   selector: 'ada-dynamic-desktop-page',
   standalone: true,
-  imports: [CommonModule, IonicModule, PageWidgetHostComponent],
+  imports: [CommonModule, IonicStandaloneImports, PageWidgetHostComponent],
   template: `
     <ion-content [style.--background]="background">
       <div class="desktop-page">

@@ -11,7 +11,7 @@ import {
   ViewContainerRef,
 } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { WidgetConfig, WidgetType } from '../../runtime/page-schema.model'
 import { CollectionGridWidgetComponent } from './collection-grid.widget.component'
 import { CommandBarWidgetComponent } from './command-bar.widget.component'
@@ -63,7 +63,7 @@ export const PAGE_WIDGET_REGISTRY: Record<WidgetType, Type<any>> = {
 @Component({
   selector: 'ada-page-widget-host',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `<ng-template #vc></ng-template>`,
 })
 export class PageWidgetHostComponent implements OnInit, OnChanges, OnDestroy {

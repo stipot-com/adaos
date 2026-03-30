@@ -1,6 +1,6 @@
 import { Component, Input, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { WidgetConfig, WidgetType } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
 import { Subscription } from 'rxjs'
@@ -11,7 +11,7 @@ import { PageActionService } from '../../runtime/page-action.service'
 @Component({
   selector: 'ada-desktop-widgets',
   standalone: true,
-  imports: [CommonModule, IonicModule, MetricTileWidgetComponent, CommandBarWidgetComponent],
+  imports: [CommonModule, IonicStandaloneImports, MetricTileWidgetComponent, CommandBarWidgetComponent],
   template: `
     <div class="widgets-section">
       <div class="widgets-header">

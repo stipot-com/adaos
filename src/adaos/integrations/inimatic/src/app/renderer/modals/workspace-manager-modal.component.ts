@@ -1,7 +1,7 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\workspace-manager-modal.component.ts
 import { Component, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { ModalController } from '@ionic/angular/standalone'
 import { FormsModule } from '@angular/forms'
 import { YDocService } from '../../y/ydoc.service'
@@ -27,7 +27,7 @@ type ScenarioOption = {
 @Component({
   selector: 'ada-workspace-manager-modal',
   standalone: true,
-  imports: [CommonModule, IonicModule, FormsModule],
+  imports: [CommonModule, IonicStandaloneImports, FormsModule],
   template: `
     <ion-header>
       <ion-toolbar>

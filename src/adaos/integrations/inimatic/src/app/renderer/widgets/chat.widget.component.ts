@@ -1,6 +1,6 @@
 import { Component, Input, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { FormsModule } from '@angular/forms'
 import { Subscription } from 'rxjs'
 import { addIcons } from 'ionicons'
@@ -15,7 +15,7 @@ import { isVerboseDebugEnabled } from '../../debug-log'
 @Component({
   selector: 'ada-chat-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule, FormsModule],
+  imports: [CommonModule, IonicStandaloneImports, FormsModule],
   template: `
     <div class="chat">
       <div class="messages" [attr.data-align-right]="alignRightFrom">
@@ -105,7 +105,7 @@ export class ChatWidgetComponent implements OnInit, OnDestroy {
 
   alignRightFrom = 'user'
   hint = ''
-  placeholder = 'Type a message…'
+  placeholder = 'Type a messageвЂ¦'
 
   private dataSub?: Subscription
   private openCommand?: string
@@ -129,7 +129,7 @@ export class ChatWidgetComponent implements OnInit, OnDestroy {
     this.sendCommand = typeof inputs.sendCommand === 'string' ? inputs.sendCommand : undefined
     this.alignRightFrom = typeof inputs.alignRightFrom === 'string' ? inputs.alignRightFrom : 'user'
     this.hint = typeof inputs.hint === 'string' ? inputs.hint : ''
-    this.placeholder = typeof inputs.placeholder === 'string' ? inputs.placeholder : 'Type a message…'
+    this.placeholder = typeof inputs.placeholder === 'string' ? inputs.placeholder : 'Type a messageвЂ¦'
     this.sendMeta = inputs && typeof inputs.meta === 'object' && inputs.meta ? { ...(inputs.meta as any) } : undefined
 
     if (inputs.autoSpeak === true || typeof inputs.autoSpeakFrom === 'string') {

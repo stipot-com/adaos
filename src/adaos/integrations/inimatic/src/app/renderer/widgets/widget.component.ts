@@ -1,12 +1,12 @@
 import { Component, Input, OnChanges, OnInit, ViewChild, ViewContainerRef, ComponentRef } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { WidgetRegistry } from '../../runtime/registry'
 
 @Component({
   selector: 'ada-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `<ng-template #vc></ng-template>`
 })
 export class WidgetComponent implements OnChanges, OnInit {

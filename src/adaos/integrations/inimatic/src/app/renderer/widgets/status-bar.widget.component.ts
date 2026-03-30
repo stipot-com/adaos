@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { Observable } from 'rxjs'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -8,7 +8,7 @@ import { PageDataService } from '../../runtime/page-data.service'
 @Component({
   selector: 'ada-status-bar-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <div class="status-bar" *ngIf="message$ | async as message">
       <span class="label">{{ widget.title || 'Status' }}</span>

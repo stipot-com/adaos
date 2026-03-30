@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { PageActionService } from '../../runtime/page-action.service'
 import { WidgetConfig, ActionConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -13,7 +13,7 @@ import { folderOpenOutline } from 'ionicons/icons'
 @Component({
   selector: 'ada-command-bar-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   providers: [PageModalService],
   template: `
     <ng-container [ngSwitch]="variant">

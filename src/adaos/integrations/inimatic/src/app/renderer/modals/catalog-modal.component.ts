@@ -1,12 +1,12 @@
 // src\adaos\integrations\inimatic\src\app\renderer\modals\catalog-modal.component.ts
 import { Component, Input } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 
 @Component({
   selector: 'ada-catalog-modal',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
   <ion-header><ion-toolbar>
     <ion-title>{{ title }}</ion-title>

@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { QRCodeModule } from 'angularx-qrcode'
 import { Subscription } from 'rxjs'
 import { WidgetConfig } from '../../runtime/page-schema.model'
@@ -9,7 +9,7 @@ import { PageDataService } from '../../runtime/page-data.service'
 @Component({
   selector: 'ada-qr-code-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule, QRCodeModule],
+  imports: [CommonModule, IonicStandaloneImports, QRCodeModule],
   template: `
     <ion-card>
       <ion-card-header *ngIf="widget?.title">

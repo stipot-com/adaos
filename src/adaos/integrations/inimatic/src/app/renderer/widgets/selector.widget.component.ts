@@ -1,6 +1,6 @@
 import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { Observable } from 'rxjs'
 import { WidgetConfig } from '../../runtime/page-schema.model'
 import { PageDataService } from '../../runtime/page-data.service'
@@ -9,7 +9,7 @@ import { PageActionService } from '../../runtime/page-action.service'
 @Component({
   selector: 'ada-selector-widget',
   standalone: true,
-  imports: [CommonModule, IonicModule],
+  imports: [CommonModule, IonicStandaloneImports],
   template: `
     <ion-item lines="full">
       <ion-label position="stacked">{{ widget.title || widget.inputs?.['label'] || 'Select' }}</ion-label>

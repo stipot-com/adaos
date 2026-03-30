@@ -1,7 +1,7 @@
 // src\adaos\integrations\inimatic\src\app\renderer\desktop\desktop.component.ts
 import { Component, OnDestroy, OnInit } from '@angular/core'
 import { CommonModule } from '@angular/common'
-import { IonicModule } from '@ionic/angular'
+import { IonicStandaloneImports } from '../../shared/ionic-standalone'
 import { ModalController } from '@ionic/angular/standalone'
 import { YDocService } from '../../y/ydoc.service'
 import { AdaosClient } from '../../core/adaos/adaos-client.service'
@@ -32,7 +32,7 @@ type WebspaceEntry = {
 @Component({
 	selector: 'ada-desktop',
 	standalone: true,
-	imports: [CommonModule, IonicModule, PageWidgetHostComponent, LoginComponent, QRCodeModule, TPipe],
+	imports: [CommonModule, IonicStandaloneImports, PageWidgetHostComponent, LoginComponent, QRCodeModule, TPipe],
 	templateUrl: './desktop.component.html',
 	styleUrls: ['./desktop.component.scss']
 })
@@ -725,9 +725,9 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 
 	async createWebspace() {
 		const suggested = `space-${Date.now().toString(16)}`
-		const rawId = prompt('ID нового webspace', suggested)
+		const rawId = prompt('ID РЅРѕРІРѕРіРѕ webspace', suggested)
 		if (!rawId) return
-		const title = prompt('Название webspace', rawId) ?? rawId
+		const title = prompt('РќР°Р·РІР°РЅРёРµ webspace', rawId) ?? rawId
 		try {
 			await this.adaos.sendEventsCommand('desktop.webspace.create', { id: rawId, title })
 			await this.y.switchWebspace(rawId)
@@ -740,7 +740,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	async renameWebspace() {
 		if (!this.activeWebspace) return
 		const entry = this.webspaces.find(ws => ws.id === this.activeWebspace)
-		const nextTitle = prompt('Новое имя webspace', entry?.title || this.activeWebspace)
+		const nextTitle = prompt('РќРѕРІРѕРµ РёРјСЏ webspace', entry?.title || this.activeWebspace)
 		if (!nextTitle) return
 		try {
 			await this.adaos.sendEventsCommand('desktop.webspace.rename', { id: this.activeWebspace, title: nextTitle })
@@ -752,7 +752,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	async deleteWebspace() {
 		if (!this.activeWebspace || this.activeWebspace === 'default' || this.activeWebspace === 'desktop') return
 		const entry = this.webspaces.find(ws => ws.id === this.activeWebspace)
-		const ok = confirm(`Удалить webspace "${entry?.title || this.activeWebspace}"?`)
+		const ok = confirm(`РЈРґР°Р»РёС‚СЊ webspace "${entry?.title || this.activeWebspace}"?`)
 		if (!ok) return
 		try {
 			await this.adaos.sendEventsCommand('desktop.webspace.delete', { id: this.activeWebspace })
