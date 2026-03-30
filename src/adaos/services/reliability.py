@@ -3784,7 +3784,7 @@ def yjs_sync_runtime_snapshot(
         recovery_playbook,
         recovery_guidance,
     ) = _build_yjs_recovery_policy(selected_entry, selected_webspace)
-    webspace_guidance = _build_yjs_webspace_guidance(selected_webspace)
+    webspace_guidance = _build_yjs_webspace_guidance(selected_webspace, action_overrides)
 
     return {
         "available": True,
@@ -3892,6 +3892,17 @@ def _build_yjs_recovery_policy(
     selected_ws = selected_webspace if isinstance(selected_webspace, dict) else {}
     projection_matches_home = selected_ws.get("projection_matches_home")
     home_scenario = str(selected_ws.get("home_scenario") or "").strip() or None
+    projection_target_space = str(selected_ws.get("projection_target_space") or "").strip() or None
+    projection_active_scenario = str(selected_ws.get("projection_active_scenario") or "").strip() or None
+    projection_active_space = str(selected_ws.get("projection_active_space") or "").strip() or None
+    projection_candidate_matches_target = bool(projection_active_scenario) and (
+        not projection_target_space or not projection_active_space or projection_active_space == projection_target_space
+    )
+    set_home_current_enabled = (
+        projection_candidate_matches_target
+        and bool(projection_active_scenario)
+        and projection_active_scenario != home_scenario
+    )
     backup_first = selected_update_entries > 0 and (
         not snapshot_exists or selected_backup_total <= 0 or selected_replay_entries > 0
     )
@@ -3929,6 +3940,20 @@ def _build_yjs_recovery_policy(
                 else "selected webspace already aligns with its manifest home scenario"
                 if projection_matches_home is True
                 else "selected webspace has no persisted home scenario"
+            ),
+        },
+        "set_home_current": {
+            "enabled": set_home_current_enabled,
+            "source_of_truth": "current_projection",
+            "scenario_id": projection_active_scenario,
+            "reason": (
+                "persist the current projected scenario as the new home scenario"
+                if set_home_current_enabled
+                else "current projected scenario already matches the persisted home scenario"
+                if projection_active_scenario and projection_active_scenario == home_scenario
+                else "current projected scenario is unavailable for this webspace"
+                if not projection_active_scenario
+                else "current projected scenario does not match this webspace target space"
             ),
         },
     }
@@ -3981,31 +4006,53 @@ def _build_yjs_recovery_policy(
     return action_overrides, recovery_playbook, recovery_guidance
 
 
-def _build_yjs_webspace_guidance(selected_webspace: dict[str, Any] | None) -> dict[str, Any]:
+def _build_yjs_webspace_guidance(
+    selected_webspace: dict[str, Any] | None,
+    action_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     selected = selected_webspace if isinstance(selected_webspace, dict) else {}
+    overrides = action_overrides if isinstance(action_overrides, dict) else {}
     projection_matches_home = selected.get("projection_matches_home")
     rebuild = selected.get("rebuild") if isinstance(selected.get("rebuild"), dict) else {}
     home_scenario = str(selected.get("home_scenario") or "").strip() or None
+    projection_active_scenario = str(selected.get("projection_active_scenario") or "").strip() or None
     rebuild_status = str(rebuild.get("status") or "").strip() or None
+    set_home_current_override = (
+        overrides.get("set_home_current") if isinstance(overrides.get("set_home_current"), dict) else {}
+    )
     warnings: list[str] = []
     recommended_action: str | None = None
     recommended_reason: str | None = None
+    alternate_action: str | None = None
+    alternate_reason: str | None = None
     if rebuild_status in {"running", "failed"}:
         warnings.append(f"webspace rebuild state is {rebuild_status}")
     if projection_matches_home is False and home_scenario:
         recommended_action = "go_home"
         recommended_reason = "projection target diverges from the persisted home scenario"
+        if bool(set_home_current_override.get("enabled")):
+            alternate_action = "set_home_current"
+            alternate_reason = str(set_home_current_override.get("reason") or "").strip() or None
+    elif not home_scenario and bool(set_home_current_override.get("enabled")):
+        recommended_action = "set_home_current"
+        recommended_reason = "selected webspace has no persisted home scenario yet"
     risk_level = "warn" if warnings or recommended_action else "ok"
-    operator_summary = (
-        f"{recommended_action} to return the webspace to home scenario"
-        if recommended_action
-        else "webspace projection already follows its persisted home scenario"
-        if projection_matches_home is True
-        else "webspace scenario guidance unavailable"
-    )
+    if recommended_action == "go_home":
+        operator_summary = "go_home to return the webspace to home scenario"
+        if alternate_action == "set_home_current":
+            operator_summary += "; or set_home_current to adopt the current projection as home"
+    elif recommended_action == "set_home_current":
+        operator_summary = "set_home_current to persist the current projection as the webspace home scenario"
+    elif projection_matches_home is True:
+        operator_summary = "webspace projection already follows its persisted home scenario"
+    else:
+        operator_summary = "webspace scenario guidance unavailable"
     return {
         "recommended_action": recommended_action,
         "recommended_reason": recommended_reason,
+        "alternate_action": alternate_action,
+        "alternate_reason": alternate_reason,
+        "projection_active_scenario": projection_active_scenario,
         "risk_level": risk_level,
         "warnings": warnings,
         "operator_summary": operator_summary,

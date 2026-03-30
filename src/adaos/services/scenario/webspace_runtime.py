@@ -2174,6 +2174,54 @@ async def go_home_webspace(webspace_id: str, *, wait_for_rebuild: bool = True) -
     return result
 
 
+async def set_current_webspace_home(webspace_id: str) -> dict[str, Any]:
+    webspace_id = str(webspace_id or "").strip()
+    if not webspace_id:
+        raise ValueError("webspace_id is required")
+    state = await describe_webspace_operational_state(webspace_id)
+    scenario_id = str(state.current_scenario or "").strip()
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": "set_home_current",
+            "source_of_truth": "current_scenario",
+            "webspace_id": webspace_id,
+            "scenario_id": None,
+            "current_scenario": None,
+            "home_scenario_before": state.effective_home_scenario,
+            "error": "current_scenario_unavailable",
+        }
+    svc = WebspaceService(get_ctx())
+    info = await svc.set_home_scenario(webspace_id, scenario_id)
+    if info is None:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": "set_home_current",
+            "source_of_truth": "current_scenario",
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "current_scenario": scenario_id,
+            "home_scenario_before": state.effective_home_scenario,
+            "error": "webspace_not_found",
+        }
+    return {
+        "ok": True,
+        "accepted": True,
+        "action": "set_home_current",
+        "source_of_truth": "current_scenario",
+        "webspace_id": info.id,
+        "scenario_id": scenario_id,
+        "current_scenario": scenario_id,
+        "home_scenario_before": state.effective_home_scenario,
+        "home_scenario": info.home_scenario,
+        "changed": str(state.effective_home_scenario or "").strip() != str(info.home_scenario or "").strip(),
+        "kind": info.kind,
+        "source_mode": info.source_mode,
+    }
+
+
 async def ensure_dev_webspace_for_scenario(
     scenario_id: str,
     *,
@@ -2333,6 +2381,15 @@ async def _on_webspace_set_home(evt: Dict[str, Any]) -> None:
     await svc.set_home_scenario(webspace_id, scenario_id)
 
 
+@subscribe("desktop.webspace.set_home_current")
+async def _on_webspace_set_home_current(evt: Dict[str, Any]) -> None:
+    payload = _payload(evt)
+    webspace_id = _webspace_id(payload)
+    if not webspace_id:
+        return
+    await set_current_webspace_home(webspace_id)
+
+
 @subscribe("desktop.scenario.set")
 async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
     """
@@ -2384,5 +2441,6 @@ __all__ = [
     "describe_webspace_overlay_state",
     "describe_webspace_projection_state",
     "describe_webspace_rebuild_state",
+    "set_current_webspace_home",
     "rebuild_webspace_from_sources",
 ]

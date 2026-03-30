@@ -372,6 +372,9 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     reload_override = action_overrides.get("reload") if isinstance(action_overrides.get("reload"), dict) else {}
     restore_override = action_overrides.get("restore") if isinstance(action_overrides.get("restore"), dict) else {}
     go_home_override = action_overrides.get("go_home") if isinstance(action_overrides.get("go_home"), dict) else {}
+    set_home_current_override = (
+        action_overrides.get("set_home_current") if isinstance(action_overrides.get("set_home_current"), dict) else {}
+    )
     recovery_order = recovery_playbook.get("action_order") if isinstance(recovery_playbook.get("action_order"), list) else []
     recommended_action = str(recovery_guidance.get("recommended_action") or "").strip() or "-"
     risk_level = str(recovery_guidance.get("risk_level") or "").strip() or "-"
@@ -390,6 +393,7 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"yws10s={transport.get('recent_open_10s') or 0} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
+        f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
         f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
         f"next={recommended_action} "
         f"risk={risk_level}"
@@ -401,8 +405,10 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
             f"kind={selected_webspace.get('kind') or '-'} "
             f"mode={selected_webspace.get('source_mode') or '-'} "
             f"home={selected_webspace.get('home_scenario') or '-'} "
+            f"proj_scenario={selected_webspace.get('projection_active_scenario') or '-'} "
             f"projection={'match' if selected_webspace.get('projection_matches_home') is True else 'drift' if selected_webspace.get('projection_matches_home') is False else 'unknown'} "
             f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
+            f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
             f"next={recommended_webspace_action} "
             f"rebuild={rebuild.get('status') or '-'}"
         )
@@ -1312,6 +1318,22 @@ def node_yjs_set_home(
         action="set-home",
         webspace=webspace,
         scenario_id=scenario_id,
+        set_home=None,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("set-home-current")
+def node_yjs_set_home_current(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to update"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_control_action(
+        action="set-home-current",
+        webspace=webspace,
+        scenario_id=None,
         set_home=None,
         control=control,
         json_output=json_output,

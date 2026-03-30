@@ -152,6 +152,11 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
     restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
     go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
+    set_home_current_override = (
+        sync_action_overrides.get("set_home_current")
+        if isinstance(sync_action_overrides.get("set_home_current"), dict)
+        else {}
+    )
     recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
     recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
     recommended_webspace_action = str(sync_webspace_guidance.get("recommended_action") or "").strip() or "-"
@@ -204,10 +209,12 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"snapshot={'yes' if selected_sync.get('snapshot_file_exists') else 'no'} "
         f"ws_mode={sync_selected_webspace.get('source_mode') or '-'} "
         f"ws_home={sync_selected_webspace.get('home_scenario') or '-'} "
+        f"ws_proj_scenario={sync_selected_webspace.get('projection_active_scenario') or '-'} "
         f"ws_proj={'match' if sync_selected_webspace.get('projection_matches_home') is True else 'drift' if sync_selected_webspace.get('projection_matches_home') is False else 'unknown'} "
         f"ws_rebuild={sync_rebuild.get('status') or '-'} "
         f"reload={reload_override.get('source_of_truth') or 'scenario'} "
         f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
+        f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
         f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
         f"next={recommended_action} "
         f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
@@ -300,6 +307,11 @@ def hub_root_watch(
             reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
             restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
             go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
+            set_home_current_override = (
+                sync_action_overrides.get("set_home_current")
+                if isinstance(sync_action_overrides.get("set_home_current"), dict)
+                else {}
+            )
             recovery_order = sync_recovery_playbook.get("action_order") if isinstance(sync_recovery_playbook.get("action_order"), list) else []
             recommended_action = str(sync_recovery_guidance.get("recommended_action") or "").strip() or "-"
             recommended_webspace_action = str(sync_webspace_guidance.get("recommended_action") or "").strip() or "-"
@@ -346,10 +358,12 @@ def hub_root_watch(
                 f"snapshot={'yes' if selected_sync.get('snapshot_file_exists') else 'no'} "
                 f"ws_mode={sync_selected_webspace.get('source_mode') or '-'} "
                 f"ws_home={sync_selected_webspace.get('home_scenario') or '-'} "
+                f"ws_proj_scenario={sync_selected_webspace.get('projection_active_scenario') or '-'} "
                 f"ws_proj={'match' if sync_selected_webspace.get('projection_matches_home') is True else 'drift' if sync_selected_webspace.get('projection_matches_home') is False else 'unknown'} "
                 f"ws_rebuild={sync_rebuild.get('status') or '-'} "
                 f"reload={reload_override.get('source_of_truth') or 'scenario'} "
                 f"restore={'yes' if restore_override.get('enabled') else 'no'}:{restore_override.get('source_of_truth') or 'snapshot'} "
+                f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
                 f"policy={'>'.join(str(item) for item in recovery_order) if recovery_order else '-'} "
                 f"next={recommended_action} "
                 f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "

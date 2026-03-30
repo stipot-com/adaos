@@ -36,6 +36,7 @@ from adaos.services.scenario.webspace_runtime import (
     go_home_webspace,
     reload_webspace_from_scenario,
     restore_webspace_from_snapshot,
+    set_current_webspace_home,
     switch_webspace_scenario,
 )
 from adaos.services.skill.manager import SkillManager
@@ -1102,6 +1103,24 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
             "scenario_id": scenario_id,
             "home_scenario": info.home_scenario,
         }
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=str(webspace_id or "default") or "default",
+    )
+    return result
+
+
+@router.post("/yjs/webspaces/{webspace_id}/set-home-current", dependencies=[Depends(require_token)])
+async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": webspace_id,
+            "error": "hub_role_required",
+        }
+    result = await set_current_webspace_home(str(webspace_id or "default") or "default")
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
