@@ -15,12 +15,6 @@ coverage.xml
 # AdaOS local runtime state (never commit)
 .adaos/
 .adaos_*/
-src/adaos/integrations/inimatic/backend/ssl/adaos_root
-src/adaos/integrations/inimatic/backend/ssl/adaos_root.pub
-src/adaos/integrations/inimatic/backend/ssl/ca.crt
-src/adaos/integrations/inimatic/backend/ssl/ca.key
-src/adaos/integrations/inimatic/backend/node_modules/
-src/adaos/integrations/inimatic/backend/dist/
 ystore.db
 ystore.db-journal
 .adaos/diagnostics

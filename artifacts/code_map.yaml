@@ -56,7 +56,7 @@
 - path: src/adaos/adapters/fs/path_provider.py
   classes:
   - Name: PathProvider
-    methds: from_settings, __init__, package_path, locales_dir, skill_templates_dir,
+    methds: from_settings, __init__, package_path, repo_root, locales_dir, skill_templates_dir,
       scenario_templates_dir, base_dir, workspace_dir, skills_workspace_dir, scenarios_workspace_dir,
       skills_cache_dir, scenarios_cache_dir, skills_dir, scenarios_dir, models_dir,
       logs_dir, cache_dir, state_dir, locales_base_dir, skills_locales_dir, scenarios_locales_dir,
@@ -65,13 +65,15 @@
   classes:
   - Name: GitError
   - Name: CliGitClient
-    methds: __init__, ensure_repo, pull, current_commit, sparse_init, sparse_set,
-      sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath, push
+    methds: __init__, ensure_repo, pull, fetch, current_commit, show, sparse_init,
+      sparse_set, sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath,
+      push
 - path: src/adaos/adapters/git/secure_git.py
   classes:
   - Name: SecureGitClient
-    methds: __init__, ensure_repo, pull, current_commit, sparse_init, sparse_set,
-      sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath, push
+    methds: __init__, ensure_repo, pull, fetch, current_commit, show, sparse_init,
+      sparse_set, sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath,
+      push
 - path: src/adaos/adapters/git/workspace.py
   funcs: wait_for_materialized
   classes:
@@ -105,15 +107,45 @@
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: require_token, require_owner_token
+  funcs: resolve_presented_token, ensure_token, require_token, require_owner_token
 - path: src/adaos/apps/api/io_webhooks.py
-  funcs: telegram_webhook, tg_pair_create, tg_pair_confirm, tg_pair_status, tg_pair_revoke
+  funcs: tg_pair_create, tg_pair_confirm, tg_pair_status, tg_pair_revoke, tg_input_bus
+- path: src/adaos/apps/api/join_api.py
+  funcs: join_code_create, join_consume
+  classes:
+  - Name: JoinCodeCreateRequest
+  - Name: JoinCodeCreateResponse
+  - Name: JoinConsumeRequest
+  - Name: JoinConsumeResponse
+- path: src/adaos/apps/api/nlu_teacher_api.py
+  funcs: get_teacher_state, apply_revision
+  classes:
+  - Name: ApplyRevisionRequest
 - path: src/adaos/apps/api/node_api.py
-  funcs: node_status, node_change_role
+  funcs: node_status, node_reliability, hub_root_reconnect, sidecar_status, sidecar_restart,
+    node_change_role, node_names, update_node_names, node_yjs_runtime, node_infrastate_snapshot,
+    node_infrastate_action, node_yjs_webspaces, node_yjs_create_webspace, node_yjs_webspace_runtime,
+    node_yjs_webspace_state, node_yjs_update_webspace, node_yjs_backup, node_yjs_reload,
+    node_yjs_toggle_install, node_yjs_desktop_state, node_yjs_catalog_state, node_yjs_set_pinned_widgets,
+    node_yjs_update_desktop, node_yjs_switch_scenario, node_yjs_go_home, node_yjs_ensure_dev,
+    node_yjs_set_home, node_yjs_reset, node_yjs_restore, list_media_library, upload_media_file,
+    delete_media_file, media_file_content, node_members, request_member_snapshot,
+    request_member_update
   classes:
   - Name: NodeStatus
   - Name: RoleChangeRequest
   - Name: RoleChangeResponse
+  - Name: HubRootReconnectRequest
+  - Name: SidecarRestartRequest
+  - Name: NodeNamesUpdateRequest
+  - Name: MemberUpdateRequest
+  - Name: WebspaceYjsActionRequest
+  - Name: WebspaceCreateRequest
+  - Name: WebspaceUpdateRequest
+  - Name: WebspaceToggleInstallRequest
+  - Name: WebspacePinnedWidgetsRequest
+  - Name: WebspaceDesktopUpdateRequest
+  - Name: InfrastateActionRequest
 - path: src/adaos/apps/api/observe_api.py
   funcs: observe_ingest, observe_tail, observe_stream, observe_test
   classes:
@@ -124,30 +156,61 @@
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: root_register, llm_chat, subnet_register, subnet_register_status
+  funcs: root_register, subnet_register, subnet_register_status, subnet_join_code_create,
+    subnet_join_consume
   classes:
-  - Name: ChatMessage
-  - Name: ChatRequest
   - Name: SubnetRegisterRequest
+  - Name: RootJoinCodeCreateRequest
+  - Name: RootJoinCodeCreateResponse
+  - Name: RootSubnetJoinRequest
+  - Name: RootSubnetJoinResponse
 - path: src/adaos/apps/api/scenarios.py
-  funcs: list_scenarios, sync, install, remove, push
+  funcs: list_scenarios, sync, install, remove, uninstall, push
   classes:
   - Name: InstallReq
   - Name: PushReq
+  - Name: UninstallReq
 - path: src/adaos/apps/api/server.py
   tags:
   - area:api
   - layer:backend
   - uc:device_login
-  funcs: lifespan, ping, status, say, health_live, health_ready
+  funcs: lifespan, ping, set_alias, admin_shutdown, admin_drain, admin_lifecycle,
+    admin_update_start, admin_update_cancel, admin_update_rollback, admin_update_status,
+    status, list_services, get_service_status, start_service, stop_service, restart_service,
+    get_service_issues, inject_service_issue, service_self_heal, get_service_doctor_requests,
+    request_service_doctor, get_service_doctor_reports, yjs_reload, say, io_console_print,
+    health_live, health_ready
   classes:
   - Name: SayRequest
   - Name: SayResponse
+  - Name: SetAliasRequest
+  - Name: ShutdownRequest
+  - Name: ShutdownResponse
+  - Name: DrainRequest
+  - Name: DrainResponse
+  - Name: CoreUpdateStartRequest
+  - Name: CoreUpdateCancelRequest
+  - Name: CoreUpdateRollbackRequest
+  - Name: ServiceIssueRequest
+  - Name: ServiceSelfHealRequest
+  - Name: ServiceDoctorRequest
+  - Name: YjsReloadRequest
+  - Name: SayRequestLike
 - path: src/adaos/apps/api/skills.py
-  funcs: list_skills, sync, install, get_skill, remove, push
+  funcs: list_skills, installed_status, sync, install, uninstall, get_skill, remove,
+    push, runtime_prepare, runtime_activate, runtime_notify_activated, runtime_status,
+    runtime_setup, update_skill
   classes:
+  - Name: UpdateReq
   - Name: InstallReq
   - Name: PushReq
+  - Name: RuntimePrepareReq
+  - Name: RuntimeActivateReq
+  - Name: RuntimeNotifyActivatedReq
+  - Name: RuntimeSetupReq
+- path: src/adaos/apps/api/stt_api.py
+  funcs: stt_transcribe
 - path: src/adaos/apps/api/subnet_api.py
   funcs: register, heartbeat, deregister, ctx_get, ctx_set, nodes_list, node_get
   classes:
@@ -161,34 +224,53 @@
   funcs: call_tool
   classes:
   - Name: ToolCall
+- path: src/adaos/apps/autostart_runner.py
+  funcs: main
 - path: src/adaos/apps/bootstrap.py
-  funcs: get_ctx, init_ctx, reload_ctx, bootstrap_app
+  funcs: get_ctx, init_ctx, reload_ctx
   classes:
   - Name: _CtxHolder
     methds: get, init, reload
+- path: src/adaos/apps/cli/active_control.py
+  funcs: resolve_control_base_url, resolve_control_token, probe_control_api
 - path: src/adaos/apps/cli/app.py
   funcs: ensure_environment, main, reset, switch_tts, switch_stt, where
 - path: src/adaos/apps/cli/commands/api.py
-  funcs: serve
+  funcs: serve, stop, restart
 - path: src/adaos/apps/cli/commands/dev.py
   tags:
   - layer:cli
   - uc:device_login
-  funcs: root_init, root_login, dev_login, skill_create, skill_push, skill_list, skill_delete,
-    skill_publish, scenario_publish, scenario_create, scenario_push, scenario_list,
+  funcs: root_init, root_login, root_logs, root_log_files, root_log_tail, dev_login,
+    skill_create, skill_push, skill_list, skill_update, skill_delete, skill_publish,
+    scenario_publish, scenario_create, scenario_push, scenario_list, scenario_update,
     scenario_delete, scenario_run, scenario_validate, dev_skill_validate, dev_skill_lint,
     dev_skill_prep, dev_skill_test, dev_skill_setup, dev_skill_run, dev_skill_activate,
     dev_skill_status, dev_skill_rollback
+- path: src/adaos/apps/cli/commands/git.py
+  funcs: status, autodetect, enable, disable
+- path: src/adaos/apps/cli/commands/hub.py
+  funcs: hub_root_status, hub_root_watch, hub_root_reconnect, hub_root_reports, hub_root_sidecar_status,
+    hub_root_sidecar_restart, join_code_create
+- path: src/adaos/apps/cli/commands/interpreter.py
+  funcs: sync_nlu, parse, status, train, list_intents, add_intent, remove_intent,
+    dataset_list, dataset_sync, init_skill
 - path: src/adaos/apps/cli/commands/llm.py
   funcs: build_prep, build_skill
 - path: src/adaos/apps/cli/commands/monitor.py
   funcs: monitor_events, monitor_sse, ping
 - path: src/adaos/apps/cli/commands/native.py
   funcs: say, start
-- path: src/adaos/apps/cli/commands/ovos.py
-  funcs: say
+- path: src/adaos/apps/cli/commands/node.py
+  funcs: node_join, node_status, node_reliability, node_members, node_yjs_status,
+    node_yjs_backup, node_yjs_create, node_yjs_update, node_yjs_describe, node_yjs_desktop,
+    node_yjs_reload, node_yjs_reset, node_yjs_restore, node_yjs_scenario, node_yjs_go_home,
+    node_yjs_set_home, node_yjs_ensure_dev, node_member_refresh, node_member_update,
+    role_set
+- path: src/adaos/apps/cli/commands/realtime.py
+  funcs: serve
 - path: src/adaos/apps/cli/commands/repo.py
-  funcs: reset
+  funcs: reset, registry_list
 - path: src/adaos/apps/cli/commands/rhasspy.py
   funcs: start, stop, status
 - path: src/adaos/apps/cli/commands/runtime.py
@@ -196,19 +278,34 @@
 - path: src/adaos/apps/cli/commands/sandbox.py
   funcs: profiles, run
 - path: src/adaos/apps/cli/commands/scenario.py
-  funcs: list_cmd, sync_cmd, install_cmd, create_cmd, uninstall_cmd, push_command,
+  funcs: list_cmd, status, sync_cmd, install_cmd, create_cmd, uninstall_cmd, push_command,
     run_cmd, validate_cmd, test_cmd
 - path: src/adaos/apps/cli/commands/sdk_export.py
   funcs: export_cmd, export_all_cmd, check_cmd
 - path: src/adaos/apps/cli/commands/secret.py
   funcs: cmd_set, cmd_get, cmd_list, cmd_delete, cmd_export, cmd_import
+- path: src/adaos/apps/cli/commands/setup.py
+  funcs: install, update, autostart_status_cmd, autostart_enable_cmd, autostart_disable_cmd,
+    autostart_update_status_cmd, autostart_update_start_cmd, autostart_update_cancel_cmd,
+    autostart_update_rollback_cmd, autostart_smoke_update_cmd
 - path: src/adaos/apps/cli/commands/skill.py
-  funcs: list_cmd, sync, uninstall, reconcile_fs_to_db, push_command, cmd_create,
-    cmd_scaffold, cmd_validate, cmd_install, cmd_test, run_handler, run_tool, cmd_setup,
-    activate, rollback, status, gc, doctor, migrate
+  funcs: service_list, service_status, service_start, service_stop, service_restart,
+    list_cmd, sync, uninstall, reconcile_fs_to_db, push_command, cmd_create, cmd_scaffold,
+    cmd_validate, cmd_install, cmd_test, run_handler, run_tool, cmd_setup, activate,
+    rollback, status, gc, doctor, migrate
 - path: src/adaos/apps/cli/commands/tests.py
   funcs: run_tests
+- path: src/adaos/apps/cli/git_status.py
+  funcs: resolve_base_ref, ensure_remote, ensure_repo_at, fetch_remote, read_last_commit,
+    compute_path_status, render_diff, compute_fs_meta, render_noindex_diff, unzip_b64_to_dir
+  classes:
+  - Name: GitCommitInfo
+    methds: iso
+  - Name: GitPathStatus
+  - Name: FsMeta
 - path: src/adaos/apps/cli/i18n.py
+- path: src/adaos/apps/core_update_apply.py
+  funcs: prepare_slot, main
 - path: src/adaos/build_info.py
   classes:
   - Name: BuildInfo
@@ -227,112 +324,225 @@
   - Name: Event
   - Name: ProcessSpec
 - path: src/adaos/facades/i18n_lazy.py
-- path: src/adaos/integrations/inimatic/LoginWV/www/LoginWV.js
-- path: src/adaos/integrations/inimatic/backend/adaos-bridge.ts
+- path: src/adaos/integrations/adaos-backend/LoginWV/www/LoginWV.js
+- path: src/adaos/integrations/adaos-backend/backend/adaos-bridge.ts
   endpoints: GET /api/subnet/nodes, POST /api/subnet/ping
-- path: src/adaos/integrations/inimatic/backend/app.ts
+- path: src/adaos/integrations/adaos-backend/backend/app.ts
   endpoints: DELETE /scenarios/draft, DELETE /scenarios/registry, DELETE /skills/draft,
-    DELETE /skills/registry, GET /debug/hubs, GET /debug/owners, GET /health, GET
-    /healthz, GET /metrics, GET /owner/hubs, GET /policy, GET /v1/health, GET /whoami,
-    POST /auth/owner/poll, POST /auth/owner/refresh, POST /auth/owner/start, POST
-    /owner/hubs, POST /pki/enroll, POST /scenarios/draft, POST /scenarios/pr, POST
-    /skills/draft, POST /skills/pr, POST /v1/bootstrap_token, POST /v1/nodes/register,
-    POST /v1/subnets/register
-- path: src/adaos/integrations/inimatic/backend/build-info.ts
+    DELETE /skills/registry, GET /api/ping, GET /debug/hubs, GET /debug/owners, GET
+    /health, GET /healthz, GET /hub/core_update/release, GET /hub/dev/log_files, GET
+    /hub/dev/log_tail, GET /hub/dev/logs, GET /livez, GET /metrics, GET /owner/hubs,
+    GET /policy, GET /readyz, GET /scenarios/draft, GET /scenarios/draft/archive,
+    GET /skills/draft, GET /skills/draft/archive, GET /v1/dev/log_files, GET /v1/dev/log_tail,
+    GET /v1/dev/logs, GET /v1/health, GET /v1/hubs/control/reports, GET /v1/hubs/core_update/reports,
+    GET /v1/hubs/core_update/subnets, GET /v1/llm/models, GET /v1/root_mgmnt/snapshot,
+    GET /whoami, POST /auth/owner/poll, POST /auth/owner/refresh, POST /auth/owner/start,
+    POST /hub/control/report, POST /hub/core_update/report, POST /hub/nats/token,
+    POST /io/tg/send, POST /owner/hubs, POST /pki/enroll, POST /scenarios/draft, POST
+    /scenarios/pr, POST /skills/draft, POST /skills/pr, POST /v1/bootstrap_token,
+    POST /v1/github/core_update/callback, POST /v1/hubs/core_update/rollback, POST
+    /v1/hubs/core_update/start, POST /v1/llm/response, POST /v1/nodes/register, POST
+    /v1/root_mgmnt/policy, POST /v1/root_mgmnt/subnets/:subnetId/action, POST /v1/subnets/join,
+    POST /v1/subnets/join-code, POST /v1/subnets/register
+- path: src/adaos/integrations/adaos-backend/backend/build-info.ts
   exports: buildInfo
-- path: src/adaos/integrations/inimatic/backend/forge.ts
+- path: src/adaos/integrations/adaos-backend/backend/bus/nats.ts
+- path: src/adaos/integrations/adaos-backend/backend/db/tg.repo.ts
+  types: Binding, TgLink
+- path: src/adaos/integrations/adaos-backend/backend/dev/log_files.ts
+  types: LogFileEntry
+- path: src/adaos/integrations/adaos-backend/backend/dev/logs.ts
+  types: CapturedLogLine
+- path: src/adaos/integrations/adaos-backend/backend/forge.ts
   types: DeleteDraftArgs, DeleteDraftResult, DeleteRegistryArgs, DeleteRegistryResult,
     DraftKind, DraftWriteResult, ForgeManagerOptions, WriteDraftOptions
-- path: src/adaos/integrations/inimatic/backend/github-app.ts
+- path: src/adaos/integrations/adaos-backend/backend/github-app.ts
   types: GhAppConfig
-- path: src/adaos/integrations/inimatic/backend/i18n.ts
+- path: src/adaos/integrations/adaos-backend/backend/i18n.ts
   types: Locale, MessageParams
-- path: src/adaos/integrations/inimatic/backend/io/bus/nats.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/hubNatsSession.ts
+  types: IssuedHubNatsSession, VerifiedHubNatsSession
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/hubRouteProxy.ts
+  endpoints: GET /hubs/:hubId/api/ping, GET /hubs/:hubId/healthz
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/nats.ts
   types: NatsOpts
-- path: src/adaos/integrations/inimatic/backend/io/idem/kv.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/natsAuth.ts
+  endpoints: POST /_health/internal, POST /internal/nats/authz
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/publicNatsUrl.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/bus/wsNatsProxy.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/idem/kv.ts
   exports: redis
-- path: src/adaos/integrations/inimatic/backend/io/pairing/api.ts
-  endpoints: GET /io/tg/pair/status, POST /io/tg/pair/confirm, POST /io/tg/pair/create,
-    POST /io/tg/pair/revoke
-- path: src/adaos/integrations/inimatic/backend/io/pairing/store.ts
-  types: Binding, PairRecord
-- path: src/adaos/integrations/inimatic/backend/io/root/settings.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/pairing/api.ts
+  endpoints: GET /io/tg/pair/link, GET /io/tg/pair/status, GET /v1/browser/pair/status,
+    POST /io/tg/pair/confirm, POST /io/tg/pair/create, POST /io/tg/pair/revoke, POST
+    /v1/browser/pair/approve, POST /v1/browser/pair/consume, POST /v1/browser/pair/create,
+    POST /v1/browser/pair/revoke, POST /v1/pair/confirm, POST /v1/pair/create
+- path: src/adaos/integrations/adaos-backend/backend/io/pairing/store.ts
+  types: Binding, BrowserPairRecord, BrowserPairState, PairRecord, TgLink
+- path: src/adaos/integrations/adaos-backend/backend/io/root/settings.ts
   types: RootSettings
-- path: src/adaos/integrations/inimatic/backend/io/router/resolve.ts
-- path: src/adaos/integrations/inimatic/backend/io/telegram/media.ts
-- path: src/adaos/integrations/inimatic/backend/io/telegram/normalize.ts
-- path: src/adaos/integrations/inimatic/backend/io/telegram/pairing.ts
-- path: src/adaos/integrations/inimatic/backend/io/telegram/sender.ts
-- path: src/adaos/integrations/inimatic/backend/io/telegram/webhook.ts
-  endpoints: POST /io/tg/:bot_id/webhook
-- path: src/adaos/integrations/inimatic/backend/io/telemetry.ts
-  exports: dlq_total, enqueue_total, outbound_total, retry_total, tg_updates_total
-- path: src/adaos/integrations/inimatic/backend/io/types.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/router/resolve.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/commands.ts
+  types: CmdCtx
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/keyboards.ts
+  types: InlineKeyboardButton
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/media.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/normalize.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/outbox.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/pairing.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/resolver.ts
+  types: ResolveCtx, Target
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/router.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/sender.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/telegram/webhook.ts
+  endpoints: GET /internal/tg/file, POST /io/tg/:bot_id/webhook
+- path: src/adaos/integrations/adaos-backend/backend/io/telemetry.ts
+  exports: dlq_total, enqueue_total, outbound_total, retry_total, route_http_proxy_failed_total,
+    route_http_replies_total, route_http_requests_total, route_ws_client_close_total,
+    tg_updates_total, ws_nats_proxy_conn_close_total, ws_nats_proxy_conn_open_total,
+    ws_nats_proxy_upstream_close_total
+- path: src/adaos/integrations/adaos-backend/backend/io/types.ts
   types: ChatInputEvent, ChatOutputEvent, ChatOutputMessage
-- path: src/adaos/integrations/inimatic/backend/io/types/fluent-ffmpeg.d.ts
-- path: src/adaos/integrations/inimatic/backend/pki.ts
+- path: src/adaos/integrations/adaos-backend/backend/io/types/fluent-ffmpeg.d.ts
+- path: src/adaos/integrations/adaos-backend/backend/logging/routing.ts
+  exports: log
+- path: src/adaos/integrations/adaos-backend/backend/pki.ts
   types: CertificateAuthorityOptions, CertificateSubject, IssueCertificateOptions,
     IssueResult
-- path: src/adaos/integrations/inimatic/backend/policy.ts
+- path: src/adaos/integrations/adaos-backend/backend/policy.ts
   types: Policy
   exports: POLICY
-- path: src/adaos/integrations/inimatic/browser_extension/content.js
-- path: src/adaos/integrations/inimatic/browser_extension/service_worker.js
-- path: src/adaos/integrations/inimatic/karma.conf.js
-- path: src/adaos/integrations/inimatic/server.js
-- path: src/adaos/integrations/inimatic/src/app/app.component.spec.ts
-- path: src/adaos/integrations/inimatic/src/app/app.component.ts
-- path: src/adaos/integrations/inimatic/src/app/app.routes.ts
-- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-client.service.ts
+- path: src/adaos/integrations/adaos-backend/backend/sessionJwt.ts
+  types: WebSessionJwtClaims
+- path: src/adaos/integrations/adaos-backend/backend/webauthn.ts
+  endpoints: POST /v1/owner1/login/verify, POST /v1/owner1/webauthn/login/challenge,
+    POST /v1/owner1/webauthn/login/challenge-by-owner, POST /v1/owner1/webauthn/login/finish,
+    POST /v1/owner1/webauthn/registration/challenge, POST /v1/owner1/webauthn/registration/finish
+  types: ErrorResponder, WebSessionStage
+  interfaces: PairingCodeRecord, WebAuthnCredentialRecord, WebAuthnDeps, WebAuthnService,
+    WebSessionState
+- path: src/adaos/integrations/adaos-client/LoginWV/www/LoginWV.js
+- path: src/adaos/integrations/adaos-client/browser_extension/content.js
+- path: src/adaos/integrations/adaos-client/browser_extension/service_worker.js
+- path: src/adaos/integrations/adaos-client/karma.conf.js
+- path: src/adaos/integrations/adaos-client/server.js
+- path: src/adaos/integrations/adaos-client/src/app/app.component.spec.ts
+- path: src/adaos/integrations/adaos-client/src/app/app.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/app.routes.ts
+- path: src/adaos/integrations/adaos-client/src/app/core/adaos/adaos-client.service.ts
   tags:
   - area:api-client
   - layer:frontend
   - uc:device_login
   - uc:qr_pairing
-  types: AdaosEvent
+  types: AdaosEvent, AdaosEventsConnectionState
   interfaces: AdaosConfig, SubnetRegisterData, SubnetRegisterRequest, SubnetRegisterResponse
-- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-types.ts
+  exports: ROOT_BASE
+- path: src/adaos/integrations/adaos-client/src/app/core/adaos/adaos-types.ts
   types: AdaosEvent
   interfaces: AdaosConfig
-- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.spec.ts
-- path: src/adaos/integrations/inimatic/src/app/desktop/desktop.component.ts
-- path: src/adaos/integrations/inimatic/src/app/features/hub/hub.component.ts
-  tags:
-  - area:ui
-  - layer:frontend
-  - uc:qr_pairing
-- path: src/adaos/integrations/inimatic/src/app/features/login/login.component.ts
-- path: src/adaos/integrations/inimatic/src/app/features/login/login.service.ts
-- path: src/adaos/integrations/inimatic/src/app/features/member/member.component.ts
-- path: src/adaos/integrations/inimatic/src/app/loginwv.service.ts
-- path: src/adaos/integrations/inimatic/src/app/phone/phone.component.spec.ts
-- path: src/adaos/integrations/inimatic/src/app/phone/phone.component.ts
-- path: src/adaos/integrations/inimatic/src/app/phone/providers.ts
-  exports: providers
-- path: src/adaos/integrations/inimatic/src/app/private-point/private-point.page.spec.ts
-- path: src/adaos/integrations/inimatic/src/app/private-point/private-point.page.ts
-- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.spec.ts
-- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.ts
-  tags:
-  - area:ui
-  - layer:frontend
-  - uc:device_login
-  - uc:qr_pairing
-- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-ctx.ts
+- path: src/adaos/integrations/adaos-client/src/app/core/adaos/hub-member-channels.service.ts
+  types: HubMemberChannelHealth, HubMemberChannelSnapshot, HubMemberCommandPolicy,
+    HubMemberControlCommandOutcome, HubMemberControlSessionState, HubMemberDirectNegotiationState,
+    HubMemberDirectPolicySource, HubMemberDirectRecoveryMode, HubMemberDirectRecoveryState,
+    HubMemberMediaPolicyMode, HubMemberPathEvidenceState, HubMemberSemanticChannelId,
+    HubMemberSemanticPath, HubMemberSyncRecoveryReason, HubMemberSyncRecoveryState,
+    HubMemberTransportState
+- path: src/adaos/integrations/adaos-client/src/app/core/adaos/webrtc-transport.service.ts
+  types: RtcTransportRecoverySnapshot, RtcTransportState
+- path: src/adaos/integrations/adaos-client/src/app/debug-log.ts
+  types: DebugLogLevel
+  interfaces: DebugLogEntry
+- path: src/adaos/integrations/adaos-client/src/app/features/login/login.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/features/login/login.service.ts
+  interfaces: LoginResult
+- path: src/adaos/integrations/adaos-client/src/app/icons.ts
+- path: src/adaos/integrations/adaos-client/src/app/loginwv.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/desktop/desktop.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/desktop/dynamic-desktop-page.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/modals/catalog-modal.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/modals/modal.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/modals/notification-history-modal.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/modals/schema-modal.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/modals/workspace-manager-modal.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/chat.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/code-viewer.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/collection-grid.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/command-bar.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/desktop-widgets.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/details.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/form.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/json-viewer.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/list.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/media-player.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/metric-tile.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/modal-overlay.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/page-widget-host.component.ts
+  exports: PAGE_WIDGET_REGISTRY
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/qr-code.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/selector.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/status-bar.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/table.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/text-editor.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/text-input.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/voice-input.widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/renderer/widgets/widget.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/actions.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/bind.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/desktop-schema.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/dsl-types.ts
+  types: AdaApp, AdaModalConfig, AdaUiDictionary, AdaUiLang, CatalogItem
+  interfaces: AdaUiLanguageSource
+- path: src/adaos/integrations/adaos-client/src/app/runtime/i18n.service.ts
+  types: UiLang
+- path: src/adaos/integrations/adaos-client/src/app/runtime/notification-log.service.ts
+  types: NotificationHistoryEntry
+- path: src/adaos/integrations/adaos-client/src/app/runtime/page-action.service.ts
+  interfaces: ActionContext
+- path: src/adaos/integrations/adaos-client/src/app/runtime/page-data.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/page-modal.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/page-schema.model.ts
+  types: DataSourceConfig, WidgetType
+  interfaces: ActionConfig, ApiDataSource, LayoutArea, LayoutConfig, PageSchema, SkillDataSource,
+    StaticDataSource, WidgetConfig, YDocDataSource
+- path: src/adaos/integrations/adaos-client/src/app/runtime/page-state.service.ts
+  types: PageState
+- path: src/adaos/integrations/adaos-client/src/app/runtime/pairing.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/registry.ts
+  types: ModalRenderFn, WidgetRenderFn
+  exports: ModalRegistry, WidgetRegistry
+- path: src/adaos/integrations/adaos-client/src/app/runtime/registry.workspaces.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/stt/providers/browser-sr.provider.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/stt/providers/hub-wav.provider.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/stt/stt.types.ts
+  types: SttEvent
+  interfaces: SttProvider
+- path: src/adaos/integrations/adaos-client/src/app/runtime/stt/util/audio-utils.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/t.pipe.ts
+- path: src/adaos/integrations/adaos-client/src/app/runtime/webio-contracts.ts
+  types: WebIOChatMessage, WebIOTtsQueueItem, WebIOTtsState, WebIOVoiceChatState
+- path: src/adaos/integrations/adaos-client/src/app/shared/i18n/language-picker.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/shared/ionic-standalone.ts
+  exports: IonicStandaloneImports
+- path: src/adaos/integrations/adaos-client/src/app/shared/qr/qr-scanner.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/skill-host/skill-ctx.ts
   types: Ability, IOSettings
   interfaces: SkillCtx, SkillManifest, SkillModule, UILayout
-- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-host.service.ts
-- path: src/adaos/integrations/inimatic/src/app/skill-host/skill-outlet.component.ts
-- path: src/adaos/integrations/inimatic/src/app/skill-host/ui-lib.ts
-- path: src/adaos/integrations/inimatic/src/app/skills/hub-ping.skill.ts
+- path: src/adaos/integrations/adaos-client/src/app/skill-host/skill-host.service.ts
+- path: src/adaos/integrations/adaos-client/src/app/skill-host/skill-outlet.component.ts
+- path: src/adaos/integrations/adaos-client/src/app/skill-host/ui-lib.ts
+- path: src/adaos/integrations/adaos-client/src/app/skills/hub-ping.skill.ts
   exports: hubPingSkill
-- path: src/adaos/integrations/inimatic/src/app/skills/hub-status.skill.ts
+- path: src/adaos/integrations/adaos-client/src/app/skills/hub-status.skill.ts
   exports: hubStatusSkill
-- path: src/adaos/integrations/ovos/__init__.py
-- path: src/adaos/integrations/ovos/tts.py
-  classes:
-  - Name: OVOSTTSAdapter
-    methds: __init__, say
+- path: src/adaos/integrations/adaos-client/src/app/y/datachannel-provider.ts
+- path: src/adaos/integrations/adaos-client/src/app/y/y-helpers.ts
+- path: src/adaos/integrations/adaos-client/src/app/y/ydoc.service.ts
+  types: YDocMaterializationSnapshot, YDocSyncConnectionState, YDocSyncResyncReason,
+    YDocSyncRuntimeSnapshot
+- path: src/adaos/integrations/adaos-client/src/assets/legacy-browser.js
+- path: src/adaos/integrations/adaos-client/src/environments/build.prod.ts
+- path: src/adaos/integrations/adaos-client/src/environments/build.ts
 - path: src/adaos/integrations/rhasspy/runner.py
   funcs: start_rhasspy, stop_rhasspy, status_rhasspy, wait_until_ready
 - path: src/adaos/integrations/rhasspy/tts.py
@@ -352,6 +562,7 @@
     methds: __init__, send
 - path: src/adaos/integrations/telegram/webhook.py
   funcs: validate_secret
+- path: src/adaos/interpreter_data/__init__.py
 - path: src/adaos/launcher/sentinel.py
   funcs: is_ready, start_core, wait_until_ready, run
   classes:
@@ -385,8 +596,8 @@
 - path: src/adaos/ports/git.py
   classes:
   - Name: GitClient
-    methds: ensure_repo, pull, current_commit, sparse_init, sparse_set, sparse_add,
-      sparse_reapply, rm_cached, changed_files, commit_subpath, push
+    methds: ensure_repo, pull, fetch, current_commit, show, sparse_init, sparse_set,
+      sparse_add, sparse_reapply, rm_cached, changed_files, commit_subpath, push
 - path: src/adaos/ports/heartbeat.py
   classes:
   - Name: HeartbeatPort
@@ -465,6 +676,8 @@
     methds: register_node, heartbeat, mark_down_if_expired, list_nodes, get_node,
       unregister_node
 - path: src/adaos/sdk/__init__.py
+- path: src/adaos/sdk/capacity.py
+  funcs: get_local_capacity
 - path: src/adaos/sdk/core/__init__.py
 - path: src/adaos/sdk/core/_cap.py
   funcs: require_cap
@@ -472,6 +685,7 @@
   funcs: require_ctx
 - path: src/adaos/sdk/core/_idem.py
   funcs: load, save
+- path: src/adaos/sdk/core/ctx.py
 - path: src/adaos/sdk/core/decorators.py
   funcs: subscribe, register_subscriptions, tool, event_payload, emits, resolve_tool
 - path: src/adaos/sdk/core/errors.py
@@ -508,6 +722,12 @@
   - Name: BusNotAvailable
 - path: src/adaos/sdk/data/context.py
   funcs: set_current_skill, clear_current_skill, get_current_skill
+- path: src/adaos/sdk/data/ctx.py
+  classes:
+  - Name: _ScopeCtx
+    methds: __init__, set_async, set
+  - Name: _CurrentUserCtx
+    methds: __init__, get_profile_settings
 - path: src/adaos/sdk/data/env.py
   funcs: get_tts_backend, get_stt_backend, get_audio_out_backend
 - path: src/adaos/sdk/data/events.py
@@ -520,14 +740,23 @@
     methds: __init__, translate
 - path: src/adaos/sdk/data/memory.py
   funcs: get, put, delete, list
+- path: src/adaos/sdk/data/profile.py
+  funcs: get_settings, update_settings
 - path: src/adaos/sdk/data/secrets.py
   funcs: get, set, delete
+- path: src/adaos/sdk/data/skill_env.py
+  funcs: skill_env_path, read_env, write_env, get_env, set_env, delete_env
 - path: src/adaos/sdk/data/skill_memory.py
   funcs: get, set
+- path: src/adaos/sdk/io/__init__.py
+- path: src/adaos/sdk/io/context.py
+  funcs: get_current_meta, io_meta
+- path: src/adaos/sdk/io/out.py
+  funcs: chat_append, say
+- path: src/adaos/sdk/io/voice.py
+  funcs: tts_speak, stt_listen
 - path: src/adaos/sdk/llm/llm_client.py
-  funcs: getOpenAIClient, generate_test_yaml, generate_test_yaml, generate_skill
-- path: src/adaos/sdk/llm/llm_skill_pipeline.py
-  funcs: skill_creation_pipeline
+  funcs: list_llm_models, send_response, request_ts_draft
 - path: src/adaos/sdk/llm/process_llm_output.py
   funcs: process_llm_output
 - path: src/adaos/sdk/manage/__init__.py
@@ -543,9 +772,11 @@
   funcs: validate, state_get, state_put, request_update
 - path: src/adaos/sdk/manage/skills.py
   funcs: install, uninstall, list_installed
+- path: src/adaos/sdk/root/__init__.py
+- path: src/adaos/sdk/root/developer.py
 - path: src/adaos/sdk/scenarios/__init__.py
   funcs: create, install, uninstall, pull, push, list_installed, delete, read_proto,
-    write_proto, read_bindings, write_bindings
+    write_proto, read_bindings, write_bindings, describe_webspace_ui
 - path: src/adaos/sdk/scenarios/runtime.py
   funcs: load_scenario, ensure_runtime_context, default_registry
   classes:
@@ -561,6 +792,9 @@
     methds: __init__, get, set, delete, list
   - Name: _InMemorySecrets
     methds: __init__, get, put
+- path: src/adaos/sdk/scenarios/workflow.py
+  funcs: apply_action
+- path: src/adaos/sdk/skill_env.py
 - path: src/adaos/sdk/skills/testing.py
   funcs: skill
   classes:
@@ -568,16 +802,37 @@
     methds: import_module, import_
 - path: src/adaos/sdk/testing/bootstrap.py
   funcs: init_dev_runtime, init_from_env
+- path: src/adaos/sdk/web/__init__.py
+- path: src/adaos/sdk/web/desktop.py
+  funcs: desktop_toggle_install, desktop_toggle_app, desktop_toggle_widget, desktop_get_installed,
+    desktop_get_snapshot, desktop_get_installed_async, desktop_get_snapshot_async,
+    desktop_get_pinned_widgets, desktop_get_pinned_widgets_async, desktop_get_topbar,
+    desktop_get_topbar_async, desktop_get_page_schema, desktop_get_page_schema_async,
+    desktop_set_installed, desktop_set_pinned_widgets, desktop_set_topbar, desktop_set_page_schema,
+    desktop_set_snapshot
+- path: src/adaos/sdk/web/webspace.py
+  funcs: webspace_list, webspace_describe, webspace_create, webspace_rename, webspace_delete,
+    webspace_refresh, webspace_set_home, webspace_go_home, webspace_ensure_dev
 - path: src/adaos/services/agent_context.py
   funcs: set_ctx, get_ctx, clear_ctx, use_ctx, pytest_sessionstart
   classes:
   - Name: AgentContext
-    methds: skills_repo, scenarios_repo, skill_ctx, reload_repos, i18n
+    methds: skills_repo, scenarios_repo, skill_ctx, projections, reload_repos, i18n
+- path: src/adaos/services/autostart.py
+  funcs: default_spec, enable, disable, status, shutil_which
+  classes:
+  - Name: AutostartSpec
 - path: src/adaos/services/bootstrap.py
-  funcs: is_ready, run_boot_sequence, shutdown, switch_role
+  funcs: is_ready, request_hub_root_reconnect, run_boot_sequence, shutdown, switch_role
   classes:
   - Name: BootstrapService
-    methds: __init__, is_ready, run_boot_sequence, shutdown, switch_role
+    methds: __init__, is_ready, request_hub_root_reconnect, run_boot_sequence, shutdown,
+      switch_role
+- path: src/adaos/services/capacity.py
+  funcs: load_capacity_from_node_yaml, get_local_capacity, install_skill_in_capacity,
+    uninstall_skill_from_capacity, install_scenario_in_capacity, uninstall_scenario_from_capacity,
+    install_io_in_capacity, uninstall_io_from_capacity, set_io_state, get_io_capacity_entry,
+    is_io_available, refresh_native_io_capacity
 - path: src/adaos/services/chat_io/interfaces.py
   classes:
   - Name: ChatInputEvent
@@ -589,12 +844,22 @@
     methds: send
   - Name: PairingProvider
     methds: issue, confirm, status, revoke
+- path: src/adaos/services/chat_io/nlu_bridge.py
+  funcs: register_chat_nlu_bridge
 - path: src/adaos/services/chat_io/pairing.py
   funcs: issue_pair_code, confirm_pair_code, pair_status, revoke_pair_code
 - path: src/adaos/services/chat_io/router.py
   funcs: resolve_hub_id
 - path: src/adaos/services/chat_io/telemetry.py
   funcs: record_event, snapshot
+- path: src/adaos/services/core_slots.py
+  funcs: slot_dir, slot_manifest_path, active_slot, previous_slot, choose_inactive_slot,
+    read_slot_manifest, write_slot_manifest, activate_slot, rollback_to_previous_slot,
+    slot_status, active_slot_manifest
+- path: src/adaos/services/core_update.py
+  funcs: plan_path, status_path, last_result_path, read_plan, write_plan, clear_plan,
+    read_status, read_last_result, write_status, finalize_runtime_boot_status, configured_update_command,
+    execute_pending_update
 - path: src/adaos/services/crypto/pki.py
   funcs: generate_rsa_key, write_private_key, write_pem, make_csr
 - path: src/adaos/services/crypto/secrets_service.py
@@ -607,9 +872,18 @@
   funcs: emit
   classes:
   - Name: LocalEventBus
-    methds: __init__, subscribe, publish
+    methds: __init__, wait_for_idle, subscribe, publish
 - path: src/adaos/services/fs/safe_io.py
   funcs: ensure_dir, write_text_atomic, write_json_atomic, read_text, remove_tree
+- path: src/adaos/services/git/archive.py
+  funcs: github_zip_url, extract_github_zip_subpaths, materialize_subpath_from_github_zip
+  classes:
+  - Name: GithubRepoRef
+    methds: repo_name
+- path: src/adaos/services/git/availability.py
+  funcs: get_git_availability, autodetect_git, set_git_enabled, set_git_disabled
+  classes:
+  - Name: GitAvailability
 - path: src/adaos/services/git/safe_commit.py
   funcs: sanitize_message, check_no_denied
 - path: src/adaos/services/git/workspace_guard.py
@@ -618,12 +892,37 @@
   classes:
   - Name: RequestsHeartbeat
     methds: __init__, register, heartbeat, deregister
+- path: src/adaos/services/hub_root_outbox_store.py
+  funcs: outbox_store_path, load_outbox_items, save_outbox_items
+- path: src/adaos/services/hub_root_protocol_store.py
+  funcs: prepare_stream_message, ack_stream_message, protocol_streams_snapshot
 - path: src/adaos/services/i18n/service.py
   classes:
   - Name: I18nService
     methds: translate
 - path: src/adaos/services/id_gen.py
   funcs: new_id
+- path: src/adaos/services/interpreter/__init__.py
+- path: src/adaos/services/interpreter/registry.py
+  funcs: sync_from_scenarios_and_skills
+- path: src/adaos/services/interpreter/router_runtime.py
+- path: src/adaos/services/interpreter/runtime.py
+  classes:
+  - Name: RasaNLURuntime
+    methds: __init__, parse
+- path: src/adaos/services/interpreter/trainer.py
+  classes:
+  - Name: RasaTrainer
+    methds: __init__, train
+- path: src/adaos/services/interpreter/workspace.py
+  classes:
+  - Name: IntentMapping
+    methds: as_dict
+  - Name: InterpreterWorkspace
+    methds: __init__, context, available_presets, get_dataset_preset, sync_dataset_from_repo,
+      collect_skill_intents, generate_dataset_from_skills, load_config, save_config,
+      list_intents, upsert_intent, remove_intent, load_metadata, save_metadata, fingerprint,
+      describe_status, dataset_summary, build_rasa_project, record_training
 - path: src/adaos/services/io_bus/http_fallback.py
   classes:
   - Name: HttpFallbackBus
@@ -632,11 +931,6 @@
   classes:
   - Name: LocalIoBus
     methds: __init__, connect, publish_input, subscribe_output
-- path: src/adaos/services/io_bus/nats_bus.py
-  funcs: json_bytes
-  classes:
-  - Name: NatsIoBus
-    methds: __init__, connect, close, publish_input, subscribe_output, publish_dlq
 - path: src/adaos/services/io_bus/rate_limit.py
   classes:
   - Name: TokenBucket
@@ -646,21 +940,94 @@
 - path: src/adaos/services/io_bus/reliability.py
   funcs: outbound_msg_hash
 - path: src/adaos/services/io_console.py
-  funcs: print
+  funcs: print, print_text
 - path: src/adaos/services/io_voice_mock.py
   funcs: tts_speak, stt_listen
+- path: src/adaos/services/io_web/__init__.py
+- path: src/adaos/services/io_web/desktop.py
+  classes:
+  - Name: WebDesktopInstalled
+    methds: to_dict
+  - Name: WebDesktopSnapshot
+    methds: to_dict
+  - Name: WebDesktopService
+    methds: __init__, get_installed, get_installed_async, get_pinned_widgets, get_pinned_widgets_async,
+      get_topbar, get_topbar_async, get_page_schema, get_page_schema_async, get_snapshot,
+      get_snapshot_async, set_installed, set_installed_async, set_pinned_widgets,
+      set_pinned_widgets_async, set_topbar, set_topbar_async, set_page_schema, set_page_schema_async,
+      set_snapshot, set_snapshot_async, toggle_install, toggle_install_async, toggle_install_with_live_room,
+      set_installed_with_live_room, set_pinned_widgets_with_live_room, set_topbar_with_live_room,
+      set_page_schema_with_live_room, set_snapshot_with_live_room
+- path: src/adaos/services/io_web/toast.py
+  classes:
+  - Name: WebToast
+    methds: to_dict
+  - Name: WebToastService
+    methds: __init__, push
+- path: src/adaos/services/join_codes.py
+  funcs: generate_code, cleanup_expired, create, consume, consume_any
+  classes:
+  - Name: JoinCodeError
+  - Name: JoinCodeNotFound
+  - Name: JoinCodeExpired
+  - Name: JoinCodeConsumed
+  - Name: JoinCodeInfo
 - path: src/adaos/services/logging.py
   funcs: setup_logging, attach_event_logger
   classes:
   - Name: JsonFormatter
     methds: format
+  - Name: PrefixMinLevelFilter
+    methds: __init__, filter
+- path: src/adaos/services/media_library.py
+  funcs: media_runtime_env, media_video_dir, sanitize_media_filename, media_file_path,
+    guess_media_type, media_capabilities, list_media_files, media_snapshot
+- path: src/adaos/services/nats_config.py
+  funcs: nats_url_uses_websocket, normalize_nats_ws_url, public_nats_ws_candidates,
+    public_nats_tcp_candidates, order_nats_ws_candidates
+- path: src/adaos/services/nats_ws_transport.py
+  funcs: install_nats_ws_transport_patch
+  classes:
+  - Name: WebSocketTransportWebsockets
+    methds: __init__, connect, connect_tls, write, writelines, read, readline, drain,
+      wait_closed, close, at_eof, __bool__
+  - Name: WebSocketTransportAiohttp
+    methds: __init__, connect, connect_tls, write, writelines, read, readline, drain,
+      wait_closed, close, at_eof, __bool__
+- path: src/adaos/services/nlu/__init__.py
+- path: src/adaos/services/nlu/candidates_runtime.py
+- path: src/adaos/services/nlu/data_registry.py
+  funcs: sync_from_scenarios_and_skills
+- path: src/adaos/services/nlu/dispatcher.py
+- path: src/adaos/services/nlu/llm_teacher_runtime.py
+- path: src/adaos/services/nlu/pipeline.py
+  funcs: invalidate_dynamic_regex_cache, describe_builtin_regex_rules
+- path: src/adaos/services/nlu/rasa_service_bridge.py
+- path: src/adaos/services/nlu/rasa_training_bridge.py
+- path: src/adaos/services/nlu/regex_rules_runtime.py
+- path: src/adaos/services/nlu/regex_usage_runtime.py
+  funcs: record_regex_rule_hit
+- path: src/adaos/services/nlu/system_actions_catalog.py
+  funcs: describe_system_actions
+- path: src/adaos/services/nlu/teacher_bridge.py
+- path: src/adaos/services/nlu/teacher_events.py
+  funcs: rebuild_threads, rebuild_events_by_candidate, make_event, append_event
+- path: src/adaos/services/nlu/teacher_runtime.py
+- path: src/adaos/services/nlu/teacher_store.py
+  funcs: teacher_state_path, load_teacher_state, save_teacher_state
+- path: src/adaos/services/nlu/teacher_store_runtime.py
+- path: src/adaos/services/nlu/trace_store.py
+  funcs: on_detect_request, on_detected, on_not_obtained
+- path: src/adaos/services/nlu/ycoerce.py
+  funcs: is_mapping_like, is_iterable_like, coerce_dict, iter_mappings, iter_scalars
 - path: src/adaos/services/node_config.py
-  funcs: displayable_path, load_node, save_node, ensure_hub, node_base_dir, set_role,
-    load_config, save_config
+  funcs: displayable_path, normalize_node_names, load_node, save_node, ensure_hub,
+    node_base_dir, set_role, set_node_names, load_config, save_config
   classes:
   - Name: RootOwnerProfile
   - Name: RootState
   - Name: RootOwnerSettings
+  - Name: RootLlmSettings
   - Name: RootSettings
   - Name: HubKeypair
   - Name: SubnetSettings
@@ -669,7 +1036,7 @@
   - Name: NodeConfig
     methds: root, root, node_id_value, subnet_id_value, owner_id, ensure_defaults,
       sync_sections, to_dict, hub_key_path, hub_cert_path, ca_cert_path, workspace_path,
-      owner_workspace
+      owner_workspace, node_names, primary_node_name
 - path: src/adaos/services/observe.py
   funcs: attach_http_trace_headers, start_observer, stop_observer, pass_filters
   classes:
@@ -690,6 +1057,53 @@
   classes:
   - Name: NetPolicy
     methds: __init__, allow, deny, is_allowed_url, require_url
+- path: src/adaos/services/realtime_sidecar.py
+  funcs: realtime_sidecar_enabled, realtime_sidecar_host, realtime_sidecar_port, realtime_sidecar_local_url,
+    realtime_sidecar_log_path, realtime_sidecar_diag_path, apply_realtime_loop_policy,
+    resolve_realtime_remote_candidates, probe_realtime_sidecar_ready, wait_realtime_sidecar_ready,
+    start_realtime_sidecar_subprocess, stop_realtime_sidecar_subprocess, realtime_sidecar_listener_snapshot,
+    restart_realtime_sidecar_subprocess, run_realtime_sidecar
+  classes:
+  - Name: _RelayStats
+  - Name: RealtimeSidecarServer
+    methds: __init__, listen_host, listen_port, start, serve_forever, close
+- path: src/adaos/services/registry/subnet_directory.py
+  funcs: get_directory
+  classes:
+  - Name: LiveState
+  - Name: SubnetDirectory
+    methds: __init__, on_register, on_heartbeat, mark_stale_if_expired, is_online,
+      find_nodes_with_skill, get_node_base_url, list_known_nodes, ingest_snapshot
+- path: src/adaos/services/registry/subnet_repo.py
+  classes:
+  - Name: SubnetRepo
+    methds: __init__, upsert_node, touch_heartbeat, list_nodes, get_node, replace_io_capacity,
+      replace_skill_capacity, nodes_with_skill, io_for_node, skills_for_node, replace_scenario_capacity,
+      scenarios_for_node
+- path: src/adaos/services/reliability.py
+  funcs: hub_root_protocol_class_policy, hub_root_protocol_traffic_class, configure_hub_root_transport_strategy,
+    record_hub_root_transport_event, hub_root_transport_strategy_snapshot, observe_hub_root_protocol_subscription,
+    observe_hub_root_protocol_publish, observe_hub_root_route_runtime, observe_hub_root_route_flow,
+    observe_hub_root_integration_outbox, reset_reliability_runtime_state, mark_root_control_up,
+    mark_root_control_down, mark_route_ready, mark_route_degraded, note_root_control_reconnect,
+    note_route_incident, observe_route_e2e, set_integration_readiness, runtime_signal_snapshot,
+    effective_channel_view, channel_diagnostics_snapshot, assess_transport_diagnostics,
+    build_readiness_tree, build_degraded_matrix, channel_overview_snapshot, hub_member_semantic_channel_model_snapshot,
+    hub_member_semantic_channels_snapshot, hub_member_connection_state_snapshot, hub_root_protocol_model_snapshot,
+    hub_root_protocol_snapshot, reliability_model_snapshot, sidecar_runtime_snapshot,
+    yjs_sync_runtime_snapshot, reliability_snapshot
+  classes:
+  - Name: MessageTaxonomy
+  - Name: DeliveryClass
+  - Name: ChannelType
+  - Name: Authority
+  - Name: ReadinessStatus
+  - Name: FlowSpec
+    methds: to_dict
+  - Name: SemanticChannelSpec
+    methds: to_dict
+  - Name: RuntimeSignal
+    methds: to_dict
 - path: src/adaos/services/resources/__init__.py
 - path: src/adaos/services/resources/requests.py
   classes:
@@ -706,9 +1120,22 @@
   - Name: RootHttpClient
     methds: from_settings, request, owner_start, owner_poll, token_refresh, whoami,
       owner_hubs_list, owner_hubs_add, pki_enroll, request_bootstrap_token, register_subnet,
-      device_authorize, device_poll, push_skill_draft, delete_draft_artifact, delete_skill_draft,
-      delete_scenario_draft, delete_registry_artifact, delete_skill_registry, delete_scenario_registry,
-      push_scenario_draft
+      dev_logs, dev_log_files, dev_log_tail, device_authorize, device_poll, push_skill_draft,
+      delete_draft_artifact, delete_skill_draft, delete_scenario_draft, delete_registry_artifact,
+      delete_skill_registry, delete_scenario_registry, get_draft_info, get_skill_draft_info,
+      get_scenario_draft_info, get_draft_archive, get_skill_draft_archive, get_scenario_draft_archive,
+      push_scenario_draft, hub_core_update_report, hub_control_report, root_dispatch_core_update,
+      root_core_update_reports, root_control_reports, root_core_update_subnets, hub_core_update_release
+- path: src/adaos/services/root/control_lifecycle_sync.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: build_control_lifecycle_report, report_hub_control_lifecycle_state
+- path: src/adaos/services/root/core_update_sync.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: build_core_update_report, report_hub_core_update_state, reconcile_hub_core_update
 - path: src/adaos/services/root/keyring.py
   tags:
   - layer:services
@@ -740,12 +1167,21 @@
   - Name: ArtifactCreateResult
   - Name: ArtifactPushResult
   - Name: ArtifactDeleteResult
+  - Name: ArtifactUpdateResult
   - Name: ArtifactListItem
   - Name: ArtifactPublishResult
   - Name: RootDeveloperService
-    methds: __init__, init, login, create_skill, create_scenario, push_skill, push_scenario,
-      publish_skill, publish_scenario, delete_skill, delete_scenario, list_skills,
-      list_scenarios
+    methds: __init__, init, dev_logs, dev_log_files, dev_log_tail, device_authorize,
+      login, create_skill, create_scenario, push_skill, push_scenario, update_skill,
+      update_scenario, publish_skill, publish_scenario, delete_skill, delete_scenario,
+      list_skills, list_scenarios
+- path: src/adaos/services/router/__init__.py
+- path: src/adaos/services/router/rules_loader.py
+  funcs: load_rules, watch_rules
+- path: src/adaos/services/router/service.py
+  classes:
+  - Name: RouterService
+    methds: __init__, start, stop
 - path: src/adaos/services/runtime/__init__.py
 - path: src/adaos/services/runtime/manager.py
   classes:
@@ -753,6 +1189,13 @@
   - Name: _Record
   - Name: AsyncProcessManager
     methds: __init__, start, stop, status
+- path: src/adaos/services/runtime_dotenv.py
+  funcs: runtime_dotenv_overrides, apply_runtime_dotenv_overrides, merged_runtime_dotenv_env
+- path: src/adaos/services/runtime_lifecycle.py
+  funcs: reset_runtime_lifecycle, request_drain, runtime_lifecycle_snapshot, runtime_node_state,
+    is_draining, is_accepting_new_work
+  classes:
+  - Name: RuntimeLifecycleState
 - path: src/adaos/services/sandbox/bootstrap.py
   funcs: detect_spec, ensure_dev_venv
   classes:
@@ -768,22 +1211,71 @@
   classes:
   - Name: SandboxService
     methds: __init__, run
+- path: src/adaos/services/scenario/__init__.py
 - path: src/adaos/services/scenario/control.py
   classes:
   - Name: ScenarioControlService
-    methds: set_enabled, set_binding
+    methds: set_enabled, is_enabled, set_binding, get_binding, list_bindings
 - path: src/adaos/services/scenario/manager.py
   classes:
   - Name: ArtifactPublishResult
   - Name: ScenarioManager
-    methds: __init__, list_installed, list_present, sync, install, remove, push, publish,
-      uninstall
+    methds: __init__, list_installed, list_present, sync, install, install_with_deps,
+      sync_to_yjs, sync_to_yjs_async, remove, push, publish, uninstall
+- path: src/adaos/services/scenario/projection_registry.py
+  classes:
+  - Name: ProjectionTarget
+  - Name: ProjectionRule
+  - Name: ProjectionRegistry
+    methds: __init__, load_entries, replace_scenario_entries, load_from_scenario,
+      resolve, active_scenario_id, active_space, snapshot
+- path: src/adaos/services/scenario/projection_service.py
+  classes:
+  - Name: ProjectionService
+    methds: from_ctx, apply
 - path: src/adaos/services/scenario/scaffold.py
   funcs: create
+- path: src/adaos/services/scenario/webspace_runtime.py
+  funcs: describe_webspace_rebuild_state, describe_webspace_operational_state, describe_webspace_overlay_state,
+    describe_webspace_projection_state, rebuild_webspace_from_sources, reload_webspace_from_scenario,
+    restore_webspace_from_snapshot, switch_webspace_scenario, go_home_webspace, ensure_dev_webspace_for_scenario,
+    reload_preview_webspaces_for_project
+  classes:
+  - Name: WebUIRegistryEntry
+  - Name: WebspaceInfo
+  - Name: WebspaceOperationalState
+    methds: to_dict
+  - Name: WebspaceResolverInputs
+  - Name: WebspaceResolverOutputs
+    methds: to_registry_entry
+  - Name: WebspaceScenarioRuntime
+    methds: __init__, resolve_webspace, compute_registry_for_webspace, rebuild_webspace_async
+  - Name: WebspaceService
+    methds: __init__, list, create, rename, update_metadata, set_home_scenario, ensure_dev_for_scenario,
+      delete, refresh
+- path: src/adaos/services/scenario/workflow_runtime.py
+  classes:
+  - Name: ScenarioWorkflowRuntime
+    methds: sync_workflow_for_webspace, apply_action, set_state
+- path: src/adaos/services/scenarios/loader.py
+  funcs: scenario_root, scenario_root_for_space, read_manifest, read_content, invalidate_cache
+- path: src/adaos/services/scheduler.py
+  funcs: get_scheduler, start_scheduler, stop_scheduler
+  classes:
+  - Name: Job
+  - Name: Scheduler
+    methds: __init__, start, stop, ensure_every, delete
+- path: src/adaos/services/semver.py
+  funcs: bump_version
 - path: src/adaos/services/settings.py
   classes:
   - Name: Settings
     methds: from_sources, with_overrides, require_subnet_id
+- path: src/adaos/services/setup/__init__.py
+- path: src/adaos/services/setup/presets.py
+  funcs: get_preset
+  classes:
+  - Name: InstallPreset
 - path: src/adaos/services/skill/context.py
   classes:
   - Name: SkillContextService
@@ -798,10 +1290,11 @@
   - Name: PolicyDefaults
   - Name: SkillManager
     methds: __init__, list_installed, list_present, get, sync, install, validate_skill,
-      run_skill_tests, uninstall, push, prepare_runtime, activate_runtime, rollback_runtime,
-      dev_rollback_runtime, runtime_status, dev_runtime_status, cleanup_runtime, gc_runtime,
-      doctor_runtime, setup_skill, dev_setup_skill, run_tool, run_dev_tool, prepare_dev_runtime,
-      activate_dev_runtime, run_dev_skill_tests
+      run_skill_tests, runtime_update, sync_skill_yaml_tools_from_handlers, uninstall,
+      push, prepare_runtime, activate_runtime, rollback_runtime, dev_rollback_runtime,
+      activate_for_space, rollback_for_space, runtime_status, dev_runtime_status,
+      cleanup_runtime, gc_runtime, doctor_runtime, setup_skill, dev_setup_skill, run_tool,
+      run_dev_tool, prepare_dev_runtime, activate_dev_runtime, run_dev_skill_tests
 - path: src/adaos/services/skill/resolver.py
   classes:
   - Name: SkillPathResolver
@@ -824,13 +1317,14 @@
 - path: src/adaos/services/skill/runtime_env.py
   classes:
   - Name: SkillSlotPaths
-    methds: skill_env_path
+    methds: skill_env_path, skill_memory_path, legacy_skill_env_path, legacy_skill_memory_path
   - Name: SkillRuntimeEnvironment
     methds: __init__, skill_name, runtime_root, version_root, slots_root, slot_root,
-      data_root, active_marker, previous_marker, metadata_path, active_version_marker,
-      list_versions, resolve_active_version, ensure_base, prepare_version, ensure_current_link,
-      build_slot_paths, read_active_slot, select_inactive_slot, set_active_slot, rollback_slot,
-      cleanup_slot, write_version_metadata, read_version_metadata, iter_slot_paths
+      data_root, files_dir, db_dir, skill_env_store_path, skill_memory_store_path,
+      active_marker, previous_marker, metadata_path, active_version_marker, list_versions,
+      resolve_active_version, ensure_base, prepare_version, ensure_current_link, build_slot_paths,
+      read_active_slot, select_inactive_slot, set_active_slot, rollback_slot, cleanup_slot,
+      write_version_metadata, read_version_metadata, iter_slot_paths
 - path: src/adaos/services/skill/scaffold.py
   funcs: create, create_skill
 - path: src/adaos/services/skill/secrets_backend.py
@@ -841,6 +1335,16 @@
   classes:
   - Name: SkillService
     methds: __init__, list, install, uninstall
+- path: src/adaos/services/skill/service_supervisor.py
+  funcs: get_service_supervisor
+  classes:
+  - Name: ServiceSpec
+    methds: base_url
+  - Name: ServiceSkillSupervisor
+    methds: __init__, ensure_discovered, refresh_discovered, resolve_base_url, list,
+      status, start, stop, restart, start_all, issues, inject_issue, doctor_requests,
+      request_doctor, self_heal, ensure_started, shutdown
+- path: src/adaos/services/skill/service_supervisor_runtime.py
 - path: src/adaos/services/skill/state.py
   classes:
   - Name: SkillStateService
@@ -854,6 +1358,7 @@
 - path: src/adaos/services/skill/update.py
   classes:
   - Name: SkillUpdateResult
+  - Name: _OverlayBackup
   - Name: SkillUpdateService
     methds: request_update
 - path: src/adaos/services/skill/validation.py
@@ -866,6 +1371,28 @@
   classes:
   - Name: ImportlibSkillsLoader
     methds: import_all_handlers
+- path: src/adaos/services/subnet/__init__.py
+- path: src/adaos/services/subnet/link_client.py
+  funcs: get_member_link_client, member_link_client_snapshot
+  classes:
+  - Name: MemberLinkClient
+    methds: __init__, is_connected, snapshot, start, stop
+- path: src/adaos/services/subnet/link_manager.py
+  funcs: get_hub_link_manager, hub_link_manager_snapshot
+  classes:
+  - Name: HubMemberLink
+    methds: send_json
+  - Name: HubLinkManager
+    methds: __init__, register, unregister, is_connected, note_member_activity, update_member_metadata,
+      update_member_snapshot, set_member_node_names, request_member_snapshot, request_member_update,
+      update_member_control_result, broadcast_event, snapshot, handle_rpc_response,
+      rpc_tools_call, broadcast_yjs_update, ingest_member_yjs_update, ingest_member_bus_event
+- path: src/adaos/services/subnet/link_ws.py
+  funcs: subnet_ws
+- path: src/adaos/services/subnet/runtime.py
+  funcs: start_subnet_p2p, stop_subnet_p2p
+- path: src/adaos/services/subnet_alias.py
+  funcs: display_subnet_alias
 - path: src/adaos/services/subnet_kv_file_http.py
   funcs: get_subnet_kv
   classes:
@@ -899,6 +1426,67 @@
   funcs: run_pytest
   classes:
   - Name: TestRunResult
+- path: src/adaos/services/user/profile.py
+  classes:
+  - Name: UserProfile
+  - Name: UserProfileService
+    methds: __init__, current_user_id, get_profile, update_profile
+- path: src/adaos/services/weather/__init__.py
+- path: src/adaos/services/weather/observer.py
+- path: src/adaos/services/webrtc/peer.py
+  funcs: handle_rtc_offer, handle_remote_ice, webrtc_peer_snapshot
+  classes:
+  - Name: HubPeer
+    methds: __init__, handle_offer, add_ice_candidate, close
+- path: src/adaos/services/webrtc/yjs_adapter.py
+  classes:
+  - Name: DataChannelYjsAdapter
+    methds: __init__, path, __aiter__, __anext__, send, recv, serve
+- path: src/adaos/services/workspace_registry.py
+  funcs: registry_pattern_set, workspace_registry_path, load_workspace_registry, write_workspace_registry,
+    rebuild_workspace_registry, upsert_workspace_registry_entry, list_workspace_registry_entries,
+    build_registry_entry
+- path: src/adaos/services/workspaces/__init__.py
+- path: src/adaos/services/workspaces/index.py
+  funcs: get_workspace, list_workspaces, normalize_workspaces, ensure_workspace, set_workspace_manifest,
+    set_display_name, delete_workspace, reset_webspaces, get_workspace_overlay, get_workspace_desktop_overlay,
+    has_workspace_overlay, get_workspace_installed_overlay, get_workspace_pinned_widgets_overlay,
+    get_workspace_topbar_overlay, get_workspace_page_schema_overlay, set_workspace_overlay,
+    set_workspace_desktop_overlay, set_workspace_installed_overlay, set_workspace_pinned_widgets_overlay,
+    set_workspace_topbar_overlay, set_workspace_page_schema_overlay
+  classes:
+  - Name: WebspaceManifest
+    methds: effective_kind, is_dev, effective_source_mode, effective_home_scenario,
+      title, with_defaults, ui_overlay, desktop_overlay, installed_overlay, pinned_widgets_overlay,
+      topbar_overlay, page_schema_overlay, has_installed_overlay, has_pinned_widgets_overlay,
+      has_topbar_overlay, has_page_schema_overlay, has_ui_overlay
+- path: src/adaos/services/yjs/__init__.py
+- path: src/adaos/services/yjs/bootstrap.py
+  funcs: ensure_webspace_seeded_from_scenario, bootstrap_seed_if_empty
+- path: src/adaos/services/yjs/doc.py
+  funcs: get_ydoc, async_get_ydoc, mutate_live_room, apply_update_to_live_room
+- path: src/adaos/services/yjs/gateway.py
+- path: src/adaos/services/yjs/gateway_ws.py
+  funcs: close_webspace_yws_connections, reset_live_webspace_room, gateway_transport_snapshot,
+    start_y_server, stop_y_server, ensure_webspace_ready, yws, yws_room, process_events_command,
+    events_ws
+  classes:
+  - Name: WorkspaceWebsocketServer
+    methds: get_room
+  - Name: FastAPIWebsocketAdapter
+    methds: __init__, path, __aiter__, __anext__, send, recv
+- path: src/adaos/services/yjs/observers.py
+  funcs: register_room_observer, list_room_observers, attach_room_observers
+- path: src/adaos/services/yjs/seed.py
+- path: src/adaos/services/yjs/store.py
+  funcs: add_ystore_write_listener, suppress_ystore_write_notifications, ystores_root,
+    ystore_path_for_webspace, ystore_snapshot_exists, get_ystore_for_webspace, ystore_runtime_snapshot,
+    reset_ystore_for_webspace, restore_ystore_for_webspace
+  classes:
+  - Name: AdaosMemoryYStore
+    methds: __init__, start, stop, write, read, backup_to_disk, runtime_snapshot
+- path: src/adaos/services/yjs/webspace.py
+  funcs: default_webspace_id, dev_webspace_id
 - path: src/adaos/skills/runtime_runner.py
   funcs: execute_tool
 - path: src/adaos/skills_templates/AlarmSkill/handlers/main.py

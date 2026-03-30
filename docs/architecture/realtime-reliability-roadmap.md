@@ -137,7 +137,7 @@ Runtime now also exposes `hardening_coverage`, and for the current `hub_root.*` 
 ### Candidate code areas
 
 - `src/adaos/services/bootstrap.py`
-- `src/adaos/integrations/inimatic/backend/app.ts`
+- `src/adaos/integrations/adaos-backend/backend/app.ts`
 - `src/adaos/services/reliability.py`
 - `tools/diag_nats_ws.py`
 - `tools/diag_route_probe.py`
@@ -327,7 +327,7 @@ Handle artifact provenance, scenario UX, and runtime lifecycle after the communi
 - `src/adaos/services/skills_loader_importlib.py`
 - `src/adaos/services/yjs/bootstrap.py`
 - `src/adaos/services/yjs/gateway_ws.py`
-- `src/adaos/integrations/inimatic/src/app/runtime/desktop-schema.service.ts`
+- `src/adaos/integrations/adaos-client/src/app/runtime/desktop-schema.service.ts`
 
 ### Exit criteria
 

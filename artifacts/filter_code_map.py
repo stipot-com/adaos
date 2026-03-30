@@ -66,7 +66,7 @@ def main():
 
     out = ART / "code_map.filtered.yaml"
     save_yaml(out, sel)
-    print(f"Selected {len(sel)} files → {out}")
+    print(f"Selected {len(sel)} files -> {out}")
 
 
 if __name__ == "__main__":

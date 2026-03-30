@@ -13,7 +13,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$SUBMODULE_PATH = "src/adaos/integrations/inimatic"
+$clientSubPath = "src\adaos\integrations\adaos-client"
+$backendSubPath = "src\adaos\integrations\adaos-backend"
+$infraSubPath = "src\adaos\integrations\infra-inimatic"
 
 # Ensure we operate from repo root even if invoked from elsewhere.
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -237,6 +239,23 @@ function Show-QrIfAvailable {
   } catch { }
 }
 
+function Show-OptionalModulesNote {
+  $missing = New-Object System.Collections.Generic.List[string]
+  if (-not (Test-Path (Join-Path $clientSubPath "package.json"))) { $missing.Add($clientSubPath) }
+  if (-not (Test-Path (Join-Path $backendSubPath "package.json"))) { $missing.Add($backendSubPath) }
+  if (-not (Test-Path (Join-Path $infraSubPath "README.md"))) { $missing.Add($infraSubPath) }
+
+  Write-Host ""
+  Write-Host "Optional private modules:"
+  Write-Host ("  Client:  {0}" -f $clientSubPath)
+  Write-Host ("  Backend: {0}" -f $backendSubPath)
+  Write-Host ("  Infra:   {0}" -f $infraSubPath)
+  if ($missing.Count -gt 0) {
+    Write-Host "  Missing locally. Initialize only if you need them:"
+    Write-Host ("    git submodule update --init --recursive {0}" -f ($missing -join " "))
+  }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
   Write-Host "Joining subnet via join-code..."
   Invoke-Adaos node join --code $JoinCode --root $RootUrl | Out-Null
@@ -388,6 +407,7 @@ if ($st -and $st.role -eq "member") {
 Write-Host ""
 Write-Host "Docs:"
 Write-Host "  https://stipot-com.github.io/adaos/"
+Show-OptionalModulesNote
 if (-not (Get-Command qrencode -ErrorAction SilentlyContinue)) {
   Write-Host ""
   Write-Host "Tip: install 'qrencode' to show QR codes in terminal."

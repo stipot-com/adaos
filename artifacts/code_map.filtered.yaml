@@ -4,7 +4,9 @@
   - uc:device_login
   - uc:qr_pairing
   funcs: add_or_update_entity, set_installed_flag, list_entities, update_skill_version,
-    get_skill_versions, list_versions
+    get_skill_versions, list_versions, idem_get, idem_put, ca_load, ca_update_serial,
+    subnet_get_or_create, device_get_by_fingerprint, device_upsert_hub, pair_issue,
+    pair_get, pair_confirm, pair_revoke, binding_upsert, get_binding_by_user
 - path: src/adaos/adapters/db/sqlite_schema.py
   tags:
   - layer:db
@@ -17,58 +19,67 @@
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: require_token
+  funcs: resolve_presented_token, ensure_token, require_token, require_owner_token
 - path: src/adaos/apps/api/root_endpoints.py
   tags:
   - area:api
   - layer:backend
   - uc:device_login
   - uc:qr_pairing
-  funcs: root_register, llm_chat
+  funcs: root_register, subnet_register, subnet_register_status, subnet_join_code_create,
+    subnet_join_consume
   classes:
-  - Name: ChatMessage
-  - Name: ChatRequest
+  - Name: SubnetRegisterRequest
+  - Name: RootJoinCodeCreateRequest
+  - Name: RootJoinCodeCreateResponse
+  - Name: RootSubnetJoinRequest
+  - Name: RootSubnetJoinResponse
 - path: src/adaos/apps/api/server.py
   tags:
   - area:api
   - layer:backend
   - uc:device_login
-  funcs: lifespan, ping, status, say, health_live, health_ready
+  funcs: lifespan, ping, set_alias, admin_shutdown, admin_drain, admin_lifecycle,
+    admin_update_start, admin_update_cancel, admin_update_rollback, admin_update_status,
+    status, list_services, get_service_status, start_service, stop_service, restart_service,
+    get_service_issues, inject_service_issue, service_self_heal, get_service_doctor_requests,
+    request_service_doctor, get_service_doctor_reports, yjs_reload, say, io_console_print,
+    health_live, health_ready
   classes:
   - Name: SayRequest
   - Name: SayResponse
+  - Name: SetAliasRequest
+  - Name: ShutdownRequest
+  - Name: ShutdownResponse
+  - Name: DrainRequest
+  - Name: DrainResponse
+  - Name: CoreUpdateStartRequest
+  - Name: CoreUpdateCancelRequest
+  - Name: CoreUpdateRollbackRequest
+  - Name: ServiceIssueRequest
+  - Name: ServiceSelfHealRequest
+  - Name: ServiceDoctorRequest
+  - Name: YjsReloadRequest
+  - Name: SayRequestLike
 - path: src/adaos/apps/cli/commands/dev.py
   tags:
   - layer:cli
   - uc:device_login
-  funcs: root_login, root_status, root_whoami, root_logout, root_sync_hubs, root_add_hub,
-    hub_enroll, hub_init, node_register
-- path: src/adaos/apps/cli/root_ops.py
-  tags:
-  - layer:cli
-  - uc:device_login
-  funcs: load_root_cli_config, save_root_cli_config, run_preflight_checks, ensure_registration,
-    assert_safe_name, create_zip_bytes, archive_bytes_to_b64, push_skill_draft, push_scenario_draft,
-    fetch_policy, keys_dir, key_path
-  classes:
-  - Name: RootCliError
-  - Name: KeyPairPaths
-  - Name: RootCliKeys
-  - Name: RootCliConfig
-- path: src/adaos/integrations/inimatic/src/app/core/adaos/adaos-client.service.ts
+  funcs: root_init, root_login, root_logs, root_log_files, root_log_tail, dev_login,
+    skill_create, skill_push, skill_list, skill_update, skill_delete, skill_publish,
+    scenario_publish, scenario_create, scenario_push, scenario_list, scenario_update,
+    scenario_delete, scenario_run, scenario_validate, dev_skill_validate, dev_skill_lint,
+    dev_skill_prep, dev_skill_test, dev_skill_setup, dev_skill_run, dev_skill_activate,
+    dev_skill_status, dev_skill_rollback
+- path: src/adaos/integrations/adaos-client/src/app/core/adaos/adaos-client.service.ts
   tags:
   - area:api-client
   - layer:frontend
   - uc:device_login
   - uc:qr_pairing
-  types: AdaosEvent
-  interfaces: AdaosConfig
-- path: src/adaos/integrations/inimatic/src/app/public-point/public-point.component.ts
-  tags:
-  - area:ui
-  - layer:frontend
-  - uc:device_login
-  - uc:qr_pairing
+  types: AdaosEvent, AdaosEventsConnectionState
+  interfaces: AdaosConfig, SubnetRegisterData, SubnetRegisterRequest, SubnetRegisterResponse
+  exports: ROOT_BASE
 - path: src/adaos/services/root/client.py
   tags:
   - layer:services
@@ -77,8 +88,24 @@
   - Name: RootHttpError
     methds: __init__
   - Name: RootHttpClient
-    methds: __post_init__, close, owner_start, owner_poll, token_refresh, whoami,
-      owner_hubs_list, owner_hubs_add, pki_enroll, subnets_register, nodes_register
+    methds: from_settings, request, owner_start, owner_poll, token_refresh, whoami,
+      owner_hubs_list, owner_hubs_add, pki_enroll, request_bootstrap_token, register_subnet,
+      dev_logs, dev_log_files, dev_log_tail, device_authorize, device_poll, push_skill_draft,
+      delete_draft_artifact, delete_skill_draft, delete_scenario_draft, delete_registry_artifact,
+      delete_skill_registry, delete_scenario_registry, get_draft_info, get_skill_draft_info,
+      get_scenario_draft_info, get_draft_archive, get_skill_draft_archive, get_scenario_draft_archive,
+      push_scenario_draft, hub_core_update_report, hub_control_report, root_dispatch_core_update,
+      root_core_update_reports, root_control_reports, root_core_update_subnets, hub_core_update_release
+- path: src/adaos/services/root/control_lifecycle_sync.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: build_control_lifecycle_report, report_hub_control_lifecycle_state
+- path: src/adaos/services/root/core_update_sync.py
+  tags:
+  - layer:services
+  - uc:device_login
+  funcs: build_core_update_report, report_hub_core_update_state, reconcile_hub_core_update
 - path: src/adaos/services/root/keyring.py
   tags:
   - layer:services
@@ -90,11 +117,31 @@
   tags:
   - layer:services
   - uc:device_login
+  funcs: assert_safe_name, create_zip_bytes, archive_bytes_to_b64, fingerprint_for_key
   classes:
   - Name: RootAuthError
   - Name: RootAuthService
-    methds: login_owner, get_access_token, whoami, logout
+    methds: resolve_owner, login_owner, get_access_token, whoami, logout, register_subnet
   - Name: OwnerHubsService
     methds: sync, add_current_hub
   - Name: PkiService
     methds: enroll
+  - Name: RootServiceError
+  - Name: TemplateResolutionError
+    methds: __init__
+  - Name: ArtifactNotFoundError
+    methds: __init__
+  - Name: DeviceAuthorization
+  - Name: RootInitResult
+  - Name: RootLoginResult
+  - Name: ArtifactCreateResult
+  - Name: ArtifactPushResult
+  - Name: ArtifactDeleteResult
+  - Name: ArtifactUpdateResult
+  - Name: ArtifactListItem
+  - Name: ArtifactPublishResult
+  - Name: RootDeveloperService
+    methds: __init__, init, dev_logs, dev_log_files, dev_log_tail, device_authorize,
+      login, create_skill, create_scenario, push_skill, push_scenario, update_skill,
+      update_scenario, publish_skill, publish_scenario, delete_skill, delete_scenario,
+      list_skills, list_scenarios

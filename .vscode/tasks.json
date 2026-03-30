@@ -48,7 +48,7 @@
 			"label": "backend:ts-node",
 			"type": "shell",
 			"options": {
-				"cwd": "${workspaceFolder}/src/adaos/integrations/inimatic"
+				"cwd": "${workspaceFolder}/src/adaos/integrations/adaos-backend"
 			},
 			"command": "npm",
 			"args": ["run", "start:api-dev"],
@@ -79,7 +79,7 @@
 			"label": "frontend:serve",
 			"type": "shell",
 			"options": {
-				"cwd": "${workspaceFolder}/src/adaos/integrations/inimatic"
+				"cwd": "${workspaceFolder}/src/adaos/integrations/adaos-client"
 			},
 			"command": "npm",
 			"args": ["run", "start"],

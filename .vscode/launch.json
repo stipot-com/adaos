@@ -17,9 +17,9 @@
 			"name": "Backend (app.ts)",
 			"type": "node",
 			"request": "launch",
-			"cwd": "${workspaceFolder}/src/adaos/integrations/inimatic/backend",
+			"cwd": "${workspaceFolder}/src/adaos/integrations/adaos-backend/backend",
 			"runtimeArgs": ["-r", "ts-node/register/transpile-only"],
-			"program": "${workspaceFolder}/src/adaos/integrations/inimatic/backend/app.ts",
+			"program": "${workspaceFolder}/src/adaos/integrations/adaos-backend/backend/app.ts",
 			"env": {
 				"PORT": "3030",
 				"HOST": "0.0.0.0",
@@ -36,7 +36,7 @@
 			"type": "pwa-chrome",
 			"request": "launch",
 			"url": "http://localhost:4200",
-			"webRoot": "${workspaceFolder}/src/adaos/integrations/inimatic",
+			"webRoot": "${workspaceFolder}/src/adaos/integrations/adaos-client",
 			"preLaunchTask": "frontend:serve"
 		}
 	],

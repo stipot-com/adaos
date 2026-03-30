@@ -11,61 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  web:
-    name: Build Ionic frontend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src/adaos/integrations/inimatic
-    env:
-      NODE_OPTIONS: --max_old_space_size=4096
-      # глушим постинсталлы и нативщину nx, чтобы не падало на раннере
-      npm_config_ignore_scripts: "true"
-      NX_BINARY_SKIP_DOWNLOAD: "true"
-      NX_NATIVE: "false"
-      CI: "1"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.18.0" # выровнено с Dockerfile
-          cache: "npm"
-          cache-dependency-path: |
-            src/adaos/integrations/inimatic/package-lock.json
-
-      - name: Clean sticky esbuild folders (just in case)
-        run: |
-          rm -rf node_modules/esbuild \
-                 node_modules/vite/node_modules/esbuild || true
-
-      - name: Install deps (no postinstall)
-        run: |
-          npm ci || npm install
-
-      - name: Rebuild esbuild only
-        run: npm rebuild esbuild
-
-      - name: Lint (optional)
-        run: npm run lint
-        continue-on-error: true
-
-      - name: Build (production)
-        env:
-          BUILD_VERSION: ci-${{ github.run_number }}-${{ github.sha }}
-        run: npm run buildprod
-
-      - name: Upload frontend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ionic-dist
-          path: |
-            src/adaos/integrations/inimatic/dist/**
-            src/adaos/integrations/inimatic/www/**
-          if-no-files-found: warn
-
   tests:
     name: Python tests
     strategy:

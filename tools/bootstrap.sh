@@ -2,7 +2,9 @@
 # tools/bootstrap.sh — bootstrap via venv + pip (Linux/macOS)
 set -euo pipefail
 
-SUBMODULE_PATH="src/adaos/integrations/inimatic"
+CLIENT_SUBMODULE_PATH="src/adaos/integrations/adaos-client"
+BACKEND_SUBMODULE_PATH="src/adaos/integrations/adaos-backend"
+INFRA_SUBMODULE_PATH="src/adaos/integrations/infra-inimatic"
 
 VENV_DIR=".venv"
 VENV_ACTIVATE=".venv/bin/activate"
@@ -113,6 +115,23 @@ fallback_to_uv() {
   # Some installers/extractors may drop the executable bit (or mount with `noexec`),
   # so invoke explicitly via bash instead of executing the file directly.
   exec bash "./tools/bootstrap_uv.sh" "${ORIG_ARGS[@]}"
+}
+
+show_optional_modules_note() {
+  local missing=()
+  [[ -f "${CLIENT_SUBMODULE_PATH}/package.json" ]] || missing+=("${CLIENT_SUBMODULE_PATH}")
+  [[ -f "${BACKEND_SUBMODULE_PATH}/package.json" ]] || missing+=("${BACKEND_SUBMODULE_PATH}")
+  [[ -f "${INFRA_SUBMODULE_PATH}/README.md" ]] || missing+=("${INFRA_SUBMODULE_PATH}")
+
+  echo
+  echo "Optional private modules:"
+  echo "  Client:  ${CLIENT_SUBMODULE_PATH}"
+  echo "  Backend: ${BACKEND_SUBMODULE_PATH}"
+  echo "  Infra:   ${INFRA_SUBMODULE_PATH}"
+  if (( ${#missing[@]} > 0 )); then
+    echo "  Missing locally. Initialize only if you need them:"
+    echo "    git submodule update --init --recursive ${missing[*]}"
+  fi
 }
 
 print_next_steps() {
@@ -255,11 +274,11 @@ READY.
 Next steps:
   1) API:
      python -m adaos api serve --host 127.0.0.1 --port 8777 --reload
-  2) Backend (Inimatic):
-     cd src/adaos/integrations/inimatic
+  2) Backend (optional):
+     cd src/adaos/integrations/adaos-backend
      npm run start:api-dev
-  3) Frontend (Inimatic):
-     cd src/adaos/integrations/inimatic
+  3) Frontend (optional):
+     cd src/adaos/integrations/adaos-client
      npm i
      npm run start
 EOF
@@ -524,5 +543,6 @@ if [[ $owner_rc -eq 0 && -n "${owner_json:-}" ]]; then
 fi
 
 print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub" "$tg_pair_code" "$owner_url" "$owner_code"
+show_optional_modules_note
 printf "\nTo activate venv:\n  source %s\n\n" "${VENV_ACTIVATE:-.venv/bin/activate}"
 open_subshell_help

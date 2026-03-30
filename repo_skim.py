@@ -37,8 +37,8 @@ EXCLUDE_DIRS = {
     ".next",
     "coverage",
 }
-# Extra ignores for inimatic (8)
-INIMATIC_EXTRA_IGNORES = {
+# Extra ignores for adaos-client
+ADAOS_CLIENT_EXTRA_IGNORES = {
     "src/types.d.ts",
     "src/zone-flags.ts",
     "src/polyfills.ts",
@@ -186,7 +186,7 @@ RE_EXPORT_CONST_SIMPLE = re.compile(r"(?m)^\s*export\s+const\s+([A-Za-z0-9_]+)\s
 
 def skim_ts_js(p: Path) -> Dict[str, Any]:
     rel = str(p.relative_to(ROOT)).replace("\\", "/")
-    if is_inimatic_ignored(rel):
+    if is_adaos_client_ignored(rel):
         return {"__skip__": True}
 
     out: Dict[str, Any] = {}
@@ -220,10 +220,10 @@ def skim_ts_js(p: Path) -> Dict[str, Any]:
     return out
 
 
-def is_inimatic_ignored(rel: str) -> bool:
-    if "src/adaos/integrations/inimatic/" not in rel:
+def is_adaos_client_ignored(rel: str) -> bool:
+    if "src/adaos/integrations/adaos-client/" not in rel:
         return False
-    for ig in INIMATIC_EXTRA_IGNORES:
+    for ig in ADAOS_CLIENT_EXTRA_IGNORES:
         if rel.endswith(ig):
             return True
     return False

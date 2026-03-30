@@ -2,7 +2,9 @@
 # tools/bootstrap_uv.sh — bootstrap via uv (Linux/macOS)
 set -euo pipefail
 
-SUBMODULE_PATH="src/adaos/integrations/inimatic"
+CLIENT_SUBMODULE_PATH="src/adaos/integrations/adaos-client"
+BACKEND_SUBMODULE_PATH="src/adaos/integrations/adaos-backend"
+INFRA_SUBMODULE_PATH="src/adaos/integrations/infra-inimatic"
 
 JOIN_CODE=""
 ROLE=""
@@ -97,6 +99,23 @@ resolve_adaos_base_dir() {
     return 0
   fi
   printf '%s' "$HOME/.adaos"
+}
+
+show_optional_modules_note() {
+  local missing=()
+  [[ -f "${CLIENT_SUBMODULE_PATH}/package.json" ]] || missing+=("${CLIENT_SUBMODULE_PATH}")
+  [[ -f "${BACKEND_SUBMODULE_PATH}/package.json" ]] || missing+=("${BACKEND_SUBMODULE_PATH}")
+  [[ -f "${INFRA_SUBMODULE_PATH}/README.md" ]] || missing+=("${INFRA_SUBMODULE_PATH}")
+
+  echo
+  echo "Optional private modules:"
+  echo "  Client:  ${CLIENT_SUBMODULE_PATH}"
+  echo "  Backend: ${BACKEND_SUBMODULE_PATH}"
+  echo "  Infra:   ${INFRA_SUBMODULE_PATH}"
+  if (( ${#missing[@]} > 0 )); then
+    echo "  Missing locally. Initialize only if you need them:"
+    echo "    git submodule update --init --recursive ${missing[*]}"
+  fi
 }
 
 print_next_steps() {
@@ -416,3 +435,4 @@ if [[ $owner_rc -eq 0 && -n "${owner_json:-}" ]]; then
 fi
 
 print_next_steps "$SERVE_HOST" "$SERVE_PORT" "$ROLE" "$deep_link" "$connected_to_hub" "$tg_pair_code" "$owner_url" "$owner_code"
+show_optional_modules_note

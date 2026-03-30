@@ -13,8 +13,8 @@ ignore:
     - "tests/**"
     - ".adaos/**"
     - "examples/**"
-    - "src/adaos/integrations/inimatic/src/**/*.spec.ts"
-    - "src/adaos/integrations/inimatic/src/environments/**"
+    - "src/adaos/integrations/adaos-client/src/**/*.spec.ts"
+    - "src/adaos/integrations/adaos-client/src/environments/**"
     - "src/adaos/services/**/__init__.py"
     - "src/adaos/**/__init__.py"
   names_regex:

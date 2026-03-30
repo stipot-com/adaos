@@ -1,0 +1,12 @@
+[submodule "src/adaos/integrations/adaos-client"]
+	path = src/adaos/integrations/adaos-client
+	url = https://github.com/stipot-com/adaos-client.git
+	branch = main
+[submodule "src/adaos/integrations/adaos-backend"]
+	path = src/adaos/integrations/adaos-backend
+	url = https://github.com/stipot-com/adaos-backend.git
+	branch = main
+[submodule "src/adaos/integrations/infra-inimatic"]
+	path = src/adaos/integrations/infra-inimatic
+	url = https://github.com/stipot-com/infra-inimatic.git
+	branch = main

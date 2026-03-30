@@ -2,5 +2,5 @@ include:
   - "src/adaos/apps/api/**"
   - "src/adaos/adapters/db/**"
   - "src/adaos/services/root/**"
-  - "src/adaos/integrations/inimatic/src/app/**"
-  - "src/adaos/integrations/inimatic/backend/**"
+  - "src/adaos/integrations/adaos-client/src/app/**"
+  - "src/adaos/integrations/adaos-backend/backend/**"

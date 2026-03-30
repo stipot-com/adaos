@@ -5,9 +5,14 @@
 ```bash
 git clone -b rev2026 https://github.com/stipot/adaos.git
 cd adaos
-git submodule update --init --recursive
 
-# установка в режиме разработки (опционально)
+# Опционально: приватные модули для web/backend/infra разработки
+git submodule update --init --recursive \
+  src/adaos/integrations/adaos-client \
+  src/adaos/integrations/adaos-backend \
+  src/adaos/integrations/infra-inimatic
+
+# установка в режиме разработки
 pip install -e ".[dev]"
 
 # mac/linux:
@@ -15,15 +20,22 @@ bash tools/bootstrap.sh
 # windows (PowerShell):
 ./tools/bootstrap.ps1
 . .\.venv\Scripts\Activate.ps1
-````
+```
+
+Core bootstrap не зависит от приватных submodule. Они нужны только если вы локально разрабатываете клиент, backend или infra.
 
 ## Запуск
 
 ```bash
-# API и Web
-make dev        # запускает API и Inimatic
+# API
+make api
 # API: http://127.0.0.1:8777
-# Web (Inimatic): http://127.0.0.1:810
+
+# Backend (опционально, нужен submodule adaos-backend)
+make backend
+
+# Frontend (опционально, нужен submodule adaos-client)
+make web
 ```
 
 ## CLI

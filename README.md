@@ -10,6 +10,12 @@
 git clone -b rev2026 https://github.com/stipot-com/adaos.git
 cd adaos
 
+# Optional: private submodules for client/backend/infra development
+git submodule update --init --recursive \
+  src/adaos/integrations/adaos-client \
+  src/adaos/integrations/adaos-backend \
+  src/adaos/integrations/infra-inimatic
+
 # 1. mac/linux:
 sudo apt-get install -y python3.11-venv
 bash tools/bootstrap.sh
@@ -32,6 +38,9 @@ adaos --help
 uv lock; uv sync
 
 ```
+
+Core AdaOS bootstrap does not require the private submodules above.
+Initialize them only if you need to work on the web client, backend service, or deployment repo locally.
 
 ## Установка одной командой (init скрипты)
 
