@@ -132,9 +132,11 @@
 				done: false,
 				failed: false,
 				timer: null,
+				pollHandle: null,
 				lines: [],
 				lastStatus: '',
 				lastDetail: '',
+				lastUiSnapshot: '',
 				removeOverlay: function () {
 					var node = document.getElementById(this.overlayId);
 					if (node && node.parentNode) {
@@ -144,6 +146,7 @@
 				dismiss: function () {
 					this.done = true;
 					this.stopSlowTimer();
+					this.stopUiPoll();
 					this.removeOverlay();
 				},
 				copyLog: function () {
@@ -235,20 +238,29 @@
 									'<button id="' + this.closeId + '" style="appearance:none;border:1px solid ' + border + ';background:transparent;color:' + text + ';border-radius:10px;padding:6px 10px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;cursor:pointer;">Close Overlay</button>' +
 								'</div>'
 								: '') +
-							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;margin:0;color:' + detail + ';font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace"></pre>' +
+							'<pre id="' + this.detailId + '" style="white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:min(52vh,560px);margin:0;color:' + detail + ';font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;user-select:text;-webkit-user-select:text"></pre>' +
 						'</div>';
 					root.appendChild(overlay);
 					this.bindOverlayActions();
 				},
 				note: function (message) {
+					var line;
 					if (!message) return;
-					this.lines.push(String(message));
-					if (this.lines.length > 12) {
-						this.lines.splice(0, this.lines.length - 12);
+					line = String(message);
+					if (this.lines.length && this.lines[this.lines.length - 1] === line) return;
+					this.lines.push(line);
+					if (this.lines.length > 24) {
+						this.lines.splice(0, this.lines.length - 24);
 					}
 					if (this.failed) {
 						this.update(this.lastStatus || 'App failed to start', this.lastDetail || '', true);
 					}
+				},
+				noteUiState: function () {
+					var snapshot = this.describeUiHydration();
+					if (!snapshot || snapshot === this.lastUiSnapshot) return;
+					this.lastUiSnapshot = snapshot;
+					this.note(snapshot);
 				},
 				renderDetail: function (detail) {
 					var out = [];
@@ -282,12 +294,19 @@
 						this.timer = null;
 					}
 				},
+				stopUiPoll: function () {
+					if (this.pollHandle) {
+						window.clearInterval(this.pollHandle);
+						this.pollHandle = null;
+					}
+				},
 				hide: function () {
 					this.done = true;
 					this.stopSlowTimer();
+					this.stopUiPoll();
 					if (this.debugEnabled) {
 						this.update(
-							this.failed ? (this.lastStatus || 'App failed to start') : 'Debug overlay pinned',
+							this.failed ? (this.lastStatus || 'App failed to start') : 'UI ready (debug pinned)',
 							this.failed
 								? (this.lastDetail || '')
 								: 'The app UI is ready. Overlay stays open because boot_debug=1. Use Copy Log or Close Overlay.',
@@ -325,6 +344,7 @@
 				fail: function (status, detail) {
 					this.failed = true;
 					this.stopSlowTimer();
+					this.stopUiPoll();
 					this.update(status || 'App failed to start', detail || '', true);
 				},
 				describeTarget: function (target) {
@@ -409,14 +429,14 @@
 					}
 				},
 				describeUiHydration: function () {
-					var htmlHydrated = 'no';
 					var htmlIonCe = 'no';
+					var ceReady = 'no';
 					try {
-						htmlHydrated = document.documentElement.classList.contains('hydrated') ? 'yes' : 'no';
 						htmlIonCe = document.documentElement.classList.contains('ion-ce') ? 'yes' : 'no';
+						ceReady = this.isUiReady() ? 'yes' : 'no';
 					} catch (err) {}
-					return 'html.hydrated=' + htmlHydrated +
-						', html.ion-ce=' + htmlIonCe +
+					return 'html.ion-ce=' + htmlIonCe +
+						', ionic.ce.ready=' + ceReady +
 						', ' + this.describeElementUpgrade('ion-app') +
 						', ' + this.describeElementUpgrade('ion-router-outlet') +
 						', ' + this.describeElementUpgrade('ion-content') +
@@ -426,23 +446,24 @@
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
 				boot.note('DOMContentLoaded');
-				boot.note(boot.describeUiHydration());
+				boot.noteUiState();
 				boot.tryUpgradeUi('DOMContentLoaded');
 				boot.startSlowTimer();
 			});
 			window.addEventListener('load', function () {
 				boot.note('window.load');
-				boot.note(boot.describeUiHydration());
+				boot.noteUiState();
 				boot.tryUpgradeUi('window.load');
 			});
-			window.setInterval(function () {
+			boot.pollHandle = window.setInterval(function () {
 				try {
 					if (boot.isUiReady() && !hydrationLogged) {
 						hydrationLogged = true;
 						boot.note('ionic.ce.ready=yes');
-						boot.note(boot.describeUiHydration());
+						boot.noteUiState();
+						boot.stopUiPoll();
 					} else if (!hydrationLogged) {
-						boot.note(boot.describeUiHydration());
+						boot.noteUiState();
 						boot.tryUpgradeUi('poll');
 					}
 				} catch (err) {}

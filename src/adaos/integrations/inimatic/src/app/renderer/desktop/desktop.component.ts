@@ -70,6 +70,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	startupState = 'Starting app...'
 	private startupTimer?: ReturnType<typeof setTimeout>
 	private startupStartedAt = 0
+	private bootUiReadyReported = false
 	constructor(
 		private y: YDocService,
 		private modal: ModalController,
@@ -80,6 +81,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 	) { }
 
 	async ngOnInit() {
+		this.bootUiReadyReported = false
 		this.publishBootState('desktop: ngOnInit')
 		this.startStartupPhase('Preparing renderer')
 		addIcons({ menuOutline, closeOutline, homeOutline, ellipsisHorizontalOutline })
@@ -232,10 +234,14 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 						: typeof document !== 'undefined' &&
 							!!document.querySelector('ion-app, ion-content')
 				if (uiReady) {
-					boot?.note?.('desktop: page schema ready')
-					boot?.note?.('desktop: ionic ce ready')
-					boot?.hide?.()
+					if (!this.bootUiReadyReported) {
+						this.bootUiReadyReported = true
+						boot?.note?.('desktop: page schema ready')
+						boot?.note?.('desktop: ionic ce ready')
+						boot?.hide?.()
+					}
 				} else {
+					this.bootUiReadyReported = false
 					boot?.note?.('desktop: page schema ready, waiting for ionic ce readiness')
 					recover(
 						'Finalizing UI...',
@@ -244,6 +250,7 @@ export class DesktopRendererComponent implements OnInit, OnDestroy {
 				}
 				return
 			}
+			this.bootUiReadyReported = false
 			if (this.initError) {
 				boot?.fail?.('Desktop init failed', this.initError)
 				return
