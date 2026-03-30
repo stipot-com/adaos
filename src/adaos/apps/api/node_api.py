@@ -61,6 +61,37 @@ def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
 
+def _publish_yjs_control_event(
+    *,
+    action: str,
+    webspace_id: str,
+    result: dict[str, Any],
+    scenario_id: str | None = None,
+) -> None:
+    payload = {
+        "action": str(action or "").strip(),
+        "webspace_id": str(webspace_id or "").strip() or "default",
+        "scenario_id": str(scenario_id or result.get("scenario_id") or "").strip() or None,
+        "ok": bool(result.get("ok")),
+        "accepted": bool(result.get("accepted")),
+        "source_of_truth": str(result.get("source_of_truth") or "").strip() or None,
+        "home_scenario": str(result.get("home_scenario") or "").strip() or None,
+        "error": str(result.get("error") or "").strip() or None,
+    }
+    event_type = "node.yjs.control.completed" if payload["ok"] and payload["accepted"] else "node.yjs.control.failed"
+    try:
+        get_ctx().bus.publish(
+            Event(
+                type=event_type,
+                payload=payload,
+                source="node.api",
+                ts=time.time(),
+            )
+        )
+    except Exception:
+        _log.debug("failed to publish %s for action=%s webspace=%s", event_type, action, webspace_id, exc_info=True)
+
+
 async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
     try:
@@ -809,7 +840,7 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
         }
     store = get_ystore_for_webspace(str(webspace_id or "default") or "default")
     await store.backup_to_disk()
-    return {
+    result = {
         "ok": True,
         "accepted": True,
         "webspace_id": str(webspace_id or "default") or "default",
@@ -818,6 +849,12 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
             webspace_id=str(webspace_id or "default") or "default",
         ),
     }
+    _publish_yjs_control_event(
+        action="backup",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+    )
+    return result
 
 
 @router.post("/yjs/webspaces/{webspace_id}/reload", dependencies=[Depends(require_token)])
@@ -838,6 +875,12 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+    )
+    _publish_yjs_control_event(
+        action="scenario",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+        scenario_id=scenario_id,
     )
     return result
 
@@ -1015,6 +1058,11 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
     )
+    _publish_yjs_control_event(
+        action="go_home",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+    )
     return result
 
 
@@ -1035,6 +1083,12 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+    )
+    _publish_yjs_control_event(
+        action="set_home",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+        scenario_id=scenario_id,
     )
     return result
 
@@ -1063,6 +1117,12 @@ async def node_yjs_ensure_dev(payload: WebspaceYjsActionRequest) -> dict[str, An
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(result.get("webspace_id") or "default") or "default",
+    )
+    _publish_yjs_control_event(
+        action="ensure_dev",
+        webspace_id=str(result.get("webspace_id") or "default") or "default",
+        result=result,
+        scenario_id=scenario_id,
     )
     return result
 
@@ -1107,6 +1167,11 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
     )
+    _publish_yjs_control_event(
+        action="set_home_current",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+    )
     return result
 
 
@@ -1124,6 +1189,12 @@ async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+    )
+    _publish_yjs_control_event(
+        action="reload",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+        scenario_id=str(payload.scenario_id or "").strip() or None,
     )
     return result
 
@@ -1147,6 +1218,12 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) ->
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
     )
+    _publish_yjs_control_event(
+        action="reset",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
+        scenario_id=str(payload.scenario_id or "").strip() or None,
+    )
     return result
 
 
@@ -1164,6 +1241,11 @@ async def node_yjs_restore(webspace_id: str) -> dict[str, Any]:
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+    )
+    _publish_yjs_control_event(
+        action="restore",
+        webspace_id=str(webspace_id or "default") or "default",
+        result=result,
     )
     return result
 

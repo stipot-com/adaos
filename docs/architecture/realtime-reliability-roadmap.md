@@ -282,6 +282,8 @@ Make Yjs transport-independent without building a second distributed system arou
 - Yjs runtime now computes immediate recovery guidance (`backup first` vs direct `reload`) from live webspace state and surfaces the recommended next action across CLI and Infra State
 - selected webspace manifest/projection state is now surfaced alongside Yjs runtime, including home scenario, source mode, rebuild status, and `go-home` guidance when projection drifts from home
 - node API / CLI and Infra State now expose `set-home-current` so operators can explicitly adopt the current projected scenario as the new webspace home without typing a scenario id
+- direct node-scoped Yjs/webspace control paths now publish canonical `node.yjs.control.*` events, and Infra State refreshes from those events instead of relying only on the original desktop bus commands
+- Yjs recovery/control scope is now explicit as hub-local-only in operator surfaces; remote member tabs show that sync control is not applicable there
 
 ## Phase 6: Media plane
 
