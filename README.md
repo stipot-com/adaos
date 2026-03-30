@@ -104,6 +104,9 @@ adaos hub root watch
 adaos hub root reconnect
 adaos hub root reconnect --transport ws|tcp
 
+# Boot debug 
+# https://app.inimatic.com/?boot_debug=1
+
 ```
 
 ## Add a member node (phase 1)

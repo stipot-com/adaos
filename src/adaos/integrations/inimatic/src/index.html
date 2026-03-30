@@ -295,12 +295,44 @@
 						bits.push(String(err.stack));
 					}
 					return bits.join('\n') || 'unknown error';
+				},
+				isUiHydrated: function () {
+					try {
+						return !!document.querySelector('ion-app.hydrated, ion-router-outlet.hydrated, ion-content.hydrated, ion-header.hydrated');
+					} catch (err) {
+						return false;
+					}
+				},
+				describeUiHydration: function () {
+					var htmlHydrated = 'no';
+					var htmlIonCe = 'no';
+					var ionApp = 'missing';
+					var outlet = 'missing';
+					var content = 'missing';
+					var ionAppNode;
+					var outletNode;
+					var contentNode;
+					try {
+						htmlHydrated = document.documentElement.classList.contains('hydrated') ? 'yes' : 'no';
+						htmlIonCe = document.documentElement.classList.contains('ion-ce') ? 'yes' : 'no';
+						ionAppNode = document.querySelector('ion-app');
+						outletNode = document.querySelector('ion-router-outlet');
+						contentNode = document.querySelector('ion-content');
+						if (ionAppNode) ionApp = ionAppNode.classList.contains('hydrated') ? 'yes' : 'no';
+						if (outletNode) outlet = outletNode.classList.contains('hydrated') ? 'yes' : 'no';
+						if (contentNode) content = contentNode.classList.contains('hydrated') ? 'yes' : 'no';
+					} catch (err) {}
+					return 'html.hydrated=' + htmlHydrated +
+						', html.ion-ce=' + htmlIonCe +
+						', ion-app.hydrated=' + ionApp +
+						', ion-router-outlet.hydrated=' + outlet +
+						', ion-content.hydrated=' + content;
 				}
 			};
 			window.__INIMATIC_BOOT__ = boot;
 			document.addEventListener('DOMContentLoaded', function () {
 				boot.note('DOMContentLoaded');
-				boot.note('html.hydrated=' + (document.documentElement.classList.contains('hydrated') ? 'yes' : 'no'));
+				boot.note(boot.describeUiHydration());
 				boot.startSlowTimer();
 			});
 			window.addEventListener('load', function () {
@@ -308,9 +340,10 @@
 			});
 			window.setInterval(function () {
 				try {
-					if (document.documentElement.classList.contains('hydrated') && !hydrationLogged) {
+					if (boot.isUiHydrated() && !hydrationLogged) {
 						hydrationLogged = true;
-						boot.note('html.hydrated=yes');
+						boot.note('ionic.hydrated=yes');
+						boot.note(boot.describeUiHydration());
 					}
 				} catch (err) {}
 			}, 3000);
