@@ -1246,32 +1246,6 @@ async def get_service_doctor_reports(name: str) -> dict:
     return {"ok": True, "reports": reports}
 
 
-class YjsReloadRequest(BaseModel):
-    webspace_id: str | None = Field(default=None, description="Target webspace id; defaults to 'default'")
-
-
-@app.post("/api/yjs/reload", dependencies=[Depends(require_token)])
-async def yjs_reload(body: YjsReloadRequest) -> dict:
-    """
-    Legacy endpoint retained only to point operators at the newer node-scoped
-    per-webspace control surface.
-    """
-    webspace_id = str(body.webspace_id or "default")
-    raise HTTPException(
-        status_code=410,
-        detail={
-            "error": "legacy_yjs_reload_endpoint_disabled",
-            "message": "Use the node-scoped per-webspace Yjs controls instead.",
-            "reload_path": f"/api/node/yjs/webspaces/{webspace_id}/reload",
-            "reset_path": f"/api/node/yjs/webspaces/{webspace_id}/reset",
-            "restore_path": f"/api/node/yjs/webspaces/{webspace_id}/restore",
-            "scenario_path": f"/api/node/yjs/webspaces/{webspace_id}/scenario",
-            "go_home_path": f"/api/node/yjs/webspaces/{webspace_id}/go-home",
-            "set_home_path": f"/api/node/yjs/webspaces/{webspace_id}/set-home",
-        },
-    )
-
-
 # TODO deprecated use bus instead. No external interface
 @app.post("/api/say", response_model=SayResponse, dependencies=[Depends(require_token)])
 async def say(payload: SayRequest):

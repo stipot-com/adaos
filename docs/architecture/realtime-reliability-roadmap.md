@@ -277,7 +277,7 @@ Make Yjs transport-independent without building a second distributed system arou
 - Infra State now surfaces Yjs runtime state and local Yjs backup/reload/reset operator actions
 - node API / CLI and Infra State can now focus Yjs diagnostics and local actions on a selected webspace instead of assuming `default`
 - hub-side node API / CLI and Infra State now expose explicit per-webspace Yjs restore-from-snapshot recovery when a disk snapshot exists
-- legacy `/api/yjs/reload` is now excluded from operator flow; node-scoped per-webspace Yjs controls are the canonical override path
+- legacy `/api/yjs/reload` has been removed entirely; node-scoped per-webspace Yjs controls are the only supported override path
 - Yjs sync runtime now carries an explicit operator recovery playbook (`reload` vs `restore` vs `reset`) and surfaces that policy consistently in CLI and Infra State
 - Yjs runtime now computes immediate recovery guidance (`backup first` vs direct `reload`) from live webspace state and surfaces the recommended next action across CLI and Infra State
 - selected webspace manifest/projection state is now surfaced alongside Yjs runtime, including home scenario, source mode, rebuild status, and `go-home` guidance when projection drifts from home
