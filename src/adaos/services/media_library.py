@@ -15,7 +15,8 @@ MEDIA_STORAGE_SUBPATH = "data/files"
 ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES = 2 * 1024 * 1024
 MEDIA_RUNTIME_SCOPE = "hub_local_media_debug"
 ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
-ROOT_MEDIA_RELAY_CHUNK_BYTES = 256 * 1024
+# Keep chunks below the default 1 MiB NATS payload limit after base64/json overhead.
+ROOT_MEDIA_RELAY_CHUNK_BYTES = 512 * 1024
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".mp4",
     ".webm",

@@ -289,11 +289,11 @@ Make Yjs transport-independent without building a second distributed system arou
 
 ### Status
 
-In progress with explicit media-plane policy, bounded relay authority, and live operator validation.
+In progress with explicit media-plane policy, bounded relay authority, relay throughput tuning, and live operator validation.
 Local media upload/playback MVP exists as an intentionally isolated direct-local HTTP path, reliability exposes media runtime separately from control/sync readiness, and browser semantic channels classify file media as `direct_local_http` vs `root_routed_http_relay`.
-There is also a dedicated bounded root media relay path (`/hubs/<id>/media/*`) for upload and playback, separate from the generic buffered `/hubs/<id>/api/*` route proxy.
+There is also a dedicated bounded root media relay path (`/hubs/<id>/media/*`) for upload and playback, separate from the generic buffered `/hubs/<id>/api/*` route proxy, and that relay now uses larger bounded chunks plus unbuffered nginx proxying for materially better large-file throughput.
 WebRTC audio/video tracks are now part of the target Phase 6 scope as a direct live-validation path: browser camera/microphone tracks are negotiated on the same peer and looped back through the hub for real end-to-end operator testing.
-This is still not yet a general multi-party media plane: the current A/V scope is hub loopback validation plus bounded file-media authority, not a full broadcast/session mesh.
+Phase 6 is complete for the current scope: bounded file-media authority and direct hub loopback validation are in place. This is still not a general multi-party media plane: the current A/V scope is hub loopback validation plus bounded file-media authority, not a full broadcast/session mesh.
 
 ### Focus
 
