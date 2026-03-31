@@ -279,14 +279,14 @@ async def handle_rtc_offer(
     """
     existing = _peers.get(device_id)
     if existing:
-        # Try re-offer on existing peer (fast path for ICE restart).
-        existing._send_ice = send_ice_cb
-        existing.webspace_id = webspace_id
-        try:
-            return await existing.handle_offer(offer_sdp, offer_type)
-        except Exception:
-            _log.info("re-offer failed for device=%s, creating new peer", device_id)
-            await existing.close()
+        # Favor a clean peer replacement on every fresh offer.
+        #
+        # This keeps operator-grade media loopback predictable and avoids
+        # accumulating stale transceivers / loopback senders on the hub side,
+        # which can surface as invalid SDP answers (for example duplicate mids)
+        # after repeated start/stop or renegotiation cycles.
+        _log.info("replacing existing peer for device=%s on new offer", device_id)
+        await existing.close()
 
     peer = HubPeer(device_id, webspace_id, send_ice_cb)
     _peers[device_id] = peer

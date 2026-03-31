@@ -10,7 +10,8 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 
 
-MEDIA_SKILL_NAME = "mediaserver"
+MEDIA_SKILL_NAME = "infrastate_skill"
+MEDIA_STORAGE_SUBPATH = "data/files"
 ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES = 2 * 1024 * 1024
 MEDIA_RUNTIME_SCOPE = "hub_local_media_debug"
 ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -46,7 +47,7 @@ def media_runtime_env() -> SkillRuntimeEnvironment:
 
 
 def media_video_dir() -> Path:
-    path = media_runtime_env().files_dir() / "video"
+    path = media_runtime_env().files_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -99,7 +100,7 @@ def media_capabilities() -> dict[str, Any]:
     return {
         "storage": {
             "dir": str(media_video_dir()),
-            "subpath": "data/files/video",
+            "subpath": MEDIA_STORAGE_SUBPATH,
         },
         "upload": {
             "direct_local": {
@@ -227,7 +228,7 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
         "live_webrtc": live_webrtc if isinstance(live_webrtc, dict) else {},
         "storage": {
             "dir": str(media_video_dir()),
-            "subpath": "data/files/video",
+            "subpath": MEDIA_STORAGE_SUBPATH,
         },
         "notes": [
             "Direct local hub API remains the preferred path for real upload and playback validation.",
