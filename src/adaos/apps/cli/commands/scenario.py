@@ -31,6 +31,19 @@ from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context,
 app = typer.Typer(help=_("cli.help_scenario"))
 
 
+def _workspace_child_names(root: Path) -> list[str]:
+    if not root.exists():
+        return []
+    names: list[str] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")):
+            continue
+        names.append(child.name)
+    return sorted(set(names))
+
+
 def _run_safe(func):
     """Wrap Typer callbacks to surface tracebacks when ADAOS_CLI_DEBUG=1."""
 
@@ -183,6 +196,8 @@ def status(
                     continue
                 names.append(str(n))
             names = sorted(set(names))
+            if not names:
+                names = _workspace_child_names(Path(scenarios_root))
 
     rows_by_name = {}
     try:
@@ -309,6 +324,10 @@ def status(
 
     if json_output:
         typer.echo(json.dumps({"scenarios": results}, ensure_ascii=False, indent=2))
+        return
+
+    if not results:
+        typer.echo("No installed scenarios.")
         return
 
     if name:

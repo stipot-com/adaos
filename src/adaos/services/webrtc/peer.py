@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 
 try:
     from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
+    from aiortc.contrib.media import MediaRelay
     from aiortc.sdp import candidate_from_sdp
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
@@ -31,6 +32,7 @@ except ImportError as exc:  # pragma: no cover
 from adaos.services.webrtc.yjs_adapter import DataChannelYjsAdapter
 
 _log = logging.getLogger("adaos.webrtc.peer")
+_media_relay = MediaRelay()
 
 STUN_CONFIG = RTCConfiguration(
     iceServers=[
@@ -62,6 +64,8 @@ class HubPeer:
         self._local_desc_task: asyncio.Task[None] | None = None
         self._events_channel: Any | None = None
         self._yjs_channel: Any | None = None
+        self._incoming_tracks: dict[str, dict[str, Any]] = {}
+        self._loopback_tracks: dict[str, dict[str, Any]] = {}
 
         # Browser creates the DataChannels – hub receives them here.
         @self.pc.on("datachannel")
@@ -89,6 +93,55 @@ class HubPeer:
             _log.info("peer %s connectionState=%s", self.device_id, self.pc.connectionState)
             if self.pc.connectionState in ("failed", "closed"):
                 asyncio.ensure_future(self.close())
+
+        @self.pc.on("track")
+        def on_track(track) -> None:  # type: ignore[no-untyped-def]
+            track_id = str(getattr(track, "id", "") or f"{track.kind}:{len(self._incoming_tracks) + 1}")
+            now = time.time()
+            self._incoming_tracks[track_id] = {
+                "id": track_id,
+                "kind": str(getattr(track, "kind", "") or "unknown"),
+                "ready_state": str(getattr(track, "readyState", "") or "live"),
+                "received_at": now,
+                "ended_at": None,
+                "loopback": False,
+            }
+            _log.info(
+                "media track received: kind=%s id=%s device=%s",
+                getattr(track, "kind", "unknown"),
+                track_id,
+                self.device_id,
+            )
+            try:
+                loopback_track = _media_relay.subscribe(track)
+                sender = self.pc.addTrack(loopback_track)
+                self._loopback_tracks[track_id] = {
+                    "id": track_id,
+                    "kind": str(getattr(track, "kind", "") or "unknown"),
+                    "added_at": now,
+                    "sender_kind": str(getattr(getattr(sender, "track", None), "kind", "") or getattr(track, "kind", "unknown")),
+                }
+                self._incoming_tracks[track_id]["loopback"] = True
+            except Exception:
+                _log.warning(
+                    "failed to attach loopback media track device=%s id=%s",
+                    self.device_id,
+                    track_id,
+                    exc_info=True,
+                )
+
+            @track.on("ended")
+            async def on_track_ended() -> None:  # type: ignore[no-untyped-def]
+                rec = self._incoming_tracks.get(track_id)
+                if rec is not None:
+                    rec["ready_state"] = "ended"
+                    rec["ended_at"] = time.time()
+                _log.info(
+                    "media track ended: kind=%s id=%s device=%s",
+                    getattr(track, "kind", "unknown"),
+                    track_id,
+                    self.device_id,
+                )
 
     # -- DataChannel handlers -------------------------------------------------
 
@@ -195,6 +248,8 @@ class HubPeer:
                 self._local_desc_task.cancel()
         except Exception:
             pass
+        self._incoming_tracks.clear()
+        self._loopback_tracks.clear()
         self._events_channel = None
         self._yjs_channel = None
         try:
@@ -253,6 +308,10 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     connection_states: dict[str, int] = {}
     open_events_channels = 0
     open_yjs_channels = 0
+    incoming_audio_tracks = 0
+    incoming_video_tracks = 0
+    loopback_audio_tracks = 0
+    loopback_video_tracks = 0
     for device_id, peer in list(_peers.items()):
         try:
             state = str(getattr(peer.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
@@ -272,6 +331,36 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
             open_events_channels += 1
         if yjs_state == "open":
             open_yjs_channels += 1
+        incoming = peer._incoming_tracks if isinstance(getattr(peer, "_incoming_tracks", None), dict) else {}
+        loopback = peer._loopback_tracks if isinstance(getattr(peer, "_loopback_tracks", None), dict) else {}
+        peer_incoming_audio = sum(
+            1
+            for item in incoming.values()
+            if isinstance(item, dict)
+            and str(item.get("kind") or "") == "audio"
+            and str(item.get("ready_state") or "live") != "ended"
+        )
+        peer_incoming_video = sum(
+            1
+            for item in incoming.values()
+            if isinstance(item, dict)
+            and str(item.get("kind") or "") == "video"
+            and str(item.get("ready_state") or "live") != "ended"
+        )
+        peer_loopback_audio = sum(
+            1
+            for item in loopback.values()
+            if isinstance(item, dict) and str(item.get("kind") or "") == "audio"
+        )
+        peer_loopback_video = sum(
+            1
+            for item in loopback.values()
+            if isinstance(item, dict) and str(item.get("kind") or "") == "video"
+        )
+        incoming_audio_tracks += peer_incoming_audio
+        incoming_video_tracks += peer_incoming_video
+        loopback_audio_tracks += peer_loopback_audio
+        loopback_video_tracks += peer_loopback_video
         peers.append(
             {
                 "device_id": device_id,
@@ -279,6 +368,11 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
                 "connection_state": state,
                 "events_channel_state": events_state,
                 "yjs_channel_state": yjs_state,
+                "incoming_audio_tracks": peer_incoming_audio,
+                "incoming_video_tracks": peer_incoming_video,
+                "loopback_audio_tracks": peer_loopback_audio,
+                "loopback_video_tracks": peer_loopback_video,
+                "media_track_total": peer_incoming_audio + peer_incoming_video,
             }
         )
     return {
@@ -287,6 +381,10 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
         "connecting_peers": int(connection_states.get("connecting") or 0),
         "open_events_channels": open_events_channels,
         "open_yjs_channels": open_yjs_channels,
+        "incoming_audio_tracks": incoming_audio_tracks,
+        "incoming_video_tracks": incoming_video_tracks,
+        "loopback_audio_tracks": loopback_audio_tracks,
+        "loopback_video_tracks": loopback_video_tracks,
         "connection_states": connection_states,
         "peers": peers,
         "updated_at": now,

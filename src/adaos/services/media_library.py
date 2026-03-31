@@ -88,6 +88,14 @@ def guess_media_type(filename: str) -> str:
 
 
 def media_capabilities() -> dict[str, Any]:
+    try:
+        from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+        live_webrtc = webrtc_peer_snapshot()
+        webrtc_supported = True
+    except Exception:
+        live_webrtc = {}
+        webrtc_supported = False
     return {
         "storage": {
             "dir": str(media_video_dir()),
@@ -121,13 +129,25 @@ def media_capabilities() -> dict[str, Any]:
             },
         },
         "broadcast": {
-            "ready": False,
-            "reason": "webrtc_media_tracks_not_implemented",
-            "details": "Current browser/hub realtime stack exposes only events and yjs data channels, not audio/video tracks.",
+            "ready": bool(webrtc_supported),
+            "mode": "webrtc_av_loopback" if webrtc_supported else "unavailable",
+            "reason": "hub_webrtc_peer_loopback" if webrtc_supported else "webrtc_runtime_unavailable",
+            "details": (
+                "Browser camera/microphone tracks can be published to the hub and looped back for end-to-end media validation."
+                if webrtc_supported
+                else "Current runtime cannot load aiortc media support."
+            ),
+            "peer_total": int(live_webrtc.get("peer_total") or 0),
+            "connected_peers": int(live_webrtc.get("connected_peers") or 0),
+            "incoming_audio_tracks": int(live_webrtc.get("incoming_audio_tracks") or 0),
+            "incoming_video_tracks": int(live_webrtc.get("incoming_video_tracks") or 0),
+            "loopback_audio_tracks": int(live_webrtc.get("loopback_audio_tracks") or 0),
+            "loopback_video_tracks": int(live_webrtc.get("loopback_video_tracks") or 0),
         },
         "notes": [
             "Direct local hub API remains the preferred path for operator-grade upload and playback validation.",
             "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered JSON /api proxy.",
+            "WebRTC audio/video loopback is available for live end-to-end media channel validation.",
         ],
     }
 
@@ -135,6 +155,14 @@ def media_capabilities() -> dict[str, Any]:
 def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     items = list(items) if isinstance(items, list) else list_media_files()
     total_bytes = sum(int(item.get("size_bytes") or 0) for item in items)
+    try:
+        from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+        live_webrtc = webrtc_peer_snapshot()
+        webrtc_supported = True
+    except Exception:
+        live_webrtc = {}
+        webrtc_supported = False
     return {
         "available": True,
         "scope": MEDIA_RUNTIME_SCOPE,
@@ -142,11 +170,15 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
             "storage": "local_hub_api",
             "playback": "local_hub_api",
             "relay": "root_media_relay",
-            "broadcast": "not_implemented",
+            "broadcast": "hub_webrtc_peer_loopback" if webrtc_supported else "unavailable",
         },
         "assessment": {
-            "state": "bounded_relay_available",
-            "reason": "media plane supports direct-local authority and bounded root relay authority on a dedicated path",
+            "state": "relay_and_webrtc_media_available" if webrtc_supported else "bounded_relay_available",
+            "reason": (
+                "media plane supports direct-local authority, bounded root relay authority, and live WebRTC audio/video loopback"
+                if webrtc_supported
+                else "media plane supports direct-local authority and bounded root relay authority on a dedicated path"
+            ),
         },
         "paths": {
             "direct_local_http": {
@@ -167,19 +199,32 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
                 "chunk_bytes_hint": ROOT_MEDIA_RELAY_CHUNK_BYTES,
             },
             "webrtc_tracks": {
-                "ready": False,
+                "ready": bool(webrtc_supported),
                 "upload": False,
-                "playback": "not_supported",
-                "authority": "none",
-                "mode": "not_implemented",
-                "reason": "webrtc_media_tracks_not_implemented",
+                "playback": "live_loopback" if webrtc_supported else "not_supported",
+                "authority": "hub_webrtc_peer_loopback" if webrtc_supported else "none",
+                "mode": "webrtc_audio_video_tracks" if webrtc_supported else "not_implemented",
+                "reason": "hub_webrtc_peer_loopback" if webrtc_supported else "webrtc_media_tracks_not_implemented",
+                "peer_total": int(live_webrtc.get("peer_total") or 0),
+                "connected_peers": int(live_webrtc.get("connected_peers") or 0),
+                "incoming_audio_tracks": int(live_webrtc.get("incoming_audio_tracks") or 0),
+                "incoming_video_tracks": int(live_webrtc.get("incoming_video_tracks") or 0),
+                "loopback_audio_tracks": int(live_webrtc.get("loopback_audio_tracks") or 0),
+                "loopback_video_tracks": int(live_webrtc.get("loopback_video_tracks") or 0),
             },
         },
         "recommended_path": "direct_local_http",
         "counts": {
             "file_total": len(items),
             "total_bytes": total_bytes,
+            "live_peer_total": int(live_webrtc.get("peer_total") or 0),
+            "live_connected_peers": int(live_webrtc.get("connected_peers") or 0),
+            "incoming_audio_tracks": int(live_webrtc.get("incoming_audio_tracks") or 0),
+            "incoming_video_tracks": int(live_webrtc.get("incoming_video_tracks") or 0),
+            "loopback_audio_tracks": int(live_webrtc.get("loopback_audio_tracks") or 0),
+            "loopback_video_tracks": int(live_webrtc.get("loopback_video_tracks") or 0),
         },
+        "live_webrtc": live_webrtc if isinstance(live_webrtc, dict) else {},
         "storage": {
             "dir": str(media_video_dir()),
             "subpath": "data/files/video",
@@ -187,7 +232,7 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
         "notes": [
             "Direct local hub API remains the preferred path for real upload and playback validation.",
             "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered /api proxy.",
-            "Broadcast/media-track transport is intentionally outside the current runtime implementation.",
+            "WebRTC audio/video loopback is available for live end-to-end media validation against the hub.",
         ],
     }
 

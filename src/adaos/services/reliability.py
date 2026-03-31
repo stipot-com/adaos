@@ -303,7 +303,7 @@ HUB_MEMBER_CHANNEL_SPECS: tuple[SemanticChannelSpec, ...] = (
         freeze_after_switch_s=3,
         duplicate_suppression="none; latency-first media semantics",
         description="Latency-sensitive media plane.",
-        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime supports only direct-local HTTP file media, not routed relay or WebRTC tracks.",
+        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime now supports bounded root relay for file media and direct WebRTC audio/video loopback for live validation.",
     ),
 )
 
@@ -2552,6 +2552,22 @@ def _hub_member_transport_evidence_snapshot(
                 "available": int(webrtc.get("open_yjs_channels") or 0) > 0,
                 "peer_total": int(webrtc.get("peer_total") or 0),
                 "open_channels": int(webrtc.get("open_yjs_channels") or 0),
+            }
+        )
+        evidence["webrtc_media"].update(
+            {
+                "available": (
+                    int(webrtc.get("incoming_audio_tracks") or 0) > 0
+                    or int(webrtc.get("incoming_video_tracks") or 0) > 0
+                    or int(webrtc.get("loopback_audio_tracks") or 0) > 0
+                    or int(webrtc.get("loopback_video_tracks") or 0) > 0
+                ),
+                "peer_total": int(webrtc.get("peer_total") or 0),
+                "connected_peers": int(webrtc.get("connected_peers") or 0),
+                "incoming_audio_tracks": int(webrtc.get("incoming_audio_tracks") or 0),
+                "incoming_video_tracks": int(webrtc.get("incoming_video_tracks") or 0),
+                "loopback_audio_tracks": int(webrtc.get("loopback_audio_tracks") or 0),
+                "loopback_video_tracks": int(webrtc.get("loopback_video_tracks") or 0),
             }
         )
 
