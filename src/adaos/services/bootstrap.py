@@ -3394,6 +3394,7 @@ class BootstrapService:
 
                         tunnels: dict[str, dict[str, Any]] = {}
                         tunnel_tasks: dict[str, asyncio.Task] = {}
+                        media_relay_sessions: dict[str, dict[str, Any]] = {}
                         pending_chunks: dict[str, dict[str, Any]] = {}
                         pending_tunnel_events: dict[str, list[dict[str, Any]]] = {}
                         pending_tunnel_meta: dict[str, dict[str, Any]] = {}
@@ -3728,6 +3729,7 @@ class BootstrapService:
                                             *[str(k) for k in tunnels.keys()],
                                             *[str(k) for k in pending_tunnel_events.keys()],
                                             *[str(k) for k in reply_subjects.keys()],
+                                            *[str(k) for k in media_relay_sessions.keys()],
                                             *[
                                                 str(st.get("key"))
                                                 for st in pending_chunks.values()
@@ -3762,6 +3764,10 @@ class BootstrapService:
                                         pass
                                 try:
                                     _drop_pending_chunks_for_key(key)
+                                except Exception:
+                                    pass
+                                try:
+                                    _cleanup_media_relay_session(key, remove_temp=True)
                                 except Exception:
                                     pass
                                 try:
@@ -4169,6 +4175,180 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
+
+                        def _cleanup_media_relay_session(key: str, *, remove_temp: bool) -> None:
+                            session = media_relay_sessions.pop(key, None)
+                            if not isinstance(session, dict):
+                                return
+                            handle = session.get("handle")
+                            try:
+                                if handle:
+                                    handle.close()
+                            except Exception:
+                                pass
+                            if remove_temp:
+                                tmp_path = session.get("tmp_path")
+                                try:
+                                    if tmp_path is not None:
+                                        Path(tmp_path).unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+
+                        async def _route_media_reply_json(
+                            key: str,
+                            *,
+                            status: int,
+                            payload: dict[str, Any],
+                        ) -> None:
+                            raw = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                            await _route_reply(
+                                key,
+                                {
+                                    "t": "media_http_meta",
+                                    "status": int(status),
+                                    "headers": {
+                                        "content-type": "application/json",
+                                        "content-length": str(len(raw)),
+                                    },
+                                },
+                            )
+                            idx0 = 0
+                            for off in range(0, len(raw), 256 * 1024):
+                                part = raw[off : off + (256 * 1024)]
+                                await _route_reply(
+                                    key,
+                                    {
+                                        "t": "media_http_chunk",
+                                        "idx": idx0,
+                                        "data_b64": base64.b64encode(bytes(part)).decode("ascii"),
+                                    },
+                                )
+                                idx0 += 1
+                            await _route_reply(
+                                key,
+                                {
+                                    "t": "media_http_end",
+                                    "total_bytes": len(raw),
+                                    "truncated": False,
+                                },
+                            )
+
+                        def _parse_media_range(range_header: str | None, size_bytes: int) -> tuple[int, int] | None:
+                            raw = str(range_header or "").strip()
+                            if not raw.lower().startswith("bytes="):
+                                return None
+                            spec = raw[6:].strip()
+                            if not spec or "," in spec:
+                                return None
+                            start_s, _sep, end_s = spec.partition("-")
+                            if not _sep:
+                                return None
+                            try:
+                                if start_s and end_s:
+                                    start = int(start_s)
+                                    end = int(end_s)
+                                elif start_s:
+                                    start = int(start_s)
+                                    end = size_bytes - 1
+                                elif end_s:
+                                    suffix_len = int(end_s)
+                                    if suffix_len <= 0:
+                                        return None
+                                    start = max(0, size_bytes - suffix_len)
+                                    end = size_bytes - 1
+                                else:
+                                    return None
+                            except Exception:
+                                return None
+                            if start < 0 or end < start or start >= size_bytes:
+                                return None
+                            end = min(end, size_bytes - 1)
+                            return (start, end)
+
+                        async def _route_media_reply_file(
+                            key: str,
+                            *,
+                            target: Path,
+                            method: str,
+                            request_headers: dict[str, Any] | None,
+                        ) -> None:
+                            from adaos.services.media_library import ROOT_MEDIA_RELAY_CHUNK_BYTES, guess_media_type
+
+                            stat = target.stat()
+                            total_size = int(stat.st_size)
+                            headers_in = request_headers if isinstance(request_headers, dict) else {}
+                            range_header = str(headers_in.get("range") or headers_in.get("Range") or "").strip()
+                            range_spec = _parse_media_range(range_header or None, total_size)
+                            if range_header and range_spec is None:
+                                await _route_reply(
+                                    key,
+                                    {
+                                        "t": "media_http_meta",
+                                        "status": 416,
+                                        "headers": {
+                                            "content-range": f"bytes */{total_size}",
+                                            "content-length": "0",
+                                        },
+                                    },
+                                )
+                                await _route_reply(key, {"t": "media_http_end", "total_bytes": 0, "truncated": False})
+                                return
+
+                            start = 0
+                            end = total_size - 1
+                            status = 200
+                            if range_spec is not None:
+                                start, end = range_spec
+                                status = 206
+                            length = max(0, end - start + 1)
+                            headers = {
+                                "content-type": guess_media_type(target.name),
+                                "content-length": str(length),
+                                "accept-ranges": "bytes",
+                                "content-disposition": f'inline; filename="{target.name}"',
+                            }
+                            if status == 206:
+                                headers["content-range"] = f"bytes {start}-{end}/{total_size}"
+                            await _route_reply(
+                                key,
+                                {
+                                    "t": "media_http_meta",
+                                    "status": status,
+                                    "headers": headers,
+                                },
+                            )
+                            if str(method or "").upper() == "HEAD" or length <= 0:
+                                await _route_reply(key, {"t": "media_http_end", "total_bytes": 0, "truncated": False})
+                                return
+
+                            sent = 0
+                            with target.open("rb") as handle:
+                                handle.seek(start)
+                                idx0 = 0
+                                remaining = length
+                                while remaining > 0:
+                                    blob = handle.read(min(int(ROOT_MEDIA_RELAY_CHUNK_BYTES), remaining))
+                                    if not blob:
+                                        break
+                                    await _route_reply(
+                                        key,
+                                        {
+                                            "t": "media_http_chunk",
+                                            "idx": idx0,
+                                            "data_b64": base64.b64encode(blob).decode("ascii"),
+                                        },
+                                    )
+                                    idx0 += 1
+                                    sent += len(blob)
+                                    remaining -= len(blob)
+                            await _route_reply(
+                                key,
+                                {
+                                    "t": "media_http_end",
+                                    "total_bytes": sent,
+                                    "truncated": False,
+                                },
+                            )
 
                         try:
                             self._hub_root_route_reset = _reset_route_runtime
@@ -4932,6 +5112,261 @@ class BootstrapService:
                                                 )
                                             except Exception:
                                                 pass
+                                    return
+
+                                if t == "media_http_open":
+                                    route_outcome = "media_http_open"
+                                    try:
+                                        from urllib.parse import unquote
+
+                                        from adaos.services.media_library import (
+                                            ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
+                                            ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+                                            guess_media_type,
+                                            list_media_files,
+                                            media_capabilities,
+                                            media_file_path,
+                                            media_runtime_snapshot,
+                                            media_snapshot,
+                                        )
+
+                                        method = str((data or {}).get("method") or "GET").upper()
+                                        path = str((data or {}).get("path") or "/media/files")
+                                        path_norm = (path.rstrip("/") or "/") if isinstance(path, str) else "/"
+                                        headers = (data or {}).get("headers") if isinstance((data or {}).get("headers"), dict) else {}
+                                        content_length = int((data or {}).get("content_length") or 0)
+
+                                        if method in ("GET", "HEAD") and path_norm == "/media/files":
+                                            payload0 = media_snapshot()
+                                            payload0["proxy_limits"] = {
+                                                "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+                                                "root_media_relay_max_upload_bytes": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
+                                            }
+                                            await _route_media_reply_json(key, status=200, payload=payload0)
+                                            route_outcome = "media_files_replied"
+                                            return
+
+                                        if method in ("GET", "HEAD") and path_norm == "/media/runtime":
+                                            runtime0 = media_runtime_snapshot()
+                                            runtime0["ok"] = True
+                                            runtime0["proxy_limits"] = {
+                                                "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+                                                "root_media_relay_max_upload_bytes": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
+                                            }
+                                            runtime0["capabilities"] = media_capabilities()
+                                            runtime0["files"] = {
+                                                "items": list_media_files(),
+                                            }
+                                            await _route_media_reply_json(key, status=200, payload=runtime0)
+                                            route_outcome = "media_runtime_replied"
+                                            return
+
+                                        if method in ("GET", "HEAD") and path_norm.startswith("/media/files/content/"):
+                                            filename = unquote(path_norm[len("/media/files/content/"):])
+                                            try:
+                                                target = media_file_path(filename)
+                                            except ValueError as exc:
+                                                await _route_media_reply_json(
+                                                    key,
+                                                    status=400,
+                                                    payload={"ok": False, "detail": str(exc)},
+                                                )
+                                                route_outcome = "media_content_bad_request"
+                                                return
+                                            if not target.exists() or not target.is_file():
+                                                await _route_media_reply_json(
+                                                    key,
+                                                    status=404,
+                                                    payload={"ok": False, "detail": "media_file_not_found"},
+                                                )
+                                                route_outcome = "media_content_missing"
+                                                return
+                                            await _route_media_reply_file(
+                                                key,
+                                                target=target,
+                                                method=method,
+                                                request_headers=headers,
+                                            )
+                                            route_outcome = "media_content_replied"
+                                            return
+
+                                        if method == "DELETE" and path_norm.startswith("/media/files/"):
+                                            filename = unquote(path_norm[len("/media/files/"):])
+                                            try:
+                                                target = media_file_path(filename)
+                                            except ValueError as exc:
+                                                await _route_media_reply_json(
+                                                    key,
+                                                    status=400,
+                                                    payload={"ok": False, "detail": str(exc)},
+                                                )
+                                                route_outcome = "media_delete_bad_request"
+                                                return
+                                            existed = target.exists()
+                                            if existed:
+                                                target.unlink()
+                                            await _route_media_reply_json(
+                                                key,
+                                                status=200,
+                                                payload={
+                                                    "ok": True,
+                                                    "filename": target.name,
+                                                    "deleted": existed,
+                                                    "items": list_media_files(),
+                                                },
+                                            )
+                                            route_outcome = "media_delete_replied"
+                                            return
+
+                                        if method == "PUT" and path_norm.startswith("/media/files/"):
+                                            filename = unquote(path_norm[len("/media/files/"):])
+                                            try:
+                                                target = media_file_path(filename)
+                                            except ValueError as exc:
+                                                await _route_media_reply_json(
+                                                    key,
+                                                    status=400,
+                                                    payload={"ok": False, "detail": str(exc)},
+                                                )
+                                                route_outcome = "media_upload_bad_request"
+                                                return
+                                            if content_length > int(ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES):
+                                                await _route_media_reply_json(
+                                                    key,
+                                                    status=413,
+                                                    payload={
+                                                        "ok": False,
+                                                        "detail": "media_upload_too_large",
+                                                        "max_upload_bytes": int(ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES),
+                                                    },
+                                                )
+                                                route_outcome = "media_upload_too_large"
+                                                return
+                                            tmp_path = target.with_name(
+                                                f"{target.name}.relay-{os.getpid()}-{int(time.time() * 1000)}.part"
+                                            )
+                                            handle = tmp_path.open("wb")
+                                            media_relay_sessions[key] = {
+                                                "mode": "upload",
+                                                "target": target,
+                                                "tmp_path": tmp_path,
+                                                "handle": handle,
+                                                "size_bytes": 0,
+                                                "replaced": target.exists(),
+                                                "mime_type": guess_media_type(target.name),
+                                                "max_upload_bytes": int(ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES),
+                                            }
+                                            route_outcome = "media_upload_open"
+                                            return
+
+                                        await _route_media_reply_json(
+                                            key,
+                                            status=404,
+                                            payload={"ok": False, "detail": "media_route_not_found"},
+                                        )
+                                        route_outcome = "media_not_found"
+                                        return
+                                    except Exception as e:
+                                        await _route_reply(
+                                            key,
+                                            {
+                                                "t": "media_http_error",
+                                                "status": 502,
+                                                "error": "media_route_open_failed",
+                                                "detail": str(e),
+                                            },
+                                        )
+                                        route_outcome = f"media_http_open_fail:{type(e).__name__}"
+                                        return
+
+                                if t == "media_http_req_chunk":
+                                    session = media_relay_sessions.get(key)
+                                    if not isinstance(session, dict) or str(session.get("mode") or "") != "upload":
+                                        route_outcome = "media_chunk_without_session"
+                                        return
+                                    try:
+                                        b64 = (data or {}).get("data_b64")
+                                        if not isinstance(b64, str) or not b64:
+                                            route_outcome = "media_chunk_empty"
+                                            return
+                                        blob = base64.b64decode(b64.encode("ascii"))
+                                        size_bytes = int(session.get("size_bytes") or 0) + len(blob)
+                                        if size_bytes > int(session.get("max_upload_bytes") or 0):
+                                            await _route_media_reply_json(
+                                                key,
+                                                status=413,
+                                                payload={
+                                                    "ok": False,
+                                                    "detail": "media_upload_too_large",
+                                                    "max_upload_bytes": int(session.get("max_upload_bytes") or 0),
+                                                },
+                                            )
+                                            _cleanup_media_relay_session(key, remove_temp=True)
+                                            route_outcome = "media_chunk_too_large"
+                                            return
+                                        handle = session.get("handle")
+                                        if not handle:
+                                            route_outcome = "media_chunk_no_handle"
+                                            return
+                                        handle.write(blob)
+                                        session["size_bytes"] = size_bytes
+                                        route_outcome = "media_chunk_written"
+                                    except Exception as e:
+                                        _cleanup_media_relay_session(key, remove_temp=True)
+                                        await _route_reply(
+                                            key,
+                                            {
+                                                "t": "media_http_error",
+                                                "status": 502,
+                                                "error": "media_upload_write_failed",
+                                                "detail": str(e),
+                                            },
+                                        )
+                                        route_outcome = f"media_chunk_fail:{type(e).__name__}"
+                                    return
+
+                                if t == "media_http_req_end":
+                                    session = media_relay_sessions.get(key)
+                                    if not isinstance(session, dict) or str(session.get("mode") or "") != "upload":
+                                        route_outcome = "media_end_without_session"
+                                        return
+                                    try:
+                                        handle = session.get("handle")
+                                        if handle:
+                                            handle.close()
+                                        target = Path(session.get("target"))
+                                        tmp_path = Path(session.get("tmp_path"))
+                                        tmp_path.replace(target)
+                                        _cleanup_media_relay_session(key, remove_temp=False)
+                                        await _route_media_reply_json(
+                                            key,
+                                            status=200,
+                                            payload={
+                                                "ok": True,
+                                                "filename": target.name,
+                                                "size_bytes": int(session.get("size_bytes") or 0),
+                                                "mime_type": str(session.get("mime_type") or ""),
+                                                "replaced": bool(session.get("replaced")),
+                                            },
+                                        )
+                                        route_outcome = "media_upload_done"
+                                    except Exception as e:
+                                        _cleanup_media_relay_session(key, remove_temp=True)
+                                        await _route_reply(
+                                            key,
+                                            {
+                                                "t": "media_http_error",
+                                                "status": 502,
+                                                "error": "media_upload_finalize_failed",
+                                                "detail": str(e),
+                                            },
+                                        )
+                                        route_outcome = f"media_end_fail:{type(e).__name__}"
+                                    return
+
+                                if t == "media_http_abort":
+                                    _cleanup_media_relay_session(key, remove_temp=True)
+                                    route_outcome = "media_http_abort"
                                     return
 
                                 if t == "http":

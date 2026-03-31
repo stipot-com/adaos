@@ -13,6 +13,8 @@ from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 MEDIA_SKILL_NAME = "mediaserver"
 ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES = 2 * 1024 * 1024
 MEDIA_RUNTIME_SCOPE = "hub_local_media_debug"
+ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+ROOT_MEDIA_RELAY_CHUNK_BYTES = 256 * 1024
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".mp4",
     ".webm",
@@ -98,9 +100,10 @@ def media_capabilities() -> dict[str, Any]:
                 "note": "Raw PUT upload is available when the browser talks to the local hub API directly.",
             },
             "root_routed": {
-                "ready": False,
-                "mode": "buffered_json_proxy",
-                "reason": "root_route_proxy_request_body_is_json_base64_only",
+                "ready": True,
+                "mode": "bounded_media_relay",
+                "note": "Dedicated /hubs/<id>/media/* relay path supports bounded upload streaming via root.",
+                "max_upload_bytes_hint": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
             },
         },
         "playback": {
@@ -110,10 +113,11 @@ def media_capabilities() -> dict[str, Any]:
                 "note": "Progressive file playback is available on the direct local hub API path.",
             },
             "root_routed": {
-                "ready": False,
-                "mode": "buffered_truncated_proxy_response",
-                "reason": "root_route_proxy_buffers_response_body_and_truncates_large_payloads",
-                "max_safe_bytes_hint": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+                "ready": True,
+                "mode": "bounded_media_relay",
+                "note": "Dedicated /hubs/<id>/media/* relay path supports ranged playback via root.",
+                "range_requests": True,
+                "chunk_bytes_hint": ROOT_MEDIA_RELAY_CHUNK_BYTES,
             },
         },
         "broadcast": {
@@ -122,8 +126,8 @@ def media_capabilities() -> dict[str, Any]:
             "details": "Current browser/hub realtime stack exposes only events and yjs data channels, not audio/video tracks.",
         },
         "notes": [
-            "Use direct local hub API for meaningful upload/playback validation.",
-            "Root-routed browser path is still suitable only for small JSON control flows, not large media payloads.",
+            "Direct local hub API remains the preferred path for operator-grade upload and playback validation.",
+            "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered JSON /api proxy.",
         ],
     }
 
@@ -137,12 +141,12 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
         "authority": {
             "storage": "local_hub_api",
             "playback": "local_hub_api",
-            "relay": "not_authoritative",
+            "relay": "root_media_relay",
             "broadcast": "not_implemented",
         },
         "assessment": {
-            "state": "direct_local_only",
-            "reason": "media upload and playback are intentionally scoped to the direct local hub API path",
+            "state": "bounded_relay_available",
+            "reason": "media plane supports direct-local authority and bounded root relay authority on a dedicated path",
         },
         "paths": {
             "direct_local_http": {
@@ -153,13 +157,14 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
                 "mode": "http_raw_put + http_file_response",
             },
             "root_routed_http": {
-                "ready": False,
-                "upload": False,
-                "playback": "small_preview_only",
-                "authority": "root_route_proxy",
-                "mode": "buffered_proxy",
-                "reason": "root_route_proxy_is_not_suitable_for_large_media_payloads",
-                "max_safe_bytes_hint": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+                "ready": True,
+                "upload": True,
+                "playback": "full",
+                "authority": "root_media_relay",
+                "mode": "bounded_media_relay",
+                "reason": "root_media_relay_streams_upload_and_playback_on_a_dedicated_path",
+                "max_upload_bytes_hint": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
+                "chunk_bytes_hint": ROOT_MEDIA_RELAY_CHUNK_BYTES,
             },
             "webrtc_tracks": {
                 "ready": False,
@@ -180,8 +185,8 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
             "subpath": "data/files/video",
         },
         "notes": [
-            "Use the direct local hub API path for real upload and playback validation.",
-            "Root-routed proxy remains suitable only for small control-like media probes, not operator-grade file upload or streaming.",
+            "Direct local hub API remains the preferred path for real upload and playback validation.",
+            "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered /api proxy.",
             "Broadcast/media-track transport is intentionally outside the current runtime implementation.",
         ],
     }

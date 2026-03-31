@@ -17,6 +17,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
 from adaos.services.io_web.desktop import WebDesktopInstalled, WebDesktopService, WebDesktopSnapshot
 from adaos.services.media_library import (
+    ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
     ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
     guess_media_type,
     list_media_files,
@@ -1255,6 +1256,7 @@ async def list_media_library() -> dict[str, Any]:
     snapshot = media_snapshot()
     snapshot["proxy_limits"] = {
         "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+        "root_media_relay_max_upload_bytes": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
     }
     return snapshot
 
@@ -1270,6 +1272,7 @@ async def media_runtime() -> dict[str, Any]:
     runtime["ok"] = True
     runtime["proxy_limits"] = {
         "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+        "root_media_relay_max_upload_bytes": ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
     }
     runtime["capabilities"] = media_capabilities()
     runtime["files"] = {

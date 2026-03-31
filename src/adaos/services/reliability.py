@@ -2574,6 +2574,15 @@ def _hub_member_transport_evidence_snapshot(
                 "frame_state": str(route_frame.get("state") or ""),
             }
         )
+        evidence["root_media_relay"].update(
+            {
+                "available": bool(route_available),
+                "active_tunnels": int(route_runtime.get("active_tunnels") or 0),
+                "pending_tunnels": int(route_runtime.get("pending_tunnels") or 0),
+                "control_state": str(route_control.get("state") or ""),
+                "frame_state": str(route_frame.get("state") or ""),
+            }
+        )
     else:
         member_available = bool(connected_to_hub is True or str(route_mode or "").strip().lower() == "ws")
         evidence["member_link_ws"]["available"] = member_available
@@ -2590,11 +2599,21 @@ def _semantic_channel_status(
     freeze_remaining_s: float,
 ) -> tuple[str, str, str]:
     if spec.channel_id == "hub_member.media":
-        return (
-            "not_applicable",
-            "isolated",
-            "media plane is intentionally isolated from control/sync readiness; inspect media_runtime for direct-local policy and current limits",
-        )
+        if not active_path:
+            return (
+                "down",
+                "unavailable",
+                "bounded media relay is not currently active",
+            )
+        if active_path == "root_media_relay":
+            return (
+                "ready",
+                "bounded_relay",
+                "root bounded media relay is the active authority path",
+            )
+        if active_path.startswith("webrtc_media"):
+            return ("ready", "direct_media", "direct media path is active")
+        return ("ready", "active", f"{active_path} is the active media authority path")
     if role_norm != "hub" and spec.channel_id == "hub_member.route":
         return (
             "not_applicable",

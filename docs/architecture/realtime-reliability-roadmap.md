@@ -290,8 +290,9 @@ Make Yjs transport-independent without building a second distributed system arou
 ### Status
 
 In progress with explicit media-plane policy and observability.
-Local media upload/playback MVP now exists as an intentionally isolated direct-local HTTP path, reliability exposes media runtime separately from control/sync readiness, and browser semantic channels classify media as `direct_local_http` vs `root_routed_http_limited` instead of leaving media as an implicit gap.
-This is still not a production media relay: routed root proxy remains intentionally limited to small previews and broadcast/WebRTC media tracks remain unimplemented.
+Local media upload/playback MVP now exists as an intentionally isolated direct-local HTTP path, reliability exposes media runtime separately from control/sync readiness, and browser semantic channels classify media as `direct_local_http` vs `root_routed_http_relay` instead of leaving media as an implicit gap.
+There is now also a dedicated bounded root media relay path (`/hubs/<id>/media/*`) for upload and playback, separate from the generic buffered `/hubs/<id>/api/*` route proxy.
+This is still not a full media transport layer: broadcast/WebRTC media tracks remain unimplemented, and the relay is intentionally scoped to bounded file-media authority rather than a general realtime AV plane.
 
 ### Focus
 
