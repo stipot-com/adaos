@@ -287,6 +287,12 @@ Make Yjs transport-independent without building a second distributed system arou
 
 ## Phase 6: Media plane
 
+### Status
+
+In progress with explicit media-plane policy and observability.
+Local media upload/playback MVP now exists as an intentionally isolated direct-local HTTP path, reliability exposes media runtime separately from control/sync readiness, and browser semantic channels classify media as `direct_local_http` vs `root_routed_http_limited` instead of leaving media as an implicit gap.
+This is still not a production media relay: routed root proxy remains intentionally limited to small previews and broadcast/WebRTC media tracks remain unimplemented.
+
 ### Focus
 
 Keep media architecture separate, but do not let it block core messaging stabilization.

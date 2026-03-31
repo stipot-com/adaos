@@ -12,6 +12,7 @@ from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 
 MEDIA_SKILL_NAME = "mediaserver"
 ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES = 2 * 1024 * 1024
+MEDIA_RUNTIME_SCOPE = "hub_local_media_debug"
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".mp4",
     ".webm",
@@ -127,6 +128,65 @@ def media_capabilities() -> dict[str, Any]:
     }
 
 
+def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = list(items) if isinstance(items, list) else list_media_files()
+    total_bytes = sum(int(item.get("size_bytes") or 0) for item in items)
+    return {
+        "available": True,
+        "scope": MEDIA_RUNTIME_SCOPE,
+        "authority": {
+            "storage": "local_hub_api",
+            "playback": "local_hub_api",
+            "relay": "not_authoritative",
+            "broadcast": "not_implemented",
+        },
+        "assessment": {
+            "state": "direct_local_only",
+            "reason": "media upload and playback are intentionally scoped to the direct local hub API path",
+        },
+        "paths": {
+            "direct_local_http": {
+                "ready": True,
+                "upload": True,
+                "playback": "full",
+                "authority": "local_hub_api",
+                "mode": "http_raw_put + http_file_response",
+            },
+            "root_routed_http": {
+                "ready": False,
+                "upload": False,
+                "playback": "small_preview_only",
+                "authority": "root_route_proxy",
+                "mode": "buffered_proxy",
+                "reason": "root_route_proxy_is_not_suitable_for_large_media_payloads",
+                "max_safe_bytes_hint": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+            },
+            "webrtc_tracks": {
+                "ready": False,
+                "upload": False,
+                "playback": "not_supported",
+                "authority": "none",
+                "mode": "not_implemented",
+                "reason": "webrtc_media_tracks_not_implemented",
+            },
+        },
+        "recommended_path": "direct_local_http",
+        "counts": {
+            "file_total": len(items),
+            "total_bytes": total_bytes,
+        },
+        "storage": {
+            "dir": str(media_video_dir()),
+            "subpath": "data/files/video",
+        },
+        "notes": [
+            "Use the direct local hub API path for real upload and playback validation.",
+            "Root-routed proxy remains suitable only for small control-like media probes, not operator-grade file upload or streaming.",
+            "Broadcast/media-track transport is intentionally outside the current runtime implementation.",
+        ],
+    }
+
+
 def list_media_files() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     root = media_video_dir()
@@ -159,4 +219,5 @@ def media_snapshot() -> dict[str, Any]:
         "count": len(items),
         "total_bytes": total_bytes,
         "capabilities": media_capabilities(),
+        "runtime": media_runtime_snapshot(items),
     }

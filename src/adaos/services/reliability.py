@@ -303,7 +303,7 @@ HUB_MEMBER_CHANNEL_SPECS: tuple[SemanticChannelSpec, ...] = (
         freeze_after_switch_s=3,
         duplicate_suppression="none; latency-first media semantics",
         description="Latency-sensitive media plane.",
-        notes="Phase 4 only exposes explicit non-ownership and current lack of media runtime selection.",
+        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime supports only direct-local HTTP file media, not routed relay or WebRTC tracks.",
     ),
 )
 
@@ -2591,9 +2591,9 @@ def _semantic_channel_status(
 ) -> tuple[str, str, str]:
     if spec.channel_id == "hub_member.media":
         return (
-            "unknown",
-            "not_configured",
-            "media semantic channel is declared but not yet wired into runtime ownership",
+            "not_applicable",
+            "isolated",
+            "media plane is intentionally isolated from control/sync readiness; inspect media_runtime for direct-local policy and current limits",
         )
     if role_norm != "hub" and spec.channel_id == "hub_member.route":
         return (
@@ -4059,6 +4059,48 @@ def _build_yjs_webspace_guidance(
     }
 
 
+def media_plane_runtime_snapshot(
+    *,
+    role: str,
+    route_mode: str | None,
+    connected_to_hub: bool | None,
+) -> dict[str, Any]:
+    role_norm = str(role or "").strip().lower()
+    try:
+        from adaos.services.media_library import media_runtime_snapshot as _media_runtime_snapshot
+    except Exception:
+        return {
+            "available": False,
+            "assessment": {
+                "state": "unavailable",
+                "reason": "media runtime module is unavailable",
+            },
+            "transport": {
+                "role": role_norm or None,
+                "route_mode": str(route_mode or "").strip() or None,
+                "connected_to_hub": connected_to_hub,
+                "control_readiness_impact": "none",
+            },
+        }
+
+    runtime = _media_runtime_snapshot()
+    paths = runtime.get("paths") if isinstance(runtime.get("paths"), dict) else {}
+    direct_local = paths.get("direct_local_http") if isinstance(paths.get("direct_local_http"), dict) else {}
+    root_routed = paths.get("root_routed_http") if isinstance(paths.get("root_routed_http"), dict) else {}
+    webrtc_tracks = paths.get("webrtc_tracks") if isinstance(paths.get("webrtc_tracks"), dict) else {}
+    runtime["transport"] = {
+        "role": role_norm or None,
+        "route_mode": str(route_mode or "").strip() or None,
+        "connected_to_hub": connected_to_hub,
+        "control_readiness_impact": "none",
+        "hub_member_semantic_state": "isolated_from_phase4_control_and_sync",
+        "direct_local_ready": bool(direct_local.get("ready")),
+        "root_routed_ready": bool(root_routed.get("ready")),
+        "broadcast_ready": bool(webrtc_tracks.get("ready")),
+    }
+    return runtime
+
+
 def reliability_snapshot(
     *,
     node_id: str,
@@ -4109,6 +4151,11 @@ def reliability_snapshot(
         transport_strategy=transport_strategy,
     )
     sync_runtime = yjs_sync_runtime_snapshot(role=role)
+    media_runtime = media_plane_runtime_snapshot(
+        role=role,
+        route_mode=route_mode,
+        connected_to_hub=connected_to_hub,
+    )
     return {
         "ok": True,
         "node": {
@@ -4135,5 +4182,6 @@ def reliability_snapshot(
             "hub_member_connection_state": hub_member_connection_state,
             "sidecar_runtime": sidecar_runtime,
             "sync_runtime": sync_runtime,
+            "media_runtime": media_runtime,
         },
     }

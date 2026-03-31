@@ -85,6 +85,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
+    media_runtime = runtime.get("media_runtime") if isinstance(runtime.get("media_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     protocol_assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
     coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}
@@ -149,6 +150,13 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
     sync_selected_webspace = sync_runtime.get("selected_webspace") if isinstance(sync_runtime.get("selected_webspace"), dict) else {}
     sync_webspace_guidance = sync_runtime.get("webspace_guidance") if isinstance(sync_runtime.get("webspace_guidance"), dict) else {}
+    media_assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}
+    media_transport = media_runtime.get("transport") if isinstance(media_runtime.get("transport"), dict) else {}
+    media_counts = media_runtime.get("counts") if isinstance(media_runtime.get("counts"), dict) else {}
+    media_paths = media_runtime.get("paths") if isinstance(media_runtime.get("paths"), dict) else {}
+    media_direct = media_paths.get("direct_local_http") if isinstance(media_paths.get("direct_local_http"), dict) else {}
+    media_routed = media_paths.get("root_routed_http") if isinstance(media_paths.get("root_routed_http"), dict) else {}
+    media_broadcast = media_paths.get("webrtc_tracks") if isinstance(media_paths.get("webrtc_tracks"), dict) else {}
     reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
     restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
     go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
@@ -219,6 +227,12 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
         f"next={recommended_action} "
         f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
         f"ws_next={recommended_webspace_action} | "
+        f"media_runtime={media_assessment.get('state') or '-'} "
+        f"media_files={media_counts.get('file_total') or 0} "
+        f"media_direct={'yes' if media_direct.get('ready') else 'no'} "
+        f"media_routed={'yes' if media_routed.get('ready') else 'no'}:{media_routed.get('playback') or '-'} "
+        f"media_broadcast={'yes' if media_broadcast.get('ready') else 'no'} "
+        f"media_impact={media_transport.get('control_readiness_impact') or '-'} | "
         f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
         f"{sidecar.get('control_ready') or '-'} "
         f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "
@@ -304,6 +318,12 @@ def hub_root_watch(
             sync_recovery_guidance = sync_runtime.get("recovery_guidance") if isinstance(sync_runtime.get("recovery_guidance"), dict) else {}
             sync_selected_webspace = sync_runtime.get("selected_webspace") if isinstance(sync_runtime.get("selected_webspace"), dict) else {}
             sync_webspace_guidance = sync_runtime.get("webspace_guidance") if isinstance(sync_runtime.get("webspace_guidance"), dict) else {}
+            media_runtime = runtime.get("media_runtime") if isinstance(runtime.get("media_runtime"), dict) else {}
+            media_assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}
+            media_counts = media_runtime.get("counts") if isinstance(media_runtime.get("counts"), dict) else {}
+            media_paths = media_runtime.get("paths") if isinstance(media_runtime.get("paths"), dict) else {}
+            media_direct = media_paths.get("direct_local_http") if isinstance(media_paths.get("direct_local_http"), dict) else {}
+            media_routed = media_paths.get("root_routed_http") if isinstance(media_paths.get("root_routed_http"), dict) else {}
             reload_override = sync_action_overrides.get("reload") if isinstance(sync_action_overrides.get("reload"), dict) else {}
             restore_override = sync_action_overrides.get("restore") if isinstance(sync_action_overrides.get("restore"), dict) else {}
             go_home_override = sync_action_overrides.get("go_home") if isinstance(sync_action_overrides.get("go_home"), dict) else {}
@@ -368,6 +388,9 @@ def hub_root_watch(
                 f"next={recommended_action} "
                 f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
                 f"ws_next={recommended_webspace_action} "
+                f"media={media_assessment.get('state') or '-'}:{media_counts.get('file_total') or 0} "
+                f"direct={'yes' if media_direct.get('ready') else 'no'} "
+                f"routed={'yes' if media_routed.get('ready') else 'no'}:{media_routed.get('playback') or '-'} "
                 f"sidecar={sidecar.get('status') or ('disabled' if not sidecar.get('enabled') else 'unknown')}/"
                 f"{sidecar.get('control_ready') or '-'} "
                 f"transport={sidecar.get('local_listener_state') or '-'}/{sidecar.get('remote_session_state') or '-'} "

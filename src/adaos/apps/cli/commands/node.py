@@ -138,6 +138,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     hub_member_connection_state = runtime.get("hub_member_connection_state") if isinstance(runtime.get("hub_member_connection_state"), dict) else {}
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
+    media_runtime = runtime.get("media_runtime") if isinstance(runtime.get("media_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
 
@@ -199,6 +200,26 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"yws10s={transport.get('recent_open_10s') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
+        )
+    if media_runtime:
+        assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}
+        transport = media_runtime.get("transport") if isinstance(media_runtime.get("transport"), dict) else {}
+        counts = media_runtime.get("counts") if isinstance(media_runtime.get("counts"), dict) else {}
+        paths = media_runtime.get("paths") if isinstance(media_runtime.get("paths"), dict) else {}
+        direct_local = paths.get("direct_local_http") if isinstance(paths.get("direct_local_http"), dict) else {}
+        root_routed = paths.get("root_routed_http") if isinstance(paths.get("root_routed_http"), dict) else {}
+        webrtc_tracks = paths.get("webrtc_tracks") if isinstance(paths.get("webrtc_tracks"), dict) else {}
+        typer.echo(
+            "media_runtime: "
+            f"state={assessment.get('state') or 'unknown'} "
+            f"scope={media_runtime.get('scope') or '-'} "
+            f"files={counts.get('file_total') or 0} "
+            f"total={counts.get('total_bytes') or 0}B "
+            f"direct={'yes' if direct_local.get('ready') else 'no'} "
+            f"routed={'yes' if root_routed.get('ready') else 'no'}:"
+            f"{root_routed.get('playback') or '-'} "
+            f"broadcast={'yes' if webrtc_tracks.get('ready') else 'no'} "
+            f"impact={transport.get('control_readiness_impact') or '-'}"
         )
     if protocol:
         assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}

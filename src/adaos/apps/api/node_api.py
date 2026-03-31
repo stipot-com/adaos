@@ -25,7 +25,7 @@ from adaos.services.media_library import (
     media_snapshot,
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
-from adaos.services.reliability import reliability_snapshot, yjs_sync_runtime_snapshot
+from adaos.services.reliability import media_plane_runtime_snapshot, reliability_snapshot, yjs_sync_runtime_snapshot
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
@@ -1257,6 +1257,25 @@ async def list_media_library() -> dict[str, Any]:
         "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
     }
     return snapshot
+
+
+@router.get("/media/runtime", dependencies=[Depends(require_token)])
+async def media_runtime() -> dict[str, Any]:
+    conf = load_config()
+    runtime = media_plane_runtime_snapshot(
+        role=str(getattr(conf, "role", "") or ""),
+        route_mode=None,
+        connected_to_hub=None,
+    )
+    runtime["ok"] = True
+    runtime["proxy_limits"] = {
+        "root_routed_response_limit_bytes": ROOT_ROUTED_MEDIA_BODY_LIMIT_BYTES,
+    }
+    runtime["capabilities"] = media_capabilities()
+    runtime["files"] = {
+        "items": list_media_files(),
+    }
+    return runtime
 
 
 @router.put("/media/files/{filename}", dependencies=[Depends(require_token)])
