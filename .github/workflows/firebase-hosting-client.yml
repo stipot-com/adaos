@@ -37,11 +37,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: src/adaos/integrations/adaos-client/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
