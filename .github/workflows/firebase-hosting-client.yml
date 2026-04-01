@@ -20,9 +20,6 @@ jobs:
   deploy:
     name: Deploy client to Firebase Hosting
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src/adaos/integrations/adaos-client
     env:
       PUBLIC_ROOT_BASE: ${{ secrets.PUBLIC_ROOT_BASE || 'https://api.inimatic.com' }}
       PUBLIC_ADAOS_BASE: ${{ secrets.PUBLIC_ADAOS_BASE || '' }}
@@ -59,6 +56,7 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
+        working-directory: src/adaos/integrations/adaos-client
         run: npm install
 
       - name: Authenticate to Google Cloud
@@ -67,7 +65,9 @@ jobs:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MYINIMATIC }}
 
       - name: Build hosting bundle
+        working-directory: src/adaos/integrations/adaos-client
         run: npm run build:hosting
 
       - name: Deploy to Firebase Hosting
+        working-directory: src/adaos/integrations/adaos-client
         run: npx firebase-tools deploy --project myinimatic --only hosting --non-interactive
