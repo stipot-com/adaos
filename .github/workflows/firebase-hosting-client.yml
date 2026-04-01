@@ -32,8 +32,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve client submodule commit
+        id: client-submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="$(git ls-tree HEAD src/adaos/integrations/adaos-client | awk '{print $3}')"
+          if [[ -z "${SHA}" ]]; then
+            echo "Failed to resolve adaos-client submodule SHA" >&2
+            exit 1
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout adaos-client submodule
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
+          repository: stipot-com/adaos-client
+          ref: ${{ steps.client-submodule.outputs.sha }}
+          path: src/adaos/integrations/adaos-client
+          token: ${{ secrets.CI_SUBMODULES_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
