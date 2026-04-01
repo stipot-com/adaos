@@ -11,7 +11,8 @@ param(
     [int]$ServePort = 8777,
     [int]$ControlPort = 8777,
     [string]$RootUrl = "https://api.inimatic.com",
-    [string]$Rev = "rev2026"
+    [string]$Rev = "rev2026",
+    [string]$ZoneId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -268,6 +269,9 @@ Install-VoiceDeps
 
 $env:ADAOS_REV = $Rev
 $env:ADAOS_API_BASE = $RootUrl
+if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
+    $env:ADAOS_ZONE_ID = $ZoneId.Trim().ToLower()
+}
 
 function Test-TcpPortAvailable {
     param(

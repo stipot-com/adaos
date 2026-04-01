@@ -1519,6 +1519,9 @@ class RootDeveloperService:
     ) -> Mapping[str, Any]:
         fingerprint = fingerprint_for_key(private_key)
         meta_payload: dict[str, Any] = {"fingerprint": fingerprint}
+        zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower()
+        if zone_id:
+            meta_payload["zone_id"] = zone_id
         if metadata:
             meta_payload.update(metadata)
         bootstrap = client.request_bootstrap_token(token, meta=meta_payload, verify=verify)

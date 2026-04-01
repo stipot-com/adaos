@@ -17,6 +17,7 @@ SERVE_PORT="8777"
 CONTROL_PORT="8777"
 ROOT_URL="https://api.inimatic.com"
 REV="rev2026"
+ZONE_ID=""
 NO_VOICE="0"
 
 log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
@@ -302,6 +303,7 @@ while [[ $# -gt 0 ]]; do
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
     --root-url) ROOT_URL="${2:-}"; shift 2 ;;
     --rev) REV="${2:-}"; shift 2 ;;
+    --zone|--zone-id) ZONE_ID="${2:-}"; shift 2 ;;
     --no_voice|--no-voice) NO_VOICE="1"; shift ;;
     -h|--help)
       cat <<EOF
@@ -314,6 +316,7 @@ Usage: tools/bootstrap.sh [options]
   --control-port PORT
   --root-url URL
   --rev REV
+  --zone ZONE_ID
   --no_voice            Skip voice/NLU deps (Rasa)
 EOF
       exit 0
@@ -430,6 +433,9 @@ fi
 
 export ADAOS_REV="$REV"
 export ADAOS_API_BASE="$ROOT_URL"
+if [[ -n "${ZONE_ID:-}" ]]; then
+  export ADAOS_ZONE_ID="$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')"
+fi
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
