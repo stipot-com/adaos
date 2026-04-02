@@ -41,6 +41,7 @@ from adaos.services.nats_config import (
     normalize_nats_ws_url,
     nats_url_uses_websocket,
     order_nats_ws_candidates,
+    public_nats_ws_api,
     public_nats_tcp_candidates,
     public_nats_ws_candidates,
 )
@@ -155,7 +156,7 @@ def _normalize_hub_nats_ws_url(value: str | None) -> str | None:
     if _hub_nats_prefer_dedicated() == "1":
         return normalized
     if normalized == PUBLIC_NATS_WS_DEDICATED:
-        return PUBLIC_NATS_WS_API
+        return public_nats_ws_api()
     return normalized
 
 
@@ -1379,7 +1380,7 @@ class BootstrapService:
                                 if base:
                                     _dedup_push(base)
                                 else:
-                                    _dedup_push(PUBLIC_NATS_WS_API)
+                                    _dedup_push(public_nats_ws_api())
                             try:
                                 now_m = time.monotonic()
                                 available = [s for s in candidates if now_m >= float(nats_server_quarantine_until.get(str(s), 0.0))]

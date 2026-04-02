@@ -20,6 +20,7 @@ from adaos.services.nats_config import (
     normalize_nats_ws_url,
     nats_url_uses_websocket,
     order_nats_ws_candidates,
+    public_nats_ws_api,
 )
 from adaos.services.nats_ws_transport import (
     _set_tcp_keepalive,
@@ -432,7 +433,7 @@ def resolve_realtime_remote_candidates() -> list[str]:
                     candidates.append(normalized)
         allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=False)
         if allow_api_fallback:
-            for item in ["wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]:
+            for item in [public_nats_ws_api(), "wss://nats.inimatic.com/nats"]:
                 if item not in candidates:
                     candidates.append(item)
         return candidates
@@ -441,9 +442,9 @@ def resolve_realtime_remote_candidates() -> list[str]:
         prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
         allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
         allow_tcp_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_TCP_FALLBACK"), default=False)
-        ws_candidates = ["wss://nats.inimatic.com/nats"]
+        ws_candidates = [public_nats_ws_api()]
         if allow_api_fallback:
-            ws_candidates.append("wss://api.inimatic.com/nats")
+            ws_candidates.append("wss://nats.inimatic.com/nats")
         ordered = order_nats_ws_candidates(ws_candidates, explicit_url=None, prefer_dedicated=prefer_dedicated)
         base_tcp = str(target_url).strip()
         if allow_tcp_fallback and base_tcp.startswith("nats://") and base_tcp not in ordered:
@@ -452,7 +453,7 @@ def resolve_realtime_remote_candidates() -> list[str]:
     node_url = normalize_nats_ws_url(node_url_raw, fallback=None)
     base = normalize_nats_ws_url(explicit_url or node_url, fallback=None)
     candidates: list[str] = []
-    for item in [base, "wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"]:
+    for item in [base, public_nats_ws_api(), "wss://nats.inimatic.com/nats"]:
         if isinstance(item, str) and item.startswith("ws") and item not in candidates:
             candidates.append(item)
     extra = str(os.getenv("ADAOS_REALTIME_REMOTE_WS_ALT", "") or "").strip()
@@ -466,7 +467,7 @@ def resolve_realtime_remote_candidates() -> list[str]:
     # of seconds even with keepalives enabled.
     prefer_dedicated = os.getenv("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     ordered = order_nats_ws_candidates(candidates, explicit_url=base, prefer_dedicated=prefer_dedicated)
-    api_ingress = "wss://api.inimatic.com/nats"
+    api_ingress = public_nats_ws_api()
     allow_api_fallback = _truthy(os.getenv("ADAOS_REALTIME_ALLOW_API_FALLBACK"), default=True)
     if api_ingress in ordered and not allow_api_fallback:
         ordered = [item for item in ordered if item != api_ingress]
