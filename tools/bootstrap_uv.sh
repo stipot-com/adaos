@@ -14,6 +14,7 @@ SERVE_PORT="8777"
 CONTROL_PORT="8777"
 ROOT_URL="https://api.inimatic.com"
 REV="rev2026"
+ZONE_ID=""
 NO_VOICE="0"
 
 log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
@@ -21,6 +22,19 @@ ok()   { printf '\033[32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m[!] %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+write_env_var() {
+  local key="$1"
+  local value="$2"
+  local env_file="${3:-.env}"
+  [[ -n "${key:-}" ]] || return 0
+  touch "$env_file"
+  if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+    sed -i "s/^${key}=.*/${key}=${value}/" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+  fi
+}
 
 show_qr_if_available() {
   local text="$1"
@@ -214,6 +228,7 @@ while [[ $# -gt 0 ]]; do
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
     --root-url) ROOT_URL="${2:-}"; shift 2 ;;
     --rev) REV="${2:-}"; shift 2 ;;
+    --zone|--zone-id) ZONE_ID="${2:-}"; shift 2 ;;
     --no_voice|--no-voice) NO_VOICE="1"; shift ;;
     -h|--help)
       cat <<EOF
@@ -226,6 +241,7 @@ Usage: tools/bootstrap_uv.sh [options]
   --control-port PORT
   --root-url URL
   --rev REV
+  --zone ZONE_ID
   --no_voice            Skip voice/NLU deps (Rasa)
 EOF
       exit 0
@@ -302,6 +318,9 @@ if [[ ! -f .env ]]; then
     warn "No .env found and no .env.example/.env.prod.sample present"
   fi
 fi
+if [[ -n "${ZONE_ID:-}" ]]; then
+  write_env_var "ADAOS_ZONE_ID" "$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')" ".env"
+fi
 
 # 5) Convenience PATH for current shell session
 if [[ -d ".venv/bin" ]]; then
@@ -327,6 +346,9 @@ fi
 
 export ADAOS_REV="$REV"
 export ADAOS_API_BASE="$ROOT_URL"
+if [[ -n "${ZONE_ID:-}" ]]; then
+  export ADAOS_ZONE_ID="$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')"
+fi
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."

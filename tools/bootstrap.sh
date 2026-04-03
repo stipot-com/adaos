@@ -27,6 +27,19 @@ fail() { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+write_env_var() {
+  local key="$1"
+  local value="$2"
+  local env_file="${3:-.env}"
+  [[ -n "${key:-}" ]] || return 0
+  touch "$env_file"
+  if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+    sed -i "s/^${key}=.*/${key}=${value}/" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+  fi
+}
+
 ORIG_ARGS=("$@")
 
 show_qr_if_available() {
@@ -412,6 +425,9 @@ if [[ ! -f .env ]]; then
   else
     warn "No .env found and no .env.example/.env.prod.sample present"
   fi
+fi
+if [[ -n "${ZONE_ID:-}" ]]; then
+  write_env_var "ADAOS_ZONE_ID" "$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')" ".env"
 fi
 
 if [[ -z "${ENV_TYPE:-}" ]]; then

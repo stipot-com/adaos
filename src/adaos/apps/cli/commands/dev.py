@@ -228,6 +228,8 @@ def root_login(
         else:
             typer.echo(f"  Open: {auth.verification_uri}")
             typer.echo(f"  Enter code: {auth.user_code}")
+        if auth.zone_id:
+            typer.echo(f"  zone_id: {auth.zone_id}")
         typer.echo(f"Polling every {auth.interval} seconds (expires in {auth.expires_in // 60} minutes)…")
 
     try:
@@ -238,6 +240,7 @@ def root_login(
                     "user_code": auth.user_code,
                     "verification_uri": auth.verification_uri,
                     "verification_uri_complete": auth.verification_uri_complete,
+                    "zone_id": auth.zone_id,
                     "expires_in": auth.expires_in,
                     "interval": auth.interval,
                 }
@@ -248,6 +251,8 @@ def root_login(
             typer.echo(f"  user_code: {auth.user_code}")
             if auth.verification_uri_complete:
                 typer.echo(f"  verification_uri_complete: {auth.verification_uri_complete}")
+            if auth.zone_id:
+                typer.echo(f"  zone_id: {auth.zone_id}")
             typer.echo(f"  verification_uri: {auth.verification_uri}")
             typer.echo(f"  expires_in: {auth.expires_in}")
             typer.echo(f"  interval: {auth.interval}")

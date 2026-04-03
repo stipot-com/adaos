@@ -113,6 +113,22 @@ def _format_expiry(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat()
 
 
+def _extract_zone_id_from_url(url: str | None) -> str | None:
+    text = str(url or "").strip()
+    if not text or "?" not in text:
+        return None
+    try:
+        query = text.split("?", 1)[1]
+    except Exception:
+        return None
+    for item in query.split("&"):
+        if not item.startswith("zone="):
+            continue
+        zone_id = item.split("=", 1)[1].strip().lower()
+        return zone_id or None
+    return None
+
+
 def _root_state(cfg: NodeConfig) -> dict:
     if cfg.root is None:
         cfg.root = {}
@@ -402,6 +418,7 @@ class DeviceAuthorization:
     user_code: str
     verification_uri: str
     verification_uri_complete: str | None
+    zone_id: str | None
     interval: int
     expires_in: int
 
@@ -925,12 +942,16 @@ class RootDeveloperService:
         expires_in = int(start.get("expires_in", 600))
         if not isinstance(device_code, str) or not isinstance(user_code, str) or not isinstance(verification_uri, str):
             raise RootServiceError("Root did not return device authorization data")
+        zone_id = _extract_zone_id_from_url(verification_complete) or _extract_zone_id_from_url(verification_uri)
+        if not zone_id:
+            zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower() or None
 
         auth = DeviceAuthorization(
             device_code=device_code,
             user_code=user_code,
             verification_uri=verification_uri,
             verification_uri_complete=verification_complete if isinstance(verification_complete, str) else None,
+            zone_id=zone_id,
             interval=interval,
             expires_in=expires_in,
         )
