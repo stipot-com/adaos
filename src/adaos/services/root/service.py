@@ -966,7 +966,7 @@ class RootDeveloperService:
         """
         cfg = self._load_config()
         verify_plain = self._plain_verify(cfg)
-        client = self._client(cfg)
+        client = self._owner_auth_client(cfg)
         hint = owner_id_hint or cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
         auth, _verify, _cert = self._start_device_authorization(
             cfg,
@@ -987,7 +987,7 @@ class RootDeveloperService:
 
         try:
             verify_plain = self._plain_verify(cfg)
-            client = self._client(cfg)
+            client = self._owner_auth_client(cfg)
             owner_id_hint = cfg.subnet_id or cfg.subnet_settings.id or "local-owner"
             auth, authorize_verify, authorize_cert = self._start_device_authorization(
                 cfg,
@@ -1508,6 +1508,15 @@ class RootDeveloperService:
             return self._client_factory(cfg)
         base_url = cfg.root_settings.base_url or "https://api.inimatic.com"
         return RootHttpClient(base_url=base_url)
+
+    def _owner_auth_client(self, cfg: NodeConfig) -> RootHttpClient:
+        if self._client_factory:
+            return self._client_factory(cfg)
+        zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower()
+        if zone_id:
+            host = "api.inimatic.com" if zone_id == "api" else f"{zone_id}.api.inimatic.com"
+            return RootHttpClient(base_url=f"https://{host}")
+        return self._client(cfg)
 
     def _plain_verify(self, cfg: NodeConfig) -> ssl.SSLContext | bool:
         ca_setting = cfg.root_settings.ca_cert
