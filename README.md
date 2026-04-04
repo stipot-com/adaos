@@ -60,6 +60,8 @@ With AdaOS you can:
 ```bash
 # use optional key to join member to subnet: --join-code CODE 
 curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s --
+# pick zone explicitly when needed:
+# curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --zone ru
 ```
 
 ### Windows (PowerShell)
@@ -67,6 +69,8 @@ curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s --
 ```powershell
 # use optional key to join member to subnet: -JoinCode CODE
 iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1
+# pick zone explicitly when needed:
+# iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
 ```
 
 ### Windows (CMD / .bat)
@@ -74,6 +78,8 @@ iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; ini
 ```bat
 # use optional key to join member to subnet: -JoinCode CODE
 curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -JoinCode CODE
+REM pick zone explicitly when needed:
+REM curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -ZoneId ru
 ```
 
 ## AdaOS Service management
@@ -121,7 +127,7 @@ adaos hub root reconnect
 adaos hub root reconnect --transport ws|tcp
 
 # Boot debug 
-# https://app.inimatic.com/?boot_debug=1
+# https://myinimatic.web.app/?boot_debug=1
 
 ```
 

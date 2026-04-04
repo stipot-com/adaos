@@ -4148,8 +4148,20 @@ def reliability_snapshot(
     connected_to_hub: bool | None,
     node_names: list[str] | None = None,
 ) -> dict[str, Any]:
+    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower() or None
     channel_diagnostics = channel_diagnostics_snapshot()
     transport_strategy = hub_root_transport_strategy_snapshot()
+    selected_server = str(transport_strategy.get("selected_server") or "").strip()
+    active_zone_id = None
+    if selected_server:
+        lower = selected_server.lower()
+        if "://api.inimatic.com" in lower or lower.endswith("api.inimatic.com"):
+            active_zone_id = "api"
+        else:
+            for candidate in ("ru", "de"):
+                if f"{candidate}.api.inimatic.com" in lower:
+                    active_zone_id = candidate
+                    break
     hub_root_protocol = hub_root_protocol_snapshot()
     hub_member_channels = hub_member_semantic_channels_snapshot(
         role=role,
@@ -4196,6 +4208,7 @@ def reliability_snapshot(
         "node": {
             "node_id": node_id,
             "subnet_id": subnet_id,
+            "zone_id": zone_id,
             "role": role,
             "ready": bool(local_ready and not draining),
             "node_state": node_state,
@@ -4212,6 +4225,11 @@ def reliability_snapshot(
             "channel_diagnostics": channel_diagnostics,
             "channel_overview": channel_overview,
             "hub_root_transport_strategy": transport_strategy,
+            "hub_root_zone": {
+                "configured_zone_id": zone_id,
+                "active_zone_id": active_zone_id,
+                "selected_server": selected_server or None,
+            },
             "hub_root_protocol": hub_root_protocol,
             "hub_member_channels": hub_member_channels,
             "hub_member_connection_state": hub_member_connection_state,

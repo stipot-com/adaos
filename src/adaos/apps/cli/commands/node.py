@@ -144,8 +144,17 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
 
     typer.echo(
         f"node={node.get('node_id') or '?'} role={node.get('role') or '?'} "
+        f"zone={node.get('zone_id') or '-'} "
         f"ready={bool(node.get('ready'))} state={node.get('node_state') or '?'}"
     )
+    hub_root_zone = runtime.get("hub_root_zone") if isinstance(runtime.get("hub_root_zone"), dict) else {}
+    if hub_root_zone:
+        typer.echo(
+            "hub_root.zone: "
+            f"configured={hub_root_zone.get('configured_zone_id') or '-'} "
+            f"active={hub_root_zone.get('active_zone_id') or '-'} "
+            f"server={hub_root_zone.get('selected_server') or '-'}"
+        )
     if channel_overview:
         for name in ("hub_root", "hub_root_browser", "browser_hub_sync"):
             item = channel_overview.get(name) if isinstance(channel_overview.get(name), dict) else {}

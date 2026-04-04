@@ -187,7 +187,7 @@ print_next_steps() {
   echo "     Stop:              python -m adaos api stop"
   echo "     Restart:           python -m adaos api restart"
   echo "  4) Web UI:"
-  echo "     Open https://app.inimatic.com/ and connect to your local node (ports 8777/8778)."
+  echo "     Open https://myinimatic.web.app/ and connect to your local node (ports 8777/8778)."
   if [[ "${role:-}" == "member" ]]; then
     echo "  5) Member → hub connectivity:"
     echo "     connected_to_hub=${connected_to_hub:-unknown}"

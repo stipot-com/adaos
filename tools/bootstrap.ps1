@@ -564,7 +564,7 @@ Write-Host ("     Start (foreground): .\\.venv\\Scripts\\python.exe -m adaos api
 Write-Host "     Stop:              .\\.venv\\Scripts\\python.exe -m adaos api stop"
 Write-Host "     Restart:           .\\.venv\\Scripts\\python.exe -m adaos api restart"
 Write-Host "  4) Web UI:"
-Write-Host "     Open https://app.inimatic.com/ and connect to your local node (ports 8777/8778)."
+Write-Host "     Open https://myinimatic.web.app/ and connect to your local node (ports 8777/8778)."
 if ($st -and $st.role -eq "member") {
     Write-Host "  5) Member → hub connectivity:"
     Write-Host ("     connected_to_hub={0}" -f $st.connected_to_hub)
