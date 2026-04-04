@@ -10,6 +10,11 @@ PUBLIC_NATS_TCP_DEDICATED = "nats://nats.inimatic.com:4222"
 
 
 def _zone_public_api_base() -> str | None:
+    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
+    if zone_id:
+        host = "api.inimatic.com" if zone_id == "api" else f"{zone_id}.api.inimatic.com"
+        return f"https://{host}"
+
     raw_root = str(os.getenv("ROOT_BASE_URL", "") or "").strip()
     if raw_root:
         try:
@@ -22,11 +27,7 @@ def _zone_public_api_base() -> str | None:
                 return urlunparse(parsed._replace(scheme=scheme, path="", params="", query="", fragment=""))
         except Exception:
             pass
-    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
-    if not zone_id:
-        return None
-    host = "api.inimatic.com" if zone_id == "api" else f"{zone_id}.api.inimatic.com"
-    return f"https://{host}"
+    return None
 
 
 def public_nats_ws_api() -> str:
