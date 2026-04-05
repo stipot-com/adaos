@@ -387,6 +387,7 @@ async def node_reliability() -> dict[str, Any]:
         node_id=conf.node_id,
         subnet_id=conf.subnet_id,
         role=conf.role,
+        zone_id=getattr(conf, "zone_id", None),
         local_ready=local_ready,
         node_state=str(lifecycle.get("node_state") or "ready"),
         draining=bool(lifecycle.get("draining")),

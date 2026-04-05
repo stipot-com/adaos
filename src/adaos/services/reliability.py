@@ -4141,6 +4141,7 @@ def reliability_snapshot(
     node_id: str,
     subnet_id: str,
     role: str,
+    zone_id: str | None = None,
     local_ready: bool,
     node_state: str,
     draining: bool,
@@ -4148,7 +4149,11 @@ def reliability_snapshot(
     connected_to_hub: bool | None,
     node_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower() or None
+    zone_id = (
+        str(zone_id or "").strip().lower()
+        or str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
+        or None
+    )
     channel_diagnostics = channel_diagnostics_snapshot()
     transport_strategy = hub_root_transport_strategy_snapshot()
     selected_server = str(transport_strategy.get("selected_server") or "").strip()
