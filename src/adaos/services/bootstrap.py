@@ -1019,9 +1019,27 @@ class BootstrapService:
                     except Exception:
                         cfg = None
 
-                    # Prefer node.yaml-driven mTLS materials (hub cert/key + CA) rather than Settings,
-                    # because Settings may not include PKI fields.
-                    base_url = getattr(self.ctx.settings, "api_base", None) or getattr(getattr(cfg, "root_settings", None), "base_url", None) or "https://api.inimatic.com"
+                    # Prefer zonal backend for hub-root runtime credentials.
+                    # `root.base_url` remains the central control-plane URL, but the
+                    # hub NATS session for stage 1 must be issued by the selected zone.
+                    zone_id = str(
+                        os.getenv("ADAOS_ZONE_ID")
+                        or getattr(cfg, "zone_id", None)
+                        or ""
+                    ).strip().lower()
+                    if zone_id:
+                        base_url = (
+                            "https://api.inimatic.com"
+                            if zone_id == "api"
+                            else f"https://{zone_id}.api.inimatic.com"
+                        )
+                    else:
+                        # Fallback for legacy configs without explicit zone.
+                        base_url = (
+                            getattr(self.ctx.settings, "api_base", None)
+                            or getattr(getattr(cfg, "root_settings", None), "base_url", None)
+                            or "https://api.inimatic.com"
+                        )
                     try:
                         ca = _expand_path(getattr(getattr(cfg, "root_settings", None), "ca_cert", None), "keys/ca.cert")
                         cert = _expand_path(getattr(getattr(getattr(cfg, "subnet_settings", None), "hub", None), "cert", None), "keys/hub_cert.pem")
