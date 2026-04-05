@@ -1136,6 +1136,9 @@ class BootstrapService:
                         # (Settings, tooling) can discover subnet/node info.
                         try:
                             if isinstance(cfg, object):
+                                zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
+                                if zone_id and "zone_id" not in y:
+                                    y["zone_id"] = zone_id
                                 if "node_id" not in y:
                                     y["node_id"] = getattr(cfg, "node_id", None) or y.get("node_id")
                                 if "subnet_id" not in y:

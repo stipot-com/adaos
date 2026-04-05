@@ -524,6 +524,9 @@ def dev_login(
             data_yaml = _load_node()
             try:
                 if "cfg" in locals() and cfg:
+                    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
+                    if zone_id and not data_yaml.get("zone_id"):
+                        data_yaml["zone_id"] = zone_id
                     data_yaml.setdefault("node_id", cfg.node_id)
                     data_yaml.setdefault("subnet_id", cfg.subnet_id)
                     data_yaml.setdefault("role", cfg.role)

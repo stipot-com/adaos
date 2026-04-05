@@ -99,6 +99,7 @@ class DevSettings:
 
 @dataclass
 class NodeConfig:
+    zone_id: str | None = None
     # TODO refactor to node.id
     node_id: str
     # TODO refactor to subnet.id
@@ -134,6 +135,10 @@ class NodeConfig:
 
     def ensure_defaults(self) -> bool:
         changed = False
+        env_zone_id = str(os.environ.get("ADAOS_ZONE_ID", "") or "").strip().lower() or None
+        if env_zone_id and self.zone_id != env_zone_id:
+            self.zone_id = env_zone_id
+            changed = True
         if not self.role:
             self.role = "hub"
             changed = True
@@ -183,6 +188,7 @@ class NodeConfig:
 
     def to_dict(self) -> dict[str, Any]:
         data = {
+            "zone_id": self.zone_id,
             "node_id": self.node_id,
             "subnet_id": self.subnet_id,
             "role": self.role,
@@ -427,6 +433,7 @@ def _settings_from_dict(settings_cls: type, payload: Any):
 
 def _default_conf() -> NodeConfig:
     conf = NodeConfig(
+        zone_id=(str(os.environ.get("ADAOS_ZONE_ID", "") or "").strip().lower() or None),
         node_id=str(uuid.uuid4()),
         subnet_id=str(uuid.uuid4()),
         role="hub",
@@ -589,6 +596,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     root_state = _normalize_root_state(raw_root_state)
 
     conf = NodeConfig(
+        zone_id=(str(data.get("zone_id") or "").strip().lower() or None),
         node_id=node_id,
         subnet_id=subnet_id,
         role=role,
