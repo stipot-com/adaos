@@ -99,12 +99,12 @@ class DevSettings:
 
 @dataclass
 class NodeConfig:
-    zone_id: str | None = None
     # TODO refactor to node.id
     node_id: str
     # TODO refactor to subnet.id
     subnet_id: str
     role: str
+    zone_id: str | None = None
     hub_url: str | None = None
     token: str | None = None
     root_state: RootState | None = None
