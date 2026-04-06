@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Final
 
 CENTRAL_PUBLIC_HOST: Final[str] = "api.inimatic.com"
-RU_PUBLIC_HOST: Final[str] = "ru.inimatic.com"
+RU_PUBLIC_HOST: Final[str] = "ru.api.inimatic.com"
 CANONICAL_ZONE_IDS: Final[tuple[str, ...]] = ("us", "eu", "ru", "in", "ch")
 CENTRAL_ZONE_IDS: Final[tuple[str, ...]] = ("us", "eu", "in", "ch")
 

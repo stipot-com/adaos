@@ -16,13 +16,13 @@ def test_canonical_zone_id_supports_legacy_aliases() -> None:
 
 
 def test_zone_public_host_uses_ru_host_only_for_ru_zone() -> None:
-    assert zone_public_host("ru") == "ru.inimatic.com"
+    assert zone_public_host("ru") == "ru.api.inimatic.com"
     assert zone_public_host("api") == "api.inimatic.com"
     assert zone_public_host("eu") == "api.inimatic.com"
 
 
 def test_zone_public_base_url_maps_logical_zones_to_shared_hosts() -> None:
-    assert zone_public_base_url("ru") == "https://ru.inimatic.com"
+    assert zone_public_base_url("ru") == "https://ru.api.inimatic.com"
     assert zone_public_base_url("us") == "https://api.inimatic.com"
     assert zone_public_base_url("in") == "https://api.inimatic.com"
 
