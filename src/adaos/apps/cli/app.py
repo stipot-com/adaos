@@ -156,6 +156,7 @@ from adaos.services.settings import Settings
 from adaos.apps.bootstrap import init_ctx, reload_ctx
 from adaos.apps.cli.i18n import _
 from adaos.services.agent_context import get_ctx
+from adaos.services.runtime_paths import current_base_dir
 from adaos.apps.cli.commands import monitor, skill, runtime, llm, tests as tests_cmd, api, scenario, sdk_export as _sdk_export, repo, dev, node, hub, realtime
 from adaos.apps.cli.commands import git as git_cmd
 from adaos.apps.cli.commands import interpreter
@@ -304,8 +305,7 @@ def switch_stt(mode: str = typer.Argument(..., help="vosk | rhasspy | native")):
 
 @app.command("where")
 def where():
-    ctx = get_ctx()
-    print("base_dir:", ctx.settings.base_dir)
+    print("base_dir:", current_base_dir())
 
 
 # -------- подкоманды --------

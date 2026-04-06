@@ -2,30 +2,19 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any
 
-from adaos.services.agent_context import get_ctx
+from adaos.services.runtime_paths import current_state_dir
 
 _LOCK = threading.RLock()
 
 
 def _base_state_dir() -> Path:
-    try:
-        ctx = get_ctx()
-        raw = ctx.paths.state_dir()
-        raw = raw() if callable(raw) else raw
-        return Path(raw).expanduser().resolve()
-    except Exception:
-        pass
-    raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve() / "state"
-    return (Path.home() / ".adaos" / "state").resolve()
+    return current_state_dir()
 
 
 def _outbox_root() -> Path:

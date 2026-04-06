@@ -20,20 +20,11 @@ from adaos.services.core_slots import (
     rollback_to_previous_slot,
     slot_dir,
 )
+from adaos.services.runtime_paths import current_base_dir
 
 
 def _base_dir() -> Path:
-    try:
-        ctx = get_ctx()
-        base = ctx.paths.base_dir()
-        base = base() if callable(base) else base
-        return Path(base).expanduser().resolve()
-    except Exception:
-        pass
-    raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (Path.home() / ".adaos").resolve()
+    return current_base_dir()
 
 
 def _state_root() -> Path:
@@ -178,7 +169,38 @@ def _repo_root() -> Path | None:
             return None
 
 
+def _repo_current_branch(repo_root: Path | None = None) -> str:
+    root = repo_root or _repo_root()
+    if root is None:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        return ""
+    branch = str(completed.stdout or "").strip()
+    return "" if branch.upper() == "HEAD" else branch
+
+
+def _shared_dotenv_path() -> str:
+    raw = str(os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+    if raw:
+        return raw
+    slot = active_slot()
+    manifest = read_slot_manifest(slot) if slot else None
+    env = manifest.get("env") if isinstance(manifest, dict) else None
+    if not isinstance(env, dict):
+        return ""
+    return str(env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+
+
 def _format_update_command(template: str, plan: dict[str, Any]) -> str:
+    repo_root = _repo_root()
     values = {
         "target_rev": str(plan.get("target_rev") or ""),
         "target_version": str(plan.get("target_version") or ""),
@@ -190,7 +212,9 @@ def _format_update_command(template: str, plan: dict[str, Any]) -> str:
         "reason": str(plan.get("reason") or ""),
         "base_dir": str(_base_dir()),
         "python": sys.executable,
-        "repo_root": str(_repo_root() or ""),
+        "repo_root": str(repo_root or ""),
+        "source_repo_root": str(repo_root or ""),
+        "shared_dotenv_path": _shared_dotenv_path(),
     }
     fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
     for field in fields:
@@ -207,6 +231,8 @@ def _default_update_command_template() -> str:
         ' --slot-dir "{inactive_slot_dir}"'
         ' --base-dir "{base_dir}"'
         ' --repo-root "{repo_root}"'
+        ' --source-repo-root "{source_repo_root}"'
+        ' --shared-dotenv-path "{shared_dotenv_path}"'
     )
 
 
@@ -237,6 +263,7 @@ def _plan_with_slot_context(plan: dict[str, Any]) -> dict[str, Any]:
             (active_manifest or {}).get("target_rev")
             or os.getenv("ADAOS_REV")
             or os.getenv("ADAOS_INIT_REV")
+            or _repo_current_branch()
             or ""
         ).strip()
         payload["target_rev"] = resolved_rev

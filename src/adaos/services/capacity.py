@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 import yaml
 
+from adaos.services.runtime_paths import current_base_dir
+
 
 def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]:
     """
@@ -17,17 +19,7 @@ def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]
     """
     # Resolve .adaos base dir lazily from env/context if not provided
     if base_dir is None:
-        try:
-            from adaos.services.node_config import node_base_dir
-
-            base_dir = node_base_dir()
-        except Exception:
-            try:
-                from adaos.services.settings import Settings
-
-                base_dir = Settings.from_sources().base_dir
-            except Exception:
-                base_dir = Path.home() / ".adaos"
+        base_dir = current_base_dir()
 
     node_path = Path(base_dir) / "node.yaml"
     try:
@@ -101,17 +93,7 @@ def get_local_capacity() -> Dict[str, Any]:
 def _resolve_base_dir(base_dir: Path | None = None) -> Path:
     if base_dir is not None:
         return base_dir
-    try:
-        from adaos.services.node_config import node_base_dir
-
-        return node_base_dir()
-    except Exception:
-        try:
-            from adaos.services.settings import Settings
-
-            return Settings.from_sources().base_dir
-        except Exception:
-            return Path.home() / ".adaos"
+    return current_base_dir()
 
 
 def _load_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]:

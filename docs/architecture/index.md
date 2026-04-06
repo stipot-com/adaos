@@ -26,4 +26,5 @@ In the current implementation:
 - Yjs-backed webspaces provide synchronized scenario and desktop state
 - autostart and core-update flows are integrated with the runtime lifecycle
 
-The following pages summarize the implemented architecture rather than the target-state research material.
+The pages in this section primarily summarize the implemented architecture.
+When a page is explicitly labeled as a roadmap or target-state design, it captures planned control-plane evolution that should stay compatible with the current runtime.

@@ -29,6 +29,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, write_status
 from adaos.services.core_slots import active_slot, active_slot_manifest, rollback_to_previous_slot, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
+from adaos.services.runtime_paths import current_base_dir, current_logs_dir
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root.core_update_sync import build_core_update_report
 
@@ -63,10 +64,7 @@ def _format_slot_value(template: str, values: dict[str, str]) -> str:
 def _slot_launch_spec(manifest: dict[str, object], *, host: str, port: int, token: str | None) -> tuple[list[str] | None, str | None]:
     slot = str(manifest.get("slot") or "").strip().upper()
     try:
-        ctx = get_ctx()
-        base_dir = ctx.paths.base_dir()
-        base_dir = base_dir() if callable(base_dir) else base_dir
-        base_dir_text = str(Path(base_dir).expanduser().resolve())
+        base_dir_text = str(current_base_dir())
     except Exception:
         base_dir_text = str(os.getenv("ADAOS_BASE_DIR") or "")
     values = {
@@ -237,8 +235,7 @@ def _tail_text(path: Path, *, limit: int = 4000) -> str:
 
 
 def _validation_log_paths(slot: str | None) -> tuple[Path, Path]:
-    base_dir = Path(os.getenv("ADAOS_BASE_DIR") or (Path.home() / ".adaos")).expanduser().resolve()
-    logs_dir = (base_dir / "logs").resolve()
+    logs_dir = current_logs_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
     suffix = str(slot or "unknown").strip().upper() or "UNKNOWN"
     return (
@@ -296,15 +293,11 @@ def _probe_update_runtime(
                     break
                 if expected_slot and url.endswith("/api/admin/update/status"):
                     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
-                    active_manifest = (
-                        payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
-                    )
+                    active_manifest = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
                     active_slot_name = str(slots.get("active_slot") or active_manifest.get("slot") or "").strip().upper()
                     check["active_slot"] = active_slot_name
                     if active_slot_name and active_slot_name != str(expected_slot).strip().upper():
-                        last_error = (
-                            f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
-                        )
+                        last_error = f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
                         check["ok"] = False
                         check["error"] = last_error
                         attempt["checks"].append(check)
@@ -351,15 +344,11 @@ def _probe_update_runtime(
                             continue
                         if expected_slot and url.endswith("/api/admin/update/status"):
                             slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
-                            active_manifest = (
-                                payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
-                            )
+                            active_manifest = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
                             active_slot_name = str(slots.get("active_slot") or active_manifest.get("slot") or "").strip().upper()
                             check["active_slot"] = active_slot_name
                             if active_slot_name and active_slot_name != str(expected_slot).strip().upper():
-                                last_error = (
-                                    f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
-                                )
+                                last_error = f"{url} returned active_slot={active_slot_name}, expected {str(expected_slot).strip().upper()}"
                                 check["ok"] = False
                                 check["error"] = last_error
                                 attempt["checks"].append(check)
@@ -500,9 +489,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         stdout_path, stderr_path = _validation_log_paths(slot)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with stdout_path.open("a", encoding="utf-8", buffering=1) as stdout_fh, stderr_path.open(
-            "a", encoding="utf-8", buffering=1
-        ) as stderr_fh:
+        with stdout_path.open("a", encoding="utf-8", buffering=1) as stdout_fh, stderr_path.open("a", encoding="utf-8", buffering=1) as stderr_fh:
             proc = subprocess.Popen(
                 argv or command or [],
                 shell=bool(command),
@@ -547,9 +534,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             "phase": "validate",
             "message": f"slot {slot} failed post-switch validation",
             "validation_error": details,
-            "validation_error_summary": str(details.get("summary") or "validation failed")
-            if isinstance(details, dict)
-            else str(details or "validation failed"),
+            "validation_error_summary": str(details.get("summary") or "validation failed") if isinstance(details, dict) else str(details or "validation failed"),
             "validation_stdout": validation_stdout,
             "validation_stderr": validation_stderr,
             "validation_logs": {

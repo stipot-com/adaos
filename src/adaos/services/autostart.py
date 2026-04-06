@@ -17,6 +17,7 @@ import requests
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import AgentContext
 from adaos.services.core_slots import active_slot, activate_slot, read_slot_manifest, slot_dir
+from adaos.services.runtime_paths import current_state_dir
 from adaos.services.node_config import load_config
 from adaos.services.settings import Settings, _parse_env_file
 
@@ -269,19 +270,7 @@ def _is_local_url(url: str | None) -> bool:
 
 
 def _state_dir() -> Path:
-    raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
-    if raw:
-        try:
-            return (Path(raw).expanduser().resolve() / "state").resolve()
-        except Exception:
-            pass
-    try:
-        from adaos.services.agent_context import get_ctx
-
-        state_root = get_ctx().paths.state_dir()
-        return Path(state_root() if callable(state_root) else state_root).resolve()
-    except Exception:
-        return (_home() / ".adaos" / "state").resolve()
+    return current_state_dir()
 
 
 def _tcp_probe(host: str, port: int, *, timeout: float = 0.6) -> bool:

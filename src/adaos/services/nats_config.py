@@ -3,24 +3,26 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse, urlunparse
 
+from adaos.services.zone_hosts import zone_public_base_url
+
 PUBLIC_NATS_WS_API = "wss://api.inimatic.com/nats"
 PUBLIC_NATS_WS_DEDICATED = "wss://nats.inimatic.com/nats"
 PUBLIC_NATS_TCP_API = "nats://api.inimatic.com:4222"
 PUBLIC_NATS_TCP_DEDICATED = "nats://nats.inimatic.com:4222"
+_DEFAULT_NATS_WS_FALLBACK = object()
 
 
 def _zone_public_api_base() -> str | None:
     zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
     if zone_id:
-        host = "api.inimatic.com" if zone_id == "api" else f"{zone_id}.api.inimatic.com"
-        return f"https://{host}"
+        return zone_public_base_url(zone_id)
 
     raw_root = str(os.getenv("ROOT_BASE_URL", "") or "").strip()
     if raw_root:
         try:
             parsed = urlparse(raw_root)
             host = str(parsed.hostname or "").strip().lower()
-            if host == "api.inimatic.com" or host.endswith(".api.inimatic.com"):
+            if host in {"api.inimatic.com", "ru.inimatic.com"} or host.endswith(".api.inimatic.com"):
                 scheme = (parsed.scheme or "https").lower()
                 if scheme not in ("http", "https"):
                     scheme = "https"
@@ -58,10 +60,10 @@ def nats_url_uses_websocket(value: str | None) -> bool:
 def normalize_nats_ws_url(
     value: str | None,
     *,
-    fallback: str | None = None,
+    fallback: str | None | object = _DEFAULT_NATS_WS_FALLBACK,
     default_path: str = "/nats",
 ) -> str | None:
-    if fallback is None:
+    if fallback is _DEFAULT_NATS_WS_FALLBACK:
         fallback = public_nats_ws_api()
     raw = str(value or "").strip()
     if not raw:

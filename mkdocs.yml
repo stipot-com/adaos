@@ -145,6 +145,8 @@ nav:
       - Layers: architecture/layers.md
       - Agent Context: architecture/context.md
       - Security: architecture/security.md
+      - Infrascope: architecture/infrascope.md
+      - Infrascope Roadmap: architecture/infrascope-roadmap.md
   - CLI:
       - Overview: cli/index.md
       - API Service: cli/api.md

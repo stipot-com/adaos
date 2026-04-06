@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 
@@ -11,13 +12,15 @@ app = typer.Typer(help="Git availability and archive fallback (node.yaml capacit
 
 
 def _echo(av, *, json_output: bool) -> None:
+    base_dir = get_ctx().paths.base_dir()
+    base_dir = Path(base_dir() if callable(base_dir) else base_dir).expanduser().resolve()
     payload = {
         "enabled": bool(av.enabled),
         "git_path": av.git_path,
         "mode": av.mode,
         "reason": av.reason,
         "source": av.source,
-        "base_dir": str(get_ctx().settings.base_dir),
+        "base_dir": str(base_dir),
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))

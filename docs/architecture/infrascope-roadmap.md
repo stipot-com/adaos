@@ -1,0 +1,243 @@
+# Infrascope Roadmap
+
+This roadmap breaks `Infrascope` into implementation iterations that fit the current AdaOS codebase and documentation model.
+
+Architecture is defined in [Infrascope](infrascope.md). This page focuses on sequencing, deliverables, and acceptance criteria.
+
+## Sequencing Principles
+
+1. Contracts before screens.
+   The canonical object model and projections come before specialized UI widgets.
+2. Reuse current runtime producers.
+   Existing node, runtime, Yjs, workspaces, and observe services should feed the new control plane.
+3. Operator value before visual complexity.
+   `overview`, `inventory`, and inspector should land before ambitious full-graph experiences.
+4. LLM compatibility from day one.
+   Every iteration should improve machine-readable context, not bolt it on later.
+5. Governance is part of the object model.
+   Ownership, visibility, and policy should not be postponed until after the UI is built.
+
+## Reference Scenarios
+
+Each iteration should improve at least one of these end-to-end scenarios:
+
+1. Diagnose why a scenario stopped working.
+2. Determine whether a broken automation is caused by root, hub, member, browser, or device failure.
+3. Preview impact before restarting a hub or updating a skill.
+4. Explain which object exceeded an LLM or external-service quota.
+5. Prepare a safe, policy-aware context packet for an LLM assistant.
+
+## Iteration 0: Canonical Vocabulary
+
+### Goal
+
+Create a stable object contract and shared vocabulary for states, relations, and actions.
+
+### Deliverables
+
+- define `CanonicalObject` and supported `kind` registry
+- normalize status and health facets across root, hub, member, browser, device, skill, scenario, runtime, and quota objects
+- define relation kinds such as `parent`, `depends_on`, `hosted_on`, `connected_to`, `uses`, and `affects`
+- define formal action descriptors with risk and permission metadata
+
+### Current Anchors
+
+- `src/adaos/services/reliability.py`
+- `src/adaos/services/node_config.py`
+- `src/adaos/services/workspaces/index.py`
+- `src/adaos/services/user/profile.py`
+- `src/adaos/apps/api/node_api.py`
+- `src/adaos/apps/api/skills.py`
+- `src/adaos/apps/api/scenarios.py`
+
+### Done When
+
+- every core object class can be represented with `id`, `kind`, `title`, `status`, `relations`, and `governance`
+- the same status words mean the same thing across node and runtime APIs
+
+## Iteration 1: Projection Layer
+
+### Goal
+
+Build machine-readable projections that can feed both UI and LLM workflows.
+
+### Deliverables
+
+- object projection service
+- topology projection service
+- narrative projection for summaries and operator focus
+- action projection for formal safe actions
+- task packet builder for LLM and automation
+
+### Current Anchors
+
+- `src/adaos/services/scenario/projection_service.py`
+- `src/adaos/services/scenario/projection_registry.py`
+- `src/adaos/apps/api/observe_api.py`
+- `src/adaos/apps/api/subnet_api.py`
+- `src/adaos/services/observe.py`
+- `src/adaos/services/eventbus.py`
+
+### Done When
+
+- a selected object can be fetched as `object`, `neighborhood`, and `task_packet`
+- UI and LLM no longer need bespoke serializers for each object kind
+
+## Iteration 2: Operator Workspace MVP
+
+### Goal
+
+Ship the first useful operator-facing control plane.
+
+### Deliverables
+
+- `overview` with health strip, active incidents, quota summary, active runtimes, and recent changes
+- `inventory` tabs for hubs, members, browsers, devices, skills, and scenarios
+- unified right-side `object inspector`
+- drill-down from incident to object without leaving context
+
+### Current Anchors
+
+- `src/adaos/services/workspaces/*`
+- `src/adaos/services/yjs/*`
+- `src/adaos/services/scenario/webspace_runtime.py`
+- browser-facing workspace shells that already consume Yjs-backed state
+
+### Done When
+
+- an operator can locate the failing area of the subnet in under five seconds
+- object details open in-context instead of as disconnected standalone pages
+
+## Iteration 3: Topology and Impact Mode
+
+### Goal
+
+Make relationships, failure paths, and change impact visible.
+
+### Deliverables
+
+- layered topology map for `physical`, `connectivity`, `runtime`, `resource`, and `capability` views
+- neighborhood isolation and graph filtering
+- dependency graph for selected object
+- impact preview before `restart`, `reconnect`, `update`, or `disable`
+- version and sync drift map
+
+### Current Anchors
+
+- `src/adaos/services/subnet/link_manager.py`
+- `src/adaos/services/subnet/link_client.py`
+- `src/adaos/services/subnet/runtime.py`
+- `src/adaos/services/root/service.py`
+- `src/adaos/services/reliability.py`
+
+### Done When
+
+- the operator can identify the path of failure, not only the failing node
+- destructive or disruptive actions show affected objects before execution
+
+## Iteration 4: Runtime, Incidents, and Resources
+
+### Goal
+
+Turn `Infrascope` into a real operational cockpit instead of a static inventory.
+
+### Deliverables
+
+- runtime timeline for scenario and skill executions
+- failed runs, retries, and event backlog surfaces
+- incident model with impact radius and root-cause candidates
+- resource and quota views tied back to owning objects
+- trace from browser or user action to scenario, skill, and device effect
+
+### Current Anchors
+
+- `src/adaos/services/scenario/workflow_runtime.py`
+- `src/adaos/services/skill/runtime.py`
+- `src/adaos/services/skill/service_supervisor_runtime.py`
+- `src/adaos/services/observe.py`
+- `src/adaos/services/resources/*`
+- `src/adaos/services/chat_io/telemetry.py`
+
+### Done When
+
+- a runtime failure can be traced through execution and event flow
+- quota spikes can be attributed to a concrete scenario, skill, or subnet object
+
+## Iteration 5: Profile-Aware Overlays
+
+### Goal
+
+Support multiple human and machine consumers over the same canonical objects.
+
+### Deliverables
+
+- identities, profiles, workspaces, roles, and ownership overlays
+- profile-aware landing pages and default filters
+- object representations for `operator`, `developer`, `household`, and `llm`
+- ownership and review metadata on changes and incidents
+
+### Current Anchors
+
+- `src/adaos/services/user/profile.py`
+- `src/adaos/services/workspaces/index.py`
+- `src/adaos/services/policy/*`
+- Yjs workspace overlays already present in workspace manifests
+
+### Done When
+
+- the same hub object can render differently for admin, household user, and LLM without diverging IDs or relations
+- visibility and actions are enforced by the same governance layer that shapes the UI
+
+## Iteration 6: LLM-Assisted Operations and Change Loop
+
+### Goal
+
+Move the LLM from passive observer to governed participant in diagnosis and controlled change.
+
+### Deliverables
+
+- task packets with `desired_state`, `actual_state`, `gap`, and `constraints`
+- change proposals referencing formal actions instead of ad hoc text instructions
+- dry-run and impact simulation before proposal submission
+- review and approval flow for LLM-generated changes
+- recommendation and anomaly layers on top of structured projections
+
+### Current Anchors
+
+- projection services introduced in Iteration 1
+- governance and ownership overlays introduced in Iteration 5
+- existing CLI and API control paths under `src/adaos/apps/cli`, `src/adaos/apps/api`, and `src/adaos/sdk/manage/*`
+
+### Done When
+
+- an LLM can explain a problem, propose a change, and hand over a reviewable action plan without bypassing policy
+- operators can accept, reject, or refine proposals using the same control-plane objects
+
+## Release Grouping
+
+The roadmap can be grouped into user-visible releases:
+
+- `v1 / operational MVP`: Iterations 0-2
+- `v2 / topology and runtime control`: Iterations 3-4
+- `v3 / profile-aware and LLM-native control plane`: Iterations 5-6
+
+## Suggested Implementation Order
+
+1. Normalize object envelopes in existing API and service responses.
+2. Introduce projection services and neighborhood/task-packet builders.
+3. Build `overview`, `inventory`, and unified inspector over those projections.
+4. Add layered topology and impact views.
+5. Add runtime traces, incidents, and resource attribution.
+6. Add profile overlays, ownership, and review/change workflows.
+
+## Practical First Backlog
+
+If implementation starts immediately, the first backlog should stay narrow:
+
+- define `CanonicalObject` and `ActionDescriptor`
+- create projection adapters for `root`, `hub`, `member`, `skill`, and `scenario`
+- expose one `overview` endpoint composed from existing health and runtime signals
+- expose one `object inspector` endpoint that returns object, incidents, recent events, and actions
+- add one `task_packet` endpoint for a selected object and task goal
+
+That is enough to begin shipping `Infrascope` without waiting for the full graph or multi-user polish.

@@ -89,6 +89,7 @@ from adaos.services import weather as _weather_services  # ensure weather observ
 from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
 from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
 from adaos.services.skill.service_supervisor import get_service_supervisor
+from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 from adaos.integrations.telegram.sender import TelegramSender
 
 
@@ -1028,11 +1029,7 @@ class BootstrapService:
                         or ""
                     ).strip().lower()
                     if zone_id:
-                        base_url = (
-                            "https://api.inimatic.com"
-                            if zone_id == "api"
-                            else f"https://{zone_id}.api.inimatic.com"
-                        )
+                        base_url = zone_public_base_url(zone_id)
                     else:
                         # Fallback for legacy configs without explicit zone.
                         base_url = (
@@ -1155,8 +1152,9 @@ class BootstrapService:
                         try:
                             if isinstance(cfg, object):
                                 zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
-                                if zone_id and "zone_id" not in y:
-                                    y["zone_id"] = zone_id
+                                canonical = canonical_zone_id(zone_id)
+                                if canonical and "zone_id" not in y:
+                                    y["zone_id"] = canonical
                                 if "node_id" not in y:
                                     y["node_id"] = getattr(cfg, "node_id", None) or y.get("node_id")
                                 if "subnet_id" not in y:

@@ -37,6 +37,7 @@ from .keyring import KeyringUnavailableError, delete_refresh, load_refresh, save
 from adaos.adapters.db import sqlite as sqlite_db
 from adaos.apps.api.auth import require_owner_token
 from adaos.services.id_gen import new_id
+from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.skill.manager import SkillManager
@@ -125,7 +126,7 @@ def _extract_zone_id_from_url(url: str | None) -> str | None:
         if not item.startswith("zone="):
             continue
         zone_id = item.split("=", 1)[1].strip().lower()
-        return zone_id or None
+        return canonical_zone_id(zone_id)
     return None
 
 
@@ -877,6 +878,10 @@ class RootDeveloperService:
     ) -> tuple[DeviceAuthorization, ssl.SSLContext | bool, tuple[str, str] | None]:
         authorize_cert: tuple[str, str] | None = None
         authorize_verify: ssl.SSLContext | bool = verify_plain
+        requested_zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
+        authorize_payload: dict[str, Any] = {"owner_id": owner_id_hint}
+        if requested_zone_id:
+            authorize_payload["zone_id"] = requested_zone_id
 
         mtls_material = self._mtls_material_optional(cfg, verify_plain)
         if mtls_material:
@@ -887,7 +892,7 @@ class RootDeveloperService:
                 start = client.device_authorize(
                     verify=authorize_verify,
                     cert=authorize_cert,
-                    payload={"owner_id": owner_id_hint},
+                    payload=authorize_payload,
                 )
             except RootHttpError as exc:
                 if self._is_certificate_error(exc):
@@ -897,7 +902,7 @@ class RootDeveloperService:
                 authorize_cert = None
                 authorize_verify = verify_plain
                 try:
-                    start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
+                    start = client.device_authorize(verify=authorize_verify, payload=authorize_payload)
                 except RootHttpError as retry_exc:
                     try:
                         fallback = self._maybe_retry_with_mtls(cfg, retry_exc)
@@ -910,13 +915,13 @@ class RootDeveloperService:
                         start = client.device_authorize(
                             verify=authorize_verify,
                             cert=authorize_cert,
-                            payload={"owner_id": owner_id_hint},
+                            payload=authorize_payload,
                         )
                     except RootHttpError as second_exc:
                         raise RootServiceError(str(second_exc)) from second_exc
         else:
             try:
-                start = client.device_authorize(verify=authorize_verify, payload={"owner_id": owner_id_hint})
+                start = client.device_authorize(verify=authorize_verify, payload=authorize_payload)
             except RootHttpError as exc:
                 try:
                     fallback = self._maybe_retry_with_mtls(cfg, exc)
@@ -929,7 +934,7 @@ class RootDeveloperService:
                     start = client.device_authorize(
                         verify=authorize_verify,
                         cert=authorize_cert,
-                        payload={"owner_id": owner_id_hint},
+                        payload=authorize_payload,
                     )
                 except RootHttpError as retry_exc:
                     raise RootServiceError(str(retry_exc)) from retry_exc
@@ -944,7 +949,7 @@ class RootDeveloperService:
             raise RootServiceError("Root did not return device authorization data")
         zone_id = _extract_zone_id_from_url(verification_complete) or _extract_zone_id_from_url(verification_uri)
         if not zone_id:
-            zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower() or None
+            zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
 
         auth = DeviceAuthorization(
             device_code=device_code,
@@ -1512,10 +1517,9 @@ class RootDeveloperService:
     def _owner_auth_client(self, cfg: NodeConfig) -> RootHttpClient:
         if self._client_factory:
             return self._client_factory(cfg)
-        zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower()
+        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
         if zone_id:
-            host = "api.inimatic.com" if zone_id == "api" else f"{zone_id}.api.inimatic.com"
-            return RootHttpClient(base_url=f"https://{host}")
+            return RootHttpClient(base_url=zone_public_base_url(zone_id))
         return self._client(cfg)
 
     def _plain_verify(self, cfg: NodeConfig) -> ssl.SSLContext | bool:
@@ -1549,7 +1553,7 @@ class RootDeveloperService:
     ) -> Mapping[str, Any]:
         fingerprint = fingerprint_for_key(private_key)
         meta_payload: dict[str, Any] = {"fingerprint": fingerprint}
-        zone_id = (os.getenv("ADAOS_ZONE_ID") or "").strip().lower()
+        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
         if zone_id:
             meta_payload["zone_id"] = zone_id
         if metadata:

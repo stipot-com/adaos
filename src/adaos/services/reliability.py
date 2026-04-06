@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
+from adaos.services.zone_hosts import canonical_zone_id
 
 
 class MessageTaxonomy(str, Enum):
@@ -4160,13 +4161,10 @@ def reliability_snapshot(
     active_zone_id = None
     if selected_server:
         lower = selected_server.lower()
-        if "://api.inimatic.com" in lower or lower.endswith("api.inimatic.com"):
-            active_zone_id = "api"
-        else:
-            for candidate in ("ru", "de"):
-                if f"{candidate}.api.inimatic.com" in lower:
-                    active_zone_id = candidate
-                    break
+        if "://ru.inimatic.com" in lower or lower.endswith("ru.inimatic.com"):
+            active_zone_id = "ru"
+        elif "://api.inimatic.com" in lower or lower.endswith("api.inimatic.com"):
+            active_zone_id = canonical_zone_id(zone_id) if canonical_zone_id(zone_id) in {"us", "eu", "in", "ch"} else "us"
     hub_root_protocol = hub_root_protocol_snapshot()
     hub_member_channels = hub_member_semantic_channels_snapshot(
         role=role,

@@ -1,28 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-from adaos.services.agent_context import get_ctx
+from adaos.services.runtime_paths import current_base_dir
 
 
 SLOTS = ("A", "B")
 
 
 def _base_dir() -> Path:
-    try:
-        ctx = get_ctx()
-        base = ctx.paths.base_dir()
-        base = base() if callable(base) else base
-        return Path(base).expanduser().resolve()
-    except Exception:
-        pass
-    raw = str(os.getenv("ADAOS_BASE_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (Path.home() / ".adaos").resolve()
+    return current_base_dir()
 
 
 def _slots_root() -> Path:
