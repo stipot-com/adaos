@@ -484,12 +484,16 @@ What is implemented in this slice:
 - root MCP response envelope and error model
 - root-hosted tool-contract registry over root-curated descriptor sets plus placeholder operational contracts
 - root-side descriptor registry instead of a direct public `export_sdk` MCP path
-- managed-target registry skeleton with `test hub` as the first published target descriptor
+- state-backed managed-target registry skeleton with `test hub` as the first published target descriptor
 - `RootMcpClient` skeleton with `root_url + subnet_id + access_token + zone` configuration model
+- initial root-side capability registry and policy gate for direct endpoints and MCP tool execution
 - minimal root MCP API entrypoints:
   - `GET /v1/root/mcp/foundation`
   - `GET /v1/root/mcp/contracts`
+  - `GET /v1/root/mcp/descriptors`
+  - `GET /v1/root/mcp/descriptors/{descriptor_id}`
   - `GET /v1/root/mcp/targets`
+  - `GET /v1/root/mcp/targets/{target_id}`
   - `POST /v1/root/mcp/call`
   - `GET /v1/root/mcp/audit`
 - read-only development tools for:
@@ -502,6 +506,7 @@ What is implemented in this slice:
 - placeholder operational contract catalog for future `infra_access_skill`
 - initial audit persistence to local root MCP audit storage
 - audit filtering by tool, trace, target, and subnet scope
+- scope-aware target filtering by `subnet_id` and `zone`
 
 This is intentionally still a skeleton: it establishes the entrypoint, contracts, and audit shape before adding real managed-target execution.
 
@@ -548,20 +553,20 @@ This is intentionally still a skeleton: it establishes the entrypoint, contracts
 ### Partially Aligned
 
 - `health/status/control APIs`: there are useful node and subnet APIs, but they are still mostly HTTP-centric and not normalized as root-routed typed operational tools
-- `SDK metadata exposure`: exporter support exists, but it is not yet curated and hosted as a root MCP development surface
-- `scenario/skill descriptors`: manifests, registries, and projection services exist, but not yet as a unified root-level self-description catalog
-- `capability model`: `src/adaos/services/policy/capabilities.py` and SDK capability errors exist, but there is no unified capability-class registry or MCP policy layer
+- `SDK metadata exposure`: exporter support exists and is now exposed through a root-curated descriptor registry, but the descriptor set is still narrow and not yet a full authoring surface
+- `scenario/skill descriptors`: manifests, registries, and projection services now have a root-level descriptor path, but the catalog is still limited and incomplete for authoring workflows
+- `capability model`: `src/adaos/services/policy/capabilities.py` and SDK capability errors now have an initial Root MCP capability registry and policy gate, but the vocabulary is not yet unified across all AdaOS permission layers
 - `web UI declarative assets`: Yjs and workspace surfaces exist, but no dedicated operational-skill web UI or audit-first operator view exists yet
 
 ### Missing
 
-- actual `Root MCP Foundation` runtime on `root`
 - `MCP Development Surface` and `MCP Operational Surface` as explicit products
-- managed target registry with operational-surface publication state
 - `infra_access_skill`
-- typed operational tool catalog on root
-- unified operational event model spanning request, policy, execution, result, and error
-- operational audit trail and workflow effectiveness views
+- executable managed-target routing beyond the current skeleton registry and descriptors
+- bounded token issuance lifecycle for external MCP clients
+- write-capable operational tool execution through target-side execution adapters
+- fully unified operational event model spanning request, policy, execution, result, and error
+- workflow effectiveness views over the operational audit trail
 - target-level web UI for operational skills
 
 ### Should Be Refactored Before Extension
@@ -578,7 +583,7 @@ This proposal should be reflected in the current docs set as follows:
 - [Infrascope](infrascope.md): add an explicit relationship section between the human-facing control plane and `Root MCP Foundation`
 - [Infrascope Roadmap](infrascope-roadmap.md): add `Root MCP Foundation` as a companion track and note phase alignment points
 - [Architecture Overview](index.md): clarify that target-state control-plane work is documented in both `Infrascope` and `Root MCP Foundation`
-- `sdk_control_plane.md` and `cli/api.md`: update later when the first real root MCP skeleton and published contracts land
+- `sdk_control_plane.md` and `cli/api.md`: keep aligned with the current root-curated descriptor model, managed-target registry, and external client shape as Phase 1 evolves
 
 ## Recommended Terminology
 

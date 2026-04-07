@@ -33,6 +33,7 @@ Phase 0 and early Phase 1 architectural guidance is:
 - external HTTP facades should stay narrower than SDK where possible
 - future `Root MCP Foundation` should build on `adaos.sdk.core.exporter`, `adaos.services.system_model.*`, manifest schemas, template metadata, and managed-target registries
 - external MCP clients should speak to `root` with a scoped client model such as `root_url + subnet_id + access_token + zone`, not import SDK directly
+- current Phase 1 root MCP read surfaces already expose descriptor and managed-target endpoints, but they remain intentionally narrower than SDK and are guarded by root-side capability policy
 
 In other words, AdaOS should remain `SDK-first` inside the platform, while MCP becomes the governed root-hosted agent-facing entrypoint over root-curated descriptors and managed operational surfaces.
 

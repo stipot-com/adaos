@@ -56,7 +56,10 @@ CLI обычно подставляет этот токен автоматиче
 
 - `GET /v1/root/mcp/foundation`
 - `GET /v1/root/mcp/contracts`
+- `GET /v1/root/mcp/descriptors`
+- `GET /v1/root/mcp/descriptors/{descriptor_id}`
 - `GET /v1/root/mcp/targets`
+- `GET /v1/root/mcp/targets/{target_id}`
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
 

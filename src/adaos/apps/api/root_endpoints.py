@@ -21,11 +21,15 @@ from adaos.services.join_codes import (
 )
 from adaos.services.root_mcp.service import (
     foundation_snapshot,
+    get_descriptor,
+    get_managed_target,
     invoke_tool,
+    list_descriptor_registry,
     list_managed_targets,
     list_tool_contracts,
     recent_audit_events,
 )
+from adaos.services.root_mcp.policy import evaluate_direct_access
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
@@ -89,6 +93,16 @@ def _mcp_scope(*, subnet_id: str | None, zone: str | None) -> dict[str, Any]:
     if token:
         scope["zone"] = token
     return scope
+
+
+def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
+    decision = evaluate_direct_access(
+        required_capability,
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail={"code": decision.code, "message": decision.message})
 
 
 @root_router.post("/register")
@@ -307,6 +321,7 @@ async def root_mcp_foundation(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("development.read.foundation", auth=auth)
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
@@ -324,12 +339,53 @@ async def root_mcp_contracts(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("development.read.contracts" if str(surface or "").strip().lower() != "operations" else "operations.read.contracts", auth=auth)
     contracts = [item.to_dict() for item in list_tool_contracts(surface=surface)]
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
         "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
         "contracts": contracts,
+    }
+
+
+@root_router.get("/mcp/descriptors")
+async def root_mcp_descriptors(
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("development.read.descriptors", auth=auth)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "descriptors": list_descriptor_registry(),
+    }
+
+
+@root_router.get("/mcp/descriptors/{descriptor_id}")
+async def root_mcp_descriptor(
+    descriptor_id: str,
+    level: str = "std",
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("development.read.descriptors", auth=auth)
+    try:
+        descriptor = get_descriptor(descriptor_id, level=level)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": f"Descriptor '{descriptor_id}' was not found."}) from None
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "descriptor": descriptor,
     }
 
 
@@ -342,11 +398,39 @@ async def root_mcp_targets(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
-        "targets": list_managed_targets(environment=environment),
+        "scope": scope,
+        "targets": list_managed_targets(environment=environment, subnet_id=scope.get("subnet_id"), zone=scope.get("zone")),
+    }
+
+
+@root_router.get("/mcp/targets/{target_id}")
+async def root_mcp_target(
+    target_id: str,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    target = get_managed_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail={"code": "target_not_found", "message": f"Managed target '{target_id}' was not found."})
+    if scope.get("subnet_id") and target.get("subnet_id") and scope["subnet_id"] != target["subnet_id"]:
+        raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
+    if scope.get("zone") and target.get("zone") and scope["zone"] != target["zone"]:
+        raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Managed target is outside the requested zone scope."})
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "target": target,
     }
 
 
@@ -364,6 +448,7 @@ async def root_mcp_audit(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("audit.read", auth=auth)
     events = recent_audit_events(
         limit=max(1, min(int(limit), 200)),
         tool_id=tool_id,

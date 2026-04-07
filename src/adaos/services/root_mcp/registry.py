@@ -16,6 +16,9 @@ from adaos.services.system_model.model import (
     TrustStatus,
 )
 
+from .policy import capability_registry_payload, capability_registry_summary
+from .targets import managed_target_registry_summary
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
@@ -62,6 +65,32 @@ def _template_catalog() -> dict[str, Any]:
     return {
         "skills": _template_names(getattr(ctx.paths, "skill_templates_dir", None)),
         "scenarios": _template_names(getattr(ctx.paths, "scenario_templates_dir", None)),
+    }
+
+
+def _client_profile() -> dict[str, Any]:
+    return {
+        "recommended_client": "RootMcpClient",
+        "connection": {
+            "root_url": {"required": True, "type": "string"},
+            "subnet_id": {"required": True, "type": "string"},
+            "access_token": {"required": True, "type": "string"},
+            "zone": {"required": False, "type": "string"},
+        },
+        "headers": {
+            "Authorization": "Bearer <access_token>",
+            "X-AdaOS-Subnet-Id": "<subnet_id>",
+            "X-AdaOS-Zone": "<zone>",
+        },
+        "entrypoints": [
+            "/v1/root/mcp/foundation",
+            "/v1/root/mcp/contracts",
+            "/v1/root/mcp/descriptors",
+            "/v1/root/mcp/descriptors/{descriptor_id}",
+            "/v1/root/mcp/targets",
+            "/v1/root/mcp/call",
+            "/v1/root/mcp/audit",
+        ],
     }
 
 
@@ -134,6 +163,20 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             source_kind="template_catalog",
             tags=["development", "templates", "scaffold"],
         ),
+        _descriptor_entry(
+            "capability_registry",
+            title="Capability registry",
+            summary="Root MCP capability classes, default grants, and risk hints.",
+            source_kind="root_mcp_policy_registry",
+            tags=["development", "policy", "capabilities"],
+        ),
+        _descriptor_entry(
+            "mcp_client_profile",
+            title="MCP client profile",
+            summary="Root MCP client configuration shape for external tools such as Codex or VS Code integrations.",
+            source_kind="root_mcp_client_profile",
+            tags=["development", "client", "integration"],
+        ),
     ]
 
 
@@ -144,6 +187,8 @@ def descriptor_registry_summary() -> dict[str, Any]:
         "publication_mode": "root-curated",
         "descriptor_count": len(items),
         "descriptors": [item["descriptor_id"] for item in items],
+        "capability_registry": capability_registry_summary(),
+        "managed_target_registry": managed_target_registry_summary(),
     }
 
 
@@ -171,6 +216,12 @@ def get_descriptor_set(descriptor_id: str, *, level: str = "std") -> dict[str, A
     if token == "template_catalog":
         entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
         return {**entry, "payload": _template_catalog()}
+    if token == "capability_registry":
+        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
+        return {**entry, "payload": capability_registry_payload()}
+    if token == "mcp_client_profile":
+        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
+        return {**entry, "payload": _client_profile()}
     raise KeyError(token)
 
 

@@ -48,11 +48,23 @@ class RootMcpClient:
             params["surface"] = surface
         return dict(self._request("GET", "/v1/root/mcp/contracts", params=params))
 
+    def list_descriptors(self) -> dict[str, Any]:
+        return dict(self._request("GET", "/v1/root/mcp/descriptors"))
+
+    def get_descriptor(self, descriptor_id: str, *, level: str = "std") -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if level:
+            params["level"] = level
+        return dict(self._request("GET", f"/v1/root/mcp/descriptors/{descriptor_id}", params=params))
+
     def list_managed_targets(self, *, environment: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if environment:
             params["environment"] = environment
         return dict(self._request("GET", "/v1/root/mcp/targets", params=params))
+
+    def get_managed_target(self, target_id: str) -> dict[str, Any]:
+        return dict(self._request("GET", f"/v1/root/mcp/targets/{target_id}"))
 
     def recent_audit(
         self,

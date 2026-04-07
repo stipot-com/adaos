@@ -19,8 +19,11 @@ from .model import (
     RootMcpToolContract,
     schema_object,
 )
+from .policy import evaluate_tool_access
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
+from .targets import get_managed_target as get_target_descriptor
 from .targets import list_managed_targets as list_target_descriptors
+from .targets import managed_target_registry_summary
 
 
 def _iso_now() -> str:
@@ -72,6 +75,7 @@ def _foundation_summary() -> dict[str, Any]:
         },
         "registries": {
             "descriptor_registry": descriptor_registry_summary(),
+            "managed_target_registry": managed_target_registry_summary(),
         },
         "managed_targets": {
             "count": len(managed_targets),
@@ -325,6 +329,19 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             required_capability="operations.read.targets",
             metadata={"published_by": "root", "handler": "list_managed_targets"},
         ),
+        RootMcpToolContract(
+            id="operations.get_managed_target",
+            title="Get managed target",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return a single managed-target descriptor by target id.",
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}},
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="operations.read.targets",
+            metadata={"published_by": "root", "handler": "get_managed_target"},
+        ),
     ]
 
 
@@ -350,8 +367,26 @@ def foundation_snapshot() -> dict[str, Any]:
     return _foundation_summary()
 
 
-def list_managed_targets(*, environment: str | None = None) -> list[dict[str, Any]]:
-    return [item.to_dict() for item in list_target_descriptors(environment=environment)]
+def list_descriptor_registry() -> list[dict[str, Any]]:
+    return list_descriptor_sets()
+
+
+def get_descriptor(descriptor_id: str, *, level: str = "std") -> dict[str, Any]:
+    return get_descriptor_set(descriptor_id, level=level)
+
+
+def list_managed_targets(
+    *,
+    environment: str | None = None,
+    subnet_id: str | None = None,
+    zone: str | None = None,
+) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in list_target_descriptors(environment=environment, subnet_id=subnet_id, zone=zone)]
+
+
+def get_managed_target(target_id: str) -> dict[str, Any] | None:
+    item = get_target_descriptor(target_id)
+    return item.to_dict() if item is not None else None
 
 
 def recent_audit_events(
@@ -383,7 +418,7 @@ def _handle_list_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[
 
 
 def _handle_list_descriptor_sets(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
-    return {"descriptors": list_descriptor_sets(), "publication_mode": "root-curated"}
+    return {"descriptors": list_descriptor_registry(), "publication_mode": "root-curated"}
 
 
 def _handle_get_descriptor_set(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
@@ -391,7 +426,7 @@ def _handle_get_descriptor_set(arguments: dict[str, Any], *, dry_run: bool) -> d
     if not descriptor_id:
         raise ValueError("descriptor_id is required")
     level = str(arguments.get("level") or "std").strip().lower() or "std"
-    return {"descriptor": get_descriptor_set(descriptor_id, level=level)}
+    return {"descriptor": get_descriptor(descriptor_id, level=level)}
 
 
 def _handle_system_model_vocabulary(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
@@ -420,7 +455,19 @@ def _handle_operational_contracts(arguments: dict[str, Any], *, dry_run: bool) -
 
 def _handle_managed_targets(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     environment = str(arguments.get("environment") or "").strip().lower() or None
-    return {"targets": list_managed_targets(environment=environment)}
+    subnet_id = str(arguments.get("subnet_id") or "").strip() or None
+    zone = str(arguments.get("zone") or "").strip() or None
+    return {"targets": list_managed_targets(environment=environment, subnet_id=subnet_id, zone=zone)}
+
+
+def _handle_get_managed_target(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_managed_target(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    return {"target": target}
 
 
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
@@ -433,6 +480,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
+    "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),
 }
 
 
@@ -463,6 +511,7 @@ def invoke_tool(
     contract = get_tool_contract(tool_token)
     payload_arguments = dict(arguments or {})
     scope_meta = dict(scope or {})
+    policy_decision = None
 
     if contract is None:
         response = RootMcpResponseEnvelope(
@@ -476,25 +525,16 @@ def invoke_tool(
             error=RootMcpError(code="tool_not_found", message=f"Unknown MCP tool '{tool_token}'."),
             meta=scope_meta,
         )
-    elif contract.availability is not RootMcpAvailability.ENABLED:
-        response = RootMcpResponseEnvelope(
-            request_id=effective_request_id,
-            trace_id=effective_trace_id,
-            tool_id=contract.id,
-            surface=contract.surface,
-            ok=False,
-            status="error",
-            dry_run=bool(dry_run),
-            error=RootMcpError(
-                code="tool_not_available",
-                message=f"Tool '{contract.id}' is declared but not executable yet.",
-                details={"availability": contract.availability.value},
-            ),
-            meta={"availability": contract.availability.value, **scope_meta},
-        )
     else:
-        handler = _HANDLERS.get(contract.id)
-        if handler is None:
+        policy_decision = evaluate_tool_access(
+            contract,
+            arguments=payload_arguments,
+            actor=actor,
+            auth_method=auth_method,
+            scope=scope_meta,
+        )
+
+        if not policy_decision.allowed:
             response = RootMcpResponseEnvelope(
                 request_id=effective_request_id,
                 trace_id=effective_trace_id,
@@ -503,30 +543,28 @@ def invoke_tool(
                 ok=False,
                 status="error",
                 dry_run=bool(dry_run),
-                error=RootMcpError(code="handler_missing", message=f"No handler is registered for '{contract.id}'."),
-                meta=scope_meta,
+                error=RootMcpError(code=policy_decision.code, message=policy_decision.message),
+                meta={**scope_meta, **policy_decision.to_meta()},
+            )
+        elif contract.availability is not RootMcpAvailability.ENABLED:
+            response = RootMcpResponseEnvelope(
+                request_id=effective_request_id,
+                trace_id=effective_trace_id,
+                tool_id=contract.id,
+                surface=contract.surface,
+                ok=False,
+                status="error",
+                dry_run=bool(dry_run),
+                error=RootMcpError(
+                    code="tool_not_available",
+                    message=f"Tool '{contract.id}' is declared but not executable yet.",
+                    details={"availability": contract.availability.value},
+                ),
+                meta={"availability": contract.availability.value, **scope_meta, **policy_decision.to_meta()},
             )
         else:
-            try:
-                result = handler(payload_arguments, dry_run=bool(dry_run))
-                response = RootMcpResponseEnvelope(
-                    request_id=effective_request_id,
-                    trace_id=effective_trace_id,
-                    tool_id=contract.id,
-                    surface=contract.surface,
-                    ok=True,
-                    status="ok",
-                    dry_run=bool(dry_run),
-                    result=result,
-                    meta={
-                        "availability": contract.availability.value,
-                        "required_capability": contract.required_capability,
-                        "stability": contract.stability,
-                        **scope_meta,
-                    },
-                )
-            except KeyError as exc:
-                missing = str(exc).strip("'")
+            handler = _HANDLERS.get(contract.id)
+            if handler is None:
                 response = RootMcpResponseEnvelope(
                     request_id=effective_request_id,
                     trace_id=effective_trace_id,
@@ -535,43 +573,76 @@ def invoke_tool(
                     ok=False,
                     status="error",
                     dry_run=bool(dry_run),
-                    error=RootMcpError(
-                        code="not_found",
-                        message=f"Requested MCP object '{missing}' was not found.",
-                    ),
-                    meta=scope_meta,
+                    error=RootMcpError(code="handler_missing", message=f"No handler is registered for '{contract.id}'."),
+                    meta={**scope_meta, **policy_decision.to_meta()},
                 )
-            except ValueError as exc:
-                response = RootMcpResponseEnvelope(
-                    request_id=effective_request_id,
-                    trace_id=effective_trace_id,
-                    tool_id=contract.id,
-                    surface=contract.surface,
-                    ok=False,
-                    status="error",
-                    dry_run=bool(dry_run),
-                    error=RootMcpError(
-                        code="invalid_request",
-                        message=str(exc) or f"Invalid arguments for '{contract.id}'.",
-                    ),
-                    meta=scope_meta,
-                )
-            except Exception as exc:
-                response = RootMcpResponseEnvelope(
-                    request_id=effective_request_id,
-                    trace_id=effective_trace_id,
-                    tool_id=contract.id,
-                    surface=contract.surface,
-                    ok=False,
-                    status="error",
-                    dry_run=bool(dry_run),
-                    error=RootMcpError(
-                        code="execution_failed",
-                        message=f"Tool '{contract.id}' failed during execution.",
-                        details={"error": str(exc)},
-                    ),
-                    meta=scope_meta,
-                )
+            else:
+                try:
+                    result = handler(payload_arguments, dry_run=bool(dry_run))
+                    response = RootMcpResponseEnvelope(
+                        request_id=effective_request_id,
+                        trace_id=effective_trace_id,
+                        tool_id=contract.id,
+                        surface=contract.surface,
+                        ok=True,
+                        status="ok",
+                        dry_run=bool(dry_run),
+                        result=result,
+                        meta={
+                            "availability": contract.availability.value,
+                            "required_capability": contract.required_capability,
+                            "stability": contract.stability,
+                            **scope_meta,
+                            **policy_decision.to_meta(),
+                        },
+                    )
+                except KeyError as exc:
+                    missing = str(exc).strip("'")
+                    response = RootMcpResponseEnvelope(
+                        request_id=effective_request_id,
+                        trace_id=effective_trace_id,
+                        tool_id=contract.id,
+                        surface=contract.surface,
+                        ok=False,
+                        status="error",
+                        dry_run=bool(dry_run),
+                        error=RootMcpError(
+                            code="not_found",
+                            message=f"Requested MCP object '{missing}' was not found.",
+                        ),
+                        meta={**scope_meta, **policy_decision.to_meta()},
+                    )
+                except ValueError as exc:
+                    response = RootMcpResponseEnvelope(
+                        request_id=effective_request_id,
+                        trace_id=effective_trace_id,
+                        tool_id=contract.id,
+                        surface=contract.surface,
+                        ok=False,
+                        status="error",
+                        dry_run=bool(dry_run),
+                        error=RootMcpError(
+                            code="invalid_request",
+                            message=str(exc) or f"Invalid arguments for '{contract.id}'.",
+                        ),
+                        meta={**scope_meta, **policy_decision.to_meta()},
+                    )
+                except Exception as exc:
+                    response = RootMcpResponseEnvelope(
+                        request_id=effective_request_id,
+                        trace_id=effective_trace_id,
+                        tool_id=contract.id,
+                        surface=contract.surface,
+                        ok=False,
+                        status="error",
+                        dry_run=bool(dry_run),
+                        error=RootMcpError(
+                            code="execution_failed",
+                            message=f"Tool '{contract.id}' failed during execution.",
+                            details={"error": str(exc)},
+                        ),
+                        meta={**scope_meta, **policy_decision.to_meta()},
+                    )
 
     target_id = str(payload_arguments.get("target_id") or "").strip() or None
     event = RootMcpAuditEvent(
@@ -584,13 +655,18 @@ def invoke_tool(
         auth_method=auth_method,
         capability=(contract.required_capability if contract else None),
         target_id=target_id,
+        policy_decision=policy_decision.policy_decision if policy_decision is not None else "allow",
         dry_run=bool(dry_run),
         status=response.status,
         started_at=started_at,
         finished_at=_iso_now(),
         result_summary=_result_summary(response.result) if response.ok else {},
         error=(response.error.to_dict() if response.error else {}),
-        meta={"tool_availability": contract.availability.value if contract else "missing", **scope_meta},
+        meta={
+            "tool_availability": contract.availability.value if contract else "missing",
+            **scope_meta,
+            **(policy_decision.to_meta() if policy_decision is not None else {}),
+        },
     )
     append_audit_event(event)
     response.audit_event_id = event.event_id
@@ -599,8 +675,11 @@ def invoke_tool(
 
 __all__ = [
     "foundation_snapshot",
+    "get_descriptor",
+    "get_managed_target",
     "get_tool_contract",
     "invoke_tool",
+    "list_descriptor_registry",
     "list_managed_targets",
     "list_tool_contracts",
     "recent_audit_events",

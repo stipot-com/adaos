@@ -451,6 +451,8 @@ Phase 0 считается завершенной, когда:
 
 Текущий Phase 1 slice уже смещён от прямого `export_sdk` MCP path к root-side descriptor registry, managed-target registry skeleton и `RootMcpClient` с конфигурацией `root_url + subnet_id + access_token + zone`.
 
+На текущем checkpoint Phase 1 уже включает root-side capability registry и policy gate для direct read surfaces и MCP tool execution, а managed-target registry стал state-backed skeleton вместо чисто in-memory описания.
+
 Текущий кодовый checkpoint закладывает первый root-hosted skeleton в:
 
 - `src/adaos/services/root_mcp/model.py`
