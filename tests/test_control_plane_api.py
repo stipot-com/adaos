@@ -251,3 +251,33 @@ def test_sdk_control_plane_local_capacity_and_io_helpers(monkeypatch) -> None:
 
     assert capacity["id"] == "capacity:node-1"
     assert io_items[0]["kind"] == "io_endpoint"
+
+
+def test_sdk_control_plane_device_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "list_device_models",
+        lambda: [CanonicalObject(id="device:tablet-kitchen", kind="device", title="tablet-kitchen")],
+    )
+
+    devices = control_plane.list_device_objects()
+
+    assert devices[0]["id"] == "device:tablet-kitchen"
+    assert devices[0]["kind"] == "device"
+
+
+def test_sdk_control_plane_quota_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "list_quota_models",
+        lambda webspace_id=None: [CanonicalObject(id="quota:telegram-outbox", kind="quota", title="telegram outbox quota")],
+    )
+
+    quotas = control_plane.list_quota_objects(webspace_id="desk")
+
+    assert quotas[0]["id"] == "quota:telegram-outbox"
+    assert quotas[0]["kind"] == "quota"

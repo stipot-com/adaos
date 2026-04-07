@@ -79,6 +79,14 @@ def list_browser_session_objects() -> list[Mapping[str, Any]]:
     return [item.to_dict() for item in list_browser_session_models()]
 
 
+def list_device_models():
+    return _data_control_plane.list_device_models()
+
+
+def list_device_objects() -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_device_models()]
+
+
 def get_local_capacity_model():
     return _data_control_plane.get_local_capacity_model()
 
@@ -105,6 +113,14 @@ def get_reliability_projection(*, webspace_id: str | None = None) -> Mapping[str
 
 def get_reliability_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
     return [item.to_dict() for item in get_reliability_model(webspace_id=webspace_id).objects]
+
+
+def list_quota_models(*, webspace_id: str | None = None):
+    return _data_control_plane.list_quota_models(webspace_id=webspace_id)
+
+
+def list_quota_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_quota_models(webspace_id=webspace_id)]
 
 
 def get_inventory_model():
@@ -138,6 +154,8 @@ __all__ = [
     "get_workspace_object",
     "list_browser_session_models",
     "list_browser_session_objects",
+    "list_device_models",
+    "list_device_objects",
     "get_local_capacity_model",
     "get_local_capacity_object",
     "list_local_io_models",
@@ -145,6 +163,8 @@ __all__ = [
     "get_reliability_model",
     "get_reliability_projection",
     "get_reliability_objects",
+    "list_quota_models",
+    "list_quota_objects",
     "get_inventory_model",
     "get_inventory_projection",
     "get_inventory_objects",

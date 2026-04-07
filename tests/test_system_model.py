@@ -5,17 +5,26 @@ from types import SimpleNamespace
 from pydantic import BaseModel
 
 from adaos.services.system_model import (
+    CANONICAL_KIND_REGISTRY,
+    CANONICAL_RELATION_REGISTRY,
+    CanonicalKind,
     CanonicalObject,
+    RelationKind,
+    canonical_ref,
     CanonicalStatus,
     canonical_inventory_projection,
     canonical_object_from_browser_session,
     canonical_object_from_capacity_snapshot,
+    canonical_object_from_device_endpoint,
+    canonical_object_from_integration_quota,
     canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_projection_from_reliability_snapshot,
     canonical_object_from_skill_status,
     canonical_object_from_user_profile,
     canonical_object_from_workspace_manifest,
+    normalize_kind,
+    normalize_relation_kind,
     normalize_connectivity_status,
     normalize_operational_status,
 )
@@ -40,6 +49,14 @@ def test_normalize_operational_status_maps_common_runtime_terms() -> None:
     assert normalize_operational_status("degraded") == CanonicalStatus.DEGRADED
     assert normalize_operational_status("draining") == CanonicalStatus.WARNING
     assert normalize_operational_status("not_applicable") == CanonicalStatus.UNKNOWN
+
+
+def test_kind_and_relation_registry_normalize_and_build_refs() -> None:
+    assert CANONICAL_KIND_REGISTRY["device"] == CanonicalKind.DEVICE
+    assert CANONICAL_RELATION_REGISTRY["hosted_on"] == RelationKind.HOSTED_ON
+    assert normalize_kind("BROWSER_SESSION") == "browser_session"
+    assert normalize_relation_kind(RelationKind.WORKSPACE) == "workspace"
+    assert canonical_ref(CanonicalKind.QUOTA, "telegram-outbox") == "quota:telegram-outbox"
 
 
 def test_normalize_connectivity_status_handles_bool_and_transport_tokens() -> None:
@@ -179,6 +196,25 @@ def test_canonical_object_from_browser_session_tracks_workspace_and_channels() -
     assert obj["runtime"]["incoming_video_tracks"] == 1
 
 
+def test_canonical_object_from_device_endpoint_merges_workspace_and_session_links() -> None:
+    obj = canonical_object_from_device_endpoint(
+        {
+            "device_id": "tablet-kitchen",
+            "device_kind": "browser",
+            "workspace_ids": ["kitchen"],
+            "session_ids": ["browser:tablet-kitchen"],
+            "online": True,
+            "source": "merged",
+        }
+    ).to_dict()
+
+    assert obj["id"] == "device:tablet-kitchen"
+    assert obj["kind"] == "device"
+    assert obj["relations"]["workspace"] == ["workspace:kitchen"]
+    assert obj["relations"]["connected_to"] == ["browser:tablet-kitchen"]
+    assert obj["health"]["connectivity"] == "reachable"
+
+
 def test_canonical_object_from_capacity_snapshot_summarizes_local_inventory() -> None:
     obj = canonical_object_from_capacity_snapshot(
         {
@@ -209,6 +245,29 @@ def test_canonical_object_from_io_capacity_entry_tracks_availability_tokens() ->
     assert obj["status"] == "offline"
     assert obj["runtime"]["mode"] == "webhook"
     assert obj["runtime"]["reason"] == "token_missing"
+
+
+def test_canonical_object_from_integration_quota_exposes_usage_and_pressure() -> None:
+    obj = canonical_object_from_integration_quota(
+        {
+            "name": "telegram",
+            "size": 12,
+            "max_size": 10,
+            "durable_store": False,
+            "publish_fail": 2,
+            "publish_ok": 1,
+            "last_error": "network timeout",
+            "updated_ago_s": 3.1,
+        },
+        node_id="hub-1",
+        root_id="root:eu",
+    ).to_dict()
+
+    assert obj["id"] == "quota:telegram-outbox"
+    assert obj["kind"] == "quota"
+    assert obj["status"] == "warning"
+    assert obj["relations"]["connected_to"] == ["root:eu"]
+    assert obj["resources"]["used"] == 12
 
 
 def test_canonical_projection_from_reliability_snapshot_builds_runtime_components() -> None:
@@ -291,6 +350,12 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "counts": {"file_total": 2, "total_bytes": 1024, "live_peer_total": 0, "live_connected_peers": 0},
                     "recommended_path": "direct_local_http",
                 },
+                "hub_root_protocol": {
+                    "integration_outboxes": {
+                        "telegram": {"name": "telegram", "size": 1, "max_size": 10, "durable_store": True},
+                        "llm": {"name": "llm", "size": 0, "max_size": 5, "durable_store": True},
+                    }
+                },
             },
         }
     ).to_dict()
@@ -301,6 +366,7 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
 
     objects = {item["id"]: item for item in projection["objects"]}
     assert objects["root:eu"]["kind"] == "root"
+    assert objects["quota:telegram-outbox"]["kind"] == "quota"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
@@ -347,6 +413,11 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
                     "assessment": {"state": "unavailable", "reason": "media runtime module is unavailable"},
                     "transport": {"direct_local_ready": False},
                 },
+                "hub_root_protocol": {
+                    "integration_outboxes": {
+                        "telegram": {"name": "telegram", "size": 5, "durable_store": False, "publish_fail": 1, "publish_ok": 0}
+                    }
+                },
             },
         }
     ).to_dict()
@@ -356,6 +427,7 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
 
     assert sync_actions["restore"]["risk"] == "medium"
     assert objects["connection:hub:hub-2/route"]["status"] == "offline"
+    assert objects["quota:telegram-outbox"]["status"] in {"warning", "degraded"}
     assert any(item["object_id"] == "connection:hub:hub-2/route" for item in projection["incidents"])
     assert any(item["object_id"] == "runtime:hub:hub-2/sidecar" for item in projection["incidents"])
 

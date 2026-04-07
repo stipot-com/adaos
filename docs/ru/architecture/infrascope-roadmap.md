@@ -64,7 +64,7 @@
 - добавить SDK entry points для canonical self, skill, scenario и reliability projection objects и оставить API тонким фасадом
 - сначала проверить словарь и адаптеры точечными unit tests, а уже потом расширять покрытие API
 
-Текущий checkpoint распространяет тот же envelope на selected reliability snapshots, добавляет canonical coverage для workspace/profile/browser-session/capacity objects и вводит local inventory projection для SDK/LLM use. Единственным новым external facade остаётся aggregate reliability projection, так что current raw responses не ломаются, а более широкий surface остаётся SDK-first.
+Текущий checkpoint распространяет тот же envelope на selected reliability snapshots, добавляет явные реестры `kind` и `relation`, а также расширяет canonical coverage на workspace, profile, browser-session, device, capacity и quota objects. Local inventory projection теперь объединяет локальные catalog objects с selected reliability-derived root/quota objects для SDK/LLM use. Рост external API остаётся намеренно узким: current raw responses не ломаются, а более широкий surface остаётся SDK-first, при этом HTTP-фасады ограничены aggregate projections.
 
 ## Итерация 1: Projection Layer
 

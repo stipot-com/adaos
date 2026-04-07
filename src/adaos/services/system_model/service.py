@@ -9,12 +9,14 @@ from adaos.services.subnet.link_client import get_member_link_client
 from adaos.services.system_model.catalog import (
     browser_session_objects,
     current_profile_object,
+    device_objects,
     installed_scenario_objects,
     installed_skill_objects,
     local_capacity_object,
     local_io_objects,
     workspace_objects,
 )
+from adaos.services.system_model.model import CanonicalKind
 from adaos.services.system_model.mappers import canonical_object_from_node_status
 from adaos.services.system_model.projections import canonical_inventory_projection, canonical_projection_from_reliability_snapshot
 
@@ -87,14 +89,22 @@ def current_inventory_projection():
         node_ref = node_token or subject_id
     else:
         node_ref = subject_id
+    reliability = current_reliability_projection()
+    reliability_objects = [
+        item
+        for item in reliability.objects
+        if str(item.kind or "").strip() in {CanonicalKind.ROOT.value, CanonicalKind.QUOTA.value}
+    ]
     objects = [
         current_profile_object(),
         local_capacity_object(node_id=node_ref),
         *local_io_objects(node_id=node_ref),
+        *device_objects(),
         *workspace_objects(),
         *browser_session_objects(),
         *installed_skill_objects(),
         *installed_scenario_objects(),
+        *reliability_objects,
     ]
     return canonical_inventory_projection(subject, objects)
 

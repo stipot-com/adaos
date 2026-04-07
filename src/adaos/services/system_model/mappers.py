@@ -5,8 +5,11 @@ from typing import Any, Mapping
 
 from adaos.services.system_model.model import (
     CanonicalGovernance,
+    CanonicalKind,
     CanonicalObject,
     CanonicalStatus,
+    RelationKind,
+    canonical_ref,
     compact_mapping,
     normalize_connectivity_status,
     normalize_installation_status,
@@ -68,7 +71,7 @@ def canonical_object_from_node_status(payload: Any) -> CanonicalObject:
         status = CanonicalStatus.WARNING
 
     title = primary_name or (node_names[0] if node_names else node_id)
-    relations = {"subnet": [f"subnet:{subnet_id}"]} if subnet_id else {}
+    relations = {RelationKind.SUBNET.value: [f"subnet:{subnet_id}"]} if subnet_id else {}
     health = compact_mapping(
         {
             "availability": "ready" if ready is True else "not_ready" if ready is False else None,
@@ -95,9 +98,10 @@ def canonical_object_from_node_status(payload: Any) -> CanonicalObject:
     )
     summary = f"{role} node" + (f" in subnet {subnet_id}" if subnet_id else "")
 
+    kind = role if role in {"hub", "member"} else CanonicalKind.NODE.value
     return CanonicalObject(
-        id=f"{role}:{node_id}" if role in {"hub", "member"} else f"node:{node_id}",
-        kind=role if role in {"hub", "member"} else "node",
+        id=canonical_ref(kind, node_id) or f"{kind}:{node_id}",
+        kind=kind,
         title=title,
         summary=summary,
         status=status,
@@ -132,8 +136,8 @@ def canonical_object_from_skill_status(payload: Any) -> CanonicalObject:
     )
 
     return CanonicalObject(
-        id=f"skill:{name}",
-        kind="skill",
+        id=canonical_ref(CanonicalKind.SKILL, name) or f"skill:{name}",
+        kind=CanonicalKind.SKILL.value,
         title=name,
         summary="Skill catalog object",
         status=status,
@@ -151,8 +155,8 @@ def canonical_object_from_scenario_item(payload: Any) -> CanonicalObject:
     actual_state = compact_mapping({"path": path})
     versioning = compact_mapping({"actual": version})
     return CanonicalObject(
-        id=f"scenario:{name}",
-        kind="scenario",
+        id=canonical_ref(CanonicalKind.SCENARIO, name) or f"scenario:{name}",
+        kind=CanonicalKind.SCENARIO.value,
         title=name,
         summary="Scenario catalog object",
         status=CanonicalStatus.UNKNOWN,
@@ -176,7 +180,9 @@ def canonical_object_from_browser_session(payload: Any) -> CanonicalObject:
 
     relations = compact_mapping(
         {
-            "workspace": [f"workspace:{webspace_id}"] if webspace_id else [],
+            RelationKind.WORKSPACE.value: [canonical_ref(CanonicalKind.WORKSPACE, webspace_id) or f"workspace:{webspace_id}"]
+            if webspace_id
+            else [],
         }
     )
     health = compact_mapping(
@@ -201,13 +207,68 @@ def canonical_object_from_browser_session(payload: Any) -> CanonicalObject:
     summary = f"Browser session {device_id}" + (f" in webspace {webspace_id}" if webspace_id else "")
     return CanonicalObject(
         id=f"browser:{device_id}",
-        kind="browser_session",
+        kind=CanonicalKind.BROWSER_SESSION.value,
         title=device_id,
         summary=summary,
         status=status,
         health=health,
         relations=relations,
         runtime=runtime,
+    )
+
+
+def canonical_object_from_device_endpoint(payload: Any) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    device_id = str(data.get("device_id") or data.get("id") or "unknown").strip() or "unknown"
+    device_kind = str(data.get("device_kind") or "device").strip().lower() or "device"
+    workspace_ids = [
+        str(item or "").strip()
+        for item in list(data.get("workspace_ids") or [])
+        if str(item or "").strip()
+    ]
+    session_ids = [
+        str(item or "").strip()
+        for item in list(data.get("session_ids") or [])
+        if str(item or "").strip()
+    ]
+    online = data.get("online")
+    last_seen = data.get("last_seen")
+    status = normalize_operational_status(online)
+    if online is None:
+        status = CanonicalStatus.UNKNOWN if workspace_ids else CanonicalStatus.WARNING
+
+    return CanonicalObject(
+        id=canonical_ref(CanonicalKind.DEVICE, device_id) or f"device:{device_id}",
+        kind=CanonicalKind.DEVICE.value,
+        title=device_id,
+        summary=f"{device_kind} device endpoint",
+        status=status,
+        health=compact_mapping(
+            {
+                "connectivity": normalize_connectivity_status(online),
+            }
+        ),
+        relations=compact_mapping(
+            {
+                RelationKind.WORKSPACE.value: [canonical_ref(CanonicalKind.WORKSPACE, item) or f"workspace:{item}" for item in workspace_ids],
+                RelationKind.CONNECTED_TO.value: session_ids,
+            }
+        ),
+        runtime=compact_mapping(
+            {
+                "device_kind": device_kind,
+                "binding_total": len(workspace_ids),
+                "session_total": len(session_ids),
+                "last_seen": last_seen,
+            }
+        ),
+        actual_state=compact_mapping(
+            {
+                "workspace_ids": workspace_ids,
+                "session_ids": session_ids,
+                "source": data.get("source"),
+            }
+        ),
     )
 
 
@@ -220,7 +281,11 @@ def canonical_object_from_capacity_snapshot(payload: Any, *, node_id: str | None
     active_scenario_total = sum(1 for item in scenario_items if bool(item.get("active", True)))
     title = "Local capacity"
     status = CanonicalStatus.ONLINE if io_items or skill_items or scenario_items else CanonicalStatus.UNKNOWN
-    relations = compact_mapping({"hosted_on": [f"node:{node_id}"] if node_id else []})
+    relations = compact_mapping(
+        {
+            RelationKind.HOSTED_ON.value: [canonical_ref(CanonicalKind.NODE, node_id) or f"node:{node_id}"] if node_id else []
+        }
+    )
     resources = compact_mapping(
         {
             "io_total": len(io_items),
@@ -238,8 +303,8 @@ def canonical_object_from_capacity_snapshot(payload: Any, *, node_id: str | None
         }
     )
     return CanonicalObject(
-        id=f"capacity:{node_id}" if node_id else "capacity:local",
-        kind="capacity",
+        id=canonical_ref(CanonicalKind.CAPACITY, node_id) if node_id else canonical_ref(CanonicalKind.CAPACITY, "local") or "capacity:local",
+        kind=CanonicalKind.CAPACITY.value,
         title=title,
         summary="Local node capacity and runtime inventory",
         status=status,
@@ -262,11 +327,15 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
         status = CanonicalStatus.UNKNOWN
     return CanonicalObject(
         id=f"io:{node_id}:{io_type}" if node_id else f"io:{io_type}",
-        kind="io_endpoint",
+        kind=CanonicalKind.IO_ENDPOINT.value,
         title=io_type,
         summary=f"Local IO endpoint {io_type}",
         status=status,
-        relations=compact_mapping({"hosted_on": [f"node:{node_id}"] if node_id else []}),
+        relations=compact_mapping(
+            {
+                RelationKind.HOSTED_ON.value: [canonical_ref(CanonicalKind.NODE, node_id) or f"node:{node_id}"] if node_id else []
+            }
+        ),
         runtime=compact_mapping(
             {
                 "io_type": io_type,
@@ -279,6 +348,89 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
     )
 
 
+def canonical_object_from_integration_quota(
+    payload: Any,
+    *,
+    node_id: str | None = None,
+    root_id: str | None = None,
+) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    name = str(data.get("name") or data.get("id") or "unknown").strip() or "unknown"
+    size = int(data.get("size") or 0)
+    max_size = data.get("max_size")
+    durable_store = bool(data.get("durable_store"))
+    connected = data.get("connected")
+    publish_fail = int(data.get("publish_fail") or 0)
+    publish_ok = int(data.get("publish_ok") or 0)
+    last_error = str(data.get("last_error") or "").strip() or None
+
+    status = CanonicalStatus.ONLINE
+    if isinstance(max_size, int) and max_size > 0 and size >= max_size:
+        status = CanonicalStatus.WARNING
+    elif size > 0 and not durable_store:
+        status = CanonicalStatus.DEGRADED
+    elif publish_fail > 0 and publish_fail >= max(1, publish_ok):
+        status = CanonicalStatus.WARNING
+    elif connected is False:
+        status = CanonicalStatus.WARNING
+
+    reasons: list[str] = []
+    if isinstance(max_size, int) and max_size > 0:
+        reasons.append(f"{size}/{max_size} buffered")
+    elif size > 0:
+        reasons.append(f"{size} buffered")
+    if last_error:
+        reasons.append(f"last error: {last_error}")
+    summary = f"{name} integration outbox quota"
+    if reasons:
+        summary += f" ({'; '.join(reasons)})"
+
+    return CanonicalObject(
+        id=canonical_ref(CanonicalKind.QUOTA, f"{name}-outbox") or f"quota:{name}-outbox",
+        kind=CanonicalKind.QUOTA.value,
+        title=f"{name} outbox quota",
+        summary=summary,
+        status=status,
+        relations=compact_mapping(
+            {
+                RelationKind.HOSTED_ON.value: [canonical_ref(CanonicalKind.NODE, node_id) or f"node:{node_id}"] if node_id else [],
+                RelationKind.CONNECTED_TO.value: [root_id] if root_id else [],
+            }
+        ),
+        resources=compact_mapping(
+            {
+                "used": size,
+                "limit": max_size,
+                "persisted": data.get("persisted_size"),
+            }
+        ),
+        runtime=compact_mapping(
+            {
+                "connected": connected,
+                "durable_store": durable_store,
+                "idempotency_mode": data.get("idempotency_mode"),
+                "publish_ok": publish_ok,
+                "publish_fail": publish_fail,
+                "dropped_total": data.get("dropped_total"),
+                "drained_total": data.get("drained_total"),
+                "cache_hit_total": data.get("cache_hit_total"),
+                "cache_miss_total": data.get("cache_miss_total"),
+                "conflict_total": data.get("conflict_total"),
+                "updated_ago_s": data.get("updated_ago_s"),
+                "last_error": last_error,
+                "last_error_ago_s": data.get("last_error_ago_s"),
+            }
+        ),
+        actual_state=compact_mapping(
+            {
+                "last_operation_key": data.get("last_operation_key"),
+                "persist_path": data.get("persist_path"),
+            }
+        ),
+        desired_state=compact_mapping({"max_size": max_size}),
+    )
+
+
 def canonical_object_from_user_profile(payload: Any) -> CanonicalObject:
     data = coerce_mapping(payload)
     user_id = str(data.get("user_id") or "unknown").strip() or "unknown"
@@ -287,8 +439,8 @@ def canonical_object_from_user_profile(payload: Any) -> CanonicalObject:
     representations = compact_mapping({"user": settings})
     governance = CanonicalGovernance(owner_id=f"profile:{user_id}")
     return CanonicalObject(
-        id=f"profile:{user_id}",
-        kind="profile",
+        id=canonical_ref(CanonicalKind.PROFILE, user_id) or f"profile:{user_id}",
+        kind=CanonicalKind.PROFILE.value,
         title=title,
         summary="User profile object",
         status=CanonicalStatus.UNKNOWN,
@@ -315,8 +467,12 @@ def canonical_object_from_workspace_manifest(payload: Any) -> CanonicalObject:
 
     relations = compact_mapping(
         {
-            "home_scenario": [f"scenario:{effective_home_scenario}"] if effective_home_scenario else [],
-            "device_binding": [f"device:{device_binding}"] if device_binding else [],
+            RelationKind.HOME_SCENARIO.value: [canonical_ref(CanonicalKind.SCENARIO, effective_home_scenario) or f"scenario:{effective_home_scenario}"]
+            if effective_home_scenario
+            else [],
+            RelationKind.DEVICE_BINDING.value: [canonical_ref(CanonicalKind.DEVICE, device_binding) or f"device:{device_binding}"]
+            if device_binding
+            else [],
         }
     )
     governance = CanonicalGovernance(
@@ -336,8 +492,8 @@ def canonical_object_from_workspace_manifest(payload: Any) -> CanonicalObject:
     )
 
     return CanonicalObject(
-        id=f"workspace:{workspace_id}",
-        kind="workspace",
+        id=canonical_ref(CanonicalKind.WORKSPACE, workspace_id) or f"workspace:{workspace_id}",
+        kind=CanonicalKind.WORKSPACE.value,
         title=title,
         summary=f"{effective_kind} workspace",
         status=CanonicalStatus.ONLINE if effective_home_scenario else CanonicalStatus.UNKNOWN,
@@ -352,6 +508,8 @@ __all__ = [
     "canonical_object_from_node_status",
     "canonical_object_from_browser_session",
     "canonical_object_from_capacity_snapshot",
+    "canonical_object_from_device_endpoint",
+    "canonical_object_from_integration_quota",
     "canonical_object_from_io_capacity_entry",
     "canonical_object_from_scenario_item",
     "canonical_object_from_skill_status",

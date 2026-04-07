@@ -64,7 +64,7 @@ The first code slice for Phase 0 is intentionally narrow:
 - expose SDK entry points for canonical self, skill, scenario, and reliability projection access while keeping API as a thin facade
 - verify the vocabulary and adapters with focused unit tests before adapting more APIs
 
-The current checkpoint extends that same envelope into selected reliability snapshots, introduces canonical coverage for workspace/profile/browser-session/capacity objects, and adds a local inventory projection for SDK/LLM use. The only added external facade remains the aggregate reliability projection, so raw responses stay intact and SDK keeps the broader surface area.
+The current checkpoint extends that same envelope into selected reliability snapshots, adds explicit `kind` and `relation` registries, and introduces canonical coverage for workspace, profile, browser-session, device, capacity, and quota objects. The local inventory projection now combines local catalog objects with selected reliability-derived root/quota objects for SDK and LLM use. External API growth stays intentionally narrow: raw responses remain intact, while SDK keeps the broader surface area and the added HTTP facades stay limited to aggregate projections.
 
 ## Phase 1: Projection Layer
 

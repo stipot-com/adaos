@@ -10,6 +10,7 @@ from adaos.services.skill.manager import SkillManager
 from adaos.services.system_model.mappers import (
     canonical_object_from_browser_session,
     canonical_object_from_capacity_snapshot,
+    canonical_object_from_device_endpoint,
     canonical_object_from_io_capacity_entry,
     canonical_object_from_scenario_item,
     canonical_object_from_skill_status,
@@ -131,15 +132,73 @@ def workspace_objects() -> list[Any]:
     return [canonical_object_from_workspace_manifest(row) for row in list(workspace_index.list_workspaces() or [])]
 
 
-def browser_session_objects() -> list[Any]:
+def _browser_session_payloads() -> list[dict[str, Any]]:
     try:
         from adaos.services.webrtc.peer import webrtc_peer_snapshot
 
         snapshot = webrtc_peer_snapshot()
     except Exception:
         snapshot = {}
-    peers = snapshot.get("peers") if isinstance(snapshot.get("peers"), list) else []
-    return [canonical_object_from_browser_session(item) for item in peers if isinstance(item, dict)]
+    return [item for item in list(snapshot.get("peers") or []) if isinstance(item, dict)]
+
+
+def browser_session_objects() -> list[Any]:
+    return [canonical_object_from_browser_session(item) for item in _browser_session_payloads()]
+
+
+def device_objects() -> list[Any]:
+    records: dict[str, dict[str, Any]] = {}
+
+    for row in list(workspace_index.list_workspaces() or []):
+        device_id = str(getattr(row, "device_binding", "") or "").strip()
+        if not device_id:
+            continue
+        record = records.setdefault(
+            device_id,
+            {
+                "device_id": device_id,
+                "device_kind": "workspace_binding",
+                "workspace_ids": [],
+                "session_ids": [],
+                "online": None,
+                "source": "workspace_manifest",
+            },
+        )
+        workspace_id = str(getattr(row, "workspace_id", "") or "").strip()
+        if workspace_id and workspace_id not in record["workspace_ids"]:
+            record["workspace_ids"].append(workspace_id)
+
+    for item in _browser_session_payloads():
+        device_id = str(item.get("device_id") or item.get("id") or "").strip()
+        if not device_id:
+            continue
+        record = records.setdefault(
+            device_id,
+            {
+                "device_id": device_id,
+                "device_kind": "browser",
+                "workspace_ids": [],
+                "session_ids": [],
+                "online": None,
+                "source": "browser_runtime",
+            },
+        )
+        workspace_id = str(item.get("webspace_id") or "").strip()
+        if workspace_id and workspace_id not in record["workspace_ids"]:
+            record["workspace_ids"].append(workspace_id)
+        session_id = f"browser:{device_id}"
+        if session_id not in record["session_ids"]:
+            record["session_ids"].append(session_id)
+        state = str(item.get("connection_state") or "").strip().lower()
+        if state == "connected":
+            record["online"] = True
+        elif record.get("online") is None and state in {"disconnected", "failed", "closed"}:
+            record["online"] = False
+
+    return [
+        canonical_object_from_device_endpoint(item)
+        for item in sorted(records.values(), key=lambda entry: str(entry.get("device_id") or ""))
+    ]
 
 
 def local_capacity_object(*, node_id: str | None = None):
@@ -159,6 +218,7 @@ def local_io_objects(*, node_id: str | None = None) -> list[Any]:
 __all__ = [
     "browser_session_objects",
     "current_profile_object",
+    "device_objects",
     "installed_scenario_objects",
     "installed_skill_objects",
     "local_capacity_object",

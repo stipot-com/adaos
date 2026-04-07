@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from adaos.services.system_model.mappers import canonical_object_from_node_status, coerce_mapping
+from adaos.services.system_model.mappers import (
+    canonical_object_from_integration_quota,
+    canonical_object_from_node_status,
+    coerce_mapping,
+)
 from adaos.services.system_model.model import (
     CanonicalActionDescriptor,
+    CanonicalKind,
     CanonicalObject,
     CanonicalProjection,
     CanonicalStatus,
+    RelationKind,
+    canonical_ref,
     compact_mapping,
     normalize_connectivity_status,
     normalize_operational_status,
@@ -136,8 +143,8 @@ def _root_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
     zone_id = str(zone.get("active_zone_id") or zone.get("configured_zone_id") or "default").strip() or "default"
     selected_server = str(zone.get("selected_server") or "").strip() or None
     return CanonicalObject(
-        id=f"root:{zone_id}",
-        kind="root",
+        id=canonical_ref(CanonicalKind.ROOT, zone_id) or f"root:{zone_id}",
+        kind=CanonicalKind.ROOT.value,
         title=f"Root {zone_id}",
         summary="Root control-plane authority for the current node",
         status=_runtime_status(readiness.get("status")),
@@ -146,7 +153,7 @@ def _root_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "connectivity": _connectivity_for_state(readiness.get("status")),
             }
         ),
-        relations={"connected_to": [subject.id]},
+        relations={RelationKind.CONNECTED_TO.value: [subject.id]},
         runtime=compact_mapping(
             {
                 "root_control": readiness,
@@ -163,6 +170,23 @@ def _root_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
     )
 
 
+def _integration_quota_objects(subject: CanonicalObject, runtime: dict[str, Any]) -> list[CanonicalObject]:
+    hub_root_protocol = coerce_mapping(runtime.get("hub_root_protocol"))
+    zone = coerce_mapping(runtime.get("hub_root_zone"))
+    outboxes = coerce_mapping(hub_root_protocol.get("integration_outboxes"))
+    node_id = str(subject.id.partition(":")[2] or subject.id).strip() or subject.id
+    root_token = str(zone.get("active_zone_id") or zone.get("configured_zone_id") or "default").strip() or "default"
+    root_id = canonical_ref(CanonicalKind.ROOT, root_token) or f"root:{root_token}"
+    objects: list[CanonicalObject] = []
+    for name, entry in sorted(outboxes.items()):
+        if not isinstance(entry, dict):
+            continue
+        payload = dict(entry)
+        payload.setdefault("name", str(name))
+        objects.append(canonical_object_from_integration_quota(payload, node_id=node_id, root_id=root_id))
+    return objects
+
+
 def _root_control_object(subject: CanonicalObject, runtime: dict[str, Any]) -> CanonicalObject:
     readiness_tree = coerce_mapping(runtime.get("readiness_tree"))
     channel_diagnostics = coerce_mapping(runtime.get("channel_diagnostics"))
@@ -172,9 +196,10 @@ def _root_control_object(subject: CanonicalObject, runtime: dict[str, Any]) -> C
     stability = coerce_mapping(diagnostics.get("stability"))
     status = _runtime_status(readiness.get("status"), stability.get("state"))
     summary = str(readiness.get("summary") or "").strip() or "Control-plane path between node and root"
+    root_token = str(zone.get("active_zone_id") or zone.get("configured_zone_id") or "default").strip() or "default"
     return CanonicalObject(
         id=f"connection:{subject.id}/root-control",
-        kind="connection",
+        kind=CanonicalKind.CONNECTION.value,
         title="Root control channel",
         summary=summary,
         status=status,
@@ -187,8 +212,8 @@ def _root_control_object(subject: CanonicalObject, runtime: dict[str, Any]) -> C
         ),
         relations=compact_mapping(
             {
-                "hosted_on": [subject.id],
-                "connected_to": [f"root:{str(zone.get('active_zone_id') or zone.get('configured_zone_id') or 'default').strip() or 'default'}"],
+                RelationKind.HOSTED_ON.value: [subject.id],
+                RelationKind.CONNECTED_TO.value: [canonical_ref(CanonicalKind.ROOT, root_token) or f"root:{root_token}"],
             }
         ),
         runtime=compact_mapping(
@@ -219,7 +244,7 @@ def _route_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     summary = str(readiness.get("summary") or "").strip() or "Runtime route channel"
     return CanonicalObject(
         id=f"connection:{subject.id}/route",
-        kind="connection",
+        kind=CanonicalKind.CONNECTION.value,
         title="Route channel",
         summary=summary,
         status=status,
@@ -230,7 +255,7 @@ def _route_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "stability_score": stability.get("score"),
             }
         ),
-        relations={"hosted_on": [subject.id]},
+        relations={RelationKind.HOSTED_ON.value: [subject.id]},
         runtime=compact_mapping(
             {
                 "readiness": readiness,
@@ -264,7 +289,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
         )
     return CanonicalObject(
         id=f"runtime:{subject.id}/sidecar",
-        kind="runtime",
+        kind=CanonicalKind.RUNTIME.value,
         title="Realtime sidecar",
         summary=str(payload.get("summary") or "Sidecar transport runtime"),
         status=status,
@@ -274,7 +299,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
                 "availability": payload.get("status"),
             }
         ),
-        relations={"hosted_on": [subject.id]},
+        relations={RelationKind.HOSTED_ON.value: [subject.id]},
         runtime=compact_mapping(
             {
                 "enabled": enabled,
@@ -306,12 +331,14 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
     assessment = coerce_mapping(payload.get("assessment"))
     selected_webspace = coerce_mapping(payload.get("selected_webspace"))
     selected_webspace_id = str(payload.get("selected_webspace_id") or selected_webspace.get("webspace_id") or "").strip() or None
-    relations = {"hosted_on": [subject.id]}
+    relations = {RelationKind.HOSTED_ON.value: [subject.id]}
     if selected_webspace_id:
-        relations["workspace"] = [f"workspace:{selected_webspace_id}"]
+        relations[RelationKind.WORKSPACE.value] = [
+            canonical_ref(CanonicalKind.WORKSPACE, selected_webspace_id) or f"workspace:{selected_webspace_id}"
+        ]
     return CanonicalObject(
         id=f"runtime:{subject.id}/yjs-sync",
-        kind="runtime",
+        kind=CanonicalKind.RUNTIME.value,
         title="Yjs sync runtime",
         summary=str(assessment.get("reason") or "Yjs bounded replay and recovery state"),
         status=_runtime_status(assessment.get("state")),
@@ -359,7 +386,7 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     counts = coerce_mapping(payload.get("counts"))
     return CanonicalObject(
         id=f"runtime:{subject.id}/media-plane",
-        kind="runtime",
+        kind=CanonicalKind.RUNTIME.value,
         title="Media plane",
         summary=str(assessment.get("reason") or "Local and root-routed media runtime"),
         status=_runtime_status(assessment.get("state")),
@@ -373,7 +400,7 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 ),
             }
         ),
-        relations={"hosted_on": [subject.id]},
+        relations={RelationKind.HOSTED_ON.value: [subject.id]},
         resources=compact_mapping(
             {
                 "file_total": counts.get("file_total"),
@@ -466,6 +493,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
         _sidecar_object(subject, runtime),
         _sync_object(subject, runtime),
         _media_object(subject, runtime),
+        *_integration_quota_objects(subject, runtime),
     ]
     incidents = [item for item in (_incident_from_object(obj) for obj in objects) if item]
     subject.incidents = incidents

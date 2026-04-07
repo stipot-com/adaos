@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from adaos.sdk.core._ctx import require_ctx
+from adaos.services.system_model.model import CanonicalKind
 
 
 def get_self_model():
@@ -104,6 +105,17 @@ def list_browser_session_objects() -> list[Mapping[str, Any]]:
     return [item.to_dict() for item in list_browser_session_models()]
 
 
+def list_device_models():
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.catalog import device_objects
+
+    return device_objects()
+
+
+def list_device_objects() -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_device_models()]
+
+
 def get_local_capacity_model():
     require_ctx("sdk.data.control_plane")
     from adaos.services.system_model.service import current_node_object
@@ -147,6 +159,15 @@ def get_reliability_objects(*, webspace_id: str | None = None) -> list[Mapping[s
     return [item.to_dict() for item in get_reliability_model(webspace_id=webspace_id).objects]
 
 
+def list_quota_models(*, webspace_id: str | None = None):
+    projection = get_reliability_model(webspace_id=webspace_id)
+    return [item for item in projection.objects if str(getattr(item, "kind", "") or "") == CanonicalKind.QUOTA.value]
+
+
+def list_quota_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_quota_models(webspace_id=webspace_id)]
+
+
 def get_inventory_model():
     require_ctx("sdk.data.control_plane")
     from adaos.services.system_model.service import current_inventory_projection
@@ -181,6 +202,8 @@ __all__ = [
     "get_workspace_object",
     "list_browser_session_models",
     "list_browser_session_objects",
+    "list_device_models",
+    "list_device_objects",
     "get_local_capacity_model",
     "get_local_capacity_object",
     "list_local_io_models",
@@ -188,6 +211,8 @@ __all__ = [
     "get_reliability_model",
     "get_reliability_projection",
     "get_reliability_objects",
+    "list_quota_models",
+    "list_quota_objects",
     "get_inventory_model",
     "get_inventory_projection",
     "get_inventory_objects",

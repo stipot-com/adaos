@@ -48,6 +48,43 @@ class InstallationStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+class CanonicalKind(str, Enum):
+    ROOT = "root"
+    NODE = "node"
+    HUB = "hub"
+    MEMBER = "member"
+    PROFILE = "profile"
+    WORKSPACE = "workspace"
+    BROWSER_SESSION = "browser_session"
+    DEVICE = "device"
+    IO_ENDPOINT = "io_endpoint"
+    SKILL = "skill"
+    SCENARIO = "scenario"
+    RUNTIME = "runtime"
+    CONNECTION = "connection"
+    CAPACITY = "capacity"
+    QUOTA = "quota"
+    POLICY = "policy"
+
+
+class RelationKind(str, Enum):
+    PARENT = "parent"
+    SUBNET = "subnet"
+    HOSTED_ON = "hosted_on"
+    CONNECTED_TO = "connected_to"
+    WORKSPACE = "workspace"
+    HOME_SCENARIO = "home_scenario"
+    DEVICE_BINDING = "device_binding"
+    OWNER = "owner"
+    USES = "uses"
+    AFFECTS = "affects"
+    DEPENDS_ON = "depends_on"
+
+
+CANONICAL_KIND_REGISTRY: dict[str, CanonicalKind] = {item.value: item for item in CanonicalKind}
+CANONICAL_RELATION_REGISTRY: dict[str, RelationKind] = {item.value: item for item in RelationKind}
+
+
 @dataclass(slots=True)
 class CanonicalActionDescriptor:
     id: str
@@ -121,6 +158,8 @@ class CanonicalProjection:
 
 
 def _token(value: Any) -> str:
+    if isinstance(value, Enum):
+        value = value.value
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value or "").strip().lower()
@@ -204,6 +243,30 @@ def normalize_installation_status(value: Any) -> InstallationStatus:
     return InstallationStatus.UNKNOWN
 
 
+def normalize_kind(value: Any) -> str | None:
+    token = _token(value)
+    if not token:
+        return None
+    item = CANONICAL_KIND_REGISTRY.get(token)
+    return item.value if item else token
+
+
+def normalize_relation_kind(value: Any) -> str | None:
+    token = _token(value)
+    if not token:
+        return None
+    item = CANONICAL_RELATION_REGISTRY.get(token)
+    return item.value if item else token
+
+
+def canonical_ref(kind: str | CanonicalKind, value: Any) -> str | None:
+    kind_token = normalize_kind(kind)
+    raw = str(value or "").strip()
+    if not kind_token or not raw:
+        return None
+    return f"{kind_token}:{raw}"
+
+
 def compact_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, item in value.items():
@@ -255,18 +318,25 @@ __all__ = [
     "CanonicalActionDescriptor",
     "CanonicalAudit",
     "CanonicalGovernance",
+    "CanonicalKind",
     "CanonicalObject",
     "CanonicalProjection",
     "CanonicalStatus",
+    "CANONICAL_KIND_REGISTRY",
+    "CANONICAL_RELATION_REGISTRY",
     "ConnectivityStatus",
     "InstallationStatus",
+    "RelationKind",
     "ResourcePressureStatus",
     "SyncStatus",
     "TrustStatus",
+    "canonical_ref",
     "compact_mapping",
     "normalize_connectivity_status",
     "normalize_installation_status",
+    "normalize_kind",
     "normalize_operational_status",
+    "normalize_relation_kind",
     "normalize_resource_pressure",
     "normalize_sync_status",
     "normalize_trust_status",
