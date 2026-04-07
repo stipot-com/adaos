@@ -26,7 +26,9 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.list_descriptors()
     client.get_descriptor("capability_registry")
     client.list_managed_targets(environment="test")
+    client.upsert_managed_target({"target_id": "hub:test-zone"})
     client.get_managed_target("hub:test-zone")
+    client.issue_access_token({"audience": "codex-vscode"})
     client.call("development.list_descriptor_sets", request_id="req-1")
 
     assert config.headers()["Authorization"] == "Bearer access-123"
@@ -36,5 +38,9 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[1][1] == "/v1/root/mcp/descriptors"
     assert stub.calls[2][1] == "/v1/root/mcp/descriptors/capability_registry"
     assert stub.calls[3][2]["params"]["environment"] == "test"
-    assert stub.calls[4][1] == "/v1/root/mcp/targets/hub:test-zone"
-    assert stub.calls[5][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[4][1] == "/v1/root/mcp/targets"
+    assert stub.calls[4][2]["json"]["target_id"] == "hub:test-zone"
+    assert stub.calls[5][1] == "/v1/root/mcp/targets/hub:test-zone"
+    assert stub.calls[6][1] == "/v1/root/mcp/access-tokens"
+    assert stub.calls[6][2]["json"]["audience"] == "codex-vscode"
+    assert stub.calls[7][2]["json"]["tool_id"] == "development.list_descriptor_sets"

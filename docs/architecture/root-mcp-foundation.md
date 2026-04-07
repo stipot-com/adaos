@@ -487,6 +487,7 @@ What is implemented in this slice:
 - state-backed managed-target registry skeleton with `test hub` as the first published target descriptor
 - `RootMcpClient` skeleton with `root_url + subnet_id + access_token + zone` configuration model
 - initial root-side capability registry and policy gate for direct endpoints and MCP tool execution
+- bounded root-issued MCP access-token primitives for external clients
 - minimal root MCP API entrypoints:
   - `GET /v1/root/mcp/foundation`
   - `GET /v1/root/mcp/contracts`
@@ -494,6 +495,8 @@ What is implemented in this slice:
   - `GET /v1/root/mcp/descriptors/{descriptor_id}`
   - `GET /v1/root/mcp/targets`
   - `GET /v1/root/mcp/targets/{target_id}`
+  - `POST /v1/root/mcp/targets`
+  - `POST /v1/root/mcp/access-tokens`
   - `POST /v1/root/mcp/call`
   - `GET /v1/root/mcp/audit`
 - read-only development tools for:
@@ -507,6 +510,7 @@ What is implemented in this slice:
 - initial audit persistence to local root MCP audit storage
 - audit filtering by tool, trace, target, and subnet scope
 - scope-aware target filtering by `subnet_id` and `zone`
+- access-token-backed MCP auth with bounded capabilities, target allowlists, and scope inheritance
 
 This is intentionally still a skeleton: it establishes the entrypoint, contracts, and audit shape before adding real managed-target execution.
 
@@ -556,6 +560,7 @@ This is intentionally still a skeleton: it establishes the entrypoint, contracts
 - `SDK metadata exposure`: exporter support exists and is now exposed through a root-curated descriptor registry, but the descriptor set is still narrow and not yet a full authoring surface
 - `scenario/skill descriptors`: manifests, registries, and projection services now have a root-level descriptor path, but the catalog is still limited and incomplete for authoring workflows
 - `capability model`: `src/adaos/services/policy/capabilities.py` and SDK capability errors now have an initial Root MCP capability registry and policy gate, but the vocabulary is not yet unified across all AdaOS permission layers
+- `external client access`: Root MCP now has bounded access-token primitives and a scoped client model, but issuance/rotation/revocation are still minimal and root-local
 - `web UI declarative assets`: Yjs and workspace surfaces exist, but no dedicated operational-skill web UI or audit-first operator view exists yet
 
 ### Missing
@@ -563,7 +568,7 @@ This is intentionally still a skeleton: it establishes the entrypoint, contracts
 - `MCP Development Surface` and `MCP Operational Surface` as explicit products
 - `infra_access_skill`
 - executable managed-target routing beyond the current skeleton registry and descriptors
-- bounded token issuance lifecycle for external MCP clients
+- production-grade token issuance, rotation, revocation, and trust integration for external MCP clients
 - write-capable operational tool execution through target-side execution adapters
 - fully unified operational event model spanning request, policy, execution, result, and error
 - workflow effectiveness views over the operational audit trail

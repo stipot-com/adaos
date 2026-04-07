@@ -144,6 +144,120 @@ def test_root_mcp_targets_support_state_registry_and_scope(monkeypatch, tmp_path
     assert target.json()["target"]["target_id"] == "hub:test-extra"
 
 
+def test_root_mcp_owner_can_register_target_and_issue_scoped_access_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import targets as target_registry
+    from adaos.services.root_mcp import tokens as token_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(token_registry, "_tokens_path", lambda: tmp_path / "access_tokens.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+
+    register = client.post(
+        "/v1/root/mcp/targets",
+        headers=owner_headers,
+        json={
+            "target_id": "hub:test-extra",
+            "title": "Extra Test Hub",
+            "kind": "hub",
+            "environment": "test",
+            "status": "online",
+            "zone": "lab-b",
+            "subnet_id": "subnet:extra",
+            "operational_surface": {"published_by": "skill:infra_access_skill", "enabled": True},
+        },
+    )
+    assert register.status_code == 200
+    assert register.json()["target"]["target_id"] == "hub:test-extra"
+
+    issued = client.post(
+        "/v1/root/mcp/access-tokens",
+        headers=owner_headers,
+        json={
+            "audience": "codex-vscode",
+            "target_id": "hub:test-extra",
+            "note": "scoped external client",
+        },
+    )
+    assert issued.status_code == 200
+    token_payload = issued.json()["token"]
+    assert token_payload["subnet_id"] == "subnet:extra"
+    assert token_payload["zone"] == "lab-b"
+    assert token_payload["target_ids"] == ["hub:test-extra"]
+    assert "development.read.descriptors" in token_payload["capabilities"]
+
+    token_headers = {"Authorization": f"Bearer {token_payload['access_token']}"}
+
+    descriptors = client.get("/v1/root/mcp/descriptors", headers=token_headers)
+    assert descriptors.status_code == 200
+
+    targets = client.get("/v1/root/mcp/targets", headers=token_headers)
+    assert targets.status_code == 200
+    target_items = targets.json()["targets"]
+    assert [item["target_id"] for item in target_items] == ["hub:test-extra"]
+    assert targets.json()["scope"]["subnet_id"] == "subnet:extra"
+    assert targets.json()["scope"]["zone"] == "lab-b"
+
+    target = client.get("/v1/root/mcp/targets/hub:test-extra", headers=token_headers)
+    assert target.status_code == 200
+    assert target.json()["target"]["target_id"] == "hub:test-extra"
+
+    call = client.post(
+        "/v1/root/mcp/call",
+        headers=token_headers,
+        json={
+            "tool_id": "development.get_descriptor_set",
+            "arguments": {"descriptor_id": "mcp_client_profile"},
+        },
+    )
+    assert call.status_code == 200
+    assert call.json()["ok"] is True
+
+
+def test_root_mcp_access_token_rejects_scope_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import targets as target_registry
+    from adaos.services.root_mcp import tokens as token_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(token_registry, "_tokens_path", lambda: tmp_path / "access_tokens.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    client.post(
+        "/v1/root/mcp/targets",
+        headers=owner_headers,
+        json={
+            "target_id": "hub:test-extra",
+            "title": "Extra Test Hub",
+            "kind": "hub",
+            "environment": "test",
+            "status": "online",
+            "zone": "lab-b",
+            "subnet_id": "subnet:extra",
+        },
+    )
+    issued = client.post(
+        "/v1/root/mcp/access-tokens",
+        headers=owner_headers,
+        json={"audience": "codex-vscode", "target_id": "hub:test-extra"},
+    )
+    token = issued.json()["token"]["access_token"]
+
+    resp = client.get(
+        "/v1/root/mcp/foundation",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-AdaOS-Zone": "other-zone",
+        },
+    )
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert detail["code"] == "zone_mismatch"
+
+
 def test_root_mcp_placeholder_tool_returns_structured_error(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
     client = _make_client()

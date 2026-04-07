@@ -18,6 +18,7 @@ from adaos.services.system_model.model import (
 
 from .policy import capability_registry_payload, capability_registry_summary
 from .targets import managed_target_registry_summary
+from .tokens import DEFAULT_ACCESS_TOKEN_CAPABILITIES, access_token_registry_summary
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -81,6 +82,9 @@ def _client_profile() -> dict[str, Any]:
             "Authorization": "Bearer <access_token>",
             "X-AdaOS-Subnet-Id": "<subnet_id>",
             "X-AdaOS-Zone": "<zone>",
+        },
+        "access_token_defaults": {
+            "capabilities": list(DEFAULT_ACCESS_TOKEN_CAPABILITIES),
         },
         "entrypoints": [
             "/v1/root/mcp/foundation",
@@ -177,6 +181,13 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             source_kind="root_mcp_client_profile",
             tags=["development", "client", "integration"],
         ),
+        _descriptor_entry(
+            "access_token_profile",
+            title="Access token profile",
+            summary="Bounded Root MCP access-token defaults and registry summary.",
+            source_kind="root_mcp_access_token_registry",
+            tags=["development", "auth", "tokens"],
+        ),
     ]
 
 
@@ -189,6 +200,7 @@ def descriptor_registry_summary() -> dict[str, Any]:
         "descriptors": [item["descriptor_id"] for item in items],
         "capability_registry": capability_registry_summary(),
         "managed_target_registry": managed_target_registry_summary(),
+        "access_token_registry": access_token_registry_summary(),
     }
 
 
@@ -222,6 +234,9 @@ def get_descriptor_set(descriptor_id: str, *, level: str = "std") -> dict[str, A
     if token == "mcp_client_profile":
         entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
         return {**entry, "payload": _client_profile()}
+    if token == "access_token_profile":
+        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
+        return {**entry, "payload": access_token_registry_summary()}
     raise KeyError(token)
 
 

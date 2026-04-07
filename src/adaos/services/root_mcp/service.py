@@ -503,6 +503,7 @@ def invoke_tool(
     auth_method: str,
     dry_run: bool = False,
     scope: dict[str, Any] | None = None,
+    auth_context: dict[str, Any] | None = None,
 ) -> RootMcpResponseEnvelope:
     started_at = _iso_now()
     effective_request_id = str(request_id or new_id())
@@ -532,6 +533,7 @@ def invoke_tool(
             actor=actor,
             auth_method=auth_method,
             scope=scope_meta,
+            auth_context=auth_context,
         )
 
         if not policy_decision.allowed:

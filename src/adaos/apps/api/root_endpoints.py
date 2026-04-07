@@ -30,6 +30,8 @@ from adaos.services.root_mcp.service import (
     recent_audit_events,
 )
 from adaos.services.root_mcp.policy import evaluate_direct_access
+from adaos.services.root_mcp.targets import upsert_managed_target
+from adaos.services.root_mcp.tokens import issue_access_token, validate_access_token
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
@@ -81,7 +83,38 @@ def _require_root_write_auth(*, authorization: str | None, owner_token: str | No
 
 
 def _require_root_access_auth(*, authorization: str | None, owner_token: str | None) -> dict[str, Any]:
-    return _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    if owner_token:
+        return _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+        expected = os.getenv("ADAOS_ROOT_BEARER_TOKEN") or ""
+        if expected and token == expected:
+            return {
+                "method": "bearer",
+                "verified": True,
+                "actor": "bearer:root",
+            }
+
+        record = validate_access_token(token)
+        if record is not None:
+            return {
+                "method": "mcp_access_token",
+                "verified": True,
+                "actor": f"mcp_access_token:{record.get('token_id')}",
+                "grant_source": "issued_access_token",
+                "capabilities": list(record.get("capabilities") or []),
+                "subnet_id": record.get("subnet_id"),
+                "zone": record.get("zone"),
+                "allowed_target_ids": list(record.get("target_ids") or []),
+                "access_token_id": record.get("token_id"),
+                "audience": record.get("audience"),
+            }
+
+    raise HTTPException(status_code=401, detail="Missing Authorization bearer token or X-Owner-Token")
 
 
 def _mcp_scope(*, subnet_id: str | None, zone: str | None) -> dict[str, Any]:
@@ -95,11 +128,39 @@ def _mcp_scope(*, subnet_id: str | None, zone: str | None) -> dict[str, Any]:
     return scope
 
 
+def _effective_mcp_scope(*, auth: dict[str, Any], subnet_id: str | None, zone: str | None) -> dict[str, Any]:
+    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    auth_subnet = str(auth.get("subnet_id") or "").strip()
+    if auth_subnet:
+        if scope.get("subnet_id") and scope["subnet_id"] != auth_subnet:
+            raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Requested subnet scope does not match access token scope."})
+        scope["subnet_id"] = auth_subnet
+    auth_zone = str(auth.get("zone") or "").strip()
+    if auth_zone:
+        if scope.get("zone") and scope["zone"] != auth_zone:
+            raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Requested zone scope does not match access token scope."})
+        scope["zone"] = auth_zone
+    return scope
+
+
+def _allowed_target_ids(auth: dict[str, Any]) -> list[str]:
+    raw = auth.get("allowed_target_ids") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        token = str(item or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
 def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
     decision = evaluate_direct_access(
         required_capability,
         actor=str(auth.get("actor") or "root:unknown"),
         auth_method=str(auth.get("method") or "unknown"),
+        auth_context=auth,
     )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail={"code": decision.code, "message": decision.message})
@@ -313,6 +374,32 @@ class RootMcpCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class RootMcpTargetUpsertRequest(BaseModel):
+    target_id: str = Field(..., min_length=1, max_length=128)
+    title: str = Field(..., min_length=1, max_length=256)
+    kind: str = Field(..., min_length=1, max_length=64)
+    environment: str = Field(..., min_length=1, max_length=32)
+    status: str = Field(default="unknown", min_length=1, max_length=64)
+    zone: str | None = Field(default=None, max_length=128)
+    subnet_id: str | None = Field(default=None, max_length=128)
+    transport: dict[str, Any] = Field(default_factory=dict)
+    operational_surface: dict[str, Any] = Field(default_factory=dict)
+    access: dict[str, Any] = Field(default_factory=dict)
+    policy: dict[str, Any] = Field(default_factory=dict)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class RootMcpAccessTokenIssueRequest(BaseModel):
+    audience: str = Field(..., min_length=1, max_length=128)
+    ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    capabilities: list[str] = Field(default_factory=list)
+    subnet_id: str | None = Field(default=None, max_length=128)
+    zone: str | None = Field(default=None, max_length=128)
+    target_id: str | None = Field(default=None, max_length=128)
+    target_ids: list[str] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=512)
+
+
 @root_router.get("/mcp/foundation")
 async def root_mcp_foundation(
     authorization: str | None = Header(default=None),
@@ -321,11 +408,12 @@ async def root_mcp_foundation(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("development.read.foundation", auth=auth)
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "scope": scope,
         "foundation": foundation_snapshot(),
     }
 
@@ -339,12 +427,13 @@ async def root_mcp_contracts(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("development.read.contracts" if str(surface or "").strip().lower() != "operations" else "operations.read.contracts", auth=auth)
     contracts = [item.to_dict() for item in list_tool_contracts(surface=surface)]
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "scope": scope,
         "contracts": contracts,
     }
 
@@ -357,11 +446,12 @@ async def root_mcp_descriptors(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("development.read.descriptors", auth=auth)
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "scope": scope,
         "descriptors": list_descriptor_registry(),
     }
 
@@ -376,6 +466,7 @@ async def root_mcp_descriptor(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("development.read.descriptors", auth=auth)
     try:
         descriptor = get_descriptor(descriptor_id, level=level)
@@ -384,7 +475,7 @@ async def root_mcp_descriptor(
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "scope": scope,
         "descriptor": descriptor,
     }
 
@@ -399,12 +490,32 @@ async def root_mcp_targets(
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
     _enforce_mcp_capability("operations.read.targets", auth=auth)
-    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    targets = list_managed_targets(environment=environment, subnet_id=scope.get("subnet_id"), zone=scope.get("zone"))
+    allowed_target_ids = _allowed_target_ids(auth)
+    if allowed_target_ids:
+        targets = [item for item in targets if str(item.get("target_id") or "") in allowed_target_ids]
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
         "scope": scope,
-        "targets": list_managed_targets(environment=environment, subnet_id=scope.get("subnet_id"), zone=scope.get("zone")),
+        "targets": targets,
+    }
+
+
+@root_router.post("/mcp/targets")
+async def root_mcp_upsert_target(
+    payload: RootMcpTargetUpsertRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.write.targets", auth=auth)
+    target = upsert_managed_target(payload.model_dump(mode="python"))
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "target": target.to_dict(),
     }
 
 
@@ -418,10 +529,13 @@ async def root_mcp_target(
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
     _enforce_mcp_capability("operations.read.targets", auth=auth)
-    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     target = get_managed_target(target_id)
     if target is None:
         raise HTTPException(status_code=404, detail={"code": "target_not_found", "message": f"Managed target '{target_id}' was not found."})
+    allowed_target_ids = _allowed_target_ids(auth)
+    if allowed_target_ids and target_id not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
     if scope.get("subnet_id") and target.get("subnet_id") and scope["subnet_id"] != target["subnet_id"]:
         raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
     if scope.get("zone") and target.get("zone") and scope["zone"] != target["zone"]:
@@ -448,6 +562,7 @@ async def root_mcp_audit(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("audit.read", auth=auth)
     events = recent_audit_events(
         limit=max(1, min(int(limit), 200)),
@@ -460,8 +575,35 @@ async def root_mcp_audit(
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
-        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "scope": scope,
         "events": events,
+    }
+
+
+@root_router.post("/mcp/access-tokens")
+async def root_mcp_issue_access_token(
+    payload: RootMcpAccessTokenIssueRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.issue.tokens", auth=auth)
+    issued = issue_access_token(
+        audience=payload.audience,
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        ttl_seconds=payload.ttl_seconds,
+        capabilities=list(payload.capabilities or []),
+        subnet_id=payload.subnet_id,
+        zone=payload.zone,
+        target_id=payload.target_id,
+        target_ids=list(payload.target_ids or []),
+        note=payload.note,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "token": issued,
     }
 
 
@@ -474,7 +616,7 @@ async def root_mcp_call(
     zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
 ) -> dict[str, Any]:
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
-    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     response = invoke_tool(
         payload.tool_id,
         arguments=payload.arguments,
@@ -484,6 +626,7 @@ async def root_mcp_call(
         auth_method=str(auth.get("method") or "unknown"),
         dry_run=payload.dry_run,
         scope=scope,
+        auth_context=auth,
     )
     return {"ok": response.ok, "scope": scope, "response": response.to_dict()}
 

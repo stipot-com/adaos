@@ -63,8 +63,14 @@ class RootMcpClient:
             params["environment"] = environment
         return dict(self._request("GET", "/v1/root/mcp/targets", params=params))
 
+    def upsert_managed_target(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(self._request("POST", "/v1/root/mcp/targets", json=dict(payload)))
+
     def get_managed_target(self, target_id: str) -> dict[str, Any]:
         return dict(self._request("GET", f"/v1/root/mcp/targets/{target_id}"))
+
+    def issue_access_token(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(self._request("POST", "/v1/root/mcp/access-tokens", json=dict(payload)))
 
     def recent_audit(
         self,

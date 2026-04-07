@@ -26,6 +26,7 @@ from .service import (
     recent_audit_events,
 )
 from .targets import managed_target_registry_summary, upsert_managed_target
+from .tokens import access_token_registry_summary, issue_access_token, validate_access_token
 
 __all__ = [
     "ROOT_MCP_ERROR_SCHEMA",
@@ -40,6 +41,7 @@ __all__ = [
     "RootMcpSurface",
     "RootMcpToolContract",
     "append_audit_event",
+    "access_token_registry_summary",
     "capability_registry_payload",
     "capability_registry_summary",
     "descriptor_registry_summary",
@@ -59,5 +61,7 @@ __all__ = [
     "managed_target_registry_summary",
     "recent_audit_events",
     "schema_object",
+    "issue_access_token",
     "upsert_managed_target",
+    "validate_access_token",
 ]

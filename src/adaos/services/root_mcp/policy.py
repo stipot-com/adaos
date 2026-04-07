@@ -27,6 +27,17 @@ def _parse_capabilities(raw: str | None) -> list[str]:
     return [item for item in (token.strip() for token in str(raw).split(",")) if item]
 
 
+def _normalize_target_ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        token = str(item or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
 def _capability_entry(
     capability: str,
     *,
@@ -101,6 +112,20 @@ def list_capability_classes() -> list[dict[str, Any]]:
             risk="low",
             summary="Read managed-target registry and target descriptors.",
             default_grants=["owner_token", "bearer"],
+        ),
+        _capability_entry(
+            "operations.write.targets",
+            surface="operations",
+            risk="medium",
+            summary="Register or update managed-target descriptors on root.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "operations.issue.tokens",
+            surface="operations",
+            risk="medium",
+            summary="Issue bounded Root MCP access tokens for external clients.",
+            default_grants=["owner_token"],
         ),
         _capability_entry(
             "audit.read",
@@ -255,8 +280,13 @@ def evaluate_direct_access(
     *,
     actor: str,
     auth_method: str,
+    auth_context: dict[str, Any] | None = None,
 ) -> RootMcpPolicyDecision:
-    grants, grant_source = _default_capabilities_for_auth_method(auth_method)
+    context = dict(auth_context or {})
+    grants = _parse_capabilities(",".join(str(item) for item in context.get("capabilities") or []))
+    grant_source = str(context.get("grant_source") or "").strip() or None
+    if not grants:
+        grants, grant_source = _default_capabilities_for_auth_method(auth_method)
     if not has_capability(grants, required_capability):
         return RootMcpPolicyDecision(
             allowed=False,
@@ -284,8 +314,13 @@ def evaluate_tool_access(
     actor: str,
     auth_method: str,
     scope: dict[str, Any] | None = None,
+    auth_context: dict[str, Any] | None = None,
 ) -> RootMcpPolicyDecision:
-    grants, grant_source = _default_capabilities_for_auth_method(auth_method)
+    context = dict(auth_context or {})
+    grants = _parse_capabilities(",".join(str(item) for item in context.get("capabilities") or []))
+    grant_source = str(context.get("grant_source") or "").strip() or None
+    if not grants:
+        grants, grant_source = _default_capabilities_for_auth_method(auth_method)
     required_capability = contract.required_capability
     payload = dict(arguments or {})
     target_id = str(payload.get("target_id") or "").strip() or None
@@ -305,6 +340,19 @@ def evaluate_tool_access(
         )
 
     if target_id:
+        allowed_target_ids = _normalize_target_ids(context.get("allowed_target_ids") or [])
+        if allowed_target_ids and target_id not in allowed_target_ids:
+            return RootMcpPolicyDecision(
+                allowed=False,
+                code="target_forbidden",
+                message=f"Actor '{actor}' is not allowed to access target '{target_id}'.",
+                policy_decision="deny",
+                required_capability=required_capability,
+                granted_capabilities=grants,
+                grant_source=grant_source,
+                target_id=target_id,
+                meta={"allowed_target_ids": allowed_target_ids},
+            )
         target = get_managed_target(target_id)
         if target is None:
             return RootMcpPolicyDecision(

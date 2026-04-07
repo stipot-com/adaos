@@ -453,6 +453,8 @@ Phase 0 считается завершенной, когда:
 
 На текущем checkpoint Phase 1 уже включает root-side capability registry и policy gate для direct read surfaces и MCP tool execution, а managed-target registry стал state-backed skeleton вместо чисто in-memory описания.
 
+Дополнительно текущий срез уже включает bounded root-issued MCP access tokens для внешних клиентов и owner-only upsert для managed target descriptors на root.
+
 Текущий кодовый checkpoint закладывает первый root-hosted skeleton в:
 
 - `src/adaos/services/root_mcp/model.py`
