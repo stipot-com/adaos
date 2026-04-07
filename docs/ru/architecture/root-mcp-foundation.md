@@ -508,6 +508,8 @@ Phase 0 считается завершенной, когда:
   - `hub.restart_service`
   - `hub.run_allowed_tests`
   - `hub.get_test_results`
+  - `hub.deploy_ref`
+  - `hub.rollback_last_test_deploy`
 - policy-side gating target-bound `hub.*` tools по опубликованной target capability surface от `infra_access_skill`
 - target-side self-description `infra_access_skill` в control reports, включая skill metadata, наличие web UI, observability hints и token-management readiness
 - execution-mode gating, поэтому local-pilot adapters запускаются только когда target публикует `execution_mode=local_process`

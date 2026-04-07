@@ -127,6 +127,28 @@ def list_workspace_registry_entries(
     return results
 
 
+def find_workspace_registry_entry(
+    workspace_root: Path,
+    *,
+    kind: RegistryKind,
+    name_or_id: str,
+    fallback_to_scan: bool = True,
+) -> dict[str, Any] | None:
+    needle = str(name_or_id or "").strip().lower()
+    if not needle:
+        return None
+    for item in list_workspace_registry_entries(
+        workspace_root,
+        kind=kind,
+        fallback_to_scan=fallback_to_scan,
+    ):
+        name = str(item.get("name") or "").strip().lower()
+        artifact_id = str(item.get("id") or "").strip().lower()
+        if needle in {name, artifact_id}:
+            return dict(item)
+    return None
+
+
 def build_registry_entry(kind: RegistryKind, artifact_dir: Path) -> dict[str, Any] | None:
     directory = Path(artifact_dir)
     manifest_path, manifest = _load_manifest(directory, kind)
@@ -288,6 +310,7 @@ __all__ = [
     "REGISTRY_FILE_NAME",
     "REGISTRY_FORMAT_VERSION",
     "build_registry_entry",
+    "find_workspace_registry_entry",
     "list_workspace_registry_entries",
     "load_workspace_registry",
     "rebuild_workspace_registry",

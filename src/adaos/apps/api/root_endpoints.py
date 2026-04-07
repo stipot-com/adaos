@@ -61,6 +61,7 @@ def _append_direct_root_mcp_audit(
     meta: dict[str, Any] | None = None,
     result_summary: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
+    redactions: list[str] | None = None,
 ) -> str:
     finished_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     event = RootMcpAuditEvent(
@@ -81,6 +82,7 @@ def _append_direct_root_mcp_audit(
         finished_at=finished_at,
         result_summary=result_summary or {},
         error=error or {},
+        redactions=list(redactions or []),
         meta=meta or {},
     )
     append_audit_event(event)
@@ -818,6 +820,7 @@ async def root_mcp_issue_access_token(
             "token_id": issued.get("token_id"),
         },
         result_summary={"kind": "access_token", "token_id": issued.get("token_id")},
+        redactions=["result.access_token"],
     )
     return {
         "ok": True,

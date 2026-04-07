@@ -179,8 +179,10 @@ def build_operational_surface() -> dict[str, Any]:
 
     configured_services = _normalize_str_list(config.get("allowed_services"))
     configured_tests = _normalize_str_list(config.get("allowed_test_paths"))
+    configured_refs = _normalize_str_list(config.get("allowed_deploy_refs"))
     allowed_services = _parse_csv(os.getenv("ADAOS_INFRA_ACCESS_ALLOWED_SERVICES")) or configured_services
     allowed_test_paths = _parse_csv(os.getenv("ADAOS_INFRA_ACCESS_ALLOWED_TEST_PATHS")) or configured_tests
+    allowed_deploy_refs = _parse_csv(os.getenv("ADAOS_INFRA_ACCESS_ALLOWED_REFS")) or configured_refs
 
     observability = dict(config.get("observability") or {}) if isinstance(config.get("observability"), dict) else {}
     observability_enabled = bool(observability.get("enabled", True))
@@ -199,6 +201,7 @@ def build_operational_surface() -> dict[str, Any]:
         "execution_adapter": execution_adapter,
         "allowed_services": allowed_services,
         "allowed_test_paths": allowed_test_paths,
+        "allowed_deploy_refs": allowed_deploy_refs,
         "skill": {
             "name": str(state.get("skill_name") or _SKILL_NAME),
             "version": str(manifest.get("version") or "").strip() or None,

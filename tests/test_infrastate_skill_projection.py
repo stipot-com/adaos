@@ -184,6 +184,43 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
     ]
 
 
+def test_infrastate_skill_items_use_registry_catalog_for_update_status(monkeypatch):
+    mod = _load_infrastate_module()
+
+    class _MetaId:
+        def __init__(self, value: str):
+            self.value = value
+
+    monkeypatch.setattr(
+        mod,
+        "get_ctx",
+        lambda: SimpleNamespace(
+            skills_repo=SimpleNamespace(list=lambda: [SimpleNamespace(id=_MetaId("infrastate_skill"), version="0.19.0")]),
+            sql=object(),
+            git=object(),
+            paths=SimpleNamespace(workspace_dir=lambda: Path(".")),
+            bus=None,
+            caps=object(),
+            settings=object(),
+        ),
+    )
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: object())
+    monkeypatch.setattr(mod, "SkillManager", lambda **kwargs: SimpleNamespace(runtime_status=lambda name: {"active_slot": "A"}))
+    monkeypatch.setattr(mod, "find_workspace_registry_entry", lambda *args, **kwargs: {"version": "0.20.0"})
+
+    items = mod._skills_items()
+
+    assert items == [
+        {
+            "name": "infrastate_skill",
+            "version": "0.19.0",
+            "slot": "A",
+            "remote_version": "0.20.0",
+            "update_available": True,
+        }
+    ]
+
+
 def test_infrastate_marketplace_filters_installed_and_marks_running_operations(monkeypatch):
     mod = _load_infrastate_module()
 

@@ -460,9 +460,17 @@ class SkillManager:
             dst = runtime_root / rel
             try:
                 if dst.exists() and not force:
-                    src_mtime = src.stat().st_mtime
-                    dst_mtime = dst.stat().st_mtime
-                    if src_mtime <= dst_mtime:
+                    src_stat = src.stat()
+                    dst_stat = dst.stat()
+                    same_size = int(src_stat.st_size) == int(dst_stat.st_size)
+                    newer_source = float(src_stat.st_mtime) > float(dst_stat.st_mtime)
+                    if same_size and not newer_source:
+                        try:
+                            if src.read_bytes() == dst.read_bytes():
+                                continue
+                        except OSError:
+                            pass
+                    elif not newer_source:
                         continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)

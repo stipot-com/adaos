@@ -59,9 +59,11 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     implemented = next(item for item in contract_items if item["id"] == "hub.get_status")
     assert implemented["availability"] == "enabled"
     assert implemented["metadata"]["published_by"] == "root"
-    placeholder = next(item for item in contract_items if item["id"] == "hub.deploy_ref")
-    assert placeholder["availability"] == "placeholder"
-    assert placeholder["metadata"]["published_by"] == "skill:infra_access_skill"
+    deploy_ref = next(item for item in contract_items if item["id"] == "hub.deploy_ref")
+    assert deploy_ref["availability"] == "enabled"
+    assert deploy_ref["metadata"]["published_by"] == "skill:infra_access_skill"
+    rollback = next(item for item in contract_items if item["id"] == "hub.rollback_last_test_deploy")
+    assert rollback["availability"] == "enabled"
 
     targets = client.get("/v1/root/mcp/targets", headers=owner_headers)
     assert targets.status_code == 200
@@ -111,6 +113,8 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     assert envelope["tool_id"] == "development.get_descriptor_set"
     assert envelope["status"] == "ok"
     assert envelope["meta"]["subnet_id"] == "subnet:test-zone"
+    assert envelope["meta"]["trace"]["request"]["argument_keys"] == ["descriptor_id"]
+    assert envelope["meta"]["trace"]["routing"]["mode"] == "root.descriptor_registry"
     assert "descriptor" in envelope["result"]
     assert envelope["audit_event_id"]
 
@@ -126,6 +130,7 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     assert all(item["meta"]["subnet_id"] == "subnet:test-zone" for item in events)
     event = next(item for item in events if item["event_id"] == envelope["audit_event_id"])
     assert event["execution_adapter"] == "root.descriptor_registry"
+    assert event["meta"]["trace"]["request"]["argument_keys"] == ["descriptor_id"]
 
 
 def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path) -> None:
@@ -347,6 +352,16 @@ def test_root_mcp_access_token_lifecycle_management(monkeypatch, tmp_path) -> No
     assert events
     assert events[0]["tool_id"] == "root.access_tokens.revoke"
 
+    issue_audit = client.get(
+        "/v1/root/mcp/audit",
+        headers=owner_headers,
+        params={"tool_id": "root.access_tokens.issue"},
+    )
+    assert issue_audit.status_code == 200
+    issue_events = issue_audit.json()["events"]
+    assert issue_events
+    assert issue_events[0]["redactions"] == ["result.access_token"]
+
 
 def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
@@ -547,6 +562,7 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert token_payload["response"]["result"]["subnet_id"] == "subnet-test-1"
     assert token_payload["response"]["result"]["zone"] == "lab-b"
     assert token_payload["response"]["meta"]["routing_mode"] == "root.access_token_issuer"
+    assert token_payload["response"]["meta"]["redactions"] == ["result.access_token"]
 
     issued_token_id = token_payload["response"]["result"]["token_id"]
 
@@ -592,6 +608,7 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert any(item["tool_id"] == "hub.run_healthchecks" and item["execution_adapter"] == "infra_access.local_process.healthchecks" for item in audit_items)
     assert any(item["tool_id"] == "hub.list_access_tokens" and item["execution_adapter"] == "root.access_token_registry" for item in audit_items)
     assert any(item["tool_id"] == "hub.revoke_access_token" and item["execution_adapter"] == "root.access_token_revocation" for item in audit_items)
+    assert any(item["tool_id"] == "hub.issue_access_token" and item["redactions"] == ["result.access_token"] for item in audit_items)
 
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
@@ -649,10 +666,13 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
                 "execution_mode": "local_process",
                 "allowed_services": ["alpha"],
                 "allowed_test_paths": ["tests/test_sample_dummy.py"],
+                "allowed_deploy_refs": ["refs/heads/test-main", "refs/tags/v1"],
                 "capabilities": [
                     "hub.restart_service",
                     "hub.run_allowed_tests",
                     "hub.get_test_results",
+                    "hub.deploy_ref",
+                    "hub.rollback_last_test_deploy",
                 ],
             },
         },
@@ -699,6 +719,60 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert get_results_payload["ok"] is True
     assert get_results_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.test_results"
     assert get_results_payload["response"]["result"]["test_results"]["available"] is True
+
+    deploy_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.deploy_ref",
+            "arguments": {"target_id": target_id, "ref": "refs/heads/test-main", "note": "pilot deploy"},
+        },
+    )
+    assert deploy_call.status_code == 200
+    deploy_payload = deploy_call.json()
+    assert deploy_payload["ok"] is True
+    assert deploy_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.deploy_ref"
+    assert deploy_payload["response"]["result"]["deployment"]["state"]["current_ref"] == "refs/heads/test-main"
+    assert deploy_payload["response"]["meta"]["trace"]["result"]["kind"] == "object"
+
+    rollback_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.rollback_last_test_deploy",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert rollback_call.status_code == 200
+    rollback_payload = rollback_call.json()
+    assert rollback_payload["ok"] is False
+    assert rollback_payload["response"]["error"]["code"] == "invalid_request"
+
+    second_deploy_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.deploy_ref",
+            "arguments": {"target_id": target_id, "ref": "refs/tags/v1"},
+        },
+    )
+    assert second_deploy_call.status_code == 200
+    second_deploy_payload = second_deploy_call.json()
+    assert second_deploy_payload["ok"] is True
+
+    rollback_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.rollback_last_test_deploy",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert rollback_call.status_code == 200
+    rollback_payload = rollback_call.json()
+    assert rollback_payload["ok"] is True
+    assert rollback_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.rollback"
+    assert rollback_payload["response"]["result"]["deployment"]["state"]["current_ref"] == "refs/heads/test-main"
 
 
 def test_root_mcp_operational_tool_requires_published_skill_capability(monkeypatch, tmp_path) -> None:

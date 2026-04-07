@@ -35,6 +35,8 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.issue_target_access_token("hub:test-zone", audience="codex-vscode", note="web-client")
     client.list_target_access_tokens("hub:test-zone", active_only=True)
     client.revoke_target_access_token("hub:test-zone", "tok-2", reason="rotate-target")
+    client.deploy_target_ref("hub:test-zone", ref="refs/heads/test-main", note="pilot")
+    client.rollback_last_test_deploy("hub:test-zone")
     client.call("development.list_descriptor_sets", request_id="req-1")
 
     assert config.headers()["Authorization"] == "Bearer access-123"
@@ -61,4 +63,7 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[11][2]["json"]["arguments"]["active_only"] is True
     assert stub.calls[12][2]["json"]["tool_id"] == "hub.revoke_access_token"
     assert stub.calls[12][2]["json"]["arguments"]["token_id"] == "tok-2"
-    assert stub.calls[13][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[13][2]["json"]["tool_id"] == "hub.deploy_ref"
+    assert stub.calls[13][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
+    assert stub.calls[14][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
+    assert stub.calls[15][2]["json"]["tool_id"] == "development.list_descriptor_sets"

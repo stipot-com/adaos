@@ -103,6 +103,7 @@ class RootMcpAuditEvent:
     finished_at: str | None = None
     result_summary: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] = field(default_factory=dict)
+    redactions: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

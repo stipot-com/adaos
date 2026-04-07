@@ -10,9 +10,12 @@ from adaos.services.id_gen import new_id
 
 from .audit import append_audit_event, list_audit_events
 from .infra_access import (
+    deploy_local_ref,
+    read_deploy_state,
     read_local_logs,
     read_test_results,
     restart_local_service,
+    rollback_local_deploy,
     run_allowed_tests,
     run_local_healthchecks,
 )
@@ -112,36 +115,7 @@ def _foundation_summary() -> dict[str, Any]:
 
 
 def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
-    summary = "Planned test-hub operational tool published later through infra_access_skill."
-    return [
-        RootMcpToolContract(
-            id="hub.deploy_ref",
-            title="Deploy ref to test hub",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(
-                properties={"target_id": {"type": "string"}, "ref": {"type": "string"}},
-                required=["target_id", "ref"],
-            ),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.deploy_ref",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            side_effects="write",
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
-        ),
-        RootMcpToolContract(
-            id="hub.rollback_last_test_deploy",
-            title="Rollback last test deploy",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.rollback_last_test_deploy",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            side_effects="write",
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
-        ),
-    ]
+    return []
 
 
 def _implemented_tool_contracts() -> list[RootMcpToolContract]:
@@ -348,10 +322,49 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             },
         ),
         RootMcpToolContract(
+            id="hub.deploy_ref",
+            title="Deploy ref to test hub",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Apply a bounded local-pilot deployment ref through the infra_access_skill local adapter without direct shell or git mutation.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "ref": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                required=["target_id", "ref"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.deploy_ref",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_deploy_ref",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.rollback_last_test_deploy",
+            title="Rollback last test deploy",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Rollback the latest bounded local-pilot deployment ref through the infra_access_skill local adapter.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.rollback_last_test_deploy",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_rollback_last_test_deploy",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
             id="operations.list_contracts",
             title="List operational contracts",
             surface=RootMcpSurface.OPERATIONS,
-            summary="Return the current operational contract catalog, including placeholder test-hub contracts.",
+            summary="Return the current operational contract catalog for managed targets and root-routed pilot operations.",
             input_schema=schema_object(),
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="operations.read.contracts",
@@ -599,6 +612,7 @@ def _handle_hub_get_status(arguments: dict[str, Any], *, dry_run: bool) -> dict[
         "lifecycle": dict((report or {}).get("lifecycle") or {}),
         "root_control": dict((report or {}).get("root_control") or {}),
         "route": dict((report or {}).get("route") or {}),
+        "deployment_state": read_deploy_state(target_id=target_id),
         "last_reported_at": (report or {}).get("reported_at"),
     }
 
@@ -617,6 +631,7 @@ def _handle_hub_get_runtime_summary(arguments: dict[str, Any], *, dry_run: bool)
         "transport": dict((report or {}).get("transport") or {}),
         "lifecycle": dict((report or {}).get("lifecycle") or {}),
         "operational_surface": dict((report or {}).get("operational_surface") or target.get("operational_surface") or {}),
+        "deployment_state": read_deploy_state(target_id=target_id),
         "last_reported_at": (report or {}).get("reported_at"),
     }
 
@@ -637,6 +652,7 @@ def _handle_hub_get_operational_surface(arguments: dict[str, Any], *, dry_run: b
         "webui": dict(surface.get("webui") or {}) if isinstance(surface.get("webui"), dict) else {},
         "observability": dict(surface.get("observability") or {}) if isinstance(surface.get("observability"), dict) else {},
         "token_management": token_management,
+        "deployment_state": read_deploy_state(target_id=target_id),
         "access": dict(target.access or {}),
         "policy": dict(target.policy or {}),
         "report": {
@@ -832,6 +848,42 @@ def _handle_hub_get_test_results(arguments: dict[str, Any], *, dry_run: bool) ->
     }
 
 
+def _handle_hub_deploy_ref(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    ref = str(arguments.get("ref") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not ref:
+        raise ValueError("ref is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    surface = _target_operational_surface(target_id)
+    note = str(arguments.get("note") or "").strip() or None
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "deployment": deploy_local_ref(
+            target_id=target_id,
+            ref=ref,
+            allowed_refs=surface.get("allowed_deploy_refs") if isinstance(surface.get("allowed_deploy_refs"), list) else [],
+            note=note,
+        ),
+    }
+
+
+def _handle_hub_rollback_last_test_deploy(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "deployment": rollback_local_deploy(target_id=target_id),
+    }
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
     "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
@@ -848,6 +900,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.restart_service": lambda arguments, dry_run=False: _handle_hub_restart_service(arguments, dry_run=dry_run),
     "hub.run_allowed_tests": lambda arguments, dry_run=False: _handle_hub_run_allowed_tests(arguments, dry_run=dry_run),
     "hub.get_test_results": lambda arguments, dry_run=False: _handle_hub_get_test_results(arguments, dry_run=dry_run),
+    "hub.deploy_ref": lambda arguments, dry_run=False: _handle_hub_deploy_ref(arguments, dry_run=dry_run),
+    "hub.rollback_last_test_deploy": lambda arguments, dry_run=False: _handle_hub_rollback_last_test_deploy(arguments, dry_run=dry_run),
     "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
     "hub.list_access_tokens": lambda arguments, dry_run=False: _handle_hub_list_access_tokens(arguments, dry_run=dry_run),
     "hub.revoke_access_token": lambda arguments, dry_run=False: _handle_hub_revoke_access_token(arguments, dry_run=dry_run),
@@ -866,6 +920,13 @@ def _result_summary(result: Any) -> dict[str, Any]:
     return {"kind": type(result).__name__}
 
 
+def _redactions_for_tool(tool_id: str) -> list[str]:
+    token = str(tool_id or "").strip()
+    if token in {"hub.issue_access_token", "root.access_tokens.issue"}:
+        return ["result.access_token"]
+    return []
+
+
 def _execution_adapter_for_tool(tool_id: str) -> str:
     token = str(tool_id or "").strip()
     if token in {"hub.get_status", "hub.get_runtime_summary", "hub.get_operational_surface"}:
@@ -880,6 +941,10 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "infra_access.local_process.pytest"
     if token == "hub.get_test_results":
         return "infra_access.local_process.test_results"
+    if token == "hub.deploy_ref":
+        return "infra_access.local_process.deploy_ref"
+    if token == "hub.rollback_last_test_deploy":
+        return "infra_access.local_process.rollback"
     if token == "hub.issue_access_token":
         return "root.access_token_issuer"
     if token == "hub.list_access_tokens":
@@ -891,6 +956,43 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
     if token.startswith("operations."):
         return "root.managed_target_registry"
     return "root.local_handler"
+
+
+def _trace_meta(
+    *,
+    tool_id: str,
+    contract: RootMcpToolContract | None,
+    arguments: dict[str, Any],
+    scope_meta: dict[str, Any],
+    policy_decision: Any,
+    routing_mode: str,
+    result_summary: dict[str, Any] | None = None,
+    error_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy_meta = policy_decision.to_meta() if policy_decision is not None else {}
+    return {
+        "request": {
+            "argument_keys": sorted(str(key) for key in arguments.keys())[:20],
+            "target_id": str(arguments.get("target_id") or "").strip() or None,
+            "scope": dict(scope_meta),
+        },
+        "policy": {
+            "decision": str((policy_decision.policy_decision if policy_decision is not None else "allow") or "allow"),
+            "required_capability": policy_meta.get("required_capability"),
+            "grant_source": policy_meta.get("grant_source"),
+        },
+        "routing": {
+            "mode": routing_mode,
+            "surface": contract.surface.value if contract is not None else RootMcpSurface.DEVELOPMENT.value,
+            "published_by": (contract.metadata.get("published_by") if contract is not None else None),
+            "target_environment": policy_meta.get("target_environment"),
+            "target_zone": policy_meta.get("target_zone"),
+            "target_execution_mode": policy_meta.get("target_execution_mode"),
+        },
+        "result": dict(result_summary or {}),
+        "error": dict(error_summary or {}),
+        "redactions": _redactions_for_tool(tool_id),
+    }
 
 
 def invoke_tool(
@@ -913,6 +1015,7 @@ def invoke_tool(
     payload_arguments = dict(arguments or {})
     scope_meta = dict(scope or {})
     policy_decision = None
+    routing_mode = _execution_adapter_for_tool(tool_token)
 
     if contract is None:
         response = RootMcpResponseEnvelope(
@@ -937,6 +1040,15 @@ def invoke_tool(
         )
 
         if not policy_decision.allowed:
+            trace = _trace_meta(
+                tool_id=contract.id,
+                contract=contract,
+                arguments=payload_arguments,
+                scope_meta=scope_meta,
+                policy_decision=policy_decision,
+                routing_mode=routing_mode,
+                error_summary={"code": policy_decision.code},
+            )
             response = RootMcpResponseEnvelope(
                 request_id=effective_request_id,
                 trace_id=effective_trace_id,
@@ -946,9 +1058,18 @@ def invoke_tool(
                 status="error",
                 dry_run=bool(dry_run),
                 error=RootMcpError(code=policy_decision.code, message=policy_decision.message),
-                meta={**scope_meta, **policy_decision.to_meta()},
+                meta={**scope_meta, **policy_decision.to_meta(), "trace": trace, "redactions": _redactions_for_tool(contract.id)},
             )
         elif contract.availability is not RootMcpAvailability.ENABLED:
+            trace = _trace_meta(
+                tool_id=contract.id,
+                contract=contract,
+                arguments=payload_arguments,
+                scope_meta=scope_meta,
+                policy_decision=policy_decision,
+                routing_mode=routing_mode,
+                error_summary={"code": "tool_not_available", "availability": contract.availability.value},
+            )
             response = RootMcpResponseEnvelope(
                 request_id=effective_request_id,
                 trace_id=effective_trace_id,
@@ -962,11 +1083,26 @@ def invoke_tool(
                     message=f"Tool '{contract.id}' is declared but not executable yet.",
                     details={"availability": contract.availability.value},
                 ),
-                meta={"availability": contract.availability.value, **scope_meta, **policy_decision.to_meta()},
+                meta={
+                    "availability": contract.availability.value,
+                    **scope_meta,
+                    **policy_decision.to_meta(),
+                    "trace": trace,
+                    "redactions": _redactions_for_tool(contract.id),
+                },
             )
         else:
             handler = _HANDLERS.get(contract.id)
             if handler is None:
+                trace = _trace_meta(
+                    tool_id=contract.id,
+                    contract=contract,
+                    arguments=payload_arguments,
+                    scope_meta=scope_meta,
+                    policy_decision=policy_decision,
+                    routing_mode=routing_mode,
+                    error_summary={"code": "handler_missing"},
+                )
                 response = RootMcpResponseEnvelope(
                     request_id=effective_request_id,
                     trace_id=effective_trace_id,
@@ -976,11 +1112,21 @@ def invoke_tool(
                     status="error",
                     dry_run=bool(dry_run),
                     error=RootMcpError(code="handler_missing", message=f"No handler is registered for '{contract.id}'."),
-                    meta={**scope_meta, **policy_decision.to_meta()},
+                    meta={**scope_meta, **policy_decision.to_meta(), "trace": trace, "redactions": _redactions_for_tool(contract.id)},
                 )
             else:
                 try:
                     result = handler(payload_arguments, dry_run=bool(dry_run))
+                    summary = _result_summary(result)
+                    trace = _trace_meta(
+                        tool_id=contract.id,
+                        contract=contract,
+                        arguments=payload_arguments,
+                        scope_meta=scope_meta,
+                        policy_decision=policy_decision,
+                        routing_mode=routing_mode,
+                        result_summary=summary,
+                    )
                     response = RootMcpResponseEnvelope(
                         request_id=effective_request_id,
                         trace_id=effective_trace_id,
@@ -994,13 +1140,24 @@ def invoke_tool(
                             "availability": contract.availability.value,
                             "required_capability": contract.required_capability,
                             "stability": contract.stability,
-                            "routing_mode": _execution_adapter_for_tool(contract.id),
+                            "routing_mode": routing_mode,
                             **scope_meta,
                             **policy_decision.to_meta(),
+                            "trace": trace,
+                            "redactions": _redactions_for_tool(contract.id),
                         },
                     )
                 except KeyError as exc:
                     missing = str(exc).strip("'")
+                    trace = _trace_meta(
+                        tool_id=contract.id,
+                        contract=contract,
+                        arguments=payload_arguments,
+                        scope_meta=scope_meta,
+                        policy_decision=policy_decision,
+                        routing_mode=routing_mode,
+                        error_summary={"code": "not_found", "missing": missing},
+                    )
                     response = RootMcpResponseEnvelope(
                         request_id=effective_request_id,
                         trace_id=effective_trace_id,
@@ -1013,9 +1170,18 @@ def invoke_tool(
                             code="not_found",
                             message=f"Requested MCP object '{missing}' was not found.",
                         ),
-                        meta={**scope_meta, **policy_decision.to_meta()},
+                        meta={**scope_meta, **policy_decision.to_meta(), "trace": trace, "redactions": _redactions_for_tool(contract.id)},
                     )
                 except ValueError as exc:
+                    trace = _trace_meta(
+                        tool_id=contract.id,
+                        contract=contract,
+                        arguments=payload_arguments,
+                        scope_meta=scope_meta,
+                        policy_decision=policy_decision,
+                        routing_mode=routing_mode,
+                        error_summary={"code": "invalid_request"},
+                    )
                     response = RootMcpResponseEnvelope(
                         request_id=effective_request_id,
                         trace_id=effective_trace_id,
@@ -1028,9 +1194,18 @@ def invoke_tool(
                             code="invalid_request",
                             message=str(exc) or f"Invalid arguments for '{contract.id}'.",
                         ),
-                        meta={**scope_meta, **policy_decision.to_meta()},
+                        meta={**scope_meta, **policy_decision.to_meta(), "trace": trace, "redactions": _redactions_for_tool(contract.id)},
                     )
                 except Exception as exc:
+                    trace = _trace_meta(
+                        tool_id=contract.id,
+                        contract=contract,
+                        arguments=payload_arguments,
+                        scope_meta=scope_meta,
+                        policy_decision=policy_decision,
+                        routing_mode=routing_mode,
+                        error_summary={"code": "execution_failed"},
+                    )
                     response = RootMcpResponseEnvelope(
                         request_id=effective_request_id,
                         trace_id=effective_trace_id,
@@ -1044,10 +1219,11 @@ def invoke_tool(
                             message=f"Tool '{contract.id}' failed during execution.",
                             details={"error": str(exc)},
                         ),
-                        meta={**scope_meta, **policy_decision.to_meta()},
+                        meta={**scope_meta, **policy_decision.to_meta(), "trace": trace, "redactions": _redactions_for_tool(contract.id)},
                     )
 
     target_id = str(payload_arguments.get("target_id") or "").strip() or None
+    audit_trace = dict(response.meta.get("trace") or {}) if isinstance(response.meta.get("trace"), dict) else {}
     event = RootMcpAuditEvent(
         event_id=new_id(),
         request_id=response.request_id,
@@ -1066,10 +1242,12 @@ def invoke_tool(
         finished_at=_iso_now(),
         result_summary=_result_summary(response.result) if response.ok else {},
         error=(response.error.to_dict() if response.error else {}),
+        redactions=_redactions_for_tool(response.tool_id),
         meta={
             "tool_availability": contract.availability.value if contract else "missing",
             **scope_meta,
             **(policy_decision.to_meta() if policy_decision is not None else {}),
+            "trace": audit_trace,
         },
     )
     append_audit_event(event)

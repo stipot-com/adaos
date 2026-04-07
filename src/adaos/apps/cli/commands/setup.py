@@ -345,32 +345,44 @@ def update(
         if not name or not bool(getattr(row, "installed", True)):
             continue
         try:
+            runtime_status_before = {}
+            try:
+                runtime_status_before = skill_mgr.runtime_status(str(name))
+            except Exception:
+                runtime_status_before = {}
+            runtime_version_before = str(runtime_status_before.get("version") or "").strip()
             res = skill_mgr.runtime_update(str(name), space="workspace")
             entry = {"skill": str(name), "ok": True, "result": res}
+            try:
+                source_meta = ctx.skills_repo.get(str(name))
+            except Exception:
+                source_meta = None
+            source_version = str(getattr(source_meta, "version", None) or "").strip()
+            should_prepare = bool(source_version and source_version != runtime_version_before)
+            if isinstance(res, dict) and not bool(res.get("ok", True)):
+                should_prepare = True
 
             # If runtime is missing/unprepared, optionally rebuild it using the
             # full prepare+activate flow (also refreshes node.yaml capacity).
-            if migrate_runtime and isinstance(res, dict) and not bool(res.get("ok", True)):
-                reason = str(res.get("reason") or "")
-                if reason in {"no_active_runtime", "runtime_src_missing"}:
-                    try:
-                        skill_mgr.install(str(name), validate=False)
-                        runtime = skill_mgr.prepare_runtime(str(name), run_tests=False)
-                        version = getattr(runtime, "version", None)
-                        slot = getattr(runtime, "slot", None)
-                        skill_mgr.activate_for_space(
-                            str(name),
-                            version=version,
-                            slot=slot,
-                            space="default",
-                            webspace_id=target_webspace,
-                        )
-                        entry["runtime_migrated"] = True
-                        entry["migrated_version"] = version
-                        entry["migrated_slot"] = slot
-                    except Exception as exc:
-                        entry["runtime_migrated"] = False
-                        entry["migration_error"] = str(exc)
+            if migrate_runtime and should_prepare:
+                try:
+                    skill_mgr.install(str(name), validate=False)
+                    runtime = skill_mgr.prepare_runtime(str(name), run_tests=False)
+                    version = getattr(runtime, "version", None)
+                    slot = getattr(runtime, "slot", None)
+                    skill_mgr.activate_for_space(
+                        str(name),
+                        version=version,
+                        slot=slot,
+                        space="default",
+                        webspace_id=target_webspace,
+                    )
+                    entry["runtime_migrated"] = True
+                    entry["migrated_version"] = version
+                    entry["migrated_slot"] = slot
+                except Exception as exc:
+                    entry["runtime_migrated"] = False
+                    entry["migration_error"] = str(exc)
 
             out["runtime_updated"].append(entry)
         except Exception as exc:

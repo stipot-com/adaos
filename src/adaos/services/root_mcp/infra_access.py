@@ -55,12 +55,16 @@ def _results_path() -> Path:
 def _read_results() -> dict[str, Any]:
     path = _results_path()
     if not path.exists():
-        return {"tests": {}}
+        return {"tests": {}, "deployments": {}}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"tests": {}}
-    return payload if isinstance(payload, dict) else {"tests": {}}
+        return {"tests": {}, "deployments": {}}
+    if not isinstance(payload, dict):
+        return {"tests": {}, "deployments": {}}
+    payload.setdefault("tests", {})
+    payload.setdefault("deployments", {})
+    return payload
 
 
 def _write_results(payload: dict[str, Any]) -> None:
@@ -85,6 +89,11 @@ def _normalize_str_list(value: Any) -> list[str]:
         if token and token not in out:
             out.append(token)
     return out
+
+
+def _deployments(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("deployments")
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _run_coroutine_in_thread(coro_factory) -> Any:
@@ -310,10 +319,145 @@ def read_test_results(*, target_id: str) -> dict[str, Any]:
     return {"available": True, "target_id": target_id, "result": item}
 
 
+def deploy_local_ref(
+    *,
+    target_id: str,
+    ref: str,
+    allowed_refs: list[str] | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    target_token = str(target_id or "").strip()
+    ref_token = str(ref or "").strip()
+    if not target_token:
+        raise ValueError("target_id is required")
+    if not ref_token:
+        raise ValueError("ref is required")
+    allowed = _normalize_str_list(allowed_refs or [])
+    if not allowed:
+        raise ValueError("target does not publish any allowed deploy refs")
+    if allowed and ref_token not in allowed:
+        raise ValueError(f"ref '{ref_token}' is not in the infra access allowlist")
+
+    payload = _read_results()
+    deployments = _deployments(payload)
+    current_state = dict(deployments.get(target_token) or {}) if isinstance(deployments.get(target_token), dict) else {}
+    current_record = dict(current_state.get("current") or {}) if isinstance(current_state.get("current"), dict) else {}
+    previous_ref = str(current_record.get("ref") or "").strip() or None
+    finished_at = _iso_from_ts(time.time())
+    deployment = {
+        "operation": "deploy",
+        "deployment_id": f"deploy:{int(time.time() * 1000)}",
+        "target_id": target_token,
+        "ref": ref_token,
+        "previous_ref": previous_ref,
+        "status": "applied",
+        "mode": "local_process",
+        "note": str(note or "").strip() or None,
+        "started_at": finished_at,
+        "finished_at": finished_at,
+        "state_backend": "root_mcp.infra_access_results",
+    }
+    history = [item for item in (current_state.get("history") or []) if isinstance(item, dict)]
+    history.append(deployment)
+    state = {
+        "available": True,
+        "target_id": target_token,
+        "current": deployment,
+        "history": history[-20:],
+        "current_ref": ref_token,
+        "previous_ref": previous_ref,
+        "rollback_available": previous_ref is not None,
+        "updated_at": finished_at,
+        "allowed_refs": allowed,
+    }
+    deployments[target_token] = state
+    payload["deployments"] = deployments
+    _write_results(payload)
+    return {
+        "target_id": target_token,
+        "mode": "local_process",
+        "deployment": deployment,
+        "state": state,
+    }
+
+
+def rollback_local_deploy(
+    *,
+    target_id: str,
+) -> dict[str, Any]:
+    target_token = str(target_id or "").strip()
+    if not target_token:
+        raise ValueError("target_id is required")
+
+    payload = _read_results()
+    deployments = _deployments(payload)
+    current_state = dict(deployments.get(target_token) or {}) if isinstance(deployments.get(target_token), dict) else {}
+    current_record = dict(current_state.get("current") or {}) if isinstance(current_state.get("current"), dict) else {}
+    current_ref = str(current_record.get("ref") or "").strip() or None
+    previous_ref = str(current_record.get("previous_ref") or "").strip() or None
+    if not current_ref:
+        raise ValueError(f"target '{target_token}' does not have a recorded deployment to roll back")
+    if not previous_ref:
+        raise ValueError(f"target '{target_token}' does not have a previous ref available for rollback")
+
+    finished_at = _iso_from_ts(time.time())
+    rollback = {
+        "operation": "rollback",
+        "deployment_id": f"rollback:{int(time.time() * 1000)}",
+        "target_id": target_token,
+        "ref": previous_ref,
+        "rolled_back_from": current_ref,
+        "status": "rolled_back",
+        "mode": "local_process",
+        "started_at": finished_at,
+        "finished_at": finished_at,
+        "state_backend": "root_mcp.infra_access_results",
+    }
+    history = [item for item in (current_state.get("history") or []) if isinstance(item, dict)]
+    history.append(rollback)
+    older_previous_ref = None
+    for item in reversed(history[:-1]):
+        candidate = str(item.get("ref") or "").strip()
+        if candidate and candidate != previous_ref:
+            older_previous_ref = candidate
+            break
+    state = {
+        "available": True,
+        "target_id": target_token,
+        "current": rollback,
+        "history": history[-20:],
+        "current_ref": previous_ref,
+        "previous_ref": older_previous_ref,
+        "rollback_available": older_previous_ref is not None,
+        "updated_at": finished_at,
+        "allowed_refs": [item for item in (current_state.get("allowed_refs") or []) if isinstance(item, str)],
+    }
+    deployments[target_token] = state
+    payload["deployments"] = deployments
+    _write_results(payload)
+    return {
+        "target_id": target_token,
+        "mode": "local_process",
+        "deployment": rollback,
+        "state": state,
+    }
+
+
+def read_deploy_state(*, target_id: str) -> dict[str, Any]:
+    deployments = _deployments(_read_results())
+    item = deployments.get(str(target_id))
+    if not isinstance(item, dict):
+        return {"available": False, "target_id": target_id}
+    return {"available": True, "target_id": target_id, "state": item}
+
+
 __all__ = [
+    "deploy_local_ref",
+    "read_deploy_state",
     "read_local_logs",
     "read_test_results",
     "restart_local_service",
+    "rollback_local_deploy",
     "run_allowed_tests",
     "run_local_healthchecks",
 ]

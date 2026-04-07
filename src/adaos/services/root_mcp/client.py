@@ -194,6 +194,46 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def deploy_target_ref(
+        self,
+        target_id: str,
+        *,
+        ref: str,
+        note: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "ref": str(ref),
+        }
+        if note:
+            arguments["note"] = str(note)
+        return self.call(
+            "hub.deploy_ref",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def rollback_last_test_deploy(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.rollback_last_test_deploy",
+            arguments={"target_id": str(target_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def recent_audit(
         self,
         *,

@@ -15,6 +15,7 @@ from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
+from adaos.services.workspace_registry import find_workspace_registry_entry
 from adaos.services.yjs.webspace import default_webspace_id
 
 import yaml
@@ -76,73 +77,20 @@ def _safe_version(v: Any) -> Version | None:
         return None
 
 
-def _read_remote_manifest_version(ctx: AgentContext, *, skill_id: str) -> str | None:
-    """
-    Best-effort resolve remote version for a skill without modifying worktree.
-    - monorepo: `origin/<branch>:skills/<id>/skill.yaml`
-    - standalone: `origin/HEAD:skill.yaml`
-    """
-    settings = getattr(ctx, "settings", None)
-    git = getattr(ctx, "git", None)
-    repo = getattr(ctx, "skills_repo", None)
-    if git is None or repo is None:
+def _read_registry_catalog_version(ctx: AgentContext, *, skill_id: str) -> str | None:
+    entry = find_workspace_registry_entry(
+        Path(ctx.paths.workspace_dir()),
+        kind="skills",
+        name_or_id=skill_id,
+        fallback_to_scan=False,
+    )
+    if not isinstance(entry, dict):
         return None
-
-    meta = repo.get(skill_id)
-    if meta is None:
+    version = entry.get("version")
+    if version is None:
         return None
-    local_path = Path(getattr(meta, "path", Path(ctx.paths.skills_dir()) / skill_id))
-
-    monorepo_url = getattr(settings, "skills_monorepo_url", None) if settings else None
-    monorepo_branch = (getattr(settings, "skills_monorepo_branch", None) if settings else None) or "main"
-
-    if monorepo_url:
-        skills_root = Path(ctx.paths.skills_dir())
-        if (skills_root / ".git").exists():
-            repo_root = skills_root
-        elif (skills_root.parent / ".git").exists():
-            repo_root = skills_root.parent
-        else:
-            return None
-        try:
-            git.fetch(str(repo_root), remote="origin", branch=monorepo_branch)
-        except Exception:
-            pass
-        candidates = [
-            f"origin/{monorepo_branch}:skills/{skill_id}/skill.yaml",
-            f"origin/{monorepo_branch}:skills/{skill_id}/manifest.yaml",
-            f"origin/{monorepo_branch}:skills/{skill_id}/adaos.skill.yaml",
-        ]
-    else:
-        repo_root = local_path
-        if not (repo_root / ".git").exists():
-            return None
-        try:
-            git.fetch(str(repo_root), remote="origin")
-        except Exception:
-            pass
-        candidates = [
-            "origin/HEAD:skill.yaml",
-            "origin/HEAD:manifest.yaml",
-            "origin/HEAD:adaos.skill.yaml",
-        ]
-
-    for spec in candidates:
-        try:
-            raw = git.show(str(repo_root), spec)
-        except Exception:
-            continue
-        try:
-            data = yaml.safe_load(raw) or {}
-        except Exception:
-            continue
-        ver = data.get("version")
-        if ver is None:
-            continue
-        s = str(ver).strip()
-        if s:
-            return s
-    return None
+    token = str(version).strip()
+    return token or None
 
 
 class InstallReq(BaseModel):
@@ -230,7 +178,7 @@ async def installed_status(mgr: SkillManager = Depends(_get_manager), ctx: Agent
         except Exception:
             slot = ""
 
-        remote_version_s = _read_remote_manifest_version(ctx, skill_id=name) or ""
+        remote_version_s = _read_registry_catalog_version(ctx, skill_id=name) or ""
 
         update_available = False
         lv = _safe_version(local_version_s)
@@ -436,6 +384,34 @@ async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
     result = service.request_update(body.name, dry_run=body.dry_run)
     webspace_id = body.webspace_id or default_webspace_id()
     if not body.dry_run:
+        mgr = _get_manager(ctx)
+        runtime_status_before = {}
+        try:
+            runtime_status_before = mgr.runtime_status(body.name)
+        except Exception:
+            runtime_status_before = {}
+        runtime_version_before = str(runtime_status_before.get("version") or "").strip()
+        source_version = str(result.version or "").strip()
+        runtime_result: Dict[str, Any] | None = None
+        try:
+            runtime_result = mgr.runtime_update(body.name, space="workspace")
+        except Exception:
+            log.exception("runtime_update failed after skill source update: %s", body.name)
+        should_prepare = bool(source_version and source_version != runtime_version_before)
+        if isinstance(runtime_result, dict) and not bool(runtime_result.get("ok", True)):
+            should_prepare = True
+        if should_prepare:
+            try:
+                prep = mgr.prepare_runtime(body.name, run_tests=False)
+                mgr.activate_for_space(
+                    body.name,
+                    version=getattr(prep, "version", None),
+                    slot=getattr(prep, "slot", None),
+                    space="default",
+                    webspace_id=webspace_id,
+                )
+            except Exception:
+                log.exception("prepare/activate failed after skill update: %s", body.name)
         bus = getattr(ctx, "bus", None)
         if bus is not None:
             bus_emit(bus, "skills.updated", {"name": body.name, "webspace_id": webspace_id}, "api.skills")
