@@ -74,7 +74,7 @@ def canonical_object_from_node_status(payload: Any) -> CanonicalObject:
     relations = {RelationKind.SUBNET.value: [f"subnet:{subnet_id}"]} if subnet_id else {}
     health = compact_mapping(
         {
-            "availability": "ready" if ready is True else "not_ready" if ready is False else None,
+            "availability": status,
             "connectivity": normalize_connectivity_status(
                 connected_to_hub if connected_to_hub is not None else route_mode
             ),

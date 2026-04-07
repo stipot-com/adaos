@@ -91,6 +91,7 @@ def test_canonical_object_from_node_status_accepts_pydantic_payload() -> None:
     assert obj["id"] == "member:member-1"
     assert obj["kind"] == "member"
     assert obj["status"] == "online"
+    assert obj["health"]["availability"] == "online"
     assert obj["relations"]["subnet"] == ["subnet:subnet-a"]
     assert obj["health"]["connectivity"] == "reachable"
 
@@ -445,7 +446,9 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     ).to_dict()
 
     assert projection["id"] == "projection:hub:hub-1/reliability"
-    assert projection["subject"]["health"]["root_control"] == "ready"
+    assert projection["subject"]["health"]["root_control"] == "online"
+    assert projection["subject"]["health"]["route"] == "online"
+    assert projection["subject"]["health"]["sync"] == "online"
     assert projection["context"]["blocked_capabilities"] == ["root_routed_browser_proxy"]
 
     objects = {item["id"]: item for item in projection["objects"]}
@@ -453,6 +456,8 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["quota:hub-protocol-control"]["kind"] == "quota"
     assert objects["quota:telegram-outbox"]["kind"] == "quota"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
+    assert objects["runtime:hub:hub-1/sidecar"]["health"]["availability"] == "online"
+    assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
 
@@ -525,6 +530,8 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
     assert objects["connection:hub:hub-2/route"]["status"] == "offline"
     assert objects["quota:hub-protocol-integration"]["status"] in {"warning", "degraded"}
     assert objects["quota:telegram-outbox"]["status"] in {"warning", "degraded"}
+    assert objects["runtime:hub:hub-2/sidecar"]["health"]["availability"] == "degraded"
+    assert objects["runtime:hub:hub-2/yjs-sync"]["health"]["availability"] == "degraded"
     assert any(item["object_id"] == "connection:hub:hub-2/route" for item in projection["incidents"])
     assert any(item["object_id"] == "runtime:hub:hub-2/sidecar" for item in projection["incidents"])
 

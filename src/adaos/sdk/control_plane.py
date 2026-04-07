@@ -115,6 +115,30 @@ def get_reliability_objects(*, webspace_id: str | None = None) -> list[Mapping[s
     return [item.to_dict() for item in get_reliability_model(webspace_id=webspace_id).objects]
 
 
+def get_root_model(*, webspace_id: str | None = None):
+    return _data_control_plane.get_root_model(webspace_id=webspace_id)
+
+
+def get_root_object(*, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_root_model(webspace_id=webspace_id).to_dict()
+
+
+def list_runtime_models(*, webspace_id: str | None = None):
+    return _data_control_plane.list_runtime_models(webspace_id=webspace_id)
+
+
+def list_runtime_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_runtime_models(webspace_id=webspace_id)]
+
+
+def list_connection_models(*, webspace_id: str | None = None):
+    return _data_control_plane.list_connection_models(webspace_id=webspace_id)
+
+
+def list_connection_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in list_connection_models(webspace_id=webspace_id)]
+
+
 def list_quota_models(*, webspace_id: str | None = None):
     return _data_control_plane.list_quota_models(webspace_id=webspace_id)
 
@@ -175,6 +199,12 @@ __all__ = [
     "get_reliability_model",
     "get_reliability_projection",
     "get_reliability_objects",
+    "get_root_model",
+    "get_root_object",
+    "list_runtime_models",
+    "list_runtime_objects",
+    "list_connection_models",
+    "list_connection_objects",
     "list_quota_models",
     "list_quota_objects",
     "get_inventory_model",

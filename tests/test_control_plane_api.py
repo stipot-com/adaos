@@ -233,6 +233,37 @@ def test_sdk_control_plane_get_reliability_projection(monkeypatch) -> None:
     assert objects[0]["id"] == "connection:member:node-1/route"
 
 
+def test_sdk_control_plane_root_runtime_and_connection_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+    from adaos.sdk.data import control_plane as data_control_plane
+
+    projection = CanonicalProjection(
+        id="projection:hub:alpha/reliability",
+        kind="reliability",
+        title="Hub Alpha reliability",
+        subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online"),
+        objects=[
+            CanonicalObject(id="root:eu", kind="root", title="Root EU", status="online"),
+            CanonicalObject(id="connection:hub:alpha/root-control", kind="connection", title="Root control", status="online"),
+            CanonicalObject(id="runtime:hub:alpha/yjs-sync", kind="runtime", title="Yjs sync", status="online"),
+        ],
+    )
+
+    monkeypatch.setattr(
+        data_control_plane,
+        "get_reliability_model",
+        lambda webspace_id=None: projection,
+    )
+
+    root = control_plane.get_root_object(webspace_id="desk")
+    runtimes = control_plane.list_runtime_objects(webspace_id="desk")
+    connections = control_plane.list_connection_objects(webspace_id="desk")
+
+    assert root["id"] == "root:eu"
+    assert runtimes[0]["kind"] == "runtime"
+    assert connections[0]["kind"] == "connection"
+
+
 def test_sdk_control_plane_get_current_profile_object(monkeypatch) -> None:
     from adaos.sdk import control_plane
 

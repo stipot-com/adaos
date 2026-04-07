@@ -58,6 +58,13 @@ def _connectivity_for_state(*values: Any):
     return normalize_connectivity_status(None)
 
 
+def _canonical_status_token(*values: Any) -> str | None:
+    status = _runtime_status(*values)
+    if status == CanonicalStatus.UNKNOWN:
+        return None
+    return status.value
+
+
 def _risk_for_action(action_id: str) -> str:
     token = _token(action_id)
     if token in {"backup", "go_home", "restart_sidecar", "reconnect_root"}:
@@ -125,11 +132,11 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
     return compact_mapping(
         {
             "readiness": {
-                "hub_local_core": coerce_mapping(readiness_tree.get("hub_local_core")).get("status"),
-                "root_control": coerce_mapping(readiness_tree.get("root_control")).get("status"),
-                "route": coerce_mapping(readiness_tree.get("route")).get("status"),
-                "sync": coerce_mapping(readiness_tree.get("sync")).get("status"),
-                "media": coerce_mapping(readiness_tree.get("media")).get("status"),
+                "hub_local_core": _canonical_status_token(coerce_mapping(readiness_tree.get("hub_local_core")).get("status")),
+                "root_control": _canonical_status_token(coerce_mapping(readiness_tree.get("root_control")).get("status")),
+                "route": _canonical_status_token(coerce_mapping(readiness_tree.get("route")).get("status")),
+                "sync": _canonical_status_token(coerce_mapping(readiness_tree.get("sync")).get("status")),
+                "media": _canonical_status_token(coerce_mapping(readiness_tree.get("media")).get("status")),
             },
             "blocked_capabilities": blocked_capabilities,
             "hub_root_zone": zone,
@@ -314,7 +321,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
         health=compact_mapping(
             {
                 "connectivity": _connectivity_for_state(payload.get("remote_session_state"), payload.get("control_ready")),
-                "availability": payload.get("status"),
+                "availability": _canonical_status_token(payload.get("status")),
             }
         ),
         relations={RelationKind.HOSTED_ON.value: [subject.id]},
@@ -362,7 +369,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
         status=_runtime_status(assessment.get("state")),
         health=compact_mapping(
             {
-                "availability": assessment.get("state"),
+                "availability": _canonical_status_token(assessment.get("state")),
                 "connectivity": _connectivity_for_state(coerce_mapping(payload.get("transport")).get("server_ready")),
             }
         ),
@@ -410,7 +417,7 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
         status=_runtime_status(assessment.get("state")),
         health=compact_mapping(
             {
-                "availability": assessment.get("state"),
+                "availability": _canonical_status_token(assessment.get("state")),
                 "connectivity": _connectivity_for_state(
                     transport.get("direct_local_ready"),
                     transport.get("root_routed_ready"),
