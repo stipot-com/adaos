@@ -28,7 +28,7 @@ from .service import (
     recent_audit_events,
 )
 from .targets import managed_target_registry_summary, upsert_managed_target
-from .tokens import access_token_registry_summary, issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
+from .tokens import access_token_registry_summary, get_access_token_record, issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
 
 __all__ = [
     "ROOT_MCP_ERROR_SCHEMA",
@@ -52,6 +52,7 @@ __all__ = [
     "evaluate_direct_access",
     "evaluate_tool_access",
     "foundation_snapshot",
+    "get_access_token_record",
     "get_descriptor",
     "get_descriptor_set",
     "get_managed_target",

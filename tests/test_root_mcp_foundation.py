@@ -46,6 +46,9 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "operations.list_contracts" in contract_ids
     assert "operations.list_managed_targets" in contract_ids
     assert "development.export_sdk" not in contract_ids
+    assert "hub.get_operational_surface" in contract_ids
+    assert "hub.list_access_tokens" in contract_ids
+    assert "hub.revoke_access_token" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -166,7 +169,15 @@ def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path
     assert "infra_access_app" in surface["webui"]["app_ids"]
     assert surface["token_management"]["enabled"] is True
     assert surface["token_management"]["issuer_mode"] == "root_mcp"
+    assert "hub.get_operational_surface" in surface["capabilities"]
     assert "hub.issue_access_token" in surface["capabilities"]
+    assert "hub.list_access_tokens" in surface["capabilities"]
+    assert "hub.revoke_access_token" in surface["capabilities"]
+    assert surface["token_management"]["manage_tools"] == [
+        "hub.issue_access_token",
+        "hub.list_access_tokens",
+        "hub.revoke_access_token",
+    ]
     assert surface["observability"]["channels"] == ["root_mcp.audit"]
 
 
@@ -395,12 +406,29 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
                 "enabled": True,
                 "availability": "enabled",
                 "execution_mode": "local_process",
+                "token_management": {
+                    "enabled": True,
+                    "issuer_mode": "root_mcp",
+                    "web_client_ready": True,
+                },
+                "webui": {
+                    "available": True,
+                    "app_ids": ["infra_access_app"],
+                    "widget_ids": ["infra_access_tokens"],
+                },
+                "observability": {
+                    "enabled": True,
+                    "channels": ["root_mcp.audit", "hub.control_report"],
+                },
                 "capabilities": [
                     "hub.get_status",
                     "hub.get_runtime_summary",
+                    "hub.get_operational_surface",
                     "hub.get_logs",
                     "hub.run_healthchecks",
                     "hub.issue_access_token",
+                    "hub.list_access_tokens",
+                    "hub.revoke_access_token",
                 ],
             },
         },
@@ -456,6 +484,22 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert runtime_payload["response"]["result"]["transport"]["effective_transport"] == "root_proxy"
     assert runtime_payload["response"]["meta"]["report_verified"] is False
 
+    surface_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_operational_surface",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert surface_call.status_code == 200
+    surface_payload = surface_call.json()
+    assert surface_payload["ok"] is True
+    assert surface_payload["response"]["result"]["operational_surface"]["published_by"] == "skill:infra_access_skill"
+    assert surface_payload["response"]["result"]["token_management"]["enabled"] is True
+    assert surface_payload["response"]["result"]["webui"]["available"] is True
+    assert surface_payload["response"]["meta"]["routing_mode"] == "root.control_report_projection"
+
     logs_call = client.post(
         "/v1/root/mcp/call",
         headers=owner_headers,
@@ -498,9 +542,41 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     token_payload = token_call.json()
     assert token_payload["ok"] is True
     assert token_payload["response"]["result"]["target_ids"] == [target_id]
+    assert token_payload["response"]["result"]["target_id"] == target_id
+    assert token_payload["response"]["result"]["issuer_mode"] == "root_mcp"
     assert token_payload["response"]["result"]["subnet_id"] == "subnet-test-1"
     assert token_payload["response"]["result"]["zone"] == "lab-b"
     assert token_payload["response"]["meta"]["routing_mode"] == "root.access_token_issuer"
+
+    issued_token_id = token_payload["response"]["result"]["token_id"]
+
+    list_tokens_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.list_access_tokens",
+            "arguments": {"target_id": target_id, "active_only": True},
+        },
+    )
+    assert list_tokens_call.status_code == 200
+    list_tokens_payload = list_tokens_call.json()
+    assert list_tokens_payload["ok"] is True
+    assert list_tokens_payload["response"]["meta"]["routing_mode"] == "root.access_token_registry"
+    assert any(item["token_id"] == issued_token_id for item in list_tokens_payload["response"]["result"]["tokens"])
+
+    revoke_token_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.revoke_access_token",
+            "arguments": {"target_id": target_id, "token_id": issued_token_id, "reason": "rotate"},
+        },
+    )
+    assert revoke_token_call.status_code == 200
+    revoke_token_payload = revoke_token_call.json()
+    assert revoke_token_payload["ok"] is True
+    assert revoke_token_payload["response"]["meta"]["routing_mode"] == "root.access_token_revocation"
+    assert revoke_token_payload["response"]["result"]["token"]["status"] == "revoked"
 
     audit = client.get(
         "/v1/root/mcp/audit",
@@ -511,8 +587,11 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     audit_items = audit.json()["events"]
     assert any(item["tool_id"] == "hub.control_report.ingest" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_status" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
+    assert any(item["tool_id"] == "hub.get_operational_surface" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_logs" and item["execution_adapter"] == "infra_access.local_process.logs" for item in audit_items)
     assert any(item["tool_id"] == "hub.run_healthchecks" and item["execution_adapter"] == "infra_access.local_process.healthchecks" for item in audit_items)
+    assert any(item["tool_id"] == "hub.list_access_tokens" and item["execution_adapter"] == "root.access_token_registry" for item in audit_items)
+    assert any(item["tool_id"] == "hub.revoke_access_token" and item["execution_adapter"] == "root.access_token_revocation" for item in audit_items)
 
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
@@ -711,6 +790,51 @@ def test_root_mcp_local_execution_tools_require_local_process_route(monkeypatch,
     logs_payload = logs_call.json()
     assert logs_payload["ok"] is False
     assert logs_payload["response"]["error"]["code"] == "execution_route_unavailable"
+
+
+def test_root_mcp_token_tools_require_target_token_management(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-4b"
+
+    report = client.post(
+        "/v1/hub/control/report",
+        json={
+            "target_id": target_id,
+            "subnet_id": "subnet-test-4b",
+            "environment": "test",
+            "zone": "lab-e",
+            "reported_at": "2026-04-07T12:16:00Z",
+            "lifecycle": {"node_state": "running"},
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "availability": "enabled",
+                "capabilities": ["hub.issue_access_token", "hub.list_access_tokens", "hub.revoke_access_token"],
+            },
+        },
+    )
+    assert report.status_code == 200
+
+    token_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.issue_access_token",
+            "arguments": {"target_id": target_id, "audience": "codex-vscode"},
+        },
+    )
+    assert token_call.status_code == 200
+    token_payload = token_call.json()
+    assert token_payload["ok"] is False
+    assert token_payload["response"]["error"]["code"] == "token_management_unavailable"
 
 
 def test_root_mcp_can_require_verified_control_reports(monkeypatch, tmp_path) -> None:

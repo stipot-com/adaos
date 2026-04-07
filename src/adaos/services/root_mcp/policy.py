@@ -191,6 +191,13 @@ def list_capability_classes() -> list[dict[str, Any]]:
             default_grants=["owner_token"],
         ),
         _capability_entry(
+            "hub.get_operational_surface",
+            surface="operations",
+            risk="low",
+            summary="Inspect the published infra_access_skill surface, web UI, and token-management state for a target.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
             "hub.get_logs",
             surface="operations",
             risk="medium",
@@ -209,6 +216,20 @@ def list_capability_classes() -> list[dict[str, Any]]:
             surface="operations",
             risk="medium",
             summary="Issue a bounded managed-target access token for external MCP clients.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "hub.list_access_tokens",
+            surface="operations",
+            risk="medium",
+            summary="List bounded managed-target access tokens for web UI and external MCP client management.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "hub.revoke_access_token",
+            surface="operations",
+            risk="high",
+            summary="Revoke a previously issued managed-target access token.",
             default_grants=["owner_token"],
         ),
         _capability_entry(
@@ -456,6 +477,7 @@ def evaluate_tool_access(
             surface_enabled = bool(operational_surface.get("enabled"))
             surface_capabilities = _normalize_surface_capabilities(operational_surface.get("capabilities"))
             execution_mode = str(operational_surface.get("execution_mode") or "").strip().lower()
+            token_management = dict(operational_surface.get("token_management") or {}) if isinstance(operational_surface.get("token_management"), dict) else {}
             report_verified = bool((target.meta or {}).get("report_verified"))
             require_verified_reports = str(os.getenv("ADAOS_ROOT_MCP_REQUIRE_VERIFIED_REPORTS") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -497,6 +519,33 @@ def evaluate_tool_access(
                     target_id=target_id,
                     meta={"published_capabilities": surface_capabilities},
                 )
+
+            if contract.id in {"hub.issue_access_token", "hub.list_access_tokens", "hub.revoke_access_token"}:
+                if not bool(token_management.get("enabled")):
+                    return RootMcpPolicyDecision(
+                        allowed=False,
+                        code="token_management_unavailable",
+                        message=f"Target '{target_id}' does not currently expose token management through infra_access_skill.",
+                        policy_decision="deny",
+                        required_capability=required_capability,
+                        granted_capabilities=grants,
+                        grant_source=grant_source,
+                        target_id=target_id,
+                        meta={"token_management": token_management},
+                    )
+                issuer_mode = str(token_management.get("issuer_mode") or "").strip().lower() or "unknown"
+                if issuer_mode != "root_mcp":
+                    return RootMcpPolicyDecision(
+                        allowed=False,
+                        code="token_management_route_unavailable",
+                        message=f"Target '{target_id}' does not publish a root_mcp token-management route.",
+                        policy_decision="deny",
+                        required_capability=required_capability,
+                        granted_capabilities=grants,
+                        grant_source=grant_source,
+                        target_id=target_id,
+                        meta={"issuer_mode": issuer_mode},
+                    )
 
             required_execution_mode = str(contract.metadata.get("required_execution_mode") or "").strip().lower()
             if required_execution_mode and execution_mode != required_execution_mode:
@@ -542,6 +591,8 @@ def evaluate_tool_access(
                 "target_surface_enabled": bool((target.operational_surface or {}).get("enabled")),
                 "target_surface_capabilities": _normalize_surface_capabilities((target.operational_surface or {}).get("capabilities")),
                 "target_execution_mode": str((target.operational_surface or {}).get("execution_mode") or "").strip().lower() or "reported_only",
+                "target_token_management_enabled": bool(token_management.get("enabled")),
+                "target_token_issuer_mode": str(token_management.get("issuer_mode") or "").strip().lower() or "unknown",
                 "report_verified": bool((target.meta or {}).get("report_verified")),
             },
         )

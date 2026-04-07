@@ -31,6 +31,10 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.issue_access_token({"audience": "codex-vscode"})
     client.list_access_tokens(active_only=True)
     client.revoke_access_token("tok-1", reason="rotate")
+    client.get_operational_surface("hub:test-zone")
+    client.issue_target_access_token("hub:test-zone", audience="codex-vscode", note="web-client")
+    client.list_target_access_tokens("hub:test-zone", active_only=True)
+    client.revoke_target_access_token("hub:test-zone", "tok-2", reason="rotate-target")
     client.call("development.list_descriptor_sets", request_id="req-1")
 
     assert config.headers()["Authorization"] == "Bearer access-123"
@@ -49,4 +53,12 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[7][2]["params"]["active_only"] is True
     assert stub.calls[8][1] == "/v1/root/mcp/access-tokens/tok-1/revoke"
     assert stub.calls[8][2]["json"]["reason"] == "rotate"
-    assert stub.calls[9][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[9][2]["json"]["tool_id"] == "hub.get_operational_surface"
+    assert stub.calls[9][2]["json"]["arguments"]["target_id"] == "hub:test-zone"
+    assert stub.calls[10][2]["json"]["tool_id"] == "hub.issue_access_token"
+    assert stub.calls[10][2]["json"]["arguments"]["note"] == "web-client"
+    assert stub.calls[11][2]["json"]["tool_id"] == "hub.list_access_tokens"
+    assert stub.calls[11][2]["json"]["arguments"]["active_only"] is True
+    assert stub.calls[12][2]["json"]["tool_id"] == "hub.revoke_access_token"
+    assert stub.calls[12][2]["json"]["arguments"]["token_id"] == "tok-2"
+    assert stub.calls[13][2]["json"]["tool_id"] == "development.list_descriptor_sets"

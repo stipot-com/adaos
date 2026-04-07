@@ -377,8 +377,12 @@ Operational capabilities should initially be published through `infra_access_ski
 
 - `hub.get_status`
 - `hub.get_runtime_summary`
+- `hub.get_operational_surface`
 - `hub.get_logs`
 - `hub.run_healthchecks`
+- `hub.issue_access_token`
+- `hub.list_access_tokens`
+- `hub.revoke_access_token`
 - `hub.deploy_ref`
 - `hub.restart_service`
 - `hub.run_allowed_tests`
@@ -514,7 +518,10 @@ What is implemented in this slice:
 - executable telemetry-backed operational tools for:
   - `hub.get_status`
   - `hub.get_runtime_summary`
+  - `hub.get_operational_surface`
   - `hub.issue_access_token`
+  - `hub.list_access_tokens`
+  - `hub.revoke_access_token`
 - first local-pilot `infra_access_skill` execution adapters for:
   - `hub.get_logs`
   - `hub.run_healthchecks`
@@ -527,13 +534,14 @@ What is implemented in this slice:
 - optional verified-report policy mode, so operational tools can require a verified control report before execution
 - unified operational audit events for both MCP tool execution and `hub.control_report.ingest`
 - root-side access-token lifecycle management with issue, list, revoke, and audit coverage for web-client and external MCP flows
+- target-scoped token-management routing through `hub.issue_access_token`, `hub.list_access_tokens`, and `hub.revoke_access_token`, gated by the target's published `infra_access_skill` token-management surface
 - placeholder operational contract catalog retained for future remote `infra_access_skill` execution plus deploy/rollback operations
 - initial audit persistence to local root MCP audit storage
 - audit filtering by tool, trace, target, and subnet scope
 - scope-aware target filtering by `subnet_id` and `zone`
 - access-token-backed MCP auth with bounded capabilities, target allowlists, and scope inheritance
 
-This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports, skill-aware managed-target publication, root-hosted read tools, bounded local-pilot `infra_access_skill` writes for restart/test flows, and a first access-token management lifecycle suitable for web-client control surfaces. Broader remote execution, deploy, and rollback operations remain deferred to the future target-side `infra_access_skill` path.
+This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports, skill-aware managed-target publication, root-hosted read tools, `infra_access_skill` surface inspection, bounded local-pilot `infra_access_skill` writes for restart/test flows, and a first target-scoped access-token management lifecycle suitable for web-client control surfaces. Broader remote execution, deploy, and rollback operations remain deferred to the future target-side `infra_access_skill` path.
 
 ### Phase 2. MCP-to-SDK Base
 

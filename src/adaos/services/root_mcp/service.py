@@ -33,7 +33,7 @@ from .reports import control_report_registry_summary, list_control_reports
 from .targets import get_managed_target as get_target_descriptor
 from .targets import list_managed_targets as list_target_descriptors
 from .targets import managed_target_registry_summary
-from .tokens import access_token_registry_summary
+from .tokens import access_token_registry_summary, get_access_token_record, issue_access_token, list_access_tokens, revoke_access_token
 
 
 def _iso_now() -> str:
@@ -245,6 +245,20 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             metadata={"published_by": "root", "handler": "hub_get_runtime_summary", "environment_scope": "test-first"},
         ),
         RootMcpToolContract(
+            id="hub.get_operational_surface",
+            title="Get target operational surface",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Inspect the published infra_access_skill surface, including web UI, observability, and token-management state.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_operational_surface",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_get_operational_surface",
+                "environment_scope": "test-first",
+            },
+        ),
+        RootMcpToolContract(
             id="hub.get_logs",
             title="Get hub logs",
             surface=RootMcpSurface.OPERATIONS,
@@ -370,19 +384,71 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             id="hub.issue_access_token",
             title="Issue managed-target access token",
             surface=RootMcpSurface.OPERATIONS,
-            summary="Issue a bounded root-side access token for an external MCP client.",
+            summary="Issue a bounded target-scoped access token through the target's published infra_access_skill token-management route.",
             input_schema=schema_object(
                 properties={
                     "target_id": {"type": "string"},
                     "audience": {"type": "string"},
                     "ttl_seconds": {"type": "integer", "minimum": 60},
                     "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "note": {"type": "string"},
                 },
                 required=["target_id", "audience"],
             ),
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="hub.issue_access_token",
-            metadata={"published_by": "root", "handler": "hub_issue_access_token", "environment_scope": "test-first"},
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_issue_access_token",
+                "environment_scope": "test-first",
+                "token_management_route": "root_mcp",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.list_access_tokens",
+            title="List managed-target access tokens",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="List bounded target-scoped access tokens for web-client and MCP-client management.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string"},
+                    "active_only": {"type": "boolean"},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.list_access_tokens",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_list_access_tokens",
+                "environment_scope": "test-first",
+                "token_management_route": "root_mcp",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.revoke_access_token",
+            title="Revoke managed-target access token",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Revoke a bounded target-scoped access token through the target's published infra_access_skill token-management route.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "token_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                required=["target_id", "token_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.revoke_access_token",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_revoke_access_token",
+                "environment_scope": "test-only",
+                "token_management_route": "root_mcp",
+            },
         ),
     ]
 
@@ -555,9 +621,44 @@ def _handle_hub_get_runtime_summary(arguments: dict[str, Any], *, dry_run: bool)
     }
 
 
-def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
-    from .tokens import issue_access_token
+def _handle_hub_get_operational_surface(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    report = _latest_control_report(target_id)
+    surface = dict(target.operational_surface or {})
+    token_management = dict(surface.get("token_management") or {}) if isinstance(surface.get("token_management"), dict) else {}
+    return {
+        "target_id": target_id,
+        "operational_surface": surface,
+        "webui": dict(surface.get("webui") or {}) if isinstance(surface.get("webui"), dict) else {},
+        "observability": dict(surface.get("observability") or {}) if isinstance(surface.get("observability"), dict) else {},
+        "token_management": token_management,
+        "access": dict(target.access or {}),
+        "policy": dict(target.policy or {}),
+        "report": {
+            "last_reported_at": (report or {}).get("reported_at") or (target.meta or {}).get("last_reported_at"),
+            "report_verified": bool((target.meta or {}).get("report_verified")),
+            "report_auth_method": str((target.meta or {}).get("report_auth_method") or "").strip() or "unknown",
+        },
+    }
 
+
+def _require_root_token_management(target_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    surface = _target_operational_surface(target_id)
+    token_management = dict(surface.get("token_management") or {}) if isinstance(surface.get("token_management"), dict) else {}
+    if not bool(token_management.get("enabled")):
+        raise ValueError(f"target '{target_id}' does not expose token management through infra_access_skill")
+    issuer_mode = str(token_management.get("issuer_mode") or "").strip().lower() or "unknown"
+    if issuer_mode != "root_mcp":
+        raise ValueError(f"target '{target_id}' does not expose a root_mcp token-management route")
+    return surface, token_management
+
+
+def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     target_id = str(arguments.get("target_id") or "").strip()
     audience = str(arguments.get("audience") or "").strip()
     if not target_id:
@@ -567,10 +668,12 @@ def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) 
     target = get_target_descriptor(target_id)
     if target is None:
         raise KeyError(target_id)
+    surface, token_management = _require_root_token_management(target_id)
     ttl_seconds = int(arguments.get("ttl_seconds") or 3600)
     raw_caps = arguments.get("capabilities")
     capabilities = [str(item).strip() for item in raw_caps] if isinstance(raw_caps, list) else []
-    return issue_access_token(
+    note = str(arguments.get("note") or "").strip() or None
+    issued = issue_access_token(
         audience=audience,
         actor="root:tool",
         auth_method="root_tool",
@@ -579,7 +682,59 @@ def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) 
         subnet_id=target.subnet_id,
         zone=target.zone,
         target_id=target_id,
+        note=note,
     )
+    return {
+        **issued,
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+    }
+
+
+def _handle_hub_list_access_tokens(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    surface, token_management = _require_root_token_management(target_id)
+    limit = max(1, min(int(arguments.get("limit") or 50), 200))
+    status = str(arguments.get("status") or "").strip() or None
+    active_only = bool(arguments.get("active_only"))
+    return {
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+        "tokens": list_access_tokens(limit=limit, status=status, target_id=target_id, active_only=active_only),
+    }
+
+
+def _handle_hub_revoke_access_token(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    token_id = str(arguments.get("token_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not token_id:
+        raise ValueError("token_id is required")
+    surface, token_management = _require_root_token_management(target_id)
+    record = get_access_token_record(token_id)
+    if record is None:
+        raise KeyError(token_id)
+    target_ids = [str(item).strip() for item in record.get("target_ids") or [] if str(item).strip()]
+    if target_id not in target_ids:
+        raise ValueError(f"token '{token_id}' is not scoped to target '{target_id}'")
+    reason = str(arguments.get("reason") or "").strip() or None
+    revoked = revoke_access_token(
+        token_id,
+        actor="root:tool",
+        auth_method="root_tool",
+        reason=reason,
+    )
+    return {
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+        "token": revoked,
+    }
 
 
 def _target_execution_mode(target_id: str) -> str:
@@ -687,12 +842,15 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
     "hub.get_status": lambda arguments, dry_run=False: _handle_hub_get_status(arguments, dry_run=dry_run),
     "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
+    "hub.get_operational_surface": lambda arguments, dry_run=False: _handle_hub_get_operational_surface(arguments, dry_run=dry_run),
     "hub.get_logs": lambda arguments, dry_run=False: _handle_hub_get_logs(arguments, dry_run=dry_run),
     "hub.run_healthchecks": lambda arguments, dry_run=False: _handle_hub_run_healthchecks(arguments, dry_run=dry_run),
     "hub.restart_service": lambda arguments, dry_run=False: _handle_hub_restart_service(arguments, dry_run=dry_run),
     "hub.run_allowed_tests": lambda arguments, dry_run=False: _handle_hub_run_allowed_tests(arguments, dry_run=dry_run),
     "hub.get_test_results": lambda arguments, dry_run=False: _handle_hub_get_test_results(arguments, dry_run=dry_run),
     "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
+    "hub.list_access_tokens": lambda arguments, dry_run=False: _handle_hub_list_access_tokens(arguments, dry_run=dry_run),
+    "hub.revoke_access_token": lambda arguments, dry_run=False: _handle_hub_revoke_access_token(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
     "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),
@@ -710,7 +868,7 @@ def _result_summary(result: Any) -> dict[str, Any]:
 
 def _execution_adapter_for_tool(tool_id: str) -> str:
     token = str(tool_id or "").strip()
-    if token in {"hub.get_status", "hub.get_runtime_summary"}:
+    if token in {"hub.get_status", "hub.get_runtime_summary", "hub.get_operational_surface"}:
         return "root.control_report_projection"
     if token == "hub.get_logs":
         return "infra_access.local_process.logs"
@@ -724,6 +882,10 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "infra_access.local_process.test_results"
     if token == "hub.issue_access_token":
         return "root.access_token_issuer"
+    if token == "hub.list_access_tokens":
+        return "root.access_token_registry"
+    if token == "hub.revoke_access_token":
+        return "root.access_token_revocation"
     if token.startswith("development."):
         return "root.descriptor_registry"
     if token.startswith("operations."):

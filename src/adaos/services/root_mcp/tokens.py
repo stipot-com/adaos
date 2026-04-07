@@ -79,6 +79,16 @@ def _sanitize_record(item: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def get_access_token_record(token_id: str) -> dict[str, Any] | None:
+    token = str(token_id or "").strip()
+    if not token:
+        return None
+    for item in reversed(_read_records()):
+        if str(item.get("token_id") or "").strip() == token:
+            return _sanitize_record(item)
+    return None
+
+
 def issue_access_token(
     *,
     audience: str,
@@ -271,6 +281,7 @@ def access_token_registry_summary() -> dict[str, Any]:
 __all__ = [
     "DEFAULT_ACCESS_TOKEN_CAPABILITIES",
     "access_token_registry_summary",
+    "get_access_token_record",
     "issue_access_token",
     "list_access_tokens",
     "revoke_access_token",

@@ -98,6 +98,102 @@ class RootMcpClient:
             payload["reason"] = str(reason)
         return dict(self._request("POST", f"/v1/root/mcp/access-tokens/{token_id}/revoke", json=payload))
 
+    def get_operational_surface(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_operational_surface",
+            arguments={"target_id": str(target_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def issue_target_access_token(
+        self,
+        target_id: str,
+        *,
+        audience: str,
+        ttl_seconds: int | None = None,
+        capabilities: list[str] | None = None,
+        note: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "audience": str(audience),
+        }
+        if ttl_seconds is not None:
+            arguments["ttl_seconds"] = int(ttl_seconds)
+        if capabilities is not None:
+            arguments["capabilities"] = [str(item) for item in capabilities]
+        if note:
+            arguments["note"] = str(note)
+        return self.call(
+            "hub.issue_access_token",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def list_target_access_tokens(
+        self,
+        target_id: str,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+        active_only: bool = False,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "limit": int(limit),
+            "active_only": bool(active_only),
+        }
+        if status:
+            arguments["status"] = str(status)
+        return self.call(
+            "hub.list_access_tokens",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def revoke_target_access_token(
+        self,
+        target_id: str,
+        token_id: str,
+        *,
+        reason: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "token_id": str(token_id),
+        }
+        if reason:
+            arguments["reason"] = str(reason)
+        return self.call(
+            "hub.revoke_access_token",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def recent_audit(
         self,
         *,

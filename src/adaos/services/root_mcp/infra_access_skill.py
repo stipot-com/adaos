@@ -46,6 +46,12 @@ def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
     return token in {"1", "true", "yes", "on"}
 
 
+def _ensure_capability(capabilities: list[str], token: str) -> None:
+    value = str(token or "").strip()
+    if value and value not in capabilities:
+        capabilities.append(value)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -155,11 +161,14 @@ def build_operational_surface() -> dict[str, Any]:
     configured_caps = _normalize_str_list(config.get("capabilities"))
     env_caps = _parse_csv(os.getenv("ADAOS_INFRA_ACCESS_CAPABILITIES"))
     capabilities = env_caps or configured_caps
+    _ensure_capability(capabilities, "hub.get_operational_surface")
 
     token_management = dict(config.get("token_management") or {}) if isinstance(config.get("token_management"), dict) else {}
     token_management_enabled = bool(token_management.get("enabled", bool(state.get("available"))))
-    if token_management_enabled and "hub.issue_access_token" not in capabilities:
-        capabilities.append("hub.issue_access_token")
+    if token_management_enabled:
+        _ensure_capability(capabilities, "hub.issue_access_token")
+        _ensure_capability(capabilities, "hub.list_access_tokens")
+        _ensure_capability(capabilities, "hub.revoke_access_token")
 
     enabled_default = bool(config.get("enabled", bool(state.get("available"))))
     enabled = _parse_bool(os.getenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED"), default=enabled_default)
@@ -214,6 +223,11 @@ def build_operational_surface() -> dict[str, Any]:
             "enabled": token_management_enabled,
             "issuer_mode": str(token_management.get("issuer_mode") or "root_mcp").strip() or "root_mcp",
             "web_client_ready": bool(token_management_enabled and webui.get("available")),
+            "manage_tools": [
+                "hub.issue_access_token",
+                "hub.list_access_tokens",
+                "hub.revoke_access_token",
+            ],
         },
     }
 
