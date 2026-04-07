@@ -30,6 +30,7 @@ from adaos.services.root_mcp.service import (
     recent_audit_events,
 )
 from adaos.services.root_mcp.policy import evaluate_direct_access
+from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
 from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.root_mcp.tokens import issue_access_token, validate_access_token
 
@@ -115,6 +116,53 @@ def _require_root_access_auth(*, authorization: str | None, owner_token: str | N
             }
 
     raise HTTPException(status_code=401, detail="Missing Authorization bearer token or X-Owner-Token")
+
+
+def _legacy_root_token_auth(root_token: str | None) -> dict[str, Any] | None:
+    token = str(root_token or "").strip()
+    if not token:
+        return None
+    expected = os.getenv("ROOT_TOKEN") or os.getenv("ADAOS_ROOT_BEARER_TOKEN") or ""
+    if expected and token != expected:
+        raise HTTPException(status_code=401, detail="Invalid X-Root-Token")
+    return {
+        "method": "root_token",
+        "verified": bool(expected),
+        "actor": "root_token:root",
+        "capabilities": ["*"],
+        "grant_source": "legacy_root_token",
+    }
+
+
+def _require_root_read_auth_or_legacy_root_token(
+    *,
+    authorization: str | None,
+    owner_token: str | None,
+    root_token: str | None,
+) -> dict[str, Any]:
+    legacy = _legacy_root_token_auth(root_token)
+    if legacy is not None:
+        return legacy
+    return _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+
+
+def _resolve_hub_control_report_auth(
+    *,
+    authorization: str | None,
+    owner_token: str | None,
+    root_token: str | None,
+) -> dict[str, Any]:
+    if owner_token or authorization:
+        return _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    legacy = _legacy_root_token_auth(root_token)
+    if legacy is not None:
+        return legacy
+    return {
+        "method": "hub_control_report_unverified",
+        "verified": False,
+        "actor": "hub_report:unverified",
+        "grant_source": "transport_expected",
+    }
 
 
 def _mcp_scope(*, subnet_id: str | None, zone: str | None) -> dict[str, Any]:
@@ -398,6 +446,64 @@ class RootMcpAccessTokenIssueRequest(BaseModel):
     target_id: str | None = Field(default=None, max_length=128)
     target_ids: list[str] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=512)
+
+
+@router.post("/v1/hub/control/report")
+async def hub_control_report_ingest(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    root_token: str | None = Header(default=None, alias="X-Root-Token"),
+) -> dict[str, Any]:
+    auth = _resolve_hub_control_report_auth(authorization=authorization, owner_token=owner_token, root_token=root_token)
+    payload_raw = await request.json()
+    if not isinstance(payload_raw, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body")
+    result = ingest_control_report(payload_raw)
+    return {
+        **result,
+        "auth": {"method": auth.get("method")},
+    }
+
+
+@router.get("/v1/hubs/control/reports")
+async def hub_control_reports(
+    hub_id: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    root_token: str | None = Header(default=None, alias="X-Root-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_read_auth_or_legacy_root_token(authorization=authorization, owner_token=owner_token, root_token=root_token)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    allowed_target_ids = _allowed_target_ids(auth)
+    target_filter = str(hub_id or "").strip() or None
+    if target_filter and allowed_target_ids and target_filter not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
+
+    items: list[dict[str, Any]] = []
+    for item in list_control_reports(hub_id=target_filter):
+        target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        target_id = str(item.get("hub_id") or "").strip()
+        if allowed_target_ids and target_id not in allowed_target_ids:
+            continue
+        if scope.get("subnet_id") and target.get("subnet_id") and scope["subnet_id"] != target["subnet_id"]:
+            if target_filter:
+                raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
+            continue
+        if scope.get("zone") and target.get("zone") and scope["zone"] != target["zone"]:
+            if target_filter:
+                raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Managed target is outside the requested zone scope."})
+            continue
+        items.append(item)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "reports": items,
+    }
 
 
 @root_router.get("/mcp/foundation")

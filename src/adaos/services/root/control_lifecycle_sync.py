@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from adaos.services.agent_context import get_ctx
@@ -57,6 +58,31 @@ def _root_client(conf) -> RootHttpClient | None:
     return RootHttpClient(base_url=base_url, verify=verify, cert=(str(cert_path), str(key_path)))
 
 
+def _environment(conf) -> str:
+    return (
+        str(os.getenv("ADAOS_ENVIRONMENT") or "").strip().lower()
+        or str(os.getenv("ADAOS_SUBNET_ENVIRONMENT") or "").strip().lower()
+        or "test"
+    )
+
+
+def _zone(conf) -> str | None:
+    token = str(os.getenv("ADAOS_ROOT_ZONE") or "").strip()
+    return token or None
+
+
+def _infra_access_operational_surface() -> dict[str, Any]:
+    enabled = str(os.getenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    capabilities_raw = str(os.getenv("ADAOS_INFRA_ACCESS_CAPABILITIES") or "").strip()
+    capabilities = [item for item in (token.strip() for token in capabilities_raw.split(",")) if item]
+    return {
+        "published_by": "skill:infra_access_skill",
+        "enabled": enabled,
+        "availability": "enabled" if enabled else "planned",
+        "capabilities": capabilities,
+    }
+
+
 def build_control_lifecycle_report(conf) -> dict[str, Any]:
     lifecycle = runtime_lifecycle_snapshot()
     signals = runtime_signal_snapshot()
@@ -68,11 +94,15 @@ def build_control_lifecycle_report(conf) -> dict[str, Any]:
     root_diag = diagnostics.get("root_control") if isinstance(diagnostics.get("root_control"), dict) else {}
     route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
     assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
+    slot_manifest = active_slot_manifest() or {}
 
     return {
+        "target_id": f"hub:{str(getattr(conf, 'subnet_id', '') or '').strip() or 'unknown_hub'}",
         "node_id": str(getattr(conf, "node_id", "") or ""),
         "subnet_id": str(getattr(conf, "subnet_id", "") or ""),
         "role": str(getattr(conf, "role", "") or ""),
+        "environment": _environment(conf),
+        "zone": _zone(conf),
         "lifecycle": {
             "node_state": str(lifecycle.get("node_state") or "unknown"),
             "reason": str(lifecycle.get("reason") or ""),
@@ -98,6 +128,12 @@ def build_control_lifecycle_report(conf) -> dict[str, Any]:
             "last_event": str(strategy.get("last_event") or ""),
             "assessment_state": str(assessment.get("state") or ""),
         },
+        "runtime": {
+            "active_slot": str(slot_manifest.get("slot") or slot_manifest.get("slot_id") or ""),
+            "git_commit": str(slot_manifest.get("git_commit") or ""),
+            "target_rev": str(slot_manifest.get("target_rev") or slot_manifest.get("git_branch") or ""),
+        },
+        "operational_surface": _infra_access_operational_surface(),
     }
 
 

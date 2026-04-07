@@ -485,6 +485,7 @@ What is implemented in this slice:
 - root-hosted tool-contract registry over root-curated descriptor sets plus placeholder operational contracts
 - root-side descriptor registry instead of a direct public `export_sdk` MCP path
 - state-backed managed-target registry skeleton with `test hub` as the first published target descriptor
+- report-backed managed-target refresh through hub control-lifecycle reports
 - `RootMcpClient` skeleton with `root_url + subnet_id + access_token + zone` configuration model
 - initial root-side capability registry and policy gate for direct endpoints and MCP tool execution
 - bounded root-issued MCP access-token primitives for external clients
@@ -499,6 +500,8 @@ What is implemented in this slice:
   - `POST /v1/root/mcp/access-tokens`
   - `POST /v1/root/mcp/call`
   - `GET /v1/root/mcp/audit`
+  - `POST /v1/hub/control/report`
+  - `GET /v1/hubs/control/reports`
 - read-only development tools for:
   - foundation summary
   - contract listing
@@ -506,13 +509,17 @@ What is implemented in this slice:
   - descriptor-set retrieval
   - canonical system-model vocabulary
   - skill/scenario manifest schemas
-- placeholder operational contract catalog for future `infra_access_skill`
+- executable telemetry-backed operational tools for:
+  - `hub.get_status`
+  - `hub.get_runtime_summary`
+  - `hub.issue_access_token`
+- placeholder operational contract catalog retained for future `infra_access_skill` write-oriented operations
 - initial audit persistence to local root MCP audit storage
 - audit filtering by tool, trace, target, and subnet scope
 - scope-aware target filtering by `subnet_id` and `zone`
 - access-token-backed MCP auth with bounded capabilities, target allowlists, and scope inheritance
 
-This is intentionally still a skeleton: it establishes the entrypoint, contracts, and audit shape before adding real managed-target execution.
+This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports and root-hosted read tools, while write-like operational flows remain deferred to the future `infra_access_skill` execution path.
 
 ### Phase 2. MCP-to-SDK Base
 

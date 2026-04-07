@@ -13,6 +13,7 @@ from .model import (
     schema_object,
 )
 from .policy import capability_registry_payload, capability_registry_summary, evaluate_direct_access, evaluate_tool_access
+from .reports import control_report_registry_summary, ingest_control_report, list_control_reports, sync_target_from_control_report
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
 from .service import (
     foundation_snapshot,
@@ -44,6 +45,7 @@ __all__ = [
     "access_token_registry_summary",
     "capability_registry_payload",
     "capability_registry_summary",
+    "control_report_registry_summary",
     "descriptor_registry_summary",
     "evaluate_direct_access",
     "evaluate_tool_access",
@@ -62,6 +64,9 @@ __all__ = [
     "recent_audit_events",
     "schema_object",
     "issue_access_token",
+    "ingest_control_report",
     "upsert_managed_target",
     "validate_access_token",
+    "list_control_reports",
+    "sync_target_from_control_report",
 ]

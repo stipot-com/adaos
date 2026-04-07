@@ -21,6 +21,7 @@ from .model import (
 )
 from .policy import evaluate_tool_access
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
+from .reports import control_report_registry_summary, list_control_reports
 from .targets import get_managed_target as get_target_descriptor
 from .targets import list_managed_targets as list_target_descriptors
 from .targets import managed_target_registry_summary
@@ -69,20 +70,24 @@ def _foundation_summary() -> dict[str, Any]:
         "entrypoints": {
             "foundation": "/v1/root/mcp/foundation",
             "contracts": "/v1/root/mcp/contracts",
+            "descriptors": "/v1/root/mcp/descriptors",
             "targets": "/v1/root/mcp/targets",
+            "access_tokens": "/v1/root/mcp/access-tokens",
             "call": "/v1/root/mcp/call",
             "audit": "/v1/root/mcp/audit",
+            "control_reports": "/v1/hubs/control/reports",
         },
         "registries": {
             "descriptor_registry": descriptor_registry_summary(),
             "managed_target_registry": managed_target_registry_summary(),
+            "control_report_registry": control_report_registry_summary(),
         },
         "managed_targets": {
             "count": len(managed_targets),
             "first_target": "test hub",
             "publication_model": "skill-mediated",
             "preferred_target_surface": "infra_access_skill",
-            "registry_status": "skeleton",
+            "registry_status": "report-backed skeleton",
         },
         "client": {
             "recommended_client": "RootMcpClient",
@@ -96,28 +101,6 @@ def _foundation_summary() -> dict[str, Any]:
 def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
     summary = "Planned test-hub operational tool published later through infra_access_skill."
     return [
-        RootMcpToolContract(
-            id="hub.get_status",
-            title="Get hub status",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.get_status",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
-        ),
-        RootMcpToolContract(
-            id="hub.get_runtime_summary",
-            title="Get hub runtime summary",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.get_runtime_summary",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
-        ),
         RootMcpToolContract(
             id="hub.get_logs",
             title="Get hub logs",
@@ -140,24 +123,6 @@ def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
             input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="hub.run_healthchecks",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
-        ),
-        RootMcpToolContract(
-            id="hub.issue_access_token",
-            title="Issue managed-target access token",
-            surface=RootMcpSurface.OPERATIONS,
-            summary="Planned token bootstrap contract for external MCP clients routed through infra_access_skill.",
-            input_schema=schema_object(
-                properties={
-                    "target_id": {"type": "string"},
-                    "audience": {"type": "string"},
-                    "ttl_seconds": {"type": "integer", "minimum": 60},
-                },
-                required=["target_id", "audience"],
-            ),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.issue_access_token",
             availability=RootMcpAvailability.PLACEHOLDER,
             metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
         ),
@@ -310,6 +275,26 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             metadata={"published_by": "root", "handler": "get_scenario_manifest_schema"},
         ),
         RootMcpToolContract(
+            id="hub.get_status",
+            title="Get hub status",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return the current managed-target descriptor and latest reported control state.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_status",
+            metadata={"published_by": "root", "handler": "hub_get_status", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.get_runtime_summary",
+            title="Get hub runtime summary",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return the latest reported runtime and transport summary for a managed target.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_runtime_summary",
+            metadata={"published_by": "root", "handler": "hub_get_runtime_summary", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
             id="operations.list_contracts",
             title="List operational contracts",
             surface=RootMcpSurface.OPERATIONS,
@@ -341,6 +326,24 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="operations.read.targets",
             metadata={"published_by": "root", "handler": "get_managed_target"},
+        ),
+        RootMcpToolContract(
+            id="hub.issue_access_token",
+            title="Issue managed-target access token",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Issue a bounded root-side access token for an external MCP client.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "audience": {"type": "string"},
+                    "ttl_seconds": {"type": "integer", "minimum": 60},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                },
+                required=["target_id", "audience"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.issue_access_token",
+            metadata={"published_by": "root", "handler": "hub_issue_access_token", "environment_scope": "test-first"},
         ),
     ]
 
@@ -442,7 +445,7 @@ def _handle_scenario_manifest_schema(arguments: dict[str, Any], *, dry_run: bool
 
 
 def _handle_operational_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
-    items = [item.to_dict() for item in _placeholder_operational_contracts()]
+    items = [item.to_dict() for item in list_tool_contracts(surface=RootMcpSurface.OPERATIONS.value)]
     return {
         "contracts": items,
         "managed_targets": {
@@ -470,6 +473,76 @@ def _handle_get_managed_target(arguments: dict[str, Any], *, dry_run: bool) -> d
     return {"target": target}
 
 
+def _latest_control_report(target_id: str) -> dict[str, Any] | None:
+    items = list_control_reports(hub_id=target_id)
+    if not items:
+        return None
+    latest = items[0]
+    return dict(latest.get("report") or {}) if isinstance(latest, dict) else None
+
+
+def _handle_hub_get_status(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_managed_target(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    report = _latest_control_report(target_id)
+    return {
+        "target": target,
+        "lifecycle": dict((report or {}).get("lifecycle") or {}),
+        "root_control": dict((report or {}).get("root_control") or {}),
+        "route": dict((report or {}).get("route") or {}),
+        "last_reported_at": (report or {}).get("reported_at"),
+    }
+
+
+def _handle_hub_get_runtime_summary(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_managed_target(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    report = _latest_control_report(target_id)
+    return {
+        "target_id": target_id,
+        "runtime": dict((report or {}).get("runtime") or {}),
+        "transport": dict((report or {}).get("transport") or {}),
+        "lifecycle": dict((report or {}).get("lifecycle") or {}),
+        "operational_surface": dict((report or {}).get("operational_surface") or target.get("operational_surface") or {}),
+        "last_reported_at": (report or {}).get("reported_at"),
+    }
+
+
+def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    from .tokens import issue_access_token
+
+    target_id = str(arguments.get("target_id") or "").strip()
+    audience = str(arguments.get("audience") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not audience:
+        raise ValueError("audience is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    ttl_seconds = int(arguments.get("ttl_seconds") or 3600)
+    raw_caps = arguments.get("capabilities")
+    capabilities = [str(item).strip() for item in raw_caps] if isinstance(raw_caps, list) else []
+    return issue_access_token(
+        audience=audience,
+        actor="root:tool",
+        auth_method="root_tool",
+        ttl_seconds=ttl_seconds,
+        capabilities=capabilities,
+        subnet_id=target.subnet_id,
+        zone=target.zone,
+        target_id=target_id,
+    )
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
     "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
@@ -478,6 +551,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.get_system_model_vocabulary": lambda arguments, dry_run=False: _handle_system_model_vocabulary(arguments, dry_run=dry_run),
     "development.get_skill_manifest_schema": lambda arguments, dry_run=False: _handle_skill_manifest_schema(arguments, dry_run=dry_run),
     "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
+    "hub.get_status": lambda arguments, dry_run=False: _handle_hub_get_status(arguments, dry_run=dry_run),
+    "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
+    "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
     "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),

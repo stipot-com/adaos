@@ -17,6 +17,7 @@ from adaos.services.system_model.model import (
 )
 
 from .policy import capability_registry_payload, capability_registry_summary
+from .reports import control_report_registry_summary
 from .targets import managed_target_registry_summary
 from .tokens import DEFAULT_ACCESS_TOKEN_CAPABILITIES, access_token_registry_summary
 
@@ -200,6 +201,7 @@ def descriptor_registry_summary() -> dict[str, Any]:
         "descriptors": [item["descriptor_id"] for item in items],
         "capability_registry": capability_registry_summary(),
         "managed_target_registry": managed_target_registry_summary(),
+        "control_report_registry": control_report_registry_summary(),
         "access_token_registry": access_token_registry_summary(),
     }
 

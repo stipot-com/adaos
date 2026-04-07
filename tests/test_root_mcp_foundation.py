@@ -44,7 +44,10 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "operations.list_contracts" in contract_ids
     assert "operations.list_managed_targets" in contract_ids
     assert "development.export_sdk" not in contract_ids
-    placeholder = next(item for item in contract_items if item["id"] == "hub.get_status")
+    implemented = next(item for item in contract_items if item["id"] == "hub.get_status")
+    assert implemented["availability"] == "enabled"
+    assert implemented["metadata"]["published_by"] == "root"
+    placeholder = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert placeholder["availability"] == "placeholder"
     assert placeholder["metadata"]["published_by"] == "skill:infra_access_skill"
 
@@ -216,6 +219,128 @@ def test_root_mcp_owner_can_register_target_and_issue_scoped_access_token(monkey
     assert call.json()["ok"] is True
 
 
+def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
+    from adaos.services.root_mcp import tokens as token_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+    monkeypatch.setattr(token_registry, "_tokens_path", lambda: tmp_path / "access_tokens.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-1"
+
+    report = client.post(
+        "/v1/hub/control/report",
+        json={
+            "target_id": target_id,
+            "title": "Test Hub 1",
+            "subnet_id": "subnet-test-1",
+            "role": "hub",
+            "environment": "test",
+            "zone": "lab-b",
+            "reported_at": "2026-04-07T12:00:00Z",
+            "lifecycle": {
+                "node_state": "running",
+                "reason": "healthy",
+                "draining": False,
+                "accepting_new_work": True,
+            },
+            "root_control": {
+                "status": "ok",
+                "summary": "connected",
+            },
+            "route": {
+                "status": "ok",
+                "summary": "root-proxy",
+            },
+            "transport": {
+                "requested_transport": "root_proxy",
+                "effective_transport": "root_proxy",
+                "selected_server": "root-a",
+                "assessment_state": "ok",
+            },
+            "runtime": {
+                "active_slot": "slot-a",
+                "git_commit": "abcdef123456",
+                "target_rev": "refs/heads/main",
+            },
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "availability": "enabled",
+                "capabilities": [
+                    "hub.get_status",
+                    "hub.get_runtime_summary",
+                    "hub.issue_access_token",
+                ],
+            },
+        },
+    )
+    assert report.status_code == 200
+    report_payload = report.json()
+    assert report_payload["ok"] is True
+    assert report_payload["duplicate"] is False
+    assert report_payload["target_id"] == target_id
+    assert report_payload["auth"]["method"] == "hub_control_report_unverified"
+
+    reports = client.get(
+        "/v1/hubs/control/reports",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+        params={"hub_id": target_id},
+    )
+    assert reports.status_code == 200
+    report_items = reports.json()["reports"]
+    assert len(report_items) == 1
+    assert report_items[0]["target"]["target_id"] == target_id
+
+    status_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_status",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert status_call.status_code == 200
+    status_payload = status_call.json()
+    assert status_payload["ok"] is True
+    assert status_payload["response"]["result"]["target"]["target_id"] == target_id
+    assert status_payload["response"]["result"]["lifecycle"]["node_state"] == "running"
+
+    runtime_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_runtime_summary",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert runtime_call.status_code == 200
+    runtime_payload = runtime_call.json()
+    assert runtime_payload["ok"] is True
+    assert runtime_payload["response"]["result"]["runtime"]["active_slot"] == "slot-a"
+    assert runtime_payload["response"]["result"]["transport"]["effective_transport"] == "root_proxy"
+
+    token_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.issue_access_token",
+            "arguments": {"target_id": target_id, "audience": "codex-vscode"},
+        },
+    )
+    assert token_call.status_code == 200
+    token_payload = token_call.json()
+    assert token_payload["ok"] is True
+    assert token_payload["response"]["result"]["target_ids"] == [target_id]
+    assert token_payload["response"]["result"]["subnet_id"] == "subnet-test-1"
+    assert token_payload["response"]["result"]["zone"] == "lab-b"
+
+
 def test_root_mcp_access_token_rejects_scope_override(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
     from adaos.services.root_mcp import targets as target_registry
@@ -270,16 +395,16 @@ def test_root_mcp_placeholder_tool_returns_structured_error(monkeypatch) -> None
         "/v1/root/mcp/call",
         headers=headers,
         json={
-            "tool_id": "hub.get_status",
+            "tool_id": "hub.get_logs",
             "request_id": "req-root-mcp-2",
-            "arguments": {"target_id": target_id},
+            "arguments": {"target_id": target_id, "tail": 50},
         },
     )
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["ok"] is False
     envelope = payload["response"]
-    assert envelope["tool_id"] == "hub.get_status"
+    assert envelope["tool_id"] == "hub.get_logs"
     assert envelope["status"] == "error"
     assert envelope["error"]["code"] == "tool_not_available"
     assert envelope["meta"]["availability"] == "placeholder"

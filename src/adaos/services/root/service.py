@@ -37,6 +37,7 @@ from .keyring import KeyringUnavailableError, delete_refresh, load_refresh, save
 from adaos.adapters.db import sqlite as sqlite_db
 from adaos.apps.api.auth import require_owner_token
 from adaos.services.id_gen import new_id
+from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 from adaos.adapters.scenarios.git_repo import GitScenarioRepository
 from adaos.services.scenario.manager import ScenarioManager
@@ -335,6 +336,30 @@ class RootAuthService:
             "hub_device_id": device_id,
             "cert_pem": cert_pem,
         }
+        try:
+            upsert_managed_target(
+                {
+                    "target_id": f"hub:{subnet['subnet_id']}",
+                    "title": f"Hub {subnet['subnet_id']}",
+                    "kind": "hub",
+                    "environment": str(((hints or {}) if isinstance(hints, dict) else {}).get("environment") or "test").strip().lower() or "test",
+                    "status": "registered",
+                    "zone": str(((hints or {}) if isinstance(hints, dict) else {}).get("zone") or "").strip() or None,
+                    "subnet_id": subnet["subnet_id"],
+                    "transport": {"channel": "hub_root_protocol", "mode": "registered"},
+                    "operational_surface": {
+                        "published_by": "skill:infra_access_skill",
+                        "enabled": False,
+                        "availability": "planned",
+                    },
+                    "meta": {
+                        "registry_source": "subnet_registration",
+                        "hub_device_id": device_id,
+                    },
+                }
+            )
+        except Exception:
+            pass
         return {"data": data, "event_id": event_id, "server_time_utc": envelope_time}
 
 

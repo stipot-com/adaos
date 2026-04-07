@@ -64,12 +64,15 @@ Current Root MCP Foundation skeleton endpoints are exposed separately from `/api
 - `POST /v1/root/mcp/access-tokens`
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
+- `POST /v1/hub/control/report`
+- `GET /v1/hubs/control/reports`
 
 The current skeleton also applies root-side capability checks and scope hints:
 
 - read-only bearer access is allowed only for the default development/registry/audit capabilities
 - target lists and tool calls can be scoped by `X-AdaOS-Subnet-Id` and `X-AdaOS-Zone`
 - root can issue bounded MCP access tokens for external clients, and those tokens carry inherited `subnet_id` / `zone` / target allowlists
+- hub control reports can refresh managed-target state on `root`, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
 - write-like operational tools are still blocked until the target-side `infra_access_skill` path is implemented
 
 ## Positioning Relative to Root MCP Foundation
