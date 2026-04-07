@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from adaos.services.bootstrap import is_ready, load_config
+from adaos.services.reliability import reliability_snapshot
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
 from adaos.services.system_model.mappers import canonical_object_from_node_status
+from adaos.services.system_model.projections import canonical_projection_from_reliability_snapshot
 
 
 def route_info(role: str) -> tuple[str | None, bool | None]:
@@ -44,5 +46,33 @@ def current_node_status_payload() -> dict[str, Any]:
 def current_node_object():
     return canonical_object_from_node_status(current_node_status_payload())
 
+def current_reliability_payload(*, webspace_id: str | None = None) -> dict[str, Any]:
+    conf = load_config()
+    route_mode, connected = route_info(conf.role)
+    lifecycle = runtime_lifecycle_snapshot()
+    return reliability_snapshot(
+        node_id=conf.node_id,
+        subnet_id=conf.subnet_id,
+        role=conf.role,
+        zone_id=getattr(conf, "zone_id", None),
+        local_ready=is_ready(),
+        node_state=str(lifecycle.get("node_state") or "ready"),
+        draining=bool(lifecycle.get("draining")),
+        route_mode=route_mode,
+        connected_to_hub=connected,
+        node_names=list(getattr(conf, "node_names", []) or []),
+        webspace_id=webspace_id,
+    )
 
-__all__ = ["current_node_object", "current_node_status_payload", "route_info"]
+
+def current_reliability_projection(*, webspace_id: str | None = None):
+    return canonical_projection_from_reliability_snapshot(current_reliability_payload(webspace_id=webspace_id))
+
+
+__all__ = [
+    "current_node_object",
+    "current_node_status_payload",
+    "current_reliability_payload",
+    "current_reliability_projection",
+    "route_info",
+]

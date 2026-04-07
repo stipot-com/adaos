@@ -11,6 +11,7 @@ from .model import (
     CanonicalAudit,
     CanonicalGovernance,
     CanonicalObject,
+    CanonicalProjection,
     CanonicalStatus,
     ConnectivityStatus,
     InstallationStatus,
@@ -25,12 +26,14 @@ from .model import (
     normalize_sync_status,
     normalize_trust_status,
 )
+from .projections import canonical_projection_from_reliability_snapshot
 
 __all__ = [
     "CanonicalActionDescriptor",
     "CanonicalAudit",
     "CanonicalGovernance",
     "CanonicalObject",
+    "CanonicalProjection",
     "CanonicalStatus",
     "ConnectivityStatus",
     "InstallationStatus",
@@ -38,6 +41,7 @@ __all__ = [
     "SyncStatus",
     "TrustStatus",
     "canonical_object_from_node_status",
+    "canonical_projection_from_reliability_snapshot",
     "canonical_object_from_scenario_item",
     "canonical_object_from_skill_status",
     "canonical_object_from_user_profile",

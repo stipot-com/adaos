@@ -61,10 +61,10 @@
 
 - добавить общий canonical vocabulary и object envelope в `src/adaos/services/system_model/*`
 - добавить adapter functions для текущих форм node, skill, scenario, profile и workspace
-- добавить SDK entry points для canonical self, skill и scenario objects и оставить API тонким фасадом
+- добавить SDK entry points для canonical self, skill, scenario и reliability projection objects и оставить API тонким фасадом
 - сначала проверить словарь и адаптеры точечными unit tests, а уже потом расширять покрытие API
 
-Следующий низкорисковый шаг — распространить тот же envelope на часть reliability snapshots и при необходимости на тонкие API facades, не ломая текущие ответы.
+Текущий checkpoint распространяет тот же envelope на selected reliability snapshots и добавляет один тонкий external facade для aggregate reliability projection, не ломая current raw responses.
 
 ## Итерация 1: Projection Layer
 

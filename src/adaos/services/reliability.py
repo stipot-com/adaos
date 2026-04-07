@@ -4149,6 +4149,7 @@ def reliability_snapshot(
     route_mode: str | None,
     connected_to_hub: bool | None,
     node_names: list[str] | None = None,
+    webspace_id: str | None = None,
 ) -> dict[str, Any]:
     zone_id = (
         str(zone_id or "").strip().lower()
@@ -4200,7 +4201,7 @@ def reliability_snapshot(
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,
     )
-    sync_runtime = yjs_sync_runtime_snapshot(role=role)
+    sync_runtime = yjs_sync_runtime_snapshot(role=role, webspace_id=webspace_id)
     media_runtime = media_plane_runtime_snapshot(
         role=role,
         route_mode=route_mode,

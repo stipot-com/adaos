@@ -102,6 +102,24 @@ class CanonicalObject:
         return payload if isinstance(payload, dict) else {}
 
 
+@dataclass(slots=True)
+class CanonicalProjection:
+    id: str
+    kind: str
+    title: str
+    subject: CanonicalObject
+    summary: str | None = None
+    objects: list[CanonicalObject] = field(default_factory=list)
+    incidents: list[dict[str, Any]] = field(default_factory=list)
+    context: dict[str, Any] = field(default_factory=dict)
+    representations: dict[str, Any] = field(default_factory=dict)
+    audit: CanonicalAudit = field(default_factory=CanonicalAudit)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = _jsonify(self)
+        return payload if isinstance(payload, dict) else {}
+
+
 def _token(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -238,6 +256,7 @@ __all__ = [
     "CanonicalAudit",
     "CanonicalGovernance",
     "CanonicalObject",
+    "CanonicalProjection",
     "CanonicalStatus",
     "ConnectivityStatus",
     "InstallationStatus",

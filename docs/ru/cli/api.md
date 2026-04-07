@@ -39,7 +39,7 @@ CLI обычно подставляет этот токен автоматиче
 - `/api/services/*`: supervision service-type skills
 - `/api/skills/*`: список навыков, install/update, runtime prepare/activate, uninstall
 - `/api/scenarios/*`: install, sync, push и uninstall сценариев
-- `/api/node/*`: status, reliability, role, members, media, Yjs webspace
+- `/api/node/*`: status, reliability, control-plane projections, role, members, media, Yjs webspace
 - `/api/observe/*`: ingest, tail и SSE stream
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle и orchestration обновлений ядра

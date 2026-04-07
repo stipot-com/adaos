@@ -26,7 +26,7 @@ from adaos.services.media_library import (
     media_snapshot,
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
-from adaos.services.reliability import media_plane_runtime_snapshot, reliability_snapshot, yjs_sync_runtime_snapshot
+from adaos.services.reliability import media_plane_runtime_snapshot, yjs_sync_runtime_snapshot
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
@@ -46,7 +46,13 @@ from adaos.services.realtime_sidecar import (
     restart_realtime_sidecar_subprocess,
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
-from adaos.services.system_model.service import current_node_object, current_node_status_payload, route_info
+from adaos.services.system_model.service import (
+    current_node_object,
+    current_node_status_payload,
+    current_reliability_payload,
+    current_reliability_projection,
+    route_info,
+)
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace
 
@@ -358,24 +364,15 @@ async def node_control_plane_object_self() -> dict[str, Any]:
     return {"ok": True, "object": canonical.to_dict()}
 
 
+@router.get("/control-plane/projections/reliability", dependencies=[Depends(require_token)])
+async def node_control_plane_reliability_projection(webspace_id: str | None = None) -> dict[str, Any]:
+    projection = current_reliability_projection(webspace_id=webspace_id)
+    return {"ok": True, "projection": projection.to_dict()}
+
+
 @router.get("/reliability", dependencies=[Depends(require_token)])
 async def node_reliability() -> dict[str, Any]:
-    conf = load_config()
-    route_mode, connected = route_info(conf.role)
-    lifecycle = runtime_lifecycle_snapshot()
-    local_ready = is_ready()
-    return reliability_snapshot(
-        node_id=conf.node_id,
-        subnet_id=conf.subnet_id,
-        role=conf.role,
-        zone_id=getattr(conf, "zone_id", None),
-        local_ready=local_ready,
-        node_state=str(lifecycle.get("node_state") or "ready"),
-        draining=bool(lifecycle.get("draining")),
-        route_mode=route_mode,
-        connected_to_hub=connected,
-        node_names=list(getattr(conf, "node_names", []) or []),
-    )
+    return current_reliability_payload()
 
 
 @router.post("/hub-root/reconnect", dependencies=[Depends(require_token)])
@@ -385,20 +382,7 @@ async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]
 
 @router.get("/sidecar/status", dependencies=[Depends(require_token)])
 async def sidecar_status(request: Request) -> dict[str, Any]:
-    conf = load_config()
-    route_mode, connected = route_info(conf.role)
-    lifecycle = runtime_lifecycle_snapshot()
-    reliability = reliability_snapshot(
-        node_id=conf.node_id,
-        subnet_id=conf.subnet_id,
-        role=conf.role,
-        local_ready=is_ready(),
-        node_state=str(lifecycle.get("node_state") or "ready"),
-        draining=bool(lifecycle.get("draining")),
-        route_mode=route_mode,
-        connected_to_hub=connected,
-        node_names=list(getattr(conf, "node_names", []) or []),
-    )
+    reliability = current_reliability_payload()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     process = realtime_sidecar_listener_snapshot(getattr(request.app.state, "realtime_sidecar_proc", None))
     return {
@@ -417,19 +401,7 @@ async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> d
     reconnect_result: dict[str, Any] | None = None
     if bool(payload.reconnect_hub_root) and str(conf.role or "").strip().lower() == "hub":
         reconnect_result = await request_hub_root_reconnect()
-    route_mode, connected = route_info(conf.role)
-    lifecycle = runtime_lifecycle_snapshot()
-    reliability = reliability_snapshot(
-        node_id=conf.node_id,
-        subnet_id=conf.subnet_id,
-        role=conf.role,
-        local_ready=is_ready(),
-        node_state=str(lifecycle.get("node_state") or "ready"),
-        draining=bool(lifecycle.get("draining")),
-        route_mode=route_mode,
-        connected_to_hub=connected,
-        node_names=list(getattr(conf, "node_names", []) or []),
-    )
+    reliability = current_reliability_payload()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     return {
         "ok": True,

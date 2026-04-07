@@ -39,7 +39,7 @@ The CLI resolves this token automatically for local control operations.
 - `/api/services/*`: service skill supervision
 - `/api/skills/*`: skill listing, install/update, runtime prepare/activate, uninstall
 - `/api/scenarios/*`: scenario install, sync, push, uninstall
-- `/api/node/*`: node status, reliability, role, members, media, Yjs webspaces
+- `/api/node/*`: node status, reliability, control-plane projections, role, members, media, Yjs webspaces
 - `/api/observe/*`: ingest, tail, and SSE stream
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle, and core-update orchestration

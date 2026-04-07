@@ -15,6 +15,7 @@ In the current codebase, the control plane is split across:
 - webspace and desktop control for Yjs-backed state
 - canonical self-object access via SDK-first control-plane helpers
 - canonical skill/scenario object access via SDK-first helpers before widening the external API
+- canonical reliability projection access for LLM and skills, with runtime component objects and action metadata
 
 ## Related modules
 
@@ -24,4 +25,5 @@ In the current codebase, the control plane is split across:
 - `adaos.sdk.control_plane`
 - `adaos.sdk.data.control_plane`
 - `adaos.services.system_model.*`
+- `adaos.services.reliability`
 - runtime services under `adaos.services.*`

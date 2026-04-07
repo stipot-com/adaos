@@ -376,7 +376,20 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     app = FastAPI()
     app.include_router(node_api.router, prefix="/api/node")
     app.dependency_overrides[require_token] = lambda: None
-    monkeypatch.setattr(node_api, "runtime_lifecycle_snapshot", lambda: {"node_state": "ready", "draining": False})
+    monkeypatch.setattr(
+        node_api,
+        "current_reliability_payload",
+        lambda: reliability_snapshot(
+            node_id="node-1",
+            subnet_id="sn_1",
+            role="hub",
+            local_ready=True,
+            node_state="ready",
+            draining=False,
+            route_mode="hub",
+            connected_to_hub=None,
+        ),
+    )
 
     client = TestClient(app)
     response = client.get("/api/node/reliability")

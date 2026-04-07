@@ -1,6 +1,6 @@
 # Infrascope Roadmap
 
-This roadmap breaks `Infrascope` into implementation iterations that fit the current AdaOS codebase and documentation model.
+This roadmap breaks `Infrascope` into implementation Phases that fit the current AdaOS codebase and documentation model.
 
 Architecture is defined in [Infrascope](infrascope.md). This page focuses on sequencing, deliverables, and acceptance criteria.
 
@@ -13,13 +13,13 @@ Architecture is defined in [Infrascope](infrascope.md). This page focuses on seq
 3. Operator value before visual complexity.
    `overview`, `inventory`, and inspector should land before ambitious full-graph experiences.
 4. LLM compatibility from day one.
-   Every iteration should improve machine-readable context, not bolt it on later.
+   Every Phase should improve machine-readable context, not bolt it on later.
 5. Governance is part of the object model.
    Ownership, visibility, and policy should not be postponed until after the UI is built.
 
 ## Reference Scenarios
 
-Each iteration should improve at least one of these end-to-end scenarios:
+Each Phase should improve at least one of these end-to-end scenarios:
 
 1. Diagnose why a scenario stopped working.
 2. Determine whether a broken automation is caused by root, hub, member, browser, or device failure.
@@ -27,7 +27,7 @@ Each iteration should improve at least one of these end-to-end scenarios:
 4. Explain which object exceeded an LLM or external-service quota.
 5. Prepare a safe, policy-aware context packet for an LLM assistant.
 
-## Iteration 0: Canonical Vocabulary
+## Phase 0: Canonical Vocabulary
 
 ### Goal
 
@@ -57,16 +57,16 @@ Create a stable object contract and shared vocabulary for states, relations, and
 
 ### Current Implementation Slice
 
-The first code slice for Iteration 0 is intentionally narrow:
+The first code slice for Phase 0 is intentionally narrow:
 
 - add shared canonical vocabulary and object envelope under `src/adaos/services/system_model/*`
 - add adapter functions for current node, skill, scenario, profile, and workspace shapes
-- expose SDK entry points for canonical self, skill, and scenario object access while keeping API as a thin facade
+- expose SDK entry points for canonical self, skill, scenario, and reliability projection access while keeping API as a thin facade
 - verify the vocabulary and adapters with focused unit tests before adapting more APIs
 
-The next low-risk follow-up is to extend the same envelope into selected reliability snapshots and optional API facades without breaking existing responses.
+The current checkpoint extends that same envelope into selected reliability snapshots and exposes one thin external facade for the aggregate reliability projection without breaking the existing raw responses.
 
-## Iteration 1: Projection Layer
+## Phase 1: Projection Layer
 
 ### Goal
 
@@ -94,7 +94,7 @@ Build machine-readable projections that can feed both UI and LLM workflows.
 - a selected object can be fetched as `object`, `neighborhood`, and `task_packet`
 - UI and LLM no longer need bespoke serializers for each object kind
 
-## Iteration 2: Operator Workspace MVP
+## Phase 2: Operator Workspace MVP
 
 ### Goal
 
@@ -119,7 +119,7 @@ Ship the first useful operator-facing control plane.
 - an operator can locate the failing area of the subnet in under five seconds
 - object details open in-context instead of as disconnected standalone pages
 
-## Iteration 3: Topology and Impact Mode
+## Phase 3: Topology and Impact Mode
 
 ### Goal
 
@@ -146,7 +146,7 @@ Make relationships, failure paths, and change impact visible.
 - the operator can identify the path of failure, not only the failing node
 - destructive or disruptive actions show affected objects before execution
 
-## Iteration 4: Runtime, Incidents, and Resources
+## Phase 4: Runtime, Incidents, and Resources
 
 ### Goal
 
@@ -174,7 +174,7 @@ Turn `Infrascope` into a real operational cockpit instead of a static inventory.
 - a runtime failure can be traced through execution and event flow
 - quota spikes can be attributed to a concrete scenario, skill, or subnet object
 
-## Iteration 5: Profile-Aware Overlays
+## Phase 5: Profile-Aware Overlays
 
 ### Goal
 
@@ -199,7 +199,7 @@ Support multiple human and machine consumers over the same canonical objects.
 - the same hub object can render differently for admin, household user, and LLM without diverging IDs or relations
 - visibility and actions are enforced by the same governance layer that shapes the UI
 
-## Iteration 6: LLM-Assisted Operations and Change Loop
+## Phase 6: LLM-Assisted Operations and Change Loop
 
 ### Goal
 
@@ -215,8 +215,8 @@ Move the LLM from passive observer to governed participant in diagnosis and cont
 
 ### Current Anchors
 
-- projection services introduced in Iteration 1
-- governance and ownership overlays introduced in Iteration 5
+- projection services introduced in Phase 1
+- governance and ownership overlays introduced in Phase 5
 - existing CLI and API control paths under `src/adaos/apps/cli`, `src/adaos/apps/api`, and `src/adaos/sdk/manage/*`
 
 ### Done When
@@ -228,9 +228,9 @@ Move the LLM from passive observer to governed participant in diagnosis and cont
 
 The roadmap can be grouped into user-visible releases:
 
-- `v1 / operational MVP`: Iterations 0-2
-- `v2 / topology and runtime control`: Iterations 3-4
-- `v3 / profile-aware and LLM-native control plane`: Iterations 5-6
+- `v1 / operational MVP`: Phases 0-2
+- `v2 / topology and runtime control`: Phases 3-4
+- `v3 / profile-aware and LLM-native control plane`: Phases 5-6
 
 ## Suggested Implementation Order
 

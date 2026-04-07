@@ -47,6 +47,18 @@ def get_scenario_object(name: str) -> Mapping[str, Any]:
     return get_scenario_model(name).to_dict()
 
 
+def get_reliability_model(*, webspace_id: str | None = None):
+    return _data_control_plane.get_reliability_model(webspace_id=webspace_id)
+
+
+def get_reliability_projection(*, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_reliability_model(webspace_id=webspace_id).to_dict()
+
+
+def get_reliability_objects(*, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in get_reliability_model(webspace_id=webspace_id).objects]
+
+
 __all__ = [
     "get_self_model",
     "get_self_object",
@@ -58,4 +70,7 @@ __all__ = [
     "list_scenario_objects",
     "get_scenario_model",
     "get_scenario_object",
+    "get_reliability_model",
+    "get_reliability_projection",
+    "get_reliability_objects",
 ]
