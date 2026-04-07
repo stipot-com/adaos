@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from typing import Any, Awaitable, Callable
+from pathlib import Path
 
 try:
     from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
@@ -30,6 +31,11 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from adaos.services.webrtc.yjs_adapter import DataChannelYjsAdapter
+from adaos.services.media_library import (
+    ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
+    guess_media_type,
+    media_file_path,
+)
 
 _log = logging.getLogger("adaos.webrtc.peer")
 _media_relay = MediaRelay()
@@ -64,8 +70,10 @@ class HubPeer:
         self._local_desc_task: asyncio.Task[None] | None = None
         self._events_channel: Any | None = None
         self._yjs_channel: Any | None = None
+        self._media_channel: Any | None = None
         self._incoming_tracks: dict[str, dict[str, Any]] = {}
         self._loopback_tracks: dict[str, dict[str, Any]] = {}
+        self._media_upload: dict[str, Any] | None = None
 
         # Browser creates the DataChannels – hub receives them here.
         @self.pc.on("datachannel")
@@ -75,6 +83,8 @@ class HubPeer:
                 self._setup_events_channel(channel)
             elif channel.label == "yjs":
                 self._setup_yjs_channel(channel)
+            elif channel.label == "media":
+                self._setup_media_channel(channel)
             else:
                 _log.warning("unknown datachannel label=%s", channel.label)
 
@@ -199,6 +209,164 @@ class HubPeer:
             lambda _t: _log.debug("yjs dc task done device=%s", self.device_id)
         )
 
+    def _setup_media_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
+        """Accept direct binary media upload chunks over a dedicated DataChannel."""
+        self._media_channel = channel
+
+        async def _send(msg: dict[str, Any]) -> None:
+            try:
+                channel.send(json.dumps(msg))
+            except Exception:
+                _log.warning("media dc send failed device=%s", self.device_id, exc_info=True)
+
+        async def _fail(upload_id: str, detail: str, *, code: str = "media_upload_failed") -> None:
+            await _send({
+                "ch": "media",
+                "t": "error",
+                "uploadId": upload_id,
+                "error": code,
+                "detail": detail,
+            })
+
+        async def _handle_json(msg: dict[str, Any]) -> None:
+            upload_id = str(msg.get("uploadId") or "").strip()
+            if not upload_id:
+                return
+            kind = str(msg.get("t") or "").strip().lower()
+            if kind == "start":
+                if self._media_upload is not None:
+                    await _fail(upload_id, "media_upload_busy", code="media_upload_busy")
+                    return
+                try:
+                    target = media_file_path(str(msg.get("filename") or ""))
+                except ValueError as exc:
+                    await _fail(upload_id, str(exc), code="media_upload_bad_request")
+                    return
+                expected_size = max(0, int(msg.get("sizeBytes") or 0))
+                if expected_size > int(ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES):
+                    await _fail(upload_id, "media_upload_too_large", code="media_upload_too_large")
+                    return
+                tmp_path = target.with_name(
+                    f"{target.name}.p2p-{int(time.time() * 1000)}.part"
+                )
+                try:
+                    handle = tmp_path.open("wb")
+                except Exception as exc:
+                    await _fail(upload_id, str(exc), code="media_upload_open_failed")
+                    return
+                self._media_upload = {
+                    "upload_id": upload_id,
+                    "target": target,
+                    "tmp_path": tmp_path,
+                    "handle": handle,
+                    "size_bytes": 0,
+                    "expected_size": expected_size,
+                    "replaced": target.exists(),
+                    "mime_type": guess_media_type(target.name),
+                }
+                await _send({
+                    "ch": "media",
+                    "t": "progress",
+                    "uploadId": upload_id,
+                    "receivedBytes": 0,
+                })
+                return
+            if kind == "end":
+                upload = self._media_upload
+                if not upload or str(upload.get("upload_id") or "") != upload_id:
+                    await _fail(upload_id, "media_upload_missing_session", code="media_upload_missing_session")
+                    return
+                try:
+                    handle = upload.get("handle")
+                    if handle:
+                        handle.close()
+                    target = Path(upload["target"])
+                    tmp_path = Path(upload["tmp_path"])
+                    tmp_path.replace(target)
+                    size_bytes = int(upload.get("size_bytes") or 0)
+                    mime_type = str(upload.get("mime_type") or guess_media_type(target.name))
+                    self._cleanup_media_upload(remove_temp=False)
+                    await _send({
+                        "ch": "media",
+                        "t": "done",
+                        "uploadId": upload_id,
+                        "sizeBytes": size_bytes,
+                        "mimeType": mime_type,
+                    })
+                except Exception as exc:
+                    self._cleanup_media_upload(remove_temp=True)
+                    await _fail(upload_id, str(exc), code="media_upload_finalize_failed")
+                return
+            if kind == "abort":
+                upload = self._media_upload
+                if upload and str(upload.get("upload_id") or "") == upload_id:
+                    self._cleanup_media_upload(remove_temp=True)
+                return
+
+        @channel.on("message")
+        def on_message(data: str | bytes) -> None:
+            async def _handle() -> None:
+                if isinstance(data, str):
+                    try:
+                        msg = json.loads(data)
+                    except Exception:
+                        return
+                    await _handle_json(msg if isinstance(msg, dict) else {})
+                    return
+                upload = self._media_upload
+                if not upload:
+                    return
+                try:
+                    blob = bytes(data)
+                    size_bytes = int(upload.get("size_bytes") or 0) + len(blob)
+                    if size_bytes > int(ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES):
+                        upload_id = str(upload.get("upload_id") or "")
+                        self._cleanup_media_upload(remove_temp=True)
+                        await _fail(upload_id, "media_upload_too_large", code="media_upload_too_large")
+                        return
+                    handle = upload.get("handle")
+                    if not handle:
+                        upload_id = str(upload.get("upload_id") or "")
+                        self._cleanup_media_upload(remove_temp=True)
+                        await _fail(upload_id, "media_upload_no_handle", code="media_upload_no_handle")
+                        return
+                    handle.write(blob)
+                    upload["size_bytes"] = size_bytes
+                    await _send({
+                        "ch": "media",
+                        "t": "progress",
+                        "uploadId": str(upload.get("upload_id") or ""),
+                        "receivedBytes": size_bytes,
+                    })
+                except Exception as exc:
+                    upload_id = str(upload.get("upload_id") or "")
+                    self._cleanup_media_upload(remove_temp=True)
+                    await _fail(upload_id, str(exc), code="media_upload_write_failed")
+
+            asyncio.ensure_future(_handle())
+
+        @channel.on("close")
+        def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._cleanup_media_upload(remove_temp=True)
+            self._media_channel = None
+
+    def _cleanup_media_upload(self, *, remove_temp: bool) -> None:
+        upload = self._media_upload
+        self._media_upload = None
+        if not upload:
+            return
+        handle = upload.get("handle")
+        try:
+            if handle:
+                handle.close()
+        except Exception:
+            pass
+        if remove_temp:
+            try:
+                Path(upload["tmp_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     # -- SDP / ICE ------------------------------------------------------------
 
     async def handle_offer(self, sdp: str, type: str = "offer") -> dict[str, str]:
@@ -250,8 +418,10 @@ class HubPeer:
             pass
         self._incoming_tracks.clear()
         self._loopback_tracks.clear()
+        self._cleanup_media_upload(remove_temp=True)
         self._events_channel = None
         self._yjs_channel = None
+        self._media_channel = None
         try:
             await self.pc.close()
         except Exception:
