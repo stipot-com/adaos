@@ -1,4 +1,7 @@
 from .mappers import (
+    canonical_object_from_browser_session,
+    canonical_object_from_capacity_snapshot,
+    canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_object_from_scenario_item,
     canonical_object_from_skill_status,
@@ -26,7 +29,7 @@ from .model import (
     normalize_sync_status,
     normalize_trust_status,
 )
-from .projections import canonical_projection_from_reliability_snapshot
+from .projections import canonical_inventory_projection, canonical_projection_from_reliability_snapshot
 
 __all__ = [
     "CanonicalActionDescriptor",
@@ -40,6 +43,10 @@ __all__ = [
     "ResourcePressureStatus",
     "SyncStatus",
     "TrustStatus",
+    "canonical_inventory_projection",
+    "canonical_object_from_browser_session",
+    "canonical_object_from_capacity_snapshot",
+    "canonical_object_from_io_capacity_entry",
     "canonical_object_from_node_status",
     "canonical_projection_from_reliability_snapshot",
     "canonical_object_from_scenario_item",

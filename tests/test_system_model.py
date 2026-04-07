@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from pydantic import BaseModel
 
 from adaos.services.system_model import (
+    CanonicalObject,
     CanonicalStatus,
+    canonical_inventory_projection,
+    canonical_object_from_browser_session,
+    canonical_object_from_capacity_snapshot,
+    canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_projection_from_reliability_snapshot,
     canonical_object_from_skill_status,
@@ -41,6 +46,7 @@ def test_normalize_connectivity_status_handles_bool_and_transport_tokens() -> No
     assert normalize_connectivity_status(True).value == "reachable"
     assert normalize_connectivity_status(False).value == "unreachable"
     assert normalize_connectivity_status("ws").value == "reachable"
+    assert normalize_connectivity_status("open").value == "reachable"
     assert normalize_connectivity_status("none").value == "unreachable"
 
 
@@ -122,6 +128,28 @@ def test_canonical_object_from_workspace_manifest_uses_effective_properties() ->
     assert obj["governance"]["owner_id"] == "profile:ops"
 
 
+def test_canonical_object_from_workspace_manifest_includes_binding_and_overlay_state() -> None:
+    manifest = SimpleNamespace(
+        workspace_id="kitchen",
+        title="Kitchen",
+        effective_kind="workspace",
+        effective_home_scenario="home",
+        effective_source_mode="workspace",
+        owner_scope="profile:owner",
+        profile_scope="role:operator",
+        device_binding="tablet-kitchen",
+        has_ui_overlay=True,
+        has_installed_overlay=True,
+        has_pinned_widgets_overlay=False,
+    )
+
+    obj = canonical_object_from_workspace_manifest(manifest).to_dict()
+
+    assert obj["relations"]["device_binding"] == ["device:tablet-kitchen"]
+    assert obj["runtime"]["overlay"]["has_ui_overlay"] is True
+    assert obj["actual_state"]["device_binding"] == "tablet-kitchen"
+
+
 def test_canonical_object_from_user_profile_uses_preferred_name() -> None:
     obj = canonical_object_from_user_profile(
         SimpleNamespace(user_id="u-1", settings={"preferred_name": "Ada", "locale": "ru-RU"})
@@ -130,6 +158,57 @@ def test_canonical_object_from_user_profile_uses_preferred_name() -> None:
     assert obj["id"] == "profile:u-1"
     assert obj["title"] == "Ada"
     assert obj["actual_state"]["settings"]["locale"] == "ru-RU"
+
+
+def test_canonical_object_from_browser_session_tracks_workspace_and_channels() -> None:
+    obj = canonical_object_from_browser_session(
+        {
+            "device_id": "browser-a",
+            "webspace_id": "desk",
+            "connection_state": "connected",
+            "events_channel_state": "open",
+            "yjs_channel_state": "open",
+            "incoming_video_tracks": 1,
+        }
+    ).to_dict()
+
+    assert obj["id"] == "browser:browser-a"
+    assert obj["kind"] == "browser_session"
+    assert obj["relations"]["workspace"] == ["workspace:desk"]
+    assert obj["health"]["connectivity"] == "reachable"
+    assert obj["runtime"]["incoming_video_tracks"] == 1
+
+
+def test_canonical_object_from_capacity_snapshot_summarizes_local_inventory() -> None:
+    obj = canonical_object_from_capacity_snapshot(
+        {
+            "io": [{"io_type": "stdout"}, {"io_type": "say"}],
+            "skills": [{"name": "weather", "active": True}, {"name": "music", "active": False}],
+            "scenarios": [{"name": "home", "active": True}],
+        },
+        node_id="node-7",
+    ).to_dict()
+
+    assert obj["id"] == "capacity:node-7"
+    assert obj["resources"]["io_total"] == 2
+    assert obj["resources"]["active_skill_total"] == 1
+    assert obj["runtime"]["skills"] == ["weather", "music"]
+
+
+def test_canonical_object_from_io_capacity_entry_tracks_availability_tokens() -> None:
+    obj = canonical_object_from_io_capacity_entry(
+        {
+            "io_type": "telegram",
+            "priority": 60,
+            "capabilities": ["text", "state:unavailable", "mode:webhook", "reason:token_missing"],
+        },
+        node_id="node-7",
+    ).to_dict()
+
+    assert obj["id"] == "io:node-7:telegram"
+    assert obj["status"] == "offline"
+    assert obj["runtime"]["mode"] == "webhook"
+    assert obj["runtime"]["reason"] == "token_missing"
 
 
 def test_canonical_projection_from_reliability_snapshot_builds_runtime_components() -> None:
@@ -221,6 +300,7 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert projection["context"]["blocked_capabilities"] == ["root_routed_browser_proxy"]
 
     objects = {item["id"]: item for item in projection["objects"]}
+    assert objects["root:eu"]["kind"] == "root"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
@@ -278,3 +358,19 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
     assert objects["connection:hub:hub-2/route"]["status"] == "offline"
     assert any(item["object_id"] == "connection:hub:hub-2/route" for item in projection["incidents"])
     assert any(item["object_id"] == "runtime:hub:hub-2/sidecar" for item in projection["incidents"])
+
+
+def test_canonical_inventory_projection_counts_objects_and_incidents() -> None:
+    subject = CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status=CanonicalStatus.ONLINE)
+    objects = [
+        CanonicalObject(id="workspace:desk", kind="workspace", title="Desk", status=CanonicalStatus.ONLINE),
+        CanonicalObject(id="browser:b1", kind="browser_session", title="Browser 1", status=CanonicalStatus.WARNING),
+        CanonicalObject(id="io:node:say", kind="io_endpoint", title="say", status=CanonicalStatus.OFFLINE),
+    ]
+
+    projection = canonical_inventory_projection(subject, objects).to_dict()
+
+    assert projection["id"] == "projection:hub:alpha/inventory"
+    assert projection["context"]["kind_totals"]["browser_session"] == 1
+    assert projection["context"]["incident_total"] == 2
+    assert len(projection["incidents"]) == 2

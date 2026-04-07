@@ -16,6 +16,8 @@
 - canonical self-object access через SDK-first control-plane helpers
 - canonical skill/scenario object access через SDK-first helpers до расширения внешнего API
 - canonical reliability projection access для LLM и skills, включая runtime component objects и action metadata
+- canonical workspace, profile, browser-session и local capacity objects через SDK-first helpers
+- local inventory projection, объединяющая node, workspace, browser, skill, scenario и capacity objects для LLM-oriented reasoning
 
 ## Связанные модули
 

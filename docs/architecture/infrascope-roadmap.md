@@ -64,7 +64,7 @@ The first code slice for Phase 0 is intentionally narrow:
 - expose SDK entry points for canonical self, skill, scenario, and reliability projection access while keeping API as a thin facade
 - verify the vocabulary and adapters with focused unit tests before adapting more APIs
 
-The current checkpoint extends that same envelope into selected reliability snapshots and exposes one thin external facade for the aggregate reliability projection without breaking the existing raw responses.
+The current checkpoint extends that same envelope into selected reliability snapshots, introduces canonical coverage for workspace/profile/browser-session/capacity objects, and adds a local inventory projection for SDK/LLM use. The only added external facade remains the aggregate reliability projection, so raw responses stay intact and SDK keeps the broader surface area.
 
 ## Phase 1: Projection Layer
 

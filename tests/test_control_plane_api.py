@@ -88,6 +88,51 @@ def test_node_control_plane_reliability_projection_returns_canonical_payload(mon
     assert payload["projection"]["objects"][0]["id"] == "runtime:hub:alpha/yjs-sync"
 
 
+def test_node_control_plane_inventory_projection_returns_canonical_payload(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+
+    monkeypatch.setattr(
+        node_api,
+        "current_inventory_projection",
+        lambda: CanonicalProjection(
+            id="projection:hub:alpha/inventory",
+            kind="inventory",
+            title="Hub Alpha inventory",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online"),
+            objects=[
+                CanonicalObject(id="workspace:desk", kind="workspace", title="Desk", status="online"),
+                CanonicalObject(id="capacity:alpha", kind="capacity", title="Capacity", status="online"),
+            ],
+        ),
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/node/control-plane/projections/inventory")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["projection"]["id"] == "projection:hub:alpha/inventory"
+    assert payload["projection"]["objects"][0]["id"] == "workspace:desk"
+
+
 def test_sdk_control_plane_get_self_object(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     sys.modules.setdefault("y_py", types.SimpleNamespace(YDoc=type("YDoc", (), {}), apply_update=lambda *args, **kwargs: None))
@@ -141,3 +186,68 @@ def test_sdk_control_plane_get_reliability_projection(monkeypatch) -> None:
 
     assert payload["subject"]["id"] == "member:node-1"
     assert objects[0]["id"] == "connection:member:node-1/route"
+
+
+def test_sdk_control_plane_get_current_profile_object(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "get_current_profile_model",
+        lambda: CanonicalObject(id="profile:owner", kind="profile", title="Owner"),
+    )
+
+    payload = control_plane.get_current_profile_object()
+
+    assert payload["id"] == "profile:owner"
+    assert payload["kind"] == "profile"
+
+
+def test_sdk_control_plane_workspace_and_inventory_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "list_workspace_models",
+        lambda: [CanonicalObject(id="workspace:desk", kind="workspace", title="Desk")],
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_inventory_model",
+        lambda: CanonicalProjection(
+            id="projection:hub:alpha/inventory",
+            kind="inventory",
+            title="Inventory",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha"),
+            objects=[CanonicalObject(id="capacity:alpha", kind="capacity", title="Capacity")],
+        ),
+    )
+
+    workspaces = control_plane.list_workspace_objects()
+    inventory = control_plane.get_inventory_projection()
+    inventory_objects = control_plane.get_inventory_objects()
+
+    assert workspaces[0]["id"] == "workspace:desk"
+    assert inventory["id"] == "projection:hub:alpha/inventory"
+    assert inventory_objects[0]["kind"] == "capacity"
+
+
+def test_sdk_control_plane_local_capacity_and_io_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "get_local_capacity_model",
+        lambda: CanonicalObject(id="capacity:node-1", kind="capacity", title="Local capacity"),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "list_local_io_models",
+        lambda: [CanonicalObject(id="io:node-1:say", kind="io_endpoint", title="say")],
+    )
+
+    capacity = control_plane.get_local_capacity_object()
+    io_items = control_plane.list_local_io_objects()
+
+    assert capacity["id"] == "capacity:node-1"
+    assert io_items[0]["kind"] == "io_endpoint"

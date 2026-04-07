@@ -129,6 +129,40 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _root_object(subject: CanonicalObject, runtime: dict[str, Any]) -> CanonicalObject:
+    readiness_tree = coerce_mapping(runtime.get("readiness_tree"))
+    zone = coerce_mapping(runtime.get("hub_root_zone"))
+    readiness = coerce_mapping(readiness_tree.get("root_control"))
+    zone_id = str(zone.get("active_zone_id") or zone.get("configured_zone_id") or "default").strip() or "default"
+    selected_server = str(zone.get("selected_server") or "").strip() or None
+    return CanonicalObject(
+        id=f"root:{zone_id}",
+        kind="root",
+        title=f"Root {zone_id}",
+        summary="Root control-plane authority for the current node",
+        status=_runtime_status(readiness.get("status")),
+        health=compact_mapping(
+            {
+                "connectivity": _connectivity_for_state(readiness.get("status")),
+            }
+        ),
+        relations={"connected_to": [subject.id]},
+        runtime=compact_mapping(
+            {
+                "root_control": readiness,
+                "selected_server": selected_server,
+            }
+        ),
+        actual_state=compact_mapping(
+            {
+                "configured_zone_id": zone.get("configured_zone_id"),
+                "active_zone_id": zone.get("active_zone_id"),
+                "selected_server": selected_server,
+            }
+        ),
+    )
+
+
 def _root_control_object(subject: CanonicalObject, runtime: dict[str, Any]) -> CanonicalObject:
     readiness_tree = coerce_mapping(runtime.get("readiness_tree"))
     channel_diagnostics = coerce_mapping(runtime.get("channel_diagnostics"))
@@ -151,7 +185,12 @@ def _root_control_object(subject: CanonicalObject, runtime: dict[str, Any]) -> C
                 "stability_score": stability.get("score"),
             }
         ),
-        relations={"hosted_on": [subject.id]},
+        relations=compact_mapping(
+            {
+                "hosted_on": [subject.id],
+                "connected_to": [f"root:{str(zone.get('active_zone_id') or zone.get('configured_zone_id') or 'default').strip() or 'default'}"],
+            }
+        ),
         runtime=compact_mapping(
             {
                 "readiness": readiness,
@@ -355,6 +394,51 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     )
 
 
+def canonical_inventory_projection(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    title: str = "Local control-plane inventory",
+    summary: str | None = None,
+) -> CanonicalProjection:
+    kind_totals: dict[str, int] = {}
+    incidents: list[dict[str, Any]] = []
+    for obj in objects:
+        kind = str(obj.kind or "unknown").strip() or "unknown"
+        kind_totals[kind] = int(kind_totals.get(kind) or 0) + 1
+        incident = _incident_from_object(obj)
+        if incident:
+            incidents.append(incident)
+
+    ordered_kinds = ", ".join(f"{kind}:{kind_totals[kind]}" for kind in sorted(kind_totals))
+    effective_summary = summary or (f"{subject.title} inventory with {len(objects)} objects" + (f" ({ordered_kinds})" if ordered_kinds else ""))
+    context = compact_mapping(
+        {
+            "kind_totals": kind_totals,
+            "incident_total": len(incidents),
+        }
+    )
+    llm_repr = compact_mapping(
+        {
+            "subject_id": subject.id,
+            "object_ids": [obj.id for obj in objects],
+            "kind_totals": kind_totals,
+            "incident_total": len(incidents),
+        }
+    )
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/inventory",
+        kind="inventory",
+        title=title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=context,
+        representations={"llm": llm_repr},
+    )
+
+
 def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalProjection:
     data = coerce_mapping(payload)
     node_data = coerce_mapping(data.get("node"))
@@ -376,6 +460,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
     subject.representations["llm"] = compact_mapping(llm_repr)
 
     objects = [
+        _root_object(subject, runtime),
         _root_control_object(subject, runtime),
         _route_object(subject, runtime),
         _sidecar_object(subject, runtime),
@@ -413,4 +498,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
     )
 
 
-__all__ = ["canonical_projection_from_reliability_snapshot"]
+__all__ = [
+    "canonical_inventory_projection",
+    "canonical_projection_from_reliability_snapshot",
+]

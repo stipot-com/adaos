@@ -162,6 +162,123 @@ def canonical_object_from_scenario_item(payload: Any) -> CanonicalObject:
     )
 
 
+def canonical_object_from_browser_session(payload: Any) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    device_id = str(data.get("device_id") or data.get("id") or "unknown").strip() or "unknown"
+    webspace_id = str(data.get("webspace_id") or "").strip() or None
+    connection_state = str(data.get("connection_state") or "").strip().lower() or None
+    events_channel_state = str(data.get("events_channel_state") or "").strip().lower() or None
+    yjs_channel_state = str(data.get("yjs_channel_state") or "").strip().lower() or None
+
+    status = normalize_operational_status(connection_state)
+    if connection_state in {"connecting", "new"}:
+        status = CanonicalStatus.WARNING
+
+    relations = compact_mapping(
+        {
+            "workspace": [f"workspace:{webspace_id}"] if webspace_id else [],
+        }
+    )
+    health = compact_mapping(
+        {
+            "connectivity": normalize_connectivity_status(connection_state),
+            "events_channel": normalize_connectivity_status(events_channel_state),
+            "yjs_channel": normalize_connectivity_status(yjs_channel_state),
+        }
+    )
+    runtime = compact_mapping(
+        {
+            "connection_state": connection_state,
+            "events_channel_state": events_channel_state,
+            "yjs_channel_state": yjs_channel_state,
+            "incoming_audio_tracks": data.get("incoming_audio_tracks"),
+            "incoming_video_tracks": data.get("incoming_video_tracks"),
+            "loopback_audio_tracks": data.get("loopback_audio_tracks"),
+            "loopback_video_tracks": data.get("loopback_video_tracks"),
+            "media_track_total": data.get("media_track_total"),
+        }
+    )
+    summary = f"Browser session {device_id}" + (f" in webspace {webspace_id}" if webspace_id else "")
+    return CanonicalObject(
+        id=f"browser:{device_id}",
+        kind="browser_session",
+        title=device_id,
+        summary=summary,
+        status=status,
+        health=health,
+        relations=relations,
+        runtime=runtime,
+    )
+
+
+def canonical_object_from_capacity_snapshot(payload: Any, *, node_id: str | None = None) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    io_items = [item for item in list(data.get("io") or []) if isinstance(item, Mapping)]
+    skill_items = [item for item in list(data.get("skills") or []) if isinstance(item, Mapping)]
+    scenario_items = [item for item in list(data.get("scenarios") or []) if isinstance(item, Mapping)]
+    active_skill_total = sum(1 for item in skill_items if bool(item.get("active", True)))
+    active_scenario_total = sum(1 for item in scenario_items if bool(item.get("active", True)))
+    title = "Local capacity"
+    status = CanonicalStatus.ONLINE if io_items or skill_items or scenario_items else CanonicalStatus.UNKNOWN
+    relations = compact_mapping({"hosted_on": [f"node:{node_id}"] if node_id else []})
+    resources = compact_mapping(
+        {
+            "io_total": len(io_items),
+            "skill_total": len(skill_items),
+            "scenario_total": len(scenario_items),
+            "active_skill_total": active_skill_total,
+            "active_scenario_total": active_scenario_total,
+        }
+    )
+    runtime = compact_mapping(
+        {
+            "io_types": [str(item.get("io_type") or item.get("type") or "").strip() for item in io_items if str(item.get("io_type") or item.get("type") or "").strip()],
+            "skills": [str(item.get("name") or "").strip() for item in skill_items if str(item.get("name") or "").strip()],
+            "scenarios": [str(item.get("name") or "").strip() for item in scenario_items if str(item.get("name") or "").strip()],
+        }
+    )
+    return CanonicalObject(
+        id=f"capacity:{node_id}" if node_id else "capacity:local",
+        kind="capacity",
+        title=title,
+        summary="Local node capacity and runtime inventory",
+        status=status,
+        relations=relations,
+        resources=resources,
+        runtime=runtime,
+        actual_state=compact_mapping(data),
+    )
+
+
+def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None = None) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    io_type = str(data.get("io_type") or data.get("type") or "unknown").strip() or "unknown"
+    capabilities = [str(item or "").strip() for item in list(data.get("capabilities") or []) if str(item or "").strip()]
+    state_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("state:")), "")
+    mode_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("mode:")), "")
+    reason_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("reason:")), "")
+    status = CanonicalStatus.OFFLINE if state_token == "unavailable" else CanonicalStatus.ONLINE
+    if not capabilities and status == CanonicalStatus.ONLINE:
+        status = CanonicalStatus.UNKNOWN
+    return CanonicalObject(
+        id=f"io:{node_id}:{io_type}" if node_id else f"io:{io_type}",
+        kind="io_endpoint",
+        title=io_type,
+        summary=f"Local IO endpoint {io_type}",
+        status=status,
+        relations=compact_mapping({"hosted_on": [f"node:{node_id}"] if node_id else []}),
+        runtime=compact_mapping(
+            {
+                "io_type": io_type,
+                "priority": data.get("priority"),
+                "mode": mode_token or None,
+                "reason": reason_token or None,
+            }
+        ),
+        actual_state=compact_mapping({"capabilities": capabilities}),
+    )
+
+
 def canonical_object_from_user_profile(payload: Any) -> CanonicalObject:
     data = coerce_mapping(payload)
     user_id = str(data.get("user_id") or "unknown").strip() or "unknown"
@@ -191,22 +308,41 @@ def canonical_object_from_workspace_manifest(payload: Any) -> CanonicalObject:
     effective_source_mode = str(getattr(payload, "effective_source_mode", "") or "").strip() or None
     owner_scope = str(getattr(payload, "owner_scope", "") or "").strip() or None
     profile_scope = str(getattr(payload, "profile_scope", "") or "").strip() or None
+    device_binding = str(getattr(payload, "device_binding", "") or "").strip() or None
+    has_ui_overlay = bool(getattr(payload, "has_ui_overlay", False))
+    has_installed_overlay = bool(getattr(payload, "has_installed_overlay", False))
+    has_pinned_widgets_overlay = bool(getattr(payload, "has_pinned_widgets_overlay", False))
 
-    relations = {"home_scenario": [f"scenario:{effective_home_scenario}"]} if effective_home_scenario else {}
+    relations = compact_mapping(
+        {
+            "home_scenario": [f"scenario:{effective_home_scenario}"] if effective_home_scenario else [],
+            "device_binding": [f"device:{device_binding}"] if device_binding else [],
+        }
+    )
     governance = CanonicalGovernance(
         owner_id=owner_scope,
         visibility=[profile_scope] if profile_scope else [],
         metadata=compact_mapping({"workspace_kind": effective_kind}),
     )
-    actual_state = compact_mapping({"source_mode": effective_source_mode})
+    actual_state = compact_mapping({"source_mode": effective_source_mode, "device_binding": device_binding})
+    runtime = compact_mapping(
+        {
+            "overlay": {
+                "has_ui_overlay": has_ui_overlay,
+                "has_installed_overlay": has_installed_overlay,
+                "has_pinned_widgets_overlay": has_pinned_widgets_overlay,
+            }
+        }
+    )
 
     return CanonicalObject(
         id=f"workspace:{workspace_id}",
         kind="workspace",
         title=title,
         summary=f"{effective_kind} workspace",
-        status=CanonicalStatus.UNKNOWN,
+        status=CanonicalStatus.ONLINE if effective_home_scenario else CanonicalStatus.UNKNOWN,
         relations=relations,
+        runtime=runtime,
         governance=governance,
         actual_state=actual_state,
     )
@@ -214,6 +350,9 @@ def canonical_object_from_workspace_manifest(payload: Any) -> CanonicalObject:
 
 __all__ = [
     "canonical_object_from_node_status",
+    "canonical_object_from_browser_session",
+    "canonical_object_from_capacity_snapshot",
+    "canonical_object_from_io_capacity_entry",
     "canonical_object_from_scenario_item",
     "canonical_object_from_skill_status",
     "canonical_object_from_user_profile",

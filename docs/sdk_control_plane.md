@@ -16,6 +16,8 @@ In the current codebase, the control plane is split across:
 - canonical self-object access via SDK-first control-plane helpers
 - canonical skill/scenario object access via SDK-first helpers before widening the external API
 - canonical reliability projection access for LLM and skills, with runtime component objects and action metadata
+- canonical workspace, profile, browser-session, and local capacity objects through SDK-first helpers
+- local inventory projection that combines node, workspace, browser, skill, scenario, and capacity objects for LLM-oriented reasoning
 
 ## Related modules
 

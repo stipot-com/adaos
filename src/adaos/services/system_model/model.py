@@ -151,9 +151,9 @@ def normalize_connectivity_status(value: Any) -> ConnectivityStatus:
         return ConnectivityStatus.UNREACHABLE
 
     token = _token(value)
-    if token in {"reachable", "connected", "online", "up", "ready", "ws", "hub"}:
+    if token in {"reachable", "connected", "online", "up", "ready", "ws", "hub", "open"}:
         return ConnectivityStatus.REACHABLE
-    if token in {"unreachable", "disconnected", "offline", "down", "failed", "none"}:
+    if token in {"unreachable", "disconnected", "offline", "down", "failed", "none", "closed", "closing"}:
         return ConnectivityStatus.UNREACHABLE
     return ConnectivityStatus.UNKNOWN
 

@@ -3,10 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
+from adaos.services.capacity import get_local_capacity
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.skill.manager import SkillManager
-from adaos.services.system_model.mappers import canonical_object_from_scenario_item, canonical_object_from_skill_status
+from adaos.services.system_model.mappers import (
+    canonical_object_from_browser_session,
+    canonical_object_from_capacity_snapshot,
+    canonical_object_from_io_capacity_entry,
+    canonical_object_from_scenario_item,
+    canonical_object_from_skill_status,
+    canonical_object_from_user_profile,
+    canonical_object_from_workspace_manifest,
+)
+from adaos.services.user.profile import UserProfileService
+from adaos.services.workspaces import index as workspace_index
 
 
 def _ctx(ctx: AgentContext | None = None) -> AgentContext:
@@ -106,9 +117,54 @@ def installed_scenario_objects(*, ctx: AgentContext | None = None) -> list[Any]:
     return objects
 
 
+def current_profile_object(*, ctx: AgentContext | None = None):
+    svc = UserProfileService(_ctx(ctx))
+    return canonical_object_from_user_profile(svc.get_profile())
+
+
+def workspace_object(workspace_id: str):
+    row = workspace_index.get_workspace(workspace_id) or workspace_index.ensure_workspace(workspace_id)
+    return canonical_object_from_workspace_manifest(row)
+
+
+def workspace_objects() -> list[Any]:
+    return [canonical_object_from_workspace_manifest(row) for row in list(workspace_index.list_workspaces() or [])]
+
+
+def browser_session_objects() -> list[Any]:
+    try:
+        from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+        snapshot = webrtc_peer_snapshot()
+    except Exception:
+        snapshot = {}
+    peers = snapshot.get("peers") if isinstance(snapshot.get("peers"), list) else []
+    return [canonical_object_from_browser_session(item) for item in peers if isinstance(item, dict)]
+
+
+def local_capacity_object(*, node_id: str | None = None):
+    return canonical_object_from_capacity_snapshot(get_local_capacity(), node_id=node_id)
+
+
+def local_io_objects(*, node_id: str | None = None) -> list[Any]:
+    snapshot = get_local_capacity()
+    io_items = snapshot.get("io") if isinstance(snapshot.get("io"), list) else []
+    return [
+        canonical_object_from_io_capacity_entry(item, node_id=node_id)
+        for item in io_items
+        if isinstance(item, dict)
+    ]
+
+
 __all__ = [
+    "browser_session_objects",
+    "current_profile_object",
     "installed_scenario_objects",
     "installed_skill_objects",
+    "local_capacity_object",
+    "local_io_objects",
     "scenario_object",
     "skill_object",
+    "workspace_object",
+    "workspace_objects",
 ]
