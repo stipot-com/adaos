@@ -54,10 +54,13 @@ def test_rebuild_workspace_registry_reads_skill_and_scenario_manifests(tmp_path:
 
     assert payload["version"] == 1
     assert payload["skills"][0]["name"] == "weather_skill"
+    assert payload["skills"][0]["id"] == "weather_skill"
     assert payload["skills"][0]["title"] == "Weather"
     assert payload["skills"][0]["runtime_python"] == "3.11"
     assert payload["skills"][0]["tools_count"] == 1
+    assert payload["skills"][0]["install"]["kind"] == "skill"
     assert payload["scenarios"][0]["name"] == "greet_on_boot"
+    assert payload["scenarios"][0]["id"] == "greet_on_boot"
     assert payload["scenarios"][0]["trigger"] == "manual"
     assert payload["scenarios"][0]["io"]["output"] == ["text", "voice"]
 
@@ -106,6 +109,39 @@ def test_upsert_workspace_registry_entry_preserves_existing_entries(tmp_path: Pa
     names = [item["name"] for item in items]
     assert names == ["alarm_skill", "weather_skill"]
     assert items[1]["version"] == "2.0.0"
+
+
+def test_registry_entry_includes_tags_and_publisher(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "infra_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        "\n".join(
+            [
+                "id: infra_skill",
+                "name: Infra",
+                "version: '1.0.0'",
+                "tags:",
+                "  - infra",
+                "  - ops",
+                "publisher:",
+                "  owner_id: owner-1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    entry = upsert_workspace_registry_entry(
+        workspace,
+        "skills",
+        skill_dir,
+        extra={"publisher": {"owner_id": "owner-1", "node_id": "hub-1"}},
+    )
+
+    assert entry["tags"] == ["infra", "ops"]
+    assert entry["publisher"]["owner_id"] == "owner-1"
+    assert entry["publisher"]["node_id"] == "hub-1"
 
 
 def test_registry_pattern_set_keeps_registry_json_first():

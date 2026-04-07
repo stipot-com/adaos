@@ -13,6 +13,7 @@ from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.skill.manager import SkillManager
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -150,6 +151,8 @@ class InstallReq(BaseModel):
     perform_validation: bool = False
     strict: bool = True
     probe_tools: bool = False
+    async_operation: bool = False
+    webspace_id: str | None = None
 
 
 class PushReq(BaseModel):
@@ -261,6 +264,18 @@ async def sync(mgr: SkillManager = Depends(_get_manager)):
 
 @router.post("/install")
 async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
+    if body.async_operation:
+        operation = submit_install_operation(
+            target_kind="skill",
+            target_id=body.name,
+            webspace_id=body.webspace_id,
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "operation_id": operation["operation_id"],
+            "operation": operation,
+        }
     # Best-effort sync to ensure monorepo workspace exists
     sync_error: Exception | None = None
     try:

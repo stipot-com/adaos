@@ -2189,6 +2189,22 @@ class RootDeveloperService:
             version_bump_index=1,
             set_prototype=False,
         )
+        try:
+            upsert_workspace_registry_entry(
+                workspace,
+                kind,
+                source,
+                version=(manifest_meta or {}).get("version"),
+                updated_at=(manifest_meta or {}).get("updated_at"),
+                extra={
+                    "publisher": {
+                        "owner_id": owner_id,
+                        "node_id": cfg.node_settings.id or cfg.node_id,
+                    }
+                },
+            )
+        except Exception:
+            _log.debug("failed to update local workspace registry after push kind=%s name=%s", kind, name, exc_info=True)
         archive_bytes = create_zip_bytes(source)
         archive_b64 = archive_bytes_to_b64(archive_bytes)
         digest = hashlib.sha256(archive_bytes).hexdigest()

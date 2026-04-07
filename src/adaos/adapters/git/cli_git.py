@@ -321,18 +321,32 @@ class CliGitClient(GitClient):
         out = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=dir).strip()
         return out or "main"
 
-    def commit_subpath(self, dir: StrOrPath, subpath: str, message: str, author_name: str, author_email: str, signoff: bool = False) -> str:
+    def commit_subpath(
+        self,
+        dir: StrOrPath,
+        subpath: str | Sequence[str],
+        message: str,
+        author_name: str,
+        author_email: str,
+        signoff: bool = False,
+    ) -> str:
         # stage только подпуть
         # В sparse-checkout репозитории git add без --sparse откажется
         # индексировать пути за пределами sparse-набора. Используем
         # --sparse, чтобы корректно работать и с узкой sparse-конфигурацией.
+        if isinstance(subpath, str):
+            paths = [subpath]
+        else:
+            paths = [str(item).strip() for item in subpath if str(item).strip()]
+        if not paths:
+            return "nothing-to-commit"
         try:
-            _run_git(["add", "--sparse", "--", subpath], cwd=dir)
+            _run_git(["add", "--sparse", "--", *paths], cwd=dir)
         except GitError as exc:
             # На очень старых версиях git флаг --sparse может быть не поддержан.
             # В этом случае пробуем ещё раз без него, сохраняя прежнее поведение.
             if "unknown option" in str(exc) and "--sparse" in str(exc):
-                _run_git(["add", "--", subpath], cwd=dir)
+                _run_git(["add", "--", *paths], cwd=dir)
             else:
                 raise
         # пустой ли индекс?

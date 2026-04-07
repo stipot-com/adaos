@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 import yaml
+from adaos.services.workspace_registry import upsert_workspace_registry_entry
 
 from adaos.domain import SkillMeta, SkillRecord
 from adaos.ports import EventBus, GitClient, SkillRepository, SkillRegistry
@@ -925,7 +926,13 @@ class SkillManager:
         sub = name.strip()
         subpath = f"skills/{sub}"
         self._bump_skill_manifest_minor(root / "skills" / sub)
-        changed = self.ctx.git.changed_files(str(root), subpath=subpath)
+        upsert_workspace_registry_entry(root, "skills", root / "skills" / sub)
+        changed = sorted(
+            {
+                *self.ctx.git.changed_files(str(root), subpath=subpath),
+                *self.ctx.git.changed_files(str(root), subpath="registry.json"),
+            }
+        )
         if not changed:
             return "nothing-to-push"
         bad = check_no_denied(changed)
@@ -946,7 +953,7 @@ class SkillManager:
         msg = sanitize_message(message)
         sha = self.ctx.git.commit_subpath(
             str(root),
-            subpath=subpath,
+            subpath=[subpath, "registry.json"],
             message=msg,
             author_name=author_name,
             author_email=author_email,

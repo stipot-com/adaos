@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+pytest.importorskip("y_py")
 
 from adaos.apps.api import scenarios, skills
 from adaos.apps.api.auth import require_token
@@ -109,6 +112,11 @@ def test_skill_api_exposes_management_routes() -> None:
     assert resp.status_code == 200
     assert resp.json()["skill"]["id"] == "demo"
 
+    resp = client.post("/api/skills/install", json={"name": "demo", "async_operation": True, "webspace_id": "default"})
+    assert resp.status_code == 200
+    assert resp.json()["accepted"] is True
+    assert resp.json()["operation"]["target_id"] == "demo"
+
     resp = client.get("/api/skills/demo")
     assert resp.status_code == 200
     assert resp.json()["skill"]["name"] == "demo"
@@ -139,6 +147,11 @@ def test_scenario_api_matches_service_surface() -> None:
     resp = client.post("/api/scenarios/install", json={"name": "scene"})
     assert resp.status_code == 200
     assert resp.json()["scenario"]["id"] == "scene"
+
+    resp = client.post("/api/scenarios/install", json={"name": "scene", "async_operation": True, "webspace_id": "default"})
+    assert resp.status_code == 200
+    assert resp.json()["accepted"] is True
+    assert resp.json()["operation"]["target_id"] == "scene"
 
     assert client.delete("/api/scenarios/scene").status_code == 200
 

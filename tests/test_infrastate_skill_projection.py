@@ -109,7 +109,7 @@ def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeyp
     mod = _load_infrastate_module()
     projected: dict[str, object] = {}
 
-    def _boom():
+    def _boom(*, webspace_id=None):
         raise UnboundLocalError("cannot access local variable 'sync_runtime' where it is not associated with a value")
 
     monkeypatch.setattr(mod, "_snapshot", _boom)
@@ -182,6 +182,53 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
         {"name": "alpha", "version": "1.2.3", "updated_at": 1.0},
         {"name": "gamma", "version": "3.0.0", "updated_at": 2.0},
     ]
+
+
+def test_infrastate_marketplace_filters_installed_and_marks_running_operations(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(
+        mod,
+        "get_ctx",
+        lambda: SimpleNamespace(paths=SimpleNamespace(workspace_dir=lambda: Path("."))),
+    )
+    monkeypatch.setattr(
+        mod,
+        "list_workspace_registry_entries",
+        lambda workspace_root, kind=None: (
+            [
+                {"kind": "skill", "id": "installed_skill", "name": "installed_skill", "version": "1.0.0"},
+                {"kind": "skill", "id": "queued_skill", "name": "queued_skill", "version": "1.2.0"},
+            ]
+            if kind == "skills"
+            else [{"kind": "scenario", "id": "new_scene", "name": "new_scene", "version": "0.5.0"}]
+        ),
+    )
+    monkeypatch.setattr(mod, "_skills_items", lambda: [{"name": "installed_skill", "version": "1.0.0", "slot": "A"}])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(
+        mod,
+        "get_operation_manager",
+        lambda: SimpleNamespace(
+            snapshot=lambda webspace_id=None: {
+                "active_items": [
+                    {
+                        "target_kind": "skill",
+                        "target_id": "queued_skill",
+                        "status": "running",
+                        "current_step": "skill.install",
+                    }
+                ]
+            }
+        ),
+    )
+
+    items = mod._marketplace_items(webspace_id="default")
+
+    assert [item["id"] for item in items["skills"]] == ["queued_skill"]
+    assert items["skills"][0]["install_disabled"] is True
+    assert items["skills"][0]["operation_status"] == "running"
+    assert [item["id"] for item in items["scenarios"]] == ["new_scene"]
 
 
 def test_infrastate_effective_runtime_projection_prefers_validated_target_slot():

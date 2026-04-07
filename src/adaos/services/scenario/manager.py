@@ -28,6 +28,7 @@ from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
 from adaos.services.semver import bump_version
+from adaos.services.workspace_registry import upsert_workspace_registry_entry
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.scenario.manager")
@@ -384,7 +385,13 @@ class ScenarioManager:
         sub = name.strip()
         subpath = f"scenarios/{sub}"
         self._bump_scenario_manifest_minor(Path(root) / "scenarios" / sub)
-        changed = self.git.changed_files(str(root), subpath=subpath)
+        upsert_workspace_registry_entry(Path(root), "scenarios", Path(root) / "scenarios" / sub)
+        changed = sorted(
+            {
+                *self.git.changed_files(str(root), subpath=subpath),
+                *self.git.changed_files(str(root), subpath="registry.json"),
+            }
+        )
         if not changed:
             return "nothing-to-push"
         bad = check_no_denied(changed)
@@ -394,7 +401,7 @@ class ScenarioManager:
         ctx = get_ctx()
         sha = self.git.commit_subpath(
             str(root),
-            subpath=subpath,
+            subpath=[subpath, "registry.json"],
             message=msg,
             author_name=ctx.settings.git_author_name,
             author_email=ctx.settings.git_author_email,

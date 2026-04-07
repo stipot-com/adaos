@@ -7,6 +7,7 @@ from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import get_ctx, AgentContext
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.adapters.db import SqliteScenarioRegistry
+from adaos.services.operations import submit_install_operation
 
 
 router = APIRouter(tags=["scenarios"], dependencies=[Depends(require_token)])
@@ -55,6 +56,8 @@ def _meta_id(meta: Any) -> str:
 class InstallReq(BaseModel):
     name: str
     pin: Optional[str] = None
+    async_operation: bool = False
+    webspace_id: str | None = None
 
 
 class PushReq(BaseModel):
@@ -92,6 +95,18 @@ async def sync(mgr: ScenarioManager = Depends(_get_manager)):
 
 @router.post("/install")
 async def install(body: InstallReq, mgr: ScenarioManager = Depends(_get_manager)):
+    if body.async_operation:
+        operation = submit_install_operation(
+            target_kind="scenario",
+            target_id=body.name,
+            webspace_id=body.webspace_id,
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "operation_id": operation["operation_id"],
+            "operation": operation,
+        }
     meta = mgr.install(body.name, pin=body.pin)
     # приведём к компактному виду как в CLI-эхо
     return {

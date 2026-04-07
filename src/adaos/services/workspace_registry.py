@@ -81,6 +81,7 @@ def upsert_workspace_registry_entry(
     *,
     version: str | None = None,
     updated_at: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = load_workspace_registry(workspace_root, fallback_to_scan=True)
     entry = build_registry_entry(kind, artifact_dir)
@@ -90,6 +91,11 @@ def upsert_workspace_registry_entry(
         entry["version"] = str(version)
     if updated_at:
         entry["updated_at"] = str(updated_at)
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if value is None:
+                continue
+            entry[str(key)] = value
     items = list(payload.get(kind) or [])
     items = [item for item in items if isinstance(item, dict) and str(item.get("name") or "") != entry["name"]]
     items.append(entry)
@@ -128,23 +134,42 @@ def build_registry_entry(kind: RegistryKind, artifact_dir: Path) -> dict[str, An
         return None
 
     artifact_name = directory.name
+    manifest_id = _clean_text(manifest.get("id")) or artifact_name
     title = _clean_text(manifest.get("name"))
     description = _clean_text(manifest.get("description"))
+    tags = _clean_tags(manifest.get("tags"))
     entry: dict[str, Any] = {
         "kind": kind[:-1],
+        "id": manifest_id,
         "name": artifact_name,
         "version": _clean_text(manifest.get("version")) or "0.0.0",
         "updated_at": _clean_text(manifest.get("updated_at")) or _now_iso(),
         "path": f"{kind}/{artifact_name}",
         "manifest": f"{kind}/{artifact_name}/{manifest_path.name}",
+        "source": {
+            "path": f"{kind}/{artifact_name}",
+            "manifest": f"{kind}/{artifact_name}/{manifest_path.name}",
+        },
+        "install": {
+            "kind": kind[:-1],
+            "name": artifact_name,
+            "id": manifest_id,
+        },
     }
     if title and title != artifact_name:
         entry["title"] = title
     if description:
         entry["description"] = description
+    if tags:
+        entry["tags"] = tags
+
+    publisher = manifest.get("publisher")
+    if isinstance(publisher, dict):
+        publisher_entry = {str(key): value for key, value in publisher.items() if value is not None}
+        if publisher_entry:
+            entry["publisher"] = publisher_entry
 
     if kind == "skills":
-        manifest_id = _clean_text(manifest.get("id"))
         if manifest_id and manifest_id != artifact_name:
             entry["manifest_id"] = manifest_id
         manifest_entry = _clean_text(manifest.get("entry"))
@@ -233,6 +258,26 @@ def _clean_text(value: Any) -> str | None:
     except Exception:
         return None
     return text or None
+
+
+def _clean_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw = [item.strip() for item in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw = [str(item or "").strip() for item in value]
+    else:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not item:
+            continue
+        folded = item.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        result.append(item)
+    return result
 
 
 def _now_iso() -> str:

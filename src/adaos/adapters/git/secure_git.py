@@ -69,7 +69,15 @@ class SecureGitClient(GitClient):
     def changed_files(self, dir: str, subpath: Optional[str] = None) -> list[str]:
         return self.base.changed_files(dir, subpath)
 
-    def commit_subpath(self, dir: str, subpath: str, message: str, author_name: str, author_email: str, signoff: bool = False) -> str:
+    def commit_subpath(
+        self,
+        dir: str,
+        subpath: str | Sequence[str],
+        message: str,
+        author_name: str,
+        author_email: str,
+        signoff: bool = False,
+    ) -> str:
         # локальная операция — сетевых проверок не нужно
         return self.base.commit_subpath(dir, subpath, message, author_name, author_email, signoff)
 
