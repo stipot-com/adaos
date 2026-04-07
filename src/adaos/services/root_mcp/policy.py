@@ -198,6 +198,20 @@ def list_capability_classes() -> list[dict[str, Any]]:
             default_grants=["owner_token"],
         ),
         _capability_entry(
+            "hub.get_activity_log",
+            surface="operations",
+            risk="low",
+            summary="Read recent target activity derived from Root MCP audit and control-report history.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "hub.get_capability_usage_summary",
+            surface="operations",
+            risk="low",
+            summary="Read aggregated target capability-usage summaries for infra_access_skill observability.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
             "hub.get_logs",
             surface="operations",
             risk="medium",

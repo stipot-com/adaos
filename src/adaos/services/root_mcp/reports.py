@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
+from .infra_access_skill import build_operational_surface
 from .targets import get_managed_target, upsert_managed_target
 
 
@@ -81,6 +82,28 @@ def _merge_operational_surface(report: Mapping[str, Any], target_id: str) -> dic
     merged.update(payload_surface)
     if "published_by" not in merged:
         merged["published_by"] = "skill:infra_access_skill"
+    if str(merged.get("published_by") or "").strip() == "skill:infra_access_skill":
+        defaults = build_operational_surface()
+        default_webui = dict(defaults.get("webui") or {}) if isinstance(defaults.get("webui"), dict) else {}
+        merged_webui = dict(merged.get("webui") or {}) if isinstance(merged.get("webui"), dict) else {}
+        if default_webui and "data_sources" not in merged_webui:
+            merged_webui["data_sources"] = list(default_webui.get("data_sources") or [])
+        if merged_webui:
+            merged["webui"] = merged_webui
+
+        default_observability = dict(defaults.get("observability") or {}) if isinstance(defaults.get("observability"), dict) else {}
+        merged_observability = dict(merged.get("observability") or {}) if isinstance(merged.get("observability"), dict) else {}
+        if default_observability and "activity_tools" not in merged_observability:
+            merged_observability["activity_tools"] = list(default_observability.get("activity_tools") or [])
+        if merged_observability:
+            merged["observability"] = merged_observability
+
+        default_token_management = dict(defaults.get("token_management") or {}) if isinstance(defaults.get("token_management"), dict) else {}
+        merged_token_management = dict(merged.get("token_management") or {}) if isinstance(merged.get("token_management"), dict) else {}
+        if default_token_management and "manage_tools" not in merged_token_management:
+            merged_token_management["manage_tools"] = list(default_token_management.get("manage_tools") or [])
+        if merged_token_management:
+            merged["token_management"] = merged_token_management
     return merged
 
 

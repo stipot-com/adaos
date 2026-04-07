@@ -1,4 +1,4 @@
-from .audit import append_audit_event, list_audit_events
+from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
 from .client import RootMcpClient, RootMcpClientConfig
 from .infra_access_skill import build_operational_surface, resolve_skill_dir, skill_state
 from .model import (
@@ -76,4 +76,6 @@ __all__ = [
     "revoke_access_token",
     "skill_state",
     "sync_target_from_control_report",
+    "target_activity_feed",
+    "target_capability_usage_summary",
 ]

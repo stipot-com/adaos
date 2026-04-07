@@ -79,6 +79,7 @@ The current skeleton also applies root-side capability checks and scope hints:
 - hub control reports may be verified with `X-AdaOS-Hub-Report-Token` when `ADAOS_ROOT_HUB_REPORT_TOKEN` is configured on root
 - hub control reports can refresh managed-target state on `root`, including `infra_access_skill` metadata such as web UI presence, observability hints, and token-management readiness, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
 - `hub.get_operational_surface` now exposes the published `infra_access_skill` surface for inspection, including web UI, observability, and token-management state
+- `hub.get_activity_log` and `hub.get_capability_usage_summary` now expose root-side observability projections for `infra_access_skill` WebUI panels without introducing a separate observability API
 - target-scoped token management is available through typed `hub.issue_access_token`, `hub.list_access_tokens`, and `hub.revoke_access_token` MCP tool calls, not only through root-direct token endpoints
 - `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests`, `hub.get_test_results`, `hub.deploy_ref`, and `hub.rollback_last_test_deploy` now work as a local-pilot path only when the target publishes `execution_mode=local_process`
 - local restart, test, and deploy flows are additionally bounded by target-published allowlists such as `allowed_services`, `allowed_test_paths`, and `allowed_deploy_refs`

@@ -190,6 +190,44 @@ def build_operational_surface() -> dict[str, Any]:
         "root_mcp.audit",
         "hub.control_report",
     ]
+    if observability_enabled:
+        _ensure_capability(capabilities, "hub.get_activity_log")
+        _ensure_capability(capabilities, "hub.get_capability_usage_summary")
+
+    webui_data_sources = [
+        {
+            "id": "overview",
+            "tool_id": "hub.get_operational_surface",
+            "kind": "overview",
+            "requires": ["target_id"],
+        },
+    ]
+    if observability_enabled:
+        webui_data_sources.extend(
+            [
+                {
+                    "id": "activity_log",
+                    "tool_id": "hub.get_activity_log",
+                    "kind": "activity_log",
+                    "requires": ["target_id"],
+                },
+                {
+                    "id": "capability_usage",
+                    "tool_id": "hub.get_capability_usage_summary",
+                    "kind": "capability_usage",
+                    "requires": ["target_id"],
+                },
+            ]
+        )
+    if token_management_enabled:
+        webui_data_sources.append(
+            {
+                "id": "access_tokens",
+                "tool_id": "hub.list_access_tokens",
+                "kind": "token_management",
+                "requires": ["target_id"],
+            }
+        )
 
     availability = "enabled" if enabled else ("installed" if state.get("available") else "missing")
     return {
@@ -215,12 +253,14 @@ def build_operational_surface() -> dict[str, Any]:
             "modal_ids": list(webui.get("modal_ids") or []),
             "widget_ids": list(webui.get("widget_ids") or []),
             "widget_registry_ids": list(webui.get("widget_registry_ids") or []),
+            "data_sources": webui_data_sources,
         },
         "observability": {
             "enabled": observability_enabled,
             "channels": observability_channels,
             "request_audit": True,
             "history_mode": "root_audit_plus_control_reports",
+            "activity_tools": ["hub.get_activity_log", "hub.get_capability_usage_summary"],
         },
         "token_management": {
             "enabled": token_management_enabled,

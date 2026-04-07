@@ -8,7 +8,7 @@ from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
-from .audit import append_audit_event, list_audit_events
+from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
 from .infra_access import (
     deploy_local_ref,
     read_deploy_state,
@@ -229,6 +229,47 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             metadata={
                 "published_by": "skill:infra_access_skill",
                 "handler": "hub_get_operational_surface",
+                "environment_scope": "test-first",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.get_activity_log",
+            title="Get target activity log",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return recent target activity derived from Root MCP audit and control-report history for infra_access_skill observability.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "errors_only": {"type": "boolean"},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_activity_log",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_get_activity_log",
+                "environment_scope": "test-first",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.get_capability_usage_summary",
+            title="Get target capability usage summary",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return aggregated capability-usage counts for a managed target using Root MCP audit history.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_capability_usage_summary",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_get_capability_usage_summary",
                 "environment_scope": "test-first",
             },
         ),
@@ -663,6 +704,45 @@ def _handle_hub_get_operational_surface(arguments: dict[str, Any], *, dry_run: b
     }
 
 
+def _handle_hub_get_activity_log(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    limit = max(1, min(int(arguments.get("limit") or 50), 200))
+    errors_only = bool(arguments.get("errors_only"))
+    statuses = ["error"] if errors_only else None
+    return {
+        "target_id": target_id,
+        "activity": target_activity_feed(
+            target_id=target_id,
+            limit=limit,
+            statuses=statuses,
+            include_control_reports=True,
+        ),
+    }
+
+
+def _handle_hub_get_capability_usage_summary(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    limit = max(1, min(int(arguments.get("limit") or 200), 1000))
+    return {
+        "target_id": target_id,
+        "usage": target_capability_usage_summary(
+            target_id=target_id,
+            limit=limit,
+            include_control_reports=True,
+        ),
+    }
+
+
 def _require_root_token_management(target_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     surface = _target_operational_surface(target_id)
     token_management = dict(surface.get("token_management") or {}) if isinstance(surface.get("token_management"), dict) else {}
@@ -895,6 +975,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.get_status": lambda arguments, dry_run=False: _handle_hub_get_status(arguments, dry_run=dry_run),
     "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
     "hub.get_operational_surface": lambda arguments, dry_run=False: _handle_hub_get_operational_surface(arguments, dry_run=dry_run),
+    "hub.get_activity_log": lambda arguments, dry_run=False: _handle_hub_get_activity_log(arguments, dry_run=dry_run),
+    "hub.get_capability_usage_summary": lambda arguments, dry_run=False: _handle_hub_get_capability_usage_summary(arguments, dry_run=dry_run),
     "hub.get_logs": lambda arguments, dry_run=False: _handle_hub_get_logs(arguments, dry_run=dry_run),
     "hub.run_healthchecks": lambda arguments, dry_run=False: _handle_hub_run_healthchecks(arguments, dry_run=dry_run),
     "hub.restart_service": lambda arguments, dry_run=False: _handle_hub_restart_service(arguments, dry_run=dry_run),
@@ -931,6 +1013,10 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
     token = str(tool_id or "").strip()
     if token in {"hub.get_status", "hub.get_runtime_summary", "hub.get_operational_surface"}:
         return "root.control_report_projection"
+    if token == "hub.get_activity_log":
+        return "root.audit_projection.activity"
+    if token == "hub.get_capability_usage_summary":
+        return "root.audit_projection.capability_usage"
     if token == "hub.get_logs":
         return "infra_access.local_process.logs"
     if token == "hub.run_healthchecks":

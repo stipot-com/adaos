@@ -212,11 +212,12 @@ async def sync(mgr: SkillManager = Depends(_get_manager)):
 
 @router.post("/install")
 async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
+    webspace_id = body.webspace_id or default_webspace_id()
     if body.async_operation:
         operation = submit_install_operation(
             target_kind="skill",
             target_id=body.name,
-            webspace_id=body.webspace_id,
+            webspace_id=webspace_id,
         )
         return {
             "ok": True,
@@ -267,6 +268,20 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
             "version": getattr(meta, "version", None),
             "path": str(getattr(meta, "path", "")),
         },
+    }
+    prep = mgr.prepare_runtime(body.name, run_tests=False)
+    slot = mgr.activate_for_space(
+        body.name,
+        version=getattr(prep, "version", None),
+        slot=getattr(prep, "slot", None),
+        space="default",
+        webspace_id=webspace_id,
+    )
+    payload["runtime"] = {
+        "version": getattr(prep, "version", None),
+        "slot": slot,
+        "prepared": getattr(prep, "slot", None),
+        "webspace_id": webspace_id,
     }
     if report is not None:
         if hasattr(report, "to_dict"):

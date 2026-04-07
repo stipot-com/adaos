@@ -114,6 +114,45 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def get_target_activity_log(
+        self,
+        target_id: str,
+        *,
+        limit: int = 50,
+        errors_only: bool = False,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_activity_log",
+            arguments={
+                "target_id": str(target_id),
+                "limit": int(limit),
+                "errors_only": bool(errors_only),
+            },
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def get_target_capability_usage_summary(
+        self,
+        target_id: str,
+        *,
+        limit: int = 200,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_capability_usage_summary",
+            arguments={"target_id": str(target_id), "limit": int(limit)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def issue_target_access_token(
         self,
         target_id: str,

@@ -421,15 +421,32 @@ def submit_install_operation(
                 meta, report = result
             else:
                 meta, report = result, None
+            handle.update(progress=70, message="Preparing runtime", current_step="skill.prepare_runtime")
+            prep = await asyncio.to_thread(partial(mgr.prepare_runtime, target_id, run_tests=False))
+            handle.update(progress=88, message="Activating skill", current_step="skill.activate")
+            active_slot = await asyncio.to_thread(
+                partial(
+                    mgr.activate_for_space,
+                    target_id,
+                    version=getattr(prep, "version", None),
+                    slot=getattr(prep, "slot", None),
+                    space="default",
+                    webspace_id=ws,
+                )
+            )
             payload = {
                 "target_kind": "skill",
                 "target_id": target_id,
                 "version": getattr(meta, "version", None),
                 "path": str(getattr(meta, "path", "")),
+                "runtime_version": getattr(prep, "version", None),
+                "slot": active_slot,
+                "prepared_slot": getattr(prep, "slot", None),
+                "webspace_id": ws,
             }
             if report is not None:
                 payload["report"] = report.to_dict() if hasattr(report, "to_dict") else repr(report)
-            handle.succeeded(result=payload, message=f"Installed skill {target_id}")
+            handle.succeeded(result=payload, message=f"Installed and activated skill {target_id}")
             return
 
         mgr = ScenarioManager(

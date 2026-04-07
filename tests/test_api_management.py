@@ -150,6 +150,7 @@ def test_skill_api_exposes_management_routes() -> None:
     resp = client.post("/api/skills/install", json={"name": "demo"})
     assert resp.status_code == 200
     assert resp.json()["skill"]["id"] == "demo"
+    assert resp.json()["runtime"]["slot"] == "B"
 
     resp = client.post("/api/skills/install", json={"name": "demo", "async_operation": True, "webspace_id": "default"})
     assert resp.status_code == 200
@@ -167,6 +168,8 @@ def test_skill_api_exposes_management_routes() -> None:
     assert resp.json()["revision"] == "deadbeef"
 
     assert any(call.startswith("install:") for call in skill_mgr.calls)
+    assert "prepare_runtime:demo" in skill_mgr.calls
+    assert any(call.startswith("activate_for_space:demo:") and call.endswith(":desktop") for call in skill_mgr.calls)
     assert any(call.startswith("push:") for call in skill_mgr.calls)
 
 

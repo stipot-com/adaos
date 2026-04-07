@@ -77,6 +77,7 @@ CLI обычно подставляет этот токен автоматиче
 - hub control reports могут верифицироваться через `X-AdaOS-Hub-Report-Token`, если на root задан `ADAOS_ROOT_HUB_REPORT_TOKEN`
 - hub control reports могут обновлять managed-target state на `root`, включая `infra_access_skill` metadata вроде наличия web UI, observability hints и token-management readiness, и это уже питает executable read-side tools вроде `hub.get_status` и `hub.get_runtime_summary`
 - `hub.get_operational_surface` теперь отдаёт published `infra_access_skill` surface для inspection, включая web UI, observability и token-management state
+- `hub.get_activity_log` и `hub.get_capability_usage_summary` дают root-side observability projections для `infra_access_skill` WebUI без отдельного observability API
 - target-scoped token management доступен через typed MCP tool calls `hub.issue_access_token`, `hub.list_access_tokens` и `hub.revoke_access_token`, а не только через root-direct token endpoints
 - `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests` и `hub.get_test_results` работают как local-pilot path только когда target публикует `execution_mode=local_process`
 - local restart и test flows дополнительно ограничиваются target-published allowlists, например `allowed_services` и `allowed_test_paths`

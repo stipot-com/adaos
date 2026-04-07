@@ -47,6 +47,8 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "operations.list_managed_targets" in contract_ids
     assert "development.export_sdk" not in contract_ids
     assert "hub.get_operational_surface" in contract_ids
+    assert "hub.get_activity_log" in contract_ids
+    assert "hub.get_capability_usage_summary" in contract_ids
     assert "hub.list_access_tokens" in contract_ids
     assert "hub.revoke_access_token" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
@@ -175,9 +177,14 @@ def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path
     assert surface["token_management"]["enabled"] is True
     assert surface["token_management"]["issuer_mode"] == "root_mcp"
     assert "hub.get_operational_surface" in surface["capabilities"]
+    assert "hub.get_activity_log" in surface["capabilities"]
+    assert "hub.get_capability_usage_summary" in surface["capabilities"]
     assert "hub.issue_access_token" in surface["capabilities"]
     assert "hub.list_access_tokens" in surface["capabilities"]
     assert "hub.revoke_access_token" in surface["capabilities"]
+    assert surface["webui"]["data_sources"][0]["tool_id"] == "hub.get_operational_surface"
+    assert any(item["tool_id"] == "hub.get_activity_log" for item in surface["webui"]["data_sources"])
+    assert surface["observability"]["activity_tools"] == ["hub.get_activity_log", "hub.get_capability_usage_summary"]
     assert surface["token_management"]["manage_tools"] == [
         "hub.issue_access_token",
         "hub.list_access_tokens",
@@ -439,6 +446,8 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
                     "hub.get_status",
                     "hub.get_runtime_summary",
                     "hub.get_operational_surface",
+                    "hub.get_activity_log",
+                    "hub.get_capability_usage_summary",
                     "hub.get_logs",
                     "hub.run_healthchecks",
                     "hub.issue_access_token",
@@ -513,7 +522,37 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert surface_payload["response"]["result"]["operational_surface"]["published_by"] == "skill:infra_access_skill"
     assert surface_payload["response"]["result"]["token_management"]["enabled"] is True
     assert surface_payload["response"]["result"]["webui"]["available"] is True
+    assert any(item["tool_id"] == "hub.get_activity_log" for item in surface_payload["response"]["result"]["operational_surface"]["webui"]["data_sources"])
     assert surface_payload["response"]["meta"]["routing_mode"] == "root.control_report_projection"
+
+    activity_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_activity_log",
+            "arguments": {"target_id": target_id, "limit": 10},
+        },
+    )
+    assert activity_call.status_code == 200
+    activity_payload = activity_call.json()
+    assert activity_payload["ok"] is True
+    assert activity_payload["response"]["meta"]["routing_mode"] == "root.audit_projection.activity"
+    assert activity_payload["response"]["result"]["activity"]["items"]
+    assert any(item["tool_id"] == "hub.control_report.ingest" for item in activity_payload["response"]["result"]["activity"]["items"])
+
+    usage_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_capability_usage_summary",
+            "arguments": {"target_id": target_id, "limit": 50},
+        },
+    )
+    assert usage_call.status_code == 200
+    usage_payload = usage_call.json()
+    assert usage_payload["ok"] is True
+    assert usage_payload["response"]["meta"]["routing_mode"] == "root.audit_projection.capability_usage"
+    assert any(item["tool_id"] == "hub.control_report.ingest" for item in usage_payload["response"]["result"]["usage"]["tools"])
 
     logs_call = client.post(
         "/v1/root/mcp/call",
@@ -604,6 +643,8 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert any(item["tool_id"] == "hub.control_report.ingest" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_status" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_operational_surface" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
+    assert any(item["tool_id"] == "hub.get_activity_log" and item["execution_adapter"] == "root.audit_projection.activity" for item in audit_items)
+    assert any(item["tool_id"] == "hub.get_capability_usage_summary" and item["execution_adapter"] == "root.audit_projection.capability_usage" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_logs" and item["execution_adapter"] == "infra_access.local_process.logs" for item in audit_items)
     assert any(item["tool_id"] == "hub.run_healthchecks" and item["execution_adapter"] == "infra_access.local_process.healthchecks" for item in audit_items)
     assert any(item["tool_id"] == "hub.list_access_tokens" and item["execution_adapter"] == "root.access_token_registry" for item in audit_items)

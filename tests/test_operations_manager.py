@@ -80,6 +80,12 @@ def _make_ctx() -> SimpleNamespace:
     return SimpleNamespace(
         bus=_FakeBus(),
         paths=_FakePaths(),
+        skills_repo=object(),
+        sql=object(),
+        git=object(),
+        caps=object(),
+        settings=object(),
+        scenarios_repo=object(),
     )
 
 
@@ -168,3 +174,56 @@ def test_operation_manager_records_notifications_on_completion(monkeypatch) -> N
 
     runtime_map = docs["default"].get_map("runtime")
     assert isinstance(runtime_map.get("notifications"), list)
+
+
+def test_submit_skill_install_operation_prepares_and_activates_runtime(monkeypatch) -> None:
+    docs: dict[str, _FakeYDoc] = {}
+    calls: list[str] = []
+
+    @contextmanager
+    def _get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    @asynccontextmanager
+    async def _async_get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    class _FakeSkillManager:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def sync(self) -> None:
+            calls.append("sync")
+
+        def install(self, name: str, **kwargs):
+            calls.append(f"install:{name}")
+            return SimpleNamespace(version="1.2.3", path=f"/skills/{name}")
+
+        def prepare_runtime(self, name: str, run_tests: bool = False):
+            calls.append(f"prepare_runtime:{name}:{int(run_tests)}")
+            return SimpleNamespace(version="1.2.3", slot="B")
+
+        def activate_for_space(self, name: str, *, version: str | None = None, slot: str | None = None, space: str = "default", webspace_id: str = "default"):
+            calls.append(f"activate_for_space:{name}:{version}:{slot}:{space}:{webspace_id}")
+            return slot or "B"
+
+    monkeypatch.setattr(operations_manager, "get_ydoc", _get_ydoc)
+    monkeypatch.setattr(operations_manager, "async_get_ydoc", _async_get_ydoc)
+    monkeypatch.setattr(operations_manager, "WebToastService", _FakeToastService)
+    monkeypatch.setattr(operations_manager, "SkillManager", _FakeSkillManager)
+    monkeypatch.setattr(operations_manager, "SqliteSkillRegistry", lambda sql: object())
+    monkeypatch.setattr(operations_manager, "_MANAGERS", {})
+
+    ctx = _make_ctx()
+    result = operations_manager.submit_install_operation(
+        target_kind="skill",
+        target_id="demo_skill",
+        webspace_id="default",
+        ctx=ctx,
+    )
+
+    assert result["target_id"] == "demo_skill"
+    assert "sync" in calls
+    assert "install:demo_skill" in calls
+    assert "prepare_runtime:demo_skill:0" in calls
+    assert "activate_for_space:demo_skill:1.2.3:B:default:default" in calls
