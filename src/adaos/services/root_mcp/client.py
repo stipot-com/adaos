@@ -72,6 +72,32 @@ class RootMcpClient:
     def issue_access_token(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return dict(self._request("POST", "/v1/root/mcp/access-tokens", json=dict(payload)))
 
+    def list_access_tokens(
+        self,
+        *,
+        limit: int = 100,
+        status: str | None = None,
+        audience: str | None = None,
+        target_id: str | None = None,
+        active_only: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        if status:
+            params["status"] = status
+        if audience:
+            params["audience"] = audience
+        if target_id:
+            params["target_id"] = target_id
+        if active_only:
+            params["active_only"] = True
+        return dict(self._request("GET", "/v1/root/mcp/access-tokens", params=params))
+
+    def revoke_access_token(self, token_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason:
+            payload["reason"] = str(reason)
+        return dict(self._request("POST", f"/v1/root/mcp/access-tokens/{token_id}/revoke", json=payload))
+
     def recent_audit(
         self,
         *,

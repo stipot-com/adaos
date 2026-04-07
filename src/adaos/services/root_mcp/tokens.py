@@ -73,6 +73,12 @@ def _normalize_target_ids(raw: Any) -> list[str]:
     return _normalize_capabilities(raw)
 
 
+def _sanitize_record(item: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(item)
+    payload.pop("token_hash", None)
+    return payload
+
+
 def issue_access_token(
     *,
     audience: str,
@@ -123,6 +129,9 @@ def issue_access_token(
         "target_ids": scoped_target_ids,
         "primary_target_id": primary_target,
         "note": str(note or "").strip() or None,
+        "revoked_at": None,
+        "revoked_by": None,
+        "revocation_reason": None,
     }
     items = _read_records()
     items.append(record)
@@ -165,6 +174,76 @@ def validate_access_token(token: str) -> dict[str, Any] | None:
     return None
 
 
+def list_access_tokens(
+    *,
+    limit: int = 100,
+    status: str | None = None,
+    audience: str | None = None,
+    target_id: str | None = None,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    items = list(reversed(_read_records()))
+    out: list[dict[str, Any]] = []
+    status_filter = str(status or "").strip().lower() or None
+    audience_filter = str(audience or "").strip() or None
+    target_filter = str(target_id or "").strip() or None
+    now = datetime.now(timezone.utc)
+    for item in items:
+        record_status = str(item.get("status") or "").strip().lower() or "unknown"
+        if status_filter and record_status != status_filter:
+            continue
+        if audience_filter and str(item.get("audience") or "").strip() != audience_filter:
+            continue
+        if target_filter and target_filter not in _normalize_target_ids(item.get("target_ids")):
+            continue
+        if active_only:
+            if record_status != "active":
+                continue
+            try:
+                expires_at = datetime.fromisoformat(str(item.get("expires_at") or ""))
+            except Exception:
+                continue
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                continue
+        out.append(_sanitize_record(item))
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def revoke_access_token(
+    token_id: str,
+    *,
+    actor: str,
+    auth_method: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    token = str(token_id or "").strip()
+    if not token:
+        raise ValueError("token_id is required")
+    items = _read_records()
+    revoked: dict[str, Any] | None = None
+    for item in items:
+        if str(item.get("token_id") or "").strip() != token:
+            continue
+        if str(item.get("status") or "").strip().lower() == "revoked":
+            revoked = dict(item)
+            break
+        item["status"] = "revoked"
+        item["revoked_at"] = _iso_now()
+        item["revoked_by"] = str(actor or "root:unknown")
+        item["revoked_auth_method"] = str(auth_method or "unknown")
+        item["revocation_reason"] = str(reason or "").strip() or None
+        revoked = dict(item)
+        break
+    if revoked is None:
+        raise KeyError(token)
+    _write_records(items)
+    return _sanitize_record(revoked)
+
+
 def access_token_registry_summary() -> dict[str, Any]:
     items = _read_records()
     active = 0
@@ -193,5 +272,7 @@ __all__ = [
     "DEFAULT_ACCESS_TOKEN_CAPABILITIES",
     "access_token_registry_summary",
     "issue_access_token",
+    "list_access_tokens",
+    "revoke_access_token",
     "validate_access_token",
 ]

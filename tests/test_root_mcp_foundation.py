@@ -35,6 +35,8 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert foundation_payload["foundation"]["surfaces"]["development"]["enabled"] is True
     assert foundation_payload["foundation"]["managed_targets"]["preferred_target_surface"] == "infra_access_skill"
     assert foundation_payload["foundation"]["client"]["recommended_client"] == "RootMcpClient"
+    assert foundation_payload["foundation"]["registries"]["access_token_registry"]["available"] is True
+    assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)
     assert contracts.status_code == 200
@@ -121,6 +123,51 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     assert all(item["meta"]["subnet_id"] == "subnet:test-zone" for item in events)
     event = next(item for item in events if item["event_id"] == envelope["audit_event_id"])
     assert event["execution_adapter"] == "root.descriptor_registry"
+
+
+def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path) -> None:
+    from adaos.services.root_mcp import infra_access_skill
+
+    skill_dir = tmp_path / "skills" / "infra_access_skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text(
+        "\n".join(
+            [
+                "name: infra_access_skill",
+                "version: 0.2.0",
+                "entry: handlers/main.py",
+                "description: Infra access surface",
+                "dependencies: []",
+                "events: {}",
+                "tools: []",
+                "exports: {}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "config.json").write_text(
+        '{"enabled": true, "execution_mode": "reported_only", "capabilities": ["hub.get_status"], "token_management": {"enabled": true, "issuer_mode": "root_mcp"}, "observability": {"enabled": true, "channels": ["root_mcp.audit"]}}',
+        encoding="utf-8",
+    )
+    (skill_dir / "webui.json").write_text(
+        '{"apps":[{"id":"infra_access_app","title":"Infra Access","launchModal":"infra_access_modal"}],"widgets":[{"id":"infra_access_tokens","type":"ui.list","title":"Tokens"}],"registry":{"modals":{"infra_access_modal":{"title":"Infra Access","schema":{"id":"infra_access_modal","layout":{"type":"single","areas":[{"id":"main","role":"main"}]},"widgets":[]}}}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(infra_access_skill, "resolve_skill_dir", lambda: skill_dir)
+    monkeypatch.delenv("ADAOS_INFRA_ACCESS_CAPABILITIES", raising=False)
+    monkeypatch.delenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED", raising=False)
+    monkeypatch.delenv("ADAOS_INFRA_ACCESS_EXECUTION_MODE", raising=False)
+
+    surface = infra_access_skill.build_operational_surface()
+
+    assert surface["enabled"] is True
+    assert surface["skill"]["version"] == "0.2.0"
+    assert surface["webui"]["available"] is True
+    assert "infra_access_app" in surface["webui"]["app_ids"]
+    assert surface["token_management"]["enabled"] is True
+    assert surface["token_management"]["issuer_mode"] == "root_mcp"
+    assert "hub.issue_access_token" in surface["capabilities"]
+    assert surface["observability"]["channels"] == ["root_mcp.audit"]
 
 
 def test_root_mcp_targets_support_state_registry_and_scope(monkeypatch, tmp_path) -> None:
@@ -226,6 +273,68 @@ def test_root_mcp_owner_can_register_target_and_issue_scoped_access_token(monkey
     )
     assert call.status_code == 200
     assert call.json()["ok"] is True
+
+
+def test_root_mcp_access_token_lifecycle_management(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import tokens as token_registry
+
+    monkeypatch.setattr(token_registry, "_tokens_path", lambda: tmp_path / "access_tokens.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+
+    issued = client.post(
+        "/v1/root/mcp/access-tokens",
+        headers=owner_headers,
+        json={
+            "audience": "web-client",
+            "subnet_id": "subnet:web",
+            "zone": "lab-ui",
+            "note": "web management session",
+        },
+    )
+    assert issued.status_code == 200
+    token = issued.json()["token"]
+    assert issued.json()["audit_event_id"]
+    assert token["audience"] == "web-client"
+
+    listed = client.get(
+        "/v1/root/mcp/access-tokens",
+        headers=owner_headers,
+        params={"active_only": "true"},
+    )
+    assert listed.status_code == 200
+    listed_tokens = listed.json()["tokens"]
+    assert len(listed_tokens) == 1
+    assert listed_tokens[0]["token_id"] == token["token_id"]
+    assert "token_hash" not in listed_tokens[0]
+
+    revoked = client.post(
+        f"/v1/root/mcp/access-tokens/{token['token_id']}/revoke",
+        headers=owner_headers,
+        json={"reason": "rotate"},
+    )
+    assert revoked.status_code == 200
+    revoked_payload = revoked.json()
+    assert revoked_payload["token"]["status"] == "revoked"
+    assert revoked_payload["audit_event_id"]
+
+    denied = client.get(
+        "/v1/root/mcp/descriptors",
+        headers={"Authorization": f"Bearer {token['access_token']}"},
+    )
+    assert denied.status_code == 401
+
+    audit = client.get(
+        "/v1/root/mcp/audit",
+        headers=owner_headers,
+        params={"tool_id": "root.access_tokens.revoke"},
+    )
+    assert audit.status_code == 200
+    events = audit.json()["events"]
+    assert events
+    assert events[0]["tool_id"] == "root.access_tokens.revoke"
 
 
 def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path) -> None:
@@ -737,8 +846,8 @@ def test_root_mcp_placeholder_tool_returns_structured_error(monkeypatch) -> None
     envelope = payload["response"]
     assert envelope["tool_id"] == "hub.deploy_ref"
     assert envelope["status"] == "error"
-    assert envelope["error"]["code"] == "surface_unavailable"
-    assert envelope["meta"]["published_by"] == "skill:infra_access_skill"
+    assert envelope["error"]["code"] == "capability_not_published"
+    assert "hub.deploy_ref" not in envelope["meta"]["published_capabilities"]
 
 
 def test_root_mcp_descriptor_not_found_is_structured(monkeypatch) -> None:

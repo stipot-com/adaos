@@ -29,6 +29,8 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.upsert_managed_target({"target_id": "hub:test-zone"})
     client.get_managed_target("hub:test-zone")
     client.issue_access_token({"audience": "codex-vscode"})
+    client.list_access_tokens(active_only=True)
+    client.revoke_access_token("tok-1", reason="rotate")
     client.call("development.list_descriptor_sets", request_id="req-1")
 
     assert config.headers()["Authorization"] == "Bearer access-123"
@@ -43,4 +45,8 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[5][1] == "/v1/root/mcp/targets/hub:test-zone"
     assert stub.calls[6][1] == "/v1/root/mcp/access-tokens"
     assert stub.calls[6][2]["json"]["audience"] == "codex-vscode"
-    assert stub.calls[7][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[7][1] == "/v1/root/mcp/access-tokens"
+    assert stub.calls[7][2]["params"]["active_only"] is True
+    assert stub.calls[8][1] == "/v1/root/mcp/access-tokens/tok-1/revoke"
+    assert stub.calls[8][2]["json"]["reason"] == "rotate"
+    assert stub.calls[9][2]["json"]["tool_id"] == "development.list_descriptor_sets"

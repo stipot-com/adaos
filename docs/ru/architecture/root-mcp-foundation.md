@@ -478,6 +478,8 @@ Phase 0 считается завершенной, когда:
   - `GET /v1/root/mcp/targets/{target_id}`
   - `POST /v1/root/mcp/targets`
   - `POST /v1/root/mcp/access-tokens`
+  - `GET /v1/root/mcp/access-tokens`
+  - `POST /v1/root/mcp/access-tokens/{token_id}/revoke`
   - `POST /v1/root/mcp/call`
   - `GET /v1/root/mcp/audit`
 - `POST /v1/hub/control/report`
@@ -500,16 +502,18 @@ Phase 0 считается завершенной, когда:
   - `hub.run_allowed_tests`
   - `hub.get_test_results`
 - policy-side gating target-bound `hub.*` tools по опубликованной target capability surface от `infra_access_skill`
+- target-side self-description `infra_access_skill` в control reports, включая skill metadata, наличие web UI, observability hints и token-management readiness
 - execution-mode gating, поэтому local-pilot adapters запускаются только когда target публикует `execution_mode=local_process`
 - optional verified-report policy mode, поэтому operational tools можно требовать только после verified control report
 - unified operational audit events и для MCP tool execution, и для `hub.control_report.ingest`
+- root-side lifecycle management для access tokens: issue, list, revoke и audit coverage для web-client и внешних MCP flows
 - placeholder operational contract catalog сохраняется для будущего remote `infra_access_skill` execution и deploy/rollback операций
 - initial audit persistence в локальное root MCP audit storage
 - audit filtering по tool, trace, target и subnet scope
 - scope-aware filtering targets по `subnet_id` и `zone`
 - access-token-backed MCP auth с bounded capabilities, target allowlists и scope inheritance
 
-Это все еще ранний skeleton: текущий срез уже доказывает первый `hub -> root -> Root MCP` operational loop через control reports, root-hosted read tools и bounded local-pilot write/test flows через `infra_access_skill`. Более широкие remote execution, deploy и rollback операции остаются отложенными до полноценного target-side `infra_access_skill` path.
+Это все еще ранний skeleton: текущий срез уже доказывает первый `hub -> root -> Root MCP` operational loop через control reports, skill-aware publication managed targets, root-hosted read tools, bounded local-pilot write/test flows через `infra_access_skill` и первый lifecycle access-token management, пригодный для web-client control surfaces. Более широкие remote execution, deploy и rollback операции остаются отложенными до полноценного target-side `infra_access_skill` path.
 
 ### Phase 2. MCP-to-SDK Base
 

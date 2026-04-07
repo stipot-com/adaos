@@ -16,6 +16,7 @@ from .infra_access import (
     run_allowed_tests,
     run_local_healthchecks,
 )
+from .infra_access_skill import skill_state as infra_access_skill_state
 from .model import (
     ROOT_MCP_RESPONSE_SCHEMA,
     RootMcpAuditEvent,
@@ -32,6 +33,7 @@ from .reports import control_report_registry_summary, list_control_reports
 from .targets import get_managed_target as get_target_descriptor
 from .targets import list_managed_targets as list_target_descriptors
 from .targets import managed_target_registry_summary
+from .tokens import access_token_registry_summary
 
 
 def _iso_now() -> str:
@@ -88,6 +90,7 @@ def _foundation_summary() -> dict[str, Any]:
             "descriptor_registry": descriptor_registry_summary(),
             "managed_target_registry": managed_target_registry_summary(),
             "control_report_registry": control_report_registry_summary(),
+            "access_token_registry": access_token_registry_summary(),
         },
         "managed_targets": {
             "count": len(managed_targets),
@@ -95,6 +98,9 @@ def _foundation_summary() -> dict[str, Any]:
             "publication_model": "skill-mediated",
             "preferred_target_surface": "infra_access_skill",
             "registry_status": "report-backed skeleton",
+        },
+        "infra_access_skill": {
+            "state": infra_access_skill_state(),
         },
         "client": {
             "recommended_client": "RootMcpClient",

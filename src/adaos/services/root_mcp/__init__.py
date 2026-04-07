@@ -1,5 +1,6 @@
 from .audit import append_audit_event, list_audit_events
 from .client import RootMcpClient, RootMcpClientConfig
+from .infra_access_skill import build_operational_surface, resolve_skill_dir, skill_state
 from .model import (
     ROOT_MCP_ERROR_SCHEMA,
     ROOT_MCP_RESPONSE_SCHEMA,
@@ -27,7 +28,7 @@ from .service import (
     recent_audit_events,
 )
 from .targets import managed_target_registry_summary, upsert_managed_target
-from .tokens import access_token_registry_summary, issue_access_token, validate_access_token
+from .tokens import access_token_registry_summary, issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
 
 __all__ = [
     "ROOT_MCP_ERROR_SCHEMA",
@@ -43,6 +44,7 @@ __all__ = [
     "RootMcpToolContract",
     "append_audit_event",
     "access_token_registry_summary",
+    "build_operational_surface",
     "capability_registry_payload",
     "capability_registry_summary",
     "control_report_registry_summary",
@@ -64,9 +66,13 @@ __all__ = [
     "recent_audit_events",
     "schema_object",
     "issue_access_token",
+    "list_access_tokens",
     "ingest_control_report",
     "upsert_managed_target",
     "validate_access_token",
     "list_control_reports",
+    "resolve_skill_dir",
+    "revoke_access_token",
+    "skill_state",
     "sync_target_from_control_report",
 ]

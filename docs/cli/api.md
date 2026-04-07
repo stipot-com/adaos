@@ -62,6 +62,8 @@ Current Root MCP Foundation skeleton endpoints are exposed separately from `/api
 - `GET /v1/root/mcp/targets/{target_id}`
 - `POST /v1/root/mcp/targets`
 - `POST /v1/root/mcp/access-tokens`
+- `GET /v1/root/mcp/access-tokens`
+- `POST /v1/root/mcp/access-tokens/{token_id}/revoke`
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
 - `POST /v1/hub/control/report`
@@ -72,9 +74,10 @@ The current skeleton also applies root-side capability checks and scope hints:
 - read-only bearer access is allowed only for the default development/registry/audit capabilities
 - target lists and tool calls can be scoped by `X-AdaOS-Subnet-Id` and `X-AdaOS-Zone`
 - root can issue bounded MCP access tokens for external clients, and those tokens carry inherited `subnet_id` / `zone` / target allowlists
+- root now also exposes token-management lifecycle endpoints for listing and revoking previously issued MCP access tokens
 - target-bound `hub.*` tools are now also gated by the managed target's published `infra_access_skill` capability surface
 - hub control reports may be verified with `X-AdaOS-Hub-Report-Token` when `ADAOS_ROOT_HUB_REPORT_TOKEN` is configured on root
-- hub control reports can refresh managed-target state on `root`, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
+- hub control reports can refresh managed-target state on `root`, including `infra_access_skill` metadata such as web UI presence, observability hints, and token-management readiness, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
 - `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests`, and `hub.get_test_results` now work as a local-pilot path only when the target publishes `execution_mode=local_process`
 - local restart and test flows are additionally bounded by target-published allowlists such as `allowed_services` and `allowed_test_paths`
 - broader remote deploy/rollback-style operations are still blocked until the target-side `infra_access_skill` path is implemented

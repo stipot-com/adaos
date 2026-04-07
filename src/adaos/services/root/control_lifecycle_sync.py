@@ -13,6 +13,7 @@ from adaos.services.reliability import (
     runtime_signal_snapshot,
 )
 from adaos.services.root.client import RootHttpClient
+from adaos.services.root_mcp.infra_access_skill import build_operational_surface
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 
 _CONTROL_LIFECYCLE_FLOW_ID = "hub_root.control.lifecycle"
@@ -72,18 +73,7 @@ def _zone(conf) -> str | None:
 
 
 def _infra_access_operational_surface() -> dict[str, Any]:
-    enabled = str(os.getenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
-    capabilities_raw = str(os.getenv("ADAOS_INFRA_ACCESS_CAPABILITIES") or "").strip()
-    capabilities = [item for item in (token.strip() for token in capabilities_raw.split(",")) if item]
-    execution_mode = str(os.getenv("ADAOS_INFRA_ACCESS_EXECUTION_MODE") or "").strip().lower() or "reported_only"
-    return {
-        "published_by": "skill:infra_access_skill",
-        "enabled": enabled,
-        "availability": "enabled" if enabled else "planned",
-        "capabilities": capabilities,
-        "execution_mode": execution_mode,
-        "execution_adapter": "infra_access.local_process" if execution_mode == "local_process" else "report_only",
-    }
+    return build_operational_surface()
 
 
 def _control_report_headers() -> dict[str, str]:

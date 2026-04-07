@@ -149,10 +149,24 @@ def list_capability_classes() -> list[dict[str, Any]]:
             default_grants=["owner_token"],
         ),
         _capability_entry(
+            "operations.read.tokens",
+            surface="operations",
+            risk="medium",
+            summary="Read bounded Root MCP access-token registry state for management UIs.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
             "operations.issue.tokens",
             surface="operations",
             risk="medium",
             summary="Issue bounded Root MCP access tokens for external clients.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "operations.revoke.tokens",
+            surface="operations",
+            risk="high",
+            summary="Revoke previously issued Root MCP access tokens.",
             default_grants=["owner_token"],
         ),
         _capability_entry(

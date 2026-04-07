@@ -34,7 +34,7 @@ from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
 from adaos.services.root_mcp.targets import upsert_managed_target
-from adaos.services.root_mcp.tokens import issue_access_token, validate_access_token
+from adaos.services.root_mcp.tokens import issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
@@ -48,6 +48,43 @@ def _iso_utc(ts: float) -> str:
 def _resolve_owner_id(owner_token: str) -> str:
     require_owner_token(owner_token)
     return os.getenv("ADAOS_ROOT_OWNER_ID") or "local-owner"
+
+
+def _append_direct_root_mcp_audit(
+    *,
+    tool_id: str,
+    actor: str,
+    auth_method: str,
+    capability: str,
+    status: str,
+    target_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+    result_summary: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> str:
+    finished_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    event = RootMcpAuditEvent(
+        event_id=new_id(),
+        request_id=new_id(),
+        trace_id=new_id(),
+        tool_id=tool_id,
+        surface=RootMcpSurface.OPERATIONS,
+        actor=actor,
+        auth_method=auth_method,
+        capability=capability,
+        target_id=target_id,
+        policy_decision="allow",
+        execution_adapter="root.direct_endpoint",
+        dry_run=False,
+        status=status,
+        started_at=finished_at,
+        finished_at=finished_at,
+        result_summary=result_summary or {},
+        error=error or {},
+        meta=meta or {},
+    )
+    append_audit_event(event)
+    return event.event_id
 
 
 def _register_subnet_with_root_auth(owner_token: str, csr_pem: str, fingerprint: str, hints: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -471,6 +508,10 @@ class RootMcpAccessTokenIssueRequest(BaseModel):
     note: str | None = Field(default=None, max_length=512)
 
 
+class RootMcpAccessTokenRevokeRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=512)
+
+
 @router.post("/v1/hub/control/report")
 async def hub_control_report_ingest(
     request: Request,
@@ -763,10 +804,93 @@ async def root_mcp_issue_access_token(
         target_ids=list(payload.target_ids or []),
         note=payload.note,
     )
+    audit_event_id = _append_direct_root_mcp_audit(
+        tool_id="root.access_tokens.issue",
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        capability="operations.issue.tokens",
+        status="ok",
+        target_id=payload.target_id,
+        meta={
+            "subnet_id": issued.get("subnet_id"),
+            "zone": issued.get("zone"),
+            "audience": issued.get("audience"),
+            "token_id": issued.get("token_id"),
+        },
+        result_summary={"kind": "access_token", "token_id": issued.get("token_id")},
+    )
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
         "token": issued,
+        "audit_event_id": audit_event_id,
+    }
+
+
+@root_router.get("/mcp/access-tokens")
+async def root_mcp_list_access_tokens(
+    limit: int = 100,
+    status: str | None = None,
+    audience: str | None = None,
+    target_id: str | None = None,
+    active_only: bool = False,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.read.tokens", auth=auth)
+    tokens = list_access_tokens(
+        limit=max(1, min(int(limit), 200)),
+        status=status,
+        audience=audience,
+        target_id=target_id,
+        active_only=active_only,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "tokens": tokens,
+    }
+
+
+@root_router.post("/mcp/access-tokens/{token_id}/revoke")
+async def root_mcp_revoke_access_token(
+    token_id: str,
+    payload: RootMcpAccessTokenRevokeRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.revoke.tokens", auth=auth)
+    try:
+        record = revoke_access_token(
+            token_id,
+            actor=str(auth.get("actor") or "root:unknown"),
+            auth_method=str(auth.get("method") or "unknown"),
+            reason=payload.reason,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "token_not_found", "message": "Access token not found."}) from None
+    audit_event_id = _append_direct_root_mcp_audit(
+        tool_id="root.access_tokens.revoke",
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        capability="operations.revoke.tokens",
+        status="ok",
+        target_id=str(record.get("primary_target_id") or ""),
+        meta={
+            "subnet_id": record.get("subnet_id"),
+            "zone": record.get("zone"),
+            "audience": record.get("audience"),
+            "token_id": record.get("token_id"),
+        },
+        result_summary={"kind": "access_token", "token_id": record.get("token_id"), "status": record.get("status")},
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "token": record,
+        "audit_event_id": audit_event_id,
     }
 
 

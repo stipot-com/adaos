@@ -62,6 +62,8 @@ CLI обычно подставляет этот токен автоматиче
 - `GET /v1/root/mcp/targets/{target_id}`
 - `POST /v1/root/mcp/targets`
 - `POST /v1/root/mcp/access-tokens`
+- `GET /v1/root/mcp/access-tokens`
+- `POST /v1/root/mcp/access-tokens/{token_id}/revoke`
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
 
@@ -70,9 +72,10 @@ CLI обычно подставляет этот токен автоматиче
 - read-only bearer access разрешён только для default development/registry/audit capabilities
 - target lists и tool calls можно ограничивать через `X-AdaOS-Subnet-Id` и `X-AdaOS-Zone`
 - root умеет выдавать bounded MCP access tokens для внешних клиентов; они несут унаследованные `subnet_id` / `zone` / target allowlists
+- root теперь также даёт token-management lifecycle endpoints для listing и revoke ранее выданных MCP access tokens
 - target-bound `hub.*` tools дополнительно gated по published capability surface от `infra_access_skill`
 - hub control reports могут верифицироваться через `X-AdaOS-Hub-Report-Token`, если на root задан `ADAOS_ROOT_HUB_REPORT_TOKEN`
-- hub control reports могут обновлять managed-target state на `root`, и это уже питает executable read-side tools вроде `hub.get_status` и `hub.get_runtime_summary`
+- hub control reports могут обновлять managed-target state на `root`, включая `infra_access_skill` metadata вроде наличия web UI, observability hints и token-management readiness, и это уже питает executable read-side tools вроде `hub.get_status` и `hub.get_runtime_summary`
 - `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests` и `hub.get_test_results` работают как local-pilot path только когда target публикует `execution_mode=local_process`
 - local restart и test flows дополнительно ограничиваются target-published allowlists, например `allowed_services` и `allowed_test_paths`
 - более широкие remote deploy/rollback-style операции пока остаются заблокированными до полноценного target-side `infra_access_skill` path

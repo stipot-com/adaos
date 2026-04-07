@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from adaos.services.agent_context import get_ctx
 
+from .infra_access_skill import build_operational_surface
 from .model import RootMcpManagedTarget
 
 
@@ -59,6 +60,7 @@ def _default_test_hub_descriptor() -> RootMcpManagedTarget:
     subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "test-subnet"
     zone = str(os.getenv("ADAOS_ROOT_ZONE") or "local-dev")
     status = str(os.getenv("ADAOS_ROOT_TEST_HUB_STATUS") or "planned").strip().lower() or "planned"
+    operational_surface = build_operational_surface()
     return RootMcpManagedTarget(
         target_id=f"hub:{subnet_id}",
         title="Test Hub",
@@ -68,23 +70,12 @@ def _default_test_hub_descriptor() -> RootMcpManagedTarget:
         zone=zone,
         subnet_id=subnet_id,
         transport={"channel": "hub_root_protocol", "mode": "existing-control-channel"},
-        operational_surface={
-            "published_by": "skill:infra_access_skill",
-            "enabled": False,
-            "availability": "planned",
-            "capabilities": [
-                "hub.get_status",
-                "hub.get_runtime_summary",
-                "hub.get_logs",
-                "hub.run_healthchecks",
-                "hub.issue_access_token",
-            ],
-        },
+        operational_surface=operational_surface,
         access={
             "client_transport": "root_http_mcp",
             "client_config_fields": ["root_url", "subnet_id", "access_token", "zone"],
-            "token_issuer": "skill:infra_access_skill",
-            "status": "planned",
+            "token_issuer": str(((operational_surface.get("token_management") or {}) if isinstance(operational_surface.get("token_management"), dict) else {}).get("issuer_mode") or "skill:infra_access_skill"),
+            "status": "available" if bool(((operational_surface.get("token_management") or {}) if isinstance(operational_surface.get("token_management"), dict) else {}).get("enabled")) else "planned",
             "recommended_client": "RootMcpClient",
         },
         policy={
