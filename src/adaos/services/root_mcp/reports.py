@@ -84,7 +84,11 @@ def _merge_operational_surface(report: Mapping[str, Any], target_id: str) -> dic
     return merged
 
 
-def sync_target_from_control_report(report: Mapping[str, Any]) -> dict[str, Any]:
+def sync_target_from_control_report(
+    report: Mapping[str, Any],
+    *,
+    ingest_auth: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     target_id = _coerce_target_id(report)
     subnet_id = str(report.get("subnet_id") or "").strip() or None
     zone = str(report.get("zone") or "").strip() or None
@@ -94,6 +98,10 @@ def sync_target_from_control_report(report: Mapping[str, Any]) -> dict[str, Any]
     transport = _normalize_mapping(report.get("transport"))
     if "channel" not in transport:
         transport["channel"] = "hub_root_protocol"
+    auth = _normalize_mapping(ingest_auth)
+    verified = bool(auth.get("verified"))
+    auth_method = str(auth.get("method") or "").strip() or "unknown"
+    trust_state = "verified" if verified else "unverified"
     upserted = upsert_managed_target(
         {
             "target_id": target_id,
@@ -110,20 +118,28 @@ def sync_target_from_control_report(report: Mapping[str, Any]) -> dict[str, Any]
             "meta": {
                 "last_reported_at": str(report.get("reported_at") or _iso_now()),
                 "registry_source": "control_report",
+                "report_auth_method": auth_method,
+                "report_verified": verified,
+                "report_trust": trust_state,
             },
         }
     )
     return upserted.to_dict()
 
 
-def ingest_control_report(report: Mapping[str, Any]) -> dict[str, Any]:
+def ingest_control_report(
+    report: Mapping[str, Any],
+    *,
+    ingest_auth: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = dict(report)
     target_id = _coerce_target_id(payload)
     message_id = str((_normalize_mapping(payload.get("_protocol"))).get("message_id") or "").strip() or None
     items = _read_reports()
     current = items.get(target_id) or {}
     duplicate = bool(message_id and str(current.get("message_id") or "") == message_id)
-    target = sync_target_from_control_report(payload)
+    auth = _normalize_mapping(ingest_auth)
+    target = sync_target_from_control_report(payload, ingest_auth=auth)
     stored = {
         "target_id": target_id,
         "hub_id": target_id,
@@ -132,6 +148,7 @@ def ingest_control_report(report: Mapping[str, Any]) -> dict[str, Any]:
         "message_id": message_id,
         "report": payload,
         "target": target,
+        "ingest_auth": auth,
         "server_time_utc": _iso_now(),
         "event_id": new_id(),
     }
@@ -148,6 +165,8 @@ def ingest_control_report(report: Mapping[str, Any]) -> dict[str, Any]:
         "target_id": target_id,
         "event_id": stored["event_id"],
         "server_time_utc": stored["server_time_utc"],
+        "report_verified": bool(auth.get("verified")),
+        "report_auth_method": str(auth.get("method") or "").strip() or "unknown",
     }
 
 
@@ -163,6 +182,7 @@ def list_control_reports(*, hub_id: str | None = None) -> list[dict[str, Any]]:
                 "hub_id": target_id,
                 "report": dict(item.get("report") or {}),
                 "target": dict(item.get("target") or {}),
+                "ingest_auth": dict(item.get("ingest_auth") or {}),
                 "event_id": item.get("event_id"),
                 "server_time_utc": item.get("server_time_utc"),
             }

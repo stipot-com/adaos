@@ -542,6 +542,7 @@ class RootHttpClient:
         self,
         *,
         payload: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
         verify: str | bool | ssl.SSLContext | None = None,
         cert: tuple[str, str] | None = None,
     ) -> dict:
@@ -550,6 +551,7 @@ class RootHttpClient:
                 "POST",
                 "/v1/hub/control/report",
                 json=dict(payload),
+                headers=headers,
                 verify=(self.verify if verify is None else verify),
                 cert=(self.cert if cert is None else cert),
                 timeout=30.0,

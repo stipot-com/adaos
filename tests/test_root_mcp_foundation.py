@@ -112,6 +112,8 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     assert events
     assert any(item["event_id"] == envelope["audit_event_id"] for item in events)
     assert all(item["meta"]["subnet_id"] == "subnet:test-zone" for item in events)
+    event = next(item for item in events if item["event_id"] == envelope["audit_event_id"])
+    assert event["execution_adapter"] == "root.descriptor_registry"
 
 
 def test_root_mcp_targets_support_state_registry_and_scope(monkeypatch, tmp_path) -> None:
@@ -286,6 +288,8 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert report_payload["duplicate"] is False
     assert report_payload["target_id"] == target_id
     assert report_payload["auth"]["method"] == "hub_control_report_unverified"
+    assert report_payload["report_verified"] is False
+    assert report_payload["audit_event_id"]
 
     reports = client.get(
         "/v1/hubs/control/reports",
@@ -296,6 +300,7 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     report_items = reports.json()["reports"]
     assert len(report_items) == 1
     assert report_items[0]["target"]["target_id"] == target_id
+    assert report_items[0]["ingest_auth"]["method"] == "hub_control_report_unverified"
 
     status_call = client.post(
         "/v1/root/mcp/call",
@@ -310,6 +315,8 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert status_payload["ok"] is True
     assert status_payload["response"]["result"]["target"]["target_id"] == target_id
     assert status_payload["response"]["result"]["lifecycle"]["node_state"] == "running"
+    assert status_payload["response"]["meta"]["routing_mode"] == "root.control_report_projection"
+    assert status_payload["response"]["meta"]["target_surface_enabled"] is True
 
     runtime_call = client.post(
         "/v1/root/mcp/call",
@@ -324,6 +331,7 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert runtime_payload["ok"] is True
     assert runtime_payload["response"]["result"]["runtime"]["active_slot"] == "slot-a"
     assert runtime_payload["response"]["result"]["transport"]["effective_transport"] == "root_proxy"
+    assert runtime_payload["response"]["meta"]["report_verified"] is False
 
     token_call = client.post(
         "/v1/root/mcp/call",
@@ -339,6 +347,130 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert token_payload["response"]["result"]["target_ids"] == [target_id]
     assert token_payload["response"]["result"]["subnet_id"] == "subnet-test-1"
     assert token_payload["response"]["result"]["zone"] == "lab-b"
+    assert token_payload["response"]["meta"]["routing_mode"] == "root.access_token_issuer"
+
+    audit = client.get(
+        "/v1/root/mcp/audit",
+        headers=owner_headers,
+        params={"target_id": target_id},
+    )
+    assert audit.status_code == 200
+    audit_items = audit.json()["events"]
+    assert any(item["tool_id"] == "hub.control_report.ingest" for item in audit_items)
+    assert any(item["tool_id"] == "hub.get_status" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
+
+
+def test_root_mcp_operational_tool_requires_published_skill_capability(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-2"
+
+    report = client.post(
+        "/v1/hub/control/report",
+        json={
+            "target_id": target_id,
+            "subnet_id": "subnet-test-2",
+            "environment": "test",
+            "zone": "lab-c",
+            "reported_at": "2026-04-07T12:05:00Z",
+            "lifecycle": {"node_state": "running"},
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "availability": "enabled",
+                "capabilities": ["hub.get_status"],
+            },
+        },
+    )
+    assert report.status_code == 200
+
+    runtime_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_runtime_summary",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert runtime_call.status_code == 200
+    runtime_payload = runtime_call.json()
+    assert runtime_payload["ok"] is False
+    assert runtime_payload["response"]["error"]["code"] == "capability_not_published"
+
+
+def test_root_mcp_can_require_verified_control_reports(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    monkeypatch.setenv("ADAOS_ROOT_HUB_REPORT_TOKEN", "hub-report-secret")
+    monkeypatch.setenv("ADAOS_ROOT_MCP_REQUIRE_VERIFIED_REPORTS", "1")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-3"
+    base_report = {
+        "target_id": target_id,
+        "subnet_id": "subnet-test-3",
+        "environment": "test",
+        "zone": "lab-d",
+        "reported_at": "2026-04-07T12:10:00Z",
+        "lifecycle": {"node_state": "running"},
+        "operational_surface": {
+            "published_by": "skill:infra_access_skill",
+            "enabled": True,
+            "availability": "enabled",
+            "capabilities": ["hub.get_status"],
+        },
+    }
+
+    unverified = client.post("/v1/hub/control/report", json=base_report)
+    assert unverified.status_code == 200
+    assert unverified.json()["report_verified"] is False
+
+    denied = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_status",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert denied.status_code == 200
+    denied_payload = denied.json()
+    assert denied_payload["ok"] is False
+    assert denied_payload["response"]["error"]["code"] == "report_unverified"
+
+    verified = client.post(
+        "/v1/hub/control/report",
+        headers={"X-AdaOS-Hub-Report-Token": "hub-report-secret"},
+        json={**base_report, "reported_at": "2026-04-07T12:11:00Z"},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["auth"]["method"] == "hub_report_token"
+    assert verified.json()["report_verified"] is True
+
+    allowed = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_status",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert allowed.status_code == 200
+    allowed_payload = allowed.json()
+    assert allowed_payload["ok"] is True
+    assert allowed_payload["response"]["meta"]["report_verified"] is True
 
 
 def test_root_mcp_access_token_rejects_scope_override(monkeypatch, tmp_path) -> None:
@@ -406,8 +538,8 @@ def test_root_mcp_placeholder_tool_returns_structured_error(monkeypatch) -> None
     envelope = payload["response"]
     assert envelope["tool_id"] == "hub.get_logs"
     assert envelope["status"] == "error"
-    assert envelope["error"]["code"] == "tool_not_available"
-    assert envelope["meta"]["availability"] == "placeholder"
+    assert envelope["error"]["code"] == "surface_unavailable"
+    assert envelope["meta"]["published_by"] == "skill:infra_access_skill"
 
 
 def test_root_mcp_descriptor_not_found_is_structured(monkeypatch) -> None:

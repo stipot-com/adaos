@@ -513,6 +513,9 @@ What is implemented in this slice:
   - `hub.get_status`
   - `hub.get_runtime_summary`
   - `hub.issue_access_token`
+- policy-side gating of target-bound `hub.*` tools by the target's published `infra_access_skill` capability surface
+- optional verified-report policy mode, so operational tools can require a verified control report before execution
+- unified operational audit events for both MCP tool execution and `hub.control_report.ingest`
 - placeholder operational contract catalog retained for future `infra_access_skill` write-oriented operations
 - initial audit persistence to local root MCP audit storage
 - audit filtering by tool, trace, target, and subnet scope

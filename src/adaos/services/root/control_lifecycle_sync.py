@@ -83,6 +83,17 @@ def _infra_access_operational_surface() -> dict[str, Any]:
     }
 
 
+def _control_report_headers() -> dict[str, str]:
+    token = str(
+        os.getenv("ADAOS_HUB_CONTROL_REPORT_TOKEN")
+        or os.getenv("ADAOS_ROOT_HUB_REPORT_TOKEN")
+        or ""
+    ).strip()
+    if not token:
+        return {}
+    return {"X-AdaOS-Hub-Report-Token": token}
+
+
 def build_control_lifecycle_report(conf) -> dict[str, Any]:
     lifecycle = runtime_lifecycle_snapshot()
     signals = runtime_signal_snapshot()
@@ -155,7 +166,7 @@ def report_hub_control_lifecycle_state(conf) -> dict[str, Any] | None:
     )
     payload["reported_at"] = protocol_meta.get("issued_at")
     payload["_protocol"] = dict(protocol_meta)
-    result = client.hub_control_report(payload=payload)
+    result = client.hub_control_report(payload=payload, headers=_control_report_headers() or None)
     try:
         ack_stream_message(
             _control_lifecycle_stream_id(conf),

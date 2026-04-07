@@ -569,6 +569,19 @@ def _result_summary(result: Any) -> dict[str, Any]:
     return {"kind": type(result).__name__}
 
 
+def _execution_adapter_for_tool(tool_id: str) -> str:
+    token = str(tool_id or "").strip()
+    if token in {"hub.get_status", "hub.get_runtime_summary"}:
+        return "root.control_report_projection"
+    if token == "hub.issue_access_token":
+        return "root.access_token_issuer"
+    if token.startswith("development."):
+        return "root.descriptor_registry"
+    if token.startswith("operations."):
+        return "root.managed_target_registry"
+    return "root.local_handler"
+
+
 def invoke_tool(
     tool_id: str,
     *,
@@ -670,6 +683,7 @@ def invoke_tool(
                             "availability": contract.availability.value,
                             "required_capability": contract.required_capability,
                             "stability": contract.stability,
+                            "routing_mode": _execution_adapter_for_tool(contract.id),
                             **scope_meta,
                             **policy_decision.to_meta(),
                         },
@@ -734,6 +748,7 @@ def invoke_tool(
         capability=(contract.required_capability if contract else None),
         target_id=target_id,
         policy_decision=policy_decision.policy_decision if policy_decision is not None else "allow",
+        execution_adapter=_execution_adapter_for_tool(response.tool_id),
         dry_run=bool(dry_run),
         status=response.status,
         started_at=started_at,

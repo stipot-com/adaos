@@ -38,6 +38,34 @@ def _normalize_target_ids(raw: Any) -> list[str]:
     return out
 
 
+def _normalize_surface_capabilities(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        token = str(item or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _surface_supports(surface_capabilities: list[str], *, tool_id: str, required_capability: str | None) -> bool:
+    if not surface_capabilities:
+        return False
+    if "*" in surface_capabilities:
+        return True
+    if tool_id in surface_capabilities:
+        return True
+    token = str(required_capability or "").strip()
+    if token and token in surface_capabilities:
+        return True
+    if token:
+        prefix = token.split(".", 1)[0] + ".*"
+        if prefix in surface_capabilities:
+            return True
+    return False
+
+
 def _capability_entry(
     capability: str,
     *,
@@ -408,6 +436,66 @@ def evaluate_tool_access(
                 meta={"target_environment": target.environment},
             )
 
+        if contract.id.startswith("hub."):
+            operational_surface = dict(target.operational_surface or {})
+            published_by = str(operational_surface.get("published_by") or "").strip()
+            surface_enabled = bool(operational_surface.get("enabled"))
+            surface_capabilities = _normalize_surface_capabilities(operational_surface.get("capabilities"))
+            report_verified = bool((target.meta or {}).get("report_verified"))
+            require_verified_reports = str(os.getenv("ADAOS_ROOT_MCP_REQUIRE_VERIFIED_REPORTS") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+            if published_by and published_by != "skill:infra_access_skill":
+                return RootMcpPolicyDecision(
+                    allowed=False,
+                    code="surface_mismatch",
+                    message=f"Target '{target_id}' publishes an unexpected operational surface '{published_by}'.",
+                    policy_decision="deny",
+                    required_capability=required_capability,
+                    granted_capabilities=grants,
+                    grant_source=grant_source,
+                    target_id=target_id,
+                    meta={"published_by": published_by},
+                )
+
+            if not surface_enabled:
+                return RootMcpPolicyDecision(
+                    allowed=False,
+                    code="surface_unavailable",
+                    message=f"Target '{target_id}' does not currently expose an enabled infra_access_skill surface.",
+                    policy_decision="deny",
+                    required_capability=required_capability,
+                    granted_capabilities=grants,
+                    grant_source=grant_source,
+                    target_id=target_id,
+                    meta={"published_by": published_by or "skill:infra_access_skill"},
+                )
+
+            if not _surface_supports(surface_capabilities, tool_id=contract.id, required_capability=required_capability):
+                return RootMcpPolicyDecision(
+                    allowed=False,
+                    code="capability_not_published",
+                    message=f"Target '{target_id}' does not publish capability '{contract.id}'.",
+                    policy_decision="deny",
+                    required_capability=required_capability,
+                    granted_capabilities=grants,
+                    grant_source=grant_source,
+                    target_id=target_id,
+                    meta={"published_capabilities": surface_capabilities},
+                )
+
+            if require_verified_reports and not report_verified:
+                return RootMcpPolicyDecision(
+                    allowed=False,
+                    code="report_unverified",
+                    message=f"Target '{target_id}' has not produced a verified control report.",
+                    policy_decision="deny",
+                    required_capability=required_capability,
+                    granted_capabilities=grants,
+                    grant_source=grant_source,
+                    target_id=target_id,
+                    meta={"report_verified": report_verified},
+                )
+
         return RootMcpPolicyDecision(
             allowed=True,
             required_capability=required_capability,
@@ -418,6 +506,10 @@ def evaluate_tool_access(
                 "target_environment": target.environment,
                 "target_subnet_id": target.subnet_id,
                 "target_zone": target.zone,
+                "target_surface_published_by": str((target.operational_surface or {}).get("published_by") or ""),
+                "target_surface_enabled": bool((target.operational_surface or {}).get("enabled")),
+                "target_surface_capabilities": _normalize_surface_capabilities((target.operational_surface or {}).get("capabilities")),
+                "report_verified": bool((target.meta or {}).get("report_verified")),
             },
         )
 

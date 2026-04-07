@@ -72,6 +72,8 @@ The current skeleton also applies root-side capability checks and scope hints:
 - read-only bearer access is allowed only for the default development/registry/audit capabilities
 - target lists and tool calls can be scoped by `X-AdaOS-Subnet-Id` and `X-AdaOS-Zone`
 - root can issue bounded MCP access tokens for external clients, and those tokens carry inherited `subnet_id` / `zone` / target allowlists
+- target-bound `hub.*` tools are now also gated by the managed target's published `infra_access_skill` capability surface
+- hub control reports may be verified with `X-AdaOS-Hub-Report-Token` when `ADAOS_ROOT_HUB_REPORT_TOKEN` is configured on root
 - hub control reports can refresh managed-target state on `root`, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
 - write-like operational tools are still blocked until the target-side `infra_access_skill` path is implemented
 

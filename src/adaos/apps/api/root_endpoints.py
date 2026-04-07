@@ -29,6 +29,8 @@ from adaos.services.root_mcp.service import (
     list_tool_contracts,
     recent_audit_events,
 )
+from adaos.services.root_mcp.audit import append_audit_event
+from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
 from adaos.services.root_mcp.targets import upsert_managed_target
@@ -134,6 +136,23 @@ def _legacy_root_token_auth(root_token: str | None) -> dict[str, Any] | None:
     }
 
 
+def _hub_report_token_auth(hub_report_token: str | None) -> dict[str, Any] | None:
+    token = str(hub_report_token or "").strip()
+    if not token:
+        return None
+    expected = os.getenv("ADAOS_ROOT_HUB_REPORT_TOKEN") or ""
+    if not expected:
+        return None
+    if token != expected:
+        raise HTTPException(status_code=401, detail="Invalid X-AdaOS-Hub-Report-Token")
+    return {
+        "method": "hub_report_token",
+        "verified": True,
+        "actor": "hub_report:verified",
+        "grant_source": "hub_report_token",
+    }
+
+
 def _require_root_read_auth_or_legacy_root_token(
     *,
     authorization: str | None,
@@ -151,9 +170,13 @@ def _resolve_hub_control_report_auth(
     authorization: str | None,
     owner_token: str | None,
     root_token: str | None,
+    hub_report_token: str | None,
 ) -> dict[str, Any]:
     if owner_token or authorization:
         return _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    report_token_auth = _hub_report_token_auth(hub_report_token)
+    if report_token_auth is not None:
+        return report_token_auth
     legacy = _legacy_root_token_auth(root_token)
     if legacy is not None:
         return legacy
@@ -454,15 +477,49 @@ async def hub_control_report_ingest(
     authorization: str | None = Header(default=None),
     owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
     root_token: str | None = Header(default=None, alias="X-Root-Token"),
+    hub_report_token: str | None = Header(default=None, alias="X-AdaOS-Hub-Report-Token"),
 ) -> dict[str, Any]:
-    auth = _resolve_hub_control_report_auth(authorization=authorization, owner_token=owner_token, root_token=root_token)
+    auth = _resolve_hub_control_report_auth(
+        authorization=authorization,
+        owner_token=owner_token,
+        root_token=root_token,
+        hub_report_token=hub_report_token,
+    )
     payload_raw = await request.json()
     if not isinstance(payload_raw, dict):
         raise HTTPException(status_code=422, detail="Invalid request body")
-    result = ingest_control_report(payload_raw)
+    result = ingest_control_report(payload_raw, ingest_auth=auth)
+    protocol = payload_raw.get("_protocol") if isinstance(payload_raw.get("_protocol"), dict) else {}
+    audit_event = RootMcpAuditEvent(
+        event_id=new_id(),
+        request_id=str(protocol.get("message_id") or result.get("event_id") or new_id()),
+        trace_id=str(protocol.get("flow_id") or new_id()),
+        tool_id="hub.control_report.ingest",
+        surface=RootMcpSurface.OPERATIONS,
+        actor=str(auth.get("actor") or "hub_report:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        capability="hub.control_report.ingest",
+        target_id=str(result.get("target_id") or ""),
+        policy_decision="allow",
+        execution_adapter="hub_root_protocol",
+        dry_run=False,
+        status="duplicate" if bool(result.get("duplicate")) else "ok",
+        started_at=str(payload_raw.get("reported_at") or result.get("server_time_utc") or ""),
+        finished_at=str(result.get("server_time_utc") or ""),
+        result_summary={"kind": "control_report", "duplicate": bool(result.get("duplicate"))},
+        meta={
+            "report_verified": bool(result.get("report_verified")),
+            "report_auth_method": str(result.get("report_auth_method") or ""),
+            "subnet_id": str(payload_raw.get("subnet_id") or ""),
+            "zone": str(payload_raw.get("zone") or ""),
+            "message_id": str(protocol.get("message_id") or ""),
+        },
+    )
+    append_audit_event(audit_event)
     return {
         **result,
         "auth": {"method": auth.get("method")},
+        "audit_event_id": audit_event.event_id,
     }
 
 
