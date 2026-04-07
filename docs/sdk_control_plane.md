@@ -16,8 +16,10 @@ In the current codebase, the control plane is split across:
 - canonical self-object access via SDK-first control-plane helpers
 - canonical skill/scenario object access via SDK-first helpers before widening the external API
 - canonical reliability projection access for LLM and skills, with runtime component objects and action metadata
+- canonical neighborhood projection access over subnet-directory peers, root connectivity, and nearby capacity snapshots
 - canonical workspace, profile, browser-session, device, quota, and local capacity objects through SDK-first helpers
 - canonical kind and relation registries under `adaos.services.system_model.model` so SDK, API, and LLM projections share the same vocabulary
+- shared governance and action-role defaults so SDK-facing objects carry owner, visibility, and role hints consistently
 - local inventory projection that combines node, workspace, browser, device, skill, scenario, capacity, and selected reliability-derived root/quota objects for LLM-oriented reasoning
 
 ## Related modules

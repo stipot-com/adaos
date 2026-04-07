@@ -133,6 +133,51 @@ def test_node_control_plane_inventory_projection_returns_canonical_payload(monke
     assert payload["projection"]["objects"][0]["id"] == "workspace:desk"
 
 
+def test_node_control_plane_neighborhood_projection_returns_canonical_payload(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+
+    monkeypatch.setattr(
+        node_api,
+        "current_neighborhood_projection",
+        lambda: CanonicalProjection(
+            id="projection:hub:alpha/neighborhood",
+            kind="neighborhood",
+            title="Hub Alpha neighborhood",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online"),
+            objects=[
+                CanonicalObject(id="member:beta", kind="member", title="Member Beta", status="online"),
+                CanonicalObject(id="root:eu", kind="root", title="Root EU", status="online"),
+            ],
+        ),
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/node/control-plane/projections/neighborhood")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["projection"]["id"] == "projection:hub:alpha/neighborhood"
+    assert payload["projection"]["objects"][0]["id"] == "member:beta"
+
+
 def test_sdk_control_plane_get_self_object(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     sys.modules.setdefault("y_py", types.SimpleNamespace(YDoc=type("YDoc", (), {}), apply_update=lambda *args, **kwargs: None))
@@ -281,3 +326,25 @@ def test_sdk_control_plane_quota_helpers(monkeypatch) -> None:
 
     assert quotas[0]["id"] == "quota:telegram-outbox"
     assert quotas[0]["kind"] == "quota"
+
+
+def test_sdk_control_plane_neighborhood_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "get_neighborhood_model",
+        lambda: CanonicalProjection(
+            id="projection:hub:alpha/neighborhood",
+            kind="neighborhood",
+            title="Neighborhood",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha"),
+            objects=[CanonicalObject(id="member:beta", kind="member", title="Member Beta")],
+        ),
+    )
+
+    projection = control_plane.get_neighborhood_projection()
+    objects = control_plane.get_neighborhood_objects()
+
+    assert projection["id"] == "projection:hub:alpha/neighborhood"
+    assert objects[0]["id"] == "member:beta"

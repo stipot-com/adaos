@@ -44,6 +44,13 @@ The CLI resolves this token automatically for local control operations.
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle, and core-update orchestration
 
+Current control-plane projection facades under `/api/node/*` are intentionally narrow and aggregate-focused:
+
+- `GET /api/node/control-plane/objects/self`
+- `GET /api/node/control-plane/projections/reliability`
+- `GET /api/node/control-plane/projections/inventory`
+- `GET /api/node/control-plane/projections/neighborhood`
+
 ## Notes
 
 - `/api/say` and `/api/io/console/print` still exist, but the code marks them as deprecated in favor of bus-driven flows.

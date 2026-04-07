@@ -183,6 +183,21 @@ def get_inventory_objects() -> list[Mapping[str, Any]]:
     return [item.to_dict() for item in get_inventory_model().objects]
 
 
+def get_neighborhood_model():
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_neighborhood_projection
+
+    return current_neighborhood_projection()
+
+
+def get_neighborhood_projection() -> Mapping[str, Any]:
+    return get_neighborhood_model().to_dict()
+
+
+def get_neighborhood_objects() -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in get_neighborhood_model().objects]
+
+
 __all__ = [
     "get_self_model",
     "get_self_object",
@@ -216,4 +231,7 @@ __all__ = [
     "get_inventory_model",
     "get_inventory_projection",
     "get_inventory_objects",
+    "get_neighborhood_model",
+    "get_neighborhood_projection",
+    "get_neighborhood_objects",
 ]

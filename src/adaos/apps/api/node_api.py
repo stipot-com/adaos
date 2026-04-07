@@ -48,6 +48,7 @@ from adaos.services.realtime_sidecar import (
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.system_model.service import (
     current_inventory_projection,
+    current_neighborhood_projection,
     current_node_object,
     current_node_status_payload,
     current_reliability_payload,
@@ -374,6 +375,12 @@ async def node_control_plane_reliability_projection(webspace_id: str | None = No
 @router.get("/control-plane/projections/inventory", dependencies=[Depends(require_token)])
 async def node_control_plane_inventory_projection() -> dict[str, Any]:
     projection = current_inventory_projection()
+    return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/projections/neighborhood", dependencies=[Depends(require_token)])
+async def node_control_plane_neighborhood_projection() -> dict[str, Any]:
+    projection = current_neighborhood_projection()
     return {"ok": True, "projection": projection.to_dict()}
 
 

@@ -44,6 +44,13 @@ CLI обычно подставляет этот токен автоматиче
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle и orchestration обновлений ядра
 
+Текущие control-plane projection facades под `/api/node/*` намеренно узкие и агрегатные:
+
+- `GET /api/node/control-plane/objects/self`
+- `GET /api/node/control-plane/projections/reliability`
+- `GET /api/node/control-plane/projections/inventory`
+- `GET /api/node/control-plane/projections/neighborhood`
+
 ## Замечания
 
 - `/api/say` и `/api/io/console/print` в коде помечены как deprecated в пользу bus-driven flow.

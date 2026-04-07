@@ -5,6 +5,7 @@ from typing import Any
 from adaos.services.system_model.mappers import (
     canonical_object_from_integration_quota,
     canonical_object_from_node_status,
+    canonical_object_from_protocol_traffic_budget,
     coerce_mapping,
 )
 from adaos.services.system_model.model import (
@@ -184,6 +185,23 @@ def _integration_quota_objects(subject: CanonicalObject, runtime: dict[str, Any]
         payload = dict(entry)
         payload.setdefault("name", str(name))
         objects.append(canonical_object_from_integration_quota(payload, node_id=node_id, root_id=root_id))
+    return objects
+
+
+def _traffic_budget_objects(subject: CanonicalObject, runtime: dict[str, Any]) -> list[CanonicalObject]:
+    hub_root_protocol = coerce_mapping(runtime.get("hub_root_protocol"))
+    zone = coerce_mapping(runtime.get("hub_root_zone"))
+    traffic_classes = coerce_mapping(hub_root_protocol.get("traffic_classes"))
+    node_id = str(subject.id.partition(":")[2] or subject.id).strip() or subject.id
+    root_token = str(zone.get("active_zone_id") or zone.get("configured_zone_id") or "default").strip() or "default"
+    root_id = canonical_ref(CanonicalKind.ROOT, root_token) or f"root:{root_token}"
+    objects: list[CanonicalObject] = []
+    for name, entry in sorted(traffic_classes.items()):
+        if not isinstance(entry, dict):
+            continue
+        payload = dict(entry)
+        payload.setdefault("traffic_class", str(name))
+        objects.append(canonical_object_from_protocol_traffic_budget(payload, node_id=node_id, root_id=root_id))
     return objects
 
 
@@ -421,6 +439,62 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     )
 
 
+def canonical_neighborhood_projection(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    title: str = "Local control-plane neighborhood",
+    summary: str | None = None,
+) -> CanonicalProjection:
+    kind_totals: dict[str, int] = {}
+    peer_node_ids: list[str] = []
+    online_peer_total = 0
+    incidents: list[dict[str, Any]] = []
+    for obj in objects:
+        kind = str(obj.kind or "unknown").strip() or "unknown"
+        kind_totals[kind] = int(kind_totals.get(kind) or 0) + 1
+        if kind in {CanonicalKind.NODE.value, CanonicalKind.HUB.value, CanonicalKind.MEMBER.value}:
+            peer_node_ids.append(obj.id)
+            if obj.status == CanonicalStatus.ONLINE:
+                online_peer_total += 1
+        incident = _incident_from_object(obj)
+        if incident:
+            incidents.append(incident)
+
+    effective_summary = summary or (
+        f"{subject.title} neighborhood with {len(peer_node_ids)} peer nodes and {len(objects)} related objects"
+    )
+    context = compact_mapping(
+        {
+            "kind_totals": kind_totals,
+            "peer_total": len(peer_node_ids),
+            "online_peer_total": online_peer_total,
+            "incident_total": len(incidents),
+            "peer_node_ids": peer_node_ids,
+        }
+    )
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/neighborhood",
+        kind="neighborhood",
+        title=title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=context,
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "peer_node_ids": peer_node_ids,
+                    "object_ids": [obj.id for obj in objects],
+                    "incident_total": len(incidents),
+                }
+            }
+        ),
+    )
+
+
 def canonical_inventory_projection(
     subject: CanonicalObject,
     objects: list[CanonicalObject],
@@ -493,6 +567,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
         _sidecar_object(subject, runtime),
         _sync_object(subject, runtime),
         _media_object(subject, runtime),
+        *_traffic_budget_objects(subject, runtime),
         *_integration_quota_objects(subject, runtime),
     ]
     incidents = [item for item in (_incident_from_object(obj) for obj in objects) if item]
@@ -528,5 +603,6 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
 
 __all__ = [
     "canonical_inventory_projection",
+    "canonical_neighborhood_projection",
     "canonical_projection_from_reliability_snapshot",
 ]

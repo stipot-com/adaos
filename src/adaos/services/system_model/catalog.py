@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
+from adaos.services.bootstrap import load_config
 from adaos.services.capacity import get_local_capacity
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.skill.manager import SkillManager
+from adaos.services.system_model.governance import apply_governance_defaults
 from adaos.services.system_model.mappers import (
     canonical_object_from_browser_session,
     canonical_object_from_capacity_snapshot,
@@ -17,12 +19,27 @@ from adaos.services.system_model.mappers import (
     canonical_object_from_user_profile,
     canonical_object_from_workspace_manifest,
 )
+from adaos.services.system_model.model import CanonicalKind, canonical_ref
 from adaos.services.user.profile import UserProfileService
 from adaos.services.workspaces import index as workspace_index
 
 
 def _ctx(ctx: AgentContext | None = None) -> AgentContext:
     return ctx or get_ctx()
+
+
+def _governance_refs() -> tuple[str | None, str | None]:
+    conf = load_config()
+    subnet_value = str(getattr(conf, "subnet_id", "") or "").strip()
+    owner_value = str(getattr(conf, "owner_id", "") or "").strip()
+    tenant_id = f"subnet:{subnet_value}" if subnet_value else None
+    owner_id = canonical_ref(CanonicalKind.PROFILE, owner_value) or (f"profile:{owner_value}" if owner_value else None)
+    return tenant_id, owner_id
+
+
+def _governed(obj: Any):
+    tenant_id, owner_id = _governance_refs()
+    return apply_governance_defaults(obj, tenant_id=tenant_id, owner_id=owner_id)
 
 
 def _skill_manager(ctx: AgentContext | None = None) -> SkillManager:
@@ -67,7 +84,7 @@ def skill_object(name: str, *, ctx: AgentContext | None = None):
         "slot": slot or None,
         "update_available": False,
     }
-    return canonical_object_from_skill_status(payload)
+    return _governed(canonical_object_from_skill_status(payload))
 
 
 def installed_skill_objects(*, ctx: AgentContext | None = None) -> list[Any]:
@@ -89,14 +106,14 @@ def scenario_object(name: str, *, ctx: AgentContext | None = None):
     for row in rows:
         row_name = str(getattr(row, "name", "") or "").strip()
         if row_name == name:
-            return canonical_object_from_scenario_item(
+            return _governed(canonical_object_from_scenario_item(
                 {
                     "name": name,
                     "version": getattr(row, "version", None),
                     "path": getattr(row, "path", None),
                 }
-            )
-    return canonical_object_from_scenario_item({"name": name})
+            ))
+    return _governed(canonical_object_from_scenario_item({"name": name}))
 
 
 def installed_scenario_objects(*, ctx: AgentContext | None = None) -> list[Any]:
@@ -107,29 +124,29 @@ def installed_scenario_objects(*, ctx: AgentContext | None = None) -> list[Any]:
         if not name:
             continue
         objects.append(
-            canonical_object_from_scenario_item(
+            _governed(canonical_object_from_scenario_item(
                 {
                     "name": name,
                     "version": getattr(row, "version", None),
                     "path": getattr(row, "path", None),
                 }
-            )
+            ))
         )
     return objects
 
 
 def current_profile_object(*, ctx: AgentContext | None = None):
     svc = UserProfileService(_ctx(ctx))
-    return canonical_object_from_user_profile(svc.get_profile())
+    return _governed(canonical_object_from_user_profile(svc.get_profile()))
 
 
 def workspace_object(workspace_id: str):
     row = workspace_index.get_workspace(workspace_id) or workspace_index.ensure_workspace(workspace_id)
-    return canonical_object_from_workspace_manifest(row)
+    return _governed(canonical_object_from_workspace_manifest(row))
 
 
 def workspace_objects() -> list[Any]:
-    return [canonical_object_from_workspace_manifest(row) for row in list(workspace_index.list_workspaces() or [])]
+    return [_governed(canonical_object_from_workspace_manifest(row)) for row in list(workspace_index.list_workspaces() or [])]
 
 
 def _browser_session_payloads() -> list[dict[str, Any]]:
@@ -143,7 +160,7 @@ def _browser_session_payloads() -> list[dict[str, Any]]:
 
 
 def browser_session_objects() -> list[Any]:
-    return [canonical_object_from_browser_session(item) for item in _browser_session_payloads()]
+    return [_governed(canonical_object_from_browser_session(item)) for item in _browser_session_payloads()]
 
 
 def device_objects() -> list[Any]:
@@ -196,20 +213,20 @@ def device_objects() -> list[Any]:
             record["online"] = False
 
     return [
-        canonical_object_from_device_endpoint(item)
+        _governed(canonical_object_from_device_endpoint(item))
         for item in sorted(records.values(), key=lambda entry: str(entry.get("device_id") or ""))
     ]
 
 
 def local_capacity_object(*, node_id: str | None = None):
-    return canonical_object_from_capacity_snapshot(get_local_capacity(), node_id=node_id)
+    return _governed(canonical_object_from_capacity_snapshot(get_local_capacity(), node_id=node_id))
 
 
 def local_io_objects(*, node_id: str | None = None) -> list[Any]:
     snapshot = get_local_capacity()
     io_items = snapshot.get("io") if isinstance(snapshot.get("io"), list) else []
     return [
-        canonical_object_from_io_capacity_entry(item, node_id=node_id)
+        _governed(canonical_object_from_io_capacity_entry(item, node_id=node_id))
         for item in io_items
         if isinstance(item, dict)
     ]

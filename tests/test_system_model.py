@@ -7,20 +7,25 @@ from pydantic import BaseModel
 from adaos.services.system_model import (
     CANONICAL_KIND_REGISTRY,
     CANONICAL_RELATION_REGISTRY,
+    CanonicalActionDescriptor,
     CanonicalKind,
     CanonicalObject,
     RelationKind,
+    apply_governance_defaults,
     canonical_ref,
     CanonicalStatus,
     canonical_inventory_projection,
+    canonical_neighborhood_projection,
     canonical_object_from_browser_session,
     canonical_object_from_capacity_snapshot,
     canonical_object_from_device_endpoint,
     canonical_object_from_integration_quota,
+    canonical_object_from_protocol_traffic_budget,
     canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_projection_from_reliability_snapshot,
     canonical_object_from_skill_status,
+    canonical_object_from_subnet_directory_node,
     canonical_object_from_user_profile,
     canonical_object_from_workspace_manifest,
     normalize_kind,
@@ -215,6 +220,31 @@ def test_canonical_object_from_device_endpoint_merges_workspace_and_session_link
     assert obj["health"]["connectivity"] == "reachable"
 
 
+def test_canonical_object_from_subnet_directory_node_maps_capacity_and_presence() -> None:
+    obj = canonical_object_from_subnet_directory_node(
+        {
+            "node_id": "member-2",
+            "subnet_id": "main",
+            "roles": ["member"],
+            "hostname": "Kitchen Member",
+            "base_url": "http://member-2.local",
+            "node_state": "ready",
+            "online": True,
+            "capacity": {
+                "io": [{"io_type": "say"}],
+                "skills": [{"name": "weather"}],
+                "scenarios": [{"name": "home"}],
+            },
+        }
+    ).to_dict()
+
+    assert obj["id"] == "member:member-2"
+    assert obj["kind"] == "member"
+    assert obj["resources"]["io_total"] == 1
+    assert obj["runtime"]["hostname"] == "Kitchen Member"
+    assert obj["health"]["connectivity"] == "reachable"
+
+
 def test_canonical_object_from_capacity_snapshot_summarizes_local_inventory() -> None:
     obj = canonical_object_from_capacity_snapshot(
         {
@@ -268,6 +298,50 @@ def test_canonical_object_from_integration_quota_exposes_usage_and_pressure() ->
     assert obj["status"] == "warning"
     assert obj["relations"]["connected_to"] == ["root:eu"]
     assert obj["resources"]["used"] == 12
+
+
+def test_canonical_object_from_protocol_traffic_budget_exposes_limits_and_pressure() -> None:
+    obj = canonical_object_from_protocol_traffic_budget(
+        {
+            "traffic_class": "control",
+            "policy": {
+                "pending_msgs_limit": 4,
+                "pending_bytes_limit": 4096,
+                "worker_budget": 1,
+            },
+            "last_qsize": 4,
+            "last_pending_bytes": 1024,
+            "publish_fail": 0,
+            "publish_ok": 3,
+        },
+        node_id="hub-1",
+        root_id="root:eu",
+    ).to_dict()
+
+    assert obj["id"] == "quota:hub-protocol-control"
+    assert obj["status"] == "warning"
+    assert obj["resources"]["queue_limit"] == 4
+    assert obj["relations"]["connected_to"] == ["root:eu"]
+
+
+def test_apply_governance_defaults_merges_visibility_roles_and_action_defaults() -> None:
+    obj = CanonicalObject(
+        id="runtime:hub:alpha/sidecar",
+        kind="runtime",
+        title="Realtime sidecar",
+        actions=[CanonicalActionDescriptor(id="restart_sidecar", title="restart sidecar")],
+    )
+
+    governed = apply_governance_defaults(
+        obj,
+        tenant_id="subnet:main",
+        owner_id="profile:owner",
+    ).to_dict()
+
+    assert governed["governance"]["tenant_id"] == "subnet:main"
+    assert governed["governance"]["owner_id"] == "profile:owner"
+    assert "role:infra-operator" in governed["governance"]["roles_allowed"]
+    assert governed["actions"][0]["requires_role"] == "role:infra-operator"
 
 
 def test_canonical_projection_from_reliability_snapshot_builds_runtime_components() -> None:
@@ -351,6 +425,16 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "recommended_path": "direct_local_http",
                 },
                 "hub_root_protocol": {
+                    "traffic_classes": {
+                        "control": {
+                            "traffic_class": "control",
+                            "policy": {"pending_msgs_limit": 4, "pending_bytes_limit": 4096, "worker_budget": 1},
+                            "last_qsize": 1,
+                            "last_pending_bytes": 512,
+                            "publish_ok": 3,
+                            "publish_fail": 0,
+                        }
+                    },
                     "integration_outboxes": {
                         "telegram": {"name": "telegram", "size": 1, "max_size": 10, "durable_store": True},
                         "llm": {"name": "llm", "size": 0, "max_size": 5, "durable_store": True},
@@ -366,6 +450,7 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
 
     objects = {item["id"]: item for item in projection["objects"]}
     assert objects["root:eu"]["kind"] == "root"
+    assert objects["quota:hub-protocol-control"]["kind"] == "quota"
     assert objects["quota:telegram-outbox"]["kind"] == "quota"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
@@ -414,6 +499,17 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
                     "transport": {"direct_local_ready": False},
                 },
                 "hub_root_protocol": {
+                    "traffic_classes": {
+                        "integration": {
+                            "traffic_class": "integration",
+                            "policy": {"pending_msgs_limit": 2, "pending_bytes_limit": 2048, "worker_budget": 1},
+                            "last_qsize": 2,
+                            "last_pending_bytes": 2048,
+                            "pressure_events": 1,
+                            "publish_fail": 1,
+                            "publish_ok": 0,
+                        }
+                    },
                     "integration_outboxes": {
                         "telegram": {"name": "telegram", "size": 5, "durable_store": False, "publish_fail": 1, "publish_ok": 0}
                     }
@@ -427,6 +523,7 @@ def test_canonical_projection_from_reliability_snapshot_maps_actions_and_inciden
 
     assert sync_actions["restore"]["risk"] == "medium"
     assert objects["connection:hub:hub-2/route"]["status"] == "offline"
+    assert objects["quota:hub-protocol-integration"]["status"] in {"warning", "degraded"}
     assert objects["quota:telegram-outbox"]["status"] in {"warning", "degraded"}
     assert any(item["object_id"] == "connection:hub:hub-2/route" for item in projection["incidents"])
     assert any(item["object_id"] == "runtime:hub:hub-2/sidecar" for item in projection["incidents"])
@@ -446,3 +543,19 @@ def test_canonical_inventory_projection_counts_objects_and_incidents() -> None:
     assert projection["context"]["kind_totals"]["browser_session"] == 1
     assert projection["context"]["incident_total"] == 2
     assert len(projection["incidents"]) == 2
+
+
+def test_canonical_neighborhood_projection_tracks_peers_and_incidents() -> None:
+    subject = CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status=CanonicalStatus.ONLINE)
+    objects = [
+        CanonicalObject(id="member:beta", kind="member", title="Member Beta", status=CanonicalStatus.ONLINE),
+        CanonicalObject(id="member:gamma", kind="member", title="Member Gamma", status=CanonicalStatus.WARNING),
+        CanonicalObject(id="root:eu", kind="root", title="Root EU", status=CanonicalStatus.ONLINE),
+    ]
+
+    projection = canonical_neighborhood_projection(subject, objects).to_dict()
+
+    assert projection["id"] == "projection:hub:alpha/neighborhood"
+    assert projection["context"]["peer_total"] == 2
+    assert projection["context"]["online_peer_total"] == 1
+    assert projection["context"]["incident_total"] == 1
