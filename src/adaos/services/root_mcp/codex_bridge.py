@@ -1,0 +1,503 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, BinaryIO, Mapping
+
+from .client import RootMcpClient, RootMcpClientConfig
+from .tokens import DEFAULT_ACCESS_TOKEN_CAPABILITIES
+
+
+DEFAULT_CODEX_TARGET_CAPABILITIES: list[str] = [
+    *DEFAULT_ACCESS_TOKEN_CAPABILITIES,
+    "hub.get_operational_surface",
+    "hub.get_status",
+    "hub.get_runtime_summary",
+    "hub.get_activity_log",
+    "hub.get_capability_usage_summary",
+    "hub.get_logs",
+    "hub.run_healthchecks",
+]
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _normalize_text(value: Any) -> str | None:
+    token = str(value or "").strip()
+    return token or None
+
+
+def _normalize_unique(items: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for item in items or []:
+        token = str(item or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+@dataclass(slots=True)
+class CodexBridgeProfile:
+    root_url: str
+    target_id: str | None = None
+    subnet_id: str | None = None
+    zone: str | None = None
+    access_token: str | None = None
+    access_token_file: str | None = None
+    server_name: str = "adaos-test-hub"
+    audience: str = "codex-vscode"
+    generated_at: str | None = None
+    capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CODEX_TARGET_CAPABILITIES))
+
+    def resolved_access_token(self) -> str:
+        direct = _normalize_text(self.access_token)
+        if direct:
+            return direct
+        env_name = _normalize_text(os.getenv("ADAOS_MCP_ACCESS_TOKEN_ENV"))
+        if env_name:
+            token = _normalize_text(os.getenv(env_name))
+            if token:
+                return token
+        path = _normalize_text(self.access_token_file)
+        if path:
+            try:
+                token = Path(path).read_text(encoding="utf-8").strip()
+            except Exception as exc:  # pragma: no cover - file errors depend on host
+                raise RuntimeError(f"failed to read Root MCP access token from {path}: {exc}") from exc
+            if token:
+                return token
+        raise RuntimeError("Root MCP access token is missing; re-run 'adaos dev root mcp prepare-codex'")
+
+    def client_config(self) -> RootMcpClientConfig:
+        return RootMcpClientConfig(
+            root_url=str(self.root_url),
+            subnet_id=self.subnet_id,
+            zone=self.zone,
+            access_token=self.resolved_access_token(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "server_name": self.server_name,
+            "root_url": self.root_url,
+            "target_id": self.target_id,
+            "subnet_id": self.subnet_id,
+            "zone": self.zone,
+            "access_token_file": self.access_token_file,
+            "audience": self.audience,
+            "generated_at": self.generated_at or _iso_now(),
+            "capabilities": list(self.capabilities),
+        }
+
+
+def default_profile_paths(base_dir: str | Path, server_name: str) -> tuple[Path, Path]:
+    token = str(server_name or "adaos-test-hub").strip() or "adaos-test-hub"
+    safe_name = token.replace(":", "-").replace("/", "-").replace("\\", "-").replace(" ", "-")
+    root = Path(base_dir) / ".adaos" / "mcp"
+    return root / f"{safe_name}.profile.json", root / f"{safe_name}.token"
+
+
+def load_codex_bridge_profile(
+    path: str | Path | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> CodexBridgeProfile:
+    environment = dict(env or os.environ)
+    profile_path = _normalize_text(path) or _normalize_text(environment.get("ADAOS_MCP_PROFILE"))
+    payload: dict[str, Any] = {}
+    if profile_path:
+        resolved = Path(profile_path)
+        try:
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"failed to read Codex MCP profile {resolved}: {exc}") from exc
+    root_url = _normalize_text(payload.get("root_url")) or _normalize_text(environment.get("ADAOS_MCP_ROOT_URL"))
+    if not root_url:
+        raise RuntimeError("Root MCP bridge requires root_url; set ADAOS_MCP_PROFILE or ADAOS_MCP_ROOT_URL")
+    return CodexBridgeProfile(
+        root_url=root_url,
+        target_id=_normalize_text(payload.get("target_id")) or _normalize_text(environment.get("ADAOS_MCP_TARGET_ID")),
+        subnet_id=_normalize_text(payload.get("subnet_id")) or _normalize_text(environment.get("ADAOS_MCP_SUBNET_ID")),
+        zone=_normalize_text(payload.get("zone")) or _normalize_text(environment.get("ADAOS_MCP_ZONE")),
+        access_token=_normalize_text(payload.get("access_token")) or _normalize_text(environment.get("ADAOS_MCP_ACCESS_TOKEN")),
+        access_token_file=_normalize_text(payload.get("access_token_file")) or _normalize_text(environment.get("ADAOS_MCP_ACCESS_TOKEN_FILE")),
+        server_name=_normalize_text(payload.get("server_name")) or "adaos-test-hub",
+        audience=_normalize_text(payload.get("audience")) or "codex-vscode",
+        generated_at=_normalize_text(payload.get("generated_at")),
+        capabilities=_normalize_unique(list(payload.get("capabilities") or [])) or list(DEFAULT_CODEX_TARGET_CAPABILITIES),
+    )
+
+
+def write_codex_bridge_profile(
+    *,
+    profile_path: str | Path,
+    token_path: str | Path,
+    profile: CodexBridgeProfile,
+    access_token: str,
+) -> tuple[Path, Path]:
+    profile_file = Path(profile_path)
+    token_file = Path(token_path)
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(str(access_token).strip() + "\n", encoding="utf-8")
+    stored = CodexBridgeProfile(
+        root_url=profile.root_url,
+        target_id=profile.target_id,
+        subnet_id=profile.subnet_id,
+        zone=profile.zone,
+        access_token_file=str(token_file),
+        server_name=profile.server_name,
+        audience=profile.audience,
+        generated_at=profile.generated_at or _iso_now(),
+        capabilities=_normalize_unique(profile.capabilities) or list(DEFAULT_CODEX_TARGET_CAPABILITIES),
+    )
+    profile_file.write_text(_json_text(stored.to_dict()) + "\n", encoding="utf-8")
+    return profile_file, token_file
+
+
+def build_codex_stdio_command(
+    *,
+    server_name: str,
+    python_executable: str,
+    profile_path: str | Path,
+) -> list[str]:
+    return [
+        "codex",
+        "mcp",
+        "add",
+        str(server_name or "adaos-test-hub").strip() or "adaos-test-hub",
+        "--env",
+        f"ADAOS_MCP_PROFILE={Path(profile_path)}",
+        "--",
+        str(python_executable),
+        "-m",
+        "adaos",
+        "dev",
+        "root",
+        "mcp",
+        "serve",
+    ]
+
+
+def _tool_text(payload: Any, *, error: bool = False) -> dict[str, Any]:
+    text = _json_text(payload)
+    response = {
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": payload,
+    }
+    if error:
+        response["isError"] = True
+    return response
+
+
+class CodexRootMcpBridge:
+    def __init__(self, profile: CodexBridgeProfile):
+        self.profile = profile
+
+    def _client(self) -> RootMcpClient:
+        return RootMcpClient(self.profile.client_config())
+
+    def _effective_target_id(self, arguments: Mapping[str, Any] | None) -> str:
+        target_id = _normalize_text((arguments or {}).get("target_id")) or self.profile.target_id
+        if not target_id:
+            raise ValueError("target_id is required for this bridge call")
+        return target_id
+
+    def instructions(self) -> str:
+        target = self.profile.target_id or "the configured managed target"
+        return (
+            "This MCP server is a local stdio bridge from Codex to AdaOS Root MCP. "
+            f"It is currently bound to {target}. Prefer get_status, get_runtime_summary, "
+            "and get_operational_surface before requesting logs or healthchecks."
+        )
+
+    def tool_definitions(self) -> list[dict[str, Any]]:
+        target_optional = self.profile.target_id is not None
+        target_properties = {"target_id": {"type": "string", "description": "Managed target id. Defaults to the configured test hub."}}
+        target_required = [] if target_optional else ["target_id"]
+        return [
+            {
+                "name": "foundation",
+                "description": "Read the AdaOS Root MCP foundation snapshot used by this bridge.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "list_managed_targets",
+                "description": "List managed targets visible to the current Root MCP token scope.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "environment": {"type": "string", "description": "Optional environment filter such as test."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_managed_target",
+                "description": "Describe the configured managed target or another accessible target.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": target_properties,
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_operational_surface",
+                "description": "Inspect the published infra_access_skill surface, token management, and WebUI hints.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": target_properties,
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_status",
+                "description": "Read the current hub status, route, root-control, and deployment state.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": target_properties,
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_runtime_summary",
+                "description": "Read the current runtime summary published for the managed hub.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": target_properties,
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_activity_log",
+                "description": "Read recent Root MCP activity and control-report events for the target.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                        "errors_only": {"type": "boolean", "default": False},
+                    },
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_capability_usage_summary",
+                "description": "Read aggregated capability-usage counters for the target.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+                    },
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_logs",
+                "description": "Read bounded logs through infra_access_skill when the target exposes local_process execution.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "tail": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                    },
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "run_healthchecks",
+                "description": "Run bounded healthchecks through infra_access_skill when the target exposes local_process execution.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": target_properties,
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "recent_audit",
+                "description": "Read recent Root MCP audit events for this bridge scope.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                        "tool_id": {"type": "string"},
+                        "trace_id": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        ]
+
+    def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        args = dict(arguments or {})
+        client = self._client()
+        tool = str(name or "").strip()
+        if tool == "foundation":
+            return _tool_text(client.foundation())
+        if tool == "list_managed_targets":
+            return _tool_text(client.list_managed_targets(environment=_normalize_text(args.get("environment"))))
+        if tool == "get_managed_target":
+            return _tool_text(client.get_managed_target(self._effective_target_id(args)))
+        if tool == "get_operational_surface":
+            return _tool_text(client.get_operational_surface(self._effective_target_id(args)))
+        if tool == "get_status":
+            return _tool_text(client.get_target_status(self._effective_target_id(args)))
+        if tool == "get_runtime_summary":
+            return _tool_text(client.get_target_runtime_summary(self._effective_target_id(args)))
+        if tool == "get_activity_log":
+            return _tool_text(
+                client.get_target_activity_log(
+                    self._effective_target_id(args),
+                    limit=int(args.get("limit") or 50),
+                    errors_only=bool(args.get("errors_only")),
+                )
+            )
+        if tool == "get_capability_usage_summary":
+            return _tool_text(
+                client.get_target_capability_usage_summary(
+                    self._effective_target_id(args),
+                    limit=int(args.get("limit") or 200),
+                )
+            )
+        if tool == "get_logs":
+            return _tool_text(
+                client.get_target_logs(
+                    self._effective_target_id(args),
+                    tail=int(args.get("tail") or 200),
+                )
+            )
+        if tool == "run_healthchecks":
+            return _tool_text(client.run_target_healthchecks(self._effective_target_id(args)))
+        if tool == "recent_audit":
+            return _tool_text(
+                client.recent_audit(
+                    limit=int(args.get("limit") or 50),
+                    tool_id=_normalize_text(args.get("tool_id")),
+                    trace_id=_normalize_text(args.get("trace_id")),
+                    target_id=self.profile.target_id,
+                    subnet_id=self.profile.subnet_id,
+                )
+            )
+        raise KeyError(tool)
+
+    def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        method = str(request.get("method") or "").strip()
+        request_id = request.get("id")
+        params = request.get("params")
+        try:
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": self.profile.server_name, "version": "0.1.0"},
+                    "instructions": self.instructions(),
+                }
+                return {"jsonrpc": "2.0", "id": request_id, "result": result}
+            if method == "ping":
+                return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+            if method == "tools/list":
+                return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": self.tool_definitions()}}
+            if method == "tools/call":
+                payload = dict(params or {})
+                name = str(payload.get("name") or "").strip()
+                arguments = payload.get("arguments")
+                return {"jsonrpc": "2.0", "id": request_id, "result": self.call_tool(name, arguments)}
+            if method.startswith("notifications/"):
+                return None
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"Method not supported: {method}"},
+            }
+        except Exception as exc:
+            if method == "tools/call":
+                error_payload = {
+                    "ok": False,
+                    "error": {
+                        "message": str(exc),
+                        "type": exc.__class__.__name__,
+                    },
+                }
+                return {"jsonrpc": "2.0", "id": request_id, "result": _tool_text(error_payload, error=True)}
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": str(exc)},
+            }
+
+
+def _read_framed_message(stream: BinaryIO) -> dict[str, Any] | None:
+    headers: dict[str, str] = {}
+    while True:
+        line = stream.readline()
+        if not line:
+            return None
+        if line in {b"\r\n", b"\n"}:
+            break
+        try:
+            key, value = line.decode("utf-8").split(":", 1)
+        except ValueError:
+            continue
+        headers[key.strip().lower()] = value.strip()
+    try:
+        length = int(headers.get("content-length") or "0")
+    except ValueError:
+        length = 0
+    if length <= 0:
+        return None
+    body = stream.read(length)
+    if not body:
+        return None
+    return json.loads(body.decode("utf-8"))
+
+
+def _write_framed_message(stream: BinaryIO, payload: Mapping[str, Any]) -> None:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    header = f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n\r\n".encode("ascii")
+    stream.write(header)
+    stream.write(body)
+    stream.flush()
+
+
+def serve_codex_stdio_bridge(profile: CodexBridgeProfile | None = None) -> None:
+    bridge = CodexRootMcpBridge(profile or load_codex_bridge_profile())
+    input_stream = sys.stdin.buffer
+    output_stream = sys.stdout.buffer
+    while True:
+        message = _read_framed_message(input_stream)
+        if message is None:
+            return
+        response = bridge.handle_request(message)
+        if response is not None:
+            _write_framed_message(output_stream, response)
+
+
+__all__ = [
+    "CodexBridgeProfile",
+    "CodexRootMcpBridge",
+    "DEFAULT_CODEX_TARGET_CAPABILITIES",
+    "build_codex_stdio_command",
+    "default_profile_paths",
+    "load_codex_bridge_profile",
+    "serve_codex_stdio_bridge",
+    "write_codex_bridge_profile",
+]

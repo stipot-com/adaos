@@ -490,7 +490,9 @@ The current code checkpoint establishes the first root-hosted skeleton under:
 - `src/adaos/services/root_mcp/service.py`
 - `src/adaos/services/root_mcp/targets.py`
 - `src/adaos/services/root_mcp/client.py`
+- `src/adaos/services/root_mcp/codex_bridge.py`
 - `src/adaos/apps/api/root_endpoints.py`
+- `src/adaos/apps/cli/commands/dev.py`
 
 What is implemented in this slice:
 
@@ -555,8 +557,25 @@ What is implemented in this slice:
 - audit filtering by tool, trace, target, and subnet scope
 - scope-aware target filtering by `subnet_id` and `zone`
 - access-token-backed MCP auth with bounded capabilities, target allowlists, and scope inheritance
+- local `stdio` Codex bridge for VS Code and Codex CLI, bound to a managed test hub through a workspace-local profile plus token file
+- `adaos dev root mcp prepare-codex` to issue a target-scoped bridge token and materialize the local Codex profile
+- `adaos dev root mcp serve` to expose a real MCP tool surface over `stdio` by translating Codex tool calls into `RootMcpClient` calls
+- initial Codex-facing tool set for:
+  - `foundation`
+  - `list_managed_targets`
+  - `get_managed_target`
+  - `get_operational_surface`
+  - `get_status`
+  - `get_runtime_summary`
+  - `get_activity_log`
+  - `get_capability_usage_summary`
+  - `get_logs`
+  - `run_healthchecks`
+  - `recent_audit`
 
-This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports, skill-aware managed-target publication, root-hosted read tools, `infra_access_skill` surface inspection, typed observability feeds for activity and capability usage, bounded local-pilot `infra_access_skill` writes for restart/test/deploy flows, richer request-policy-routing-result traces, and a first target-scoped access-token management lifecycle suitable for web-client control surfaces. Broader remote execution and real target-side rollout execution remain deferred to the future `infra_access_skill` path.
+This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports, skill-aware managed-target publication, root-hosted read tools, `infra_access_skill` surface inspection, typed observability feeds for activity and capability usage, bounded local-pilot `infra_access_skill` writes for restart/test/deploy flows, richer request-policy-routing-result traces, and a first target-scoped access-token management lifecycle suitable for web-client control surfaces.
+
+It also now proves the first end-to-end external-client workflow for Codex in VS Code without exposing a fake direct SDK path: Codex starts a local `stdio` bridge, the bridge uses a workspace-local Root MCP profile and token file, and Root MCP remains the only machine-operable backend surface. Broader remote execution and real target-side rollout execution remain deferred to the future `infra_access_skill` path.
 
 ### Phase 2. MCP-to-SDK Base
 

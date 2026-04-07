@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json, os, traceback
+import json, os, shutil, subprocess, sys, traceback
 import functools
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from dataclasses import asdict
 
 import typer
@@ -33,15 +33,27 @@ from adaos.services.skill.runtime import (
     run_dev_skill_prep,
 )
 from adaos.services.root.client import RootHttpClient
+from adaos.services.root_mcp.codex_bridge import (
+    CodexBridgeProfile,
+    DEFAULT_CODEX_TARGET_CAPABILITIES,
+    build_codex_stdio_command,
+    default_profile_paths,
+    load_codex_bridge_profile,
+    serve_codex_stdio_bridge,
+    write_codex_bridge_profile,
+)
+from adaos.services.root_mcp.client import RootMcpClient, RootMcpClientConfig
 from adaos.services.nats_config import normalize_nats_ws_url
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help="Developer utilities for Root and Forge workflows.")
 root_app = typer.Typer(help="Bootstrap and authenticate against the Root service.")
+mcp_app = typer.Typer(help="Root MCP bridge and Codex / VS Code integration utilities.")
 skill_app = typer.Typer(help="Manage owner skills in the local Forge workspace.")
 scenario_app = typer.Typer(help="Manage owner scenarios in the local Forge workspace.")
 
 app.add_typer(root_app, name="root")
+root_app.add_typer(mcp_app, name="mcp")
 app.add_typer(skill_app, name="skill")
 app.add_typer(scenario_app, name="scenario")
 
@@ -436,6 +448,265 @@ def _echo_login_result(result: RootLoginResult) -> None:
     if result.subnet_id:
         typer.echo(f"Subnet ID: {result.subnet_id}")
     typer.echo(f"Workspace: {_display_path(result.workspace_path)}")
+
+
+def _repo_root_dir() -> Path:
+    ctx = get_ctx()
+    try:
+        raw = ctx.paths.repo_root()
+        return Path(raw() if callable(raw) else raw)
+    except Exception:
+        return Path.cwd()
+
+
+def _dev_root_http_client(*, root_url: str | None = None) -> tuple[RootHttpClient, Any]:
+    from adaos.services.node_config import load_config, _expand_path as _expand_path
+
+    ctx = get_ctx()
+    cfg = load_config(ctx=ctx)
+    ca = _expand_path(cfg.root_settings.ca_cert, "keys/ca.cert")
+    cert = _expand_path(cfg.subnet_settings.hub.cert, "keys/hub_cert.pem")
+    key = _expand_path(cfg.subnet_settings.hub.key, "keys/hub_private.pem")
+    verify: str | bool = True
+    if os.getenv("ADAOS_ROOT_VERIFY_CA", "0") == "1":
+        verify = str(ca) if ca.exists() else True
+    cert_tuple = (str(cert), str(key)) if cert.exists() and key.exists() else None
+    base = str(root_url or cfg.root_settings.base_url or ctx.settings.api_base or "").strip()
+    return RootHttpClient(base_url=base, verify=verify, cert=cert_tuple), cfg
+
+
+def _resolve_root_mcp_management_client(
+    *,
+    root_url: str | None = None,
+    owner_token: str | None = None,
+) -> tuple[RootMcpClient, Any, str]:
+    from adaos.services.root.service import RootAuthService, RootAuthError
+
+    http, cfg = _dev_root_http_client(root_url=root_url)
+    explicit_owner_token = str(owner_token or os.getenv("ROOT_TOKEN") or os.getenv("ADAOS_ROOT_TOKEN") or "").strip() or None
+    if explicit_owner_token:
+        headers = {"X-Owner-Token": explicit_owner_token}
+        managed_http = RootHttpClient(base_url=http.base_url, verify=http.verify, cert=http.cert, default_headers=headers)
+        return (
+            RootMcpClient(
+                RootMcpClientConfig(root_url=http.base_url, extra_headers=headers),
+                http=managed_http,
+            ),
+            cfg,
+            "owner_token",
+        )
+
+    try:
+        access_token = RootAuthService(http=http).get_access_token(cfg)
+    except RootAuthError as exc:
+        raise RootServiceError(f"{exc}. Run 'adaos dev root login' or pass --owner-token.") from exc
+    managed_http = RootHttpClient(
+        base_url=http.base_url,
+        verify=http.verify,
+        cert=http.cert,
+        default_headers={"Authorization": f"Bearer {access_token}"},
+    )
+    return (
+        RootMcpClient(
+            RootMcpClientConfig(root_url=http.base_url, access_token=access_token),
+            http=managed_http,
+        ),
+        cfg,
+        "owner_bearer",
+    )
+
+
+def _coalesce_target_id(cfg: Any, *, target_id: str | None, subnet_id: str | None) -> str:
+    explicit_target_id = str(target_id or "").strip()
+    if explicit_target_id:
+        return explicit_target_id
+    token = str(subnet_id or getattr(cfg, "subnet_id", None) or "").strip()
+    if token:
+        return f"hub:{token}"
+    raise RootServiceError("Unable to infer target_id. Pass --target-id or configure subnet_id.")
+
+
+def _coalesce_zone(cfg: Any, *, zone: str | None) -> str | None:
+    explicit_zone = str(zone or "").strip()
+    if explicit_zone:
+        return explicit_zone
+    for candidate in (getattr(cfg, "zone_id", None), os.getenv("ADAOS_ZONE_ID"), os.getenv("ZONE_ID")):
+        token = str(candidate or "").strip()
+        if token:
+            return token
+    return None
+
+
+@mcp_app.command("prepare-codex")
+@_run_safe
+def prepare_codex(
+    name: str = typer.Option("adaos-test-hub", "--name", help="MCP server name to register in Codex."),
+    target_id: str | None = typer.Option(None, "--target-id", help="Managed target id. Defaults to hub:<subnet_id>."),
+    root_url: str | None = typer.Option(None, "--root-url", help="Explicit Root base URL."),
+    subnet_id: str | None = typer.Option(None, "--subnet-id", help="Explicit subnet scope for the generated profile."),
+    zone: str | None = typer.Option(None, "--zone", help="Explicit zone for the generated profile."),
+    ttl_seconds: int = typer.Option(28_800, "--ttl-seconds", help="Issued MCP token TTL in seconds."),
+    owner_token: str | None = typer.Option(None, "--owner-token", help="Owner token for direct root auth when device login is not configured."),
+    ensure_target: bool = typer.Option(True, "--ensure-target/--no-ensure-target", help="Create a minimal test-hub target descriptor if it is missing."),
+    apply_codex: bool = typer.Option(False, "--apply-codex", help="Run 'codex mcp add' after writing the profile and token files."),
+    profile_file: str | None = typer.Option(None, "--profile-file", help="Override the generated profile file path."),
+    token_file: str | None = typer.Option(None, "--token-file", help="Override the generated access-token file path."),
+    capability: List[str] = typer.Option([], "--capability", help="Extra Root MCP capabilities to add to the issued Codex token."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable setup output."),
+) -> None:
+    client, cfg, auth_mode = _resolve_root_mcp_management_client(root_url=root_url, owner_token=owner_token)
+    inferred_subnet_id = str(subnet_id or getattr(cfg, "subnet_id", None) or "").strip() or None
+    effective_target_id = _coalesce_target_id(cfg, target_id=target_id, subnet_id=inferred_subnet_id)
+    effective_zone = _coalesce_zone(cfg, zone=zone)
+
+    target_payload: dict[str, Any] | None = None
+    try:
+        target_payload = client.get_managed_target(effective_target_id)
+    except Exception:
+        if ensure_target:
+            minimal_target = {
+                "target_id": effective_target_id,
+                "title": f"Hub {inferred_subnet_id or effective_target_id}",
+                "kind": "hub",
+                "environment": "test",
+                "status": "registered",
+                "zone": effective_zone,
+                "subnet_id": inferred_subnet_id,
+                "transport": {"channel": "hub_root_protocol", "mode": "manual_setup"},
+                "operational_surface": {
+                    "published_by": "skill:infra_access_skill",
+                    "enabled": False,
+                    "availability": "planned",
+                },
+                "meta": {"registry_source": "codex_prepare"},
+            }
+            target_payload = client.upsert_managed_target(minimal_target)
+        else:
+            raise RootServiceError(f"Managed target '{effective_target_id}' is not registered on root.")
+
+    target_block = dict(target_payload.get("target") or {}) if isinstance(target_payload, dict) else {}
+    effective_subnet_id = inferred_subnet_id or str(target_block.get("subnet_id") or "").strip() or None
+    effective_zone = effective_zone or str(target_block.get("zone") or "").strip() or None
+
+    requested_capabilities = list(DEFAULT_CODEX_TARGET_CAPABILITIES)
+    for item in capability:
+        token = str(item or "").strip()
+        if token and token not in requested_capabilities:
+            requested_capabilities.append(token)
+
+    issued = client.issue_target_access_token(
+        effective_target_id,
+        audience="codex-vscode",
+        ttl_seconds=ttl_seconds,
+        capabilities=requested_capabilities,
+        note="Codex VS Code MCP bridge",
+    )
+    response = dict(issued.get("response") or {})
+    result = dict(response.get("result") or {})
+    access_token = str(result.get("access_token") or "").strip()
+    if not access_token:
+        raise RootServiceError("Root MCP did not return an access_token for Codex setup.")
+
+    repo_root = _repo_root_dir()
+    default_profile_file, default_token_file = default_profile_paths(repo_root, name)
+    stored_profile = CodexBridgeProfile(
+        root_url=str(root_url or getattr(cfg.root_settings, "base_url", None) or get_ctx().settings.api_base or "").strip(),
+        target_id=effective_target_id,
+        subnet_id=effective_subnet_id,
+        zone=effective_zone,
+        server_name=name,
+        audience="codex-vscode",
+        generated_at=result.get("issued_at") if isinstance(result.get("issued_at"), str) else None,
+        capabilities=list(result.get("capabilities") or requested_capabilities),
+    )
+    resolved_profile_file, resolved_token_file = write_codex_bridge_profile(
+        profile_path=profile_file or default_profile_file,
+        token_path=token_file or default_token_file,
+        profile=stored_profile,
+        access_token=access_token,
+    )
+    codex_add_cmd = build_codex_stdio_command(
+        python_executable=sys.executable,
+        profile_path=resolved_profile_file,
+        server_name=name,
+    )
+
+    if apply_codex:
+        if not shutil.which("codex"):
+            raise RootServiceError("Codex CLI is not available on PATH.")
+        subprocess.run(["codex", "mcp", "remove", name], check=False, capture_output=True, text=True)
+        completed = subprocess.run(codex_add_cmd, check=False, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RootServiceError((completed.stderr or completed.stdout or "codex mcp add failed").strip())
+
+    payload = {
+        "ok": True,
+        "auth_mode": auth_mode,
+        "server_name": name,
+        "root_url": stored_profile.root_url,
+        "subnet_id": effective_subnet_id,
+        "zone": effective_zone,
+        "target_id": effective_target_id,
+        "profile_file": str(resolved_profile_file),
+        "token_file": str(resolved_token_file),
+        "token_id": result.get("token_id"),
+        "expires_at": result.get("expires_at"),
+        "capabilities": list(result.get("capabilities") or []),
+        "codex_add_command": codex_add_cmd,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    typer.secho("Codex test-hub MCP profile prepared.", fg=typer.colors.GREEN)
+    typer.echo(f"Root URL: {payload['root_url']}")
+    typer.echo(f"Target ID: {payload['target_id']}")
+    if payload["subnet_id"]:
+        typer.echo(f"Subnet ID: {payload['subnet_id']}")
+    if payload["zone"]:
+        typer.echo(f"Zone: {payload['zone']}")
+    typer.echo(f"Profile: {payload['profile_file']}")
+    typer.echo(f"Token file: {payload['token_file']}")
+    typer.echo(f"Expires at: {payload['expires_at'] or 'unknown'}")
+    typer.echo("")
+    typer.echo("Add this MCP server to Codex:")
+    typer.echo(f"  {subprocess.list2cmdline(codex_add_cmd)}")
+    if apply_codex:
+        typer.secho("Codex MCP server updated in ~/.codex/config.toml.", fg=typer.colors.GREEN)
+
+
+@mcp_app.command("serve")
+@_run_safe
+def serve_codex(
+    profile: str | None = typer.Option(None, "--profile", help="Path to the generated Codex MCP profile JSON."),
+    root_url: str | None = typer.Option(None, "--root-url", help="Explicit Root base URL when not using a profile file."),
+    target_id: str | None = typer.Option(None, "--target-id", help="Managed target id when not using a profile file."),
+    subnet_id: str | None = typer.Option(None, "--subnet-id", help="Subnet scope when not using a profile file."),
+    zone: str | None = typer.Option(None, "--zone", help="Zone when not using a profile file."),
+    access_token: str | None = typer.Option(None, "--access-token", help="Inline Root MCP access token for manual testing."),
+    access_token_file: str | None = typer.Option(None, "--access-token-file", help="Path to a Root MCP access token file."),
+) -> None:
+    try:
+        if any([profile, root_url, target_id, subnet_id, zone, access_token, access_token_file]):
+            fallback = load_codex_bridge_profile(profile) if profile else None
+            effective_profile = CodexBridgeProfile(
+                root_url=str(root_url or (fallback.root_url if fallback else "")).strip(),
+                target_id=target_id or (fallback.target_id if fallback else None),
+                subnet_id=subnet_id or (fallback.subnet_id if fallback else None),
+                zone=zone or (fallback.zone if fallback else None),
+                access_token=access_token or (fallback.access_token if fallback else None),
+                access_token_file=access_token_file or (fallback.access_token_file if fallback else None),
+                server_name=(fallback.server_name if fallback else "adaos-test-hub"),
+                audience=(fallback.audience if fallback else "codex-vscode"),
+                generated_at=(fallback.generated_at if fallback else None),
+                capabilities=list((fallback.capabilities if fallback else DEFAULT_CODEX_TARGET_CAPABILITIES)),
+            )
+        else:
+            effective_profile = load_codex_bridge_profile(profile)
+        serve_codex_stdio_bridge(effective_profile)
+    except Exception as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
 
 
 @app.command("telegram")

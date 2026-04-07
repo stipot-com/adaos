@@ -69,6 +69,8 @@ Current Root MCP Foundation skeleton endpoints are exposed separately from `/api
 - `POST /v1/hub/control/report`
 - `GET /v1/hubs/control/reports`
 
+For the current Codex-in-VS-Code workflow, use the local bridge documented in [Codex Test-Hub MCP](codex-test-hub-mcp.md). The current root surface is a Root MCP API foundation, not yet a direct remote MCP transport.
+
 The current skeleton also applies root-side capability checks and scope hints:
 
 - read-only bearer access is allowed only for the default development/registry/audit capabilities

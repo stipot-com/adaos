@@ -153,6 +153,7 @@ nav:
   - CLI:
       - Overview: cli/index.md
       - API Service: cli/api.md
+      - Codex Test-Hub MCP: cli/codex-test-hub-mcp.md
       - Runtime And Operations: cli/runtime.md
   - SDK:
       - Overview: sdk/index.md

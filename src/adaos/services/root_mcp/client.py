@@ -114,6 +114,38 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def get_target_status(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_status",
+            arguments={"target_id": str(target_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def get_target_runtime_summary(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_runtime_summary",
+            arguments={"target_id": str(target_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def get_target_activity_log(
         self,
         target_id: str,
@@ -148,6 +180,39 @@ class RootMcpClient:
         return self.call(
             "hub.get_capability_usage_summary",
             arguments={"target_id": str(target_id), "limit": int(limit)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def get_target_logs(
+        self,
+        target_id: str,
+        *,
+        tail: int = 200,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.get_logs",
+            arguments={"target_id": str(target_id), "tail": int(tail)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def run_target_healthchecks(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.run_healthchecks",
+            arguments={"target_id": str(target_id)},
             request_id=request_id,
             trace_id=trace_id,
             dry_run=dry_run,

@@ -1,5 +1,15 @@
 from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
 from .client import RootMcpClient, RootMcpClientConfig
+from .codex_bridge import (
+    CodexBridgeProfile,
+    CodexRootMcpBridge,
+    DEFAULT_CODEX_TARGET_CAPABILITIES,
+    build_codex_stdio_command,
+    default_profile_paths,
+    load_codex_bridge_profile,
+    serve_codex_stdio_bridge,
+    write_codex_bridge_profile,
+)
 from .infra_access_skill import build_operational_surface, resolve_skill_dir, skill_state
 from .model import (
     ROOT_MCP_ERROR_SCHEMA,
@@ -42,12 +52,16 @@ __all__ = [
     "RootMcpResponseEnvelope",
     "RootMcpSurface",
     "RootMcpToolContract",
+    "CodexBridgeProfile",
+    "CodexRootMcpBridge",
     "append_audit_event",
     "access_token_registry_summary",
     "build_operational_surface",
+    "build_codex_stdio_command",
     "capability_registry_payload",
     "capability_registry_summary",
     "control_report_registry_summary",
+    "default_profile_paths",
     "descriptor_registry_summary",
     "evaluate_direct_access",
     "evaluate_tool_access",
@@ -66,16 +80,20 @@ __all__ = [
     "managed_target_registry_summary",
     "recent_audit_events",
     "schema_object",
+    "DEFAULT_CODEX_TARGET_CAPABILITIES",
     "issue_access_token",
     "list_access_tokens",
     "ingest_control_report",
     "upsert_managed_target",
     "validate_access_token",
     "list_control_reports",
+    "load_codex_bridge_profile",
     "resolve_skill_dir",
     "revoke_access_token",
+    "serve_codex_stdio_bridge",
     "skill_state",
     "sync_target_from_control_report",
     "target_activity_feed",
     "target_capability_usage_summary",
+    "write_codex_bridge_profile",
 ]

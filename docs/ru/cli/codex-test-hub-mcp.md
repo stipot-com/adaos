@@ -1,0 +1,159 @@
+# Codex MCP для test hub
+
+Этот документ описывает текущий MVP-сценарий подключения Codex в VS Code к test hub через AdaOS Root MCP.
+
+Текущая реализация намеренно сделана как локальный `stdio` bridge:
+
+`Codex в VS Code -> local bridge -> RootMcpClient -> Root MCP API -> managed test hub`
+
+Такой путь сохраняет SDK внутренним, не создаёт ложного прямого SDK surface и соответствует текущему состоянию `Phase 1` для `Root MCP Foundation`.
+
+## Что покрывает этот MVP
+
+- scoped-подключение Codex к одному managed target, обычно `hub:<subnet_id>`
+- базовые read-first operational methods для target
+- выдачу токена через опубликованный target-side surface `infra_access_skill`
+- хранение profile и token files в локальном runtime state workspace
+
+Сейчас bridge публикует такие tools:
+
+- `foundation`
+- `list_managed_targets`
+- `get_managed_target`
+- `get_operational_surface`
+- `get_status`
+- `get_runtime_summary`
+- `get_activity_log`
+- `get_capability_usage_summary`
+- `get_logs`
+- `run_healthchecks`
+- `recent_audit`
+
+## Почему это локальный bridge, а не direct remote MCP
+
+Codex умеет регистрировать MCP servers напрямую, но текущий AdaOS root surface пока является Root MCP API foundation, а не полноценным remote MCP transport.
+
+Кроме того, текущий AdaOS scope выражается через `root_url + subnet_id + zone + bounded access token`, тогда как нативный remote HTTP MCP flow у Codex лучше подходит под модель `url + bearer`.
+
+Поэтому текущий MVP использует локальный bridge-процесс, который стартует сам Codex. Bridge читает workspace-local profile и token file, а затем переводит MCP tool calls в вызовы `RootMcpClient`.
+
+## Предварительные условия
+
+Перед настройкой убедитесь, что:
+
+- workspace подключён к нужному root
+- test hub виден на root как managed target
+- target публикует `infra_access_skill`, если нужны operational tools
+- выполнен `adaos dev root login`, либо у вас есть `ROOT_TOKEN` / `ADAOS_ROOT_TOKEN`
+
+Для `get_logs` и `run_healthchecks` target сейчас должен публиковать `infra_access_skill` с `execution_mode=local_process`.
+
+## Рекомендуемая настройка
+
+### 1. Подготовить bridge profile для Codex
+
+Запустите:
+
+```powershell
+adaos dev root mcp prepare-codex
+```
+
+По умолчанию команда:
+
+- вычислит `target_id` как `hub:<subnet_id>`
+- выпустит bounded MCP access token для `codex-vscode`
+- запишет profile file в `.adaos/mcp/adaos-test-hub.profile.json`
+- запишет token file в `.adaos/mcp/adaos-test-hub.token`
+- выведет точную команду `codex mcp add ...` для регистрации bridge
+
+Полезные варианты:
+
+```powershell
+adaos dev root mcp prepare-codex --target-id hub:test-subnet --ttl-seconds 14400
+adaos dev root mcp prepare-codex --owner-token $env:ROOT_TOKEN
+adaos dev root mcp prepare-codex --apply-codex
+```
+
+`--apply-codex` сразу обновит `~/.codex/config.toml`.
+
+### 2. Зарегистрировать bridge в Codex
+
+Скопируйте команду, которую напечатал `prepare-codex`, либо используйте ту же форму вручную:
+
+```powershell
+codex mcp add adaos-test-hub --env ADAOS_MCP_PROFILE=D:\git\adaos\.adaos\mcp\adaos-test-hub.profile.json -- D:\git\adaos\.venv\Scripts\python.exe -m adaos dev root mcp serve
+```
+
+Ключевые части:
+
+- `ADAOS_MCP_PROFILE`
+  указывает bridge на workspace-local profile JSON
+- Python command запускает локальный `stdio` bridge
+
+Сам токен не хранится в `~/.codex/config.toml`; bridge читает его из token file, на который ссылается profile.
+
+### 3. Проверить регистрацию в Codex
+
+```powershell
+codex mcp list
+codex mcp get adaos-test-hub
+```
+
+После этого откройте Codex в VS Code и дайте простой запрос, например:
+
+```text
+Use the AdaOS test-hub MCP tools to inspect the target operational surface, status, and runtime summary.
+```
+
+В tool trace вы увидите namespaced tools вида:
+
+- `mcp__adaos-test-hub__get_operational_surface`
+- `mcp__adaos-test-hub__get_status`
+- `mcp__adaos-test-hub__get_runtime_summary`
+
+## Ротация и обновление
+
+Чтобы перевыпустить токен, достаточно снова запустить:
+
+```powershell
+adaos dev root mcp prepare-codex --apply-codex
+```
+
+Bridge читает token file на каждом вызове, поэтому при ротации токена не нужно заново менять server definition, если путь к profile остаётся тем же.
+
+Чтобы удалить регистрацию из Codex:
+
+```powershell
+codex mcp remove adaos-test-hub
+```
+
+## Troubleshooting
+
+### Target не зарегистрирован
+
+По умолчанию команда работает с `--ensure-target`, поэтому может создать минимальную запись test target на root. Если реальное состояние target всё равно не появляется, проверьте control reports и target registration path.
+
+### Не выпускается токен
+
+`prepare-codex` использует target-scoped путь `hub.issue_access_token`. Если это не работает, обычно target ещё не публикует token management через `infra_access_skill`.
+
+Проверьте:
+
+- `get_operational_surface`
+- target control reports на root
+- draft/installed state `infra_access_skill` на hub
+
+### Не работают logs или healthchecks
+
+Сейчас эти методы зависят от `execution_mode=local_process`. Если target публикует только `reported_only`, status и observability tools будут работать, а bounded execution tools — нет.
+
+## Текущие границы MVP
+
+Этот MVP пока намеренно не включает:
+
+- direct remote MCP transport от root к Codex
+- arbitrary shell access
+- unrestricted deploy или rollback
+- публичный SDK import path для внешних MCP clients
+
+Это остаётся задачей следующих фаз `Root MCP Foundation`.

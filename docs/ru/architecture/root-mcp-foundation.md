@@ -469,7 +469,9 @@ Phase 0 считается завершенной, когда:
 - `src/adaos/services/root_mcp/service.py`
 - `src/adaos/services/root_mcp/targets.py`
 - `src/adaos/services/root_mcp/client.py`
+- `src/adaos/services/root_mcp/codex_bridge.py`
 - `src/adaos/apps/api/root_endpoints.py`
+- `src/adaos/apps/cli/commands/dev.py`
 
 Что уже реализовано в этом срезе:
 
