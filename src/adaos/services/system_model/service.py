@@ -25,8 +25,13 @@ from adaos.services.system_model.mappers import (
     canonical_object_from_subnet_directory_node,
 )
 from adaos.services.system_model.projections import (
+    canonical_object_inspector,
+    canonical_object_projection,
+    canonical_overview_projection,
     canonical_inventory_projection,
     canonical_neighborhood_projection,
+    canonical_task_packet,
+    canonical_topology_projection,
     canonical_projection_from_reliability_snapshot,
 )
 
@@ -125,11 +130,23 @@ def current_reliability_projection(*, webspace_id: str | None = None):
     )
 
 
-def current_neighborhood_projection():
+def _flatten_refs(relations: Any) -> list[str]:
+    data = relations if isinstance(relations, dict) else {}
+    out: list[str] = []
+    for value in data.values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            token = str(item or "").strip()
+            if token and token not in out:
+                out.append(token)
+    return out
+
+
+def _current_node_neighborhood_projection(*, webspace_id: str | None = None):
     tenant_id, owner_id = _control_plane_scope_refs()
     subject = current_node_object()
     node_ref = _node_ref(subject.id)
-    reliability = current_reliability_projection()
+    reliability = current_reliability_projection(webspace_id=webspace_id)
 
     objects: list[Any] = []
     seen: set[str] = set()
@@ -180,6 +197,122 @@ def current_neighborhood_projection():
     )
 
 
+def current_control_plane_objects(*, webspace_id: str | None = None) -> list[Any]:
+    subject = current_node_object()
+    inventory = current_inventory_projection()
+    reliability = current_reliability_projection(webspace_id=webspace_id)
+    neighborhood = _current_node_neighborhood_projection(webspace_id=webspace_id)
+    objects: list[Any] = []
+    seen: set[str] = set()
+    for item in [subject, inventory.subject, reliability.subject, neighborhood.subject, *inventory.objects, *reliability.objects, *neighborhood.objects]:
+        _append_unique(objects, item, seen)
+    return objects
+
+
+def current_overview_projection(*, webspace_id: str | None = None):
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_node_object()
+    objects = [item for item in current_control_plane_objects(webspace_id=webspace_id) if str(getattr(item, "id", "") or "") != subject.id]
+    return apply_projection_governance(
+        canonical_overview_projection(subject, objects),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def _object_index(*, webspace_id: str | None = None) -> dict[str, Any]:
+    return {str(item.id): item for item in current_control_plane_objects(webspace_id=webspace_id)}
+
+
+def current_object_model(object_id: str, *, webspace_id: str | None = None):
+    token = str(object_id or "").strip()
+    if token in {"self", "current", "local"}:
+        return current_node_object()
+    obj = _object_index(webspace_id=webspace_id).get(token)
+    if obj is None:
+        raise KeyError(token)
+    return obj
+
+
+def _neighborhood_objects_for(subject: Any, universe: list[Any]) -> list[Any]:
+    subject_id = str(getattr(subject, "id", "") or "")
+    related_ids = set(_flatten_refs(getattr(subject, "relations", {})))
+    for item in universe:
+        item_id = str(getattr(item, "id", "") or "")
+        if not item_id or item_id == subject_id:
+            continue
+        if subject_id in _flatten_refs(getattr(item, "relations", {})):
+            related_ids.add(item_id)
+    neighbors: list[Any] = []
+    seen: set[str] = set()
+    for item in universe:
+        item_id = str(getattr(item, "id", "") or "")
+        if not item_id or item_id == subject_id or item_id not in related_ids or item_id in seen:
+            continue
+        seen.add(item_id)
+        neighbors.append(item)
+    return neighbors
+
+
+def current_object_projection(object_id: str, *, webspace_id: str | None = None):
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_object_model(object_id, webspace_id=webspace_id)
+    neighborhood = _neighborhood_objects_for(subject, current_control_plane_objects(webspace_id=webspace_id))
+    return apply_projection_governance(
+        canonical_object_projection(subject, neighborhood),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def current_object_inspector(object_id: str, *, task_goal: str | None = None, webspace_id: str | None = None):
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_object_model(object_id, webspace_id=webspace_id)
+    neighborhood = _neighborhood_objects_for(subject, current_control_plane_objects(webspace_id=webspace_id))
+    return apply_projection_governance(
+        canonical_object_inspector(subject, neighborhood, task_goal=task_goal),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def current_topology_projection(object_id: str, *, webspace_id: str | None = None):
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_object_model(object_id, webspace_id=webspace_id)
+    neighborhood = _neighborhood_objects_for(subject, current_control_plane_objects(webspace_id=webspace_id))
+    return apply_projection_governance(
+        canonical_topology_projection(subject, neighborhood),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def current_task_packet(object_id: str, *, task_goal: str | None = None, webspace_id: str | None = None):
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_object_model(object_id, webspace_id=webspace_id)
+    neighborhood = _neighborhood_objects_for(subject, current_control_plane_objects(webspace_id=webspace_id))
+    return apply_projection_governance(
+        canonical_task_packet(subject, neighborhood, task_goal=task_goal),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def current_neighborhood_projection(object_id: str | None = None, *, webspace_id: str | None = None):
+    token = str(object_id or "").strip()
+    current_id = current_node_object().id
+    if not token or token in {"self", "current", "local", current_id}:
+        return _current_node_neighborhood_projection(webspace_id=webspace_id)
+    tenant_id, owner_id = _control_plane_scope_refs()
+    subject = current_object_model(token, webspace_id=webspace_id)
+    objects = _neighborhood_objects_for(subject, current_control_plane_objects(webspace_id=webspace_id))
+    return apply_projection_governance(
+        canonical_neighborhood_projection(subject, objects),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
 def current_inventory_projection():
     subject = current_node_object()
     node_ref = _node_ref(subject.id)
@@ -209,11 +342,18 @@ def current_inventory_projection():
 
 
 __all__ = [
+    "current_control_plane_objects",
     "current_inventory_projection",
     "current_neighborhood_projection",
     "current_node_object",
     "current_node_status_payload",
+    "current_object_inspector",
+    "current_object_model",
+    "current_object_projection",
+    "current_overview_projection",
     "current_reliability_payload",
     "current_reliability_projection",
+    "current_task_packet",
+    "current_topology_projection",
     "route_info",
 ]

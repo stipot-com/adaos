@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from adaos.services.system_model.mappers import (
@@ -118,6 +119,322 @@ def _incident_from_object(obj: CanonicalObject) -> dict[str, Any] | None:
             "summary": obj.summary,
         }
     )
+
+
+def _flatten_relation_refs(relations: dict[str, Any] | None) -> list[str]:
+    out: list[str] = []
+    data = relations if isinstance(relations, dict) else {}
+    for value in data.values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            token = str(item or "").strip()
+            if token and token not in out:
+                out.append(token)
+    return out
+
+
+def _collect_incidents(subject: CanonicalObject, objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    incidents: list[dict[str, Any]] = []
+    for item in [subject, *objects]:
+        incidents.extend(list(item.incidents or []))
+        incident = _incident_from_object(item)
+        if incident and not any(existing.get("id") == incident.get("id") for existing in incidents):
+            incidents.append(incident)
+    return incidents
+
+
+def _status_token(value: Any) -> str:
+    if isinstance(value, CanonicalStatus):
+        return value.value
+    token = _token(value)
+    return token or CanonicalStatus.UNKNOWN.value
+
+
+def _status_rank(value: Any) -> int:
+    token = _status_token(value)
+    order = {
+        CanonicalStatus.OFFLINE.value: 5,
+        CanonicalStatus.DEGRADED.value: 4,
+        CanonicalStatus.WARNING.value: 3,
+        CanonicalStatus.UNKNOWN.value: 2,
+        CanonicalStatus.ONLINE.value: 1,
+    }
+    return int(order.get(token) or 0)
+
+
+def _worst_status(items: list[CanonicalObject]) -> str:
+    if not items:
+        return CanonicalStatus.UNKNOWN.value
+    ordered = sorted((_status_token(item.status) for item in items), key=_status_rank, reverse=True)
+    return ordered[0] if ordered else CanonicalStatus.UNKNOWN.value
+
+
+def _representative_object_id(items: list[CanonicalObject]) -> str | None:
+    if not items:
+        return None
+    ranked = sorted(items, key=lambda item: (_status_rank(item.status), item.title), reverse=True)
+    token = str(ranked[0].id or "").strip() if ranked else ""
+    return token or None
+
+
+def _kind_totals(items: list[CanonicalObject]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for item in items:
+        kind = str(item.kind or "unknown").strip() or "unknown"
+        totals[kind] = int(totals.get(kind) or 0) + 1
+    return totals
+
+
+def _incident_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    severity = str(item.get("severity") or "").strip().lower()
+    severity_rank = {
+        "critical": 4,
+        "high": 3,
+        "medium": 2,
+        "low": 1,
+    }
+    return (-int(severity_rank.get(severity) or 0), str(item.get("title") or ""))
+
+
+def _health_strip_items(subject: CanonicalObject, objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    catalog = [
+        ("roots", "Roots", "cloud-outline", {CanonicalKind.ROOT.value}),
+        ("hubs", "Hubs", "server-outline", {CanonicalKind.HUB.value}),
+        ("members", "Members", "git-branch-outline", {CanonicalKind.MEMBER.value}),
+        ("browsers", "Browsers", "globe-outline", {CanonicalKind.BROWSER_SESSION.value}),
+        ("devices", "Devices", "phone-portrait-outline", {CanonicalKind.DEVICE.value}),
+        ("runtimes", "Runtimes", "pulse-outline", {CanonicalKind.RUNTIME.value}),
+        ("quotas", "Quotas", "speedometer-outline", {CanonicalKind.QUOTA.value}),
+        ("skills", "Skills", "extension-puzzle-outline", {CanonicalKind.SKILL.value}),
+        ("scenarios", "Scenarios", "layers-outline", {CanonicalKind.SCENARIO.value}),
+    ]
+    items: list[dict[str, Any]] = []
+    universe = [subject, *objects]
+    for bucket_id, title, icon, kinds in catalog:
+        members = [item for item in universe if str(item.kind or "").strip() in kinds]
+        if not members:
+            continue
+        online_total = sum(1 for item in members if _status_token(item.status) == CanonicalStatus.ONLINE.value)
+        issue_titles = [item.title for item in members if _status_rank(item.status) >= _status_rank(CanonicalStatus.WARNING.value)]
+        status = _worst_status(members)
+        subtitle = f"{online_total}/{len(members)} online"
+        summary = f"{len(members)} object(s)"
+        if issue_titles:
+            summary = f"Issues: {', '.join(issue_titles[:3])}"
+        items.append(
+            compact_mapping(
+                {
+                    "id": f"health:{bucket_id}",
+                    "object_id": _representative_object_id(members),
+                    "kind": bucket_id,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "status": status,
+                    "summary": summary,
+                    "icon": icon,
+                    "details": [item.to_dict() for item in members],
+                }
+            )
+        )
+    return items
+
+
+def _quota_summary_items(objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for obj in objects:
+        if str(obj.kind or "").strip() != CanonicalKind.QUOTA.value:
+            continue
+        resources = coerce_mapping(obj.resources)
+        used = resources.get("used")
+        limit = resources.get("limit")
+        queue_size = resources.get("queue_size")
+        queue_limit = resources.get("queue_limit")
+        pending_bytes = resources.get("pending_bytes")
+        pending_bytes_limit = resources.get("pending_bytes_limit")
+        parts: list[str] = []
+        if used is not None or limit is not None:
+            parts.append(f"used {used or 0}/{limit or '?'}")
+        if queue_size is not None or queue_limit is not None:
+            parts.append(f"queue {queue_size or 0}/{queue_limit or '?'}")
+        if pending_bytes is not None or pending_bytes_limit is not None:
+            parts.append(f"bytes {pending_bytes or 0}/{pending_bytes_limit or '?'}")
+        items.append(
+            compact_mapping(
+                {
+                    "id": f"quota-summary:{obj.id}",
+                    "object_id": obj.id,
+                    "kind": obj.kind,
+                    "title": obj.title,
+                    "subtitle": ", ".join(parts) if parts else obj.summary,
+                    "status": _status_token(obj.status),
+                    "summary": obj.summary,
+                    "details": obj.to_dict(),
+                }
+            )
+        )
+    return sorted(items, key=lambda item: (_status_rank(item.get("status")), str(item.get("title") or "")), reverse=True)
+
+
+def _runtime_summary_items(objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for obj in objects:
+        if str(obj.kind or "").strip() != CanonicalKind.RUNTIME.value:
+            continue
+        runtime = coerce_mapping(obj.runtime)
+        assessment = coerce_mapping(runtime.get("assessment"))
+        phase = str(runtime.get("phase") or runtime.get("scope") or "").strip()
+        selected_webspace_id = str(coerce_mapping(obj.actual_state).get("selected_webspace_id") or "").strip()
+        subtitle_bits = [bit for bit in [phase, selected_webspace_id] if bit]
+        items.append(
+            compact_mapping(
+                {
+                    "id": f"runtime-summary:{obj.id}",
+                    "object_id": obj.id,
+                    "kind": obj.kind,
+                    "title": obj.title,
+                    "subtitle": " | ".join(subtitle_bits) if subtitle_bits else obj.summary,
+                    "status": _status_token(obj.status),
+                    "summary": str(assessment.get("reason") or obj.summary or ""),
+                    "details": obj.to_dict(),
+                }
+            )
+        )
+    return sorted(items, key=lambda item: (_status_rank(item.get("status")), str(item.get("title") or "")), reverse=True)
+
+
+def _recent_change_items(subject: CanonicalObject, objects: list[CanonicalObject], *, limit: int = 12) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for obj in [subject, *objects]:
+        versioning = coerce_mapping(obj.versioning)
+        if bool(versioning.get("drift")):
+            change_id = f"change:{obj.id}:drift"
+            if change_id not in seen:
+                seen.add(change_id)
+                items.append(
+                    compact_mapping(
+                        {
+                            "id": change_id,
+                            "object_id": obj.id,
+                            "category": "drift",
+                            "title": f"{obj.title} drift",
+                            "subtitle": f"desired {versioning.get('desired') or '-'} | actual {versioning.get('actual') or '-'}",
+                            "status": _status_token(obj.status),
+                            "summary": obj.summary,
+                            "details": obj.to_dict(),
+                        }
+                    )
+                )
+
+        runtime = coerce_mapping(obj.runtime)
+        transitions = runtime.get("recent_non_ready_transitions_5m")
+        if transitions is None:
+            transitions = runtime.get("recent_transitions_5m")
+        try:
+            transition_total = int(transitions or 0)
+        except Exception:
+            transition_total = 0
+        if transition_total > 0:
+            change_id = f"change:{obj.id}:transitions"
+            if change_id not in seen:
+                seen.add(change_id)
+                items.append(
+                    compact_mapping(
+                        {
+                            "id": change_id,
+                            "object_id": obj.id,
+                            "category": "transition",
+                            "title": f"{obj.title} transitions",
+                            "subtitle": f"{transition_total} transition(s) in the last 5m",
+                            "status": _status_token(obj.status),
+                            "summary": obj.summary,
+                            "details": obj.to_dict(),
+                        }
+                    )
+                )
+
+        gap = _state_gap(obj)
+        if gap:
+            change_id = f"change:{obj.id}:state-gap"
+            if change_id not in seen:
+                seen.add(change_id)
+                items.append(
+                    compact_mapping(
+                        {
+                            "id": change_id,
+                            "object_id": obj.id,
+                            "category": "state_gap",
+                            "title": f"{obj.title} state gap",
+                            "subtitle": ", ".join(sorted(gap.keys())[:4]),
+                            "status": _status_token(obj.status),
+                            "summary": obj.summary,
+                            "details": gap,
+                        }
+                    )
+                )
+    ordered = sorted(
+        items,
+        key=lambda item: (_status_rank(item.get("status")), str(item.get("category") or ""), str(item.get("title") or "")),
+        reverse=True,
+    )
+    return ordered[:limit]
+
+
+def _narrative_projection(subject: CanonicalObject, objects: list[CanonicalObject], incidents: list[dict[str, Any]]) -> dict[str, Any]:
+    degraded = [item.title for item in objects if item.status in {CanonicalStatus.OFFLINE, CanonicalStatus.DEGRADED, CanonicalStatus.WARNING}]
+    current_issue = incidents[0]["summary"] if incidents else subject.summary
+    operator_focus = degraded[:3] or [subject.title]
+    return compact_mapping(
+        {
+            "summary": subject.summary or f"{subject.title} ({subject.kind})",
+            "current_issue": current_issue,
+            "operator_focus": operator_focus,
+            "risk_summary": f"{len(incidents)} active incident(s)" if incidents else "no active incidents",
+        }
+    )
+
+
+def _action_projection(subject: CanonicalObject, objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for owner in [subject, *objects]:
+        for action in list(owner.actions or []):
+            token = f"{owner.id}:{action.id}"
+            if token in seen:
+                continue
+            seen.add(token)
+            payload = compact_mapping(asdict(action))
+            payload["object_id"] = owner.id
+            actions.append(payload)
+    return actions
+
+
+def _topology_edges(subject: CanonicalObject, objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    included = {item.id for item in [subject, *objects]}
+    edges: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for owner in [subject, *objects]:
+        for relation, refs in (owner.relations or {}).items():
+            for ref in refs:
+                target = str(ref or "").strip()
+                if not target or target not in included:
+                    continue
+                key = (owner.id, str(relation), target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append({"source": owner.id, "relation": str(relation), "target": target})
+    return edges
+
+
+def _state_gap(subject: CanonicalObject) -> dict[str, Any]:
+    desired = subject.desired_state if isinstance(subject.desired_state, dict) else {}
+    actual = subject.actual_state if isinstance(subject.actual_state, dict) else {}
+    delta: dict[str, Any] = {}
+    for key in sorted(set(desired) | set(actual)):
+        if desired.get(key) != actual.get(key):
+            delta[key] = {"desired": desired.get(key), "actual": actual.get(key)}
+    return compact_mapping(delta)
 
 
 def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
@@ -547,6 +864,280 @@ def canonical_inventory_projection(
     )
 
 
+def canonical_overview_projection(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    title: str = "Infrascope overview",
+    summary: str | None = None,
+) -> CanonicalProjection:
+    universe = [subject, *objects]
+    incidents = sorted(_collect_incidents(subject, objects), key=_incident_sort_key)
+    health_strip = _health_strip_items(subject, objects)
+    quota_summary = _quota_summary_items(objects)
+    active_runtimes = _runtime_summary_items(objects)
+    recent_changes = _recent_change_items(subject, objects)
+    kind_totals = _kind_totals(universe)
+    overall_status = _worst_status(universe)
+    effective_summary = summary or (
+        f"{subject.title} overview with {len(universe)} objects, {len(incidents)} incidents, and {len(recent_changes)} recent changes"
+    )
+    summary_tile = compact_mapping(
+        {
+            "label": "Control plane",
+            "value": overall_status,
+            "subtitle": f"{subject.title} | {len(universe)} objects",
+            "description": f"{len(incidents)} incidents | {len(quota_summary)} quotas | {len(active_runtimes)} runtimes",
+        }
+    )
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/overview",
+        kind="overview",
+        title=title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=compact_mapping(
+            {
+                "summary_tile": summary_tile,
+                "overall_status": overall_status,
+                "kind_totals": kind_totals,
+                "health_strip": health_strip,
+                "active_incidents": incidents,
+                "quota_summary": quota_summary,
+                "active_runtimes": active_runtimes,
+                "recent_changes": recent_changes,
+            }
+        ),
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "overall_status": overall_status,
+                    "incident_total": len(incidents),
+                    "kind_totals": kind_totals,
+                },
+                "operator": {
+                    "summary_tile": summary_tile,
+                    "health_strip": health_strip,
+                    "active_incidents": incidents,
+                    "quota_summary": quota_summary,
+                    "active_runtimes": active_runtimes,
+                    "recent_changes": recent_changes,
+                },
+            }
+        ),
+    )
+
+
+def canonical_object_projection(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+) -> CanonicalProjection:
+    incidents = _collect_incidents(subject, objects)
+    narrative = _narrative_projection(subject, objects, incidents)
+    actions = _action_projection(subject, objects)
+    effective_title = title or f"{subject.title} object"
+    effective_summary = summary or str(narrative.get("summary") or subject.summary or subject.title)
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/object",
+        kind="object",
+        title=effective_title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=compact_mapping(
+            {
+                "narrative": narrative,
+                "action_total": len(actions),
+                "incident_total": len(incidents),
+            }
+        ),
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "narrative": narrative,
+                    "allowed_action_ids": [item.get("id") for item in actions],
+                },
+                "operator": {
+                    "actions": actions,
+                },
+            }
+        ),
+    )
+
+
+def canonical_object_inspector(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    task_goal: str | None = None,
+    title: str | None = None,
+    summary: str | None = None,
+) -> CanonicalProjection:
+    incidents = sorted(_collect_incidents(subject, objects), key=_incident_sort_key)
+    narrative = _narrative_projection(subject, objects, incidents)
+    actions = _action_projection(subject, objects)
+    edges = _topology_edges(subject, objects)
+    recent_changes = _recent_change_items(subject, objects, limit=8)
+    task_packet = canonical_task_packet(subject, objects, task_goal=task_goal).to_dict()
+    inspector_payload = compact_mapping(
+        {
+            "label": subject.kind,
+            "value": _status_token(subject.status),
+            "subtitle": subject.title,
+            "description": narrative.get("current_issue") or subject.summary,
+            "object": subject.to_dict(),
+            "incidents": incidents,
+            "actions": actions,
+            "recent_changes": recent_changes,
+            "topology": {"edges": edges},
+            "task_packet": task_packet,
+        }
+    )
+    effective_title = title or f"{subject.title} inspector"
+    effective_summary = summary or str(narrative.get("summary") or subject.summary or subject.title)
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/inspector",
+        kind="inspector",
+        title=effective_title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=compact_mapping(
+            {
+                "narrative": narrative,
+                "actions": actions,
+                "recent_changes": recent_changes,
+                "topology": {"edges": edges},
+                "task_packet": task_packet,
+                "inspector": inspector_payload,
+            }
+        ),
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "allowed_action_ids": [item.get("id") for item in actions],
+                    "incident_total": len(incidents),
+                },
+                "operator": inspector_payload,
+            }
+        ),
+    )
+
+
+def canonical_topology_projection(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+) -> CanonicalProjection:
+    incidents = _collect_incidents(subject, objects)
+    edges = _topology_edges(subject, objects)
+    effective_title = title or f"{subject.title} topology"
+    effective_summary = summary or f"{subject.title} topology with {len(objects) + 1} nodes and {len(edges)} edges"
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/topology",
+        kind="topology",
+        title=effective_title,
+        subject=subject,
+        summary=effective_summary,
+        objects=objects,
+        incidents=incidents,
+        context=compact_mapping(
+            {
+                "node_ids": [subject.id, *[item.id for item in objects]],
+                "edge_total": len(edges),
+                "view_modes": ["physical", "connectivity", "runtime", "resource", "capability"],
+            }
+        ),
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "edges": edges,
+                },
+                "operator": {
+                    "edges": edges,
+                },
+            }
+        ),
+    )
+
+
+def canonical_task_packet(
+    subject: CanonicalObject,
+    objects: list[CanonicalObject],
+    *,
+    task_goal: str | None = None,
+    title: str | None = None,
+) -> CanonicalProjection:
+    incidents = _collect_incidents(subject, objects)
+    narrative = _narrative_projection(subject, objects, incidents)
+    actions = _action_projection(subject, objects)
+    goal = str(task_goal or "").strip() or "diagnose current state"
+    policy_context = compact_mapping(
+        {
+            "tenant_id": subject.governance.tenant_id,
+            "owner_id": subject.governance.owner_id,
+            "visibility": list(subject.governance.visibility or []),
+            "roles_allowed": list(subject.governance.roles_allowed or []),
+        }
+    )
+    constraints = compact_mapping(
+        {
+            "roles_allowed": list(subject.governance.roles_allowed or []),
+            "visibility": list(subject.governance.visibility or []),
+        }
+    )
+    gap = _state_gap(subject)
+    return CanonicalProjection(
+        id=f"projection:{subject.id}/task-packet",
+        kind="task_packet",
+        title=title or f"{subject.title} task packet",
+        subject=subject,
+        summary=f"Task packet for {subject.title}: {goal}",
+        objects=objects,
+        incidents=incidents,
+        context=compact_mapping(
+            {
+                "task_goal": goal,
+                "local_object": subject.to_dict(),
+                "neighborhood": [item.to_dict() for item in objects],
+                "policy_context": policy_context,
+                "allowed_actions": actions,
+                "relevant_incidents": incidents,
+                "recent_changes": [],
+                "desired_state": subject.desired_state,
+                "actual_state": subject.actual_state,
+                "gap": gap,
+                "constraints": constraints,
+                "narrative": narrative,
+            }
+        ),
+        representations=compact_mapping(
+            {
+                "llm": {
+                    "subject_id": subject.id,
+                    "task_goal": goal,
+                    "policy_context": policy_context,
+                    "allowed_action_ids": [item.get("id") for item in actions],
+                    "incident_total": len(incidents),
+                }
+            }
+        ),
+    )
+
+
 def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalProjection:
     data = coerce_mapping(payload)
     node_data = coerce_mapping(data.get("node"))
@@ -609,7 +1200,12 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
 
 
 __all__ = [
+    "canonical_overview_projection",
+    "canonical_object_inspector",
+    "canonical_object_projection",
     "canonical_inventory_projection",
     "canonical_neighborhood_projection",
+    "canonical_task_packet",
+    "canonical_topology_projection",
     "canonical_projection_from_reliability_snapshot",
 ]

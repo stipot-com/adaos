@@ -159,6 +159,66 @@ def get_reliability_objects(*, webspace_id: str | None = None) -> list[Mapping[s
     return [item.to_dict() for item in get_reliability_model(webspace_id=webspace_id).objects]
 
 
+def get_overview_model(*, webspace_id: str | None = None):
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_overview_projection
+
+    return current_overview_projection(webspace_id=webspace_id)
+
+
+def get_overview_projection(*, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_overview_model(webspace_id=webspace_id).to_dict()
+
+
+def get_object_model(object_id: str, *, webspace_id: str | None = None):
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_object_projection
+
+    return current_object_projection(object_id, webspace_id=webspace_id)
+
+
+def get_object_projection(object_id: str, *, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_object_model(object_id, webspace_id=webspace_id).to_dict()
+
+
+def get_object_inspector_model(object_id: str, *, task_goal: str | None = None, webspace_id: str | None = None):
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_object_inspector
+
+    return current_object_inspector(object_id, task_goal=task_goal, webspace_id=webspace_id)
+
+
+def get_object_inspector_projection(
+    object_id: str,
+    *,
+    task_goal: str | None = None,
+    webspace_id: str | None = None,
+) -> Mapping[str, Any]:
+    return get_object_inspector_model(object_id, task_goal=task_goal, webspace_id=webspace_id).to_dict()
+
+
+def get_topology_model(object_id: str, *, webspace_id: str | None = None):
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_topology_projection
+
+    return current_topology_projection(object_id, webspace_id=webspace_id)
+
+
+def get_topology_projection(object_id: str, *, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_topology_model(object_id, webspace_id=webspace_id).to_dict()
+
+
+def get_task_packet_model(object_id: str, *, task_goal: str | None = None, webspace_id: str | None = None):
+    require_ctx("sdk.data.control_plane")
+    from adaos.services.system_model.service import current_task_packet
+
+    return current_task_packet(object_id, task_goal=task_goal, webspace_id=webspace_id)
+
+
+def get_task_packet(object_id: str, *, task_goal: str | None = None, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_task_packet_model(object_id, task_goal=task_goal, webspace_id=webspace_id).to_dict()
+
+
 def get_root_model(*, webspace_id: str | None = None):
     projection = get_reliability_model(webspace_id=webspace_id)
     for item in projection.objects:
@@ -213,19 +273,19 @@ def get_inventory_objects() -> list[Mapping[str, Any]]:
     return [item.to_dict() for item in get_inventory_model().objects]
 
 
-def get_neighborhood_model():
+def get_neighborhood_model(object_id: str | None = None, *, webspace_id: str | None = None):
     require_ctx("sdk.data.control_plane")
     from adaos.services.system_model.service import current_neighborhood_projection
 
-    return current_neighborhood_projection()
+    return current_neighborhood_projection(object_id=object_id, webspace_id=webspace_id)
 
 
-def get_neighborhood_projection() -> Mapping[str, Any]:
-    return get_neighborhood_model().to_dict()
+def get_neighborhood_projection(object_id: str | None = None, *, webspace_id: str | None = None) -> Mapping[str, Any]:
+    return get_neighborhood_model(object_id=object_id, webspace_id=webspace_id).to_dict()
 
 
-def get_neighborhood_objects() -> list[Mapping[str, Any]]:
-    return [item.to_dict() for item in get_neighborhood_model().objects]
+def get_neighborhood_objects(object_id: str | None = None, *, webspace_id: str | None = None) -> list[Mapping[str, Any]]:
+    return [item.to_dict() for item in get_neighborhood_model(object_id=object_id, webspace_id=webspace_id).objects]
 
 
 __all__ = [
@@ -256,6 +316,16 @@ __all__ = [
     "get_reliability_model",
     "get_reliability_projection",
     "get_reliability_objects",
+    "get_overview_model",
+    "get_overview_projection",
+    "get_object_model",
+    "get_object_inspector_model",
+    "get_object_inspector_projection",
+    "get_object_projection",
+    "get_topology_model",
+    "get_topology_projection",
+    "get_task_packet_model",
+    "get_task_packet",
     "get_root_model",
     "get_root_object",
     "list_runtime_models",

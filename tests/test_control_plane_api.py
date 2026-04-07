@@ -88,6 +88,48 @@ def test_node_control_plane_reliability_projection_returns_canonical_payload(mon
     assert payload["projection"]["objects"][0]["id"] == "runtime:hub:alpha/yjs-sync"
 
 
+def test_node_control_plane_overview_projection_returns_canonical_payload(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+
+    monkeypatch.setattr(
+        node_api,
+        "current_overview_projection",
+        lambda webspace_id=None: CanonicalProjection(
+            id="projection:hub:alpha/overview",
+            kind="overview",
+            title="Overview",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="warning"),
+            context={"summary_tile": {"value": "warning"}},
+        ),
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/node/control-plane/projections/overview", params={"webspace_id": "desk"})
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["projection"]["id"] == "projection:hub:alpha/overview"
+    assert payload["projection"]["context"]["summary_tile"]["value"] == "warning"
+
+
 def test_node_control_plane_inventory_projection_returns_canonical_payload(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     fake_y_py = types.SimpleNamespace(
@@ -156,7 +198,7 @@ def test_node_control_plane_neighborhood_projection_returns_canonical_payload(mo
     monkeypatch.setattr(
         node_api,
         "current_neighborhood_projection",
-        lambda: CanonicalProjection(
+        lambda object_id=None, webspace_id=None: CanonicalProjection(
             id="projection:hub:alpha/neighborhood",
             kind="neighborhood",
             title="Hub Alpha neighborhood",
@@ -176,6 +218,92 @@ def test_node_control_plane_neighborhood_projection_returns_canonical_payload(mo
     assert payload["ok"] is True
     assert payload["projection"]["id"] == "projection:hub:alpha/neighborhood"
     assert payload["projection"]["objects"][0]["id"] == "member:beta"
+
+
+def test_node_control_plane_object_topology_and_task_packet_projections_return_payload(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+
+    monkeypatch.setattr(
+        node_api,
+        "current_object_projection",
+        lambda object_id, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/object",
+            kind="object",
+            title="Object projection",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather", status="warning"),
+        ),
+    )
+    monkeypatch.setattr(
+        node_api,
+        "current_object_inspector",
+        lambda object_id, task_goal=None, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/inspector",
+            kind="inspector",
+            title="Inspector",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather", status="warning"),
+            context={"task_goal": task_goal},
+        ),
+    )
+    monkeypatch.setattr(
+        node_api,
+        "current_topology_projection",
+        lambda object_id, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/topology",
+            kind="topology",
+            title="Topology projection",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather", status="warning"),
+        ),
+    )
+    monkeypatch.setattr(
+        node_api,
+        "current_task_packet",
+        lambda object_id, task_goal=None, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/task-packet",
+            kind="task_packet",
+            title="Task packet",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather", status="warning"),
+            context={"task_goal": task_goal},
+        ),
+    )
+
+    client = TestClient(app)
+    object_resp = client.get("/api/node/control-plane/projections/object", params={"object_id": "skill:weather"})
+    inspector_resp = client.get(
+        "/api/node/control-plane/projections/object-inspector",
+        params={"object_id": "skill:weather", "task_goal": "inspect weather"},
+    )
+    topology_resp = client.get("/api/node/control-plane/projections/topology", params={"object_id": "skill:weather"})
+    task_resp = client.get(
+        "/api/node/control-plane/projections/task-packet",
+        params={"object_id": "skill:weather", "task_goal": "diagnose weather"},
+    )
+
+    assert object_resp.status_code == 200
+    assert object_resp.json()["projection"]["id"] == "projection:skill:weather/object"
+    assert inspector_resp.status_code == 200
+    assert inspector_resp.json()["projection"]["kind"] == "inspector"
+    assert inspector_resp.json()["projection"]["context"]["task_goal"] == "inspect weather"
+    assert topology_resp.status_code == 200
+    assert topology_resp.json()["projection"]["kind"] == "topology"
+    assert task_resp.status_code == 200
+    assert task_resp.json()["projection"]["context"]["task_goal"] == "diagnose weather"
 
 
 def test_sdk_control_plane_get_self_object(monkeypatch) -> None:
@@ -231,6 +359,81 @@ def test_sdk_control_plane_get_reliability_projection(monkeypatch) -> None:
 
     assert payload["subject"]["id"] == "member:node-1"
     assert objects[0]["id"] == "connection:member:node-1/route"
+
+
+def test_sdk_control_plane_object_topology_and_task_packet_helpers(monkeypatch) -> None:
+    from adaos.sdk import control_plane
+
+    monkeypatch.setattr(
+        control_plane,
+        "get_overview_model",
+        lambda webspace_id=None: CanonicalProjection(
+            id="projection:hub:alpha/overview",
+            kind="overview",
+            title="Overview",
+            subject=CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha"),
+            context={"summary_tile": {"value": "online"}},
+        ),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_object_model",
+        lambda object_id, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/object",
+            kind="object",
+            title="Object",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather"),
+        ),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_object_inspector_model",
+        lambda object_id, task_goal=None, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/inspector",
+            kind="inspector",
+            title="Inspector",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather"),
+            context={"task_goal": task_goal},
+        ),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_topology_model",
+        lambda object_id, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/topology",
+            kind="topology",
+            title="Topology",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather"),
+        ),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_task_packet_model",
+        lambda object_id, task_goal=None, webspace_id=None: CanonicalProjection(
+            id=f"projection:{object_id}/task-packet",
+            kind="task_packet",
+            title="Task packet",
+            subject=CanonicalObject(id=object_id, kind="skill", title="Weather"),
+            context={"task_goal": task_goal},
+        ),
+    )
+
+    overview = control_plane.get_overview_projection(webspace_id="desk")
+    object_projection = control_plane.get_object_projection("skill:weather", webspace_id="desk")
+    inspector_projection = control_plane.get_object_inspector_projection(
+        "skill:weather",
+        task_goal="inspect weather",
+        webspace_id="desk",
+    )
+    topology_projection = control_plane.get_topology_projection("skill:weather", webspace_id="desk")
+    task_packet = control_plane.get_task_packet("skill:weather", task_goal="diagnose weather", webspace_id="desk")
+
+    assert overview["id"] == "projection:hub:alpha/overview"
+    assert object_projection["id"] == "projection:skill:weather/object"
+    assert inspector_projection["kind"] == "inspector"
+    assert inspector_projection["context"]["task_goal"] == "inspect weather"
+    assert topology_projection["kind"] == "topology"
+    assert task_packet["context"]["task_goal"] == "diagnose weather"
 
 
 def test_sdk_control_plane_root_runtime_and_connection_helpers(monkeypatch) -> None:
@@ -365,7 +568,7 @@ def test_sdk_control_plane_neighborhood_helpers(monkeypatch) -> None:
     monkeypatch.setattr(
         control_plane,
         "get_neighborhood_model",
-        lambda: CanonicalProjection(
+        lambda object_id=None, webspace_id=None: CanonicalProjection(
             id="projection:hub:alpha/neighborhood",
             kind="neighborhood",
             title="Neighborhood",
@@ -374,8 +577,8 @@ def test_sdk_control_plane_neighborhood_helpers(monkeypatch) -> None:
         ),
     )
 
-    projection = control_plane.get_neighborhood_projection()
-    objects = control_plane.get_neighborhood_objects()
+    projection = control_plane.get_neighborhood_projection(object_id="hub:alpha", webspace_id="desk")
+    objects = control_plane.get_neighborhood_objects(object_id="hub:alpha", webspace_id="desk")
 
     assert projection["id"] == "projection:hub:alpha/neighborhood"
     assert objects[0]["id"] == "member:beta"

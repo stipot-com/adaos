@@ -51,8 +51,13 @@ from adaos.services.system_model.service import (
     current_neighborhood_projection,
     current_node_object,
     current_node_status_payload,
+    current_object_inspector,
+    current_object_projection,
+    current_overview_projection,
     current_reliability_payload,
     current_reliability_projection,
+    current_task_packet,
+    current_topology_projection,
     route_info,
 )
 from adaos.services.yjs.doc import async_get_ydoc
@@ -372,6 +377,12 @@ async def node_control_plane_reliability_projection(webspace_id: str | None = No
     return {"ok": True, "projection": projection.to_dict()}
 
 
+@router.get("/control-plane/projections/overview", dependencies=[Depends(require_token)])
+async def node_control_plane_overview_projection(webspace_id: str | None = None) -> dict[str, Any]:
+    projection = current_overview_projection(webspace_id=webspace_id)
+    return {"ok": True, "projection": projection.to_dict()}
+
+
 @router.get("/control-plane/projections/inventory", dependencies=[Depends(require_token)])
 async def node_control_plane_inventory_projection() -> dict[str, Any]:
     projection = current_inventory_projection()
@@ -379,8 +390,47 @@ async def node_control_plane_inventory_projection() -> dict[str, Any]:
 
 
 @router.get("/control-plane/projections/neighborhood", dependencies=[Depends(require_token)])
-async def node_control_plane_neighborhood_projection() -> dict[str, Any]:
-    projection = current_neighborhood_projection()
+async def node_control_plane_neighborhood_projection(object_id: str | None = None, webspace_id: str | None = None) -> dict[str, Any]:
+    try:
+        projection = current_neighborhood_projection(object_id=object_id, webspace_id=webspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
+    return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/projections/object", dependencies=[Depends(require_token)])
+async def node_control_plane_object_projection(object_id: str, webspace_id: str | None = None) -> dict[str, Any]:
+    try:
+        projection = current_object_projection(object_id, webspace_id=webspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
+    return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/projections/object-inspector", dependencies=[Depends(require_token)])
+async def node_control_plane_object_inspector(object_id: str, task_goal: str | None = None, webspace_id: str | None = None) -> dict[str, Any]:
+    try:
+        projection = current_object_inspector(object_id, task_goal=task_goal, webspace_id=webspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
+    return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/projections/topology", dependencies=[Depends(require_token)])
+async def node_control_plane_topology_projection(object_id: str, webspace_id: str | None = None) -> dict[str, Any]:
+    try:
+        projection = current_topology_projection(object_id, webspace_id=webspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
+    return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/projections/task-packet", dependencies=[Depends(require_token)])
+async def node_control_plane_task_packet(object_id: str, task_goal: str | None = None, webspace_id: str | None = None) -> dict[str, Any]:
+    try:
+        projection = current_task_packet(object_id, task_goal=task_goal, webspace_id=webspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
     return {"ok": True, "projection": projection.to_dict()}
 
 

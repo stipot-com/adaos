@@ -48,8 +48,13 @@ from .model import (
     normalize_trust_status,
 )
 from .projections import (
+    canonical_object_inspector,
+    canonical_object_projection,
+    canonical_overview_projection,
     canonical_inventory_projection,
     canonical_neighborhood_projection,
+    canonical_task_packet,
+    canonical_topology_projection,
     canonical_projection_from_reliability_snapshot,
 )
 
@@ -73,8 +78,13 @@ __all__ = [
     "apply_governance_defaults",
     "apply_projection_governance",
     "canonical_ref",
+    "canonical_object_inspector",
+    "canonical_object_projection",
+    "canonical_overview_projection",
     "canonical_inventory_projection",
     "canonical_neighborhood_projection",
+    "canonical_task_packet",
+    "canonical_topology_projection",
     "canonical_object_from_browser_session",
     "canonical_object_from_capacity_snapshot",
     "canonical_object_from_device_endpoint",

@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+
+if "y_py" not in sys.modules:
+    sys.modules["y_py"] = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        encode_state_vector=lambda *args, **kwargs: b"",
+        encode_state_as_update=lambda *args, **kwargs: b"",
+        apply_update=lambda *args, **kwargs: None,
+    )
+if "ypy_websocket.ystore" not in sys.modules:
+    ystore_module = types.ModuleType("ypy_websocket.ystore")
+    ystore_module.BaseYStore = type("BaseYStore", (), {})
+    ystore_module.YDocNotFound = type("YDocNotFound", (Exception,), {})
+    sys.modules["ypy_websocket.ystore"] = ystore_module
+if "ypy_websocket" not in sys.modules:
+    pkg = types.ModuleType("ypy_websocket")
+    pkg.ystore = sys.modules["ypy_websocket.ystore"]
+    sys.modules["ypy_websocket"] = pkg
+
+
+class _FakeCanonicalObject:
+    def __init__(
+        self,
+        object_id: str,
+        kind: str,
+        title: str,
+        *,
+        status: str = "online",
+        summary: str = "",
+    ) -> None:
+        self.id = object_id
+        self.kind = kind
+        self.title = title
+        self.status = status
+        self.summary = summary
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "title": self.title,
+            "status": self.status,
+            "summary": self.summary,
+        }
+
+
+def _load_infrascope_module():
+    root = Path(__file__).resolve().parents[1]
+    path = root / ".adaos" / "workspace" / "skills" / "infrascope_skill" / "handlers" / "main.py"
+    module_name = f"test_infrascope_skill_{uuid4().hex}"
+    service_key = "adaos.services.system_model.service"
+    previous_service_module = sys.modules.get(service_key)
+    service_module = types.ModuleType("adaos.services.system_model.service")
+    service_module.current_control_plane_objects = lambda webspace_id=None: []
+    service_module.current_object_inspector = lambda object_id, task_goal=None, webspace_id=None: None
+    service_module.current_overview_projection = lambda webspace_id=None: None
+    sys.modules[service_key] = service_module
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if previous_service_module is None:
+            sys.modules.pop(service_key, None)
+        else:
+            sys.modules[service_key] = previous_service_module
+
+
+def test_infrascope_skill_projects_overview_summary_and_incident_rows(monkeypatch):
+    mod = _load_infrascope_module()
+
+    local = _FakeCanonicalObject("local", "hub", "Local hub")
+    member = _FakeCanonicalObject("member-1", "member", "Kitchen member", status="degraded", summary="link flaps")
+    projection = SimpleNamespace(
+        subject=local,
+        objects=[member],
+        context={
+            "summary_tile": {
+                "label": "health",
+                "value": "degraded",
+                "subtitle": "1 active incident",
+            },
+            "health_strip": [
+                {
+                    "id": "health:member-1",
+                    "object_id": "member-1",
+                    "summary": "Link is degraded",
+                }
+            ],
+            "active_incidents": [
+                {
+                    "id": "incident:member-1",
+                    "object_id": "member-1",
+                    "title": "Kitchen member",
+                    "severity": "high",
+                    "summary": "Link is degraded",
+                }
+            ],
+        },
+    )
+
+    monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: projection)
+
+    summary = mod.get_overview_summary()
+    incidents = mod.list_overview_collection("active_incidents")
+    health = mod.list_overview_collection("health_strip")
+
+    assert summary["object_id"] == "local"
+    assert summary["buttons"][-1]["id"] == "inspect_local"
+    assert incidents == [
+        {
+            "id": "incident:member-1",
+            "object_id": "member-1",
+            "object_title": "Kitchen member",
+            "title": "Kitchen member",
+            "subtitle": "high | degraded",
+            "summary": "Link is degraded",
+            "severity": "high",
+            "status": "degraded",
+            "icon": "git-branch-outline",
+            "details": {
+                "incident": {
+                    "id": "incident:member-1",
+                    "object_id": "member-1",
+                    "title": "Kitchen member",
+                    "severity": "high",
+                    "summary": "Link is degraded",
+                },
+                "object": member.to_dict(),
+            },
+        }
+    ]
+    assert health[0]["object_id"] == "member-1"
+    assert health[0]["icon"] == "git-branch-outline"
+
+
+def test_infrascope_skill_inventory_and_inspector_shape(monkeypatch):
+    mod = _load_infrascope_module()
+
+    skill = _FakeCanonicalObject("skill:watchdog", "skill", "Watchdog", status="warning", summary="restart suggested")
+    scenario = _FakeCanonicalObject("scenario:ops", "scenario", "Ops Desk", status="online")
+    subject = _FakeCanonicalObject("hub-1", "hub", "Hub 1", status="degraded", summary="packet loss")
+    projection = SimpleNamespace(
+        subject=subject,
+        context={
+            "inspector": {
+                "label": "hub",
+                "value": "degraded",
+                "subtitle": "Hub 1",
+            },
+            "actions": [{"id": "restart", "title": "Restart"}],
+            "recent_changes": [{"id": "change:1", "title": "Config updated"}],
+            "topology": {"edges": [{"from": "hub-1", "to": "member-1"}]},
+            "task_packet": {"task_goal": "assist operator"},
+        },
+        incidents=[{"id": "incident:hub-1", "summary": "packet loss"}],
+        summary="Hub 1 is degraded",
+    )
+
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [skill, scenario])
+    monkeypatch.setattr(mod, "current_object_inspector", lambda object_id, task_goal=None, webspace_id=None: projection)
+
+    inventory = mod.list_inventory("skills")
+    inspector = mod.get_object_inspector("hub-1", task_goal="assist operator")
+
+    assert [item["object_id"] for item in inventory] == ["skill:watchdog"]
+    assert inventory[0]["status"] == "warning"
+    assert inventory[0]["icon"] == "extension-puzzle-outline"
+    assert inspector["object_id"] == "hub-1"
+    assert inspector["object"]["kind"] == "hub"
+    assert inspector["actions"] == [{"id": "restart", "title": "Restart"}]
+    assert inspector["task_packet"] == {"task_goal": "assist operator"}
+    assert inspector["topology"] == {"edges": [{"from": "hub-1", "to": "member-1"}]}
+
+
+def test_infrascope_skill_returns_safe_fallback_for_unknown_object(monkeypatch):
+    mod = _load_infrascope_module()
+
+    def _raise(*args, **kwargs):
+        raise KeyError("missing")
+
+    monkeypatch.setattr(mod, "current_object_inspector", _raise)
+
+    payload = mod.get_object_inspector("missing-object")
+
+    assert payload["value"] == "unknown"
+    assert payload["warning"] == "Object not found: missing-object"
+    assert payload["topology"] == {"edges": []}
+    assert payload["task_packet"] == {}
+
+
+def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
+    root = Path(__file__).resolve().parents[1]
+    scenario_path = root / ".adaos" / "workspace" / "scenarios" / "infrascope" / "scenario.json"
+    skill_path = root / ".adaos" / "workspace" / "skills" / "infrascope_skill" / "skill.yaml"
+
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    skill_yaml = skill_path.read_text(encoding="utf-8")
+    widgets = {item["id"]: item for item in scenario["ui"]["application"]["desktop"]["pageSchema"]["widgets"]}
+
+    inventory = widgets["inventory-list"]
+    incidents = widgets["overview-incidents"]
+    summary = widgets["selected-object-summary"]
+
+    assert scenario["type"] == "desktop"
+    assert inventory["visibleIf"] == "$state.infrascopeMode === 'inventory'"
+    assert inventory["dataSource"]["params"]["kind"] == "$state.inventoryKind"
+    assert incidents["actions"][0]["params"]["inspectorTab"] == "incidents"
+    assert summary["dataSource"]["name"] == "infrascope_skill.get_object_inspector"
+    assert "get_overview_summary" in skill_yaml
+    assert "get_object_inspector" in skill_yaml

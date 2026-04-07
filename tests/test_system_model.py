@@ -14,8 +14,13 @@ from adaos.services.system_model import (
     apply_governance_defaults,
     canonical_ref,
     CanonicalStatus,
+    canonical_object_projection,
+    canonical_object_inspector,
     canonical_inventory_projection,
     canonical_neighborhood_projection,
+    canonical_overview_projection,
+    canonical_task_packet,
+    canonical_topology_projection,
     canonical_object_from_browser_session,
     canonical_object_from_capacity_snapshot,
     canonical_object_from_device_endpoint,
@@ -566,3 +571,99 @@ def test_canonical_neighborhood_projection_tracks_peers_and_incidents() -> None:
     assert projection["context"]["peer_total"] == 2
     assert projection["context"]["online_peer_total"] == 1
     assert projection["context"]["incident_total"] == 1
+
+
+def test_canonical_overview_projection_builds_health_strip_runtime_and_recent_changes() -> None:
+    subject = CanonicalObject(
+        id="hub:alpha",
+        kind="hub",
+        title="Hub Alpha",
+        status=CanonicalStatus.WARNING,
+        summary="Primary hub requires attention",
+        versioning={"actual": "2026.04.07", "desired": "2026.04.08", "drift": True},
+    )
+    objects = [
+        CanonicalObject(
+            id="runtime:hub:alpha/yjs-sync",
+            kind="runtime",
+            title="Yjs sync",
+            status=CanonicalStatus.DEGRADED,
+            summary="bounded replay window near limit",
+            runtime={"phase": "bounded_sync", "recent_transitions_5m": 2},
+        ),
+        CanonicalObject(
+            id="quota:telegram-outbox",
+            kind="quota",
+            title="Telegram outbox",
+            status=CanonicalStatus.WARNING,
+            summary="publish backlog is growing",
+            resources={"used": 9, "limit": 10},
+        ),
+    ]
+
+    projection = canonical_overview_projection(subject, objects).to_dict()
+
+    assert projection["id"] == "projection:hub:alpha/overview"
+    assert projection["context"]["summary_tile"]["value"] == "degraded"
+    assert projection["context"]["health_strip"][0]["object_id"] == "hub:alpha"
+    assert projection["context"]["quota_summary"][0]["object_id"] == "quota:telegram-outbox"
+    assert projection["context"]["active_runtimes"][0]["object_id"] == "runtime:hub:alpha/yjs-sync"
+    assert any(item["category"] == "drift" for item in projection["context"]["recent_changes"])
+
+
+def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:
+    subject = CanonicalObject(
+        id="hub:alpha",
+        kind="hub",
+        title="Hub Alpha",
+        status=CanonicalStatus.WARNING,
+        summary="Primary hub has drift",
+        relations={"connected_to": ["root:eu"], "uses": ["skill:weather"]},
+        desired_state={"version": "2026.04.08"},
+        actual_state={"version": "2026.04.07"},
+        actions=[CanonicalActionDescriptor(id="restart", title="restart", risk="medium")],
+    )
+    objects = [
+        CanonicalObject(id="root:eu", kind="root", title="Root EU", status=CanonicalStatus.ONLINE, relations={"connected_to": ["hub:alpha"]}),
+        CanonicalObject(id="skill:weather", kind="skill", title="weather", status=CanonicalStatus.DEGRADED, summary="remote version drift"),
+    ]
+
+    projection = canonical_object_inspector(subject, objects, task_goal="diagnose drift").to_dict()
+
+    assert projection["id"] == "projection:hub:alpha/inspector"
+    assert projection["context"]["inspector"]["value"] == "warning"
+    assert projection["context"]["actions"][0]["id"] == "restart"
+    assert projection["context"]["topology"]["edges"][0]["source"] == "hub:alpha"
+    assert projection["context"]["task_packet"]["context"]["task_goal"] == "diagnose drift"
+
+
+def test_canonical_object_topology_and_task_packet_projections_share_selected_object_context() -> None:
+    subject = CanonicalObject(
+        id="hub:alpha",
+        kind="hub",
+        title="Hub Alpha",
+        status=CanonicalStatus.WARNING,
+        summary="Primary hub has drift",
+        relations={"connected_to": ["root:eu"], "uses": ["skill:weather"]},
+        desired_state={"version": "2026.04.08"},
+        actual_state={"version": "2026.04.07"},
+        actions=[CanonicalActionDescriptor(id="restart", title="restart", risk="medium")],
+    )
+    objects = [
+        CanonicalObject(id="root:eu", kind="root", title="Root EU", status=CanonicalStatus.ONLINE, relations={"connected_to": ["hub:alpha"]}),
+        CanonicalObject(id="skill:weather", kind="skill", title="weather", status=CanonicalStatus.DEGRADED, summary="remote version drift"),
+    ]
+
+    object_projection = canonical_object_projection(subject, objects).to_dict()
+    topology_projection = canonical_topology_projection(subject, objects).to_dict()
+    task_packet = canonical_task_packet(subject, objects, task_goal="diagnose drift").to_dict()
+
+    assert object_projection["id"] == "projection:hub:alpha/object"
+    assert object_projection["context"]["narrative"]["risk_summary"] == "2 active incident(s)"
+    assert object_projection["representations"]["operator"]["actions"][0]["object_id"] == "hub:alpha"
+    assert topology_projection["id"] == "projection:hub:alpha/topology"
+    assert topology_projection["context"]["edge_total"] >= 2
+    assert task_packet["id"] == "projection:hub:alpha/task-packet"
+    assert task_packet["context"]["task_goal"] == "diagnose drift"
+    assert task_packet["context"]["gap"]["version"]["desired"] == "2026.04.08"
+    assert task_packet["context"]["allowed_actions"][0]["id"] == "restart"
