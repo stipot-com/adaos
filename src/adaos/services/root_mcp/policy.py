@@ -441,6 +441,7 @@ def evaluate_tool_access(
             published_by = str(operational_surface.get("published_by") or "").strip()
             surface_enabled = bool(operational_surface.get("enabled"))
             surface_capabilities = _normalize_surface_capabilities(operational_surface.get("capabilities"))
+            execution_mode = str(operational_surface.get("execution_mode") or "").strip().lower()
             report_verified = bool((target.meta or {}).get("report_verified"))
             require_verified_reports = str(os.getenv("ADAOS_ROOT_MCP_REQUIRE_VERIFIED_REPORTS") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -483,6 +484,23 @@ def evaluate_tool_access(
                     meta={"published_capabilities": surface_capabilities},
                 )
 
+            required_execution_mode = str(contract.metadata.get("required_execution_mode") or "").strip().lower()
+            if required_execution_mode and execution_mode != required_execution_mode:
+                return RootMcpPolicyDecision(
+                    allowed=False,
+                    code="execution_route_unavailable",
+                    message=f"Target '{target_id}' does not expose execution mode '{required_execution_mode}' for '{contract.id}'.",
+                    policy_decision="deny",
+                    required_capability=required_capability,
+                    granted_capabilities=grants,
+                    grant_source=grant_source,
+                    target_id=target_id,
+                    meta={
+                        "required_execution_mode": required_execution_mode,
+                        "target_execution_mode": execution_mode or "reported_only",
+                    },
+                )
+
             if require_verified_reports and not report_verified:
                 return RootMcpPolicyDecision(
                     allowed=False,
@@ -509,6 +527,7 @@ def evaluate_tool_access(
                 "target_surface_published_by": str((target.operational_surface or {}).get("published_by") or ""),
                 "target_surface_enabled": bool((target.operational_surface or {}).get("enabled")),
                 "target_surface_capabilities": _normalize_surface_capabilities((target.operational_surface or {}).get("capabilities")),
+                "target_execution_mode": str((target.operational_surface or {}).get("execution_mode") or "").strip().lower() or "reported_only",
                 "report_verified": bool((target.meta or {}).get("report_verified")),
             },
         )

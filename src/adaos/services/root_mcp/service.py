@@ -9,6 +9,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
 from .audit import append_audit_event, list_audit_events
+from .infra_access import read_local_logs, run_local_healthchecks
 from .model import (
     ROOT_MCP_RESPONSE_SCHEMA,
     RootMcpAuditEvent,
@@ -101,31 +102,6 @@ def _foundation_summary() -> dict[str, Any]:
 def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
     summary = "Planned test-hub operational tool published later through infra_access_skill."
     return [
-        RootMcpToolContract(
-            id="hub.get_logs",
-            title="Get hub logs",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(
-                properties={"target_id": {"type": "string"}, "tail": {"type": "integer", "minimum": 1}},
-                required=["target_id"],
-            ),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.get_logs",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
-        ),
-        RootMcpToolContract(
-            id="hub.run_healthchecks",
-            title="Run hub healthchecks",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.run_healthchecks",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
-        ),
         RootMcpToolContract(
             id="hub.deploy_ref",
             title="Deploy ref to test hub",
@@ -293,6 +269,39 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="hub.get_runtime_summary",
             metadata={"published_by": "root", "handler": "hub_get_runtime_summary", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.get_logs",
+            title="Get hub logs",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return a bounded tail of local pilot hub logs through the infra_access_skill local adapter.",
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "tail": {"type": "integer", "minimum": 1}},
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_logs",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_get_logs",
+                "environment_scope": "test-first",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.run_healthchecks",
+            title="Run hub healthchecks",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Run bounded local pilot healthchecks through the infra_access_skill local adapter.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.run_healthchecks",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_run_healthchecks",
+                "environment_scope": "test-first",
+                "required_execution_mode": "local_process",
+            },
         ),
         RootMcpToolContract(
             id="operations.list_contracts",
@@ -543,6 +552,41 @@ def _handle_hub_issue_access_token(arguments: dict[str, Any], *, dry_run: bool) 
     )
 
 
+def _target_execution_mode(target_id: str) -> str:
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    surface = dict(target.operational_surface or {})
+    return str(surface.get("execution_mode") or "").strip().lower() or "reported_only"
+
+
+def _handle_hub_get_logs(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    tail = int(arguments.get("tail") or 200)
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "logs": read_local_logs(tail=tail),
+    }
+
+
+def _handle_hub_run_healthchecks(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "healthchecks": run_local_healthchecks(),
+    }
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
     "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
@@ -553,6 +597,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
     "hub.get_status": lambda arguments, dry_run=False: _handle_hub_get_status(arguments, dry_run=dry_run),
     "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
+    "hub.get_logs": lambda arguments, dry_run=False: _handle_hub_get_logs(arguments, dry_run=dry_run),
+    "hub.run_healthchecks": lambda arguments, dry_run=False: _handle_hub_run_healthchecks(arguments, dry_run=dry_run),
     "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
@@ -573,6 +619,10 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
     token = str(tool_id or "").strip()
     if token in {"hub.get_status", "hub.get_runtime_summary"}:
         return "root.control_report_projection"
+    if token == "hub.get_logs":
+        return "infra_access.local_process.logs"
+    if token == "hub.run_healthchecks":
+        return "infra_access.local_process.healthchecks"
     if token == "hub.issue_access_token":
         return "root.access_token_issuer"
     if token.startswith("development."):

@@ -44,10 +44,13 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "operations.list_contracts" in contract_ids
     assert "operations.list_managed_targets" in contract_ids
     assert "development.export_sdk" not in contract_ids
+    get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
+    assert get_logs["availability"] == "enabled"
+    assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
     implemented = next(item for item in contract_items if item["id"] == "hub.get_status")
     assert implemented["availability"] == "enabled"
     assert implemented["metadata"]["published_by"] == "root"
-    placeholder = next(item for item in contract_items if item["id"] == "hub.get_logs")
+    placeholder = next(item for item in contract_items if item["id"] == "hub.deploy_ref")
     assert placeholder["availability"] == "placeholder"
     assert placeholder["metadata"]["published_by"] == "skill:infra_access_skill"
 
@@ -234,6 +237,10 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     client = _make_client()
     owner_headers = {"X-Owner-Token": "owner-secret"}
     target_id = "hub:subnet-test-1"
+    logs_dir = tmp_path / "base" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "adaos.log").write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    (logs_dir / "service.alpha.log").write_text("svc-1\nsvc-2\n", encoding="utf-8")
 
     report = client.post(
         "/v1/hub/control/report",
@@ -274,9 +281,12 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
                 "published_by": "skill:infra_access_skill",
                 "enabled": True,
                 "availability": "enabled",
+                "execution_mode": "local_process",
                 "capabilities": [
                     "hub.get_status",
                     "hub.get_runtime_summary",
+                    "hub.get_logs",
+                    "hub.run_healthchecks",
                     "hub.issue_access_token",
                 ],
             },
@@ -333,6 +343,36 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert runtime_payload["response"]["result"]["transport"]["effective_transport"] == "root_proxy"
     assert runtime_payload["response"]["meta"]["report_verified"] is False
 
+    logs_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_logs",
+            "arguments": {"target_id": target_id, "tail": 2},
+        },
+    )
+    assert logs_call.status_code == 200
+    logs_payload = logs_call.json()
+    assert logs_payload["ok"] is True
+    assert logs_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.logs"
+    assert logs_payload["response"]["result"]["logs"]["files"]
+    assert any(item["name"] == "adaos.log" for item in logs_payload["response"]["result"]["logs"]["files"])
+
+    healthchecks_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.run_healthchecks",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert healthchecks_call.status_code == 200
+    healthchecks_payload = healthchecks_call.json()
+    assert healthchecks_payload["ok"] is True
+    assert healthchecks_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.healthchecks"
+    assert healthchecks_payload["response"]["result"]["healthchecks"]["checks"]
+    assert healthchecks_payload["response"]["result"]["healthchecks"]["mode"] == "local_process"
+
     token_call = client.post(
         "/v1/root/mcp/call",
         headers=owner_headers,
@@ -358,6 +398,8 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     audit_items = audit.json()["events"]
     assert any(item["tool_id"] == "hub.control_report.ingest" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_status" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
+    assert any(item["tool_id"] == "hub.get_logs" and item["execution_adapter"] == "infra_access.local_process.logs" for item in audit_items)
+    assert any(item["tool_id"] == "hub.run_healthchecks" and item["execution_adapter"] == "infra_access.local_process.healthchecks" for item in audit_items)
 
 
 def test_root_mcp_operational_tool_requires_published_skill_capability(monkeypatch, tmp_path) -> None:
@@ -403,6 +445,52 @@ def test_root_mcp_operational_tool_requires_published_skill_capability(monkeypat
     runtime_payload = runtime_call.json()
     assert runtime_payload["ok"] is False
     assert runtime_payload["response"]["error"]["code"] == "capability_not_published"
+
+
+def test_root_mcp_local_execution_tools_require_local_process_route(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-4"
+
+    report = client.post(
+        "/v1/hub/control/report",
+        json={
+            "target_id": target_id,
+            "subnet_id": "subnet-test-4",
+            "environment": "test",
+            "zone": "lab-e",
+            "reported_at": "2026-04-07T12:15:00Z",
+            "lifecycle": {"node_state": "running"},
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "availability": "enabled",
+                "execution_mode": "reported_only",
+                "capabilities": ["hub.get_logs", "hub.run_healthchecks"],
+            },
+        },
+    )
+    assert report.status_code == 200
+
+    logs_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_logs",
+            "arguments": {"target_id": target_id, "tail": 10},
+        },
+    )
+    assert logs_call.status_code == 200
+    logs_payload = logs_call.json()
+    assert logs_payload["ok"] is False
+    assert logs_payload["response"]["error"]["code"] == "execution_route_unavailable"
 
 
 def test_root_mcp_can_require_verified_control_reports(monkeypatch, tmp_path) -> None:
@@ -527,16 +615,16 @@ def test_root_mcp_placeholder_tool_returns_structured_error(monkeypatch) -> None
         "/v1/root/mcp/call",
         headers=headers,
         json={
-            "tool_id": "hub.get_logs",
+            "tool_id": "hub.deploy_ref",
             "request_id": "req-root-mcp-2",
-            "arguments": {"target_id": target_id, "tail": 50},
+            "arguments": {"target_id": target_id, "ref": "refs/heads/main"},
         },
     )
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["ok"] is False
     envelope = payload["response"]
-    assert envelope["tool_id"] == "hub.get_logs"
+    assert envelope["tool_id"] == "hub.deploy_ref"
     assert envelope["status"] == "error"
     assert envelope["error"]["code"] == "surface_unavailable"
     assert envelope["meta"]["published_by"] == "skill:infra_access_skill"

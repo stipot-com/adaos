@@ -75,11 +75,14 @@ def _infra_access_operational_surface() -> dict[str, Any]:
     enabled = str(os.getenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
     capabilities_raw = str(os.getenv("ADAOS_INFRA_ACCESS_CAPABILITIES") or "").strip()
     capabilities = [item for item in (token.strip() for token in capabilities_raw.split(",")) if item]
+    execution_mode = str(os.getenv("ADAOS_INFRA_ACCESS_EXECUTION_MODE") or "").strip().lower() or "reported_only"
     return {
         "published_by": "skill:infra_access_skill",
         "enabled": enabled,
         "availability": "enabled" if enabled else "planned",
         "capabilities": capabilities,
+        "execution_mode": execution_mode,
+        "execution_adapter": "infra_access.local_process" if execution_mode == "local_process" else "report_only",
     }
 
 

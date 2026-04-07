@@ -75,6 +75,7 @@ The current skeleton also applies root-side capability checks and scope hints:
 - target-bound `hub.*` tools are now also gated by the managed target's published `infra_access_skill` capability surface
 - hub control reports may be verified with `X-AdaOS-Hub-Report-Token` when `ADAOS_ROOT_HUB_REPORT_TOKEN` is configured on root
 - hub control reports can refresh managed-target state on `root`, which now powers executable read-side operational tools such as `hub.get_status` and `hub.get_runtime_summary`
+- `hub.get_logs` and `hub.run_healthchecks` now work as a local-pilot path only when the target publishes `execution_mode=local_process`
 - write-like operational tools are still blocked until the target-side `infra_access_skill` path is implemented
 
 ## Positioning Relative to Root MCP Foundation

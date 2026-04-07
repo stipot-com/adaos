@@ -513,7 +513,11 @@ What is implemented in this slice:
   - `hub.get_status`
   - `hub.get_runtime_summary`
   - `hub.issue_access_token`
+- first local-pilot `infra_access_skill` execution adapters for:
+  - `hub.get_logs`
+  - `hub.run_healthchecks`
 - policy-side gating of target-bound `hub.*` tools by the target's published `infra_access_skill` capability surface
+- execution-mode gating, so local-pilot adapters only run when the target publishes `execution_mode=local_process`
 - optional verified-report policy mode, so operational tools can require a verified control report before execution
 - unified operational audit events for both MCP tool execution and `hub.control_report.ingest`
 - placeholder operational contract catalog retained for future `infra_access_skill` write-oriented operations
