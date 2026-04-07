@@ -179,8 +179,9 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
     items = mod._scenario_items()
 
     assert items == [
-        {"name": "alpha", "version": "1.2.3", "updated_at": 1.0},
-        {"name": "gamma", "version": "3.0.0", "updated_at": 2.0},
+        {"name": "alpha", "version": "1.2.3", "updated_at": 1.0, "uninstall_disabled": False},
+        {"name": "beta", "version": "2.0.0", "updated_at": None, "uninstall_disabled": False},
+        {"name": "gamma", "version": "3.0.0", "updated_at": 2.0, "uninstall_disabled": False},
     ]
 
 
@@ -206,15 +207,26 @@ def test_infrastate_skill_items_use_registry_catalog_for_update_status(monkeypat
     )
     monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: object())
     monkeypatch.setattr(mod, "SkillManager", lambda **kwargs: SimpleNamespace(runtime_status=lambda name: {"active_slot": "A"}))
-    monkeypatch.setattr(mod, "find_workspace_registry_entry", lambda *args, **kwargs: {"version": "0.20.0"})
+    monkeypatch.setattr(
+        mod,
+        "_marketplace_catalog_entries",
+        lambda kind: [{"id": "infrastate_skill", "name": "infrastate_skill", "version": "0.20.0"}] if kind == "skills" else [],
+    )
 
     items = mod._skills_items()
 
     assert items == [
         {
             "name": "infrastate_skill",
+            "display_name": "infrastate_skill *",
             "version": "0.19.0",
+            "version_display": "0.19.0 (0.20.0)",
             "slot": "A",
+            "active": True,
+            "can_activate": True,
+            "can_test": True,
+            "used_by_scenarios": [],
+            "uninstall_disabled": False,
             "remote_version": "0.20.0",
             "update_available": True,
         }
@@ -226,13 +238,8 @@ def test_infrastate_marketplace_filters_installed_and_marks_running_operations(m
 
     monkeypatch.setattr(
         mod,
-        "get_ctx",
-        lambda: SimpleNamespace(paths=SimpleNamespace(workspace_dir=lambda: Path("."))),
-    )
-    monkeypatch.setattr(
-        mod,
-        "list_workspace_registry_entries",
-        lambda workspace_root, kind=None: (
+        "_marketplace_catalog_entries",
+        lambda kind: (
             [
                 {"kind": "skill", "id": "installed_skill", "name": "installed_skill", "version": "1.0.0"},
                 {"kind": "skill", "id": "queued_skill", "name": "queued_skill", "version": "1.2.0"},
@@ -266,6 +273,44 @@ def test_infrastate_marketplace_filters_installed_and_marks_running_operations(m
     assert items["skills"][0]["install_disabled"] is True
     assert items["skills"][0]["operation_status"] == "running"
     assert [item["id"] for item in items["scenarios"]] == ["new_scene"]
+
+
+def test_infrastate_marketplace_catalog_prefers_remote_registry_and_local_scan(monkeypatch, tmp_path: Path):
+    mod = _load_infrastate_module()
+    workspace = tmp_path / "workspace"
+    scenario_dir = workspace / "scenarios" / "infrascope"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / "scenario.yaml").write_text(
+        "\n".join(
+            [
+                "id: infrascope",
+                "name: Infrascope",
+                "version: '0.2.0'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "get_ctx",
+        lambda: SimpleNamespace(paths=SimpleNamespace(workspace_dir=lambda: workspace)),
+    )
+    monkeypatch.setattr(mod, "list_workspace_registry_entries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"scenarios":[{"kind":"scenario","id":"remote_scene","name":"remote_scene","version":"1.0.0"}]}',
+            stderr="",
+        ),
+    )
+
+    items = mod._marketplace_catalog_entries("scenarios")
+
+    assert [item["name"] for item in items] == ["infrascope", "remote_scene"]
 
 
 def test_infrastate_effective_runtime_projection_prefers_validated_target_slot():

@@ -92,23 +92,39 @@ def list_cmd(
 
     mgr = _mgr()
     rows = mgr.list_installed()
+    present = list(mgr.list_present() or [])
+    fallback_rows = [
+        {
+            "name": str(getattr(getattr(meta, "id", None), "value", None) or getattr(meta, "name", "") or "").strip(),
+            "version": str(getattr(meta, "version", None) or "unknown"),
+        }
+        for meta in present
+        if str(getattr(getattr(meta, "id", None), "value", None) or getattr(meta, "name", "") or "").strip()
+    ]
 
     if json_output:
+        scenarios = [
+            {
+                "name": r.name,
+                "version": getattr(r, "active_version", None) or "unknown",
+            }
+            for r in rows
+            if bool(getattr(r, "installed", True))
+        ]
+        if not scenarios:
+            scenarios = fallback_rows
         payload = {
-            "scenarios": [
-                {
-                    "name": r.name,
-                    "version": getattr(r, "active_version", None) or "unknown",
-                }
-                for r in rows
-                if bool(getattr(r, "installed", True))
-            ]
+            "scenarios": scenarios
         }
         typer.echo(json.dumps(payload, ensure_ascii=False))
         return
 
     if not rows:
-        typer.echo(_("cli.scenario.list.empty"))
+        if fallback_rows:
+            for item in fallback_rows:
+                typer.echo(_("cli.scenario.list.item", name=item["name"], version=item["version"]))
+        else:
+            typer.echo(_("cli.scenario.list.empty"))
     else:
         for r in rows:
             if not bool(getattr(r, "installed", True)):

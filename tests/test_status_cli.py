@@ -258,3 +258,41 @@ def test_scenario_status_reports_empty_when_registry_and_workspace_are_empty(tmp
 
     assert result.exit_code == 0
     assert "No installed scenarios." in result.stdout
+
+
+def test_scenario_list_falls_back_to_workspace_when_registry_empty(tmp_path, monkeypatch):
+    scenario_root = tmp_path / "workspace" / "scenarios" / "infrascope"
+    scenario_root.mkdir(parents=True, exist_ok=True)
+    (scenario_root / "scenario.yaml").write_text("id: infrascope\nversion: '0.3.0'\n", encoding="utf-8")
+
+    class _Paths:
+        def workspace_dir(self):
+            return tmp_path / "workspace"
+
+        def scenarios_workspace_dir(self):
+            return tmp_path / "workspace" / "scenarios"
+
+        def dev_scenarios_dir(self):
+            return tmp_path / "scenarios-dev"
+
+    class _Ctx:
+        paths = _Paths()
+        sql = object()
+
+    monkeypatch.setattr(scenario_cmd, "get_ctx", lambda: _Ctx())
+
+    class _Mgr:
+        @staticmethod
+        def list_installed():
+            return []
+
+        @staticmethod
+        def list_present():
+            return [types.SimpleNamespace(id=types.SimpleNamespace(value="infrascope"), version="0.3.0")]
+
+    monkeypatch.setattr(scenario_cmd, "_mgr", lambda: _Mgr())
+
+    result = CliRunner().invoke(scenario_cmd.app, ["list"])
+
+    assert result.exit_code == 0
+    assert "infrascope" in result.stdout
