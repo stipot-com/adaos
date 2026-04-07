@@ -22,11 +22,25 @@
 - shared governance и action-role defaults, чтобы SDK-facing objects последовательно несли owner, visibility и role hints
 - local inventory projection, объединяющая node, workspace, browser, device, skill, scenario, capacity и selected reliability-derived root/quota objects для LLM-oriented reasoning
 
+## Связь с Root MCP Foundation
+
+Текущий SDK control-plane layer — это ближайший уже реализованный предшественник будущей `MCP Development Surface`.
+
+Guidance для Phase 0 такая:
+
+- SDK остается primary development contract surface для skills и LLM workflows
+- root-hosted MCP должен публиковать curated descriptors поверх SDK и canonical system-model contracts, а не скрейпить произвольные HTTP payloads или raw code
+- внешний HTTP surface по возможности должен оставаться уже, чем SDK
+- будущая `Root MCP Foundation` должна опираться на `adaos.sdk.core.exporter`, `adaos.services.system_model.*`, manifest schemas и template metadata
+
+Иными словами, AdaOS должен оставаться `SDK-first` для development-facing machine-readable surfaces, а MCP должен стать governed root-hosted agent-facing entrypoint поверх этих contracts.
+
 ## Связанные модули
 
 - `adaos.apps.cli.active_control`
 - `adaos.apps.api.*`
 - `adaos.sdk.manage.*`
+- `adaos.sdk.core.exporter`
 - `adaos.sdk.control_plane`
 - `adaos.sdk.data.control_plane`
 - `adaos.services.system_model.*`

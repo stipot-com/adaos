@@ -51,6 +51,23 @@ CLI обычно подставляет этот токен автоматиче
 - `GET /api/node/control-plane/projections/inventory`
 - `GET /api/node/control-plane/projections/neighborhood`
 
+## Позиционирование относительно Root MCP Foundation
+
+Текущий FastAPI surface — это локальный runtime и node-control API. Это не будущая `Root MCP Foundation`.
+
+Архитектурное позиционирование для Phase 0 такое:
+
+- локальный HTTP остается полезным для runtime, browser, CLI и node operations
+- широкий agent-facing MCP должен появиться на `root`, а не за счет превращения каждого node в открытый infrastructure endpoint
+- operational access к managed targets должен идти через skill-mediated surfaces, например будущий `infra_access_skill`
+- текущие `/api/node/control-plane/*` endpoints должны оставаться aggregate-focused и совместимыми с SDK-first control-plane contracts
+
+Так AdaOS не смешивает между собой:
+
+- local node API
+- human-facing web control surfaces
+- future root-hosted agent-facing MCP surfaces
+
 ## Замечания
 
 - `/api/say` и `/api/io/console/print` в коде помечены как deprecated в пользу bus-driven flow.

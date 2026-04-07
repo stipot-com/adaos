@@ -51,6 +51,23 @@ Current control-plane projection facades under `/api/node/*` are intentionally n
 - `GET /api/node/control-plane/projections/inventory`
 - `GET /api/node/control-plane/projections/neighborhood`
 
+## Positioning Relative to Root MCP Foundation
+
+The current FastAPI surface is a local runtime and node-control API. It is not the future `Root MCP Foundation`.
+
+Phase 0 architectural positioning is:
+
+- local HTTP remains useful for runtime, browser, CLI, and node operations
+- broad agent-facing MCP should be introduced on `root`, not by expanding every node into an open infrastructure endpoint
+- operational access to managed targets should prefer skill-mediated surfaces such as future `infra_access_skill`
+- current `/api/node/control-plane/*` endpoints should stay aggregate-focused and compatible with SDK-first control-plane contracts
+
+This keeps AdaOS from conflating:
+
+- local node API
+- human-facing web control surfaces
+- future root-hosted agent-facing MCP surfaces
+
 ## Notes
 
 - `/api/say` and `/api/io/console/print` still exist, but the code marks them as deprecated in favor of bus-driven flows.

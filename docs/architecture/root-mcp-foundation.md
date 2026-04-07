@@ -431,6 +431,13 @@ The eventual goal is to align this model with AdaOS's broader permission and cap
 - define `infra_access_skill` concept
 - define operational event and observability model
 
+Phase 0 is complete when:
+
+- the terminology and placement are fixed in architecture docs
+- `Infrascope`, SDK-first control-plane docs, and roadmap notes reference the same MCP foundation model
+- `infra_access_skill` is established as the preferred target-side operational surface
+- `test hub` is established as the first managed target in the architecture notes
+
 ### Phase 1. Root MCP Foundation Skeleton
 
 - add minimal root MCP entrypoint and request/response envelopes

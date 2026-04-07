@@ -48,6 +48,19 @@
 
 ---
 
+### 4.5 Root MCP Foundation
+
+* [ ] Архитектурная фиксация `Root MCP Foundation` на `root`.
+* [ ] Разделение на `MCP Development Surface` и `MCP Operational Surface`.
+* [ ] Root-hosted skeleton: typed envelopes, tool-contract registry, audit primitives.
+* [ ] `MCP-to-SDK` descriptors: SDK metadata, schemas, templates, canonical vocabulary.
+* [ ] `test hub` как первый `managed target`.
+* [ ] `infra_access_skill` как skill-mediated operational surface вместо always-open infra endpoint.
+* [ ] WebUI и observability для `infra_access_skill`.
+  *DoD:* root публикует agent-facing foundation без always-open infra endpoint; доступ к test-target операциям идет только через enabled skill-mediated capability surface.
+
+---
+
 ### 5. Безопасность и доверие
 
 * [ ] PKI, выдача сертификатов, trust-root.

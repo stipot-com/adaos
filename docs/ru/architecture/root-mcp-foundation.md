@@ -431,6 +431,13 @@ Operational routing flow должен выглядеть так:
 - фиксируем концепт `infra_access_skill`
 - фиксируем operational event и observability model
 
+Phase 0 считается завершенной, когда:
+
+- терминология и placement зафиксированы в architecture docs
+- `Infrascope`, SDK-first control-plane docs и roadmap notes ссылаются на одну и ту же MCP foundation model
+- `infra_access_skill` закреплен как предпочтительный target-side operational surface
+- `test hub` закреплен в architecture notes как первый managed target
+
 ### Phase 1. Root MCP Foundation Skeleton
 
 - добавляем minimal root MCP entrypoint и request/response envelopes
