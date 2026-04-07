@@ -59,6 +59,68 @@ def _workspace_child_names(root: Path) -> list[str]:
     return sorted(set(names))
 
 
+def _repo_workspace_skills_root(ctx) -> Path | None:
+    try:
+        repo_root_attr = getattr(ctx.paths, "repo_root", None)
+        repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+        if not repo_root:
+            return None
+        candidate = Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills"
+        if candidate.exists():
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _collect_workspace_skill_names(ctx, workspace_skills_root: Path) -> list[str]:
+    names = set(_workspace_child_names(workspace_skills_root))
+    repo_root = _repo_workspace_skills_root(ctx)
+    if repo_root is not None:
+        names.update(_workspace_child_names(repo_root))
+    return sorted(names)
+
+
+def _collect_runtime_skill_names(workspace_skills_root: Path) -> list[str]:
+    runtime_root = workspace_skills_root / ".runtime"
+    if not runtime_root.exists():
+        return []
+    names: list[str] = []
+    for child in runtime_root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")):
+            continue
+        names.append(child.name)
+    return sorted(set(names))
+
+
+def _resolve_workspace_skill_source(ctx, skill_name: str, workspace_root: Path, workspace_skills_root: Path) -> tuple[Path, Path, str]:
+    local_path = (workspace_skills_root / skill_name).resolve()
+    if local_path.exists():
+        return workspace_root, local_path, "workspace"
+
+    repo_root = _repo_workspace_skills_root(ctx)
+    if repo_root is not None:
+        repo_path = (repo_root / skill_name).resolve()
+        if repo_path.exists():
+            repo_workdir_attr = getattr(ctx.paths, "repo_root", None)
+            repo_workdir = repo_workdir_attr() if callable(repo_workdir_attr) else repo_workdir_attr
+            workdir = Path(repo_workdir).expanduser().resolve() if repo_workdir else repo_root.parent.parent.parent.resolve()
+            return workdir, repo_path, "repo_workspace_fallback"
+
+    return workspace_root, local_path, "workspace"
+
+
+def _normalize_runtime_missing_state(skill_name: str) -> dict[str, object]:
+    return {
+        "name": skill_name,
+        "installed": False,
+        "ready": False,
+        "state": "runtime-missing",
+    }
+
+
 def _run_safe(func):
     def wrapper(*args, **kwargs):
         try:
@@ -970,6 +1032,19 @@ def status(
         # Dev: compare local dev folder with the Root backend draft state (API).
         base_ref = None
 
+    installed_names: set[str] = set()
+    if space == "workspace":
+        try:
+            rows = SqliteSkillRegistry(ctx.sql).list()
+        except Exception:
+            rows = []
+        for row in rows:
+            n = getattr(row, "name", None) or getattr(row, "id", None)
+            if not n or not bool(getattr(row, "installed", True)):
+                continue
+            installed_names.add(str(n))
+        installed_names.update(_collect_runtime_skill_names(Path(skills_root)))
+
     if name:
         names = [name]
     else:
@@ -983,41 +1058,59 @@ def status(
                         names.append(child.name)
             names = sorted(set(names))
         else:
-            try:
-                rows = SqliteSkillRegistry(ctx.sql).list()
-            except Exception:
-                rows = []
             names = []
-            for row in rows:
-                n = getattr(row, "name", None) or getattr(row, "id", None)
-                if not n or not bool(getattr(row, "installed", True)):
-                    continue
+            for n in installed_names:
                 names.append(str(n))
-            names = sorted(set(names))
-            if not names:
-                names = _workspace_child_names(Path(skills_root))
+            names = sorted(set(names) | set(_collect_workspace_skill_names(ctx, Path(skills_root))))
 
     results: list[dict] = []
     for skill_name in names:
         runtime_state = None
         runtime_error = None
+        source_kind = "dev"
+        source_path = Path(dev_skills_root) / skill_name
+        source_workdir = Path(dev_skills_root)
+        source_base_ref = None
         if space == "workspace":
-            try:
-                runtime_state = mgr.runtime_status(skill_name)
-            except Exception as exc:
-                runtime_error = str(exc)
+            source_workdir, source_path, source_kind = _resolve_workspace_skill_source(
+                ctx,
+                skill_name,
+                Path(workspace_root),
+                Path(skills_root),
+            )
+            source_base_ref = base_ref if source_kind == "workspace" else None
+            if skill_name in installed_names:
+                try:
+                    runtime_state = mgr.runtime_status(skill_name)
+                except Exception as exc:
+                    message = str(exc or "").strip()
+                    if message.lower() == "no versions installed":
+                        runtime_state = _normalize_runtime_missing_state(skill_name)
+                    else:
+                        runtime_error = message
+            else:
+                runtime_state = {
+                    "name": skill_name,
+                    "installed": False,
+                    "ready": False,
+                    "state": "draft",
+                }
 
         if space == "workspace":
             path_status = compute_path_status(
-                workdir=workspace_root,
-                path=(Path(skills_root) / skill_name),
-                base_ref=base_ref,
+                workdir=source_workdir,
+                path=source_path,
+                base_ref=source_base_ref,
             )
             entry = {
                 "name": skill_name,
                 "space": space,
                 "runtime": runtime_state,
                 "runtime_error": runtime_error,
+                "source": {
+                    "kind": source_kind,
+                    "path": str(source_path),
+                },
                 "git": {
                     "path": path_status.path,
                     "exists": path_status.exists,
@@ -1129,14 +1222,22 @@ def status(
         entry = results[0] if results else {}
         st = entry.get("runtime") or {}
         g = entry.get("git") or {}
+        source = entry.get("source") or {}
         typer.echo(f"skill: {entry.get('name')}")
         typer.echo(f"space: {entry.get('space')}")
         if entry.get("runtime_error"):
             typer.secho(f"runtime: error: {entry.get('runtime_error')}", fg=typer.colors.YELLOW)
         elif space == "workspace":
-            typer.echo(f"version: {st.get('version')}")
-            typer.echo(f"active slot: {st.get('active_slot')}")
-            if st.get("ready", True):
+            state = str(st.get("state") or "").strip()
+            if st.get("installed") is False or state in {"draft", "runtime-missing"}:
+                message = "runtime: draft (not installed in runtime yet)" if state != "runtime-missing" else "runtime: not installed in runtime yet"
+                typer.echo(message)
+            else:
+                typer.echo(f"version: {st.get('version')}")
+                typer.echo(f"active slot: {st.get('active_slot')}")
+            if st.get("installed") is False or state in {"draft", "runtime-missing"}:
+                typer.echo("resolved manifest: (not installed)")
+            elif st.get("ready", True):
                 typer.echo(f"resolved manifest: {st.get('resolved_manifest')}")
             else:
                 typer.echo("resolved manifest: (not activated)")
@@ -1153,6 +1254,10 @@ def status(
             default_tool = st.get("default_tool")
             if default_tool:
                 typer.echo(f"default tool: {default_tool}")
+            if source.get("kind"):
+                typer.echo(f"source: {source.get('kind')}")
+            if source.get("path"):
+                typer.echo(f"source path: {source.get('path')}")
 
         if space == "workspace":
             typer.echo(f"git path: {g.get('path')}")
@@ -1204,6 +1309,12 @@ def status(
         flags: list[str] = []
         if entry.get("runtime_error"):
             flags.append("runtime-error")
+        elif space == "workspace":
+            state = str(st.get("state") or "").strip()
+            if st.get("installed") is False or state == "draft":
+                flags.append("draft")
+            elif state == "runtime-missing":
+                flags.append("runtime-missing")
         if space == "workspace":
             if g.get("dirty"):
                 flags.append("dirty")
@@ -1213,7 +1324,7 @@ def status(
             dc = entry.get("dev_compare") or {}
             if dc.get("changed_vs_base"):
                 flags.append("diff")
-        version = st.get("version") or ("n/a" if space == "dev" else "unknown")
+        version = st.get("version") or ("n/a" if space == "dev" or st.get("installed") is False or str(st.get("state") or "").strip() in {"draft", "runtime-missing"} else "unknown")
         slot = st.get("active_slot") or ("n/a" if space == "dev" else "n/a")
         suffix = f" [{', '.join(flags)}]" if flags else ""
         typer.echo(f"{entry.get('name')}: v{version} slot={slot}{suffix}")
