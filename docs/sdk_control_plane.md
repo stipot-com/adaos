@@ -13,10 +13,15 @@ In the current codebase, the control plane is split across:
 - node status, reliability, join, role, and member-update flows
 - service supervision and issue reporting
 - webspace and desktop control for Yjs-backed state
+- canonical self-object access via SDK-first control-plane helpers
+- canonical skill/scenario object access via SDK-first helpers before widening the external API
 
 ## Related modules
 
 - `adaos.apps.cli.active_control`
 - `adaos.apps.api.*`
 - `adaos.sdk.manage.*`
+- `adaos.sdk.control_plane`
+- `adaos.sdk.data.control_plane`
+- `adaos.services.system_model.*`
 - runtime services under `adaos.services.*`

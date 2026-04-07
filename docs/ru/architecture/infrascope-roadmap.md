@@ -55,6 +55,17 @@
 - каждый базовый тип объекта можно представить через `id`, `kind`, `title`, `status`, `relations` и `governance`
 - одинаковые статусные слова значат одно и то же в node- и runtime-API
 
+### Текущий срез реализации
+
+Первый кодовый срез для Iteration 0 намеренно узкий:
+
+- добавить общий canonical vocabulary и object envelope в `src/adaos/services/system_model/*`
+- добавить adapter functions для текущих форм node, skill, scenario, profile и workspace
+- добавить SDK entry points для canonical self, skill и scenario objects и оставить API тонким фасадом
+- сначала проверить словарь и адаптеры точечными unit tests, а уже потом расширять покрытие API
+
+Следующий низкорисковый шаг — распространить тот же envelope на часть reliability snapshots и при необходимости на тонкие API facades, не ломая текущие ответы.
+
 ## Итерация 1: Projection Layer
 
 ### Цель

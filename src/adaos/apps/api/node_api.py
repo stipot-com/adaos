@@ -46,7 +46,7 @@ from adaos.services.realtime_sidecar import (
     restart_realtime_sidecar_subprocess,
 )
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
-from adaos.services.subnet.link_client import get_member_link_client
+from adaos.services.system_model.service import current_node_object, current_node_status_payload, route_info
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace
 
@@ -343,44 +343,25 @@ async def _require_request_token(
     )
 
 
-def _route_info(role: str) -> tuple[str | None, bool | None]:
-    route_mode = None
-    connected = None
-    try:
-        if role == "hub":
-            route_mode = "hub"
-        elif role == "member":
-            connected = bool(get_member_link_client().is_connected())
-            route_mode = "ws" if connected else "none"
-    except Exception:
-        route_mode = None
-        connected = None
-    return route_mode, connected
+def _node_status_payload() -> dict[str, Any]:
+    return current_node_status_payload()
 
 
 @router.get("/status", response_model=NodeStatus, dependencies=[Depends(require_token)])
 async def node_status():
-    conf = load_config()
-    route_mode, connected = _route_info(conf.role)
-    lifecycle = runtime_lifecycle_snapshot()
-    return NodeStatus(
-        node_id=conf.node_id,
-        subnet_id=conf.subnet_id,
-        role=conf.role,
-        node_names=list(getattr(conf, "node_names", []) or []),
-        primary_node_name=str(getattr(conf, "primary_node_name", "") or ""),
-        ready=is_ready() and not bool(lifecycle.get("draining")),
-        node_state=str(lifecycle.get("node_state") or "ready"),
-        draining=bool(lifecycle.get("draining")),
-        route_mode=route_mode,
-        connected_to_hub=connected,
-    )
+    return NodeStatus(**_node_status_payload())
+
+
+@router.get("/control-plane/objects/self", dependencies=[Depends(require_token)])
+async def node_control_plane_object_self() -> dict[str, Any]:
+    canonical = current_node_object()
+    return {"ok": True, "object": canonical.to_dict()}
 
 
 @router.get("/reliability", dependencies=[Depends(require_token)])
 async def node_reliability() -> dict[str, Any]:
     conf = load_config()
-    route_mode, connected = _route_info(conf.role)
+    route_mode, connected = route_info(conf.role)
     lifecycle = runtime_lifecycle_snapshot()
     local_ready = is_ready()
     return reliability_snapshot(
@@ -405,7 +386,7 @@ async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]
 @router.get("/sidecar/status", dependencies=[Depends(require_token)])
 async def sidecar_status(request: Request) -> dict[str, Any]:
     conf = load_config()
-    route_mode, connected = _route_info(conf.role)
+    route_mode, connected = route_info(conf.role)
     lifecycle = runtime_lifecycle_snapshot()
     reliability = reliability_snapshot(
         node_id=conf.node_id,
@@ -436,7 +417,7 @@ async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> d
     reconnect_result: dict[str, Any] | None = None
     if bool(payload.reconnect_hub_root) and str(conf.role or "").strip().lower() == "hub":
         reconnect_result = await request_hub_root_reconnect()
-    route_mode, connected = _route_info(conf.role)
+    route_mode, connected = route_info(conf.role)
     lifecycle = runtime_lifecycle_snapshot()
     reliability = reliability_snapshot(
         node_id=conf.node_id,
@@ -471,7 +452,7 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
     deprecated_fields: list[str] = ["hub_url"] if payload.hub_url else []
 
     conf = await switch_role(req.app, new_role, hub_url=None, subnet_id=sub_id)
-    route_mode, connected = _route_info(conf.role)
+    route_mode, connected = route_info(conf.role)
 
     diags = {
         "requested_role": new_role,
@@ -1361,7 +1342,7 @@ async def media_file_content(
 @router.get("/members", dependencies=[Depends(require_token)])
 async def node_members() -> dict[str, Any]:
     conf = load_config()
-    route_mode, connected = _route_info(conf.role)
+    route_mode, connected = route_info(conf.role)
     lifecycle = runtime_lifecycle_snapshot()
     reliability = reliability_snapshot(
         node_id=conf.node_id,

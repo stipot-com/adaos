@@ -55,6 +55,17 @@ Create a stable object contract and shared vocabulary for states, relations, and
 - every core object class can be represented with `id`, `kind`, `title`, `status`, `relations`, and `governance`
 - the same status words mean the same thing across node and runtime APIs
 
+### Current Implementation Slice
+
+The first code slice for Iteration 0 is intentionally narrow:
+
+- add shared canonical vocabulary and object envelope under `src/adaos/services/system_model/*`
+- add adapter functions for current node, skill, scenario, profile, and workspace shapes
+- expose SDK entry points for canonical self, skill, and scenario object access while keeping API as a thin facade
+- verify the vocabulary and adapters with focused unit tests before adapting more APIs
+
+The next low-risk follow-up is to extend the same envelope into selected reliability snapshots and optional API facades without breaking existing responses.
+
 ## Iteration 1: Projection Layer
 
 ### Goal
