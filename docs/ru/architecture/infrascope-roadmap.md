@@ -27,6 +27,27 @@
 4. Объяснить, какой объект превысил LLM или external-service квоту.
 5. Подготовить безопасный, policy-aware context packet для LLM assistant.
 
+## Companion Track: Root MCP Foundation
+
+`Infrascope` — это human-facing track control plane. Параллельно AdaOS должен заложить [Root MCP Foundation](root-mcp-foundation.md) на `root` как agent-facing companion layer.
+
+Этот companion track важен потому, что:
+
+- vocabulary Phase 0 должна быть общей для web, SDK и будущих MCP surfaces
+- projections и task packets из Phase 1 должны переиспользоваться будущей `MCP Development Surface`
+- Phases 2-4 должны рассматривать `infra_access_skill` как first-class operational skill, чьи web UI и observability можно инспектировать в `Infrascope`
+- Phases 5-6 должны свести human и agent control surfaces к общему policy, audit и action vocabulary
+
+Ожидаемая последовательность Root MCP Foundation:
+
+1. `Architectural fixation`: терминология, root-first boundaries, split development/operations, managed target model, `infra_access_skill` и operational event model
+2. `Foundation skeleton`: minimal root MCP entrypoint, typed envelopes, tool-contract registry и audit primitives
+3. `MCP-to-SDK base`: machine-readable SDK и contract descriptors для LLM-assisted development
+4. `Test-hub operational pilot`: первый managed target, `infra_access_skill`, сначала read-only diagnostics, затем controlled writes с observability
+5. `Convergence`: shared objects, actions, event history и review flows для web и MCP surfaces
+
+`Infrascope` не должен ждать завершения всего этого трека, но и расходиться с ним тоже не должен.
+
 ## Итерация 0: Канонический словарь
 
 ### Цель

@@ -27,6 +27,27 @@ Each Phase should improve at least one of these end-to-end scenarios:
 4. Explain which object exceeded an LLM or external-service quota.
 5. Prepare a safe, policy-aware context packet for an LLM assistant.
 
+## Companion Track: Root MCP Foundation
+
+`Infrascope` is the human-facing control-plane track. In parallel, AdaOS should establish [Root MCP Foundation](root-mcp-foundation.md) on `root` as the agent-facing companion layer.
+
+This companion track matters because:
+
+- Phase 0 canonical vocabulary should be shared by web, SDK, and future MCP surfaces
+- Phase 1 projections and task packets should be reusable by the future `MCP Development Surface`
+- Phases 2-4 should treat `infra_access_skill` as a first-class operational skill whose web UI and observability are inspectable inside `Infrascope`
+- Phases 5-6 should converge human and agent control surfaces around the same policy, audit, and action vocabulary
+
+The expected Root MCP Foundation sequencing is:
+
+1. `Architectural fixation`: terminology, root-first boundaries, development/operations split, managed target model, `infra_access_skill`, and operational event model
+2. `Foundation skeleton`: minimal root MCP entrypoint, typed envelopes, tool-contract registry, and audit primitives
+3. `MCP-to-SDK base`: machine-readable SDK and contract descriptors for LLM-assisted development
+4. `Test-hub operational pilot`: first managed target, `infra_access_skill`, read-only diagnostics first, then controlled writes with observability
+5. `Convergence`: shared objects, actions, event history, and review flows across web and MCP surfaces
+
+`Infrascope` should not wait for that whole track to finish, but it should avoid diverging from it.
+
 ## Phase 0: Canonical Vocabulary
 
 ### Goal

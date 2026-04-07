@@ -88,6 +88,7 @@ plugins:
             Personalization: Профиль пользователя
             LLM DevOps Stages: Этапы LLM DevOps
             LLM DevOps Preparation: Этапы LLM DevOps - подготовка
+            Root MCP Foundation: Root MCP Foundation
             NLU: Интерпретация намерений
             NLU Teacher: NLU Teacher
             Device Initialization: Инициализация устройства
@@ -146,6 +147,7 @@ nav:
       - Agent Context: architecture/context.md
       - Security: architecture/security.md
       - Infrascope: architecture/infrascope.md
+      - Root MCP Foundation: architecture/root-mcp-foundation.md
       - Infrascope Roadmap: architecture/infrascope-roadmap.md
   - CLI:
       - Overview: cli/index.md

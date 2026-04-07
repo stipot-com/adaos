@@ -28,3 +28,8 @@ In the current implementation:
 
 The pages in this section primarily summarize the implemented architecture.
 When a page is explicitly labeled as a roadmap or target-state design, it captures planned control-plane evolution that should stay compatible with the current runtime.
+
+Current target-state control-plane extensions are documented in:
+
+- [Infrascope](infrascope.md): human-facing control-plane architecture over the canonical system model
+- [Root MCP Foundation](root-mcp-foundation.md): root-hosted agent-facing foundation for future MCP development and operations surfaces

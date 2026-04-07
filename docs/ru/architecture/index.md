@@ -25,3 +25,8 @@ AdaOS построен как local-first runtime с многослойной Py
 - service-type skills управляются через supervisor и health-aware API
 - Yjs-backed webspace дают синхронизированное состояние сценариев и desktop
 - autostart и core-update встроены в lifecycle runtime
+
+Target-state расширения control plane сейчас описаны в:
+
+- [Infrascope](infrascope.md): human-facing архитектура control plane поверх canonical system model
+- [Root MCP Foundation](root-mcp-foundation.md): root-hosted agent-facing foundation для будущих MCP development и operations surfaces

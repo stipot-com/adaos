@@ -221,6 +221,25 @@ Task-shaped пакет контекста для LLM или automation:
 
 Именно этот пакет должен быть основной LLM-точкой входа. Он позволяет не выгружать всю инфраструктуру целиком и не раскрывать лишние данные.
 
+## Связь с Root MCP Foundation
+
+`Infrascope` — это human-facing workspace control plane поверх canonical system model. `Root MCP Foundation` — его root-hosted agent-facing companion layer.
+
+Они должны сходиться на одних и тех же элементах:
+
+- canonical objects, relation kinds и projection classes
+- task packets и formal action descriptors
+- policy decisions, visibility rules и governance overlays
+- operational event model для requests, outcomes, incidents и history
+
+Практически это означает:
+
+- `MCP Development Surface` должна использовать те же canonical descriptors и task-shaped context packets, которые помогают `Infrascope` объяснять skills, scenarios и dependencies
+- `MCP Operational Surface` должна использовать тот же vocabulary объектов, инцидентов, ресурсов и действий, который лежит в основе human control plane
+- `infra_access_skill` должна появляться в `Infrascope` как first-class operational skill с inspector state, request history, failures, capability usage и policy overlays
+
+Поэтому оба трека нужно проектировать вместе: одна модель, один vocabulary, несколько consumer surfaces.
+
 ## Representation Layers
 
 Один и тот же объект должен иметь несколько overlays поверх общего источника истины:
