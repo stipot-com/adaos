@@ -43,6 +43,7 @@ The CLI resolves this token automatically for local control operations.
 - `/api/observe/*`: ingest, tail, and SSE stream
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle, and core-update orchestration
+- `/v1/root/*`: root bootstrap, join-code flows, and Root MCP Foundation skeleton
 
 Current control-plane projection facades under `/api/node/*` are intentionally narrow and aggregate-focused:
 
@@ -50,6 +51,14 @@ Current control-plane projection facades under `/api/node/*` are intentionally n
 - `GET /api/node/control-plane/projections/reliability`
 - `GET /api/node/control-plane/projections/inventory`
 - `GET /api/node/control-plane/projections/neighborhood`
+
+Current Root MCP Foundation skeleton endpoints are exposed separately from `/api/node/*`:
+
+- `GET /v1/root/mcp/foundation`
+- `GET /v1/root/mcp/contracts`
+- `GET /v1/root/mcp/targets`
+- `POST /v1/root/mcp/call`
+- `GET /v1/root/mcp/audit`
 
 ## Positioning Relative to Root MCP Foundation
 
@@ -60,6 +69,8 @@ Phase 0 architectural positioning is:
 - local HTTP remains useful for runtime, browser, CLI, and node operations
 - broad agent-facing MCP should be introduced on `root`, not by expanding every node into an open infrastructure endpoint
 - operational access to managed targets should prefer skill-mediated surfaces such as future `infra_access_skill`
+- root MCP should publish root-curated descriptors and managed-target contracts, not expose a direct public SDK bridge
+- external MCP clients should be able to target `root` with scoped config such as `root_url`, `subnet_id`, `access_token`, and `zone`
 - current `/api/node/control-plane/*` endpoints should stay aggregate-focused and compatible with SDK-first control-plane contracts
 
 This keeps AdaOS from conflating:

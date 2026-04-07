@@ -185,11 +185,13 @@ That event model should be shared across:
 
 The first development-facing responsibility of `Root MCP Foundation` is to expose a curated, typed, machine-readable view of AdaOS development surfaces.
 
+This should not become a direct public bridge into the SDK runtime. The SDK remains an internal and skill-oriented contract source. Root MCP should publish a `root-curated descriptor registry` over stable services, schemas, manifests, and selected SDK-derived metadata.
+
 ### Minimal Root-Hosted Development Descriptors
 
 The initial foundation should expose descriptors for:
 
-- SDK exported tools and events from `adaos.sdk.core.exporter`
+- root-curated SDK metadata derived from `adaos.sdk.core.exporter`
 - canonical control-plane object vocabulary from `adaos.services.system_model.*`
 - skill manifest schema and runtime-related manifest metadata
 - scenario manifest and projection metadata
@@ -223,7 +225,7 @@ Instead, the surface should expose curated descriptors, schemas, manifests, regi
 
 The development-facing path should be:
 
-1. expose machine-readable SDK and contract descriptors
+1. expose root-curated descriptor sets over stable SDK/service contracts
 2. expose skill/scenario template metadata and supported capability classes
 3. expose task-shaped development packets for authoring or refactoring tasks
 4. add draft/proposal and review-oriented flows later, once the contracts are stable
@@ -243,6 +245,26 @@ A `managed target` is an environment that `root` can identify, evaluate, and gov
 - recent incidents and audit history
 
 The first managed target should be a `test hub`.
+
+### Client Model
+
+The first external client model should also be fixed early so Root MCP can later be attached to Codex in VS Code and similar tools without rethinking the contract.
+
+The baseline client configuration should be:
+
+- `root_url`
+- `subnet_id`
+- `access_token`
+- `zone`
+
+The intended flow is:
+
+1. client connects to the `root` server for a chosen zone
+2. client scopes itself to a `subnet_id`
+3. client authenticates with an `access_token`
+4. `root` resolves managed-target and policy context before exposing operational capabilities
+
+On later phases, `infra_access_skill` may become the issuer or bootstrap mediator for target-scoped access tokens. What matters at this stage is fixing the client-facing shape early, even before the token-issuance lifecycle is fully implemented.
 
 ### Why the First Target Should Be a Test Hub
 
@@ -444,6 +466,44 @@ Phase 0 is complete when:
 - add root-hosted tool contract registry
 - add initial audit primitives and event IDs
 - expose only minimal read-oriented descriptors and placeholder operational contracts
+
+### Current Phase 1 Implementation Slice
+
+The current code checkpoint establishes the first root-hosted skeleton under:
+
+- `src/adaos/services/root_mcp/model.py`
+- `src/adaos/services/root_mcp/audit.py`
+- `src/adaos/services/root_mcp/registry.py`
+- `src/adaos/services/root_mcp/service.py`
+- `src/adaos/services/root_mcp/targets.py`
+- `src/adaos/services/root_mcp/client.py`
+- `src/adaos/apps/api/root_endpoints.py`
+
+What is implemented in this slice:
+
+- root MCP response envelope and error model
+- root-hosted tool-contract registry over root-curated descriptor sets plus placeholder operational contracts
+- root-side descriptor registry instead of a direct public `export_sdk` MCP path
+- managed-target registry skeleton with `test hub` as the first published target descriptor
+- `RootMcpClient` skeleton with `root_url + subnet_id + access_token + zone` configuration model
+- minimal root MCP API entrypoints:
+  - `GET /v1/root/mcp/foundation`
+  - `GET /v1/root/mcp/contracts`
+  - `GET /v1/root/mcp/targets`
+  - `POST /v1/root/mcp/call`
+  - `GET /v1/root/mcp/audit`
+- read-only development tools for:
+  - foundation summary
+  - contract listing
+  - descriptor-set catalog
+  - descriptor-set retrieval
+  - canonical system-model vocabulary
+  - skill/scenario manifest schemas
+- placeholder operational contract catalog for future `infra_access_skill`
+- initial audit persistence to local root MCP audit storage
+- audit filtering by tool, trace, target, and subnet scope
+
+This is intentionally still a skeleton: it establishes the entrypoint, contracts, and audit shape before adding real managed-target execution.
 
 ### Phase 2. MCP-to-SDK Base
 

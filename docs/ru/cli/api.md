@@ -43,6 +43,7 @@ CLI обычно подставляет этот токен автоматиче
 - `/api/observe/*`: ingest, tail и SSE stream
 - `/api/subnet/*`: register, heartbeat, context, nodes, deregister
 - `/api/admin/*`: drain, shutdown, lifecycle и orchestration обновлений ядра
+- `/v1/root/*`: root bootstrap, join-code flows и Root MCP Foundation skeleton
 
 Текущие control-plane projection facades под `/api/node/*` намеренно узкие и агрегатные:
 
@@ -50,6 +51,14 @@ CLI обычно подставляет этот токен автоматиче
 - `GET /api/node/control-plane/projections/reliability`
 - `GET /api/node/control-plane/projections/inventory`
 - `GET /api/node/control-plane/projections/neighborhood`
+
+Текущие Root MCP Foundation skeleton endpoints вынесены отдельно от `/api/node/*`:
+
+- `GET /v1/root/mcp/foundation`
+- `GET /v1/root/mcp/contracts`
+- `GET /v1/root/mcp/targets`
+- `POST /v1/root/mcp/call`
+- `GET /v1/root/mcp/audit`
 
 ## Позиционирование относительно Root MCP Foundation
 

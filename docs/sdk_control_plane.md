@@ -24,16 +24,17 @@ In the current codebase, the control plane is split across:
 
 ## Relationship to Root MCP Foundation
 
-The current SDK control-plane layer is the nearest implemented precursor to the future `MCP Development Surface`.
+The current SDK control-plane layer is the nearest implemented internal precursor to the future `MCP Development Surface`.
 
-Phase 0 architectural guidance is:
+Phase 0 and early Phase 1 architectural guidance is:
 
-- SDK remains the primary development contract surface for skills and LLM workflows
-- root-hosted MCP should expose curated descriptors over SDK and canonical system-model contracts, not scrape arbitrary HTTP payloads or raw code
+- SDK remains the primary internal contract surface for skills and local LLM workflows
+- root-hosted MCP should expose root-curated descriptors over services, schemas, manifests, and selected SDK-derived metadata, not a direct public bridge into SDK internals
 - external HTTP facades should stay narrower than SDK where possible
-- future `Root MCP Foundation` should build on `adaos.sdk.core.exporter`, `adaos.services.system_model.*`, manifest schemas, and template metadata
+- future `Root MCP Foundation` should build on `adaos.sdk.core.exporter`, `adaos.services.system_model.*`, manifest schemas, template metadata, and managed-target registries
+- external MCP clients should speak to `root` with a scoped client model such as `root_url + subnet_id + access_token + zone`, not import SDK directly
 
-In other words, AdaOS should remain `SDK-first` for development-facing machine-readable surfaces, while MCP becomes the governed root-hosted agent-facing entrypoint over those contracts.
+In other words, AdaOS should remain `SDK-first` inside the platform, while MCP becomes the governed root-hosted agent-facing entrypoint over root-curated descriptors and managed operational surfaces.
 
 ## Related modules
 

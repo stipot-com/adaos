@@ -19,17 +19,32 @@ from adaos.services.join_codes import (
     consume_any as consume_join_code_any,
     create as create_join_code,
 )
-from adaos.services.root.service import RootAuthService
+from adaos.services.root_mcp.service import (
+    foundation_snapshot,
+    invoke_tool,
+    list_managed_targets,
+    list_tool_contracts,
+    recent_audit_events,
+)
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
 subnet_router = APIRouter(prefix="/v1/subnets", tags=["subnets"])
-router.include_router(root_router)
-router.include_router(subnet_router)
 
 
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _resolve_owner_id(owner_token: str) -> str:
+    require_owner_token(owner_token)
+    return os.getenv("ADAOS_ROOT_OWNER_ID") or "local-owner"
+
+
+def _register_subnet_with_root_auth(owner_token: str, csr_pem: str, fingerprint: str, hints: dict[str, Any] | None = None) -> dict[str, Any]:
+    from adaos.services.root.service import RootAuthService
+
+    return RootAuthService.register_subnet(owner_token, csr_pem, fingerprint, hints=hints)
 
 
 def _require_root_write_auth(*, authorization: str | None, owner_token: str | None) -> dict[str, Any]:
@@ -42,7 +57,8 @@ def _require_root_write_auth(*, authorization: str | None, owner_token: str | No
     """
     if owner_token:
         require_owner_token(owner_token)
-        return {"method": "owner_token"}
+        owner_id = _resolve_owner_id(owner_token)
+        return {"method": "owner_token", "owner_id": owner_id, "actor": f"owner:{owner_id}"}
 
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
@@ -51,9 +67,28 @@ def _require_root_write_auth(*, authorization: str | None, owner_token: str | No
         expected = os.getenv("ADAOS_ROOT_BEARER_TOKEN") or ""
         if expected and token != expected:
             raise HTTPException(status_code=401, detail="Invalid bearer token")
-        return {"method": "bearer", "verified": bool(expected)}
+        return {
+            "method": "bearer",
+            "verified": bool(expected),
+            "actor": "bearer:root",
+        }
 
     raise HTTPException(status_code=401, detail="Missing Authorization bearer token or X-Owner-Token")
+
+
+def _require_root_access_auth(*, authorization: str | None, owner_token: str | None) -> dict[str, Any]:
+    return _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+
+
+def _mcp_scope(*, subnet_id: str | None, zone: str | None) -> dict[str, Any]:
+    scope: dict[str, Any] = {}
+    token = str(subnet_id or "").strip()
+    if token:
+        scope["subnet_id"] = token
+    token = str(zone or "").strip()
+    if token:
+        scope["zone"] = token
+    return scope
 
 
 @root_router.post("/register")
@@ -87,7 +122,7 @@ async def subnet_register(
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
     require_owner_token(payload.owner_token)
-    owner_id = RootAuthService.resolve_owner(payload.owner_token)
+    owner_id = _resolve_owner_id(payload.owner_token)
     canonical_source = payload.model_dump(mode="python")
     body_hash = hashlib.sha256(_canonical_body(canonical_source).encode("utf-8")).hexdigest()
 
@@ -96,7 +131,7 @@ async def subnet_register(
         if cached:
             return Response(content=cached["body_json"], status_code=cached["status_code"], media_type="application/json")
 
-    result = RootAuthService.register_subnet(payload.owner_token, payload.csr_pem, payload.fingerprint, hints=payload.hints)
+    result = _register_subnet_with_root_auth(payload.owner_token, payload.csr_pem, payload.fingerprint, hints=payload.hints)
     response_body = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
     if idempotency_key:
         sqlite_db.idem_put(
@@ -119,7 +154,7 @@ async def subnet_register_status(
     owner_token: str = Header(..., alias="X-Owner-Token"),
 ) -> dict:
     require_owner_token(owner_token)
-    owner_id = RootAuthService.resolve_owner(owner_token)
+    owner_id = _resolve_owner_id(owner_token)
     subnet = sqlite_db.subnet_get_or_create(owner_id)
     device = sqlite_db.device_get_by_fingerprint(subnet["subnet_id"], fingerprint)
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -254,3 +289,119 @@ async def subnet_join_consume(req: Request, payload: RootSubnetJoinRequest) -> R
         "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     return RootSubnetJoinResponse(ok=True, subnet_id=subnet_id, token=token, root_url=root_url, hub_url=hub_url, diagnostics=diags)
+
+
+class RootMcpCallRequest(BaseModel):
+    tool_id: str = Field(..., min_length=1, max_length=128)
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    dry_run: bool = False
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+@root_router.get("/mcp/foundation")
+async def root_mcp_foundation(
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "foundation": foundation_snapshot(),
+    }
+
+
+@root_router.get("/mcp/contracts")
+async def root_mcp_contracts(
+    surface: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    contracts = [item.to_dict() for item in list_tool_contracts(surface=surface)]
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "contracts": contracts,
+    }
+
+
+@root_router.get("/mcp/targets")
+async def root_mcp_targets(
+    environment: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "targets": list_managed_targets(environment=environment),
+    }
+
+
+@root_router.get("/mcp/audit")
+async def root_mcp_audit(
+    limit: int = 50,
+    tool_id: str | None = None,
+    trace_id: str | None = None,
+    actor: str | None = None,
+    target_id: str | None = None,
+    subnet_filter: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    events = recent_audit_events(
+        limit=max(1, min(int(limit), 200)),
+        tool_id=tool_id,
+        trace_id=trace_id,
+        actor=actor,
+        target_id=target_id,
+        subnet_id=subnet_filter,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": _mcp_scope(subnet_id=subnet_id, zone=zone),
+        "events": events,
+    }
+
+
+@root_router.post("/mcp/call")
+async def root_mcp_call(
+    payload: RootMcpCallRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _mcp_scope(subnet_id=subnet_id, zone=zone)
+    response = invoke_tool(
+        payload.tool_id,
+        arguments=payload.arguments,
+        request_id=payload.request_id,
+        trace_id=payload.trace_id,
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        dry_run=payload.dry_run,
+        scope=scope,
+    )
+    return {"ok": response.ok, "scope": scope, "response": response.to_dict()}
+
+
+router.include_router(root_router)
+router.include_router(subnet_router)

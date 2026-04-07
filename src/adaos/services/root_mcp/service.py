@@ -1,0 +1,607 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from adaos.build_info import BUILD_INFO
+from adaos.services.agent_context import get_ctx
+from adaos.services.id_gen import new_id
+
+from .audit import append_audit_event, list_audit_events
+from .model import (
+    ROOT_MCP_RESPONSE_SCHEMA,
+    RootMcpAuditEvent,
+    RootMcpAvailability,
+    RootMcpError,
+    RootMcpResponseEnvelope,
+    RootMcpSurface,
+    RootMcpToolContract,
+    schema_object,
+)
+from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
+from .targets import list_managed_targets as list_target_descriptors
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _root_host_summary() -> dict[str, Any]:
+    ctx = get_ctx()
+    conf = getattr(ctx, "config", None)
+    role = str(getattr(conf, "role", "") or "").strip().lower() or "unknown"
+    return {
+        "node_id": getattr(conf, "node_id", None),
+        "subnet_id": getattr(conf, "subnet_id", None),
+        "host_role": role,
+        "root_hosting_mode": "embedded_dev_root" if role == "hub" else "external_root_compatible",
+    }
+
+
+def _foundation_summary() -> dict[str, Any]:
+    descriptors = list_descriptor_sets()
+    managed_targets = list_target_descriptors()
+    contracts = list_tool_contracts()
+    return {
+        "id": "root-mcp-foundation",
+        "status": "experimental",
+        "build": {
+            "version": BUILD_INFO.version,
+            "build_date": BUILD_INFO.build_date,
+        },
+        "root": _root_host_summary(),
+        "surfaces": {
+            "development": {
+                "enabled": True,
+                "mode": "root-curated-descriptors",
+                "scope": "descriptor registry over internal services, schemas, and stable vocabularies",
+            },
+            "operations": {
+                "enabled": True,
+                "mode": "managed-target skeleton",
+                "scope": "root-hosted contracts and managed-target descriptors before target-side infra_access_skill execution",
+            },
+        },
+        "entrypoints": {
+            "foundation": "/v1/root/mcp/foundation",
+            "contracts": "/v1/root/mcp/contracts",
+            "targets": "/v1/root/mcp/targets",
+            "call": "/v1/root/mcp/call",
+            "audit": "/v1/root/mcp/audit",
+        },
+        "registries": {
+            "descriptor_registry": descriptor_registry_summary(),
+        },
+        "managed_targets": {
+            "count": len(managed_targets),
+            "first_target": "test hub",
+            "publication_model": "skill-mediated",
+            "preferred_target_surface": "infra_access_skill",
+            "registry_status": "skeleton",
+        },
+        "client": {
+            "recommended_client": "RootMcpClient",
+            "configuration_fields": ["root_url", "subnet_id", "access_token", "zone"],
+            "intended_use": "external MCP clients such as Codex/VS Code integrations",
+        },
+        "tool_contract_count": len(contracts),
+    }
+
+
+def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
+    summary = "Planned test-hub operational tool published later through infra_access_skill."
+    return [
+        RootMcpToolContract(
+            id="hub.get_status",
+            title="Get hub status",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_status",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.get_runtime_summary",
+            title="Get hub runtime summary",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_runtime_summary",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.get_logs",
+            title="Get hub logs",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "tail": {"type": "integer", "minimum": 1}},
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_logs",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.run_healthchecks",
+            title="Run hub healthchecks",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.run_healthchecks",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.issue_access_token",
+            title="Issue managed-target access token",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Planned token bootstrap contract for external MCP clients routed through infra_access_skill.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "audience": {"type": "string"},
+                    "ttl_seconds": {"type": "integer", "minimum": 60},
+                },
+                required=["target_id", "audience"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.issue_access_token",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.deploy_ref",
+            title="Deploy ref to test hub",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "ref": {"type": "string"}},
+                required=["target_id", "ref"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.deploy_ref",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            side_effects="write",
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
+        ),
+        RootMcpToolContract(
+            id="hub.restart_service",
+            title="Restart test-hub service",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "service": {"type": "string"}},
+                required=["target_id", "service"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.restart_service",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            side_effects="write",
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
+        ),
+        RootMcpToolContract(
+            id="hub.run_allowed_tests",
+            title="Run allowed tests on test hub",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.run_allowed_tests",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            side_effects="write",
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
+        ),
+        RootMcpToolContract(
+            id="hub.get_test_results",
+            title="Get test results",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_test_results",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.rollback_last_test_deploy",
+            title="Rollback last test deploy",
+            surface=RootMcpSurface.OPERATIONS,
+            summary=summary,
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.rollback_last_test_deploy",
+            availability=RootMcpAvailability.PLACEHOLDER,
+            side_effects="write",
+            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
+        ),
+    ]
+
+
+def _implemented_tool_contracts() -> list[RootMcpToolContract]:
+    return [
+        RootMcpToolContract(
+            id="development.describe_foundation",
+            title="Describe Root MCP Foundation",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return root-hosted MCP foundation summary and current surface status.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.foundation",
+            metadata={"published_by": "root", "handler": "describe_foundation"},
+        ),
+        RootMcpToolContract(
+            id="development.list_contracts",
+            title="List tool contracts",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return current root MCP tool contracts, including operational placeholders.",
+            input_schema=schema_object(
+                properties={"surface": {"type": "string", "enum": [item.value for item in RootMcpSurface]}},
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.contracts",
+            metadata={"published_by": "root", "handler": "list_contracts"},
+        ),
+        RootMcpToolContract(
+            id="development.list_descriptor_sets",
+            title="List descriptor sets",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the root-curated development descriptor catalog.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "root", "handler": "list_descriptor_sets"},
+        ),
+        RootMcpToolContract(
+            id="development.get_descriptor_set",
+            title="Get descriptor set",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return a root-curated descriptor payload such as sdk metadata, schemas, or template catalog.",
+            input_schema=schema_object(
+                properties={
+                    "descriptor_id": {"type": "string"},
+                    "level": {"type": "string", "enum": ["mini", "std", "rich"]},
+                },
+                required=["descriptor_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "root", "handler": "get_descriptor_set"},
+        ),
+        RootMcpToolContract(
+            id="development.get_system_model_vocabulary",
+            title="Get system model vocabulary",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the canonical system-model vocabulary published through the root descriptor registry.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.system_model",
+            metadata={"published_by": "root", "handler": "get_system_model_vocabulary"},
+        ),
+        RootMcpToolContract(
+            id="development.get_skill_manifest_schema",
+            title="Get skill manifest schema",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the skill manifest schema published through the root descriptor registry.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.skill_contracts",
+            metadata={"published_by": "root", "handler": "get_skill_manifest_schema"},
+        ),
+        RootMcpToolContract(
+            id="development.get_scenario_manifest_schema",
+            title="Get scenario manifest schema",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the scenario manifest schema published through the root descriptor registry.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.scenario_contracts",
+            metadata={"published_by": "root", "handler": "get_scenario_manifest_schema"},
+        ),
+        RootMcpToolContract(
+            id="operations.list_contracts",
+            title="List operational contracts",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return the current operational contract catalog, including placeholder test-hub contracts.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="operations.read.contracts",
+            metadata={"published_by": "root", "handler": "list_operational_contracts"},
+        ),
+        RootMcpToolContract(
+            id="operations.list_managed_targets",
+            title="List managed targets",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return root-visible managed targets and their published operational surface descriptors.",
+            input_schema=schema_object(properties={"environment": {"type": "string"}}),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="operations.read.targets",
+            metadata={"published_by": "root", "handler": "list_managed_targets"},
+        ),
+    ]
+
+
+def list_tool_contracts(*, surface: str | None = None) -> list[RootMcpToolContract]:
+    items = [*_implemented_tool_contracts(), *_placeholder_operational_contracts()]
+    if surface:
+        token = str(surface or "").strip().lower()
+        items = [item for item in items if item.surface.value == token]
+    return items
+
+
+def get_tool_contract(tool_id: str) -> RootMcpToolContract | None:
+    token = str(tool_id or "").strip()
+    if not token:
+        return None
+    for item in list_tool_contracts():
+        if item.id == token:
+            return item
+    return None
+
+
+def foundation_snapshot() -> dict[str, Any]:
+    return _foundation_summary()
+
+
+def list_managed_targets(*, environment: str | None = None) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in list_target_descriptors(environment=environment)]
+
+
+def recent_audit_events(
+    *,
+    limit: int = 50,
+    tool_id: str | None = None,
+    trace_id: str | None = None,
+    actor: str | None = None,
+    target_id: str | None = None,
+    subnet_id: str | None = None,
+) -> list[dict]:
+    return list_audit_events(
+        limit=limit,
+        tool_id=tool_id,
+        trace_id=trace_id,
+        actor=actor,
+        target_id=target_id,
+        subnet_id=subnet_id,
+    )
+
+
+def _handle_describe_foundation(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return foundation_snapshot()
+
+
+def _handle_list_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    surface = str(arguments.get("surface") or "").strip().lower() or None
+    return {"contracts": [item.to_dict() for item in list_tool_contracts(surface=surface)]}
+
+
+def _handle_list_descriptor_sets(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return {"descriptors": list_descriptor_sets(), "publication_mode": "root-curated"}
+
+
+def _handle_get_descriptor_set(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    descriptor_id = str(arguments.get("descriptor_id") or "").strip()
+    if not descriptor_id:
+        raise ValueError("descriptor_id is required")
+    level = str(arguments.get("level") or "std").strip().lower() or "std"
+    return {"descriptor": get_descriptor_set(descriptor_id, level=level)}
+
+
+def _handle_system_model_vocabulary(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return get_descriptor_set("system_model_vocabulary")["payload"]
+
+
+def _handle_skill_manifest_schema(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return {"schema": get_descriptor_set("skill_manifest_schema")["payload"]}
+
+
+def _handle_scenario_manifest_schema(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return {"schema": get_descriptor_set("scenario_manifest_schema")["payload"]}
+
+
+def _handle_operational_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    items = [item.to_dict() for item in _placeholder_operational_contracts()]
+    return {
+        "contracts": items,
+        "managed_targets": {
+            "first_target": "test hub",
+            "publication_model": "skill-mediated",
+            "preferred_surface": "infra_access_skill",
+        },
+    }
+
+
+def _handle_managed_targets(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    environment = str(arguments.get("environment") or "").strip().lower() or None
+    return {"targets": list_managed_targets(environment=environment)}
+
+
+_HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
+    "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
+    "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
+    "development.list_descriptor_sets": lambda arguments, dry_run=False: _handle_list_descriptor_sets(arguments, dry_run=dry_run),
+    "development.get_descriptor_set": lambda arguments, dry_run=False: _handle_get_descriptor_set(arguments, dry_run=dry_run),
+    "development.get_system_model_vocabulary": lambda arguments, dry_run=False: _handle_system_model_vocabulary(arguments, dry_run=dry_run),
+    "development.get_skill_manifest_schema": lambda arguments, dry_run=False: _handle_skill_manifest_schema(arguments, dry_run=dry_run),
+    "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
+    "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
+    "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
+}
+
+
+def _result_summary(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        keys = sorted(str(key) for key in result.keys())[:12]
+        return {"kind": "object", "keys": keys}
+    if isinstance(result, list):
+        return {"kind": "list", "length": len(result)}
+    return {"kind": type(result).__name__}
+
+
+def invoke_tool(
+    tool_id: str,
+    *,
+    arguments: dict[str, Any] | None = None,
+    request_id: str | None = None,
+    trace_id: str | None = None,
+    actor: str,
+    auth_method: str,
+    dry_run: bool = False,
+    scope: dict[str, Any] | None = None,
+) -> RootMcpResponseEnvelope:
+    started_at = _iso_now()
+    effective_request_id = str(request_id or new_id())
+    effective_trace_id = str(trace_id or new_id())
+    tool_token = str(tool_id or "").strip()
+    contract = get_tool_contract(tool_token)
+    payload_arguments = dict(arguments or {})
+    scope_meta = dict(scope or {})
+
+    if contract is None:
+        response = RootMcpResponseEnvelope(
+            request_id=effective_request_id,
+            trace_id=effective_trace_id,
+            tool_id=tool_token or "unknown",
+            surface=RootMcpSurface.DEVELOPMENT,
+            ok=False,
+            status="error",
+            dry_run=bool(dry_run),
+            error=RootMcpError(code="tool_not_found", message=f"Unknown MCP tool '{tool_token}'."),
+            meta=scope_meta,
+        )
+    elif contract.availability is not RootMcpAvailability.ENABLED:
+        response = RootMcpResponseEnvelope(
+            request_id=effective_request_id,
+            trace_id=effective_trace_id,
+            tool_id=contract.id,
+            surface=contract.surface,
+            ok=False,
+            status="error",
+            dry_run=bool(dry_run),
+            error=RootMcpError(
+                code="tool_not_available",
+                message=f"Tool '{contract.id}' is declared but not executable yet.",
+                details={"availability": contract.availability.value},
+            ),
+            meta={"availability": contract.availability.value, **scope_meta},
+        )
+    else:
+        handler = _HANDLERS.get(contract.id)
+        if handler is None:
+            response = RootMcpResponseEnvelope(
+                request_id=effective_request_id,
+                trace_id=effective_trace_id,
+                tool_id=contract.id,
+                surface=contract.surface,
+                ok=False,
+                status="error",
+                dry_run=bool(dry_run),
+                error=RootMcpError(code="handler_missing", message=f"No handler is registered for '{contract.id}'."),
+                meta=scope_meta,
+            )
+        else:
+            try:
+                result = handler(payload_arguments, dry_run=bool(dry_run))
+                response = RootMcpResponseEnvelope(
+                    request_id=effective_request_id,
+                    trace_id=effective_trace_id,
+                    tool_id=contract.id,
+                    surface=contract.surface,
+                    ok=True,
+                    status="ok",
+                    dry_run=bool(dry_run),
+                    result=result,
+                    meta={
+                        "availability": contract.availability.value,
+                        "required_capability": contract.required_capability,
+                        "stability": contract.stability,
+                        **scope_meta,
+                    },
+                )
+            except KeyError as exc:
+                missing = str(exc).strip("'")
+                response = RootMcpResponseEnvelope(
+                    request_id=effective_request_id,
+                    trace_id=effective_trace_id,
+                    tool_id=contract.id,
+                    surface=contract.surface,
+                    ok=False,
+                    status="error",
+                    dry_run=bool(dry_run),
+                    error=RootMcpError(
+                        code="not_found",
+                        message=f"Requested MCP object '{missing}' was not found.",
+                    ),
+                    meta=scope_meta,
+                )
+            except ValueError as exc:
+                response = RootMcpResponseEnvelope(
+                    request_id=effective_request_id,
+                    trace_id=effective_trace_id,
+                    tool_id=contract.id,
+                    surface=contract.surface,
+                    ok=False,
+                    status="error",
+                    dry_run=bool(dry_run),
+                    error=RootMcpError(
+                        code="invalid_request",
+                        message=str(exc) or f"Invalid arguments for '{contract.id}'.",
+                    ),
+                    meta=scope_meta,
+                )
+            except Exception as exc:
+                response = RootMcpResponseEnvelope(
+                    request_id=effective_request_id,
+                    trace_id=effective_trace_id,
+                    tool_id=contract.id,
+                    surface=contract.surface,
+                    ok=False,
+                    status="error",
+                    dry_run=bool(dry_run),
+                    error=RootMcpError(
+                        code="execution_failed",
+                        message=f"Tool '{contract.id}' failed during execution.",
+                        details={"error": str(exc)},
+                    ),
+                    meta=scope_meta,
+                )
+
+    target_id = str(payload_arguments.get("target_id") or "").strip() or None
+    event = RootMcpAuditEvent(
+        event_id=new_id(),
+        request_id=response.request_id,
+        trace_id=response.trace_id,
+        tool_id=response.tool_id,
+        surface=response.surface,
+        actor=actor,
+        auth_method=auth_method,
+        capability=(contract.required_capability if contract else None),
+        target_id=target_id,
+        dry_run=bool(dry_run),
+        status=response.status,
+        started_at=started_at,
+        finished_at=_iso_now(),
+        result_summary=_result_summary(response.result) if response.ok else {},
+        error=(response.error.to_dict() if response.error else {}),
+        meta={"tool_availability": contract.availability.value if contract else "missing", **scope_meta},
+    )
+    append_audit_event(event)
+    response.audit_event_id = event.event_id
+    return response
+
+
+__all__ = [
+    "foundation_snapshot",
+    "get_tool_contract",
+    "invoke_tool",
+    "list_managed_targets",
+    "list_tool_contracts",
+    "recent_audit_events",
+]

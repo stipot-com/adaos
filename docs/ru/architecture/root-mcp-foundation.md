@@ -183,6 +183,8 @@ Foundation должна проектироваться вокруг четыре
 
 ## MCP-to-SDK Foundation
 
+MCP не должен превращаться в прямой публичный мост в SDK runtime. SDK остаётся внутренним источником контрактов для skills, а Root MCP должен публиковать root-curated descriptor registry поверх стабильных services, schemas, manifests и selected SDK-derived metadata.
+
 Первая development-facing задача `Root MCP Foundation` — публиковать curated, typed, machine-readable view development surfaces AdaOS.
 
 ### Minimal Root-Hosted Development Descriptors
@@ -444,6 +446,40 @@ Phase 0 считается завершенной, когда:
 - добавляем root-hosted tool contract registry
 - добавляем initial audit primitives и event IDs
 - публикуем только минимальные read-oriented descriptors и placeholder operational contracts
+
+### Current Phase 1 Implementation Slice
+
+Текущий Phase 1 slice уже смещён от прямого `export_sdk` MCP path к root-side descriptor registry, managed-target registry skeleton и `RootMcpClient` с конфигурацией `root_url + subnet_id + access_token + zone`.
+
+Текущий кодовый checkpoint закладывает первый root-hosted skeleton в:
+
+- `src/adaos/services/root_mcp/model.py`
+- `src/adaos/services/root_mcp/audit.py`
+- `src/adaos/services/root_mcp/registry.py`
+- `src/adaos/services/root_mcp/service.py`
+- `src/adaos/services/root_mcp/targets.py`
+- `src/adaos/services/root_mcp/client.py`
+- `src/adaos/apps/api/root_endpoints.py`
+
+Что уже реализовано в этом срезе:
+
+- root MCP response envelope и error model
+- root-hosted tool-contract registry для development-facing descriptors и placeholder operational contracts
+- minimal root MCP API entrypoints:
+  - `GET /v1/root/mcp/foundation`
+  - `GET /v1/root/mcp/contracts`
+  - `POST /v1/root/mcp/call`
+  - `GET /v1/root/mcp/audit`
+- read-only development tools для:
+  - foundation summary
+  - contract listing
+  - SDK export
+  - canonical system-model vocabulary
+  - skill manifest schema
+- placeholder operational contract catalog для будущего `infra_access_skill`
+- initial audit persistence в локальное root MCP audit storage
+
+Это все еще skeleton: он фиксирует entrypoint, contracts и audit shape до появления реального managed-target execution.
 
 ### Phase 2. MCP-to-SDK Base
 
