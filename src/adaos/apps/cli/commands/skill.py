@@ -36,6 +36,7 @@ from adaos.services.skill.runtime import (
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
+from adaos.services.workspace_registry import list_workspace_registry_entries
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -1033,6 +1034,7 @@ def status(
         base_ref = None
 
     installed_names: set[str] = set()
+    workspace_registry_by_name: dict[str, dict] = {}
     if space == "workspace":
         try:
             rows = SqliteSkillRegistry(ctx.sql).list()
@@ -1044,6 +1046,16 @@ def status(
                 continue
             installed_names.add(str(n))
         installed_names.update(_collect_runtime_skill_names(Path(skills_root)))
+        try:
+            registry_items = list_workspace_registry_entries(Path(workspace_root), kind="skills", fallback_to_scan=True)
+        except Exception:
+            registry_items = []
+        for item in registry_items:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("name") or item.get("id") or "").strip()
+            if item_name:
+                workspace_registry_by_name[item_name] = item
 
     if name:
         names = [name]
@@ -1061,7 +1073,7 @@ def status(
             names = []
             for n in installed_names:
                 names.append(str(n))
-            names = sorted(set(names) | set(_collect_workspace_skill_names(ctx, Path(skills_root))))
+            names = sorted(set(names) | set(_collect_workspace_skill_names(ctx, Path(skills_root))) | set(workspace_registry_by_name))
 
     results: list[dict] = []
     for skill_name in names:
@@ -1097,6 +1109,7 @@ def status(
                 }
 
         if space == "workspace":
+            registry_meta = workspace_registry_by_name.get(skill_name)
             path_status = compute_path_status(
                 workdir=source_workdir,
                 path=source_path,
@@ -1111,6 +1124,7 @@ def status(
                     "kind": source_kind,
                     "path": str(source_path),
                 },
+                "workspace_registry": registry_meta,
                 "git": {
                     "path": path_status.path,
                     "exists": path_status.exists,
@@ -1223,14 +1237,22 @@ def status(
         st = entry.get("runtime") or {}
         g = entry.get("git") or {}
         source = entry.get("source") or {}
+        reg = entry.get("workspace_registry") or {}
         typer.echo(f"skill: {entry.get('name')}")
         typer.echo(f"space: {entry.get('space')}")
         if entry.get("runtime_error"):
             typer.secho(f"runtime: error: {entry.get('runtime_error')}", fg=typer.colors.YELLOW)
         elif space == "workspace":
             state = str(st.get("state") or "").strip()
+            is_registry_published = bool(reg)
             if st.get("installed") is False or state in {"draft", "runtime-missing"}:
-                message = "runtime: draft (not installed in runtime yet)" if state != "runtime-missing" else "runtime: not installed in runtime yet"
+                if state == "runtime-missing":
+                    message = "runtime: not installed in runtime yet"
+                elif is_registry_published:
+                    published_version = reg.get("version") or "unknown"
+                    message = f"runtime: not installed in runtime yet (workspace registry v{published_version})"
+                else:
+                    message = "runtime: draft (not installed in runtime yet)"
                 typer.echo(message)
             else:
                 typer.echo(f"version: {st.get('version')}")
@@ -1306,12 +1328,13 @@ def status(
     for entry in results:
         st = entry.get("runtime") or {}
         g = entry.get("git") or {}
+        reg = entry.get("workspace_registry") or {}
         flags: list[str] = []
         if entry.get("runtime_error"):
             flags.append("runtime-error")
         elif space == "workspace":
             state = str(st.get("state") or "").strip()
-            if st.get("installed") is False or state == "draft":
+            if st.get("installed") is False and not reg and state == "draft":
                 flags.append("draft")
             elif state == "runtime-missing":
                 flags.append("runtime-missing")
@@ -1324,7 +1347,11 @@ def status(
             dc = entry.get("dev_compare") or {}
             if dc.get("changed_vs_base"):
                 flags.append("diff")
-        version = st.get("version") or ("n/a" if space == "dev" or st.get("installed") is False or str(st.get("state") or "").strip() in {"draft", "runtime-missing"} else "unknown")
+        version = (
+            st.get("version")
+            or reg.get("version")
+            or ("n/a" if space == "dev" or st.get("installed") is False or str(st.get("state") or "").strip() in {"draft", "runtime-missing"} else "unknown")
+        )
         slot = st.get("active_slot") or ("n/a" if space == "dev" else "n/a")
         suffix = f" [{', '.join(flags)}]" if flags else ""
         typer.echo(f"{entry.get('name')}: v{version} slot={slot}{suffix}")

@@ -106,6 +106,49 @@ def test_skill_status_marks_workspace_draft_without_runtime_error(tmp_base_dir, 
     assert "runtime-error" not in result.stdout
 
 
+def test_skill_status_uses_workspace_registry_for_pushed_uninstalled_skill(tmp_base_dir, monkeypatch):
+    skill_root = tmp_base_dir / "workspace" / "skills" / "infra_access_skill"
+    skill_root.mkdir(parents=True, exist_ok=True)
+
+    class _Paths:
+        def workspace_dir(self):
+            return tmp_base_dir / "workspace"
+
+        def skills_workspace_dir(self):
+            return tmp_base_dir / "workspace" / "skills"
+
+        def dev_skills_dir(self):
+            return tmp_base_dir / "skills-dev"
+
+    class _Ctx:
+        paths = _Paths()
+        sql = object()
+
+    monkeypatch.setattr(skill_cmd, "ensure_remote", lambda *args, **kwargs: None)
+    monkeypatch.setattr(skill_cmd, "resolve_base_ref", lambda *args, **kwargs: "HEAD")
+    monkeypatch.setattr(skill_cmd, "compute_path_status", lambda **kwargs: _fake_path_status("skills/infra_access_skill"))
+    monkeypatch.setattr(skill_cmd, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(
+        skill_cmd,
+        "list_workspace_registry_entries",
+        lambda *args, **kwargs: [{"name": "infra_access_skill", "version": "0.4.0"}],
+    )
+
+    class _Mgr:
+        @staticmethod
+        def runtime_status(_name: str):
+            raise AssertionError("runtime_status should not be called for uninstalled workspace skill")
+
+    monkeypatch.setattr(skill_cmd, "_mgr", lambda: _Mgr())
+
+    result = CliRunner().invoke(skill_cmd.app, ["status"])
+
+    assert result.exit_code == 0
+    assert "infra_access_skill: v0.4.0 slot=n/a" in result.stdout
+    assert "[draft]" not in result.stdout
+    assert "runtime-error" not in result.stdout
+
+
 def test_skill_status_includes_repo_workspace_fallback_skills(tmp_base_dir, monkeypatch):
     repo_skill = tmp_base_dir / "repo" / ".adaos" / "workspace" / "skills" / "infrastate_skill"
     repo_skill.mkdir(parents=True, exist_ok=True)

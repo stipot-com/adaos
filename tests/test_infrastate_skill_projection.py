@@ -2,9 +2,27 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
+
+if "y_py" not in sys.modules:
+    sys.modules["y_py"] = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        encode_state_vector=lambda *args, **kwargs: b"",
+        encode_state_as_update=lambda *args, **kwargs: b"",
+        apply_update=lambda *args, **kwargs: None,
+    )
+if "ypy_websocket.ystore" not in sys.modules:
+    ystore_module = types.ModuleType("ypy_websocket.ystore")
+    ystore_module.BaseYStore = type("BaseYStore", (), {})
+    ystore_module.YDocNotFound = type("YDocNotFound", (Exception,), {})
+    sys.modules["ypy_websocket.ystore"] = ystore_module
+if "ypy_websocket" not in sys.modules:
+    pkg = types.ModuleType("ypy_websocket")
+    pkg.ystore = sys.modules["ypy_websocket.ystore"]
+    sys.modules["ypy_websocket"] = pkg
 
 
 def _load_infrastate_module():
@@ -164,3 +182,44 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
         {"name": "alpha", "version": "1.2.3", "updated_at": 1.0},
         {"name": "gamma", "version": "3.0.0", "updated_at": 2.0},
     ]
+
+
+def test_infrastate_effective_runtime_projection_prefers_validated_target_slot():
+    mod = _load_infrastate_module()
+
+    slots_payload = {
+        "active_slot": "A",
+        "previous_slot": "B",
+        "slots": {
+            "A": {"manifest": {"slot": "A", "git_short_commit": "ddeb33f", "git_commit": "ddeb33f-old"}},
+            "B": {"manifest": {"slot": "B", "git_short_commit": "stale-b"}},
+        },
+    }
+    build = {
+        "runtime_version": "old",
+        "runtime_git_commit": "ddeb33f-old",
+        "runtime_git_short_commit": "ddeb33f",
+        "runtime_git_branch": "HEAD",
+        "runtime_git_subject": "old subject",
+    }
+    status = {
+        "state": "succeeded",
+        "phase": "validate",
+        "target_slot": "B",
+        "manifest": {
+            "slot": "B",
+            "target_version": "8dd3543c72f912ef0d7932f4c5754ce4c6700849",
+            "git_commit": "8dd3543c72f912ef0d7932f4c5754ce4c6700849",
+            "git_short_commit": "8dd3543",
+            "git_branch": "HEAD",
+            "git_subject": "feat: add skill-aware infra_access publication and Root MCP token lifecycle management",
+        },
+    }
+
+    effective_slots, effective_build = mod._effective_runtime_projection(status, {}, slots_payload, build)
+
+    assert effective_slots["active_slot"] == "B"
+    assert effective_slots["previous_slot"] == "A"
+    assert effective_slots["slots"]["B"]["manifest"]["git_short_commit"] == "8dd3543"
+    assert effective_build["runtime_git_short_commit"] == "8dd3543"
+    assert effective_build["runtime_git_commit"] == "8dd3543c72f912ef0d7932f4c5754ce4c6700849"
