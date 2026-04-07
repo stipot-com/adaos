@@ -65,6 +65,18 @@ CLI обычно подставляет этот токен автоматиче
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
 
+Текущий skeleton также применяет root-side capability checks и scope hints:
+
+- read-only bearer access разрешён только для default development/registry/audit capabilities
+- target lists и tool calls можно ограничивать через `X-AdaOS-Subnet-Id` и `X-AdaOS-Zone`
+- root умеет выдавать bounded MCP access tokens для внешних клиентов; они несут унаследованные `subnet_id` / `zone` / target allowlists
+- target-bound `hub.*` tools дополнительно gated по published capability surface от `infra_access_skill`
+- hub control reports могут верифицироваться через `X-AdaOS-Hub-Report-Token`, если на root задан `ADAOS_ROOT_HUB_REPORT_TOKEN`
+- hub control reports могут обновлять managed-target state на `root`, и это уже питает executable read-side tools вроде `hub.get_status` и `hub.get_runtime_summary`
+- `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests` и `hub.get_test_results` работают как local-pilot path только когда target публикует `execution_mode=local_process`
+- local restart и test flows дополнительно ограничиваются target-published allowlists, например `allowed_services` и `allowed_test_paths`
+- более широкие remote deploy/rollback-style операции пока остаются заблокированными до полноценного target-side `infra_access_skill` path
+
 ## Позиционирование относительно Root MCP Foundation
 
 Текущий FastAPI surface — это локальный runtime и node-control API. Это не будущая `Root MCP Foundation`.

@@ -9,7 +9,13 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
 from .audit import append_audit_event, list_audit_events
-from .infra_access import read_local_logs, run_local_healthchecks
+from .infra_access import (
+    read_local_logs,
+    read_test_results,
+    restart_local_service,
+    run_allowed_tests,
+    run_local_healthchecks,
+)
 from .model import (
     ROOT_MCP_RESPONSE_SCHEMA,
     RootMcpAuditEvent,
@@ -116,44 +122,6 @@ def _placeholder_operational_contracts() -> list[RootMcpToolContract]:
             availability=RootMcpAvailability.PLACEHOLDER,
             side_effects="write",
             metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
-        ),
-        RootMcpToolContract(
-            id="hub.restart_service",
-            title="Restart test-hub service",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(
-                properties={"target_id": {"type": "string"}, "service": {"type": "string"}},
-                required=["target_id", "service"],
-            ),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.restart_service",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            side_effects="write",
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
-        ),
-        RootMcpToolContract(
-            id="hub.run_allowed_tests",
-            title="Run allowed tests on test hub",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.run_allowed_tests",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            side_effects="write",
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-only"},
-        ),
-        RootMcpToolContract(
-            id="hub.get_test_results",
-            title="Get test results",
-            surface=RootMcpSurface.OPERATIONS,
-            summary=summary,
-            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
-            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
-            required_capability="hub.get_test_results",
-            availability=RootMcpAvailability.PLACEHOLDER,
-            metadata={"published_by": "skill:infra_access_skill", "environment_scope": "test-first"},
         ),
         RootMcpToolContract(
             id="hub.rollback_last_test_deploy",
@@ -299,6 +267,62 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             metadata={
                 "published_by": "skill:infra_access_skill",
                 "handler": "hub_run_healthchecks",
+                "environment_scope": "test-first",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.restart_service",
+            title="Restart test-hub service",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Restart an allowlisted local pilot service through the infra_access_skill local adapter.",
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "service": {"type": "string"}},
+                required=["target_id", "service"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.restart_service",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_restart_service",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.run_allowed_tests",
+            title="Run allowed tests on test hub",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Run allowlisted local pilot tests through the infra_access_skill local adapter.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "tests": {"type": "array", "items": {"type": "string"}},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.run_allowed_tests",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_run_allowed_tests",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.get_test_results",
+            title="Get test results",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return the latest stored local pilot test results for a managed target.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.get_test_results",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_get_test_results",
                 "environment_scope": "test-first",
                 "required_execution_mode": "local_process",
             },
@@ -560,6 +584,13 @@ def _target_execution_mode(target_id: str) -> str:
     return str(surface.get("execution_mode") or "").strip().lower() or "reported_only"
 
 
+def _target_operational_surface(target_id: str) -> dict[str, Any]:
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    return dict(target.operational_surface or {})
+
+
 def _handle_hub_get_logs(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     target_id = str(arguments.get("target_id") or "").strip()
     if not target_id:
@@ -587,6 +618,59 @@ def _handle_hub_run_healthchecks(arguments: dict[str, Any], *, dry_run: bool) ->
     }
 
 
+def _handle_hub_restart_service(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    service_name = str(arguments.get("service") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not service_name:
+        raise ValueError("service is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    surface = _target_operational_surface(target_id)
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "service": restart_local_service(
+            service=service_name,
+            allowed_services=surface.get("allowed_services") if isinstance(surface.get("allowed_services"), list) else [],
+        ),
+    }
+
+
+def _handle_hub_run_allowed_tests(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    surface = _target_operational_surface(target_id)
+    raw_tests = arguments.get("tests")
+    requested_tests = [str(item).strip() for item in raw_tests if str(item).strip()] if isinstance(raw_tests, list) else []
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "tests": run_allowed_tests(
+            target_id=target_id,
+            allowed_test_paths=surface.get("allowed_test_paths") if isinstance(surface.get("allowed_test_paths"), list) else [],
+            requested_tests=requested_tests,
+        ),
+    }
+
+
+def _handle_hub_get_test_results(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "test_results": read_test_results(target_id=target_id),
+    }
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
     "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
@@ -599,6 +683,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
     "hub.get_logs": lambda arguments, dry_run=False: _handle_hub_get_logs(arguments, dry_run=dry_run),
     "hub.run_healthchecks": lambda arguments, dry_run=False: _handle_hub_run_healthchecks(arguments, dry_run=dry_run),
+    "hub.restart_service": lambda arguments, dry_run=False: _handle_hub_restart_service(arguments, dry_run=dry_run),
+    "hub.run_allowed_tests": lambda arguments, dry_run=False: _handle_hub_run_allowed_tests(arguments, dry_run=dry_run),
+    "hub.get_test_results": lambda arguments, dry_run=False: _handle_hub_get_test_results(arguments, dry_run=dry_run),
     "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
@@ -623,6 +710,12 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "infra_access.local_process.logs"
     if token == "hub.run_healthchecks":
         return "infra_access.local_process.healthchecks"
+    if token == "hub.restart_service":
+        return "infra_access.local_process.service_restart"
+    if token == "hub.run_allowed_tests":
+        return "infra_access.local_process.pytest"
+    if token == "hub.get_test_results":
+        return "infra_access.local_process.test_results"
     if token == "hub.issue_access_token":
         return "root.access_token_issuer"
     if token.startswith("development."):

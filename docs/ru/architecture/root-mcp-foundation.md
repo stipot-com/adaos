@@ -468,22 +468,48 @@ Phase 0 считается завершенной, когда:
 Что уже реализовано в этом срезе:
 
 - root MCP response envelope и error model
-- root-hosted tool-contract registry для development-facing descriptors и placeholder operational contracts
+- root-hosted tool-contract registry для root-curated development-facing descriptors и placeholder operational contracts
 - minimal root MCP API entrypoints:
   - `GET /v1/root/mcp/foundation`
   - `GET /v1/root/mcp/contracts`
+  - `GET /v1/root/mcp/descriptors`
+  - `GET /v1/root/mcp/descriptors/{descriptor_id}`
+  - `GET /v1/root/mcp/targets`
+  - `GET /v1/root/mcp/targets/{target_id}`
+  - `POST /v1/root/mcp/targets`
+  - `POST /v1/root/mcp/access-tokens`
   - `POST /v1/root/mcp/call`
   - `GET /v1/root/mcp/audit`
+- `POST /v1/hub/control/report`
+- `GET /v1/hubs/control/reports`
 - read-only development tools для:
   - foundation summary
   - contract listing
-  - SDK export
+  - descriptor-set catalog
+  - descriptor-set retrieval
   - canonical system-model vocabulary
-  - skill manifest schema
-- placeholder operational contract catalog для будущего `infra_access_skill`
+  - skill/scenario manifest schemas
+- executable telemetry-backed operational tools для:
+  - `hub.get_status`
+  - `hub.get_runtime_summary`
+  - `hub.issue_access_token`
+- first local-pilot `infra_access_skill` execution adapters для:
+  - `hub.get_logs`
+  - `hub.run_healthchecks`
+  - `hub.restart_service`
+  - `hub.run_allowed_tests`
+  - `hub.get_test_results`
+- policy-side gating target-bound `hub.*` tools по опубликованной target capability surface от `infra_access_skill`
+- execution-mode gating, поэтому local-pilot adapters запускаются только когда target публикует `execution_mode=local_process`
+- optional verified-report policy mode, поэтому operational tools можно требовать только после verified control report
+- unified operational audit events и для MCP tool execution, и для `hub.control_report.ingest`
+- placeholder operational contract catalog сохраняется для будущего remote `infra_access_skill` execution и deploy/rollback операций
 - initial audit persistence в локальное root MCP audit storage
+- audit filtering по tool, trace, target и subnet scope
+- scope-aware filtering targets по `subnet_id` и `zone`
+- access-token-backed MCP auth с bounded capabilities, target allowlists и scope inheritance
 
-Это все еще skeleton: он фиксирует entrypoint, contracts и audit shape до появления реального managed-target execution.
+Это все еще ранний skeleton: текущий срез уже доказывает первый `hub -> root -> Root MCP` operational loop через control reports, root-hosted read tools и bounded local-pilot write/test flows через `infra_access_skill`. Более широкие remote execution, deploy и rollback операции остаются отложенными до полноценного target-side `infra_access_skill` path.
 
 ### Phase 2. MCP-to-SDK Base
 

@@ -47,6 +47,10 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
+    restart_service = next(item for item in contract_items if item["id"] == "hub.restart_service")
+    assert restart_service["availability"] == "enabled"
+    run_tests = next(item for item in contract_items if item["id"] == "hub.run_allowed_tests")
+    assert run_tests["availability"] == "enabled"
     implemented = next(item for item in contract_items if item["id"] == "hub.get_status")
     assert implemented["availability"] == "enabled"
     assert implemented["metadata"]["published_by"] == "root"
@@ -400,6 +404,113 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
     assert any(item["tool_id"] == "hub.get_status" and item["execution_adapter"] == "root.control_report_projection" for item in audit_items)
     assert any(item["tool_id"] == "hub.get_logs" and item["execution_adapter"] == "infra_access.local_process.logs" for item in audit_items)
     assert any(item["tool_id"] == "hub.run_healthchecks" and item["execution_adapter"] == "infra_access.local_process.healthchecks" for item in audit_items)
+
+
+def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import reports as report_registry
+    from adaos.services.root_mcp import service as root_mcp_service
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "control_reports.json")
+
+    def fake_restart_local_service(*, service: str, allowed_services: list[str] | None = None):
+        assert service == "alpha"
+        assert allowed_services == ["alpha"]
+        return {"mode": "local_process", "service": service, "status": {"running": True, "health_ok": True}}
+
+    def fake_run_allowed_tests(*, target_id: str, allowed_test_paths: list[str] | None = None, requested_tests: list[str] | None = None, timeout_seconds: int = 120):
+        assert target_id == "hub:subnet-test-5"
+        assert allowed_test_paths == ["tests/test_sample_dummy.py"]
+        assert requested_tests == ["tests/test_sample_dummy.py"]
+        return {
+            "target_id": target_id,
+            "mode": "local_process",
+            "selected_tests": requested_tests,
+            "allowed_tests": allowed_test_paths,
+            "status": "passed",
+            "exit_code": 0,
+        }
+
+    def fake_read_test_results(*, target_id: str):
+        assert target_id == "hub:subnet-test-5"
+        return {"available": True, "target_id": target_id, "result": {"status": "passed", "selected_tests": ["tests/test_sample_dummy.py"]}}
+
+    monkeypatch.setattr(root_mcp_service, "restart_local_service", fake_restart_local_service)
+    monkeypatch.setattr(root_mcp_service, "run_allowed_tests", fake_run_allowed_tests)
+    monkeypatch.setattr(root_mcp_service, "read_test_results", fake_read_test_results)
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:subnet-test-5"
+
+    report = client.post(
+        "/v1/hub/control/report",
+        json={
+            "target_id": target_id,
+            "subnet_id": "subnet-test-5",
+            "environment": "test",
+            "zone": "lab-f",
+            "reported_at": "2026-04-07T12:20:00Z",
+            "lifecycle": {"node_state": "running"},
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "availability": "enabled",
+                "execution_mode": "local_process",
+                "allowed_services": ["alpha"],
+                "allowed_test_paths": ["tests/test_sample_dummy.py"],
+                "capabilities": [
+                    "hub.restart_service",
+                    "hub.run_allowed_tests",
+                    "hub.get_test_results",
+                ],
+            },
+        },
+    )
+    assert report.status_code == 200
+
+    restart_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.restart_service",
+            "arguments": {"target_id": target_id, "service": "alpha"},
+        },
+    )
+    assert restart_call.status_code == 200
+    restart_payload = restart_call.json()
+    assert restart_payload["ok"] is True
+    assert restart_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.service_restart"
+
+    run_tests_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.run_allowed_tests",
+            "arguments": {"target_id": target_id, "tests": ["tests/test_sample_dummy.py"]},
+        },
+    )
+    assert run_tests_call.status_code == 200
+    run_tests_payload = run_tests_call.json()
+    assert run_tests_payload["ok"] is True
+    assert run_tests_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.pytest"
+    assert run_tests_payload["response"]["result"]["tests"]["status"] == "passed"
+
+    get_results_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.get_test_results",
+            "arguments": {"target_id": target_id},
+        },
+    )
+    assert get_results_call.status_code == 200
+    get_results_payload = get_results_call.json()
+    assert get_results_payload["ok"] is True
+    assert get_results_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.test_results"
+    assert get_results_payload["response"]["result"]["test_results"]["available"] is True
 
 
 def test_root_mcp_operational_tool_requires_published_skill_capability(monkeypatch, tmp_path) -> None:
