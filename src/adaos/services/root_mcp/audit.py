@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -63,31 +64,30 @@ def list_audit_events(
     path = _audit_path()
     if not path.exists():
         return []
+    max_items = max(1, int(limit))
+    matches: deque[dict] = deque(maxlen=max_items)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                text = str(raw or "").strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and _matches_filters(
+                    payload,
+                    tool_id=tool_id,
+                    trace_id=trace_id,
+                    actor=actor,
+                    target_id=target_id,
+                    subnet_id=subnet_id,
+                ):
+                    matches.append(payload)
     except OSError:
         return []
-    out: list[dict] = []
-    for raw in reversed(lines):
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and _matches_filters(
-            payload,
-            tool_id=tool_id,
-            trace_id=trace_id,
-            actor=actor,
-            target_id=target_id,
-            subnet_id=subnet_id,
-        ):
-            out.append(payload)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
+    return list(reversed(matches))
 
 
 def _normalize_statuses(raw: Any) -> list[str]:

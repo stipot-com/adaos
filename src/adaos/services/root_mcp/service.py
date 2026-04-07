@@ -1044,6 +1044,16 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
     return "root.local_handler"
 
 
+def _should_audit_tool(tool_id: str) -> bool:
+    token = str(tool_id or "").strip()
+    # These tools project the audit log itself; auditing every read causes
+    # observability polling to continually grow the same file it scans.
+    return token not in {
+        "hub.get_activity_log",
+        "hub.get_capability_usage_summary",
+    }
+
+
 def _trace_meta(
     *,
     tool_id: str,
@@ -1310,34 +1320,35 @@ def invoke_tool(
 
     target_id = str(payload_arguments.get("target_id") or "").strip() or None
     audit_trace = dict(response.meta.get("trace") or {}) if isinstance(response.meta.get("trace"), dict) else {}
-    event = RootMcpAuditEvent(
-        event_id=new_id(),
-        request_id=response.request_id,
-        trace_id=response.trace_id,
-        tool_id=response.tool_id,
-        surface=response.surface,
-        actor=actor,
-        auth_method=auth_method,
-        capability=(contract.required_capability if contract else None),
-        target_id=target_id,
-        policy_decision=policy_decision.policy_decision if policy_decision is not None else "allow",
-        execution_adapter=_execution_adapter_for_tool(response.tool_id),
-        dry_run=bool(dry_run),
-        status=response.status,
-        started_at=started_at,
-        finished_at=_iso_now(),
-        result_summary=_result_summary(response.result) if response.ok else {},
-        error=(response.error.to_dict() if response.error else {}),
-        redactions=_redactions_for_tool(response.tool_id),
-        meta={
-            "tool_availability": contract.availability.value if contract else "missing",
-            **scope_meta,
-            **(policy_decision.to_meta() if policy_decision is not None else {}),
-            "trace": audit_trace,
-        },
-    )
-    append_audit_event(event)
-    response.audit_event_id = event.event_id
+    if _should_audit_tool(response.tool_id):
+        event = RootMcpAuditEvent(
+            event_id=new_id(),
+            request_id=response.request_id,
+            trace_id=response.trace_id,
+            tool_id=response.tool_id,
+            surface=response.surface,
+            actor=actor,
+            auth_method=auth_method,
+            capability=(contract.required_capability if contract else None),
+            target_id=target_id,
+            policy_decision=policy_decision.policy_decision if policy_decision is not None else "allow",
+            execution_adapter=_execution_adapter_for_tool(response.tool_id),
+            dry_run=bool(dry_run),
+            status=response.status,
+            started_at=started_at,
+            finished_at=_iso_now(),
+            result_summary=_result_summary(response.result) if response.ok else {},
+            error=(response.error.to_dict() if response.error else {}),
+            redactions=_redactions_for_tool(response.tool_id),
+            meta={
+                "tool_availability": contract.availability.value if contract else "missing",
+                **scope_meta,
+                **(policy_decision.to_meta() if policy_decision is not None else {}),
+                "trace": audit_trace,
+            },
+        )
+        append_audit_event(event)
+        response.audit_event_id = event.event_id
     return response
 
 
