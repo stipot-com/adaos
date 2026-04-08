@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,9 @@ class _MiniPaths:
         self._workspace = self._base / "workspace"
         self._skills = self._workspace / "skills"
         self._scenarios = self._workspace / "scenarios"
+
+    def base_dir(self) -> Path:
+        return self._base
 
     def workspace_dir(self) -> Path:
         return self._workspace
@@ -80,7 +84,7 @@ def _init_monorepo(tmp_path: Path) -> Path:
 
 
 def _make_paths(tmp_path: Path) -> _MiniPaths:
-    base = tmp_path / "workspace"
+    base = tmp_path / ".adaos"
     paths = _MiniPaths(base)
     paths.workspace_dir().mkdir(parents=True, exist_ok=True)
     return paths
@@ -195,3 +199,33 @@ def test_sparse_checkout_scope(monkeypatch, monorepo, paths):
     # scenario entry should remain in sparse checkout
     assert "scenarios/greet_on_boot" in sparse_file.read_text(encoding="utf-8")
     assert _git_status_clean(paths.workspace_dir())
+
+
+def test_sparse_set_auto_stashes_dirty_worktree(monkeypatch, monorepo, paths):
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    repo = _make_skill_repo(paths, monorepo)
+
+    repo.install("weather_skill")
+    shutil.rmtree(paths.skills_dir() / "weather_skill")
+    assert not _git_status_clean(paths.workspace_dir())
+
+    meta = repo.install("news_skill")
+    assert meta.id.value == "news_skill"
+    assert (paths.skills_dir() / "news_skill" / "skill.yaml").exists()
+    assert _git_status_clean(paths.workspace_dir())
+
+    stashes = _run_git(["stash", "list"], cwd=paths.workspace_dir())
+    assert "adaos:auto-stash sparse-checkout set" in stashes
+
+
+def test_sparse_checkout_ignores_cli_flags(monkeypatch, monorepo, paths):
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    repo = _make_skill_repo(paths, monorepo)
+    repo.install("weather_skill")
+
+    sparse_file = paths.workspace_dir() / ".git" / "info" / "sparse-checkout"
+    sparse_file.write_text("--no-cone\nskills/weather_skill\nregistry.json\n", encoding="utf-8")
+
+    repo.install("news_skill")
+    contents = sparse_file.read_text(encoding="utf-8")
+    assert "--no-cone" not in contents

@@ -37,6 +37,12 @@ class SparseWorkspace:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
+            # Guardrail: sparse-checkout patterns file must not contain CLI flags
+            # (e.g. "--no-cone"). If such lines exist due to historical bugs or
+            # manual edits, ignore them instead of propagating into future
+            # `git sparse-checkout set` calls.
+            if line.startswith("-"):
+                continue
             if line not in lines:
                 lines.append(line)
         return lines

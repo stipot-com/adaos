@@ -1,6 +1,8 @@
 # src\adaos\adapters\git\cli_git.py
 from __future__ import annotations
-import subprocess, os
+import os
+import subprocess
+import uuid
 from pathlib import Path
 import logging
 from typing import Optional, Final, Sequence, Union
@@ -279,7 +281,33 @@ class CliGitClient(GitClient):
         args = ["sparse-checkout", "set"]
         if no_cone:
             args.append("--no-cone")
-        _run_git([*args, *paths], cwd=dir)
+        if _is_adaos_workspace_repo(dir):
+            dirty = self.changed_files(dir)
+            if dirty:
+                repo_path = str(Path(dir))
+                _log.warning(
+                    "git sparse-checkout set with dirty worktree; auto-stashing repo=%s files=%s",
+                    repo_path,
+                    len(dirty),
+                )
+                _log_git_snapshot(dir)
+                stash_ref = self.stash_push(str(dir), "adaos:auto-stash sparse-checkout set", include_untracked=True)
+                if stash_ref:
+                    _log.warning("git auto-stashed local changes repo=%s stash=%s", repo_path, stash_ref)
+        try:
+            _run_git([*args, *paths], cwd=dir)
+        except GitError as exc:
+            lowered = str(exc).lower()
+            if _is_adaos_workspace_repo(dir) and "unstaged changes" in lowered and "sparse-checkout" in lowered:
+                repo_path = str(Path(dir))
+                _log.warning("git sparse-checkout set blocked by dirty worktree; auto-stashing repo=%s", repo_path)
+                _log_git_snapshot(dir)
+                stash_ref = self.stash_push(str(dir), "adaos:auto-stash sparse-checkout set", include_untracked=True)
+                if stash_ref:
+                    _log.warning("git auto-stashed local changes repo=%s stash=%s", repo_path, stash_ref)
+                _run_git([*args, *paths], cwd=dir)
+                return
+            raise
 
     def sparse_add(self, dir: StrOrPath, path: str) -> None:
         try:
@@ -310,12 +338,42 @@ class CliGitClient(GitClient):
 
     def changed_files(self, dir: StrOrPath, subpath: Optional[str] = None) -> list[str]:
         # untracked (-o) + modified (-m), исключая игнор по .gitignore
-        args = ["ls-files", "-m", "-o", "--exclude-standard"]
+        args = ["status", "--porcelain"]
         if subpath:
             args += ["--", subpath]
         out = _run_git(args, cwd=dir)
-        files = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        files: list[str] = []
+        for raw in out.splitlines():
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line.strip():
+                continue
+            payload = line[3:] if len(line) > 3 else ""
+            payload = payload.strip()
+            if " -> " in payload:
+                payload = payload.split(" -> ", 1)[1].strip()
+            if payload:
+                files.append(payload)
         return files
+
+    def stash_push(self, dir: StrOrPath, message: str, include_untracked: bool = True) -> Optional[str]:
+        marker = f"{message} [{uuid.uuid4().hex}]"
+        args = ["stash", "push"]
+        if include_untracked:
+            args.append("-u")
+        args += ["-m", marker]
+        out = _run_git(args, cwd=dir)
+        if "No local changes" in out:
+            return None
+        stashes = _run_git(["stash", "list"], cwd=dir)
+        for line in stashes.splitlines():
+            if marker in line:
+                return line.split(":", 1)[0].strip()
+        return None
+
+    def stash_pop(self, dir: StrOrPath, stash_ref: str) -> None:
+        if not stash_ref:
+            return
+        _run_git(["stash", "pop", stash_ref], cwd=dir)
 
     def _current_branch(self, dir: StrOrPath) -> str:
         out = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=dir).strip()

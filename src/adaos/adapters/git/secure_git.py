@@ -69,6 +69,12 @@ class SecureGitClient(GitClient):
     def changed_files(self, dir: str, subpath: Optional[str] = None) -> list[str]:
         return self.base.changed_files(dir, subpath)
 
+    def stash_push(self, dir: str, message: str, include_untracked: bool = True) -> Optional[str]:
+        return self.base.stash_push(dir, message, include_untracked)
+
+    def stash_pop(self, dir: str, stash_ref: str) -> None:
+        self.base.stash_pop(dir, stash_ref)
+
     def commit_subpath(
         self,
         dir: str,
