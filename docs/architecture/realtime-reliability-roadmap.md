@@ -38,6 +38,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - route and root-control incident classes still need clearer separation
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar ownership boundary is documented, but not yet the default hardened runtime path
+- local process/update supervision is still coupled to runtime lifecycle rather than a separate supervisor authority
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 
 ### Confirmed gaps
@@ -45,6 +46,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - transport/resource isolation is still weaker than subject naming suggests
 - hub-root message inventory is not yet fully classified by delivery class and idempotency policy
 - route/session incidents are still underrepresented compared to root-control incidents
+- update-state visibility still disappears when the main runtime is intentionally down for restart/apply/validate
 - system skills and scenarios still rely on a transitional mix of `workspace`, `repo workspace`, `runtime slot`, and `built-in seed`
 
 ## Phase 0: Architecture freeze
@@ -179,6 +181,52 @@ Move transport ownership where it reduces blast radius, without moving protocol 
 
 - transport failures are isolated from hub business logic
 - sidecar does not become a hidden protocol authority
+
+## Phase 3.5: Local supervisor as process and update authority
+
+### Status
+
+Planned.
+
+The next reliability gap after transport isolation is local process/update supervision.
+AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
+This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
+
+### Focus
+
+Separate:
+
+- transport ownership
+- runtime execution ownership
+- local process/update supervision ownership
+
+The sidecar remains transport-only.
+The supervisor becomes the authority for local runtime lifecycle and update attempt state.
+
+### Work items
+
+- define `adaos-supervisor` local authority boundary
+- persist explicit local update attempt state independent of runtime bind state
+- add restart/apply/validate deadlines and stale-attempt recovery
+- move update-status and restart control to a supervisor API that remains live while runtime is down
+- make systemd target supervisor instead of the main runtime process
+- align sidecar lifecycle under supervisor without turning sidecar into protocol or update authority
+
+### Candidate code areas
+
+- `src/adaos/apps/autostart_runner.py`
+- `src/adaos/services/core_update.py`
+- `src/adaos/services/autostart.py`
+- `src/adaos/apps/cli/commands/setup.py`
+- `src/adaos/apps/cli/commands/node.py`
+- future `src/adaos/apps/supervisor.py`
+
+### Exit criteria
+
+- update status remains visible while runtime is stopped
+- stale `restarting` / `applying` states resolve deterministically
+- rollback decision is owned by supervisor logic rather than only runtime-side best effort
+- sidecar remains transport-only and does not absorb process/update authority
 
 ## Phase 4: Hub-member semantic channels
 

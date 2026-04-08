@@ -12,6 +12,7 @@ Read this together with:
 - [Authority And Degraded Mode](authority-and-degraded-mode.md)
 - [Hub-Root Protocol](hub-root-protocol.md)
 - [Transport Ownership](transport-ownership.md)
+- [AdaOS Supervisor](adaos-supervisor.md)
 
 For the first rollout, `adaos-realtime` owns the remote hub↔root WebSocket and exposes a local `nats://127.0.0.1:<port>` endpoint to the hub. The existing hub NATS bridge stays in place and connects to the local sidecar instead of the remote `wss://.../nats` endpoint.
 
@@ -59,8 +60,11 @@ What this split does not solve by itself:
 - idempotent command handling
 - authority boundaries
 - degraded-mode policy
+- local update supervision and restart-state authority
 
 Those remain protocol and system responsibilities.
+
+In the target local architecture, those process/update responsibilities belong to `adaos-supervisor`, not to `adaos-realtime`.
 
 ## Rollout
 
@@ -113,3 +117,4 @@ Success criteria:
 - Sidecar mode is enabled for Windows hub role by default and can be forced with `ADAOS_REALTIME_ENABLE=1`.
 - Local endpoint defaults to `nats://127.0.0.1:7422`.
 - Remote candidate selection still uses existing node/root NATS configuration.
+- Future process topology should prefer `systemd -> adaos-supervisor -> {adaos-runtime, adaos-realtime}` over embedding sidecar lifecycle inside runtime lifespan.

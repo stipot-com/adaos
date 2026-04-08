@@ -7,6 +7,7 @@ import time
 import subprocess
 import traceback
 from functools import wraps
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -35,9 +36,6 @@ from adaos.services.autostart import status as autostart_status
 from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
 from adaos.services.core_update import plan_path as core_update_plan_path
-from adaos.services.core_update import read_last_result as read_core_update_last_result
-from adaos.services.core_update import read_plan as read_core_update_plan
-from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import status_path as core_update_status_path
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -425,6 +423,35 @@ def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
     return headers
 
 
+def _autostart_service_diagnostics() -> tuple[str, str]:
+    journal_cmd = "journalctl --user -u adaos.service -n 120 --no-pager"
+    status_path = str(core_update_status_path())
+    try:
+        info = autostart_status(get_ctx())
+    except Exception:
+        return journal_cmd, status_path
+
+    if isinstance(info, dict):
+        scope = str(info.get("scope") or "").strip().lower()
+        if scope == "system":
+            journal_cmd = "journalctl -u adaos.service -n 120 --no-pager"
+        base_dir_raw = str(info.get("base_dir") or "").strip()
+        if base_dir_raw:
+            try:
+                status_path = str((Path(base_dir_raw).expanduser().resolve() / "state" / "core_update" / "status.json"))
+            except Exception:
+                pass
+    return journal_cmd, status_path
+
+
+def _autostart_admin_unavailable_message(base_url: str) -> str:
+    journal_cmd, status_path = _autostart_service_diagnostics()
+    return (
+        f"local AdaOS admin API is unavailable at {base_url}; the service may be restarting or failed to boot. "
+        f"Inspect '{journal_cmd}' and '{status_path}'."
+    )
+
+
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
     try:
         base_url = _autostart_admin_base_url(token=token)
@@ -433,10 +460,7 @@ def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
-        raise RuntimeError(
-            f"local AdaOS admin API is unavailable at {locals().get('base_url', 'unknown')}; the service may be restarting or failed to boot. "
-            "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
-        ) from exc
+        raise RuntimeError(_autostart_admin_unavailable_message(locals().get("base_url", "unknown"))) from exc
 
 
 def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
@@ -452,23 +476,62 @@ def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optiona
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
-        raise RuntimeError(
-            f"local AdaOS admin API is unavailable at {locals().get('base_url', 'unknown')}; the service may be restarting or failed to boot. "
-            "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
-        ) from exc
+        raise RuntimeError(_autostart_admin_unavailable_message(locals().get("base_url", "unknown"))) from exc
+
+
+def _read_json_file(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _local_autostart_update_payload() -> dict | None:
-    if not any(path.exists() for path in (core_update_status_path(), core_update_plan_path(), core_update_last_result_path())):
+    candidate_roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _push(root: Path | None) -> None:
+        if root is None:
+            return
+        try:
+            resolved = root.expanduser().resolve()
+        except Exception:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidate_roots.append(resolved)
+
+    _push(core_update_status_path().parent)
+    try:
+        info = autostart_status(get_ctx())
+    except Exception:
+        info = None
+    if isinstance(info, dict):
+        base_dir_raw = str(info.get("base_dir") or "").strip()
+        if base_dir_raw:
+            _push(Path(base_dir_raw) / "state" / "core_update")
+
+    selected_root: Path | None = None
+    for root in candidate_roots:
+        if any((root / name).exists() for name in ("status.json", "plan.json", "last_result.json")):
+            selected_root = root
+            break
+    if selected_root is None:
         return None
+    status_path = selected_root / "status.json"
+    plan_path = selected_root / "plan.json"
+    last_result_path = selected_root / "last_result.json"
     return {
         "ok": True,
-        "status": read_core_update_status(),
-        "last_result": read_core_update_last_result(),
-        "plan": read_core_update_plan(),
+        "status": _read_json_file(status_path) or {"state": "idle", "updated_at": time.time()},
+        "last_result": _read_json_file(last_result_path),
+        "plan": _read_json_file(plan_path),
         "slots": core_slot_status(),
         "active_manifest": active_slot_manifest(),
         "_local_fallback": True,
+        "_local_fallback_root": str(selected_root),
     }
 
 
