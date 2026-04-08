@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import subprocess
 import traceback
 from functools import wraps
+from urllib.parse import urlparse
 from typing import Optional
 
+import psutil
 import requests
 import typer
 from requests import RequestException
@@ -15,7 +18,14 @@ from requests import RequestException
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.apps.cli.i18n import _
 from adaos.apps.cli.active_control import probe_control_api, resolve_control_base_url, resolve_control_token
-from adaos.apps.cli.commands.api import _resolve_stop_bind
+from adaos.apps.cli.commands.api import (
+    _current_process_family_pids,
+    _find_listening_server_pid,
+    _find_matching_server_pids,
+    _pidfile_path,
+    _read_pidfile,
+    _resolve_stop_bind,
+)
 from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import get_ctx
 from adaos.services.autostart import default_spec as default_autostart_spec
@@ -441,6 +451,334 @@ def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optiona
         ) from exc
 
 
+def _autostart_bind_from_status(status: dict) -> tuple[str, int] | None:
+    candidates = [status.get("live_url"), status.get("url"), status.get("configured_url")]
+    for candidate in candidates:
+        raw = str(candidate or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = urlparse(raw)
+        except Exception:
+            continue
+        host = str(parsed.hostname or "").strip()
+        port = int(parsed.port or 0)
+        if host and port > 0:
+            return host, port
+    return None
+
+
+def _safe_proc_name(proc: psutil.Process) -> str:
+    try:
+        return str(proc.name() or "").strip()
+    except Exception:
+        return ""
+
+
+def _safe_proc_cmdline(proc: psutil.Process) -> list[str]:
+    try:
+        return [str(part) for part in proc.cmdline()]
+    except Exception:
+        return []
+
+
+def _safe_proc_create_time(proc: psutil.Process) -> float | None:
+    try:
+        value = float(proc.create_time())
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def _format_cmdline(cmdline: list[str], *, max_len: int = 220) -> str:
+    raw = " ".join(str(part) for part in (cmdline or []) if str(part).strip())
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max(0, max_len - 3)].rstrip() + "..."
+
+
+def _classify_process(proc: psutil.Process) -> str:
+    cmdline = [part.lower() for part in _safe_proc_cmdline(proc)]
+    joined = " ".join(cmdline)
+    name = _safe_proc_name(proc).lower()
+    if "adaos.apps.autostart_runner" in joined:
+        return "autostart_runner"
+    if "adaos" in joined and "api" in joined and "serve" in joined:
+        return "api_server"
+    if "runtime_runner" in joined or "skill" in joined:
+        return "skill_runtime"
+    if "realtime" in joined or "sidecar" in joined:
+        return "realtime_sidecar"
+    if "node" in name:
+        return "node"
+    if "python" in name or "python" in joined:
+        return "python"
+    return name or "process"
+
+
+def _proc_snapshot(proc: psutil.Process, *, now: float) -> dict:
+    pid = int(getattr(proc, "pid", 0) or 0)
+    with proc.oneshot():
+        cmdline = _safe_proc_cmdline(proc)
+        create_time = _safe_proc_create_time(proc)
+        cpu_percent = None
+        try:
+            cpu_percent = float(proc.cpu_percent(None))
+        except Exception:
+            cpu_percent = None
+        rss_bytes = None
+        try:
+            rss_bytes = int(proc.memory_info().rss)
+        except Exception:
+            rss_bytes = None
+        status = ""
+        try:
+            status = str(proc.status() or "").strip()
+        except Exception:
+            status = ""
+        threads = None
+        try:
+            threads = int(proc.num_threads())
+        except Exception:
+            threads = None
+    age_sec = None
+    if create_time is not None:
+        age_sec = max(0.0, now - create_time)
+    return {
+        "pid": pid,
+        "kind": _classify_process(proc),
+        "name": _safe_proc_name(proc),
+        "status": status or None,
+        "cpu_percent": cpu_percent,
+        "rss_bytes": rss_bytes,
+        "threads": threads,
+        "age_sec": age_sec,
+        "cmdline": cmdline,
+        "cmdline_text": _format_cmdline(cmdline),
+    }
+
+
+def _prime_cpu_metrics(proc: psutil.Process, *, include_children: bool = True) -> None:
+    try:
+        proc.cpu_percent(None)
+    except Exception:
+        pass
+    if not include_children:
+        return
+    try:
+        for child in proc.children(recursive=True):
+            try:
+                child.cpu_percent(None)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def _select_autostart_target_pid(status: dict, host: str, port: int) -> int | None:
+    protected_pids = _current_process_family_pids()
+    pidfile = _pidfile_path(host, port)
+    meta = _read_pidfile(pidfile)
+    candidates: list[int] = []
+    try:
+        file_pid = int((meta or {}).get("pid") or 0)
+    except Exception:
+        file_pid = 0
+    if file_pid > 0 and file_pid not in protected_pids:
+        candidates.append(file_pid)
+    owner_pid = _find_listening_server_pid(host, port)
+    if owner_pid and owner_pid not in protected_pids and owner_pid not in candidates:
+        candidates.append(owner_pid)
+    for pid in _find_matching_server_pids(host, port, protected_pids=protected_pids):
+        if pid not in candidates:
+            candidates.append(pid)
+    active_pid = status.get("pid")
+    try:
+        active_pid_int = int(active_pid or 0)
+    except Exception:
+        active_pid_int = 0
+    if active_pid_int > 0 and active_pid_int not in protected_pids and active_pid_int not in candidates:
+        candidates.append(active_pid_int)
+    for pid in candidates:
+        try:
+            proc = psutil.Process(pid)
+            proc.status()
+            return pid
+        except Exception:
+            continue
+    return None
+
+
+def _maybe_fetch_service_snapshot(token: Optional[str] = None) -> dict | None:
+    try:
+        payload = _autostart_admin_get("/api/services", token=token)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _collect_autostart_inspect(*, sample_sec: float = 0.2, token: Optional[str] = None) -> dict:
+    ctx = get_ctx()
+    status = autostart_status(ctx)
+    bind = _autostart_bind_from_status(status)
+    if bind is None:
+        conf = getattr(ctx, "config", None)
+        bind = _resolve_stop_bind(conf)
+    target_pid = None
+    if bind is not None:
+        target_pid = _select_autostart_target_pid(status, bind[0], bind[1])
+
+    process_payload: dict | None = None
+    if target_pid is not None:
+        proc = psutil.Process(target_pid)
+        _prime_cpu_metrics(proc, include_children=True)
+        sleep_s = max(0.0, min(float(sample_sec), 2.0))
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        now = time.time()
+        root = _proc_snapshot(proc, now=now)
+        children: list[dict] = []
+        try:
+            for child in proc.children(recursive=True):
+                children.append(_proc_snapshot(child, now=now))
+        except Exception:
+            children = []
+        children.sort(
+            key=lambda item: (
+                float(item.get("cpu_percent") or 0.0),
+                float(item.get("rss_bytes") or 0),
+                int(item.get("pid") or 0),
+            ),
+            reverse=True,
+        )
+        process_payload = {
+            "pid": target_pid,
+            "root": root,
+            "children": children,
+            "top_children": children[:8],
+            "child_count": len(children),
+            "sample_sec": sleep_s,
+        }
+
+    services_payload = _maybe_fetch_service_snapshot(token=token)
+    top_services: list[dict] = []
+    if isinstance(services_payload, dict):
+        raw_services = services_payload.get("services")
+        if isinstance(raw_services, list):
+            for item in raw_services:
+                if not isinstance(item, dict):
+                    continue
+                service = {
+                    "name": str(item.get("name") or "").strip() or "<unknown>",
+                    "running": bool(item.get("running")),
+                    "pid": item.get("pid"),
+                    "base_url": item.get("base_url"),
+                    "health_ok": item.get("health_ok"),
+                }
+                top_services.append(service)
+        top_services.sort(key=lambda item: (0 if item.get("running") else 1, str(item.get("name") or "")))
+
+    return {
+        "autostart": status,
+        "bind": {"host": bind[0], "port": bind[1]} if bind is not None else None,
+        "process": process_payload,
+        "services": top_services,
+    }
+
+
+def _format_bytes(value: object) -> str:
+    try:
+        size = float(value)
+    except Exception:
+        return "-"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    idx = 0
+    while size >= 1024.0 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)}{units[idx]}"
+    return f"{size:.1f}{units[idx]}"
+
+
+def _format_age(value: object) -> str:
+    try:
+        seconds = int(float(value))
+    except Exception:
+        return "-"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h{minutes:02d}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d{hours:02d}h"
+
+
+def _print_autostart_inspect(payload: dict) -> None:
+    status = payload.get("autostart") if isinstance(payload.get("autostart"), dict) else {}
+    bind = payload.get("bind") if isinstance(payload.get("bind"), dict) else {}
+    process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
+    root = process.get("root") if isinstance(process.get("root"), dict) else {}
+    top_children = process.get("top_children") if isinstance(process.get("top_children"), list) else []
+    services = payload.get("services") if isinstance(payload.get("services"), list) else []
+
+    enabled = status.get("enabled")
+    active = status.get("active")
+    listening = status.get("listening")
+    typer.echo(
+        f"autostart: enabled={enabled} active={active} listening={listening}"
+    )
+    if status.get("url"):
+        typer.echo(f"url: {status.get('url')}")
+    if bind:
+        typer.echo(f"bind: {bind.get('host')}:{bind.get('port')}")
+    if root:
+        typer.echo(
+            "process: "
+            f"pid={root.get('pid')} kind={root.get('kind')} status={root.get('status') or '-'} "
+            f"cpu={float(root.get('cpu_percent') or 0.0):.1f}% rss={_format_bytes(root.get('rss_bytes'))} "
+            f"threads={root.get('threads') or '-'} age={_format_age(root.get('age_sec'))}"
+        )
+        if root.get("cmdline_text"):
+            typer.echo(f"cmd: {root.get('cmdline_text')}")
+    else:
+        typer.echo("process: not found")
+
+    if top_children:
+        typer.echo("top children:")
+        for child in top_children:
+            if not isinstance(child, dict):
+                continue
+            typer.echo(
+                "  "
+                f"pid={child.get('pid')} kind={child.get('kind')} cpu={float(child.get('cpu_percent') or 0.0):.1f}% "
+                f"rss={_format_bytes(child.get('rss_bytes'))} threads={child.get('threads') or '-'} "
+                f"age={_format_age(child.get('age_sec'))} cmd={child.get('cmdline_text') or '-'}"
+            )
+
+    if services:
+        typer.echo("services:")
+        for service in services[:12]:
+            if not isinstance(service, dict):
+                continue
+            status_text = "running" if service.get("running") else "stopped"
+            health = service.get("health_ok")
+            health_text = ""
+            if health is True:
+                health_text = " health=ok"
+            elif health is False:
+                health_text = " health=fail"
+            typer.echo(
+                "  "
+                f"{service.get('name')}: {status_text} pid={service.get('pid') or '-'} "
+                f"{service.get('base_url') or '-'}{health_text}"
+            )
+
+
 @autostart_app.command("status")
 @_run_safe
 def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=_("cli.option.json"))):
@@ -493,6 +831,26 @@ def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=
             if message:
                 summary += f", message={message}"
             typer.echo(summary)
+
+
+@autostart_app.command("inspect")
+@_run_safe
+def autostart_inspect_cmd(
+    sample_sec: float = typer.Option(
+        0.2,
+        "--sample-sec",
+        min=0.0,
+        max=2.0,
+        help="CPU sampling window for process diagnostics.",
+    ),
+    token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    payload = _collect_autostart_inspect(sample_sec=sample_sec, token=token)
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    _print_autostart_inspect(payload)
 
 
 @autostart_app.command("enable")

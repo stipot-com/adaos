@@ -95,6 +95,7 @@ curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если треб�
 
 adaos autostart enable
 adaos autostart status
+adaos autostart inspect
 adaos autostart disable
 
 

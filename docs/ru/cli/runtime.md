@@ -15,11 +15,15 @@ adaos node reliability
 
 ```bash
 adaos autostart status
+adaos autostart inspect
 adaos autostart enable
 adaos autostart disable
 ```
 
 `autostart` - это основной operational path для запуска AdaOS как управляемого сервиса ОС.
+
+`autostart inspect` помогает отладить ситуации, когда hub "жив", но UI таймаутится или одно ядро CPU забито:
+команда печатает bind автозапуска, активный PID, самые "горячие" дочерние процессы и запущенные service-skills.
 
 ## Управление обновлением ядра
 

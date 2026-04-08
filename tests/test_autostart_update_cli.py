@@ -152,3 +152,99 @@ def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> Non
 
     assert result.exit_code != 0
     assert "local AdaOS admin API is unavailable" in result.output
+
+
+def test_autostart_inspect_renders_hot_children_and_services(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_collect_autostart_inspect",
+        lambda sample_sec=0.2, token=None: {
+            "autostart": {
+                "enabled": True,
+                "active": True,
+                "listening": True,
+                "url": "http://127.0.0.1:8777",
+            },
+            "bind": {"host": "127.0.0.1", "port": 8777},
+            "process": {
+                "pid": 3210,
+                "root": {
+                    "pid": 3210,
+                    "kind": "autostart_runner",
+                    "status": "running",
+                    "cpu_percent": 12.5,
+                    "rss_bytes": 64 * 1024 * 1024,
+                    "threads": 17,
+                    "age_sec": 93,
+                    "cmdline_text": "python -m adaos.apps.autostart_runner --host 127.0.0.1 --port 8777",
+                },
+                "top_children": [
+                    {
+                        "pid": 4001,
+                        "kind": "skill_runtime",
+                        "cpu_percent": 97.2,
+                        "rss_bytes": 128 * 1024 * 1024,
+                        "threads": 9,
+                        "age_sec": 40,
+                        "cmdline_text": "python skills/runtime_runner.py weather",
+                    }
+                ],
+            },
+            "services": [
+                {
+                    "name": "weather",
+                    "running": True,
+                    "pid": 4001,
+                    "base_url": "http://127.0.0.1:9123",
+                    "health_ok": True,
+                }
+            ],
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["inspect"])
+
+    assert result.exit_code == 0, result.output
+    assert "autostart: enabled=True active=True listening=True" in result.output
+    assert "process: pid=3210 kind=autostart_runner status=running cpu=12.5%" in result.output
+    assert "pid=4001 kind=skill_runtime cpu=97.2%" in result.output
+    assert "weather: running pid=4001 http://127.0.0.1:9123 health=ok" in result.output
+
+
+def test_autostart_inspect_json_outputs_payload(monkeypatch) -> None:
+    runner = CliRunner()
+    payload = {
+        "autostart": {"enabled": True, "active": True, "listening": True},
+        "bind": {"host": "127.0.0.1", "port": 8777},
+        "process": None,
+        "services": [],
+    }
+    monkeypatch.setattr(setup_cmd, "_collect_autostart_inspect", lambda sample_sec=0.2, token=None: payload)
+
+    result = runner.invoke(autostart_app, ["inspect", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert '"host": "127.0.0.1"' in result.output
+    assert '"port": 8777' in result.output
+
+
+def test_select_autostart_target_pid_prefers_pidfile_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(setup_cmd, "_pidfile_path", lambda host, port: object())
+    monkeypatch.setattr(setup_cmd, "_read_pidfile", lambda path: {"pid": 2222})
+    monkeypatch.setattr(setup_cmd, "_find_listening_server_pid", lambda host, port: 3333)
+    monkeypatch.setattr(setup_cmd, "_find_matching_server_pids", lambda host, port, protected_pids=None: [4444])
+    monkeypatch.setattr(setup_cmd, "_current_process_family_pids", lambda: {9999})
+
+    class _FakeProc:
+        def __init__(self, pid: int):
+            self.pid = pid
+
+        def status(self):
+            return "running"
+
+    monkeypatch.setattr(setup_cmd.psutil, "Process", _FakeProc)
+
+    pid = setup_cmd._select_autostart_target_pid({}, "127.0.0.1", 8777)
+
+    assert pid == 2222

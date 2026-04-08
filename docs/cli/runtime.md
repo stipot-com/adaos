@@ -15,11 +15,15 @@ These commands are useful for checking local readiness, runtime slots, and the b
 
 ```bash
 adaos autostart status
+adaos autostart inspect
 adaos autostart enable
 adaos autostart disable
 ```
 
 `autostart` is the operational path for running AdaOS as a managed service on the host OS.
+
+`autostart inspect` helps debug cases where the hub is "up" but the UI times out or a CPU core is pinned:
+it prints the autostart bind, the active PID, top CPU-consuming child processes, and currently running service-skills.
 
 ## Core-update controls
 
