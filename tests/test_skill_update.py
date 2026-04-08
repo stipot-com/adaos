@@ -24,6 +24,9 @@ class _MiniPaths:
     def skills_dir(self) -> Path:
         return self._skills
 
+    def skills_workspace_dir(self) -> Path:
+        return self._skills
+
 
 def _run_git(args: list[str], cwd: Path) -> str:
     result = subprocess.run(
@@ -59,6 +62,10 @@ def _init_monorepo(root: Path, *, tracked_skill_env: bool) -> Path:
         encoding="utf-8",
     )
     (desktop_skill_dir / ".skill_env.json").write_text('{"mode":"desktop-remote-v1"}\n', encoding="utf-8")
+    (remote / "registry.json").write_text(
+        '{\n  "version": 1,\n  "updated_at": "2026-01-01T00:00:00+00:00",\n  "skills": [],\n  "scenarios": []\n}\n',
+        encoding="utf-8",
+    )
 
     _run_git(["add", "-A"], cwd=remote)
     _run_git(["commit", "-m", "seed infrastate"], cwd=remote)
@@ -150,3 +157,25 @@ def test_request_update_preserves_unrelated_skill_env_overlay(monkeypatch, tmp_p
     assert result.updated is True
     assert result.version == "1.0.3"
     assert unrelated_env.read_text(encoding="utf-8") == '{"mode":"desktop-local-custom"}\n'
+
+
+def test_request_update_rebuilds_workspace_registry_when_local_registry_is_dirty(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    remote = _init_monorepo(tmp_path / "case-registry", tracked_skill_env=False)
+    service, paths, repo = _make_service(tmp_path / "case-registry-node", remote)
+
+    repo.install("infrastate_skill")
+    workspace = paths.workspace_dir()
+    registry = workspace / "registry.json"
+    registry.write_text('{"version":1,"updated_at":"local","skills":[{"name":"local_only"}],"scenarios":[]}\n', encoding="utf-8")
+
+    _update_remote_skill(remote, version="1.0.4", skill_env='{"mode":"remote-default"}\n')
+
+    result = service.request_update("infrastate_skill")
+
+    assert result.updated is True
+    assert result.version == "1.0.4"
+    registry_payload = registry.read_text(encoding="utf-8")
+    assert '"name": "infrastate_skill"' in registry_payload
+    assert '"version": "1.0.4"' in registry_payload
+    assert '"name": "local_only"' not in registry_payload

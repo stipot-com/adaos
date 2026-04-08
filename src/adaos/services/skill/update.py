@@ -9,6 +9,7 @@ import tempfile
 from typing import Optional
 
 from adaos.services.agent_context import AgentContext
+from adaos.services.workspace_registry import rebuild_workspace_registry, write_workspace_registry
 
 
 @dataclass(slots=True)
@@ -81,6 +82,23 @@ def _git_restore_head(repo_root: Path, relpath: Path) -> None:
             errors.append(detail)
     joined = "; ".join(errors) or "unknown git restore error"
     raise RuntimeError(f"failed to restore overlay path {rel}: {joined}")
+
+
+def _reset_workspace_registry_for_pull(repo_root: Path) -> bool:
+    registry_path = repo_root / "registry.json"
+    if not registry_path.exists() or not registry_path.is_file():
+        return False
+    relpath = registry_path.relative_to(repo_root)
+    if _git_path_is_tracked(repo_root, relpath):
+        _git_restore_head(repo_root, relpath)
+    else:
+        registry_path.unlink()
+    return True
+
+
+def _rebuild_workspace_registry_after_pull(workspace_root: Path) -> None:
+    payload = rebuild_workspace_registry(workspace_root)
+    write_workspace_registry(workspace_root, payload)
 
 
 @contextmanager
@@ -157,6 +175,7 @@ class SkillUpdateService:
 
         with _preserve_skill_overlays(repo_root=repo_root, skill_path=skill_path):
             if monorepo:
+                _reset_workspace_registry_for_pull(workspace_root)
                 if fs and hasattr(fs, "require_write"):
                     try:
                         fs.require_write(str(workspace_root))
@@ -166,6 +185,7 @@ class SkillUpdateService:
                 # Ensure the requested skill path is present in sparse patterns before pulling.
                 git.sparse_add(str(workspace_root), sparse_target)
                 git.pull(str(pull_root))
+                _rebuild_workspace_registry_after_pull(workspace_root)
             else:
                 git.pull(str(skill_path))
 
