@@ -319,6 +319,32 @@ def test_autostart_inspect_renders_service_and_supervisor_sections(monkeypatch) 
     assert "runtime: pid=11941 kind=autostart_runner" in result.output
 
 
+def test_probe_http_json_uses_default_autostart_headers(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"ok": True}
+
+    def _get(url: str, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = dict(headers or {})
+        return _Response()
+
+    monkeypatch.setattr(setup_cmd, "_autostart_admin_headers", lambda token=None: {"X-AdaOS-Token": "dev-local-token"})
+    monkeypatch.setattr(setup_cmd.requests, "get", _get)
+
+    payload = setup_cmd._probe_http_json("http://127.0.0.1:8776", "/api/supervisor/status")
+
+    assert payload == {"ok": True}
+    assert captured["url"] == "http://127.0.0.1:8776/api/supervisor/status"
+    assert captured["headers"]["X-AdaOS-Token"] == "dev-local-token"
+    assert captured["headers"]["Accept"] == "application/json"
+
+
 def test_autostart_inspect_json_outputs_payload(monkeypatch) -> None:
     runner = CliRunner()
     payload = {

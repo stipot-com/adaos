@@ -674,9 +674,8 @@ def _classify_process(proc: psutil.Process) -> str:
 
 def _probe_http_json(base_url: str, path: str, *, token: Optional[str] = None, timeout: float = 1.0) -> dict | None:
     try:
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["X-AdaOS-Token"] = str(token)
+        headers = dict(_autostart_admin_headers(token))
+        headers["Accept"] = "application/json"
         response = requests.get(base_url.rstrip("/") + path, headers=headers, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
