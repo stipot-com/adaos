@@ -313,6 +313,29 @@ def test_infrastate_marketplace_catalog_prefers_remote_registry_and_local_scan(m
     assert [item["name"] for item in items] == ["infrascope", "remote_scene"]
 
 
+def test_infrastate_marketplace_hides_skills_installed_via_scenario_dependencies(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(
+        mod,
+        "_marketplace_catalog_entries",
+        lambda kind: (
+            [{"kind": "skill", "id": "prompt_engineer_skill", "name": "prompt_engineer_skill", "version": "0.5.0"}]
+            if kind == "skills"
+            else [{"kind": "scenario", "id": "prompt_engineer_scenario", "name": "prompt_engineer_scenario", "version": "0.2.0"}]
+        ),
+    )
+    monkeypatch.setattr(mod, "_skills_items", lambda: [])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active_items": []})
+    monkeypatch.setattr(mod, "read_manifest", lambda name: {"depends": ["prompt_engineer_skill"]} if name == "prompt_engineer_scenario" else {})
+
+    items = mod._marketplace_items(webspace_id="default")
+
+    assert items["skills"] == []
+    assert [item["id"] for item in items["scenarios"]] == ["prompt_engineer_scenario"]
+
+
 def test_infrastate_effective_runtime_projection_prefers_validated_target_slot():
     mod = _load_infrastate_module()
 

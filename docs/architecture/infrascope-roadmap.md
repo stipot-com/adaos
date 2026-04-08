@@ -140,6 +140,16 @@ Ship the first useful operator-facing control plane.
 - an operator can locate the failing area of the subnet in under five seconds
 - object details open in-context instead of as disconnected standalone pages
 
+### Current Implementation Slice
+
+The current Phase 2 checkpoint turns that MVP into an installable operator workspace:
+
+- canonical `overview` and `object inspector` projections are exposed through `src/adaos/services/system_model/projections.py`, `src/adaos/services/system_model/service.py`, `src/adaos/apps/api/node_api.py`, and the control-plane SDK surface
+- the reusable client-side page runtime now supports richer `visibleIf` expressions and state-driven data reloads for declarative widgets, so one scenario can switch between `overview`, `inventory`, and inspector tabs without bespoke UI code
+- `.adaos/workspace/skills/infrascope_skill/*` provides the UI-facing adapter skill that shapes overview sections, inventory rows, and selected-object inspector payloads for Web Desktop
+- `.adaos/workspace/scenarios/infrascope/*` provides the first desktop `Infrascope` scenario with overview panels, inventory tabs for hubs/members/browsers/devices/skills/scenarios, a unified right-side inspector, and incident-to-object drill-down without leaving context
+- focused tests cover the Phase 2 projections, API facades, SDK helpers, and workspace skill/scenario assets before later topology and impact work expands the UI
+
 ## Phase 3: Topology and Impact Mode
 
 ### Goal

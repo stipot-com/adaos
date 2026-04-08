@@ -213,11 +213,17 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
     inventory = widgets["inventory-list"]
     incidents = widgets["overview-incidents"]
     summary = widgets["selected-object-summary"]
+    mode = widgets["infrascope-mode"]
+    inventory_tabs = widgets["infrascope-inventory-tabs"]
+    inspector_tabs = widgets["inspector-tabs"]
 
     assert scenario["type"] == "desktop"
     assert inventory["visibleIf"] == "$state.infrascopeMode === 'inventory'"
     assert inventory["dataSource"]["params"]["kind"] == "$state.inventoryKind"
     assert incidents["actions"][0]["params"]["inspectorTab"] == "incidents"
     assert summary["dataSource"]["name"] == "infrascope_skill.get_object_inspector"
+    assert mode["inputs"]["selectedStateKey"] == "infrascopeMode"
+    assert inventory_tabs["inputs"]["selectedStateKey"] == "inventoryKind"
+    assert inspector_tabs["inputs"]["selectedStateKey"] == "inspectorTab"
     assert "get_overview_summary" in skill_yaml
     assert "get_object_inspector" in skill_yaml
