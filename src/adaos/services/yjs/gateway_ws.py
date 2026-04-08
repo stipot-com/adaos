@@ -759,6 +759,14 @@ async def process_events_command(
             # This prevents race condition where frontend connects Yjs provider
             # before room is ready, causing empty webspaces on first connection.
             await _post_register()
+            _publish_bus(
+                "device.registered",
+                {
+                    "device_id": captured_device,
+                    "webspace_id": captured_ws,
+                    "kind": "browser",
+                },
+            )
             await _ack(data={"webspace_id": new_webspace})
         except Exception:
             # Best-effort: still send ack even if post-register fails

@@ -1,6 +1,8 @@
 # src\adaos\api\tool_bridge.py
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any, Dict
 
 import anyio
@@ -17,10 +19,91 @@ from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.subnet.link_manager import get_hub_link_manager
+from adaos.services.yjs.webspace import default_webspace_id
 
 
 router = APIRouter()
 _log = logging.getLogger("adaos.api.tool_bridge")
+
+
+def _debug_autosync_enabled() -> bool:
+    level = (os.getenv("ADAOS_LOG_LEVEL") or "").strip().upper()
+    return not level or level == "DEBUG"
+
+
+def _repo_workspace_skill_dir(ctx: AgentContext, skill_name: str) -> Path | None:
+    try:
+        repo_root_attr = getattr(ctx.paths, "repo_root", None)
+        repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+        if not repo_root:
+            return None
+        candidate = Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills" / skill_name
+        if candidate.exists():
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _workspace_skill_source_exists(ctx: AgentContext, skill_name: str) -> bool:
+    try:
+        workspace_root = ctx.paths.skills_workspace_dir()
+        root = workspace_root() if callable(workspace_root) else workspace_root
+        candidate = Path(root).expanduser().resolve() / skill_name
+        if candidate.exists():
+            return True
+    except Exception:
+        pass
+    return _repo_workspace_skill_dir(ctx, skill_name) is not None
+
+
+def _runtime_ready(mgr: SkillManager, skill_name: str) -> bool:
+    try:
+        status = mgr.runtime_status(skill_name)
+    except Exception:
+        return False
+    return bool(status.get("ready"))
+
+
+def _resolve_tool_webspace_id(payload: Dict[str, Any]) -> str:
+    token = str(payload.get("webspace_id") or "").strip()
+    return token or default_webspace_id()
+
+
+def _maybe_sync_workspace_runtime(ctx: AgentContext, mgr: SkillManager, skill_name: str) -> None:
+    if not _debug_autosync_enabled():
+        return
+    if not _workspace_skill_source_exists(ctx, skill_name):
+        return
+    if not _runtime_ready(mgr, skill_name):
+        return
+    try:
+        mgr.runtime_update(skill_name, space="workspace")
+    except Exception:
+        _log.debug("workspace runtime_update failed for skill=%s", skill_name, exc_info=True)
+
+
+def _repair_workspace_runtime(
+    ctx: AgentContext,
+    mgr: SkillManager,
+    skill_name: str,
+    *,
+    webspace_id: str,
+) -> bool:
+    if not _workspace_skill_source_exists(ctx, skill_name):
+        return False
+    try:
+        mgr.runtime_update(skill_name, space="workspace")
+    except Exception:
+        _log.debug("workspace runtime_update repair failed for skill=%s", skill_name, exc_info=True)
+    if _runtime_ready(mgr, skill_name):
+        return True
+    try:
+        mgr.activate_for_space(skill_name, space="default", webspace_id=webspace_id)
+        return True
+    except Exception:
+        _log.debug("workspace runtime activation repair failed for skill=%s", skill_name, exc_info=True)
+        return False
 
 
 class ToolCall(BaseModel):
@@ -64,14 +147,22 @@ async def call_tool(body: ToolCall, request: Request, response: Response, ctx: A
 
     trace = attach_http_trace_headers(request.headers, response.headers)
     payload: Dict[str, Any] = body.arguments or {}
+    webspace_id = _resolve_tool_webspace_id(payload)
     # Пробуем локально; если навык отсутствует на узле-хабе — проксируем на member
     try:
         started_at = time.perf_counter()
+        if not body.dev:
+            _maybe_sync_workspace_runtime(ctx, mgr, skill_name)
 
         def _run_local_tool() -> Any:
             if body.dev:
                 return mgr.run_dev_tool(skill_name, public_tool, payload, timeout=body.timeout)
-            return mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+            try:
+                return mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
+            except (FileNotFoundError, RuntimeError, KeyError):
+                if not _repair_workspace_runtime(ctx, mgr, skill_name, webspace_id=webspace_id):
+                    raise
+                return mgr.run_tool(skill_name, public_tool, payload, timeout=body.timeout)
 
         result = await anyio.to_thread.run_sync(_run_local_tool)
         took_ms = (time.perf_counter() - started_at) * 1000.0

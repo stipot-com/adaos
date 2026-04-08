@@ -68,6 +68,91 @@ def test_call_tool_offloads_local_execution_to_worker(monkeypatch) -> None:
     assert result["trace_id"] == "trace-123"
 
 
+def test_call_tool_repairs_workspace_runtime_when_runtime_missing(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+    (tmp_path / "workspace" / "skills" / "infrascope_skill").mkdir(parents=True, exist_ok=True)
+
+    class _Paths:
+        def skills_workspace_dir(self):
+            return tmp_path / "workspace" / "skills"
+
+        def repo_root(self):
+            return tmp_path
+
+    ctx = SimpleNamespace(
+        skills_repo=None,
+        sql=None,
+        git=None,
+        paths=_Paths(),
+        caps=None,
+        settings=None,
+        bus=None,
+    )
+
+    class _FakeSkillManager:
+        def __init__(self, **_kwargs) -> None:
+            self.ready = False
+
+        def runtime_status(self, _name: str) -> dict[str, object]:
+            if not self.ready:
+                raise RuntimeError("no versions installed")
+            return {"ready": True}
+
+        def runtime_update(self, name: str, *, space: str = "workspace") -> dict[str, object]:
+            calls.append(f"update:{name}:{space}")
+            return {"ok": False, "reason": "no_active_runtime"}
+
+        def activate_for_space(
+            self,
+            name: str,
+            *,
+            space: str = "default",
+            webspace_id: str | None = None,
+            version: str | None = None,
+            slot: str | None = None,
+        ) -> str:
+            calls.append(f"activate:{name}:{space}:{webspace_id}:{version}:{slot}")
+            self.ready = True
+            return "A"
+
+        def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object], timeout: float | None = None) -> dict[str, object]:
+            calls.append(f"run:{self.ready}:{skill_name}:{tool_name}:{timeout}")
+            if not self.ready:
+                raise RuntimeError("no versions installed")
+            return {"skill": skill_name, "tool": tool_name, "payload": payload}
+
+    async def _fake_run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(tool_bridge_module, "is_accepting_new_work", lambda: True)
+    monkeypatch.setattr(tool_bridge_module, "SkillManager", _FakeSkillManager)
+    monkeypatch.setattr(tool_bridge_module, "SqliteSkillRegistry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tool_bridge_module, "attach_http_trace_headers", lambda _req, _resp: "trace-123")
+    monkeypatch.setattr(tool_bridge_module.anyio.to_thread, "run_sync", _fake_run_sync)
+    monkeypatch.setattr(tool_bridge_module, "default_webspace_id", lambda: "default")
+
+    result = asyncio.run(
+        tool_bridge_module.call_tool(
+            tool_bridge_module.ToolCall(
+                tool="infrascope_skill:get_overview_summary",
+                arguments={"webspace_id": "ws-1"},
+            ),
+            SimpleNamespace(headers={}),
+            Response(),
+            ctx=ctx,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["trace_id"] == "trace-123"
+    assert calls == [
+        "run:False:infrascope_skill:get_overview_summary:None",
+        "update:infrascope_skill:workspace",
+        "activate:infrascope_skill:default:ws-1:None:None",
+        "run:True:infrascope_skill:get_overview_summary:None",
+    ]
+
+
 def test_call_tool_returns_gateway_timeout_when_worker_times_out(monkeypatch) -> None:
     class _FakeSkillManager:
         def __init__(self, **_kwargs) -> None:

@@ -36,6 +36,8 @@ from adaos.services.media_library import (
     guess_media_type,
     media_file_path,
 )
+from adaos.services.agent_context import get_ctx
+from adaos.services.eventbus import emit as bus_emit
 
 _log = logging.getLogger("adaos.webrtc.peer")
 _media_relay = MediaRelay()
@@ -101,6 +103,7 @@ class HubPeer:
         @self.pc.on("connectionstatechange")
         def on_state() -> None:  # type: ignore[no-untyped-def]
             _log.info("peer %s connectionState=%s", self.device_id, self.pc.connectionState)
+            self._emit_state_event(reason=f"connection_state:{self.pc.connectionState}")
             if self.pc.connectionState in ("failed", "closed"):
                 asyncio.ensure_future(self.close())
 
@@ -139,6 +142,7 @@ class HubPeer:
                     track_id,
                     exc_info=True,
                 )
+            self._emit_state_event(reason=f"track:{getattr(track, 'kind', 'unknown')}:received")
 
             @track.on("ended")
             async def on_track_ended() -> None:  # type: ignore[no-untyped-def]
@@ -152,6 +156,7 @@ class HubPeer:
                     track_id,
                     self.device_id,
                 )
+                self._emit_state_event(reason=f"track:{getattr(track, 'kind', 'unknown')}:ended")
 
     # -- DataChannel handlers -------------------------------------------------
 
@@ -161,6 +166,7 @@ class HubPeer:
 
         self._events_channel = channel
         state = {"webspace_id": self.webspace_id}
+        self._emit_state_event(reason="events_channel:open")
 
         async def _send(msg: dict[str, Any]) -> None:
             try:
@@ -197,6 +203,11 @@ class HubPeer:
 
             asyncio.ensure_future(_handle())
 
+        @channel.on("close")
+        def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._events_channel = None
+            self._emit_state_event(reason="events_channel:closed")
+
     def _setup_yjs_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Bridge *yjs* DataChannel to ``ypy-websocket``."""
         self._yjs_channel = channel
@@ -208,6 +219,12 @@ class HubPeer:
         self._yjs_task.add_done_callback(
             lambda _t: _log.debug("yjs dc task done device=%s", self.device_id)
         )
+        self._emit_state_event(reason="yjs_channel:open")
+
+        @channel.on("close")
+        def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._yjs_channel = None
+            self._emit_state_event(reason="yjs_channel:closed")
 
     def _setup_media_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Accept direct binary media upload chunks over a dedicated DataChannel."""
@@ -403,6 +420,69 @@ class HubPeer:
         candidate.sdpMLineIndex = candidate_dict.get("sdpMLineIndex")
         await self.pc.addIceCandidate(candidate)
 
+    def snapshot_record(self) -> dict[str, Any]:
+        try:
+            connection_state = str(getattr(self.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
+        except Exception:
+            connection_state = "unknown"
+        try:
+            events_state = str(getattr(getattr(self, "_events_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
+        except Exception:
+            events_state = "missing"
+        try:
+            yjs_state = str(getattr(getattr(self, "_yjs_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
+        except Exception:
+            yjs_state = "missing"
+        incoming = self._incoming_tracks if isinstance(getattr(self, "_incoming_tracks", None), dict) else {}
+        loopback = self._loopback_tracks if isinstance(getattr(self, "_loopback_tracks", None), dict) else {}
+        incoming_audio_tracks = sum(
+            1
+            for item in incoming.values()
+            if isinstance(item, dict)
+            and str(item.get("kind") or "") == "audio"
+            and str(item.get("ready_state") or "live") != "ended"
+        )
+        incoming_video_tracks = sum(
+            1
+            for item in incoming.values()
+            if isinstance(item, dict)
+            and str(item.get("kind") or "") == "video"
+            and str(item.get("ready_state") or "live") != "ended"
+        )
+        loopback_audio_tracks = sum(
+            1
+            for item in loopback.values()
+            if isinstance(item, dict) and str(item.get("kind") or "") == "audio"
+        )
+        loopback_video_tracks = sum(
+            1
+            for item in loopback.values()
+            if isinstance(item, dict) and str(item.get("kind") or "") == "video"
+        )
+        return {
+            "device_id": self.device_id,
+            "webspace_id": str(getattr(self, "webspace_id", "") or ""),
+            "connection_state": connection_state,
+            "events_channel_state": events_state,
+            "yjs_channel_state": yjs_state,
+            "incoming_audio_tracks": incoming_audio_tracks,
+            "incoming_video_tracks": incoming_video_tracks,
+            "loopback_audio_tracks": loopback_audio_tracks,
+            "loopback_video_tracks": loopback_video_tracks,
+            "media_track_total": incoming_audio_tracks + incoming_video_tracks,
+        }
+
+    def _emit_state_event(self, *, reason: str) -> None:
+        try:
+            ctx = get_ctx()
+        except Exception:
+            return
+        try:
+            payload = {**self.snapshot_record(), "reason": str(reason or "state.changed")}
+            bus_emit(ctx.bus, "webrtc.peer.state.changed", payload, "webrtc.peer")
+        except Exception:
+            _log.debug("failed to emit webrtc peer state device=%s reason=%s", self.device_id, reason, exc_info=True)
+
     # -- lifecycle ------------------------------------------------------------
 
     async def close(self) -> None:
@@ -426,6 +506,7 @@ class HubPeer:
             await self.pc.close()
         except Exception:
             pass
+        self._emit_state_event(reason="peer.closed")
         # Only remove ourselves — a replacement peer may already be registered.
         if _peers.get(self.device_id) is self:
             del _peers[self.device_id]
@@ -460,6 +541,7 @@ async def handle_rtc_offer(
 
     peer = HubPeer(device_id, webspace_id, send_ice_cb)
     _peers[device_id] = peer
+    peer._emit_state_event(reason="offer.accepted")
     return await peer.handle_offer(offer_sdp, offer_type)
 
 

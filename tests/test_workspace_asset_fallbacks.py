@@ -167,6 +167,58 @@ def test_skill_manager_runtime_update_falls_back_to_repo_workspace(tmp_path: Pat
     assert "repo-workspace-handler" in (runtime_skill / "handlers" / "main.py").read_text(encoding="utf-8")
 
 
+def test_skill_manager_activate_runtime_prepares_repo_workspace_when_missing(tmp_path: Path, monkeypatch) -> None:
+    runtime_base = tmp_path / "runtime"
+    repo_root = tmp_path / "repo"
+
+    repo_skill = repo_root / ".adaos" / "workspace" / "skills" / "infrascope_skill"
+    (repo_skill / "handlers").mkdir(parents=True, exist_ok=True)
+    (repo_skill / "handlers" / "main.py").write_text(
+        'MARKER = "repo-workspace-handler"\n'
+        'def handle(payload=None):\n'
+        '    return payload or {}\n',
+        encoding="utf-8",
+    )
+    (repo_skill / "skill.yaml").write_text(
+        "name: infrascope_skill\nversion: '0.3.0'\nentry: handlers/main.py\n",
+        encoding="utf-8",
+    )
+
+    fake_ctx = SimpleNamespace(
+        paths=_PathsStub(base_dir=runtime_base, repo_root=repo_root),
+        caps=SimpleNamespace(),
+        bus=None,
+        settings=SimpleNamespace(
+            default_wall_time_sec=30.0,
+            default_max_rss_mb=None,
+            default_cpu_time_sec=None,
+        ),
+    )
+    monkeypatch.setattr(skill_manager_module, "get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+
+    manager = skill_manager_module.SkillManager(
+        git=SimpleNamespace(),
+        paths=fake_ctx.paths,
+        caps=fake_ctx.caps,
+        settings=fake_ctx.settings,
+        registry=None,
+        repo=None,
+        bus=None,
+    )
+
+    slot_name = manager.activate_runtime("infrascope_skill")
+    status = manager.runtime_status("infrascope_skill")
+    env = SkillRuntimeEnvironment(skills_root=runtime_base / "workspace" / "skills", skill_name="infrascope_skill")
+    runtime_handler = env.ensure_current_link("0.3.0") / "src" / "skills" / "infrascope_skill" / "handlers" / "main.py"
+
+    assert slot_name in {"A", "B"}
+    assert status["version"] == "0.3.0"
+    assert status["ready"] is True
+    assert Path(status["resolved_manifest"]).exists()
+    assert "repo-workspace-handler" in runtime_handler.read_text(encoding="utf-8")
+
+
 def test_skills_loader_imports_repo_workspace_handler_when_workspace_missing(tmp_path: Path, monkeypatch) -> None:
     runtime_base = tmp_path / "runtime"
     repo_root = tmp_path / "repo"

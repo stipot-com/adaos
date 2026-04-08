@@ -201,6 +201,79 @@ def test_infrascope_skill_returns_safe_fallback_for_unknown_object(monkeypatch):
     assert payload["task_packet"] == {}
 
 
+def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatch):
+    mod = _load_infrascope_module()
+
+    local = _FakeCanonicalObject("hub:local", "hub", "Local hub", status="online")
+    browser = _FakeCanonicalObject("browser:dev-1", "browser_session", "Browser dev-1", status="warning", summary="connecting")
+
+    overview_projection = SimpleNamespace(
+        subject=local,
+        objects=[browser],
+        context={
+            "summary_tile": {
+                "label": "health",
+                "value": "warning",
+                "subtitle": "1 browser session",
+            },
+            "health_strip": [
+                {
+                    "id": "health:browsers",
+                    "object_id": "browser:dev-1",
+                    "title": "Browsers",
+                    "summary": "Browser dev-1 is connecting",
+                }
+            ],
+            "active_incidents": [],
+            "active_runtimes": [],
+            "quota_summary": [],
+            "recent_changes": [],
+        },
+    )
+
+    def _inspector(object_id, task_goal=None, webspace_id=None):
+        subject = local if object_id in {"local", "hub:local"} else browser
+        return SimpleNamespace(
+            subject=subject,
+            context={
+                "inspector": {
+                    "label": subject.kind,
+                    "value": subject.status,
+                    "subtitle": subject.title,
+                },
+                "actions": [],
+                "recent_changes": [],
+                "topology": {"edges": []},
+                "task_packet": {"task_goal": task_goal or "assist operator"},
+            },
+            incidents=[],
+            summary=f"{subject.title} summary",
+        )
+
+    writes: list[tuple[str, str | None, str]] = []
+
+    monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: overview_projection)
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [local, browser])
+    monkeypatch.setattr(mod, "current_object_inspector", _inspector)
+    monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: [str(webspace_id or "ws-1")])
+    monkeypatch.setattr(
+        mod,
+        "ctx_subnet",
+        SimpleNamespace(set=lambda slot, value, webspace_id=None: writes.append((slot, webspace_id, value["summary"]["value"]))),
+    )
+
+    snapshot = mod.get_snapshot(webspace_id="ws-1")
+    first = mod.refresh_snapshot(webspace_id="ws-1")
+    second = mod.refresh_snapshot(webspace_id="ws-1")
+
+    assert snapshot["inventory"]["browsers"][0]["object_id"] == "browser:dev-1"
+    assert snapshot["inspectors"]["local"]["object_id"] == "hub:local"
+    assert snapshot["inspectors"]["browser:dev-1"]["object"]["kind"] == "browser_session"
+    assert first["projected"] == 1
+    assert second["projected"] == 0
+    assert writes == [("infrascope.snapshot", "ws-1", "warning")]
+
+
 def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
     root = Path(__file__).resolve().parents[1]
     scenario_path = root / ".adaos" / "workspace" / "scenarios" / "infrascope" / "scenario.json"
@@ -212,6 +285,7 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
 
     inventory = widgets["inventory-list"]
     incidents = widgets["overview-incidents"]
+    operations = widgets["overview-operations"]
     summary = widgets["selected-object-summary"]
     mode = widgets["infrascope-mode"]
     inventory_tabs = widgets["infrascope-inventory-tabs"]
@@ -219,11 +293,22 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
 
     assert scenario["type"] == "desktop"
     assert inventory["visibleIf"] == "$state.infrascopeMode === 'inventory'"
-    assert inventory["dataSource"]["params"]["kind"] == "$state.inventoryKind"
+    assert inventory["dataSource"]["kind"] == "y"
+    assert inventory["dataSource"]["path"] == "data/infrascope/inventory/$state.inventoryKind"
+    assert "refreshMs" not in inventory.get("inputs", {})
     assert incidents["actions"][0]["params"]["inspectorTab"] == "incidents"
-    assert summary["dataSource"]["name"] == "infrascope_skill.get_object_inspector"
+    assert operations["dataSource"]["path"] == "data/infrascope/operations/items"
+    assert summary["dataSource"]["kind"] == "y"
+    assert summary["dataSource"]["path"] == "data/infrascope/inspectors/$state.selectedObjectId"
+    assert widgets["overview-summary"]["dataSource"]["path"] == "data/infrascope/summary"
     assert mode["inputs"]["selectedStateKey"] == "infrascopeMode"
     assert inventory_tabs["inputs"]["selectedStateKey"] == "inventoryKind"
     assert inspector_tabs["inputs"]["selectedStateKey"] == "inspectorTab"
     assert "get_overview_summary" in skill_yaml
     assert "get_object_inspector" in skill_yaml
+    assert "get_snapshot" in skill_yaml
+    assert "refresh_snapshot" in skill_yaml
+    assert "data_projections" in skill_yaml
+    assert "infrascope.snapshot" in skill_yaml
+    assert "device.registered" in skill_yaml
+    assert "webrtc.peer.state.changed" in skill_yaml

@@ -329,6 +329,46 @@ def test_process_events_command_ensure_dev_returns_webspace_id(monkeypatch) -> N
     }
 
 
+def test_process_events_command_publishes_device_registered(monkeypatch) -> None:
+    published: list[tuple[str, dict[str, object] | None]] = []
+    responses: list[dict[str, object]] = []
+
+    monkeypatch.setattr(gateway_module, "_make_publish_bus", lambda *args, **kwargs: (lambda topic, extra=None: published.append((topic, extra))))
+
+    async def _fake_start_y_server() -> None:
+        return None
+
+    async def _fake_update_device_presence(webspace_id: str, device_id: str) -> None:
+        assert webspace_id == "ops"
+        assert device_id == "dev-2"
+
+    async def _send_response(msg: dict[str, object]) -> None:
+        responses.append(msg)
+
+    monkeypatch.setattr(gateway_module, "start_y_server", _fake_start_y_server)
+    monkeypatch.setattr(gateway_module, "_update_device_presence", _fake_update_device_presence)
+
+    asyncio.run(
+        gateway_module.process_events_command(
+            kind="device.register",
+            cmd_id="cmd-4",
+            payload={"device_id": "dev-2", "webspace_id": "ops"},
+            device_id="dev-2",
+            webspace_id="default",
+            send_response=_send_response,
+        )
+    )
+
+    assert published == [
+        (
+            "device.registered",
+            {"device_id": "dev-2", "webspace_id": "ops", "kind": "browser"},
+        )
+    ]
+    assert responses[-1]["ok"] is True
+    assert responses[-1]["data"] == {"webspace_id": "ops"}
+
+
 def test_accept_websocket_returns_false_when_handshake_already_closed() -> None:
     class _FakeWebSocket:
         async def accept(self) -> None:

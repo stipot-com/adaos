@@ -998,12 +998,13 @@ class SkillManager:
         self,
         name: str,
         *,
+        path: Path | None = None,
         version_override: str | None = None,
         run_tests: bool = False,
         preferred_slot: str | None = None,
     ) -> RuntimeInstallResult:
         skills_root = self.ctx.paths.skills_dir()
-        skill_dir = skills_root / name
+        skill_dir = Path(path).resolve() if path is not None else (skills_root / name)
         if not skill_dir.exists():
             raise FileNotFoundError(f"skill '{name}' not found at {skill_dir}")
 
@@ -1103,9 +1104,22 @@ class SkillManager:
 
     def activate_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
         env = self._runtime_env(name)
+        source_path: Path | None = None
+        try:
+            candidate, _source_kind = self._resolve_runtime_update_source(name, space="workspace")
+            if candidate.exists():
+                source_path = candidate
+        except Exception:
+            source_path = None
         target_version = version or self._latest_prepared_version(env) or env.resolve_active_version()
         if not target_version:
-            raise RuntimeError("no installed versions")
+            if source_path is None:
+                raise RuntimeError("no installed versions")
+            try:
+                manifest = self._load_manifest(source_path)
+            except FileNotFoundError:
+                manifest = {}
+            target_version = str(manifest.get("version") or "0.0.0")
         env.prepare_version(target_version)
         metadata = env.read_version_metadata(target_version)
         target_slot = slot or self._preferred_activation_slot(env, target_version, metadata)
@@ -1113,7 +1127,23 @@ class SkillManager:
         slot_meta = metadata.get("slots", {}).get(target_slot, {})
         manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
         if not manifest_path.exists():
-            raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared; run 'adaos skill install {name} --slot={target_slot}' first")
+            if source_path is None:
+                raise RuntimeError(
+                    f"slot {target_slot} of version {target_version} is not prepared; "
+                    f"run 'adaos skill install {name} --slot={target_slot}' first"
+                )
+            self.prepare_runtime(
+                name,
+                path=source_path,
+                version_override=target_version,
+                run_tests=False,
+                preferred_slot=target_slot,
+            )
+            metadata = env.read_version_metadata(target_version)
+            slot_meta = metadata.get("slots", {}).get(target_slot, {})
+            manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+            if not manifest_path.exists():
+                raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
         env.set_active_slot(target_version, target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
         history = metadata.setdefault("history", {})
