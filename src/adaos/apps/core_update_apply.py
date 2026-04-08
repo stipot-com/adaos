@@ -73,10 +73,92 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         )
 
 
+def _run_json(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> dict[str, object]:
+    completed = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"command failed rc={completed.returncode}: {' '.join(cmd)}\n"
+            f"stdout:\n{completed.stdout[-4000:]}\n"
+            f"stderr:\n{completed.stderr[-4000:]}"
+        )
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"command returned invalid JSON: {' '.join(cmd)}\nstdout:\n{completed.stdout[-4000:]}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"command returned non-object JSON: {' '.join(cmd)}")
+    return payload
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+def _rewrite_text_file(path: Path, *, old: str, new: str) -> bool:
+    try:
+        raw = path.read_bytes()
+    except Exception:
+        return False
+    if b"\x00" in raw:
+        return False
+    try:
+        text = raw.decode("utf-8")
+    except Exception:
+        return False
+    if old not in text:
+        return False
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    return True
+
+
+def _repair_moved_venv(venv_dir: Path, *, original_venv_dir: Path) -> dict[str, object]:
+    repaired: list[str] = []
+    if os.name == "nt":
+        scripts_dir = venv_dir / "Scripts"
+    else:
+        scripts_dir = venv_dir / "bin"
+    old_text = str(original_venv_dir)
+    new_text = str(venv_dir)
+    if scripts_dir.exists():
+        for child in scripts_dir.iterdir():
+            if not child.is_file():
+                continue
+            if _rewrite_text_file(child, old=old_text, new=new_text):
+                repaired.append(str(child))
+    pyvenv_cfg = venv_dir / "pyvenv.cfg"
+    if pyvenv_cfg.exists() and _rewrite_text_file(pyvenv_cfg, old=old_text, new=new_text):
+        repaired.append(str(pyvenv_cfg))
+    return {
+        "ok": True,
+        "venv_dir": str(venv_dir),
+        "original_venv_dir": str(original_venv_dir),
+        "repaired_files": repaired,
+    }
+
+
+def _migrate_installed_skill_runtimes(
+    python_executable: Path,
+    *,
+    base_dir: str | os.PathLike[str] = "",
+    shared_dotenv_path: str | os.PathLike[str] = "",
+) -> dict[str, object]:
+    env = dict(os.environ)
+    if str(base_dir or "").strip():
+        env["ADAOS_BASE_DIR"] = str(base_dir)
+    if str(shared_dotenv_path or "").strip():
+        env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv_path)
+    return _run_json(
+        [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"],
+        env=env,
+    )
 
 
 def _clone_repo(repo_url: str, target_rev: str, target_version: str, checkout_dir: Path) -> None:
@@ -189,6 +271,7 @@ def prepare_slot(
 
         final_repo_dir = slot_dir / "repo"
         final_venv_dir = slot_dir / "venv"
+        original_venv_dir = venv_tmp.resolve()
         final_py = _venv_python(final_venv_dir)
         git_commit = _git_text(checkout_tmp, "rev-parse", "HEAD")
         git_short_commit = _git_text(checkout_tmp, "rev-parse", "--short", "HEAD")
@@ -227,6 +310,16 @@ def prepare_slot(
         if os.path.exists(str(slot_dir)):
             shutil.rmtree(slot_dir, ignore_errors=True)
         shutil.move(str(prepared_slot), str(slot_dir))
+        repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
+        skill_runtime_migration = _migrate_installed_skill_runtimes(
+            final_py,
+            base_dir=str(base_dir or ""),
+            shared_dotenv_path=shared_dotenv,
+        )
+        if not bool(skill_runtime_migration.get("ok")):
+            raise RuntimeError(f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}")
+        manifest["venv_repair"] = repair
+        manifest["skill_runtime_migration"] = skill_runtime_migration
         write_slot_manifest(slot_name, manifest)
         return manifest
     finally:
