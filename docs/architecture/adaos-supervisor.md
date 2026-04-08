@@ -193,6 +193,7 @@ Important invariants:
 
 Installed skills are not automatically valid just because the core slot booted.
 Their runtime dependencies must be prepared against the new core interpreter and surfaced as explicit diagnostics.
+If a skill uses optional `data/internal/a|b`, that data must evolve together with the prepared runtime slot, either by default copy or by an explicit `data_migration_tool`.
 
 Target lifecycle per installed skill:
 

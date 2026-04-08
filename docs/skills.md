@@ -26,6 +26,8 @@ adaos skill doctor my_skill
 adaos skill gc
 ```
 
+For runtime slot layout, rollback semantics, and the optional `data/internal/a|b` plus `data_migration_tool` flow, see [Skill Runtime Lifecycle](skill_runtime.md).
+
 ## Service-type skills
 
 Some skills are exposed through the service supervisor:

@@ -103,6 +103,11 @@ Generate a minimal but fully functional skill compatible with the AdaOS SDK.
   set("last_city", city)
   ```
 
+* **Optional migratable internal data:** if the skill owns schema-sensitive files, it may use
+  `skills/.runtime/<name>/data/internal/a|b` together with an optional manifest field
+  `data_migration_tool`. If no migration tool is declared, AdaOS falls back to copying the
+  active internal slot into the inactive one during runtime prepare.
+
 * **Output abstraction:**
 
   * Do **not** use `print()` directly for user-facing messages.

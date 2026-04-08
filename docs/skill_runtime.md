@@ -26,6 +26,11 @@ skills/.runtime/<name>/data/
     files/
         secrets.json            # per-skill secrets (managed via CLI/setup)
         .skill_env.json         # persisted environment snapshot
+    internal/
+        a/                      # optional internal data slot
+        b/                      # optional internal data slot
+        active                  # current internal data slot marker
+        previous                # previous internal data slot marker
 ```
 
 All paths are relative and compatible with Linux/Windows. Slots are created lazily during `adaos skill install`; both directories always exist so an operator can switch immediately.
@@ -38,10 +43,64 @@ All paths are relative and compatible with Linux/Windows. Slots are created lazi
 2. Copy the current contents of `skills/<name>` into `slots/<slot>/src`.
 3. Build runtime dependencies (either reusing the host interpreter or creating an isolated virtualenv).
 4. Enrich `manifest.json` into `resolved.manifest.json`, resolving tool entry points, interpreter paths, timeouts, and policy defaults.
-5. Optionally run `src/skills/<name>/tests/` (`--test`) from the prepared slot. Commands execute inside the staged environment (interpreter, `PYTHONPATH`, `.skill_env.json`), and logs are streamed to `slots/<slot>/logs/tests.log`.
-6. Persist slot metadata (tests, timestamps, default tool) for status and rollback operations.
+5. Prepare `data/internal/<a|b>` for the target slot. By default AdaOS copies the current internal slot into the inactive one. If the skill declares a custom `data_migration_tool`, AdaOS invokes that tool instead.
+6. Optionally run `src/skills/<name>/tests/` (`--test`) from the prepared slot. Commands execute inside the staged environment (interpreter, `PYTHONPATH`, `.skill_env.json`), and logs are streamed to `slots/<slot>/logs/tests.log`.
+7. Persist slot metadata (tests, timestamps, default tool, data migration result) for status and rollback operations.
 
-`adaos skill activate <name>` switches the `active` marker to the prepared slot atomically, records the previous slot for `adaos skill rollback`, and writes the active version marker. Setup flows must run **after activation** so that secrets and runtime paths are stable.
+`adaos skill activate <name>` switches the `active` marker to the prepared slot atomically, records the previous slot for `adaos skill rollback`, writes the active version marker, and also switches `data/internal/active` to the corresponding `a|b` slot. Setup flows must run **after activation** so that secrets and runtime paths are stable.
+
+`adaos skill rollback <name>` rolls back both the runtime slot and the `data/internal/active` pointer.
+
+## Optional internal data migration
+
+This feature is optional. A skill can ignore `data/internal/a|b` completely and continue using only:
+
+- `data/db/skill_env.json`
+- `data/files/*`
+
+Use `data/internal/a|b` only for state that must evolve together with runtime schema changes.
+
+### Default behavior
+
+If a skill does not declare a migration hook, AdaOS simply copies the currently active internal data slot into the inactive one during `prepare_runtime`.
+
+### Custom migration hook
+
+A skill may declare an optional migration hook in its manifest:
+
+```yaml
+data_migration_tool: migrate_data
+tools:
+  - name: migrate_data
+    entry: handlers.main:migrate_data
+```
+
+The hook is resolved through the same tool system as ordinary skill tools.
+During prepare, AdaOS runs it against the staged skill sources for the target slot.
+
+The hook receives a payload with:
+
+- `source_internal_slot`
+- `target_internal_slot`
+- `source_internal_dir`
+- `target_internal_dir`
+- `data_root`
+- `internal_root`
+- `runtime_slot`
+- `version`
+
+AdaOS also exposes convenience environment variables while the hook runs:
+
+- `ADAOS_SKILL_INTERNAL_DATA_ROOT`
+- `ADAOS_SKILL_INTERNAL_ACTIVE_PATH`
+- `ADAOS_SKILL_INTERNAL_TARGET_PATH`
+
+Important notes:
+
+- the hook is optional
+- if the hook is absent, AdaOS falls back to copy
+- the hook is expected to populate `target_internal_dir`
+- on migration failure, AdaOS clears the target internal slot and fails `prepare_runtime`
 
 ## Tool execution and setup
 

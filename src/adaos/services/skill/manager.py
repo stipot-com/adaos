@@ -53,6 +53,7 @@ class RuntimeInstallResult:
     slot: str
     resolved_manifest: Path
     tests: Dict[str, TestResult]
+    data_migration: Dict[str, Any] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1055,6 +1056,14 @@ class SkillManager:
             policy_overrides=policy_overrides,
             skill_dir=staged_dir,
         )
+        self._write_resolved_manifest(slot, resolved)
+        data_migration = self._migrate_internal_data(
+            env=env,
+            slot=slot,
+            resolved_manifest=resolved,
+            skill_dir=staged_dir,
+            python_paths=python_paths,
+        )
 
         tests: Dict[str, TestResult] = {}
         package_dir = getattr(self.ctx.paths, "package_dir", None)
@@ -1082,14 +1091,13 @@ class SkillManager:
                 env.cleanup_slot(version, slot_name)
                 raise RuntimeError("skill tests failed")
 
-        self._write_resolved_manifest(slot, resolved)
-
         metadata = env.read_version_metadata(version)
         slots_meta = metadata.setdefault("slots", {})
         slots_meta[slot_name] = {
             "resolved_manifest": str(slot.resolved_manifest),
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "tests": {name: result.status for name, result in tests.items()},
+            "data_migration": dict(data_migration),
         }
         metadata["version"] = version
         history = metadata.setdefault("history", {})
@@ -1105,6 +1113,7 @@ class SkillManager:
             slot=slot_name,
             resolved_manifest=slot.resolved_manifest,
             tests=tests,
+            data_migration=dict(data_migration),
         )
 
     def activate_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
@@ -1150,6 +1159,7 @@ class SkillManager:
             if not manifest_path.exists():
                 raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
         env.set_active_slot(target_version, target_slot)
+        env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot
@@ -1178,7 +1188,12 @@ class SkillManager:
         if not version:
             raise RuntimeError("no active version")
         env.prepare_version(version)
-        return env.rollback_slot(version)
+        restored_slot = env.rollback_slot(version)
+        try:
+            env.rollback_internal_slot()
+        except Exception as exc:
+            raise RuntimeError(f"runtime slot restored to {restored_slot}, internal data rollback failed: {exc}") from exc
+        return restored_slot
 
     def dev_rollback_runtime(self, name: str) -> str:
         env = self._runtime_env_dev(name)
@@ -1186,7 +1201,12 @@ class SkillManager:
         if not version:
             raise RuntimeError("no active version")
         env.prepare_version(version)
-        return env.rollback_slot(version)
+        restored_slot = env.rollback_slot(version)
+        try:
+            env.rollback_internal_slot()
+        except Exception as exc:
+            raise RuntimeError(f"runtime slot restored to {restored_slot}, internal data rollback failed: {exc}") from exc
+        return restored_slot
 
     def activate_for_space(
         self,
@@ -1967,6 +1987,180 @@ class SkillManager:
         if found:
             self._write_json_object(store_path, merged)
 
+    def _remove_tree_contents(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        for child in list(path.iterdir()):
+            if child.is_dir():
+                self._remove_tree(child)
+            else:
+                try:
+                    child.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _copy_tree_contents(self, source: Path, target: Path) -> int:
+        self._remove_tree_contents(target)
+        copied = 0
+        if not source.exists():
+            return copied
+        for child in source.iterdir():
+            destination = target / child.name
+            if child.is_dir():
+                shutil.copytree(child, destination, dirs_exist_ok=True)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(child, destination)
+            copied += 1
+        return copied
+
+    def _data_migration_config(self, resolved_manifest: Mapping[str, Any]) -> dict[str, Any]:
+        config = resolved_manifest.get("data_migration")
+        if isinstance(config, Mapping):
+            return dict(config)
+        tool_name = resolved_manifest.get("data_migration_tool")
+        if isinstance(tool_name, str) and tool_name.strip():
+            return {"tool": tool_name.strip()}
+        return {}
+
+    def _run_data_migration_tool(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        slot: SkillSlotPaths,
+        resolved_manifest: Mapping[str, Any],
+        skill_dir: Path,
+        python_paths: Iterable[str],
+        tool_name: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        tools = resolved_manifest.get("tools") or {}
+        tool_spec = tools.get(tool_name) if isinstance(tools, Mapping) else None
+        if not isinstance(tool_spec, Mapping):
+            raise KeyError(f"data migration tool '{tool_name}' not found in resolved manifest")
+        module = tool_spec.get("module")
+        attr = tool_spec.get("callable") or tool_name
+        extra_paths = [Path(p) for p in python_paths if p]
+
+        ctx = self.ctx
+        previous = ctx.skill_ctx.get()
+        prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+        prev_memory = os.environ.get("ADAOS_SKILL_MEMORY_PATH")
+        prev_internal_root = os.environ.get("ADAOS_SKILL_INTERNAL_DATA_ROOT")
+        prev_internal_active = os.environ.get("ADAOS_SKILL_INTERNAL_ACTIVE_PATH")
+        prev_internal_target = os.environ.get("ADAOS_SKILL_INTERNAL_TARGET_PATH")
+        prev_secrets = ctx.secrets
+        ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
+
+        def _call_tool() -> Any:
+            with use_ctx(ctx):
+                return execute_tool(
+                    skill_dir,
+                    module=module,
+                    attr=attr,
+                    payload=payload,
+                    extra_paths=extra_paths,
+                )
+
+        try:
+            if not ctx.skill_ctx.set(slot.skill_name, skill_dir):
+                raise RuntimeError(f"failed to establish context for skill '{slot.skill_name}'")
+            os.environ["ADAOS_SKILL_ENV_PATH"] = str(slot.skill_env_path)
+            os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(slot.skill_memory_path)
+            os.environ["ADAOS_SKILL_INTERNAL_DATA_ROOT"] = str(env.internal_root())
+            os.environ["ADAOS_SKILL_INTERNAL_ACTIVE_PATH"] = str(payload.get("source_internal_dir") or "")
+            os.environ["ADAOS_SKILL_INTERNAL_TARGET_PATH"] = str(payload.get("target_internal_dir") or "")
+            result = _call_tool()
+        finally:
+            ctx.secrets = prev_secrets
+            if previous is None:
+                ctx.skill_ctx.clear()
+            else:
+                ctx.skill_ctx.set(previous.name, Path(previous.path))
+            if prev_env is None:
+                os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_ENV_PATH"] = prev_env
+            if prev_memory is None:
+                os.environ.pop("ADAOS_SKILL_MEMORY_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_MEMORY_PATH"] = prev_memory
+            if prev_internal_root is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_DATA_ROOT", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_DATA_ROOT"] = prev_internal_root
+            if prev_internal_active is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_ACTIVE_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_ACTIVE_PATH"] = prev_internal_active
+            if prev_internal_target is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_TARGET_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_TARGET_PATH"] = prev_internal_target
+
+        return result if isinstance(result, dict) else {"result": result}
+
+    def _migrate_internal_data(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        slot: SkillSlotPaths,
+        resolved_manifest: Mapping[str, Any],
+        skill_dir: Path,
+        python_paths: Iterable[str],
+    ) -> dict[str, Any]:
+        config = self._data_migration_config(resolved_manifest)
+        source_slot = env.read_active_internal_slot()
+        target_slot = env._internal_slot_name(slot.slot)
+        source_dir = env.internal_root() / source_slot
+        target_dir = slot.internal_data_dir
+        self._remove_tree_contents(target_dir)
+        payload = {
+            "skill": slot.skill_name,
+            "version": str(resolved_manifest.get("version") or ""),
+            "runtime_slot": slot.slot,
+            "source_internal_slot": source_slot,
+            "target_internal_slot": target_slot,
+            "source_internal_dir": str(source_dir),
+            "target_internal_dir": str(target_dir),
+            "data_root": str(env.data_root()),
+            "internal_root": str(env.internal_root()),
+            "source_exists": source_dir.exists(),
+        }
+        tool_name = str(config.get("tool") or "").strip()
+        if tool_name:
+            try:
+                result = self._run_data_migration_tool(
+                    env=env,
+                    slot=slot,
+                    resolved_manifest=resolved_manifest,
+                    skill_dir=skill_dir,
+                    python_paths=python_paths,
+                    tool_name=tool_name,
+                    payload=payload,
+                )
+            except Exception:
+                self._remove_tree_contents(target_dir)
+                raise
+            return {
+                "mode": "tool",
+                "tool": tool_name,
+                "source_internal_slot": source_slot,
+                "target_internal_slot": target_slot,
+                "source_internal_dir": str(source_dir),
+                "target_internal_dir": str(target_dir),
+                "result": result,
+            }
+        copied = self._copy_tree_contents(source_dir, target_dir)
+        return {
+            "mode": "copy",
+            "tool": "",
+            "source_internal_slot": source_slot,
+            "target_internal_slot": target_slot,
+            "source_internal_dir": str(source_dir),
+            "target_internal_dir": str(target_dir),
+            "copied_entries": copied,
+        }
+
     def _persist_skill_env(self, env: SkillRuntimeEnvironment, slot: SkillSlotPaths) -> None:
         source = slot.skill_env_path
         if not source.exists():
@@ -2066,6 +2260,13 @@ class SkillManager:
         if not default_tool and len(tools) == 1:
             default_tool = next(iter(tools))
 
+        data_migration = manifest.get("data_migration") if isinstance(manifest.get("data_migration"), Mapping) else {}
+        data_migration_tool = str(
+            data_migration.get("tool")
+            or manifest.get("data_migration_tool")
+            or ""
+        ).strip()
+
         return {
             "name": manifest.get("name", slot.skill_name),
             "version": manifest.get("version"),
@@ -2083,9 +2284,12 @@ class SkillManager:
                 "python_paths": list(python_paths),
                 "skill_env": str(slot.skill_env_path),
                 "skill_memory": str(slot.skill_memory_path),
+                "internal_data": str(slot.internal_data_dir),
             },
             "tools": tools,
             "default_tool": default_tool,
+            "data_migration_tool": data_migration_tool,
+            "data_migration": dict(data_migration) if data_migration_tool else {},
             "policy": {
                 "timeout_seconds": defaults.timeout_seconds,
                 "retry_count": defaults.retry_count,
@@ -2209,6 +2413,14 @@ class SkillManager:
             policy_overrides=policy_overrides,
             skill_dir=staged_dir,
         )
+        self._write_resolved_manifest(slot, resolved)
+        data_migration = self._migrate_internal_data(
+            env=env,
+            slot=slot,
+            resolved_manifest=resolved,
+            skill_dir=staged_dir,
+            python_paths=python_paths,
+        )
 
         tests: Dict[str, TestResult] = {}
         if run_tests:
@@ -2227,14 +2439,13 @@ class SkillManager:
                 env.cleanup_slot(version, slot_name)
                 raise RuntimeError("skill tests failed")
 
-        self._write_resolved_manifest(slot, resolved)
-
         metadata = env.read_version_metadata(version)
         slots_meta = metadata.setdefault("slots", {})
         slots_meta[slot_name] = {
             "resolved_manifest": str(slot.resolved_manifest),
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "tests": {name: result.status for name, result in tests.items()},
+            "data_migration": dict(data_migration),
         }
         metadata["version"] = version
         history = metadata.setdefault("history", {})
@@ -2250,6 +2461,7 @@ class SkillManager:
             slot=slot_name,
             resolved_manifest=slot.resolved_manifest,
             tests=tests,
+            data_migration=dict(data_migration),
         )
 
     def activate_dev_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
@@ -2289,6 +2501,7 @@ class SkillManager:
                 raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
 
         env.set_active_slot(target_version, target_slot)
+        env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot

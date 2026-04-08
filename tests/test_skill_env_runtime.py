@@ -30,6 +30,23 @@ def test_slot_skill_env_uses_shared_runtime_store() -> None:
     assert slot.skill_memory_path == slot.skill_env_path
     assert slot.legacy_skill_env_path == slot.runtime_dir / ".skill_env.json"
     assert slot.legacy_skill_memory_path == slot.runtime_dir / ".skill_memory.json"
+    assert slot.internal_data_dir == env.internal_slot_dir("A")
+
+
+def test_internal_data_slots_have_active_and_previous_markers() -> None:
+    ctx = get_ctx()
+    skills_root = Path(ctx.paths.skills_dir())
+    env = SkillRuntimeEnvironment(skills_root=skills_root, skill_name="internal_data_skill")
+    env.prepare_version("1.0.0")
+
+    assert env.read_active_internal_slot() == "a"
+    assert env.internal_slot_dir("A").exists()
+    assert env.internal_slot_dir("B").exists()
+
+    env.set_active_internal_slot("B")
+    assert env.read_active_internal_slot() == "b"
+    assert env.rollback_internal_slot() == "a"
+    assert env.read_active_internal_slot() == "a"
 
 
 def test_sync_skill_env_merges_template_legacy_and_store(tmp_path: Path, monkeypatch) -> None:
@@ -195,3 +212,146 @@ def test_run_dev_tool_respects_timeout(monkeypatch, tmp_path: Path) -> None:
         assert "timed out" in str(exc)
     else:  # pragma: no cover - regression guard
         raise AssertionError("expected run_dev_tool() to respect timeout_seconds")
+
+
+def test_prepare_runtime_copies_internal_data_without_custom_tool(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "copy_data_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: copy_data_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+    env.prepare_version("1.0.0")
+    env.internal_slot_dir("A").mkdir(parents=True, exist_ok=True)
+    (env.internal_slot_dir("A") / "state.json").write_text('{"value": 1}', encoding="utf-8")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": "B",
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {"skill_env": str(kwargs["slot"].skill_env_path), "skill_memory": str(kwargs["slot"].skill_memory_path)},
+            "tools": {},
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+
+    result = mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="B")
+
+    assert result.data_migration is not None
+    assert result.data_migration["mode"] == "copy"
+    assert result.data_migration["copied_entries"] == 1
+    assert (env.internal_slot_dir("B") / "state.json").read_text(encoding="utf-8") == '{"value": 1}'
+
+
+def test_prepare_runtime_runs_custom_internal_data_migration_tool(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "migrate_data_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (
+        skill_dir / "skill.yaml"
+    ).write_text(
+        "name: migrate_data_skill\nversion: '1.0.0'\ndata_migration_tool: migrate_data\n",
+        encoding="utf-8",
+    )
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+    env.prepare_version("1.0.0")
+    (env.internal_slot_dir("A") / "old.txt").write_text("legacy", encoding="utf-8")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": "B",
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {"skill_env": str(kwargs["slot"].skill_env_path), "skill_memory": str(kwargs["slot"].skill_memory_path)},
+            "tools": {
+                "migrate_data": {
+                    "module": "skills.migrate_data_skill.handlers.main",
+                    "callable": "migrate_data",
+                }
+            },
+            "default_tool": "",
+            "data_migration_tool": "migrate_data",
+            "data_migration": {"tool": "migrate_data"},
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_execute_tool(skill_dir_arg, *, module=None, attr=None, payload=None, extra_paths=None):
+        captured["module"] = module
+        captured["attr"] = attr
+        captured["payload"] = dict(payload or {})
+        target = Path(str(payload["target_internal_dir"]))
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "migrated.txt").write_text("ok", encoding="utf-8")
+        return {"ok": True, "migrated": True}
+
+    monkeypatch.setattr(skill_manager_module, "execute_tool", _fake_execute_tool)
+
+    result = mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="B")
+
+    assert result.data_migration is not None
+    assert result.data_migration["mode"] == "tool"
+    assert result.data_migration["tool"] == "migrate_data"
+    assert captured["attr"] == "migrate_data"
+    assert (env.internal_slot_dir("B") / "migrated.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_activate_and_rollback_runtime_switch_internal_data_slot(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "internal_switch_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: internal_switch_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+    env.prepare_version("1.0.0")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": "B",
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {"skill_env": str(kwargs["slot"].skill_env_path), "skill_memory": str(kwargs["slot"].skill_memory_path)},
+            "tools": {},
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="B")
+    assert env.read_active_internal_slot() == "a"
+
+    mgr.activate_runtime(skill_name, version="1.0.0", slot="B")
+    assert env.read_active_internal_slot() == "b"
+
+    restored = mgr.rollback_runtime(skill_name)
+    assert restored == "A"
+    assert env.read_active_internal_slot() == "a"

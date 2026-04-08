@@ -30,6 +30,11 @@ skills/.runtime/<name>/<version>/
 data/
     db/                           # persistent structured skill state
     files/                        # physical file artifacts/blobs
+    internal/
+        a/                        # optional migratable internal data slot
+        b/                        # optional migratable internal data slot
+        active                    # current internal data slot marker
+        previous                  # previous internal data slot marker
 ```
 
 The module also provides a thin result object :class:`SkillSlotPaths` with
@@ -66,6 +71,7 @@ class SkillSlotPaths:
     resolved_manifest: Path
     data_root: Path
     files_dir: Path
+    internal_data_dir: Path
 
     @property
     def skill_env_path(self) -> Path:
@@ -122,6 +128,59 @@ class SkillRuntimeEnvironment:
     def db_dir(self) -> Path:
         return self._data_root / "db"
 
+    def internal_root(self) -> Path:
+        return self._data_root / "internal"
+
+    def _internal_slot_name(self, slot: str) -> str:
+        token = str(slot or "").strip().upper()
+        if token not in _SLOT_NAMES:
+            raise ValueError(f"invalid slot '{slot}'")
+        return token.lower()
+
+    def internal_slot_dir(self, slot: str) -> Path:
+        return self.internal_root() / self._internal_slot_name(slot)
+
+    def internal_active_marker(self) -> Path:
+        return self.internal_root() / "active"
+
+    def internal_previous_marker(self) -> Path:
+        return self.internal_root() / "previous"
+
+    def read_active_internal_slot(self) -> str:
+        marker = self.internal_active_marker()
+        if marker.exists():
+            value = marker.read_text(encoding="utf-8").strip().lower()
+            if value in {"a", "b"}:
+                return value
+        return "a"
+
+    def set_active_internal_slot(self, slot: str) -> str:
+        selected = self._internal_slot_name(slot)
+        marker = self.internal_active_marker()
+        previous = None
+        if marker.exists():
+            previous = marker.read_text(encoding="utf-8").strip().lower()
+        tmp_path = marker.with_suffix(".tmp")
+        tmp_path.write_text(selected, encoding="utf-8")
+        os.replace(tmp_path, marker)
+        prev_marker = self.internal_previous_marker()
+        if previous and previous != selected:
+            prev_marker.write_text(previous, encoding="utf-8")
+        return selected
+
+    def rollback_internal_slot(self) -> str:
+        current = self.read_active_internal_slot()
+        prev_marker = self.internal_previous_marker()
+        if not prev_marker.exists():
+            raise RuntimeError("no previous internal slot recorded for rollback")
+        previous = prev_marker.read_text(encoding="utf-8").strip().lower()
+        if previous not in {"a", "b"}:
+            raise RuntimeError("previous internal slot marker is corrupted")
+        if previous == current:
+            raise RuntimeError("previous internal slot matches current; nothing to rollback")
+        self.set_active_internal_slot(previous.upper())
+        return previous
+
     def skill_env_store_path(self) -> Path:
         return self.db_dir() / "skill_env.json"
 
@@ -170,8 +229,13 @@ class SkillRuntimeEnvironment:
             self._data_root,
             self._data_root / "db",
             self._data_root / "files",
+            self.internal_root(),
+            self.internal_root() / "a",
+            self.internal_root() / "b",
         ):
             path.mkdir(parents=True, exist_ok=True)
+        if not self.internal_active_marker().exists():
+            self.internal_active_marker().write_text("a", encoding="utf-8")
 
     def prepare_version(self, version: str, *, activate_slot: Optional[str] = None) -> None:
         """Make sure that version layout exists.
@@ -272,6 +336,7 @@ class SkillRuntimeEnvironment:
             resolved_manifest=slot_root / "resolved.manifest.json",
             data_root=self._data_root,
             files_dir=self.files_dir(),
+            internal_data_dir=self.internal_slot_dir(slot),
         )
 
     def read_active_slot(self, version: str) -> str:
