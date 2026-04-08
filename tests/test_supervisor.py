@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from adaos.apps import supervisor
 from adaos.services.core_update import read_plan, read_status, write_plan, write_status
 
@@ -69,3 +71,74 @@ def test_reconcile_update_status_completes_attempt_on_terminal_status(monkeypatc
     assert isinstance(attempt, dict)
     assert attempt["state"] == "completed"
     assert attempt["last_status"]["state"] == "succeeded"
+
+
+def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _exercise() -> None:
+        result = await manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+        assert result["accepted"] is True
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["state"] == "active"
+        assert attempt["action"] == "update"
+        cancelled = await manager.cancel_update(reason="test.cancel")
+        assert cancelled["accepted"] is True
+        assert cancelled["status"]["state"] == "cancelled"
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["state"] == "cancelled"
+
+    asyncio.run(_exercise())
+
+
+def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    shutdown_calls: list[dict] = []
+
+    async def _fake_sleep(_value: float) -> None:
+        return None
+
+    async def _fake_shutdown(*, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict:
+        shutdown_calls.append(
+            {
+                "reason": reason,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+            }
+        )
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _fake_shutdown)
+
+    asyncio.run(
+        manager._countdown_update_worker(
+            action="rollback",
+            target_rev="",
+            target_version="",
+            reason="test.rollback",
+            countdown_sec=0.0,
+            drain_timeout_sec=5.0,
+            signal_delay_sec=0.1,
+        )
+    )
+
+    plan = read_plan()
+    status = read_status()
+    assert isinstance(plan, dict)
+    assert plan["action"] == "rollback"
+    assert status["state"] == "restarting"
+    assert status["phase"] == "shutdown"
+    assert shutdown_calls and shutdown_calls[0]["reason"] == "test.rollback"

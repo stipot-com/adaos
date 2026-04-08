@@ -25,6 +25,7 @@ from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.runtime_paths import current_base_dir
 
@@ -246,6 +247,7 @@ class SupervisorManager:
         self._last_exit_at: float | None = None
         self._last_exit_code: int | None = None
         self._last_error: str | None = None
+        self._update_task: asyncio.Task[Any] | None = None
 
     @property
     def runtime_base_url(self) -> str:
@@ -326,6 +328,7 @@ class SupervisorManager:
 
     async def ensure_started(self) -> None:
         async with self._lock:
+            self._stopping = False
             self._desired_running = True
             await self._spawn_runtime_locked()
 
@@ -409,6 +412,11 @@ class SupervisorManager:
 
     async def close(self) -> None:
         self._stopping = True
+        if self._update_task is not None:
+            self._update_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._update_task
+            self._update_task = None
         if self._monitor_task is not None:
             self._monitor_task.cancel()
             with contextlib.suppress(BaseException):
@@ -419,6 +427,7 @@ class SupervisorManager:
         payload = self._runtime_state_payload()
         payload["persisted_state"] = _read_json(_supervisor_runtime_state_path())
         payload["update_attempt"] = _read_update_attempt()
+        payload["update_task_running"] = bool(self._update_task is not None and not self._update_task.done())
         return payload
 
     def supervisor_update_status(self) -> dict[str, Any]:
@@ -443,6 +452,211 @@ class SupervisorManager:
         payload["runtime"] = self.status()
         payload["_served_by"] = "supervisor_fallback"
         return _reconcile_update_status(payload)
+
+    async def _request_runtime_shutdown(self, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict[str, Any]:
+        async with self._lock:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._desired_running = True
+                self._persist_runtime_state()
+                return {"ok": True, "accepted": False, "reason": "runtime not running"}
+            try:
+                headers = {"Content-Type": "application/json"}
+                if self.token:
+                    headers["X-AdaOS-Token"] = self.token
+                response = requests.post(
+                    self.runtime_base_url + "/api/admin/shutdown",
+                    headers=headers,
+                    json={
+                        "reason": reason,
+                        "drain_timeout_sec": float(drain_timeout_sec),
+                        "signal_delay_sec": float(signal_delay_sec),
+                    },
+                    timeout=5.0,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+            except Exception as exc:
+                self._last_error = f"shutdown request failed: {type(exc).__name__}: {exc}"
+                self._persist_runtime_state()
+                raise HTTPException(status_code=503, detail=f"runtime shutdown API unavailable: {type(exc).__name__}: {exc}") from exc
+
+    async def _countdown_update_worker(
+        self,
+        *,
+        action: str,
+        target_rev: str,
+        target_version: str,
+        reason: str,
+        countdown_sec: float,
+        drain_timeout_sec: float,
+        signal_delay_sec: float,
+    ) -> None:
+        started_at = time.time()
+        write_core_update_status(
+            {
+                "state": "countdown",
+                "phase": "countdown",
+                "action": action,
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "countdown_sec": countdown_sec,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+                "started_at": started_at,
+                "scheduled_for": started_at + countdown_sec,
+            }
+        )
+        try:
+            await asyncio.sleep(max(0.0, float(countdown_sec)))
+            plan = {
+                "state": "pending_restart",
+                "action": action,
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "created_at": time.time(),
+                "expires_at": time.time() + 1800.0,
+            }
+            write_core_update_plan(plan)
+            write_core_update_status(
+                {
+                    "state": "restarting",
+                    "phase": "shutdown",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "message": "countdown completed; pending update written",
+                }
+            )
+            await self._request_runtime_shutdown(
+                reason=reason,
+                drain_timeout_sec=drain_timeout_sec,
+                signal_delay_sec=signal_delay_sec,
+            )
+        except asyncio.CancelledError:
+            clear_core_update_plan()
+            status = write_core_update_status(
+                {
+                    "state": "cancelled",
+                    "phase": "countdown",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "message": "core update cancelled",
+                }
+            )
+            _complete_update_attempt(state="cancelled", status=status, reason=reason)
+            raise
+        finally:
+            if self._update_task is not None and self._update_task.done():
+                self._update_task = None
+
+    async def start_update(
+        self,
+        *,
+        action: str,
+        target_rev: str,
+        target_version: str,
+        reason: str,
+        countdown_sec: float,
+        drain_timeout_sec: float,
+        signal_delay_sec: float,
+    ) -> dict[str, Any]:
+        existing = self._update_task
+        if existing is not None and not existing.done():
+            return {"ok": True, "accepted": False, "status": read_core_update_status()}
+
+        current_status = read_core_update_status()
+        if str(current_status.get("state") or "").strip().lower() in {"restarting", "applying"}:
+            return {"ok": True, "accepted": False, "status": current_status}
+
+        clear_core_update_plan()
+        status = write_core_update_status(
+            {
+                "state": "countdown",
+                "phase": "countdown",
+                "action": action,
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "countdown_sec": float(countdown_sec),
+                "drain_timeout_sec": float(drain_timeout_sec),
+                "signal_delay_sec": float(signal_delay_sec),
+                "started_at": time.time(),
+                "scheduled_for": time.time() + float(countdown_sec),
+            }
+        )
+        _write_update_attempt(
+            _build_attempt_payload(
+                action=action,
+                request={
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "countdown_sec": countdown_sec,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                },
+                status=status,
+                accepted=True,
+            )
+        )
+        self._update_task = asyncio.create_task(
+            self._countdown_update_worker(
+                action=action,
+                target_rev=target_rev,
+                target_version=target_version,
+                reason=reason,
+                countdown_sec=float(countdown_sec),
+                drain_timeout_sec=float(drain_timeout_sec),
+                signal_delay_sec=float(signal_delay_sec),
+            ),
+            name=f"adaos-supervisor-core-update-{action}",
+        )
+        return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+
+    async def cancel_update(self, *, reason: str) -> dict[str, Any]:
+        task = self._update_task
+        clear_core_update_plan()
+        if task is None or task.done():
+            status = write_core_update_status(
+                {
+                    "state": "cancelled",
+                    "phase": "countdown",
+                    "message": "no pending countdown task",
+                    "reason": reason,
+                }
+            )
+            _complete_update_attempt(state="cancelled", status=status, reason=reason)
+            self._update_task = None
+            return {"ok": True, "accepted": False, "status": status, "_served_by": "supervisor"}
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        self._update_task = None
+        status = write_core_update_status(
+            {
+                "state": "cancelled",
+                "phase": "countdown",
+                "action": str((read_core_update_status() or {}).get("action") or "update"),
+                "message": "core update cancelled by request",
+                "reason": reason,
+                "drain_timeout_sec": float((read_core_update_status() or {}).get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float((read_core_update_status() or {}).get("signal_delay_sec") or 0.25),
+            }
+        )
+        _complete_update_attempt(state="cancelled", status=status, reason=reason)
+        return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
 
     def proxy_update_post(self, path: str, *, body: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
@@ -535,17 +749,33 @@ async def supervisor_update_status() -> dict[str, Any]:
 
 @app.post("/api/supervisor/update/start", dependencies=[Depends(require_token)])
 async def supervisor_update_start(payload: dict[str, Any]) -> dict[str, Any]:
-    return _manager().proxy_update_post("/api/admin/update/start", body=payload)
+    return await _manager().start_update(
+        action="update",
+        target_rev=str(payload.get("target_rev") or ""),
+        target_version=str(payload.get("target_version") or ""),
+        reason=str(payload.get("reason") or "core.update"),
+        countdown_sec=float(payload.get("countdown_sec") or 60.0),
+        drain_timeout_sec=float(payload.get("drain_timeout_sec") or 10.0),
+        signal_delay_sec=float(payload.get("signal_delay_sec") or 0.25),
+    )
 
 
 @app.post("/api/supervisor/update/cancel", dependencies=[Depends(require_token)])
 async def supervisor_update_cancel(payload: dict[str, Any]) -> dict[str, Any]:
-    return _manager().proxy_update_post("/api/admin/update/cancel", body=payload)
+    return await _manager().cancel_update(reason=str(payload.get("reason") or "user.cancelled"))
 
 
 @app.post("/api/supervisor/update/rollback", dependencies=[Depends(require_token)])
 async def supervisor_update_rollback(payload: dict[str, Any]) -> dict[str, Any]:
-    return _manager().proxy_update_post("/api/admin/update/rollback", body=payload)
+    return await _manager().start_update(
+        action="rollback",
+        target_rev="",
+        target_version="",
+        reason=str(payload.get("reason") or "core.rollback"),
+        countdown_sec=float(payload.get("countdown_sec") or 0.0),
+        drain_timeout_sec=float(payload.get("drain_timeout_sec") or 10.0),
+        signal_delay_sec=float(payload.get("signal_delay_sec") or 0.25),
+    )
 
 
 def main() -> None:
