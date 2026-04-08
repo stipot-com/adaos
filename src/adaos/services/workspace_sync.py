@@ -6,7 +6,7 @@ from typing import Any
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.adapters.git.workspace import SparseWorkspace
 from adaos.services.git.workspace_guard import ensure_clean
-from adaos.services.workspace_registry import registry_pattern_set, rebuild_workspace_registry, write_workspace_registry
+from adaos.services.workspace_registry import registry_pattern_set, rebuild_workspace_registry
 
 
 def installed_names(rows: list[object]) -> list[str]:
@@ -63,7 +63,6 @@ def effective_registry_names(ctx, registry_names: list[str], workspace_root: Pat
 def reconcile_workspace_db_to_materialized(ctx) -> dict[str, Any]:
     workspace_root = Path(ctx.paths.workspace_dir())
     payload = rebuild_workspace_registry(workspace_root)
-    write_workspace_registry(workspace_root, payload)
 
     skill_entries = payload.get("skills") if isinstance(payload.get("skills"), list) else []
     scenario_entries = payload.get("scenarios") if isinstance(payload.get("scenarios"), list) else []
