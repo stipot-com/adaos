@@ -6,7 +6,7 @@ from typing import Any
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.adapters.git.workspace import SparseWorkspace
 from adaos.services.git.workspace_guard import ensure_clean
-from adaos.services.workspace_registry import registry_pattern_set
+from adaos.services.workspace_registry import registry_pattern_set, rebuild_workspace_registry, write_workspace_registry
 
 
 def installed_names(rows: list[object]) -> list[str]:
@@ -58,6 +58,60 @@ def effective_registry_names(ctx, registry_names: list[str], workspace_root: Pat
     if fallback:
         return fallback, True
     return [], False
+
+
+def reconcile_workspace_db_to_materialized(ctx) -> dict[str, Any]:
+    workspace_root = Path(ctx.paths.workspace_dir())
+    payload = rebuild_workspace_registry(workspace_root)
+    write_workspace_registry(workspace_root, payload)
+
+    skill_entries = payload.get("skills") if isinstance(payload.get("skills"), list) else []
+    scenario_entries = payload.get("scenarios") if isinstance(payload.get("scenarios"), list) else []
+
+    skill_registry = SqliteSkillRegistry(ctx.sql)
+    scenario_registry = SqliteScenarioRegistry(ctx.sql)
+
+    current_skills = {str(row.name or "").strip(): row for row in skill_registry.list() if str(getattr(row, "name", "") or "").strip()}
+    current_scenarios = {
+        str(row.name or "").strip(): row
+        for row in scenario_registry.list()
+        if str(getattr(row, "name", "") or "").strip()
+    }
+
+    materialized_skills: dict[str, dict[str, Any]] = {}
+    for entry in skill_entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("id") or "").strip()
+        if name:
+            materialized_skills[name] = dict(entry)
+
+    materialized_scenarios: dict[str, dict[str, Any]] = {}
+    for entry in scenario_entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("id") or "").strip()
+        if name:
+            materialized_scenarios[name] = dict(entry)
+
+    for name, entry in materialized_skills.items():
+        skill_registry.register(name, active_version=str(entry.get("version") or "").strip() or None)
+    for name in sorted(set(current_skills) - set(materialized_skills)):
+        skill_registry.unregister(name)
+
+    for name, entry in materialized_scenarios.items():
+        scenario_registry.register(name, active_version=str(entry.get("version") or "").strip() or None)
+    for name in sorted(set(current_scenarios) - set(materialized_scenarios)):
+        scenario_registry.unregister(name)
+
+    return {
+        "ok": True,
+        "skills": sorted(materialized_skills),
+        "scenarios": sorted(materialized_scenarios),
+        "skills_removed": sorted(set(current_skills) - set(materialized_skills)),
+        "scenarios_removed": sorted(set(current_scenarios) - set(materialized_scenarios)),
+        "registry_updated_at": payload.get("updated_at"),
+    }
 
 
 def sync_workspace_sparse_to_registry(ctx) -> dict[str, Any]:
@@ -145,6 +199,7 @@ def sync_workspace_sparse_to_registry(ctx) -> dict[str, Any]:
 __all__ = [
     "effective_registry_names",
     "installed_names",
+    "reconcile_workspace_db_to_materialized",
     "sync_workspace_sparse_to_registry",
     "workspace_kind_names",
 ]

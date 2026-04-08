@@ -127,6 +127,10 @@ adaos hub root watch
 adaos hub root reconnect
 adaos hub root reconnect --transport ws|tcp
 
+adaos autostart inspect
+adaos autostart inspect --json
+adaos autostart inspect --sample-sec 0.5
+
 # Boot debug 
 # https://myinimatic.web.app/?boot_debug=1
 

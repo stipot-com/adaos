@@ -82,6 +82,7 @@ def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypat
 
 def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     captured: list[str] = []
+    published: list[tuple[str, str, str | None]] = []
 
     async def _fake_go_home(webspace_id: str, *, wait_for_rebuild: bool = True) -> dict[str, object]:
         captured.append((webspace_id, wait_for_rebuild))
@@ -90,12 +91,42 @@ def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
     monkeypatch.setattr(node_api_module, "go_home_webspace", _fake_go_home)
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "_publish_yjs_control_event",
+        lambda action, webspace_id, result, scenario_id=None: published.append((action, webspace_id, scenario_id)),
+    )
 
     result = asyncio.run(node_api_module.node_yjs_go_home("phase2-home"))
 
     assert captured == [("phase2-home", False)]
     assert result["scenario_id"] == "prompt_engineer_scenario"
     assert result["runtime"]["webspace_id"] == "phase2-home"
+    assert published == [("go_home", "phase2-home", "prompt_engineer_scenario")]
+
+
+def test_node_yjs_set_home_current_publishes_correct_action(monkeypatch) -> None:
+    published: list[tuple[str, str, str | None]] = []
+    async def _fake_set_current(webspace_id: str) -> dict[str, object]:
+        return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": "web_desktop"}
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "set_current_webspace_home",
+        _fake_set_current,
+    )
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "_publish_yjs_control_event",
+        lambda action, webspace_id, result, scenario_id=None: published.append((action, webspace_id, scenario_id)),
+    )
+
+    result = asyncio.run(node_api_module.node_yjs_set_home_current("phase2-home"))
+
+    assert result["ok"] is True
+    assert published == [("set_home_current", "phase2-home", "web_desktop")]
 
 
 def test_node_yjs_toggle_install_endpoint_uses_desktop_service(monkeypatch) -> None:

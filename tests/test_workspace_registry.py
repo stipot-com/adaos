@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
+from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
+from adaos.services.workspace_sync import reconcile_workspace_db_to_materialized
 from adaos.services.workspace_registry import (
     list_workspace_registry_entries,
     rebuild_workspace_registry,
@@ -148,3 +152,44 @@ def test_registry_pattern_set_keeps_registry_json_first():
     patterns = registry_pattern_set(["skills/weather_skill", "registry.json", "scenarios/greet_on_boot"])
     assert patterns[0] == "registry.json"
     assert patterns.count("registry.json") == 1
+
+
+class _Sql:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def connect(self):
+        return sqlite3.connect(self.path)
+
+
+def test_reconcile_workspace_db_to_materialized_updates_sqlite(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "weather_skill"
+    scenario_dir = workspace / "scenarios" / "greet_on_boot"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text("id: weather_skill\nversion: '1.2.3'\n", encoding="utf-8")
+    (scenario_dir / "scenario.yaml").write_text("id: greet_on_boot\nversion: '0.4.0'\n", encoding="utf-8")
+
+    sql = _Sql(tmp_path / "adaos.db")
+    skill_registry = SqliteSkillRegistry(sql)
+    scenario_registry = SqliteScenarioRegistry(sql)
+    skill_registry.register("ghost_skill", active_version="9.9.9")
+    scenario_registry.register("ghost_scene", active_version="8.8.8")
+
+    ctx = SimpleNamespace(paths=SimpleNamespace(workspace_dir=lambda: workspace), sql=sql)
+
+    result = reconcile_workspace_db_to_materialized(ctx)
+
+    assert result["ok"] is True
+    assert result["skills"] == ["weather_skill"]
+    assert result["scenarios"] == ["greet_on_boot"]
+    assert result["skills_removed"] == ["ghost_skill"]
+    assert result["scenarios_removed"] == ["ghost_scene"]
+
+    skill_rows = {row.name: row for row in skill_registry.list()}
+    scenario_rows = {row.name: row for row in scenario_registry.list()}
+    assert list(skill_rows) == ["weather_skill"]
+    assert skill_rows["weather_skill"].active_version == "1.2.3"
+    assert list(scenario_rows) == ["greet_on_boot"]
+    assert scenario_rows["greet_on_boot"].active_version == "0.4.0"

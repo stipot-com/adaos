@@ -1104,10 +1104,10 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
         webspace_id=str(webspace_id or "default") or "default",
     )
     _publish_yjs_control_event(
-        action="set_home",
+        action="go_home",
         webspace_id=str(webspace_id or "default") or "default",
         result=result,
-        scenario_id=scenario_id,
+        scenario_id=str(result.get("scenario_id") or result.get("home_scenario") or "").strip() or None,
     )
     return result
 
@@ -1187,9 +1187,10 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
         webspace_id=str(webspace_id or "default") or "default",
     )
     _publish_yjs_control_event(
-        action="set_home_current",
+        action="set_home",
         webspace_id=str(webspace_id or "default") or "default",
         result=result,
+        scenario_id=scenario_id,
     )
     return result
 
@@ -1210,10 +1211,10 @@ async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
         webspace_id=str(webspace_id or "default") or "default",
     )
     _publish_yjs_control_event(
-        action="reload",
+        action="set_home_current",
         webspace_id=str(webspace_id or "default") or "default",
         result=result,
-        scenario_id=str(payload.scenario_id or "").strip() or None,
+        scenario_id=str(result.get("scenario_id") or result.get("home_scenario") or "").strip() or None,
     )
     return result
 

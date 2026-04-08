@@ -869,6 +869,13 @@ class BootstrapService:
                     t.start()
         except Exception:
             pass
+        try:
+            from adaos.services.agent_context import get_ctx as _get_ctx
+            from adaos.services.workspace_sync import reconcile_workspace_db_to_materialized as _reconcile_workspace_db_to_materialized
+
+            _reconcile_workspace_db_to_materialized(_get_ctx())
+        except Exception:
+            self._log.debug("failed to reconcile workspace sqlite registry on boot", exc_info=True)
         if conf.role == "hub":
             await bus.emit("net.subnet.hub.ready", {"subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
 
