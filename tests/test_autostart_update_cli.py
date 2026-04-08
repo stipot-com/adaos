@@ -248,9 +248,75 @@ def test_autostart_inspect_renders_hot_children_and_services(monkeypatch) -> Non
 
     assert result.exit_code == 0, result.output
     assert "autostart: enabled=True active=True listening=True" in result.output
-    assert "process: pid=3210 kind=autostart_runner status=running cpu=12.5%" in result.output
+    assert "runtime: pid=3210 kind=autostart_runner status=running cpu=12.5%" in result.output
     assert "pid=4001 kind=skill_runtime cpu=97.2%" in result.output
     assert "weather: running pid=4001 http://127.0.0.1:9123 health=ok" in result.output
+
+
+def test_autostart_inspect_renders_service_and_supervisor_sections(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_collect_autostart_inspect",
+        lambda sample_sec=0.2, token=None: {
+            "autostart": {
+                "enabled": True,
+                "active": True,
+                "listening": False,
+                "url": "http://127.0.0.1:8777",
+            },
+            "bind": {"host": "127.0.0.1", "port": 8777},
+            "service_process": {
+                "pid": 11939,
+                "root": {
+                    "pid": 11939,
+                    "kind": "supervisor",
+                    "status": "sleeping",
+                    "cpu_percent": 0.0,
+                    "rss_bytes": 32 * 1024 * 1024,
+                    "threads": 4,
+                    "age_sec": 20,
+                    "cmdline_text": "python -m adaos.apps.supervisor --host 127.0.0.1 --port 8777",
+                },
+            },
+            "supervisor": {
+                "url": "http://127.0.0.1:8776",
+                "reachable": True,
+                "process": {
+                    "pid": 11939,
+                    "kind": "supervisor",
+                    "status": "sleeping",
+                    "cpu_percent": 0.0,
+                    "rss_bytes": 32 * 1024 * 1024,
+                    "threads": 4,
+                    "age_sec": 20,
+                    "cmdline_text": "python -m adaos.apps.supervisor --host 127.0.0.1 --port 8777",
+                },
+            },
+            "runtime_process": {
+                "pid": 11941,
+                "root": {
+                    "pid": 11941,
+                    "kind": "autostart_runner",
+                    "status": "running",
+                    "cpu_percent": 18.5,
+                    "rss_bytes": 64 * 1024 * 1024,
+                    "threads": 7,
+                    "age_sec": 11,
+                    "cmdline_text": "python -m adaos.apps.autostart_runner --host 127.0.0.1 --port 8777",
+                },
+                "top_children": [],
+            },
+            "services": [],
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["inspect"])
+
+    assert result.exit_code == 0, result.output
+    assert "service: pid=11939 kind=supervisor" in result.output
+    assert "supervisor: url=http://127.0.0.1:8776 reachable=True" in result.output
+    assert "runtime: pid=11941 kind=autostart_runner" in result.output
 
 
 def test_autostart_inspect_json_outputs_payload(monkeypatch) -> None:

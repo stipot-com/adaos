@@ -414,11 +414,26 @@ def _discover_live_control_bind(configured_host: str, configured_port: int) -> t
         if (host, port) == (configured_host, configured_port) and _tcp_probe(host, port):
             return host, port
     return None
+
+
+def _linux_service_main_pid(scope: str) -> int | None:
+    if not shutil_which("systemctl"):
+        return None
+    cmd = ["systemctl", "show", "-p", "MainPID", "--value", _linux_service_name()]
+    if str(scope or "").strip().lower() == "user":
+        if not _linux_systemctl_user_available():
+            return None
+        cmd = ["systemctl", "--user", "show", "-p", "MainPID", "--value", _linux_service_name()]
+    elif not (_linux_is_root() and _linux_has_systemd_pid1()):
+        return None
     try:
-        with socket.create_connection((host, port_i), timeout=timeout):
-            return True
+        proc = _run(cmd)
+        if proc.returncode != 0:
+            return None
+        value = int(str(proc.stdout or "").strip() or "0")
     except Exception:
-        return False
+        return None
+    return value if value > 0 else None
 
 
 def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
@@ -1148,6 +1163,9 @@ def status(ctx: AgentContext) -> dict:
             "system_service": str(system_service_path),
             "wrapper": str(wrapper),
         }
+        main_pid = _linux_service_main_pid(scope) if active else None
+        if main_pid is not None:
+            payload["service_main_pid"] = main_pid
         if wrapper_env:
             payload["wrapper_env"] = wrapper_env
             wrapper_base_dir = str(wrapper_env.get("ADAOS_BASE_DIR") or "").strip()

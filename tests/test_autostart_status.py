@@ -185,3 +185,40 @@ def test_linux_status_reports_last_runner_status(monkeypatch, tmp_path: Path) ->
 
     assert status["core_update_status"]["state"] == "failed"
     assert status["core_update_status"]["phase"] == "uvicorn.run"
+
+
+def test_linux_status_reports_service_main_pid(monkeypatch, tmp_path: Path) -> None:
+    user_home = tmp_path / "home"
+    system_service = tmp_path / "etc" / "systemd" / "system" / "adaos.service"
+    wrapper = tmp_path / "system-wrapper.sh"
+
+    system_service.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text("exec python --host 127.0.0.1 --port 8777\n", encoding="utf-8")
+    system_service.write_text(f"[Service]\nExecStart={wrapper}\n", encoding="utf-8")
+
+    class _Proc:
+        def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    def _run(cmd: list[str]):
+        if cmd[:3] == ["systemctl", "show", "-p"]:
+            return _Proc(0, "1234\n")
+        return _Proc(0, "")
+
+    monkeypatch.setattr(autostart, "_is_windows", lambda: False)
+    monkeypatch.setattr(autostart, "_is_linux", lambda: True)
+    monkeypatch.setattr(autostart, "_is_macos", lambda: False)
+    monkeypatch.setattr(autostart, "_home", lambda: user_home)
+    monkeypatch.setattr(autostart, "_linux_service_path_system", lambda: system_service.resolve())
+    monkeypatch.setattr(autostart, "_linux_is_root", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_has_systemd_pid1", lambda: True)
+    monkeypatch.setattr(autostart, "_linux_user_bus_path", lambda: tmp_path / "bus")
+    monkeypatch.setattr(autostart, "shutil_which", lambda cmd: "/bin/systemctl" if cmd == "systemctl" else None)
+    monkeypatch.setattr(autostart, "_run", _run)
+    monkeypatch.setattr(autostart, "_discover_live_control_bind", lambda host, port: (host, port))
+
+    status = autostart.status(_FakeCtx(tmp_path / "base"))
+
+    assert status["service_main_pid"] == 1234

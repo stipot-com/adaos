@@ -655,6 +655,8 @@ def _classify_process(proc: psutil.Process) -> str:
     cmdline = [part.lower() for part in _safe_proc_cmdline(proc)]
     joined = " ".join(cmdline)
     name = _safe_proc_name(proc).lower()
+    if "adaos.apps.supervisor" in joined:
+        return "supervisor"
     if "adaos.apps.autostart_runner" in joined:
         return "autostart_runner"
     if "adaos" in joined and "api" in joined and "serve" in joined:
@@ -668,6 +670,19 @@ def _classify_process(proc: psutil.Process) -> str:
     if "python" in name or "python" in joined:
         return "python"
     return name or "process"
+
+
+def _probe_http_json(base_url: str, path: str, *, token: Optional[str] = None, timeout: float = 1.0) -> dict | None:
+    try:
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["X-AdaOS-Token"] = str(token)
+        response = requests.get(base_url.rstrip("/") + path, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
 
 
 def _proc_snapshot(proc: psutil.Process, *, now: float) -> dict:
@@ -782,6 +797,61 @@ def _collect_autostart_inspect(*, sample_sec: float = 0.2, token: Optional[str] 
     if bind is not None:
         target_pid = _select_autostart_target_pid(status, bind[0], bind[1])
 
+    supervisor_payload: dict | None = None
+    supervisor_base = str(status.get("supervisor_url") or "").strip()
+    if supervisor_base:
+        supervisor_ping = _probe_http_json(supervisor_base, "/api/ping", token=token, timeout=1.0)
+        supervisor_status = _probe_http_json(supervisor_base, "/api/supervisor/status", token=token, timeout=1.5)
+        supervisor_pid = None
+        if isinstance(supervisor_status, dict):
+            try:
+                supervisor_pid = int(supervisor_status.get("supervisor_pid") or 0) or None
+            except Exception:
+                supervisor_pid = None
+        supervisor_proc = None
+        if supervisor_pid is not None:
+            try:
+                proc = psutil.Process(supervisor_pid)
+                _prime_cpu_metrics(proc, include_children=False)
+                sleep_s = max(0.0, min(float(sample_sec), 2.0))
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                supervisor_proc = _proc_snapshot(proc, now=time.time())
+            except Exception:
+                supervisor_proc = None
+        supervisor_payload = {
+            "url": supervisor_base,
+            "reachable": bool(isinstance(supervisor_ping, dict) and supervisor_ping.get("ok") is True),
+            "status": supervisor_status,
+            "process": supervisor_proc,
+        }
+
+    service_payload: dict | None = None
+    service_main_pid = None
+    try:
+        service_main_pid = int(status.get("service_main_pid") or 0) or None
+    except Exception:
+        service_main_pid = None
+    if service_main_pid is not None:
+        try:
+            proc = psutil.Process(service_main_pid)
+            _prime_cpu_metrics(proc, include_children=False)
+            sleep_s = max(0.0, min(float(sample_sec), 2.0))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            service_payload = {
+                "pid": service_main_pid,
+                "scope": status.get("scope"),
+                "service": status.get("service"),
+                "root": _proc_snapshot(proc, now=time.time()),
+            }
+        except Exception:
+            service_payload = {
+                "pid": service_main_pid,
+                "scope": status.get("scope"),
+                "service": status.get("service"),
+            }
+
     process_payload: dict | None = None
     if target_pid is not None:
         proc = psutil.Process(target_pid)
@@ -835,6 +905,9 @@ def _collect_autostart_inspect(*, sample_sec: float = 0.2, token: Optional[str] 
     return {
         "autostart": status,
         "bind": {"host": bind[0], "port": bind[1]} if bind is not None else None,
+        "service_process": service_payload,
+        "supervisor": supervisor_payload,
+        "runtime_process": process_payload,
         "process": process_payload,
         "services": top_services,
     }
@@ -875,7 +948,13 @@ def _format_age(value: object) -> str:
 def _print_autostart_inspect(payload: dict) -> None:
     status = payload.get("autostart") if isinstance(payload.get("autostart"), dict) else {}
     bind = payload.get("bind") if isinstance(payload.get("bind"), dict) else {}
-    process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
+    service_process = payload.get("service_process") if isinstance(payload.get("service_process"), dict) else {}
+    service_root = service_process.get("root") if isinstance(service_process.get("root"), dict) else {}
+    supervisor = payload.get("supervisor") if isinstance(payload.get("supervisor"), dict) else {}
+    supervisor_process = supervisor.get("process") if isinstance(supervisor.get("process"), dict) else {}
+    process = payload.get("runtime_process") if isinstance(payload.get("runtime_process"), dict) else {}
+    if not process:
+        process = payload.get("process") if isinstance(payload.get("process"), dict) else {}
     root = process.get("root") if isinstance(process.get("root"), dict) else {}
     top_children = process.get("top_children") if isinstance(process.get("top_children"), list) else []
     services = payload.get("services") if isinstance(payload.get("services"), list) else []
@@ -890,17 +969,41 @@ def _print_autostart_inspect(payload: dict) -> None:
         typer.echo(f"url: {status.get('url')}")
     if bind:
         typer.echo(f"bind: {bind.get('host')}:{bind.get('port')}")
+    if service_root:
+        typer.echo(
+            "service: "
+            f"pid={service_root.get('pid')} kind={service_root.get('kind')} status={service_root.get('status') or '-'} "
+            f"cpu={float(service_root.get('cpu_percent') or 0.0):.1f}% rss={_format_bytes(service_root.get('rss_bytes'))} "
+            f"threads={service_root.get('threads') or '-'} age={_format_age(service_root.get('age_sec'))}"
+        )
+        if service_root.get("cmdline_text"):
+            typer.echo(f"service cmd: {service_root.get('cmdline_text')}")
+    elif service_process.get("pid"):
+        typer.echo(f"service: pid={service_process.get('pid')}")
+    if supervisor:
+        typer.echo(
+            f"supervisor: url={supervisor.get('url') or '-'} reachable={supervisor.get('reachable')}"
+        )
+        if supervisor_process:
+            typer.echo(
+                "supervisor process: "
+                f"pid={supervisor_process.get('pid')} kind={supervisor_process.get('kind')} status={supervisor_process.get('status') or '-'} "
+                f"cpu={float(supervisor_process.get('cpu_percent') or 0.0):.1f}% rss={_format_bytes(supervisor_process.get('rss_bytes'))} "
+                f"threads={supervisor_process.get('threads') or '-'} age={_format_age(supervisor_process.get('age_sec'))}"
+            )
+            if supervisor_process.get("cmdline_text"):
+                typer.echo(f"supervisor cmd: {supervisor_process.get('cmdline_text')}")
     if root:
         typer.echo(
-            "process: "
+            "runtime: "
             f"pid={root.get('pid')} kind={root.get('kind')} status={root.get('status') or '-'} "
             f"cpu={float(root.get('cpu_percent') or 0.0):.1f}% rss={_format_bytes(root.get('rss_bytes'))} "
             f"threads={root.get('threads') or '-'} age={_format_age(root.get('age_sec'))}"
         )
         if root.get("cmdline_text"):
-            typer.echo(f"cmd: {root.get('cmdline_text')}")
+            typer.echo(f"runtime cmd: {root.get('cmdline_text')}")
     else:
-        typer.echo("process: not found")
+        typer.echo("runtime: not found")
 
     if top_children:
         typer.echo("top children:")
