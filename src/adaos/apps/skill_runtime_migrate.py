@@ -11,8 +11,9 @@ from adaos.services.skill.manager import SkillManager
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare and activate installed skill runtimes in current interpreter")
+    parser = argparse.ArgumentParser(description="Prepare installed skill runtimes for the current core interpreter")
     parser.add_argument("--json", action="store_true", help="Print JSON result")
+    parser.add_argument("--skip-tests", action="store_true", help="Skip post-activation skill tests")
     return parser.parse_args()
 
 
@@ -28,7 +29,30 @@ def _manager() -> SkillManager:
     )
 
 
-def migrate_installed_skills() -> dict[str, Any]:
+def _status_value(result: Any) -> str:
+    return str(getattr(result, "status", result) or "").strip().lower()
+
+
+def _tests_payload(results: dict[str, Any]) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for name, result in (results or {}).items():
+        payload[str(name)] = _status_value(result) or "unknown"
+    return payload
+
+
+def _tests_ok(results: dict[str, Any]) -> bool:
+    return all(status == "passed" for status in _tests_payload(results).values())
+
+
+def _runtime_status_safe(mgr: SkillManager, name: str) -> dict[str, Any]:
+    try:
+        payload = mgr.runtime_status(name)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
     init_ctx()
     ctx = get_ctx()
     mgr = _manager()
@@ -39,28 +63,78 @@ def migrate_installed_skills() -> dict[str, Any]:
         name = getattr(row, "name", None) or getattr(row, "id", None)
         if not name or not bool(getattr(row, "installed", True)):
             continue
-        entry: dict[str, Any] = {"skill": str(name), "ok": True}
+        skill_name = str(name)
+        before = _runtime_status_safe(mgr, skill_name)
+        entry: dict[str, Any] = {
+            "skill": skill_name,
+            "ok": True,
+            "failed_stage": "",
+            "prepared_version": None,
+            "prepared_slot": None,
+            "active_version_before": str(before.get("version") or ""),
+            "active_slot_before": str(before.get("active_slot") or ""),
+            "active_slot_after": "",
+            "tests": {},
+            "rollback_performed": False,
+            "deactivated": False,
+        }
+        activated = False
         try:
-            runtime = mgr.prepare_runtime(str(name), run_tests=False)
+            entry["stage"] = "prepare"
+            runtime = mgr.prepare_runtime(skill_name, run_tests=False)
             entry["prepared_version"] = getattr(runtime, "version", None)
             entry["prepared_slot"] = getattr(runtime, "slot", None)
+
+            entry["stage"] = "activate"
             active_slot = mgr.activate_runtime(
-                str(name),
+                skill_name,
                 version=getattr(runtime, "version", None),
                 slot=getattr(runtime, "slot", None),
             )
-            entry["active_slot"] = active_slot
+            activated = True
+            entry["active_slot_after"] = str(active_slot or "")
+
+            if run_tests:
+                entry["stage"] = "tests"
+                tests = mgr.run_skill_tests(skill_name, source="installed")
+                entry["tests"] = _tests_payload(tests)
+                if not _tests_ok(tests):
+                    raise RuntimeError("skill tests failed")
+
+            entry["stage"] = "completed"
         except Exception as exc:
+            stage = str(entry.get("stage") or "prepare")
             entry["ok"] = False
+            entry["failed_stage"] = stage
             entry["error"] = str(exc)
+            if activated and stage in {"activate", "tests"}:
+                try:
+                    entry["stage"] = "rollback"
+                    restored_slot = mgr.rollback_runtime(skill_name)
+                    entry["rollback_performed"] = True
+                    entry["rollback_slot"] = str(restored_slot or "")
+                except Exception as rollback_exc:
+                    entry["rollback_error"] = str(rollback_exc)
+            entry["stage"] = "failed"
         items.append(entry)
-    ok = all(bool(item.get("ok")) for item in items)
-    return {"ok": ok, "skills": items}
+
+    failed = [item for item in items if not bool(item.get("ok"))]
+    rollback_total = sum(1 for item in items if bool(item.get("rollback_performed")))
+    deactivated_total = sum(1 for item in items if bool(item.get("deactivated")))
+    return {
+        "ok": not failed,
+        "total": len(items),
+        "failed_total": len(failed),
+        "rollback_total": rollback_total,
+        "deactivated_total": deactivated_total,
+        "run_tests": bool(run_tests),
+        "skills": items,
+    }
 
 
 def main() -> None:
     args = _parse_args()
-    payload = migrate_installed_skills()
+    payload = migrate_installed_skills(run_tests=not bool(args.skip_tests))
     if args.json:
         print(json.dumps(payload, ensure_ascii=False))
         return

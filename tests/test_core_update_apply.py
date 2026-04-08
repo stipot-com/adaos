@@ -98,6 +98,7 @@ def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_pa
         tmp_path / "venv" / "bin" / "python",
         base_dir="/tmp/adaos-base",
         shared_dotenv_path="/tmp/adaos.env",
+        run_tests=True,
     )
 
     assert payload["ok"] is True
@@ -109,4 +110,29 @@ def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_pa
     ]
     assert captured["env"]["ADAOS_BASE_DIR"] == "/tmp/adaos-base"
     assert captured["env"]["ADAOS_SHARED_DOTENV_PATH"] == "/tmp/adaos.env"
+
+
+def test_migrate_installed_skill_runtimes_can_skip_tests(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd, cwd=None, env=None, capture_output=None, text=None):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "skills": []}), stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+    mod._migrate_installed_skill_runtimes(
+        tmp_path / "venv" / "bin" / "python",
+        run_tests=False,
+    )
+
+    assert captured["cmd"] == [
+        str(tmp_path / "venv" / "bin" / "python"),
+        "-m",
+        "adaos.apps.skill_runtime_migrate",
+        "--json",
+        "--skip-tests",
+    ]
 

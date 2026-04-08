@@ -316,3 +316,35 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
     assert "workspace." in skill_yaml
     assert "user.profile.changed" in skill_yaml
     assert "capacity.changed" in skill_yaml
+
+
+def test_infrascope_adds_skill_migration_operation_row(monkeypatch):
+    mod = _load_infrascope_module()
+
+    monkeypatch.setattr(mod, "get_overview_summary", lambda webspace_id=None: {"label": "scope", "value": "warning"})
+    monkeypatch.setattr(mod, "list_overview_collection", lambda section, webspace_id=None: [])
+    monkeypatch.setattr(mod, "list_inventory", lambda kind, webspace_id=None: [])
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [])
+    monkeypatch.setattr(mod, "get_object_inspector", lambda object_id, task_goal=None, webspace_id=None: {"object_id": object_id})
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active": [], "active_items": []})
+    monkeypatch.setattr(
+        mod,
+        "_skill_runtime_migration_report",
+        lambda: {
+            "total": 2,
+            "failed_total": 1,
+            "rollback_total": 1,
+            "skills": [
+                {"skill": "weather_skill", "ok": True},
+                {"skill": "voice_skill", "ok": False, "failed_stage": "tests"},
+            ],
+        },
+    )
+
+    snapshot = mod.get_snapshot()
+
+    rows = snapshot["operations"]["items"]
+    assert rows
+    assert rows[0]["id"] == "core-update-skill-runtime-migration"
+    assert rows[0]["status"] == "offline"
+    assert "voice_skill:tests" in rows[0]["subtitle"]

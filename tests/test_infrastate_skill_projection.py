@@ -420,3 +420,30 @@ def test_infrastate_effective_runtime_projection_prefers_validated_target_slot()
     assert effective_slots["slots"]["B"]["manifest"]["git_short_commit"] == "8dd3543"
     assert effective_build["runtime_git_short_commit"] == "8dd3543"
     assert effective_build["runtime_git_commit"] == "8dd3543c72f912ef0d7932f4c5754ce4c6700849"
+
+
+def test_infrastate_skill_runtime_migration_helpers_report_failures():
+    mod = _load_infrastate_module()
+
+    report = mod._skill_runtime_migration_report(
+        {},
+        {
+            "manifest": {
+                "skill_runtime_migration": {
+                    "total": 2,
+                    "failed_total": 1,
+                    "rollback_total": 1,
+                    "skills": [
+                        {"skill": "weather_skill", "ok": True},
+                        {"skill": "voice_skill", "ok": False, "failed_stage": "tests"},
+                    ],
+                }
+            }
+        },
+    )
+    note = mod._skill_runtime_migration_note(report)
+
+    assert report["failed_total"] == 1
+    assert "skill_migration=1/2" in note
+    assert "voice_skill:tests" in note
+    assert "rollback=1" in note

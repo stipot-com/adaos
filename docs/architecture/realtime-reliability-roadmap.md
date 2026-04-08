@@ -211,6 +211,9 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - move update-status and restart control to a supervisor API that remains live while runtime is down
 - make systemd target supervisor instead of the main runtime process
 - align sidecar lifecycle under supervisor without turning sidecar into protocol or update authority
+- migrate installed skill runtimes as an explicit core-update subflow rather than assuming old interpreter dependencies remain valid
+- persist per-skill migration diagnostics (`prepare` / `test` / `activate` / `rollback` / `deactivate`) in core-update results
+- surface skill migration failures and selective post-commit deactivations in Infra State and Infrascope
 
 ### Candidate code areas
 
@@ -227,6 +230,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - stale `restarting` / `applying` states resolve deterministically
 - rollback decision is owned by supervisor logic rather than only runtime-side best effort
 - sidecar remains transport-only and does not absorb process/update authority
+- operators can identify which installed skill failed during a core migration and at which stage
 
 ## Phase 4: Hub-member semantic channels
 

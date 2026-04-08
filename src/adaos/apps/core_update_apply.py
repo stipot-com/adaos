@@ -149,14 +149,18 @@ def _migrate_installed_skill_runtimes(
     *,
     base_dir: str | os.PathLike[str] = "",
     shared_dotenv_path: str | os.PathLike[str] = "",
+    run_tests: bool = True,
 ) -> dict[str, object]:
     env = dict(os.environ)
     if str(base_dir or "").strip():
         env["ADAOS_BASE_DIR"] = str(base_dir)
     if str(shared_dotenv_path or "").strip():
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv_path)
+    cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
+    if not run_tests:
+        cmd.append("--skip-tests")
     return _run_json(
-        [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"],
+        cmd,
         env=env,
     )
 
@@ -315,8 +319,21 @@ def prepare_slot(
             final_py,
             base_dir=str(base_dir or ""),
             shared_dotenv_path=shared_dotenv,
+            run_tests=True,
         )
         if not bool(skill_runtime_migration.get("ok")):
+            failed = []
+            for item in skill_runtime_migration.get("skills") or []:
+                if not isinstance(item, dict) or bool(item.get("ok")):
+                    continue
+                failed.append(
+                    f"{item.get('skill') or 'skill'}:{item.get('failed_stage') or 'failed'}"
+                )
+            suffix = ", ".join(failed[:5])
+            if len(failed) > 5:
+                suffix += f" (+{len(failed) - 5} more)"
+            if suffix:
+                raise RuntimeError(f"installed skill runtime migration failed: {suffix}")
             raise RuntimeError(f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}")
         manifest["venv_repair"] = repair
         manifest["skill_runtime_migration"] = skill_runtime_migration

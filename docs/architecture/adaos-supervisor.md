@@ -39,6 +39,7 @@ The supervisor solves this by keeping the update and process-control surface ali
 - runtime start/stop/restart sequencing
 - persisted update attempt state
 - slot apply / validate / rollback orchestration
+- skill runtime migration orchestration for installed skills during core slot transition
 - restart and validation deadlines
 - local admin/update API availability during runtime downtime
 - recovery from interrupted update attempts
@@ -130,6 +131,7 @@ This API is the source of truth for:
 - validation deadlines
 - rollback decisions
 - current managed child processes
+- current skill runtime migration diagnostics for the active core update attempt
 
 ### Runtime API
 
@@ -162,6 +164,7 @@ Recommended fields for `update_attempt.json`:
 - `validated_at`
 - `restored_slot`
 - `failure_summary`
+- `skill_runtime_migration`
 
 The important rule is that this state is committed by the supervisor, not inferred only from whether the runtime currently listens on `127.0.0.1:8777`.
 
@@ -173,16 +176,54 @@ Target flow:
 2. supervisor writes `update_attempt.json`
 3. supervisor requests graceful runtime shutdown
 4. supervisor prepares inactive slot
-5. supervisor launches runtime from target slot
-6. supervisor validates required runtime checks
-7. on success, supervisor commits update and clears active attempt
-8. on failure or deadline expiry, supervisor rolls back and records failure
+5. supervisor migrates installed skill runtimes against the target core interpreter
+6. supervisor launches runtime from target slot
+7. supervisor validates required runtime checks
+8. on success, supervisor commits update and clears active attempt
+9. on failure or deadline expiry, supervisor rolls back and records failure
 
 Important invariants:
 
 - the attempt record is not cleared before validation succeeds
 - `restarting` and `applying` are bounded by deadlines
 - interrupted supervisor boot resumes or resolves the last incomplete attempt
+- installed skills do not silently inherit old runtime dependencies after core migration
+
+## Skill runtime migration lifecycle
+
+Installed skills are not automatically valid just because the core slot booted.
+Their runtime dependencies must be prepared against the new core interpreter and surfaced as explicit diagnostics.
+
+Target lifecycle per installed skill:
+
+1. `prepare`
+2. `test`
+3. `activate`
+4. `rollback` on activation or post-activation failure
+5. `deactivate` if core transition is committed but a subset of skills must be quarantined afterward
+
+The supervisor remains the authority for the overall core-update decision, but individual skill runtime outcomes must be persisted as part of the update result.
+
+Recommended per-skill diagnostic fields:
+
+- `skill`
+- `ok`
+- `failed_stage`
+- `prepared_version`
+- `prepared_slot`
+- `active_slot_before`
+- `active_slot_after`
+- `rollback_performed`
+- `deactivated`
+- `tests`
+- `error`
+
+Operator surfaces such as Infra State and Infrascope should be able to answer:
+
+- which skill failed migration
+- whether the failure happened during prepare, tests, activate, rollback, or deactivate
+- whether rollback was performed
+- whether the node committed the core update with some skills intentionally deactivated
 
 ## Relationship to systemd
 
@@ -241,6 +282,7 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 - `adaos autostart/update-status` resolves to supervisor API first
 - `adaos node reliability` reports `runtime_restarting_under_supervisor` instead of only connection failure
 - Infra State surfaces supervisor attempt state alongside runtime readiness
+- Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
 
 ## Exit criteria
 
