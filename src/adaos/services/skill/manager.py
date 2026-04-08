@@ -1161,6 +1161,7 @@ class SkillManager:
         env.set_active_slot(target_version, target_slot)
         env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
+        env.clear_deactivation()
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot
         history["last_active_at"] = datetime.now(timezone.utc).isoformat()
@@ -1246,6 +1247,42 @@ class SkillManager:
             emit(self.bus, "skills.rolledback", payload, "skill.mgr")
         return target
 
+    def deactivate_runtime(self, name: str, *, reason: str = "post_commit_checks_failed") -> dict[str, Any]:
+        env = self._runtime_env(name)
+        version = env.resolve_active_version()
+        if not version:
+            raise RuntimeError("no active version")
+        env.prepare_version(version)
+        active_slot = env.read_active_slot(version)
+        payload = {
+            "name": name,
+            "version": version,
+            "slot": active_slot,
+            "reason": str(reason or "post_commit_checks_failed"),
+            "deactivated": True,
+        }
+        env.write_deactivation(payload)
+        try:
+            install_skill_in_capacity(name, version, active=False)
+        except Exception:
+            pass
+        if self.bus:
+            emit(self.bus, "skills.deactivated", dict(payload), "skill.mgr")
+        return payload
+
+    def deactivate_for_space(
+        self,
+        name: str,
+        *,
+        space: str = "default",
+        webspace_id: str | None = None,
+        reason: str = "post_commit_checks_failed",
+    ) -> dict[str, Any]:
+        if space == "dev":
+            return self.deactivate_dev_runtime(name, reason=reason)
+        else:
+            return self.deactivate_runtime(name, reason=reason)
+
     def runtime_status(self, name: str) -> Dict[str, Any]:
         env = self._runtime_env(name)
         version = env.resolve_active_version()
@@ -1259,12 +1296,17 @@ class SkillManager:
         resolved_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
         ready = resolved_path.exists()
         history = metadata.get("history", {})
+        deactivation = env.read_deactivation()
+        deactivated = bool(deactivation.get("deactivated"))
         state: Dict[str, Any] = {
             "name": name,
             "version": version,
             "active_slot": active_slot,
             "resolved_manifest": str(resolved_path),
             "ready": ready,
+            "active": not deactivated,
+            "deactivated": deactivated,
+            "deactivation": deactivation,
             "tests": slot_meta.get("tests", {}),
             "history": history,
         }
@@ -1293,12 +1335,17 @@ class SkillManager:
         resolved_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
         ready = resolved_path.exists()
         history = metadata.get("history", {})
+        deactivation = env.read_deactivation()
+        deactivated = bool(deactivation.get("deactivated"))
         state: Dict[str, Any] = {
             "name": name,
             "version": version,
             "active_slot": active_slot,
             "resolved_manifest": str(resolved_path),
             "ready": ready,
+            "active": not deactivated,
+            "deactivated": deactivated,
+            "deactivation": deactivation,
             "tests": slot_meta.get("tests", {}),
             "history": history,
         }
@@ -1313,6 +1360,30 @@ class SkillManager:
                 manifest = {}
             state["default_tool"] = manifest.get("default_tool")
         return state
+
+    def deactivate_dev_runtime(self, name: str, *, reason: str = "post_commit_checks_failed") -> dict[str, Any]:
+        env = self._runtime_env_dev(name)
+        version = env.resolve_active_version()
+        if not version:
+            raise RuntimeError("no active version")
+        env.prepare_version(version)
+        active_slot = env.read_active_slot(version)
+        payload = {
+            "name": name,
+            "version": version,
+            "slot": active_slot,
+            "reason": str(reason or "post_commit_checks_failed"),
+            "deactivated": True,
+            "dev": True,
+        }
+        env.write_deactivation(payload)
+        try:
+            install_skill_in_capacity(name, version, active=False, dev=True)
+        except Exception:
+            pass
+        if self.bus:
+            emit(self.bus, "skills.deactivated", dict(payload), "skill.mgr")
+        return payload
 
     def cleanup_runtime(self, name: str, *, purge_data: bool = False) -> None:
         env = self._runtime_env(name)
@@ -1457,6 +1528,9 @@ class SkillManager:
                 raise RuntimeError(f"slot {slot} for version {version} is not prepared")
             manifest_path = candidate
             slot_name = slot
+        if bool(status.get("deactivated")):
+            reason = str((status.get("deactivation") or {}).get("reason") or "deactivated").strip()
+            raise RuntimeError(f"skill '{name}' is deactivated: {reason}")
 
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         tools = data.get("tools") or {}
@@ -1581,6 +1655,9 @@ class SkillManager:
                 raise RuntimeError(f"slot {slot} for version {version} is not prepared")
             manifest_path = candidate
             slot_name = slot
+        if bool(status.get("deactivated")):
+            reason = str((status.get("deactivation") or {}).get("reason") or "deactivated").strip()
+            raise RuntimeError(f"skill '{name}' is deactivated: {reason}")
 
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         tools = data.get("tools") or {}

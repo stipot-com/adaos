@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 from http import HTTPStatus
@@ -242,6 +244,33 @@ def _validation_log_paths(slot: str | None) -> tuple[Path, Path]:
         (logs_dir / f"autostart-slot-{suffix}.out.log").resolve(),
         (logs_dir / f"autostart-slot-{suffix}.err.log").resolve(),
     )
+
+
+def _run_post_commit_skill_checks() -> dict[str, Any]:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "adaos.apps.skill_runtime_migrate",
+            "--json",
+            "--post-commit",
+            "--deactivate-on-failure",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"post-commit skill checks failed rc={completed.returncode}: "
+            f"{(completed.stderr or completed.stdout or '').strip()[-4000:]}"
+        )
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"post-commit skill checks returned invalid JSON: {(completed.stdout or '')[-4000:]}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("post-commit skill checks returned non-object payload")
+    return payload
 
 
 def _probe_update_runtime(
@@ -526,15 +555,37 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                 proc=proc,
             )
             if ok:
+                post_commit_skill_checks: dict[str, Any] = {}
+                post_commit_note = ""
+                try:
+                    post_commit_skill_checks = _run_post_commit_skill_checks()
+                except Exception as exc:
+                    post_commit_skill_checks = {
+                        "ok": False,
+                        "failed_total": 0,
+                        "deactivated_total": 0,
+                        "error": str(exc),
+                    }
+                    post_commit_note = " | post-commit skill checks failed to execute"
+                else:
+                    failed_total = int(post_commit_skill_checks.get("failed_total") or 0)
+                    deactivated_total = int(post_commit_skill_checks.get("deactivated_total") or 0)
+                    if failed_total or deactivated_total:
+                        post_commit_note = (
+                            f" | skills degraded after commit"
+                            f" failed={failed_total}"
+                            f" deactivated={deactivated_total}"
+                        )
                 clear_plan()
                 write_status(
                     {
                         "state": "succeeded",
                         "phase": "validate",
-                        "message": f"slot {slot} passed post-switch validation",
+                        "message": f"slot {slot} passed post-switch validation{post_commit_note}",
                         "target_slot": slot,
                         "manifest": manifest,
                         "validated_at": time.time(),
+                        "skill_post_commit_checks": post_commit_skill_checks,
                         "validation_logs": {
                             "stdout_path": str(stdout_path),
                             "stderr_path": str(stderr_path),

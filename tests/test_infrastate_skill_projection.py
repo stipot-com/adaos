@@ -474,3 +474,28 @@ def test_infrastate_skill_runtime_rollback_helpers_report_failures():
     assert "skill_rollback=2/3" in note
     assert "failed=voice_skill" in note
     assert "skipped=1" in note
+
+
+def test_infrastate_skill_post_commit_helpers_report_deactivations():
+    mod = _load_infrastate_module()
+
+    report = mod._skill_post_commit_checks_report(
+        {
+            "skill_post_commit_checks": {
+                "total": 2,
+                "failed_total": 1,
+                "deactivated_total": 1,
+                "skills": [
+                    {"skill": "weather_skill", "ok": True},
+                    {"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True},
+                ],
+            }
+        },
+        {},
+    )
+    note = mod._skill_post_commit_checks_note(report)
+
+    assert report["deactivated_total"] == 1
+    assert "skill_post_commit=1/2" in note
+    assert "voice_skill:tests" in note
+    assert "deactivated=1" in note

@@ -51,6 +51,19 @@ All paths are relative and compatible with Linux/Windows. Slots are created lazi
 
 `adaos skill rollback <name>` rolls back both the runtime slot and the `data/internal/active` pointer.
 
+## Deactivate lifecycle
+
+AdaOS may keep the core switch committed while quarantining a subset of skills.
+For that case the runtime lifecycle now includes explicit deactivation:
+
+- a deactivated skill remains installed
+- its prepared slot and metadata remain inspectable
+- tool execution is blocked with a clear `skill is deactivated` error
+- ordinary `activate` clears the deactivation marker and returns the skill to service
+
+This is intended for post-commit checks where rolling back the whole core is unnecessary, but continuing to serve a broken skill would be unsafe.
+Core-update orchestration may trigger this automatically after a successful runtime switch if post-commit skill checks fail.
+
 ## Optional internal data migration
 
 This feature is optional. A skill can ignore `data/internal/a|b` completely and continue using only:

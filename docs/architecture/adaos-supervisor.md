@@ -226,6 +226,14 @@ Operator surfaces such as Infra State and Infrascope should be able to answer:
 - whether rollback was performed
 - whether the node committed the core update with some skills intentionally deactivated
 
+After a successful core switch, `deactivate` is the preferred local containment mechanism for individual broken skills when the node should keep the new core slot rather than trigger a full rollback.
+The default target behavior is:
+
+1. runtime passes core post-switch validation
+2. supervisor runs post-commit checks for active skill runtimes
+3. failing skills are selectively deactivated
+4. core update remains committed, but operator surfaces show degraded skill set
+
 ## Relationship to systemd
 
 Target deployment:

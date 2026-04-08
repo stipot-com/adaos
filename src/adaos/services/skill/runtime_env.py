@@ -47,6 +47,7 @@ from dataclasses import dataclass
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -198,6 +199,33 @@ class SkillRuntimeEnvironment:
 
     def active_version_marker(self) -> Path:
         return self._runtime_root / "current_version"
+
+    def deactivation_marker(self) -> Path:
+        return self._runtime_root / "deactivated.json"
+
+    def read_deactivation(self) -> dict:
+        path = self.deactivation_marker()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def write_deactivation(self, payload: dict) -> None:
+        path = self.deactivation_marker()
+        tmp = path.with_suffix(".tmp")
+        body = dict(payload)
+        body.setdefault("updated_at", time.time())
+        tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def clear_deactivation(self) -> None:
+        try:
+            self.deactivation_marker().unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Discovery helpers

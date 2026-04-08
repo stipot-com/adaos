@@ -60,6 +60,11 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     proc = _Proc()
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, "ok"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_post_commit_skill_checks",
+        lambda: {"ok": False, "failed_total": 1, "deactivated_total": 1, "skills": [{"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True}]},
+    )
     captured: list[dict] = []
     clear_calls: list[str] = []
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: clear_calls.append("clear"))
@@ -77,6 +82,8 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     assert clear_calls == ["clear"]
     assert captured[-1]["state"] == "succeeded"
     assert captured[-1]["phase"] == "validate"
+    assert captured[-1]["skill_post_commit_checks"]["deactivated_total"] == 1
+    assert "skills degraded after commit" in captured[-1]["message"]
 
 
 def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None:
