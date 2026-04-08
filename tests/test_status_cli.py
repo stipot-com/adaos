@@ -237,6 +237,61 @@ def test_skill_status_marks_runtime_missing_without_runtime_error(tmp_base_dir, 
     assert "runtime-error" not in result.stdout
 
 
+def test_skill_status_prefers_workspace_version_over_runtime_version(tmp_base_dir, monkeypatch):
+    skill_root = tmp_base_dir / "workspace" / "skills" / "demo_skill"
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "skill.yaml").write_text("id: demo_skill\nversion: '1.1.0'\n", encoding="utf-8")
+
+    class _Row:
+        name = "demo_skill"
+        installed = True
+
+    class _Registry:
+        def __init__(self, _sql):
+            pass
+
+        def list(self):
+            return [_Row()]
+
+    class _Paths:
+        def workspace_dir(self):
+            return tmp_base_dir / "workspace"
+
+        def skills_workspace_dir(self):
+            return tmp_base_dir / "workspace" / "skills"
+
+        def dev_skills_dir(self):
+            return tmp_base_dir / "skills-dev"
+
+    class _Ctx:
+        paths = _Paths()
+        sql = object()
+
+    monkeypatch.setattr(skill_cmd, "SqliteSkillRegistry", _Registry)
+    monkeypatch.setattr(skill_cmd, "ensure_remote", lambda *args, **kwargs: None)
+    monkeypatch.setattr(skill_cmd, "resolve_base_ref", lambda *args, **kwargs: "HEAD")
+    monkeypatch.setattr(skill_cmd, "compute_path_status", lambda **kwargs: _fake_path_status("skills/demo_skill"))
+    monkeypatch.setattr(skill_cmd, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(
+        skill_cmd,
+        "list_workspace_registry_entries",
+        lambda *args, **kwargs: [{"name": "demo_skill", "version": "1.1.0"}],
+    )
+
+    class _Mgr:
+        @staticmethod
+        def runtime_status(_name: str):
+            return {"version": "1.0.0", "active_slot": "A", "ready": False}
+
+    monkeypatch.setattr(skill_cmd, "_mgr", lambda: _Mgr())
+
+    result = CliRunner().invoke(skill_cmd.app, ["status"])
+
+    assert result.exit_code == 0
+    assert "demo_skill: v1.1.0 slot=A" in result.stdout
+    assert "version-drift" in result.stdout
+
+
 def test_scenario_status_reports_empty_when_registry_and_workspace_are_empty(tmp_path, monkeypatch):
     class _Paths:
         def workspace_dir(self):
@@ -258,6 +313,53 @@ def test_scenario_status_reports_empty_when_registry_and_workspace_are_empty(tmp
 
     assert result.exit_code == 0
     assert "No installed scenarios." in result.stdout
+
+
+def test_scenario_status_prefers_workspace_version_over_registry_row(tmp_path, monkeypatch):
+    scenario_root = tmp_path / "workspace" / "scenarios" / "welcome_scene"
+    scenario_root.mkdir(parents=True, exist_ok=True)
+    (scenario_root / "scenario.yaml").write_text("id: welcome_scene\nversion: '0.2.0'\n", encoding="utf-8")
+
+    class _Row:
+        name = "welcome_scene"
+        installed = True
+        active_version = "0.1.0"
+
+    class _Registry:
+        def __init__(self, _sql):
+            pass
+
+        def list(self):
+            return [_Row()]
+
+    class _Paths:
+        def workspace_dir(self):
+            return tmp_path / "workspace"
+
+        def scenarios_workspace_dir(self):
+            return tmp_path / "workspace" / "scenarios"
+
+        def dev_scenarios_dir(self):
+            return tmp_path / "scenarios-dev"
+
+    class _Ctx:
+        paths = _Paths()
+        sql = object()
+
+    monkeypatch.setattr(scenario_cmd, "SqliteScenarioRegistry", _Registry)
+    monkeypatch.setattr(scenario_cmd, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(scenario_cmd, "resolve_base_ref", lambda *args, **kwargs: "HEAD")
+    monkeypatch.setattr(scenario_cmd, "compute_path_status", lambda **kwargs: _fake_path_status("scenarios/welcome_scene"))
+    monkeypatch.setattr(
+        scenario_cmd,
+        "list_workspace_registry_entries",
+        lambda *args, **kwargs: [{"name": "welcome_scene", "version": "0.2.0"}],
+    )
+
+    result = CliRunner().invoke(scenario_cmd.app, ["status", "--remote", "registry", "--ref", "HEAD"])
+
+    assert result.exit_code == 0
+    assert "welcome_scene: v0.2.0" in result.stdout
 
 
 def test_scenario_list_falls_back_to_workspace_when_registry_empty(tmp_path, monkeypatch):

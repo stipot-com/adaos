@@ -139,8 +139,15 @@ def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeyp
     assert projected["snapshot"]["fallback"] is True
 
 
-def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
+def test_infrastate_scenario_items_only_show_installed_registry_entries(monkeypatch, tmp_path: Path):
     mod = _load_infrastate_module()
+    workspace = tmp_path / "workspace"
+    alpha_dir = workspace / "scenarios" / "alpha"
+    alpha_dir.mkdir(parents=True, exist_ok=True)
+    (alpha_dir / "scenario.yaml").write_text("id: alpha\nversion: '1.2.3'\n", encoding="utf-8")
+    beta_dir = workspace / "scenarios" / "beta"
+    beta_dir.mkdir(parents=True, exist_ok=True)
+    (beta_dir / "scenario.yaml").write_text("id: beta\nversion: '2.0.0'\n", encoding="utf-8")
 
     class _ScenarioRecord:
         def __init__(self, name: str, active_version: str, last_updated: float | None = None):
@@ -148,21 +155,13 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
             self.active_version = active_version
             self.last_updated = last_updated
 
-    class _MetaId:
-        def __init__(self, value: str):
-            self.value = value
-
-    repo_metas = [
-        SimpleNamespace(id=_MetaId("alpha"), version="1.2.3"),
-        SimpleNamespace(id=_MetaId("beta"), version="2.0.0"),
-    ]
-
     monkeypatch.setattr(
         mod,
         "get_ctx",
         lambda: SimpleNamespace(
             sql=object(),
-            scenarios_repo=SimpleNamespace(list=lambda: repo_metas),
+            paths=SimpleNamespace(workspace_dir=lambda: workspace),
+            git=object(),
         ),
     )
     monkeypatch.setattr(
@@ -180,32 +179,40 @@ def test_infrastate_scenario_items_use_registry_and_repo_versions(monkeypatch):
 
     assert items == [
         {"name": "alpha", "version": "1.2.3", "updated_at": 1.0, "uninstall_disabled": False},
-        {"name": "beta", "version": "2.0.0", "updated_at": None, "uninstall_disabled": False},
         {"name": "gamma", "version": "3.0.0", "updated_at": 2.0, "uninstall_disabled": False},
     ]
 
 
-def test_infrastate_skill_items_use_registry_catalog_for_update_status(monkeypatch):
+def test_infrastate_skill_items_use_registry_and_workspace_versions(monkeypatch, tmp_path: Path):
     mod = _load_infrastate_module()
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "infrastate_skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text("id: infrastate_skill\nversion: '0.19.0'\n", encoding="utf-8")
+    extra_dir = workspace / "skills" / "extra_skill"
+    extra_dir.mkdir(parents=True, exist_ok=True)
+    (extra_dir / "skill.yaml").write_text("id: extra_skill\nversion: '9.9.9'\n", encoding="utf-8")
 
-    class _MetaId:
-        def __init__(self, value: str):
-            self.value = value
+    class _SkillRecord:
+        def __init__(self, name: str, active_version: str, installed: bool = True):
+            self.name = name
+            self.active_version = active_version
+            self.installed = installed
 
     monkeypatch.setattr(
         mod,
         "get_ctx",
         lambda: SimpleNamespace(
-            skills_repo=SimpleNamespace(list=lambda: [SimpleNamespace(id=_MetaId("infrastate_skill"), version="0.19.0")]),
             sql=object(),
             git=object(),
-            paths=SimpleNamespace(workspace_dir=lambda: Path(".")),
+            paths=SimpleNamespace(workspace_dir=lambda: workspace),
             bus=None,
             caps=object(),
             settings=object(),
+            skills_repo=object(),
         ),
     )
-    monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: object())
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: SimpleNamespace(list=lambda: [_SkillRecord("infrastate_skill", "0.18.0")]))
     monkeypatch.setattr(mod, "SkillManager", lambda **kwargs: SimpleNamespace(runtime_status=lambda name: {"active_slot": "A"}))
     monkeypatch.setattr(
         mod,
@@ -231,6 +238,44 @@ def test_infrastate_skill_items_use_registry_catalog_for_update_status(monkeypat
             "update_available": True,
         }
     ]
+
+
+def test_infrastate_adaos_update_uses_union_sparse_sync_and_installed_skill_names(monkeypatch):
+    mod = _load_infrastate_module()
+    runtime_updates: list[str] = []
+
+    ctx = SimpleNamespace(
+        sql=object(),
+        git=object(),
+        paths=SimpleNamespace(workspace_dir=lambda: Path(".")),
+        bus=None,
+        caps=object(),
+        settings=object(),
+        skills_repo=object(),
+        scenarios_repo=object(),
+    )
+
+    monkeypatch.setattr(mod, "get_ctx", lambda: ctx)
+    monkeypatch.setattr(
+        mod,
+        "sync_workspace_sparse_to_registry",
+        lambda current_ctx: {"ok": True, "skills": ["installed_skill"], "scenarios": ["scene_one"], "fallback_used": {}},
+    )
+    monkeypatch.setattr(
+        mod,
+        "SkillManager",
+        lambda **kwargs: SimpleNamespace(runtime_update=lambda name, space="workspace": runtime_updates.append(name) or {"ok": True}),
+    )
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: object())
+
+    result = mod._adaos_update_local()
+
+    assert result["ok"] is True
+    assert result["skills_synced"] is True
+    assert result["scenarios_synced"] is True
+    assert result["skills"] == ["installed_skill"]
+    assert result["scenarios"] == ["scene_one"]
+    assert runtime_updates == ["installed_skill"]
 
 
 def test_infrastate_marketplace_filters_installed_and_marks_running_operations(monkeypatch):

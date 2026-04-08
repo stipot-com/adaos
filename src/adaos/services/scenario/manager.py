@@ -384,8 +384,13 @@ class ScenarioManager:
             raise RuntimeError("Scenarios repo is not initialized. Run `adaos scenario sync` once.")
         sub = name.strip()
         subpath = f"scenarios/{sub}"
-        self._bump_scenario_manifest_minor(Path(root) / "scenarios" / sub)
+        version = self._bump_scenario_manifest_minor(Path(root) / "scenarios" / sub)
         upsert_workspace_registry_entry(Path(root), "scenarios", Path(root) / "scenarios" / sub)
+        if version and getattr(self, "reg", None) is not None:
+            try:
+                self.reg.register(sub, active_version=version)
+            except Exception:
+                pass
         changed = sorted(
             {
                 *self.git.changed_files(str(root), subpath=subpath),

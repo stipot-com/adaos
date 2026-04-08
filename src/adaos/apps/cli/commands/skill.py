@@ -36,7 +36,7 @@ from adaos.services.skill.runtime import (
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
-from adaos.services.workspace_registry import list_workspace_registry_entries
+from adaos.services.workspace_registry import build_registry_entry, list_workspace_registry_entries
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -120,6 +120,54 @@ def _normalize_runtime_missing_state(skill_name: str) -> dict[str, object]:
         "ready": False,
         "state": "runtime-missing",
     }
+
+
+def _clean_version_text(value: object | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _read_local_artifact_version(kind: str, artifact_dir: Path) -> str | None:
+    try:
+        entry = build_registry_entry(kind, artifact_dir)
+    except Exception:
+        entry = None
+    if not isinstance(entry, dict):
+        return None
+    return _clean_version_text(entry.get("version"))
+
+
+def _resolve_workspace_skill_versions(
+    *,
+    runtime_state: dict[str, object] | None,
+    registry_meta: dict[str, object] | None,
+    source_path: Path,
+) -> tuple[str | None, str | None, bool]:
+    workspace_version = _read_local_artifact_version("skills", source_path)
+    if not workspace_version and isinstance(registry_meta, dict):
+        workspace_version = _clean_version_text(registry_meta.get("version"))
+    runtime_version = None
+    if isinstance(runtime_state, dict):
+        runtime_version = _clean_version_text(runtime_state.get("version"))
+    version_drift = bool(workspace_version and runtime_version and workspace_version != runtime_version)
+    return workspace_version, runtime_version, version_drift
+
+
+def _resolve_skill_display_version(
+    *,
+    space: str,
+    runtime_state: dict[str, object] | None,
+    workspace_version: str | None,
+    runtime_version: str | None,
+) -> str:
+    if workspace_version:
+        return workspace_version
+    if runtime_version:
+        return runtime_version
+    state = str((runtime_state or {}).get("state") or "").strip()
+    if space == "dev" or (runtime_state or {}).get("installed") is False or state in {"draft", "runtime-missing"}:
+        return "n/a"
+    return "unknown"
 
 
 def _run_safe(func):
@@ -1110,6 +1158,17 @@ def status(
 
         if space == "workspace":
             registry_meta = workspace_registry_by_name.get(skill_name)
+            workspace_version, runtime_version, version_drift = _resolve_workspace_skill_versions(
+                runtime_state=runtime_state,
+                registry_meta=registry_meta,
+                source_path=source_path,
+            )
+            display_version = _resolve_skill_display_version(
+                space=space,
+                runtime_state=runtime_state,
+                workspace_version=workspace_version,
+                runtime_version=runtime_version,
+            )
             path_status = compute_path_status(
                 workdir=source_workdir,
                 path=source_path,
@@ -1125,6 +1184,10 @@ def status(
                     "path": str(source_path),
                 },
                 "workspace_registry": registry_meta,
+                "workspace_version": workspace_version,
+                "runtime_version": runtime_version,
+                "display_version": display_version,
+                "version_drift": version_drift,
                 "git": {
                     "path": path_status.path,
                     "exists": path_status.exists,
@@ -1238,8 +1301,12 @@ def status(
         g = entry.get("git") or {}
         source = entry.get("source") or {}
         reg = entry.get("workspace_registry") or {}
+        display_version = str(entry.get("display_version") or "").strip()
+        runtime_version = str(entry.get("runtime_version") or "").strip()
         typer.echo(f"skill: {entry.get('name')}")
         typer.echo(f"space: {entry.get('space')}")
+        if space == "workspace" and display_version and display_version != "n/a":
+            typer.echo(f"version: {display_version}")
         if entry.get("runtime_error"):
             typer.secho(f"runtime: error: {entry.get('runtime_error')}", fg=typer.colors.YELLOW)
         elif space == "workspace":
@@ -1255,8 +1322,9 @@ def status(
                     message = "runtime: draft (not installed in runtime yet)"
                 typer.echo(message)
             else:
-                typer.echo(f"version: {st.get('version')}")
                 typer.echo(f"active slot: {st.get('active_slot')}")
+                if entry.get("version_drift") and runtime_version:
+                    typer.echo(f"runtime version: {runtime_version}")
             if st.get("installed") is False or state in {"draft", "runtime-missing"}:
                 typer.echo("resolved manifest: (not installed)")
             elif st.get("ready", True):
@@ -1338,6 +1406,8 @@ def status(
                 flags.append("draft")
             elif state == "runtime-missing":
                 flags.append("runtime-missing")
+            if entry.get("version_drift"):
+                flags.append("version-drift")
         if space == "workspace":
             if g.get("dirty"):
                 flags.append("dirty")
@@ -1347,10 +1417,8 @@ def status(
             dc = entry.get("dev_compare") or {}
             if dc.get("changed_vs_base"):
                 flags.append("diff")
-        version = (
-            st.get("version")
-            or reg.get("version")
-            or ("n/a" if space == "dev" or st.get("installed") is False or str(st.get("state") or "").strip() in {"draft", "runtime-missing"} else "unknown")
+        version = entry.get("display_version") or (
+            "n/a" if space == "dev" or st.get("installed") is False or str(st.get("state") or "").strip() in {"draft", "runtime-missing"} else "unknown"
         )
         slot = st.get("active_slot") or ("n/a" if space == "dev" else "n/a")
         suffix = f" [{', '.join(flags)}]" if flags else ""

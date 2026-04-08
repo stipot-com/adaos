@@ -26,6 +26,7 @@ from adaos.services.root.client import RootHttpClient
 from adaos.services.root.service import create_zip_bytes
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.scaffold import create as scaffold_create
+from adaos.services.workspace_registry import build_registry_entry, list_workspace_registry_entries
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help=_("cli.help_scenario"))
@@ -42,6 +43,21 @@ def _workspace_child_names(root: Path) -> list[str]:
             continue
         names.append(child.name)
     return sorted(set(names))
+
+
+def _clean_version_text(value: object | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _read_local_artifact_version(kind: str, artifact_dir: Path) -> str | None:
+    try:
+        entry = build_registry_entry(kind, artifact_dir)
+    except Exception:
+        entry = None
+    if not isinstance(entry, dict):
+        return None
+    return _clean_version_text(entry.get("version"))
 
 
 def _run_safe(func):
@@ -189,6 +205,19 @@ def status(
     else:
         base_ref = None
 
+    workspace_registry_by_name = {}
+    if space == "workspace":
+        try:
+            registry_items = list_workspace_registry_entries(Path(workspace_root), kind="scenarios", fallback_to_scan=True)
+        except Exception:
+            registry_items = []
+        for item in registry_items:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("name") or item.get("id") or "").strip()
+            if item_name:
+                workspace_registry_by_name[item_name] = item
+
     if name:
         names = [name]
     else:
@@ -211,9 +240,7 @@ def status(
                 if not n or not bool(getattr(row, "installed", True)):
                     continue
                 names.append(str(n))
-            names = sorted(set(names))
-            if not names:
-                names = _workspace_child_names(Path(scenarios_root))
+            names = sorted(set(names) | set(_workspace_child_names(Path(scenarios_root))) | set(workspace_registry_by_name))
 
     rows_by_name = {}
     try:
@@ -225,18 +252,26 @@ def status(
     results: list[dict] = []
     for scenario_name in names:
         row = rows_by_name.get(scenario_name)
-        version = getattr(row, "active_version", None) if row is not None else None
         if space == "workspace":
+            local_dir = Path(scenarios_root) / scenario_name
+            registry_meta = workspace_registry_by_name.get(scenario_name)
+            version = (
+                _read_local_artifact_version("scenarios", local_dir)
+                or _clean_version_text((registry_meta or {}).get("version") if isinstance(registry_meta, dict) else None)
+                or _clean_version_text(getattr(row, "active_version", None) if row is not None else None)
+                or "unknown"
+            )
             path_status = compute_path_status(
                 workdir=workspace_root,
-                path=(Path(scenarios_root) / scenario_name),
+                path=local_dir,
                 base_ref=base_ref,
             )
             results.append(
                 {
                     "name": scenario_name,
                     "space": space,
-                    "version": version or "unknown",
+                    "version": version,
+                    "workspace_registry": registry_meta,
                     "git": {
                         "path": path_status.path,
                         "exists": path_status.exists,
@@ -279,6 +314,11 @@ def status(
 
             client = RootHttpClient(base_url=base_url)
             local_dir = Path(dev_scenarios_root) / scenario_name
+            version = (
+                _read_local_artifact_version("scenarios", local_dir)
+                or _clean_version_text(getattr(row, "active_version", None) if row is not None else None)
+                or "unknown"
+            )
             local_sha256 = None
             try:
                 import hashlib
@@ -324,7 +364,7 @@ def status(
                 {
                     "name": scenario_name,
                     "space": space,
-                    "version": version or "unknown",
+                    "version": version,
                     "dev_compare": {
                         "node_id": str(node_id),
                         "base_url": base_url,

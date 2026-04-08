@@ -933,8 +933,13 @@ class SkillManager:
 
         sub = name.strip()
         subpath = f"skills/{sub}"
-        self._bump_skill_manifest_minor(root / "skills" / sub)
+        version = self._bump_skill_manifest_minor(root / "skills" / sub)
         upsert_workspace_registry_entry(root, "skills", root / "skills" / sub)
+        if version and getattr(self, "reg", None) is not None:
+            try:
+                self.reg.register(sub, active_version=version)
+            except Exception:
+                pass
         changed = sorted(
             {
                 *self.ctx.git.changed_files(str(root), subpath=subpath),
