@@ -251,6 +251,7 @@ def _probe_update_runtime(
     token: str | None,
     timeout_sec: float,
     expected_slot: str | None = None,
+    proc: subprocess.Popen | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     base_url = f"http://{host}:{int(port)}"
     deadline = time.time() + max(1.0, timeout_sec)
@@ -260,6 +261,24 @@ def _probe_update_runtime(
     attempts = 0
     last_attempt: dict[str, Any] = {}
     while time.time() < deadline:
+        if proc is not None:
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+            if rc is not None:
+                last_error = f"slot process exited before becoming ready (rc={int(rc)})"
+                return False, {
+                    "ok": False,
+                    "summary": last_error,
+                    "base_url": base_url,
+                    "attempts": attempts,
+                    "token_present": bool(token),
+                    "strict": strict,
+                    "runtime_guards": bool(_runtime_update_checks(base_url)),
+                    "last_attempt": last_attempt,
+                    "proc_returncode": int(rc),
+                }
         attempts += 1
         attempt: dict[str, Any] = {
             "ts": time.time(),
@@ -504,6 +523,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                 token=resolved_token,
                 timeout_sec=_update_validation_timeout_sec(),
                 expected_slot=slot,
+                proc=proc,
             )
             if ok:
                 write_status(
