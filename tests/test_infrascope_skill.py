@@ -417,3 +417,25 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
     assert rows[0]["id"] == "core-update-skill-post-commit-checks"
     assert rows[0]["status"] == "offline"
     assert "deactivated=1" in rows[0]["subtitle"]
+
+
+def test_infrascope_list_inventory_returns_local_fallback_when_empty(monkeypatch):
+    mod = _load_infrascope_module()
+
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [])
+
+    rows = mod.list_inventory("all", webspace_id="ws-1")
+
+    assert rows
+    assert rows[0]["object_id"] == "local"
+    assert rows[0]["title"] == "Local node"
+
+
+def test_infrascope_fallback_snapshot_keeps_local_inventory():
+    mod = _load_infrascope_module()
+
+    snapshot = mod._fallback_snapshot(FileNotFoundError("missing snapshot"), webspace_id="ws-1")
+
+    assert snapshot["inventory"]["all"]
+    assert snapshot["inventory"]["all"][0]["object_id"] == "local"
+    assert snapshot["inventory"]["hubs"][0]["object_id"] == "local"

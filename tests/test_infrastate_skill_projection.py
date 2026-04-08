@@ -139,6 +139,54 @@ def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeyp
     assert projected["snapshot"]["fallback"] is True
 
 
+def test_infrastate_snapshot_tolerates_section_failures(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "_ensure_skill_data_projections", lambda: None)
+    monkeypatch.setattr(mod, "load_config", lambda: SimpleNamespace(role="hub", node_id="hub-1"))
+    monkeypatch.setattr(mod, "read_core_update_status", lambda: {"state": "idle"})
+    monkeypatch.setattr(mod, "read_core_update_last_result", lambda: {})
+    monkeypatch.setattr(mod, "slot_status", lambda: {})
+    monkeypatch.setattr(mod, "runtime_lifecycle_snapshot", lambda: {"node_state": "ready"})
+    monkeypatch.setattr(mod, "_build_meta", lambda: {})
+    monkeypatch.setattr(mod, "_effective_runtime_projection", lambda status, last_result, slots_payload, build: (slots_payload, build))
+    monkeypatch.setattr(mod, "_ui_state", lambda: {})
+    monkeypatch.setattr(mod, "_reliability_snapshot", lambda conf, lifecycle: {"runtime": {}})
+    monkeypatch.setattr(mod, "_node_tabs", lambda conf, ui_state, reliability: ([], {"kind": "local", "node_id": "hub-1", "label": "hub"}))
+    monkeypatch.setattr(mod, "_yjs_webspace_tabs", lambda conf, ui_state, reliability, selected_node: [])
+    monkeypatch.setattr(mod, "_selected_node_editor", lambda conf, selected_node: {})
+    monkeypatch.setattr(
+        mod,
+        "_selected_node_projection",
+        lambda *args, **kwargs: {"status": {"state": "idle"}, "last_result": {}, "slots_payload": {}, "lifecycle": {}, "build": {}, "selected_member": {}},
+    )
+    monkeypatch.setattr(mod, "_transport_diag_snapshot", lambda: {})
+    monkeypatch.setattr(mod, "_read_json", lambda path: {})
+    monkeypatch.setattr(mod, "_effective_update_log_report", lambda report, last_result: {})
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active_items": [], "active": []})
+    monkeypatch.setattr(mod, "_summary", lambda *args, **kwargs: {"label": "Infra State", "value": "ready"})
+    monkeypatch.setattr(mod, "_action_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_core_action_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_yjs_action_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_update_actions", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_build_items", lambda build: (_ for _ in ()).throw(FileNotFoundError("missing build file")))
+    monkeypatch.setattr(mod, "_step_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_realtime_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_slot_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_skills_items", lambda: (_ for _ in ()).throw(FileNotFoundError("missing workspace registry")))
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_marketplace_items", lambda webspace_id=None: (_ for _ in ()).throw(FileNotFoundError("missing marketplace source")))
+    monkeypatch.setattr(mod, "_status_log_items", lambda report: [])
+    monkeypatch.setattr(mod, "_event_state", lambda: [])
+
+    snapshot = mod._snapshot()
+
+    assert snapshot["summary"]["value"] == "ready"
+    assert snapshot["build"] == []
+    assert snapshot["skills"] == []
+    assert snapshot["marketplace"] == {"skills": [], "scenarios": []}
+
+
 def test_infrastate_scenario_items_only_show_installed_registry_entries(monkeypatch, tmp_path: Path):
     mod = _load_infrastate_module()
     workspace = tmp_path / "workspace"
