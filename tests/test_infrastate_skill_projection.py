@@ -447,3 +447,30 @@ def test_infrastate_skill_runtime_migration_helpers_report_failures():
     assert "skill_migration=1/2" in note
     assert "voice_skill:tests" in note
     assert "rollback=1" in note
+
+
+def test_infrastate_skill_runtime_rollback_helpers_report_failures():
+    mod = _load_infrastate_module()
+
+    report = mod._skill_runtime_rollback_report(
+        {
+            "skill_runtime_rollback": {
+                "total": 3,
+                "failed_total": 1,
+                "rollback_total": 2,
+                "skipped_total": 1,
+                "skills": [
+                    {"skill": "weather_skill", "ok": True},
+                    {"skill": "voice_skill", "ok": False, "error": "broken rollback"},
+                    {"skill": "maps_skill", "ok": True, "skipped": True},
+                ],
+            }
+        },
+        {},
+    )
+    note = mod._skill_runtime_rollback_note(report)
+
+    assert report["failed_total"] == 1
+    assert "skill_rollback=2/3" in note
+    assert "failed=voice_skill" in note
+    assert "skipped=1" in note

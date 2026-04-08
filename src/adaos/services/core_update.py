@@ -169,6 +169,84 @@ def _repo_root() -> Path | None:
             return None
 
 
+def rollback_installed_skill_runtimes() -> dict[str, Any]:
+    try:
+        from adaos.adapters.db import SqliteSkillRegistry
+        from adaos.services.skill.manager import SkillManager
+    except Exception as exc:
+        return {
+            "ok": False,
+            "total": 0,
+            "failed_total": 1,
+            "rollback_total": 0,
+            "skipped_total": 0,
+            "skills": [],
+            "error": f"skill rollback helpers unavailable: {exc}",
+        }
+
+    try:
+        ctx = get_ctx()
+        mgr = SkillManager(
+            repo=ctx.skills_repo,
+            registry=SqliteSkillRegistry(ctx.sql),
+            git=ctx.git,
+            paths=ctx.paths,
+            bus=getattr(ctx, "bus", None),
+            caps=ctx.caps,
+        )
+        reg = SqliteSkillRegistry(ctx.sql)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "total": 0,
+            "failed_total": 1,
+            "rollback_total": 0,
+            "skipped_total": 0,
+            "skills": [],
+            "error": f"skill rollback init failed: {exc}",
+        }
+
+    items: list[dict[str, Any]] = []
+    for row in reg.list():
+        name = getattr(row, "name", None) or getattr(row, "id", None)
+        if not name or not bool(getattr(row, "installed", True)):
+            continue
+        skill_name = str(name)
+        entry: dict[str, Any] = {
+            "skill": skill_name,
+            "ok": True,
+            "skipped": False,
+        }
+        try:
+            entry["restored_slot"] = str(mgr.rollback_runtime(skill_name) or "")
+        except Exception as exc:
+            error_text = str(exc)
+            lowered = error_text.lower()
+            if (
+                "no previous slot recorded" in lowered
+                or "previous slot matches current" in lowered
+                or "no active version" in lowered
+            ):
+                entry["skipped"] = True
+                entry["reason"] = error_text
+            else:
+                entry["ok"] = False
+                entry["error"] = error_text
+        items.append(entry)
+
+    failed_total = sum(1 for item in items if not bool(item.get("ok")))
+    rollback_total = sum(1 for item in items if bool(item.get("restored_slot")))
+    skipped_total = sum(1 for item in items if bool(item.get("skipped")))
+    return {
+        "ok": failed_total == 0,
+        "total": len(items),
+        "failed_total": failed_total,
+        "rollback_total": rollback_total,
+        "skipped_total": skipped_total,
+        "skills": items,
+    }
+
+
 def _repo_current_branch(repo_root: Path | None = None) -> str:
     root = repo_root or _repo_root()
     if root is None:
@@ -274,17 +352,21 @@ def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
     action = str(plan.get("action") or "update").strip().lower()
     if action == "rollback":
         restored = rollback_to_previous_slot()
+        skill_runtime_rollback = rollback_installed_skill_runtimes() if restored else {}
         if restored:
-            return write_status(
-                {
-                    "state": "rolled_back",
-                    "phase": "rollback",
-                    "message": f"rolled back to slot {restored}",
-                    "restored_slot": restored,
-                    "finished_at": time.time(),
-                    "plan": plan,
-                }
-            )
+            payload = {
+                "state": "rolled_back",
+                "phase": "rollback",
+                "message": f"rolled back to slot {restored}",
+                "restored_slot": restored,
+                "finished_at": time.time(),
+                "plan": plan,
+            }
+            if skill_runtime_rollback:
+                payload["skill_runtime_rollback"] = skill_runtime_rollback
+                if not bool(skill_runtime_rollback.get("ok")):
+                    payload["message"] += " | some skill runtime rollbacks failed"
+            return write_status(payload)
         return write_status(
             {
                 "state": "failed",

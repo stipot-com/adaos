@@ -107,6 +107,11 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (False, "http://127.0.0.1:8777/api/admin/update/status returned 500"))
     monkeypatch.setattr(autostart_runner, "rollback_to_previous_slot", lambda: "A")
+    monkeypatch.setattr(
+        autostart_runner,
+        "rollback_installed_skill_runtimes",
+        lambda: {"ok": True, "total": 1, "failed_total": 0, "rollback_total": 1, "skills": [{"skill": "weather_skill", "ok": True}]},
+    )
     captured: list[dict] = []
     clear_calls: list[str] = []
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: clear_calls.append("clear"))
@@ -125,6 +130,7 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     assert captured[-1]["phase"] == "validate"
     assert captured[-1]["restored_slot"] == "A"
     assert captured[-1]["rollback"]["ok"] is True
+    assert captured[-1]["skill_runtime_rollback"]["rollback_total"] == 1
 
 
 def test_autostart_runner_keeps_plan_until_validation(monkeypatch, tmp_path: Path) -> None:

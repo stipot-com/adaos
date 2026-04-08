@@ -26,7 +26,7 @@ from adaos.apps.cli.commands.api import (
     _write_pidfile,
 )
 from adaos.services.agent_context import get_ctx
-from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, write_status
+from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, rollback_installed_skill_runtimes, write_status
 from adaos.services.core_slots import active_slot, active_slot_manifest, rollback_to_previous_slot, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
 from adaos.services.runtime_paths import current_base_dir, current_logs_dir
@@ -550,6 +550,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         validation_stdout = _tail_text(stdout_path)
         validation_stderr = _tail_text(stderr_path)
         restored = rollback_to_previous_slot()
+        skill_runtime_rollback = rollback_installed_skill_runtimes() if restored else {}
         clear_plan()
         payload: dict[str, Any] = {
             "state": "failed",
@@ -571,6 +572,10 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         }
         if restored:
             payload["rollback"] = {"ok": True, "slot": restored}
+        if skill_runtime_rollback:
+            payload["skill_runtime_rollback"] = skill_runtime_rollback
+            if not bool(skill_runtime_rollback.get("ok")):
+                payload["message"] += " | some skill runtime rollbacks failed"
         write_status(payload)
         raise SystemExit(1)
     completed = subprocess.run(argv or command or [], shell=bool(command), env=env, cwd=str(cwd) if cwd else None)
