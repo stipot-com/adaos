@@ -423,6 +423,30 @@ def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
     return headers
 
 
+def _autostart_supervisor_base_url() -> str | None:
+    explicit = str(os.getenv("ADAOS_SUPERVISOR_URL") or os.getenv("ADAOS_SUPERVISOR_BASE") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    try:
+        info = autostart_status(get_ctx())
+    except Exception:
+        info = None
+    if not isinstance(info, dict):
+        return None
+    wrapper_env = info.get("wrapper_env") if isinstance(info.get("wrapper_env"), dict) else {}
+    host = str(wrapper_env.get("ADAOS_SUPERVISOR_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    raw_port = str(wrapper_env.get("ADAOS_SUPERVISOR_PORT") or "").strip()
+    if not raw_port:
+        return None
+    try:
+        port = int(raw_port)
+    except Exception:
+        return None
+    if port <= 0:
+        return None
+    return f"http://{host}:{port}"
+
+
 def _autostart_service_diagnostics() -> tuple[str, str]:
     journal_cmd = "journalctl --user -u adaos.service -n 120 --no-pager"
     status_path = str(core_update_status_path())
@@ -450,6 +474,37 @@ def _autostart_admin_unavailable_message(base_url: str) -> str:
         f"local AdaOS admin API is unavailable at {base_url}; the service may be restarting or failed to boot. "
         f"Inspect '{journal_cmd}' and '{status_path}'."
     )
+
+
+def _autostart_supervisor_get(path: str, *, token: Optional[str] = None) -> dict:
+    base_url = _autostart_supervisor_base_url()
+    if not base_url:
+        raise RuntimeError("local AdaOS supervisor API is unavailable; no supervisor base URL is configured")
+    try:
+        response = requests.get(base_url + path, headers=_autostart_admin_headers(token), timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    except RequestException as exc:
+        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
+
+
+def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
+    base_url = _autostart_supervisor_base_url()
+    if not base_url:
+        raise RuntimeError("local AdaOS supervisor API is unavailable; no supervisor base URL is configured")
+    try:
+        response = requests.post(
+            base_url + path,
+            headers=_autostart_admin_headers(token),
+            json=body or {},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
+    except RequestException as exc:
+        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
 
 
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
@@ -533,6 +588,21 @@ def _local_autostart_update_payload() -> dict | None:
         "_local_fallback": True,
         "_local_fallback_root": str(selected_root),
     }
+
+
+def _autostart_update_get(*, token: Optional[str] = None) -> dict:
+    try:
+        return _autostart_supervisor_get("/api/supervisor/update/status", token=token)
+    except RuntimeError:
+        return _autostart_admin_get("/api/admin/update/status", token=token)
+
+
+def _autostart_update_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
+    try:
+        return _autostart_supervisor_post(path, body=body, token=token)
+    except RuntimeError:
+        runtime_path = path.replace("/api/supervisor/update/", "/api/admin/update/")
+        return _autostart_admin_post(runtime_path, body=body, token=token)
 
 
 def _autostart_bind_from_status(status: dict) -> tuple[str, int] | None:
@@ -880,6 +950,8 @@ def autostart_status_cmd(json_output: bool = typer.Option(False, "--json", help=
         typer.echo(msg)
         if "url" in s:
             typer.echo(f"url: {s['url']}")
+        if "supervisor_url" in s:
+            typer.echo(f"supervisor url: {s['supervisor_url']}")
         if "configured_url" in s:
             typer.echo(f"configured url: {s['configured_url']}")
         if "live_url" in s:
@@ -991,7 +1063,7 @@ def autostart_update_status_cmd(
     token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
 ):
     try:
-        payload = _autostart_admin_get("/api/admin/update/status", token=token)
+        payload = _autostart_update_get(token=token)
     except RuntimeError as exc:
         payload = _local_autostart_update_payload()
         if payload is None:
@@ -1072,8 +1144,8 @@ def autostart_update_start_cmd(
     resolved_rev = str(target_rev or _repo_git_text("rev-parse", "--abbrev-ref", "HEAD") or "").strip()
     resolved_version = str(target_version or BUILD_INFO.version or "").strip()
     try:
-        payload = _autostart_admin_post(
-            "/api/admin/update/start",
+        payload = _autostart_update_post(
+            "/api/supervisor/update/start",
             token=token,
             body={
                 "target_rev": resolved_rev,
@@ -1101,7 +1173,7 @@ def autostart_update_cancel_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     try:
-        payload = _autostart_admin_post("/api/admin/update/cancel", token=token, body={"reason": reason})
+        payload = _autostart_update_post("/api/supervisor/update/cancel", token=token, body={"reason": reason})
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
@@ -1122,8 +1194,8 @@ def autostart_update_rollback_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     try:
-        payload = _autostart_admin_post(
-            "/api/admin/update/rollback",
+        payload = _autostart_update_post(
+            "/api/supervisor/update/rollback",
             token=token,
             body={
                 "countdown_sec": countdown_sec,
@@ -1155,8 +1227,8 @@ def autostart_smoke_update_cmd(
     resolved_rev = str(target_rev or _repo_git_text("rev-parse", "--abbrev-ref", "HEAD") or "").strip()
     resolved_version = str(target_version or BUILD_INFO.version or "").strip()
     try:
-        payload = _autostart_admin_post(
-            "/api/admin/update/start",
+        payload = _autostart_update_post(
+            "/api/supervisor/update/start",
             token=token,
             body={
                 "target_rev": resolved_rev,

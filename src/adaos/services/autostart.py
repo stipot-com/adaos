@@ -110,7 +110,7 @@ def default_spec(
     argv = (
         sys.executable,
         "-m",
-        "adaos.apps.autostart_runner",
+        "adaos.apps.supervisor",
         "--host",
         host,
         "--port",
@@ -123,6 +123,8 @@ def default_spec(
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv:
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv)
+    env.setdefault("ADAOS_SUPERVISOR_HOST", "127.0.0.1")
+    env.setdefault("ADAOS_SUPERVISOR_PORT", "8776")
     resolved_token = str(token or _default_control_token() or "").strip()
     if resolved_token:
         env["ADAOS_TOKEN"] = resolved_token
@@ -1036,6 +1038,10 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+            supervisor_host = str(wrapper_env.get("ADAOS_SUPERVISOR_HOST") or "").strip()
+            supervisor_port = str(wrapper_env.get("ADAOS_SUPERVISOR_PORT") or "").strip()
+            if supervisor_port:
+                payload["supervisor_url"] = f"http://{supervisor_host or '127.0.0.1'}:{supervisor_port}"
         core_update_status = _core_update_status_from_base_dir(payload.get("base_dir") or ctx.paths.base_dir())
         if core_update_status:
             payload["core_update_status"] = core_update_status
@@ -1150,6 +1156,10 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+            supervisor_host = str(wrapper_env.get("ADAOS_SUPERVISOR_HOST") or "").strip()
+            supervisor_port = str(wrapper_env.get("ADAOS_SUPERVISOR_PORT") or "").strip()
+            if supervisor_port:
+                payload["supervisor_url"] = f"http://{supervisor_host or '127.0.0.1'}:{supervisor_port}"
         payload["user_service_exists"] = user_service_path.exists()
         payload["system_service_exists"] = system_service_path.exists()
         payload["system_scope_preferred"] = _linux_should_prefer_system_scope("auto")
@@ -1198,6 +1208,10 @@ def status(ctx: AgentContext) -> dict:
             wrapper_shared_dotenv = str(wrapper_env.get("ADAOS_SHARED_DOTENV_PATH") or "").strip()
             if wrapper_shared_dotenv:
                 payload["shared_dotenv_path"] = str(Path(wrapper_shared_dotenv).expanduser().resolve())
+            supervisor_host = str(wrapper_env.get("ADAOS_SUPERVISOR_HOST") or "").strip()
+            supervisor_port = str(wrapper_env.get("ADAOS_SUPERVISOR_PORT") or "").strip()
+            if supervisor_port:
+                payload["supervisor_url"] = f"http://{supervisor_host or '127.0.0.1'}:{supervisor_port}"
         core_update_status = _core_update_status_from_base_dir(payload.get("base_dir") or ctx.paths.base_dir())
         if core_update_status:
             payload["core_update_status"] = core_update_status
