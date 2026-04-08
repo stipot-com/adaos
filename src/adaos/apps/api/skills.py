@@ -396,7 +396,19 @@ async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_
 @router.post("/update")
 async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
     service = SkillUpdateService(ctx)
-    result = service.request_update(body.name, dry_run=body.dry_run)
+    try:
+        result = service.request_update(body.name, dry_run=body.dry_run)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("skill update failed: %s", body.name)
+        raise HTTPException(status_code=500, detail=str(exc) or "skill update failed") from exc
     webspace_id = body.webspace_id or default_webspace_id()
     if not body.dry_run:
         mgr = _get_manager(ctx)

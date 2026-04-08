@@ -248,3 +248,41 @@ def test_skill_update_refreshes_runtime_when_source_version_changed(monkeypatch)
     assert "runtime_update:demo:workspace" in skill_mgr.calls
     assert "prepare_runtime:demo" in skill_mgr.calls
     assert any(call.startswith("activate_for_space:demo:2.0.0:B:default") for call in skill_mgr.calls)
+
+
+def test_skill_update_returns_not_found_when_source_skill_missing(monkeypatch) -> None:
+    skill_mgr = _FakeSkillManager()
+    scenario_mgr = _FakeScenarioManager()
+    client = _make_client(skill_mgr, scenario_mgr)
+
+    class _Service:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+
+        def request_update(self, skill_id: str, *, dry_run: bool = False):
+            raise FileNotFoundError(f"skill '{skill_id}' is not installed")
+
+    monkeypatch.setattr(skills, "SkillUpdateService", _Service)
+
+    resp = client.post("/api/skills/update", json={"name": "missing"})
+    assert resp.status_code == 404
+    assert "missing" in str(resp.json().get("detail") or "")
+
+
+def test_skill_update_returns_conflict_for_runtime_git_errors(monkeypatch) -> None:
+    skill_mgr = _FakeSkillManager()
+    scenario_mgr = _FakeScenarioManager()
+    client = _make_client(skill_mgr, scenario_mgr)
+
+    class _Service:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+
+        def request_update(self, skill_id: str, *, dry_run: bool = False):
+            raise RuntimeError("workspace has local changes")
+
+    monkeypatch.setattr(skills, "SkillUpdateService", _Service)
+
+    resp = client.post("/api/skills/update", json={"name": "demo"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "workspace has local changes"
