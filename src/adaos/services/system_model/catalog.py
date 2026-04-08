@@ -150,13 +150,34 @@ def workspace_objects() -> list[Any]:
 
 
 def _browser_session_payloads() -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    try:
+        from adaos.services.yjs.gateway_ws import active_browser_session_snapshot
+
+        snapshot = active_browser_session_snapshot()
+    except Exception:
+        snapshot = {}
+    for item in list(snapshot.get("peers") or []):
+        if not isinstance(item, dict):
+            continue
+        device_id = str(item.get("device_id") or item.get("id") or "").strip()
+        if not device_id:
+            continue
+        merged[device_id] = dict(item)
     try:
         from adaos.services.webrtc.peer import webrtc_peer_snapshot
 
         snapshot = webrtc_peer_snapshot()
     except Exception:
         snapshot = {}
-    return [item for item in list(snapshot.get("peers") or []) if isinstance(item, dict)]
+    for item in list(snapshot.get("peers") or []):
+        if not isinstance(item, dict):
+            continue
+        device_id = str(item.get("device_id") or item.get("id") or "").strip()
+        if not device_id:
+            continue
+        merged[device_id] = {**merged.get(device_id, {}), **item}
+    return [merged[key] for key in sorted(merged)]
 
 
 def browser_session_objects() -> list[Any]:

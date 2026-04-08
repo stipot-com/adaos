@@ -32,6 +32,13 @@ from adaos.services.autostart import default_spec as default_autostart_spec
 from adaos.services.autostart import disable as autostart_disable
 from adaos.services.autostart import enable as autostart_enable
 from adaos.services.autostart import status as autostart_status
+from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_update import last_result_path as core_update_last_result_path
+from adaos.services.core_update import plan_path as core_update_plan_path
+from adaos.services.core_update import read_last_result as read_core_update_last_result
+from adaos.services.core_update import read_plan as read_core_update_plan
+from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import status_path as core_update_status_path
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.setup.presets import get_preset
@@ -449,6 +456,20 @@ def _autostart_admin_post(path: str, *, body: dict | None = None, token: Optiona
             f"local AdaOS admin API is unavailable at {locals().get('base_url', 'unknown')}; the service may be restarting or failed to boot. "
             "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
         ) from exc
+
+
+def _local_autostart_update_payload() -> dict | None:
+    if not any(path.exists() for path in (core_update_status_path(), core_update_plan_path(), core_update_last_result_path())):
+        return None
+    return {
+        "ok": True,
+        "status": read_core_update_status(),
+        "last_result": read_core_update_last_result(),
+        "plan": read_core_update_plan(),
+        "slots": core_slot_status(),
+        "active_manifest": active_slot_manifest(),
+        "_local_fallback": True,
+    }
 
 
 def _autostart_bind_from_status(status: dict) -> tuple[str, int] | None:
@@ -909,8 +930,10 @@ def autostart_update_status_cmd(
     try:
         payload = _autostart_admin_get("/api/admin/update/status", token=token)
     except RuntimeError as exc:
-        typer.secho(str(exc), fg=typer.colors.RED)
-        raise typer.Exit(1) from exc
+        payload = _local_autostart_update_payload()
+        if payload is None:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return

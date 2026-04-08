@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 import yaml
 
+from adaos.services.eventbus import emit
 from adaos.services.runtime_paths import current_base_dir
 
 
@@ -114,6 +115,28 @@ def _save_node_yaml(data: Dict[str, Any], base_dir: Path | None = None) -> None:
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
+def _get_ctx_for_events():
+    from adaos.services.agent_context import get_ctx
+
+    return get_ctx()
+
+
+def _emit_capacity_changed(*, base_dir: Path | None = None) -> None:
+    try:
+        ctx = _get_ctx_for_events()
+        emit(
+            ctx.bus,
+            "capacity.changed",
+            {
+                "base_dir": str(_resolve_base_dir(base_dir)),
+                "capacity": load_capacity_from_node_yaml(base_dir),
+            },
+            "capacity",
+        )
+    except Exception:
+        pass
+
+
 def install_skill_in_capacity(name: str, version: str, *, active: bool = True, dev: bool = False, base_dir: Path | None = None) -> None:
     data = _load_node_yaml(base_dir)
     cap = data.setdefault("capacity", {})
@@ -134,6 +157,7 @@ def install_skill_in_capacity(name: str, version: str, *, active: bool = True, d
         except Exception:
             pass
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def uninstall_skill_from_capacity(name: str, *, base_dir: Path | None = None) -> None:
@@ -142,6 +166,7 @@ def uninstall_skill_from_capacity(name: str, *, base_dir: Path | None = None) ->
     skills: List[Dict[str, Any]] = cap.setdefault("skills", [])  # type: ignore[assignment]
     cap["skills"] = [s for s in skills if not (isinstance(s, dict) and s.get("name") == name)]
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def install_scenario_in_capacity(name: str, version: str, *, active: bool = True, dev: bool = False, base_dir: Path | None = None) -> None:
@@ -159,6 +184,7 @@ def install_scenario_in_capacity(name: str, version: str, *, active: bool = True
     if not found:
         scenarios.append({"name": name, "version": version, "active": bool(active), "dev": bool(dev)})
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def uninstall_scenario_from_capacity(name: str, *, base_dir: Path | None = None) -> None:
@@ -167,6 +193,7 @@ def uninstall_scenario_from_capacity(name: str, *, base_dir: Path | None = None)
     scenarios: List[Dict[str, Any]] = cap.setdefault("scenarios", [])  # type: ignore[assignment]
     cap["scenarios"] = [s for s in scenarios if not (isinstance(s, dict) and s.get("name") == name)]
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def install_io_in_capacity(io_type: str, capabilities: List[str] | None = None, *, priority: int = 50, id_hint: str | None = None, base_dir: Path | None = None) -> None:
@@ -189,6 +216,7 @@ def install_io_in_capacity(io_type: str, capabilities: List[str] | None = None, 
             rec["id_hint"] = id_hint
         io.append(rec)
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def uninstall_io_from_capacity(io_type: str, *, base_dir: Path | None = None) -> None:
@@ -197,6 +225,7 @@ def uninstall_io_from_capacity(io_type: str, *, base_dir: Path | None = None) ->
     io: List[Dict[str, Any]] = cap.setdefault("io", [])  # type: ignore[assignment]
     cap["io"] = [it for it in io if not (isinstance(it, dict) and it.get("io_type") == io_type)]
     _save_node_yaml(data, base_dir)
+    _emit_capacity_changed(base_dir=base_dir)
 
 
 def _short_reason(value: str, *, limit: int = 140) -> str:

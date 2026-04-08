@@ -311,4 +311,8 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
     assert "data_projections" in skill_yaml
     assert "infrascope.snapshot" in skill_yaml
     assert "device.registered" in skill_yaml
+    assert "browser.session.changed" in skill_yaml
     assert "webrtc.peer.state.changed" in skill_yaml
+    assert "workspace." in skill_yaml
+    assert "user.profile.changed" in skill_yaml
+    assert "capacity.changed" in skill_yaml

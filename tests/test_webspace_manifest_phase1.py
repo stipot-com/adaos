@@ -309,6 +309,43 @@ def test_ensure_workspace_persists_default_home_scenario_for_new_rows() -> None:
     assert stored == ("web_desktop",)
 
 
+def test_set_workspace_manifest_emits_workspace_event(monkeypatch) -> None:
+    workspace_id = "manifest-event-space"
+    events: list[tuple[str, dict[str, object], str]] = []
+    monkeypatch.setattr(
+        workspace_index_module,
+        "emit",
+        lambda bus, topic, payload, source: events.append((topic, dict(payload), source)),
+    )
+
+    ensure_workspace(workspace_id)
+    events.clear()
+
+    set_workspace_manifest(
+        workspace_id,
+        display_name="Event Space",
+        home_scenario="prompt_engineer_scenario",
+        device_binding="tablet-1",
+    )
+
+    assert events == [
+        (
+            "workspace.manifest.changed",
+            {
+                "workspace_id": workspace_id,
+                "display_name": "Event Space",
+                "kind": "workspace",
+                "home_scenario": "prompt_engineer_scenario",
+                "source_mode": "workspace",
+                "owner_scope": None,
+                "profile_scope": None,
+                "device_binding": "tablet-1",
+            },
+            "workspaces.index",
+        )
+    ]
+
+
 def test_normalize_workspaces_backfills_manifest_defaults() -> None:
     legacy_id = "legacy-normalize-space"
     ctx = get_ctx()

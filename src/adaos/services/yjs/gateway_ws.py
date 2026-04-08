@@ -58,6 +58,7 @@ _TRANSPORT_STATE: dict[str, dict[str, Any]] = {
     },
 }
 _ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
+_ACTIVE_YWS_CLIENTS: dict[str, dict[str, int]] = {}
 _YWS_OPEN_HISTORY: deque[float] = deque(maxlen=512)
 _YWS_CLIENT_OPEN_HISTORY: dict[str, deque[float]] = {}
 
@@ -132,12 +133,23 @@ def _transport_mark_close(name: str) -> None:
         entry["last_close_at"] = now
 
 
-def _track_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
+def _publish_runtime_event(topic: str, payload: dict[str, Any] | None = None, *, source: str = "yjs.gateway") -> None:
+    try:
+        ctx = get_agent_ctx()
+        ctx.bus.publish(DomainEvent(type=topic, payload=dict(payload or {}), source=source, ts=time.time()))
+    except Exception:
+        _log.debug("failed to publish runtime event topic=%s", topic, exc_info=True)
+
+
+def _track_yws_connection(webspace_id: str, websocket: WebSocket, *, device_id: str | None = None) -> None:
     key = str(webspace_id or "").strip() or "default"
+    device_key = str(device_id or "").strip() or "unknown"
     with _ACTIVE_YWS_LOCK:
         items = _ACTIVE_YWS_CONNECTIONS.setdefault(key, [])
         if websocket not in items:
             items.append(websocket)
+        clients = _ACTIVE_YWS_CLIENTS.setdefault(key, {})
+        clients[device_key] = int(clients.get(device_key) or 0) + 1
 
 
 def _record_yws_open(webspace_id: str, dev_id: str) -> None:
@@ -197,13 +209,56 @@ def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
     with _ACTIVE_YWS_LOCK:
         items = _ACTIVE_YWS_CONNECTIONS.get(key)
         if not items:
-            return
-        try:
-            items.remove(websocket)
-        except ValueError:
-            pass
+            device_key = None
+        else:
+            try:
+                items.remove(websocket)
+            except ValueError:
+                pass
         if not items:
             _ACTIVE_YWS_CONNECTIONS.pop(key, None)
+        params = getattr(websocket, "query_params", {}) or {}
+        device_key = str(params.get("dev") or "unknown").strip() or "unknown"
+        clients = _ACTIVE_YWS_CLIENTS.get(key)
+        if clients:
+            remaining = int(clients.get(device_key) or 0) - 1
+            if remaining > 0:
+                clients[device_key] = remaining
+            else:
+                clients.pop(device_key, None)
+            if not clients:
+                _ACTIVE_YWS_CLIENTS.pop(key, None)
+
+
+def active_browser_session_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
+    now = time.time() if now_ts is None else float(now_ts)
+    with _ACTIVE_YWS_LOCK:
+        clients = {
+            webspace_id: dict(device_counts)
+            for webspace_id, device_counts in _ACTIVE_YWS_CLIENTS.items()
+            if isinstance(device_counts, dict)
+        }
+    peers: list[dict[str, Any]] = []
+    for webspace_id, device_counts in clients.items():
+        for device_id, session_count in sorted(device_counts.items()):
+            token = str(device_id or "").strip()
+            if not token:
+                continue
+            peers.append(
+                {
+                    "device_id": token,
+                    "webspace_id": str(webspace_id or "").strip() or "default",
+                    "connection_state": "connected",
+                    "yjs_channel_state": "open",
+                    "session_count": int(session_count or 0),
+                    "source": "yws_gateway",
+                }
+            )
+    return {
+        "peer_total": len(peers),
+        "peers": peers,
+        "updated_at": now,
+    }
 
 
 async def close_webspace_yws_connections(
@@ -623,8 +678,18 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     if not await _accept_websocket(websocket, channel="yws"):
         return
     _record_yws_open(webspace_id, dev_id)
-    _track_yws_connection(webspace_id, websocket)
+    _track_yws_connection(webspace_id, websocket, device_id=dev_id)
     _transport_mark_open("yws")
+    _publish_runtime_event(
+        "browser.session.changed",
+        {
+            "device_id": dev_id,
+            "webspace_id": webspace_id,
+            "connection_state": "connected",
+            "yjs_channel_state": "open",
+            "source": "yws.gateway",
+        },
+    )
     await start_y_server()
 
     adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=webspace_id)
@@ -635,6 +700,16 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     finally:
         _untrack_yws_connection(webspace_id, websocket)
         _transport_mark_close("yws")
+        _publish_runtime_event(
+            "browser.session.changed",
+            {
+                "device_id": dev_id,
+                "webspace_id": webspace_id,
+                "connection_state": "closed",
+                "yjs_channel_state": "closed",
+                "source": "yws.gateway",
+            },
+        )
         _ylog.info("yws connection closed webspace=%s dev=%s", webspace_id, dev_id)
         if _ws_trace_enabled():
             try:

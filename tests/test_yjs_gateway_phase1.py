@@ -379,3 +379,28 @@ def test_accept_websocket_returns_false_when_handshake_already_closed() -> None:
     accepted = asyncio.run(gateway_module._accept_websocket(_FakeWebSocket(), channel="events"))
 
     assert accepted is False
+
+
+def test_active_browser_session_snapshot_tracks_yws_clients() -> None:
+    gateway_module._ACTIVE_YWS_CONNECTIONS.clear()
+    gateway_module._ACTIVE_YWS_CLIENTS.clear()
+
+    ws = SimpleNamespace(query_params={"dev": "dev-2"})
+    gateway_module._track_yws_connection("ops", ws, device_id="dev-2")
+
+    snapshot = gateway_module.active_browser_session_snapshot(now_ts=123.0)
+
+    assert snapshot["peer_total"] == 1
+    assert snapshot["peers"] == [
+        {
+            "device_id": "dev-2",
+            "webspace_id": "ops",
+            "connection_state": "connected",
+            "yjs_channel_state": "open",
+            "session_count": 1,
+            "source": "yws_gateway",
+        }
+    ]
+
+    gateway_module._untrack_yws_connection("ops", ws)
+    assert gateway_module.active_browser_session_snapshot(now_ts=123.0)["peers"] == []

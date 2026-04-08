@@ -7,6 +7,7 @@ import sqlite3
 import json
 
 from adaos.services.agent_context import get_ctx
+from adaos.services.eventbus import emit
 from adaos.services.yjs.store import ystore_path_for_webspace
 from adaos.services.yjs.webspace import default_webspace_id, dev_webspace_id
 
@@ -22,6 +23,28 @@ _ROW_SELECT = (
 )
 
 _UNSET = object()
+
+
+def _workspace_event_payload(row: "WebspaceManifest") -> dict[str, Any]:
+    return {
+        "workspace_id": row.workspace_id,
+        "display_name": row.display_name,
+        "kind": row.kind,
+        "home_scenario": row.home_scenario,
+        "source_mode": row.source_mode,
+        "owner_scope": row.owner_scope,
+        "profile_scope": row.profile_scope,
+        "device_binding": row.device_binding,
+    }
+
+
+def _emit_workspace_event(event_type: str, row: "WebspaceManifest" | None = None, *, workspace_id: str | None = None) -> None:
+    try:
+        ctx = get_ctx()
+        payload = _workspace_event_payload(row) if row is not None else {"workspace_id": str(workspace_id or "").strip()}
+        emit(ctx.bus, event_type, payload, "workspaces.index")
+    except Exception:
+        pass
 
 
 def _is_dev_display_name(value: Optional[str]) -> bool:
@@ -509,7 +532,7 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
             ),
         )
         con.commit()
-        return WebspaceManifest(
+        manifest = WebspaceManifest(
             workspace_id=workspace_id,
             path=str(p),
             created_at=created_at,
@@ -522,6 +545,8 @@ def ensure_workspace(workspace_id: str) -> WebspaceManifest:
             device_binding=None,
             ui_overlay_json=None,
         )
+        _emit_workspace_event("workspace.created", manifest)
+        return manifest
 
 
 def set_workspace_manifest(
@@ -574,6 +599,7 @@ def set_workspace_manifest(
     row = get_workspace(workspace_id)
     if not row:
         raise KeyError(f"workspace {workspace_id} not found")
+    _emit_workspace_event("workspace.manifest.changed", row)
     return row
 
 
@@ -587,6 +613,7 @@ def delete_workspace(workspace_id: str) -> None:
         _ensure_schema(con)
         con.execute("DELETE FROM y_workspaces WHERE workspace_id=?", (workspace_id,))
         con.commit()
+    _emit_workspace_event("workspace.deleted", workspace_id=workspace_id)
     try:
         path = ystore_path_for_webspace(workspace_id)
         if path.exists():
@@ -596,6 +623,7 @@ def delete_workspace(workspace_id: str) -> None:
 
 
 def reset_webspaces(rows: Iterable[WorkspaceRow]) -> None:
+    normalized_rows = list(rows)
     sql = get_ctx().sql
     with sql.connect() as con:
         _ensure_schema(con)
@@ -621,10 +649,20 @@ def reset_webspaces(rows: Iterable[WorkspaceRow]) -> None:
                     row.device_binding,
                     row.ui_overlay_json,
                 )
-                for row in rows
+                for row in normalized_rows
             ],
         )
         con.commit()
+    try:
+        ctx = get_ctx()
+        emit(
+            ctx.bus,
+            "workspace.reset",
+            {"workspace_ids": [row.workspace_id for row in normalized_rows]},
+            "workspaces.index",
+        )
+    except Exception:
+        pass
 
 
 def get_workspace_overlay(workspace_id: str) -> dict[str, Any]:

@@ -154,6 +154,47 @@ def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> Non
     assert "local AdaOS admin API is unavailable" in result.output
 
 
+def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -> None:
+    runner = CliRunner()
+
+    def _boom(path, *, token=None):
+        raise RuntimeError(
+            "local AdaOS admin API is unavailable at http://127.0.0.1:8777; the service may be restarting or failed to boot. "
+            "Inspect 'journalctl --user -u adaos.service -n 120 --no-pager' and '.adaos/state/core_update/status.json'."
+        )
+
+    monkeypatch.setattr(setup_cmd, "_autostart_admin_get", _boom)
+    monkeypatch.setattr(
+        setup_cmd,
+        "_local_autostart_update_payload",
+        lambda: {
+            "ok": True,
+            "status": {"state": "idle", "message": "autostart runner boot"},
+            "slots": {
+                "active_slot": "B",
+                "previous_slot": "A",
+                "slots": {
+                    "A": {"manifest": {"target_version": "0.1.0", "git_short_commit": "54e4a96a", "git_branch": "rev2026"}},
+                    "B": {"manifest": {"target_version": "0.1.1", "git_short_commit": "8e2f6e75", "git_branch": "rev2026"}},
+                },
+            },
+            "active_manifest": {
+                "target_version": "0.1.1",
+                "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
+                "git_branch": "rev2026",
+            },
+            "_local_fallback": True,
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "state: idle" in result.output
+    assert "message: autostart runner boot" in result.output
+    assert "active slot: B | 0.1.1 | 8e2f6e75 | rev2026" in result.output
+
+
 def test_autostart_inspect_renders_hot_children_and_services(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr(

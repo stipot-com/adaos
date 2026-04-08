@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
+import types
 
 from pydantic import BaseModel
 
@@ -205,6 +207,72 @@ def test_canonical_object_from_browser_session_tracks_workspace_and_channels() -
     assert obj["relations"]["workspace"] == ["workspace:desk"]
     assert obj["health"]["connectivity"] == "reachable"
     assert obj["runtime"]["incoming_video_tracks"] == 1
+
+
+def test_browser_session_catalog_unions_yws_and_webrtc_snapshots(monkeypatch) -> None:
+    sys.modules.setdefault("nats", SimpleNamespace())
+    sys.modules.setdefault(
+        "y_py",
+        SimpleNamespace(
+            YDoc=type("YDoc", (), {}),
+            apply_update=lambda *args, **kwargs: None,
+            encode_state_as_update=lambda *args, **kwargs: b"",
+            encode_state_vector=lambda *args, **kwargs: b"",
+        ),
+    )
+    if "ypy_websocket.ystore" not in sys.modules:
+        ystore_module = types.ModuleType("ypy_websocket.ystore")
+        ystore_module.BaseYStore = type("BaseYStore", (), {})
+        ystore_module.YDocNotFound = type("YDocNotFound", (Exception,), {})
+        sys.modules["ypy_websocket.ystore"] = ystore_module
+    if "ypy_websocket" not in sys.modules:
+        pkg = types.ModuleType("ypy_websocket")
+        pkg.ystore = sys.modules["ypy_websocket.ystore"]
+        sys.modules["ypy_websocket"] = pkg
+    from adaos.services.system_model import catalog
+
+    monkeypatch.setattr(catalog, "_governed", lambda obj: obj)
+
+    yws_mod = SimpleNamespace(
+        active_browser_session_snapshot=lambda: {
+            "peers": [
+                {
+                    "device_id": "browser-yws",
+                    "webspace_id": "desk",
+                    "connection_state": "connected",
+                    "yjs_channel_state": "open",
+                },
+                {
+                    "device_id": "browser-both",
+                    "webspace_id": "desk",
+                    "connection_state": "connected",
+                    "yjs_channel_state": "open",
+                },
+            ]
+        }
+    )
+    webrtc_mod = SimpleNamespace(
+        webrtc_peer_snapshot=lambda: {
+            "peers": [
+                {
+                    "device_id": "browser-both",
+                    "webspace_id": "desk",
+                    "connection_state": "connected",
+                    "events_channel_state": "open",
+                    "yjs_channel_state": "open",
+                    "incoming_video_tracks": 2,
+                }
+            ]
+        }
+    )
+    monkeypatch.setitem(sys.modules, "adaos.services.yjs.gateway_ws", yws_mod)
+    monkeypatch.setitem(sys.modules, "adaos.services.webrtc.peer", webrtc_mod)
+
+    objects = [item.to_dict() for item in catalog.browser_session_objects()]
+
+    assert [item["id"] for item in objects] == ["browser:browser-both", "browser:browser-yws"]
+    assert objects[0]["runtime"]["incoming_video_tracks"] == 2
+    assert objects[1]["health"]["yjs_channel"] == "reachable"
 
 
 def test_canonical_object_from_device_endpoint_merges_workspace_and_session_links() -> None:

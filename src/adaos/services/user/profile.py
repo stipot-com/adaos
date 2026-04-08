@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
+from adaos.services.eventbus import emit
 
 
 @dataclass(slots=True)
@@ -48,7 +49,17 @@ class UserProfileService:
         current = self.get_profile(uid).settings
         current.update(settings)
         self.ctx.kv.set(self._kv_key(uid), dict(current))
-        return UserProfile(user_id=uid, settings=current)
+        profile = UserProfile(user_id=uid, settings=current)
+        try:
+            emit(
+                self.ctx.bus,
+                "user.profile.changed",
+                {"user_id": uid, "settings": dict(current)},
+                "user.profile",
+            )
+        except Exception:
+            pass
+        return profile
 
 
 __all__ = ["UserProfile", "UserProfileService"]
