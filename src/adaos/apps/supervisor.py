@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -22,9 +21,11 @@ from adaos.apps.bootstrap import init_ctx
 from adaos.apps.cli.commands.api import _advertise_base, _uvicorn_loop_mode
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.runtime_paths import current_base_dir
 
 
@@ -71,6 +72,10 @@ def _supervisor_runtime_state_path() -> Path:
     return (_supervisor_state_dir() / "runtime.json").resolve()
 
 
+def _supervisor_update_attempt_path() -> Path:
+    return (_supervisor_state_dir() / "update_attempt.json").resolve()
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -94,6 +99,136 @@ def _local_update_payload() -> dict[str, Any]:
         "active_manifest": active_slot_manifest(),
         "_local_fallback": True,
     }
+
+
+def _update_attempt_timeout_sec() -> float:
+    try:
+        return max(10.0, float(str(os.getenv("ADAOS_SUPERVISOR_UPDATE_TIMEOUT_SEC") or "180").strip()))
+    except Exception:
+        return 180.0
+
+
+def _terminal_update_states() -> set[str]:
+    return {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled", "idle"}
+
+
+def _read_update_attempt() -> dict[str, Any] | None:
+    payload = _read_json(_supervisor_update_attempt_path())
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_update_attempt(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    merged.setdefault("updated_at", time.time())
+    _write_json(_supervisor_update_attempt_path(), merged)
+    return merged
+
+
+def _status_updated_at(payload: dict[str, Any]) -> float:
+    for key in ("updated_at", "validated_at", "finished_at", "started_at"):
+        try:
+            value = float(payload.get(key) or 0.0)
+        except Exception:
+            value = 0.0
+        if value > 0.0:
+            return value
+    return 0.0
+
+
+def _attempt_transition_at(payload: dict[str, Any]) -> float:
+    for key in ("transitioned_at", "scheduled_for", "requested_at", "updated_at", "created_at"):
+        try:
+            value = float(payload.get(key) or 0.0)
+        except Exception:
+            value = 0.0
+        if value > 0.0:
+            return value
+    return 0.0
+
+
+def _is_terminal_update_status(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("state") or "").strip().lower() in _terminal_update_states()
+
+
+def _build_attempt_payload(*, action: str, request: dict[str, Any], status: dict[str, Any] | None, accepted: bool) -> dict[str, Any]:
+    now = time.time()
+    current_status = dict(status or {})
+    countdown_sec = float(request.get("countdown_sec") or current_status.get("countdown_sec") or 0.0)
+    scheduled_for = float(current_status.get("scheduled_for") or (now + countdown_sec))
+    return {
+        "state": "active" if accepted else "rejected",
+        "action": str(action or current_status.get("action") or "update"),
+        "requested_at": now,
+        "transitioned_at": scheduled_for if accepted else now,
+        "countdown_sec": countdown_sec,
+        "drain_timeout_sec": float(request.get("drain_timeout_sec") or current_status.get("drain_timeout_sec") or 0.0),
+        "signal_delay_sec": float(request.get("signal_delay_sec") or current_status.get("signal_delay_sec") or 0.0),
+        "target_rev": str(request.get("target_rev") or current_status.get("target_rev") or ""),
+        "target_version": str(request.get("target_version") or current_status.get("target_version") or ""),
+        "reason": str(request.get("reason") or current_status.get("reason") or ""),
+        "accepted": bool(accepted),
+        "last_status": current_status,
+        "updated_at": now,
+    }
+
+
+def _complete_update_attempt(*, state: str, status: dict[str, Any] | None, reason: str | None = None) -> dict[str, Any]:
+    now = time.time()
+    current = _read_update_attempt() or {}
+    payload = dict(current)
+    payload["state"] = str(state or "completed")
+    payload["completed_at"] = now
+    payload["updated_at"] = now
+    if reason:
+        payload["completion_reason"] = str(reason)
+    if isinstance(status, dict):
+        payload["last_status"] = dict(status)
+    return _write_update_attempt(payload)
+
+
+def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
+    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    attempt = _read_update_attempt()
+    if not isinstance(attempt, dict):
+        return payload
+
+    payload["attempt"] = dict(attempt)
+    if str(attempt.get("state") or "").strip().lower() != "active":
+        return payload
+
+    if _is_terminal_update_status(status):
+        payload["attempt"] = _complete_update_attempt(state="completed", status=status, reason="terminal core update status")
+        return payload
+
+    now = time.time()
+    timeout_sec = _update_attempt_timeout_sec()
+    status_age = max(0.0, now - _status_updated_at(status)) if _status_updated_at(status) > 0.0 else 0.0
+    transition_age = max(0.0, now - _attempt_transition_at(attempt)) if _attempt_transition_at(attempt) > 0.0 else 0.0
+    if max(status_age, transition_age) < timeout_sec:
+        return payload
+
+    failed_status = write_core_update_status(
+        {
+            "state": "failed",
+            "phase": str(status.get("phase") or "restart_timeout"),
+            "action": str(status.get("action") or attempt.get("action") or "update"),
+            "target_rev": str(status.get("target_rev") or attempt.get("target_rev") or ""),
+            "target_version": str(status.get("target_version") or attempt.get("target_version") or ""),
+            "reason": str(status.get("reason") or attempt.get("reason") or "supervisor.timeout"),
+            "message": f"supervisor timed out waiting for runtime to finish {status.get('state') or 'update transition'}",
+            "supervisor_timeout_sec": timeout_sec,
+            "supervisor_timeout_at": now,
+            "supervisor_previous_status": status,
+        }
+    )
+    with contextlib.suppress(Exception):
+        clear_core_update_plan()
+    payload["status"] = failed_status
+    payload["attempt"] = _complete_update_attempt(state="failed", status=failed_status, reason="restart/apply timeout")
+    payload["_served_by"] = "supervisor_timeout_recovery"
+    return payload
 
 
 class SupervisorManager:
@@ -283,6 +418,7 @@ class SupervisorManager:
     def status(self) -> dict[str, Any]:
         payload = self._runtime_state_payload()
         payload["persisted_state"] = _read_json(_supervisor_runtime_state_path())
+        payload["update_attempt"] = _read_update_attempt()
         return payload
 
     def supervisor_update_status(self) -> dict[str, Any]:
@@ -300,13 +436,13 @@ class SupervisorManager:
             if isinstance(payload, dict):
                 payload.setdefault("runtime", self.status())
                 payload["_served_by"] = "runtime"
-                return payload
+                return _reconcile_update_status(payload)
         except Exception:
             pass
         payload = _local_update_payload()
         payload["runtime"] = self.status()
         payload["_served_by"] = "supervisor_fallback"
-        return payload
+        return _reconcile_update_status(payload)
 
     def proxy_update_post(self, path: str, *, body: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
@@ -321,6 +457,18 @@ class SupervisorManager:
             )
             response.raise_for_status()
             payload = response.json()
+            status = payload.get("status") if isinstance(payload, dict) and isinstance(payload.get("status"), dict) else {}
+            accepted = bool(payload.get("accepted", True)) if isinstance(payload, dict) else True
+            if path.endswith("/update/start"):
+                _write_update_attempt(
+                    _build_attempt_payload(action="update", request=body, status=status, accepted=accepted)
+                )
+            elif path.endswith("/update/rollback"):
+                _write_update_attempt(
+                    _build_attempt_payload(action="rollback", request=body, status=status, accepted=accepted)
+                )
+            elif path.endswith("/update/cancel"):
+                _complete_update_attempt(state="cancelled", status=status, reason=str(body.get("reason") or "cancelled"))
             if isinstance(payload, dict):
                 payload["_served_by"] = "runtime"
                 return payload

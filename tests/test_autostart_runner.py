@@ -61,6 +61,8 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, "ok"))
     captured: list[dict] = []
+    clear_calls: list[str] = []
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: clear_calls.append("clear"))
     monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
 
     args = types.SimpleNamespace(token="dev-local-token")
@@ -72,6 +74,7 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
         raise AssertionError("expected SystemExit")
 
     assert proc.wait_called is True
+    assert clear_calls == ["clear"]
     assert captured[-1]["state"] == "succeeded"
     assert captured[-1]["phase"] == "validate"
 
@@ -105,6 +108,8 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (False, "http://127.0.0.1:8777/api/admin/update/status returned 500"))
     monkeypatch.setattr(autostart_runner, "rollback_to_previous_slot", lambda: "A")
     captured: list[dict] = []
+    clear_calls: list[str] = []
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: clear_calls.append("clear"))
     monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
 
     args = types.SimpleNamespace(token="dev-local-token")
@@ -116,9 +121,45 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
         raise AssertionError("expected SystemExit")
 
     assert proc.terminated is True
+    assert clear_calls == ["clear"]
     assert captured[-1]["phase"] == "validate"
     assert captured[-1]["restored_slot"] == "A"
     assert captured[-1]["rollback"]["ok"] is True
+
+
+def test_autostart_runner_keeps_plan_until_validation(monkeypatch, tmp_path: Path) -> None:
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        autostart_runner,
+        "_parse_args",
+        lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})(),
+    )
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(autostart_runner, "read_plan", lambda: {"target_rev": "rev2026", "target_slot": "B"})
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(autostart_runner, "execute_pending_update", lambda plan: {"state": "succeeded", "returncode": 0})
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: calls.append("clear_plan"))
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append(("write_status", payload.get("state"))))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+
+    def _launch(*args, **kwargs):
+        calls.append(("launch", kwargs.get("validate")))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(autostart_runner, "_launch_active_slot_if_needed", _launch)
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert ("launch", True) in calls
+    assert "clear_plan" not in calls
 
 
 def test_autostart_runner_writes_failed_status_on_boot_exception(monkeypatch, tmp_path: Path) -> None:

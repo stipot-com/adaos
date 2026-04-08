@@ -526,6 +526,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                 proc=proc,
             )
             if ok:
+                clear_plan()
                 write_status(
                     {
                         "state": "succeeded",
@@ -549,6 +550,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         validation_stdout = _tail_text(stdout_path)
         validation_stderr = _tail_text(stderr_path)
         restored = rollback_to_previous_slot()
+        clear_plan()
         payload: dict[str, Any] = {
             "state": "failed",
             "phase": "validate",
@@ -594,10 +596,10 @@ def main() -> None:
         if plan:
             phase = "execute_pending_update"
             result = execute_pending_update(plan)
-            clear_plan()
             if conf is not None:
                 _upload_update_report(result, conf)
             if str(result.get("state") or "") != "succeeded":
+                clear_plan()
                 raise SystemExit(int(result.get("returncode") or 1) or 1)
             pending_update_succeeded = True
         else:
