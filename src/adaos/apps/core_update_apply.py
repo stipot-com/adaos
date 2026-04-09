@@ -157,20 +157,30 @@ def _replace_slot_dir(prepared_slot: Path, slot_dir: Path) -> None:
 def _migrate_installed_skill_runtimes(
     python_executable: Path,
     *,
+    repo_root: str | os.PathLike[str] = "",
     base_dir: str | os.PathLike[str] = "",
     shared_dotenv_path: str | os.PathLike[str] = "",
     run_tests: bool = True,
 ) -> dict[str, object]:
     env = dict(os.environ)
+    repo_root_path = Path(str(repo_root or "")).expanduser().resolve() if str(repo_root or "").strip() else None
     if str(base_dir or "").strip():
         env["ADAOS_BASE_DIR"] = str(base_dir)
     if str(shared_dotenv_path or "").strip():
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv_path)
+    if repo_root_path is not None:
+        env["ADAOS_SLOT_REPO_ROOT"] = str(repo_root_path)
+        python_entries = [str(repo_root_path / "src")]
+        existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+        if existing_pythonpath:
+            python_entries.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(entry for entry in python_entries if str(entry).strip()))
     cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
     if not run_tests:
         cmd.append("--skip-tests")
     return _run_json(
         cmd,
+        cwd=repo_root_path,
         env=env,
     )
 
@@ -325,6 +335,7 @@ def prepare_slot(
         repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
         skill_runtime_migration = _migrate_installed_skill_runtimes(
             final_py,
+            repo_root=str(final_repo_dir),
             base_dir=str(base_dir or ""),
             shared_dotenv_path=shared_dotenv,
             run_tests=True,
