@@ -82,6 +82,25 @@ def test_repair_moved_venv_rewrites_script_paths(tmp_path: Path) -> None:
     assert str(final_venv) in activate_script.read_text(encoding="utf-8")
 
 
+def test_replace_slot_dir_refuses_nested_move_when_cleanup_leaves_destination(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    prepared_slot = tmp_path / "tmp-build" / "A"
+    slot_dir = tmp_path / "slots" / "A"
+    prepared_slot.mkdir(parents=True, exist_ok=True)
+    slot_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mod.shutil, "rmtree", lambda *_args, **_kwargs: None)
+
+    try:
+        mod._replace_slot_dir(prepared_slot, slot_dir)
+        assert False, "expected RuntimeError when destination survives cleanup"
+    except RuntimeError as exc:
+        assert "refusing nested move" in str(exc)
+
+
 def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_path: Path) -> None:
     import adaos.apps.core_update_apply as mod
 

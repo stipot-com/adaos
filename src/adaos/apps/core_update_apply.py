@@ -144,6 +144,16 @@ def _repair_moved_venv(venv_dir: Path, *, original_venv_dir: Path) -> dict[str, 
     }
 
 
+def _replace_slot_dir(prepared_slot: Path, slot_dir: Path) -> None:
+    if slot_dir.exists():
+        shutil.rmtree(slot_dir, ignore_errors=True)
+    if slot_dir.exists():
+        raise RuntimeError(
+            f"slot directory cleanup failed; refusing nested move into existing path: {slot_dir}"
+        )
+    shutil.move(str(prepared_slot), str(slot_dir))
+
+
 def _migrate_installed_skill_runtimes(
     python_executable: Path,
     *,
@@ -311,9 +321,7 @@ def prepare_slot(
                 "PYTHONUNBUFFERED": "1",
             },
         }
-        if os.path.exists(str(slot_dir)):
-            shutil.rmtree(slot_dir, ignore_errors=True)
-        shutil.move(str(prepared_slot), str(slot_dir))
+        _replace_slot_dir(prepared_slot, slot_dir)
         repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
         skill_runtime_migration = _migrate_installed_skill_runtimes(
             final_py,
