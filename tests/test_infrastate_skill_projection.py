@@ -547,3 +547,68 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
     assert "skill_post_commit=1/2" in note
     assert "voice_skill:tests" in note
     assert "deactivated=1" in note
+
+
+def test_infrastate_post_local_admin_prefers_supervisor_for_update_routes(monkeypatch):
+    mod = _load_infrastate_module()
+
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls.append(url)
+        return _Resp({"ok": True, "_served_by": "supervisor"})
+
+    monkeypatch.setattr(mod.requests, "post", _post)
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HOST", "127.0.0.1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PORT", "8776")
+    monkeypatch.setattr(mod, "_self_base_url", lambda conf: "http://127.0.0.1:8777")
+
+    payload = mod._post_local_admin(SimpleNamespace(token="dev-token"), "/api/admin/update/start", {"reason": "test"})
+
+    assert payload["_served_by"] == "supervisor"
+    assert calls == ["http://127.0.0.1:8776/api/supervisor/update/start"]
+
+
+def test_infrastate_post_local_admin_falls_back_to_runtime_admin_when_supervisor_is_unavailable(monkeypatch):
+    mod = _load_infrastate_module()
+
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def _post(url, headers=None, json=None, timeout=None):
+        calls.append(url)
+        if "8776" in url:
+            raise RuntimeError("supervisor unavailable")
+        return _Resp({"ok": True, "_served_by": "runtime"})
+
+    monkeypatch.setattr(mod.requests, "post", _post)
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HOST", "127.0.0.1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PORT", "8776")
+    monkeypatch.setattr(mod, "_self_base_url", lambda conf: "http://127.0.0.1:8777")
+
+    payload = mod._post_local_admin(SimpleNamespace(token="dev-token"), "/api/admin/update/cancel", {"reason": "test"})
+
+    assert payload["_served_by"] == "runtime"
+    assert calls == [
+        "http://127.0.0.1:8776/api/supervisor/update/cancel",
+        "http://127.0.0.1:8777/api/admin/update/cancel",
+    ]

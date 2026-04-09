@@ -401,6 +401,42 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     assert payload["runtime"]["degraded_matrix"]["root_routed_browser_proxy"]["allowed"] is True
 
 
+def test_reliability_snapshot_times_out_slow_sync_and_media_sections(monkeypatch) -> None:
+    _reset_state()
+
+    def _slow_sync(*, role: str, webspace_id: str | None = None):
+        import time as _time
+
+        _time.sleep(0.2)
+        return {"available": True, "assessment": {"state": "nominal", "reason": "ok"}}
+
+    def _slow_media(*, role: str, route_mode: str | None, connected_to_hub: bool | None):
+        import time as _time
+
+        _time.sleep(0.2)
+        return {"available": True, "assessment": {"state": "nominal", "reason": "ok"}}
+
+    monkeypatch.setattr("adaos.services.reliability.yjs_sync_runtime_snapshot", _slow_sync)
+    monkeypatch.setattr("adaos.services.reliability.media_plane_runtime_snapshot", _slow_media)
+    monkeypatch.setenv("ADAOS_RELIABILITY_RUNTIME_SECTION_TIMEOUT_SEC", "0.05")
+
+    snapshot = reliability_snapshot(
+        node_id="node-1",
+        subnet_id="sn_1",
+        role="hub",
+        local_ready=True,
+        node_state="ready",
+        draining=False,
+        route_mode="hub",
+        connected_to_hub=None,
+    )
+
+    assert snapshot["runtime"]["sync_runtime"]["available"] is False
+    assert snapshot["runtime"]["sync_runtime"]["_timed_out"] is True
+    assert snapshot["runtime"]["media_runtime"]["available"] is False
+    assert snapshot["runtime"]["media_runtime"]["_timed_out"] is True
+
+
 def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
     node_cli = importlib.import_module("adaos.apps.cli.commands.node")
     monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))

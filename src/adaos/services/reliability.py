@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+import queue
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -4137,6 +4138,79 @@ def media_plane_runtime_snapshot(
     return runtime
 
 
+def _runtime_snapshot_timeout_sec() -> float:
+    try:
+        return max(0.1, float(str(os.getenv("ADAOS_RELIABILITY_RUNTIME_SECTION_TIMEOUT_SEC") or "1.5").strip()))
+    except Exception:
+        return 1.5
+
+
+def _run_bounded_runtime_section(
+    *,
+    section: str,
+    fn,
+    timeout_sec: float,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    result_q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            payload = fn()
+            if not isinstance(payload, dict):
+                payload = {
+                    **fallback,
+                    "available": False,
+                    "assessment": {
+                        "state": "unavailable",
+                        "reason": f"{section} runtime returned non-dict payload",
+                    },
+                }
+            result_q.put(payload)
+        except Exception as exc:
+            result_q.put(
+                {
+                    **fallback,
+                    "available": False,
+                    "assessment": {
+                        "state": "unavailable",
+                        "reason": f"{section} runtime failed: {type(exc).__name__}: {exc}",
+                    },
+                    "_timed_out": False,
+                    "_section": section,
+                }
+            )
+
+    thread = threading.Thread(target=_worker, name=f"adaos-reliability-{section}", daemon=True)
+    thread.start()
+    thread.join(max(0.1, float(timeout_sec)))
+    if thread.is_alive():
+        return {
+            **fallback,
+            "available": False,
+            "assessment": {
+                "state": "degraded",
+                "reason": f"{section} runtime timed out after {round(float(timeout_sec), 3)}s",
+            },
+            "_timed_out": True,
+            "_section": section,
+        }
+    try:
+        payload = result_q.get_nowait()
+    except Exception:
+        payload = {
+            **fallback,
+            "available": False,
+            "assessment": {
+                "state": "unavailable",
+                "reason": f"{section} runtime returned no payload",
+            },
+            "_timed_out": False,
+            "_section": section,
+        }
+    return payload if isinstance(payload, dict) else dict(fallback)
+
+
 def reliability_snapshot(
     *,
     node_id: str,
@@ -4201,11 +4275,43 @@ def reliability_snapshot(
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,
     )
-    sync_runtime = yjs_sync_runtime_snapshot(role=role, webspace_id=webspace_id)
-    media_runtime = media_plane_runtime_snapshot(
-        role=role,
-        route_mode=route_mode,
-        connected_to_hub=connected_to_hub,
+    section_timeout = _runtime_snapshot_timeout_sec()
+    sync_runtime = _run_bounded_runtime_section(
+        section="sync",
+        timeout_sec=section_timeout,
+        fn=lambda: yjs_sync_runtime_snapshot(role=role, webspace_id=webspace_id),
+        fallback={
+            "available": False,
+            "scope": "hub_local_only",
+            "selected_webspace_id": str(webspace_id or "").strip() or None,
+            "transport": {},
+            "action_overrides": {},
+            "recovery_playbook": {},
+            "recovery_guidance": {},
+            "selected_webspace": {},
+            "webspace_guidance": {},
+            "webspace_total": 0,
+            "active_webspace_total": 0,
+            "webspaces": {},
+        },
+    )
+    media_runtime = _run_bounded_runtime_section(
+        section="media",
+        timeout_sec=section_timeout,
+        fn=lambda: media_plane_runtime_snapshot(
+            role=role,
+            route_mode=route_mode,
+            connected_to_hub=connected_to_hub,
+        ),
+        fallback={
+            "available": False,
+            "transport": {
+                "role": str(role or "").strip().lower() or None,
+                "route_mode": str(route_mode or "").strip() or None,
+                "connected_to_hub": connected_to_hub,
+                "control_readiness_impact": "none",
+            },
+        },
     )
     return {
         "ok": True,
