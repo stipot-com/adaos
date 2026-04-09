@@ -109,9 +109,9 @@ def _upload_update_report(status: dict[str, object], conf) -> None:
 
 def _update_validation_timeout_sec() -> float:
     try:
-        return max(1.0, float(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_TIMEOUT_SEC") or "20"))
+        return max(1.0, float(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_TIMEOUT_SEC") or "45"))
     except Exception:
-        return 20.0
+        return 45.0
 
 
 def _update_validation_strict() -> bool:
@@ -283,7 +283,8 @@ def _probe_update_runtime(
     proc: subprocess.Popen | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     base_url = f"http://{host}:{int(port)}"
-    deadline = time.time() + max(1.0, timeout_sec)
+    timeout_sec = max(1.0, float(timeout_sec))
+    deadline = time.time() + timeout_sec
     last_error = "runtime validation did not start"
     headers = _validation_headers(token)
     strict = _update_validation_strict()
@@ -301,6 +302,7 @@ def _probe_update_runtime(
                     "ok": False,
                     "summary": last_error,
                     "base_url": base_url,
+                    "timeout_sec": timeout_sec,
                     "attempts": attempts,
                     "token_present": bool(token),
                     "strict": strict,
@@ -467,6 +469,7 @@ def _probe_update_runtime(
                         "ok": True,
                         "summary": "ok" if not attempt["warnings"] else "ok_with_warnings",
                         "base_url": base_url,
+                        "timeout_sec": timeout_sec,
                         "attempts": attempts,
                         "token_present": bool(token),
                         "strict": strict,
@@ -480,6 +483,7 @@ def _probe_update_runtime(
                 "ok": True,
                 "summary": "ok",
                 "base_url": base_url,
+                "timeout_sec": timeout_sec,
                 "attempts": attempts,
                 "token_present": bool(token),
                 "strict": strict,
@@ -492,6 +496,7 @@ def _probe_update_runtime(
         "ok": False,
         "summary": last_error,
         "base_url": base_url,
+        "timeout_sec": timeout_sec,
         "attempts": attempts,
         "token_present": bool(token),
         "strict": strict,

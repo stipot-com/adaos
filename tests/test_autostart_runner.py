@@ -314,4 +314,87 @@ def test_probe_update_runtime_fails_when_runtime_guard_fails(monkeypatch) -> Non
 
     assert ok is False
     assert details["runtime_guards"] is True
+    assert details["timeout_sec"] == 1.0
     assert "y server task crashed" in str(details["summary"])
+
+
+def test_update_validation_timeout_sec_defaults_to_45_seconds(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_CORE_UPDATE_VALIDATE_TIMEOUT_SEC", raising=False)
+
+    assert autostart_runner._update_validation_timeout_sec() == 45.0
+
+
+def test_probe_update_runtime_succeeds_after_initial_ping_failures(monkeypatch) -> None:
+    class _Response:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict:
+            return dict(self._payload)
+
+    attempts = {"ping": 0}
+
+    def _fake_get(url: str, headers=None, timeout=None):
+        if url.endswith("/api/ping"):
+            attempts["ping"] += 1
+            if attempts["ping"] < 3:
+                raise autostart_runner.requests.ConnectionError("connection refused")
+            return _Response(200, {"ok": True})
+        if url.endswith("/api/status"):
+            return _Response(200, {"ok": True})
+        if url.endswith("/api/admin/update/status"):
+            return _Response(
+                200,
+                {
+                    "ok": True,
+                    "slots": {"active_slot": "B"},
+                    "active_manifest": {"slot": "B"},
+                },
+            )
+        if url.endswith("/api/node/sidecar/status"):
+            return _Response(200, {"ok": True, "runtime": {"enabled": False}, "process": {}})
+        if "/api/node/yjs/webspaces/default/runtime" in url:
+            return _Response(
+                200,
+                {
+                    "ok": True,
+                    "runtime": {
+                        "available": True,
+                        "selected_webspace_id": "default",
+                        "assessment": {"state": "ready"},
+                        "transport": {"server_ready": True},
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected url {url}")
+
+    class _FakeClock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def time(self) -> float:
+            return self.value
+
+        def sleep(self, seconds: float) -> None:
+            self.value += float(seconds)
+
+    clock = _FakeClock()
+    monkeypatch.setattr(autostart_runner.requests, "get", _fake_get)
+    monkeypatch.setattr(autostart_runner.time, "time", clock.time)
+    monkeypatch.setattr(autostart_runner.time, "sleep", clock.sleep)
+    monkeypatch.delenv("ADAOS_CORE_UPDATE_VALIDATE_STRICT", raising=False)
+    monkeypatch.delenv("ADAOS_CORE_UPDATE_VALIDATE_RUNTIME", raising=False)
+
+    ok, details = autostart_runner._probe_update_runtime(
+        host="127.0.0.1",
+        port=8777,
+        token="dev-local-token",
+        timeout_sec=2.0,
+        expected_slot="B",
+    )
+
+    assert ok is True
+    assert details["attempts"] == 3
+    assert details["timeout_sec"] == 2.0
+    assert details["last_attempt"]["checks"][0]["ok"] is True
