@@ -175,7 +175,11 @@ def _migrate_installed_skill_runtimes(
         if existing_pythonpath:
             python_entries.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(entry for entry in python_entries if str(entry).strip()))
-    cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
+    migrate_script = repo_root_path / "src" / "adaos" / "apps" / "skill_runtime_migrate.py" if repo_root_path is not None else None
+    if migrate_script is not None and migrate_script.exists():
+        cmd = [str(python_executable), str(migrate_script), "--json"]
+    else:
+        cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
     if not run_tests:
         cmd.append("--skip-tests")
     return _run_json(

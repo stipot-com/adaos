@@ -106,7 +106,9 @@ def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_pa
 
     captured: dict[str, object] = {}
     repo_root = tmp_path / "repo"
-    (repo_root / "src").mkdir(parents=True, exist_ok=True)
+    migrate_script = repo_root / "src" / "adaos" / "apps" / "skill_runtime_migrate.py"
+    migrate_script.parent.mkdir(parents=True, exist_ok=True)
+    migrate_script.write_text("print('ok')\n", encoding="utf-8")
 
     def _fake_run(cmd, cwd=None, env=None, capture_output=None, text=None):
         captured["cmd"] = list(cmd)
@@ -127,8 +129,7 @@ def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_pa
     assert payload["ok"] is True
     assert captured["cmd"] == [
         str(tmp_path / "venv" / "bin" / "python"),
-        "-m",
-        "adaos.apps.skill_runtime_migrate",
+        str(migrate_script),
         "--json",
     ]
     assert captured["cwd"] == str(repo_root)
@@ -143,7 +144,9 @@ def test_migrate_installed_skill_runtimes_can_skip_tests(monkeypatch, tmp_path: 
 
     captured: dict[str, object] = {}
     repo_root = tmp_path / "repo"
-    (repo_root / "src").mkdir(parents=True, exist_ok=True)
+    migrate_script = repo_root / "src" / "adaos" / "apps" / "skill_runtime_migrate.py"
+    migrate_script.parent.mkdir(parents=True, exist_ok=True)
+    migrate_script.write_text("print('ok')\n", encoding="utf-8")
 
     def _fake_run(cmd, cwd=None, env=None, capture_output=None, text=None):
         captured["cmd"] = list(cmd)
@@ -161,11 +164,39 @@ def test_migrate_installed_skill_runtimes_can_skip_tests(monkeypatch, tmp_path: 
 
     assert captured["cmd"] == [
         str(tmp_path / "venv" / "bin" / "python"),
-        "-m",
-        "adaos.apps.skill_runtime_migrate",
+        str(migrate_script),
         "--json",
         "--skip-tests",
     ]
     assert captured["cwd"] == str(repo_root)
     assert captured["env"]["PYTHONPATH"].split(mod.os.pathsep)[0] == str(repo_root / "src")
+
+
+def test_migrate_installed_skill_runtimes_falls_back_to_module_when_script_missing(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    captured: dict[str, object] = {}
+    repo_root = tmp_path / "repo"
+    (repo_root / "src").mkdir(parents=True, exist_ok=True)
+
+    def _fake_run(cmd, cwd=None, env=None, capture_output=None, text=None):
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = cwd
+        captured["env"] = dict(env or {})
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "skills": []}), stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+    mod._migrate_installed_skill_runtimes(
+        tmp_path / "venv" / "bin" / "python",
+        repo_root=repo_root,
+        run_tests=True,
+    )
+
+    assert captured["cmd"] == [
+        str(tmp_path / "venv" / "bin" / "python"),
+        "-m",
+        "adaos.apps.skill_runtime_migrate",
+        "--json",
+    ]
 
