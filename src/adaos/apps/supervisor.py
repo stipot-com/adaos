@@ -556,6 +556,29 @@ class SupervisorManager:
             )
             _complete_update_attempt(state="cancelled", status=status, reason=reason)
             raise
+        except Exception as exc:
+            clear_core_update_plan()
+            status = write_core_update_status(
+                {
+                    "state": "failed",
+                    "phase": "shutdown",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "message": "failed to request runtime shutdown for pending core update",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "updated_at": time.time(),
+                }
+            )
+            _complete_update_attempt(
+                state="failed",
+                status=status,
+                reason=f"shutdown request failed: {type(exc).__name__}",
+            )
         finally:
             if self._update_task is not None and self._update_task.done():
                 self._update_task = None

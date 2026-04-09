@@ -142,3 +142,47 @@ def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypat
     assert status["state"] == "restarting"
     assert status["phase"] == "shutdown"
     assert shutdown_calls and shutdown_calls[0]["reason"] == "test.rollback"
+
+
+def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _fake_sleep(_value: float) -> None:
+        return None
+
+    async def _fake_shutdown(*, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict:
+        raise RuntimeError("runtime shutdown API unavailable")
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _fake_shutdown)
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "requested_at": 1.0,
+            "transitioned_at": 2.0,
+            "updated_at": 2.0,
+        }
+    )
+
+    asyncio.run(
+        manager._countdown_update_worker(
+            action="update",
+            target_rev="HEAD",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=0.0,
+            drain_timeout_sec=5.0,
+            signal_delay_sec=0.1,
+        )
+    )
+
+    assert read_plan() is None
+    status = read_status()
+    assert status["state"] == "failed"
+    assert status["phase"] == "shutdown"
+    assert status["error_type"] == "RuntimeError"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "failed"
