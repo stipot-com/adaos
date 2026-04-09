@@ -186,3 +186,30 @@ def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(mo
     attempt = supervisor._read_update_attempt()
     assert isinstance(attempt, dict)
     assert attempt["state"] == "failed"
+
+
+def test_runtime_state_payload_reports_listener_and_api_readiness(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: False)
+
+    payload = manager.status()
+
+    assert payload["managed_alive"] is True
+    assert payload["listener_running"] is True
+    assert payload["runtime_api_ready"] is False
+    assert payload["runtime_state"] == "starting"
+    assert payload["managed_executable"] == "python"
+    assert payload["managed_cmdline"][1:3] == ["-m", "adaos.apps.autostart_runner"]

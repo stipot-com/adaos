@@ -132,6 +132,8 @@ This API is the source of truth for:
 - rollback decisions
 - current managed child processes
 - current skill runtime migration diagnostics for the active core update attempt
+- runtime liveness separate from listener bind and runtime API readiness
+- active managed runtime command/executable source for the current slot
 
 ### Runtime API
 

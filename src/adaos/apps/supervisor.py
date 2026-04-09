@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -232,6 +233,27 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _listener_running(host: str, port: int, *, timeout: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((str(host or "127.0.0.1"), int(port)), timeout=max(0.05, float(timeout))):
+            return True
+    except Exception:
+        return False
+
+
+def _runtime_api_ready(base_url: str, *, token: str | None, timeout: float = 0.75) -> bool:
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-AdaOS-Token"] = token
+    try:
+        response = requests.get(f"{base_url}/api/ping", headers=headers, timeout=max(0.1, float(timeout)))
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return False
+    return bool(isinstance(payload, dict) and payload.get("ok") is True)
+
+
 class SupervisorManager:
     def __init__(self, *, runtime_host: str, runtime_port: int, token: str | None) -> None:
         self.runtime_host = str(runtime_host or "127.0.0.1").strip() or "127.0.0.1"
@@ -278,13 +300,34 @@ class SupervisorManager:
         proc = self._proc
         managed_pid = None
         managed_alive = False
+        managed_cmdline: list[str] = []
+        managed_executable = None
+        managed_cwd = None
         if proc is not None:
             try:
                 managed_pid = int(proc.pid or 0) or None
                 managed_alive = proc.poll() is None
+                raw_args = proc.args if isinstance(proc.args, (list, tuple)) else [str(proc.args or "")]
+                managed_cmdline = [str(item) for item in raw_args if str(item or "").strip()]
+                managed_executable = managed_cmdline[0] if managed_cmdline else None
+                managed_cwd = str(proc.cwd) if getattr(proc, "cwd", None) else os.getcwd()
             except Exception:
                 managed_pid = None
                 managed_alive = False
+                managed_cmdline = []
+                managed_executable = None
+                managed_cwd = None
+        listener_running = bool(managed_alive) and _listener_running(self.runtime_host, self.runtime_port)
+        api_ready = listener_running and _runtime_api_ready(self.runtime_base_url, token=self.token)
+        runtime_state = "stopped"
+        if self._stopping:
+            runtime_state = "stopping"
+        elif managed_alive and api_ready:
+            runtime_state = "ready"
+        elif managed_alive and listener_running:
+            runtime_state = "starting"
+        elif managed_alive:
+            runtime_state = "spawned"
         return {
             "ok": True,
             "supervisor_pid": os.getpid(),
@@ -296,6 +339,12 @@ class SupervisorManager:
             "stopping": bool(self._stopping),
             "managed_pid": managed_pid,
             "managed_alive": managed_alive,
+            "listener_running": listener_running,
+            "runtime_api_ready": api_ready,
+            "runtime_state": runtime_state,
+            "managed_cmdline": managed_cmdline,
+            "managed_executable": managed_executable,
+            "managed_cwd": managed_cwd,
             "restart_count": int(self._restart_count),
             "last_start_at": self._last_start_at,
             "last_exit_at": self._last_exit_at,

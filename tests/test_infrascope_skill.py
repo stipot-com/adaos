@@ -439,3 +439,94 @@ def test_infrascope_fallback_snapshot_keeps_local_inventory():
     assert snapshot["inventory"]["all"]
     assert snapshot["inventory"]["all"][0]["object_id"] == "local"
     assert snapshot["inventory"]["hubs"][0]["object_id"] == "local"
+
+
+def test_infrascope_snapshot_keeps_partial_yjs_payload_when_one_inspector_fails(monkeypatch):
+    mod = _load_infrascope_module()
+
+    local = _FakeCanonicalObject("local", "hub", "Local hub", status="online")
+    member = _FakeCanonicalObject("member-1", "member", "Kitchen member", status="degraded")
+    projection = SimpleNamespace(
+        subject=local,
+        objects=[member],
+        context={
+            "summary_tile": {"label": "scope", "value": "warning", "subtitle": "partial"},
+            "health_strip": [],
+            "active_incidents": [],
+            "quota_summary": [],
+            "active_runtimes": [],
+            "recent_changes": [],
+        },
+    )
+
+    monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: projection)
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [local, member])
+
+    def _inspector(object_id, task_goal=None, webspace_id=None):
+        if object_id == "member-1":
+            raise FileNotFoundError("missing member artifact")
+        return {
+            "object_id": "local",
+            "object_title": "Local hub",
+            "label": "hub",
+            "value": "online",
+            "topology": {"edges": []},
+            "task_packet": {},
+        }
+
+    monkeypatch.setattr(mod, "get_object_inspector", _inspector)
+
+    snapshot = mod.get_snapshot(webspace_id="ws-1")
+
+    assert snapshot["summary"]["value"] == "warning"
+    assert snapshot["inventory"]["all"]
+    assert snapshot["inspectors"]["member-1"]["warning"] == "FileNotFoundError: missing member artifact"
+    assert snapshot["summary"]["object_id"] == "local"
+
+
+def test_infrascope_snapshot_reuses_last_good_snapshot_when_refresh_fails(monkeypatch):
+    mod = _load_infrascope_module()
+
+    local = _FakeCanonicalObject("local", "hub", "Local hub", status="online")
+    projection = SimpleNamespace(
+        subject=local,
+        objects=[],
+        context={
+            "summary_tile": {"label": "scope", "value": "online", "subtitle": "steady"},
+            "health_strip": [],
+            "active_incidents": [],
+            "quota_summary": [],
+            "active_runtimes": [],
+            "recent_changes": [],
+        },
+    )
+
+    monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: projection)
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [local])
+    monkeypatch.setattr(
+        mod,
+        "get_object_inspector",
+        lambda object_id, task_goal=None, webspace_id=None: {
+            "object_id": "local",
+            "object_title": "Local hub",
+            "label": "hub",
+            "value": "online",
+            "topology": {"edges": []},
+            "task_packet": {},
+        },
+    )
+
+    first = mod.get_snapshot(webspace_id="ws-1")
+    assert first["summary"]["value"] == "online"
+
+    def _raise_snapshot(*args, **kwargs):
+        raise FileNotFoundError("missing control-plane file")
+
+    monkeypatch.setattr(mod, "_snapshot", _raise_snapshot)
+
+    second = mod.get_snapshot(webspace_id="ws-1")
+
+    assert second["summary"]["value"] == "online"
+    assert second["summary"]["warning"] == "FileNotFoundError: missing control-plane file"
+    assert second["meta"]["stale"] is True
+    assert second["inventory"]["all"][0]["object_id"] == "local"

@@ -186,7 +186,7 @@ Move transport ownership where it reduces blast radius, without moving protocol 
 
 ### Status
 
-Planned.
+In progress.
 
 The next reliability gap after transport isolation is local process/update supervision.
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
@@ -214,6 +214,9 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - migrate installed skill runtimes as an explicit core-update subflow rather than assuming old interpreter dependencies remain valid
 - persist per-skill migration diagnostics (`prepare` / `test` / `activate` / `rollback` / `deactivate`) in core-update results
 - surface skill migration failures and selective post-commit deactivations in Infra State and Infrascope
+- separate runtime liveness from listener/API readiness in supervisor-visible status
+- surface the active managed runtime command/source in supervisor diagnostics
+- harden diagnostic skills so Yjs-backed operator surfaces keep the last usable local snapshot during transient control-plane file failures
 
 ### Candidate code areas
 
