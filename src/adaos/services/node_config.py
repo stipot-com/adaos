@@ -3,12 +3,15 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
+from copy import deepcopy
 import os
 import shutil
 import sys
 import uuid
 import yaml
 from adaos.services.agent_context import get_ctx, AgentContext  # type: ignore
+
+_NODE_CONFIG_CACHE: dict[str, tuple[int | None, "NodeConfig"]] = {}
 
 
 def _base_dir(ctx: AgentContext | None = None) -> Path:
@@ -573,6 +576,18 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         save_node(conf, ctx=ctx)
         _sync_ctx_config(conf, ctx)
         return conf
+    cache_key = str(path.resolve())
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except Exception:
+        mtime_ns = None
+    cached = _NODE_CONFIG_CACHE.get(cache_key)
+    if cached is not None:
+        cached_mtime_ns, cached_conf = cached
+        if cached_mtime_ns == mtime_ns:
+            conf = deepcopy(cached_conf)
+            _sync_ctx_config(conf, ctx)
+            return conf
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     raw_root_settings = data.get("root")
@@ -613,6 +628,8 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     changed = _migrate_managed_key_material(conf) or changed
     if changed:
         save_node(conf, ctx=ctx)
+    else:
+        _NODE_CONFIG_CACHE[cache_key] = (mtime_ns, deepcopy(conf))
     _sync_ctx_config(conf, ctx)
     return conf
 
@@ -647,6 +664,11 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
         yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except Exception:
+        mtime_ns = None
+    _NODE_CONFIG_CACHE[str(path.resolve())] = (mtime_ns, deepcopy(conf))
     _sync_ctx_config(conf, ctx)
 
 

@@ -176,6 +176,57 @@ def test_node_control_plane_inventory_projection_returns_canonical_payload(monke
     assert payload["projection"]["objects"][0]["id"] == "workspace:desk"
 
 
+def test_current_control_plane_objects_reuses_short_ttl_cache(monkeypatch) -> None:
+    from adaos.services.system_model import service as mod
+
+    calls = {"inventory": 0, "reliability": 0, "neighborhood": 0}
+    node = CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online")
+
+    monkeypatch.setattr(mod, "_CONTROL_PLANE_CACHE", {})
+    monkeypatch.setattr(mod, "_CONTROL_PLANE_CACHE_TTL_S", 60.0)
+    monkeypatch.setattr(mod, "current_node_object", lambda: node)
+
+    def _inventory():
+        calls["inventory"] += 1
+        return CanonicalProjection(
+            id="projection:inventory",
+            kind="inventory",
+            title="Inventory",
+            subject=node,
+            objects=[CanonicalObject(id="workspace:desk", kind="workspace", title="Desk", status="online")],
+        )
+
+    def _reliability(*, webspace_id=None):
+        calls["reliability"] += 1
+        return CanonicalProjection(
+            id="projection:reliability",
+            kind="reliability",
+            title="Reliability",
+            subject=node,
+            objects=[CanonicalObject(id="runtime:yjs", kind="runtime", title="YJS", status="online")],
+        )
+
+    def _neighborhood(*, webspace_id=None):
+        calls["neighborhood"] += 1
+        return CanonicalProjection(
+            id="projection:neighborhood",
+            kind="neighborhood",
+            title="Neighborhood",
+            subject=node,
+            objects=[CanonicalObject(id="member:beta", kind="member", title="Beta", status="online")],
+        )
+
+    monkeypatch.setattr(mod, "current_inventory_projection", _inventory)
+    monkeypatch.setattr(mod, "current_reliability_projection", _reliability)
+    monkeypatch.setattr(mod, "_current_node_neighborhood_projection", _neighborhood)
+
+    first = mod.current_control_plane_objects()
+    second = mod.current_control_plane_objects()
+
+    assert [item.id for item in first] == [item.id for item in second]
+    assert calls == {"inventory": 1, "reliability": 1, "neighborhood": 1}
+
+
 def test_node_control_plane_neighborhood_projection_returns_canonical_payload(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     fake_y_py = types.SimpleNamespace(

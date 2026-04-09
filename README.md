@@ -136,6 +136,7 @@ adaos autostart inspect --sample-sec 0.5
 adaos autostart inspect --json
 runtime_pid = runtime_process.pid
 /root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install py-spy
+/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install 'websockets>=13,<16'
 /root/adaos/.adaos/state/core_slots/slots/A/venv/bin/py-spy dump --pid <runtime_pid>
 
 # Boot debug 

@@ -56,6 +56,33 @@ def test_load_config_refreshes_agent_context() -> None:
     assert ctx.config.role == "member"
 
 
+def test_load_config_reuses_cached_node_yaml_without_reparsing(monkeypatch) -> None:
+    import adaos.services.node_config as mod
+
+    ctx = get_ctx()
+    baseline = mod.load_config()
+    path = Path(ctx.paths.base_dir()) / "node.yaml"
+    original = path.read_text(encoding="utf-8")
+    mod._NODE_CONFIG_CACHE.clear()
+
+    calls = {"count": 0}
+    original_safe_load = mod.yaml.safe_load
+
+    def _counting_safe_load(*args, **kwargs):
+        calls["count"] += 1
+        return original_safe_load(*args, **kwargs)
+
+    monkeypatch.setattr(mod.yaml, "safe_load", _counting_safe_load)
+
+    first = mod.load_config()
+    second = mod.load_config()
+
+    assert first.subnet_id == baseline.subnet_id
+    assert first.subnet_id == second.subnet_id
+    assert calls["count"] == 1
+    path.write_text(original, encoding="utf-8")
+
+
 def test_save_config_stores_managed_key_paths_relative_to_base() -> None:
     ctx = get_ctx()
     detached = _detached_config()

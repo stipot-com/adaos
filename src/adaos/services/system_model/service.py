@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from adaos.services.bootstrap import is_ready, load_config
@@ -34,6 +35,10 @@ from adaos.services.system_model.projections import (
     canonical_topology_projection,
     canonical_projection_from_reliability_snapshot,
 )
+
+
+_CONTROL_PLANE_CACHE_TTL_S = 1.0
+_CONTROL_PLANE_CACHE: dict[str, tuple[float, list[Any]]] = {}
 
 
 def route_info(role: str) -> tuple[str | None, bool | None]:
@@ -198,6 +203,14 @@ def _current_node_neighborhood_projection(*, webspace_id: str | None = None):
 
 
 def current_control_plane_objects(*, webspace_id: str | None = None) -> list[Any]:
+    cache_key = str(webspace_id or "").strip()
+    now = time.monotonic()
+    cached = _CONTROL_PLANE_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, cached_objects = cached
+        if now - cached_at <= _CONTROL_PLANE_CACHE_TTL_S:
+            return list(cached_objects)
+
     subject = current_node_object()
     inventory = current_inventory_projection()
     reliability = current_reliability_projection(webspace_id=webspace_id)
@@ -206,6 +219,7 @@ def current_control_plane_objects(*, webspace_id: str | None = None) -> list[Any
     seen: set[str] = set()
     for item in [subject, inventory.subject, reliability.subject, neighborhood.subject, *inventory.objects, *reliability.objects, *neighborhood.objects]:
         _append_unique(objects, item, seen)
+    _CONTROL_PLANE_CACHE[cache_key] = (now, list(objects))
     return objects
 
 
