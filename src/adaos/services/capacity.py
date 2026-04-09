@@ -2,10 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List
+from copy import deepcopy
 import yaml
 
 from adaos.services.eventbus import emit
 from adaos.services.runtime_paths import current_base_dir
+
+
+_CAPACITY_CACHE: dict[str, tuple[int | None, Dict[str, Any]]] = {}
+
+
+def _cache_key(base_dir: Path) -> str:
+    return str(Path(base_dir).expanduser().resolve())
+
+
+def _node_yaml_mtime_ns(path: Path) -> int | None:
+    try:
+        if not path.exists():
+            return None
+        return int(path.stat().st_mtime_ns)
+    except Exception:
+        return None
 
 
 def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]:
@@ -21,8 +38,14 @@ def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]
     # Resolve .adaos base dir lazily from env/context if not provided
     if base_dir is None:
         base_dir = current_base_dir()
+    base_dir = Path(base_dir).expanduser().resolve()
 
     node_path = Path(base_dir) / "node.yaml"
+    cache_key = _cache_key(base_dir)
+    mtime_ns = _node_yaml_mtime_ns(node_path)
+    cached = _CAPACITY_CACHE.get(cache_key)
+    if cached and cached[0] == mtime_ns:
+        return deepcopy(cached[1])
     try:
         data = yaml.safe_load(node_path.read_text(encoding="utf-8")) if node_path.exists() else {}
     except Exception:
@@ -82,7 +105,9 @@ def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]
             "priority": 40,
         })
 
-    return {"io": io_list, "skills": skills_list, "scenarios": scenarios_list}
+    result = {"io": io_list, "skills": skills_list, "scenarios": scenarios_list}
+    _CAPACITY_CACHE[cache_key] = (mtime_ns, deepcopy(result))
+    return deepcopy(result)
 
 
 def get_local_capacity() -> Dict[str, Any]:
@@ -113,6 +138,7 @@ def _save_node_yaml(data: Dict[str, Any], base_dir: Path | None = None) -> None:
     path = Path(base) / "node.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _CAPACITY_CACHE.pop(_cache_key(base), None)
 
 
 def _get_ctx_for_events():

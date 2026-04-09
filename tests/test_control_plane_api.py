@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -530,6 +531,38 @@ def test_sdk_control_plane_local_capacity_and_io_helpers(monkeypatch) -> None:
 
     assert capacity["id"] == "capacity:node-1"
     assert io_items[0]["kind"] == "io_endpoint"
+
+
+def test_capacity_loader_reuses_cached_node_yaml_until_mtime_changes(tmp_path: Path, monkeypatch) -> None:
+    from adaos.services import capacity as mod
+
+    base = tmp_path / "base"
+    base.mkdir(parents=True, exist_ok=True)
+    node_yaml = base / "node.yaml"
+    node_yaml.write_text(
+        "capacity:\n"
+        "  io:\n"
+        "    - io_type: git\n"
+        "      capabilities: [git]\n",
+        encoding="utf-8",
+    )
+
+    real_safe_load = mod.yaml.safe_load
+    calls = {"count": 0}
+
+    def _counting_safe_load(text):
+        calls["count"] += 1
+        return real_safe_load(text)
+
+    monkeypatch.setattr(mod.yaml, "safe_load", _counting_safe_load)
+    mod._CAPACITY_CACHE.clear()
+
+    first = mod.load_capacity_from_node_yaml(base)
+    second = mod.load_capacity_from_node_yaml(base)
+
+    assert calls["count"] == 1
+    assert first == second
+    assert first is not second
 
 
 def test_sdk_control_plane_device_helpers(monkeypatch) -> None:

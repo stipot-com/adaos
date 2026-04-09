@@ -96,6 +96,7 @@ curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если треб�
 adaos autostart enable
 adaos autostart status
 adaos autostart inspect
+adaos autostart inspect --json
 adaos autostart disable
 
 
@@ -130,6 +131,12 @@ adaos hub root reconnect --transport ws|tcp
 adaos autostart inspect
 adaos autostart inspect --json
 adaos autostart inspect --sample-sec 0.5
+
+# CPU inspection
+adaos autostart inspect --json
+runtime_pid = runtime_process.pid
+/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install py-spy
+/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/py-spy dump --pid <runtime_pid>
 
 # Boot debug 
 # https://myinimatic.web.app/?boot_debug=1
