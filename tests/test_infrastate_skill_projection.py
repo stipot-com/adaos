@@ -187,6 +187,41 @@ def test_infrastate_snapshot_tolerates_section_failures(monkeypatch):
     assert snapshot["marketplace"] == {"skills": [], "scenarios": []}
 
 
+def test_infrastate_snapshot_tolerates_bootstrap_file_not_found(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "_ensure_skill_data_projections", lambda: None)
+    monkeypatch.setattr(mod, "load_config", lambda: SimpleNamespace(role="hub", node_id="hub-1", node_names=["hub"]))
+    monkeypatch.setattr(mod, "read_core_update_status", lambda: (_ for _ in ()).throw(FileNotFoundError("missing core status")))
+    monkeypatch.setattr(mod, "read_core_update_last_result", lambda: (_ for _ in ()).throw(FileNotFoundError("missing core result")))
+    monkeypatch.setattr(mod, "slot_status", lambda: (_ for _ in ()).throw(FileNotFoundError("missing slots")))
+    monkeypatch.setattr(mod, "runtime_lifecycle_snapshot", lambda: (_ for _ in ()).throw(FileNotFoundError("missing lifecycle")))
+    monkeypatch.setattr(mod, "_build_meta", lambda: (_ for _ in ()).throw(FileNotFoundError("missing build meta")))
+    monkeypatch.setattr(mod, "_ui_state", lambda: {})
+    monkeypatch.setattr(mod, "_reliability_snapshot", lambda conf, lifecycle: (_ for _ in ()).throw(FileNotFoundError("missing reliability")))
+    monkeypatch.setattr(mod, "_transport_diag_snapshot", lambda: (_ for _ in ()).throw(FileNotFoundError("missing transport diag")))
+    monkeypatch.setattr(mod, "_read_json", lambda path: (_ for _ in ()).throw(FileNotFoundError("missing report")))
+    monkeypatch.setattr(mod, "_build_items", lambda build: [])
+    monkeypatch.setattr(mod, "_step_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_realtime_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_slot_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_skills_items", lambda: [])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_marketplace_items", lambda webspace_id=None: {"skills": [], "scenarios": []})
+    monkeypatch.setattr(mod, "_status_log_items", lambda report: [])
+    monkeypatch.setattr(mod, "_event_state", lambda: [])
+
+    snapshot = mod._snapshot()
+
+    assert snapshot.get("fallback") is not True
+    assert snapshot["summary"]["label"] in {"Infra State", "Core update"}
+    assert snapshot["skills"] == []
+    assert snapshot["scenarios"] == []
+    assert snapshot["marketplace"] == {"skills": [], "scenarios": []}
+    assert snapshot["nodes"]
+    assert snapshot["node_editor"]["scope"] in {"fallback", "local"}
+
+
 def test_infrastate_scenario_items_only_show_installed_registry_entries(monkeypatch, tmp_path: Path):
     mod = _load_infrastate_module()
     workspace = tmp_path / "workspace"

@@ -29,14 +29,6 @@ SEED: dict = {
                             "actions": [
                                 {
                                     "on": "select",
-                                    "type": "callHost",
-                                    "target": "desktop.scenario.set",
-                                    "params": {
-                                        "scenario_id": "$event.scenario_id",
-                                    },
-                                },
-                                {
-                                    "on": "select",
                                     "type": "openModal",
                                     "params": {"modalId": "$event.action.openModal"},
                                 },
