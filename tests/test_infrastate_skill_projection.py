@@ -584,6 +584,65 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
     assert "deactivated=1" in note
 
 
+def test_infrastate_core_update_diagnostics_include_required_local_payloads(monkeypatch, tmp_path: Path):
+    mod = _load_infrastate_module()
+
+    base_dir = tmp_path / ".adaos"
+    (base_dir / "state" / "supervisor").mkdir(parents=True, exist_ok=True)
+    runtime_path = base_dir / "state" / "supervisor" / "runtime.json"
+    runtime_path.write_text('{"runtime_state":"spawned","managed_matches_active_slot":false}', encoding="utf-8")
+    slot_dir = base_dir / "state" / "core_slots" / "slots" / "B"
+    (slot_dir / "repo" / "src").mkdir(parents=True, exist_ok=True)
+    (slot_dir / "venv" / "bin").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mod, "_base_dir", lambda: base_dir)
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="journal tail line\nsecond line", stderr="", returncode=0),
+    )
+
+    last_result = {
+        "state": "failed",
+        "phase": "apply",
+        "target_slot": "B",
+        "message": "core update command failed",
+    }
+    status = {"state": "idle"}
+    slots_payload = {"inactive_slot": "B"}
+
+    items = mod._core_update_diagnostic_items(status, last_result, slots_payload, local_node=True)
+    actions = mod._core_update_diagnostic_actions(items)
+
+    by_id = {item["id"]: item for item in items}
+    assert "core-update-last-result" in by_id
+    assert "supervisor-runtime" in by_id
+    assert "target-slot-tree" in by_id
+    assert "adaos-service-journal" in by_id
+    assert "journal tail line" in by_id["adaos-service-journal"]["content"]
+    assert "repo/src" in by_id["target-slot-tree"]["content"]
+    assert any(item["id"] == "copy_core_update_diag_bundle" for item in actions)
+    assert any(item["id"] == "copy_core_update_diag_commands" for item in actions)
+
+
+def test_infrastate_core_update_diagnostics_skip_local_files_for_remote_member(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "_base_dir", lambda: Path("/base"))
+    items = mod._core_update_diagnostic_items(
+        {"state": "idle"},
+        {"state": "failed", "target_slot": "B"},
+        {"inactive_slot": "B"},
+        local_node=False,
+    )
+
+    ids = [item["id"] for item in items]
+    assert "core-update-diagnostic-commands" in ids
+    assert "core-update-last-result" in ids
+    assert "supervisor-runtime" not in ids
+    assert "target-slot-tree" not in ids
+
+
 def test_infrastate_post_local_admin_prefers_supervisor_for_update_routes(monkeypatch):
     mod = _load_infrastate_module()
 

@@ -175,6 +175,83 @@ def test_autostart_runner_keeps_plan_until_validation(monkeypatch, tmp_path: Pat
     assert "clear_plan" not in calls
 
 
+def test_launch_active_slot_marks_child_to_skip_pending_update(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"], "env": {}, "cwd": ""},
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    captured_env: dict[str, str] = {}
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("terminate should not be called on validation success")
+
+        def kill(self):
+            raise AssertionError("kill should not be called on validation success")
+
+    def _popen(*args, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return _Proc()
+
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", _popen)
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
+    monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: payload)
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert captured_env[autostart_runner._SKIP_PENDING_UPDATE_ENV] == "1"
+
+
+def test_autostart_runner_skips_pending_update_when_requested(monkeypatch, tmp_path: Path) -> None:
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        autostart_runner,
+        "_parse_args",
+        lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})(),
+    )
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(autostart_runner, "read_plan", lambda: calls.append("read_plan"))
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(autostart_runner, "execute_pending_update", lambda plan: calls.append(("execute", plan)))
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append(("write_status", payload.get("state"))))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_launch_active_slot_if_needed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+    )
+    monkeypatch.setenv(autostart_runner._SKIP_PENDING_UPDATE_ENV, "1")
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert "read_plan" not in calls
+    assert not any(isinstance(item, tuple) and item[0] == "execute" for item in calls)
+
+
 def test_autostart_runner_writes_failed_status_on_boot_exception(monkeypatch, tmp_path: Path) -> None:
     captured: list[dict] = []
 

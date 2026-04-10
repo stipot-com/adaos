@@ -36,6 +36,9 @@ from adaos.services.root.client import RootHttpClient
 from adaos.services.root.core_update_sync import build_core_update_report
 
 
+_SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AdaOS API via autostart wrapper")
     parser.add_argument("--host", default="127.0.0.1")
@@ -53,6 +56,11 @@ def _resolved_token(raw_token: str | None = None) -> str | None:
             conf = None
         token = str(getattr(conf, "token", "") or "").strip() if conf is not None else ""
     return token or None
+
+
+def _skip_pending_update_requested() -> bool:
+    raw = str(os.getenv(_SKIP_PENDING_UPDATE_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
@@ -535,6 +543,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
     env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(slot_dir(slot))
     if resolved_token:
         env["ADAOS_TOKEN"] = str(resolved_token)
+    env[_SKIP_PENDING_UPDATE_ENV] = "1"
     cwd_raw = str(manifest.get("cwd") or "").strip()
     cwd = Path(cwd_raw).expanduser().resolve() if cwd_raw else None
     if validate:
@@ -647,7 +656,8 @@ def main() -> None:
         phase = "init_ctx"
         init_ctx()
         phase = "read_plan"
-        plan = read_plan()
+        skip_pending_update = _skip_pending_update_requested()
+        plan = None if skip_pending_update else read_plan()
         pending_update_succeeded = False
         conf = None
         try:
