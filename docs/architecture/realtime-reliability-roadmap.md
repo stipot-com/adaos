@@ -192,6 +192,8 @@ The next reliability gap after transport isolation is local process/update super
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
 This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
 Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
+Current MVP coverage now includes slot-first validation, explicit root-promotion states, forced shutdown recovery for hung runtime restarts, and a browser-shell transition badge that preserves the last known update/restart state during reconnect windows.
+The remaining gap is a browser-reachable live supervisor status path through routed/root-proxied deployments, so browser status can keep advancing from supervisor truth even while runtime HTTP/WS is down.
 
 ### Focus
 
@@ -223,6 +225,9 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - surface active-slot structure validation in supervisor diagnostics so broken slot layouts fail explicitly
 - harden diagnostic skills so Yjs-backed operator surfaces keep the last usable local snapshot during transient control-plane file failures
 - keep browser-facing update visibility alive through supervisor status/polling while `/ws` and `/yws` reconnect during slot restart
+- expose a read-only browser-safe supervisor transition surface so restart/update state is not collapsed into generic `offline`
+- distinguish browser-facing `hub restarting`, `update applying`, `rollback`, `root promotion pending`, and `update failed` from ordinary transport reconnect state
+- route that read-only supervisor transition surface through the browser-reachable hub/root path, not only local loopback deployments
 
 ### Candidate code areas
 
@@ -241,6 +246,8 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - sidecar remains transport-only and does not absorb process/update authority
 - operators can identify which installed skill failed during a core migration and at which stage
 - operators can distinguish `slot validation`, `root promotion pending`, and `root restart in progress` from supervisor-visible state
+- browser header/status surfaces can distinguish controlled supervisor-managed restart/update transitions from plain hub offline or transport loss
+- routed browser sessions can continue reading live supervisor transition state even while runtime `/api`, `/ws`, and `/yws` are unavailable
 
 ## Phase 4: Hub-member semantic channels
 

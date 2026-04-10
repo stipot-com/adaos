@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+from fastapi.testclient import TestClient
+
 from adaos.apps import supervisor
 from adaos.services.core_update import read_plan, read_status, write_plan, write_status
 
@@ -416,6 +418,59 @@ def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -
     assert payload["status"]["state"] == "succeeded"
     assert payload["status"]["phase"] == "root_promoted"
     assert payload["root_promotion"]["restart_required"] is True
+
+
+def test_public_update_status_payload_is_browser_safe() -> None:
+    payload = supervisor._public_update_status_payload(
+        {
+            "status": {
+                "state": "restarting",
+                "phase": "shutdown",
+                "message": "countdown completed; pending update written",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+1.abc",
+                "updated_at": 123.0,
+                "error": "hidden",
+            },
+            "runtime": {
+                "active_slot": "A",
+                "runtime_state": "spawned",
+                "listener_running": False,
+                "runtime_api_ready": False,
+                "root_promotion_required": True,
+                "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
+                "managed_cmdline": ["hidden"],
+            },
+            "_served_by": "supervisor_fallback",
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["status"]["state"] == "restarting"
+    assert payload["status"]["phase"] == "shutdown"
+    assert payload["runtime"]["active_slot"] == "A"
+    assert payload["runtime"]["root_promotion_required"] is True
+    assert payload["_served_by"] == "supervisor_fallback"
+    assert "managed_cmdline" not in payload["runtime"]
+    assert "error" not in payload["status"]
+
+
+def test_public_update_status_endpoint_is_unauthenticated(monkeypatch) -> None:
+    class _Manager:
+        def public_update_status(self) -> dict:
+            return {
+                "ok": True,
+                "status": {"state": "restarting", "phase": "shutdown"},
+                "runtime": {"runtime_state": "spawned"},
+            }
+
+    monkeypatch.setattr(supervisor, "_manager", lambda: _Manager())
+    client = TestClient(supervisor.app)
+
+    response = client.get("/api/supervisor/public/update-status")
+
+    assert response.status_code == 200
+    assert response.json()["status"]["state"] == "restarting"
 
 
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:

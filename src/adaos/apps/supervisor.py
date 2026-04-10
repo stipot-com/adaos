@@ -254,6 +254,36 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    source = dict(payload or {})
+    status = source.get("status") if isinstance(source.get("status"), dict) else {}
+    runtime = source.get("runtime") if isinstance(source.get("runtime"), dict) else {}
+    bootstrap_update = runtime.get("bootstrap_update") if isinstance(runtime.get("bootstrap_update"), dict) else {}
+    public_status = {
+        "state": str(status.get("state") or "").strip().lower() or "unknown",
+        "phase": str(status.get("phase") or "").strip().lower() or "",
+        "message": str(status.get("message") or "").strip(),
+        "target_rev": str(status.get("target_rev") or "").strip(),
+        "target_version": str(status.get("target_version") or "").strip(),
+        "updated_at": status.get("updated_at"),
+    }
+    return {
+        "ok": True,
+        "status": public_status,
+        "runtime": {
+            "active_slot": str(runtime.get("active_slot") or "").strip() or None,
+            "runtime_state": str(runtime.get("runtime_state") or "").strip() or None,
+            "listener_running": bool(runtime.get("listener_running")),
+            "runtime_api_ready": bool(runtime.get("runtime_api_ready")),
+            "root_promotion_required": bool(
+                runtime.get("root_promotion_required")
+                or bootstrap_update.get("required")
+            ),
+        },
+        "_served_by": str(source.get("_served_by") or "").strip() or "unknown",
+    }
+
+
 def _listener_running(host: str, port: int, *, timeout: float = 0.35) -> bool:
     try:
         with socket.create_connection((str(host or "127.0.0.1"), int(port)), timeout=max(0.05, float(timeout))):
@@ -593,6 +623,9 @@ class SupervisorManager:
         payload["runtime"] = self.status()
         payload["_served_by"] = "supervisor_fallback"
         return _reconcile_update_status(payload)
+
+    def public_update_status(self) -> dict[str, Any]:
+        return _public_update_status_payload(self.supervisor_update_status())
 
     async def _request_runtime_shutdown(self, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict[str, Any]:
         async with self._lock:
@@ -1010,6 +1043,11 @@ async def supervisor_runtime_restart() -> dict[str, Any]:
 @app.get("/api/supervisor/update/status", dependencies=[Depends(require_token)])
 async def supervisor_update_status() -> dict[str, Any]:
     return _manager().supervisor_update_status()
+
+
+@app.get("/api/supervisor/public/update-status")
+async def supervisor_public_update_status() -> dict[str, Any]:
+    return _manager().public_update_status()
 
 
 @app.post("/api/supervisor/update/start", dependencies=[Depends(require_token)])

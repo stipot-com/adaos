@@ -152,6 +152,20 @@ This API is the source of truth for:
 - active managed runtime command/executable source for the current slot
 - active slot structure diagnostics (`manifest` / `repo` / `venv` / nested-slot anomalies)
 
+For browser-facing observability, supervisor should also expose a limited read-only transition surface that can be polled without admin-mutating privileges.
+That surface is intended only for restart/update visibility such as:
+
+- `hub restarting`
+- `update applying`
+- `rollback in progress`
+- `root promotion pending`
+- `update failed`
+
+It must not expose mutating control operations or become a substitute for the authenticated operator API.
+
+Current MVP browser behavior may preserve and display the last known transition state during reconnect windows even when live supervisor polling is unavailable on the browser-facing route.
+The target end state is stronger: browser-reachable routed deployments should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
+
 ### Runtime API
 
 Available only while `adaos-runtime` is running:
@@ -329,6 +343,7 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 - `adaos node reliability` reports `runtime_restarting_under_supervisor` instead of only connection failure
 - Infra State surfaces supervisor attempt state alongside runtime readiness
 - Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
+- browser header/status surfaces poll a read-only supervisor transition view so controlled restarts are not shown only as generic `offline`
 
 ## Exit criteria
 
