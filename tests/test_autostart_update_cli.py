@@ -159,6 +159,16 @@ def test_autostart_update_complete_promotes_root_and_restarts_service(monkeypatc
     runner = CliRunner()
     captured: dict[str, object] = {}
 
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "validated", "phase": "root_promotion_pending"},
+            "runtime": {"root_promotion_required": True},
+        },
+    )
+
     def _post(path, *, body=None, token=None):
         captured["path"] = path
         captured["body"] = body
@@ -177,6 +187,25 @@ def test_autostart_update_complete_promotes_root_and_restarts_service(monkeypatc
     assert captured["path"] == "/api/supervisor/update/promote-root"
     assert captured["body"]["reason"] == "cli.core_update.complete"
     assert '"service": "adaos.service"' in result.output
+
+
+def test_autostart_update_complete_noops_when_root_promotion_not_required(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "validate"},
+            "runtime": {"root_promotion_required": False, "bootstrap_update": {"required": False}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert '"noop": true' in result.output.lower()
+    assert "root promotion is not required" in result.output
 
 
 def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> None:

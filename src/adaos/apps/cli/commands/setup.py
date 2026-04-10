@@ -504,6 +504,17 @@ def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Op
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = str(response.text or "").strip()
+            status_code = getattr(response, "status_code", None)
+            status_label = f"HTTP {status_code}" if status_code is not None else "HTTP error"
+            if detail:
+                raise RuntimeError(
+                    f"local AdaOS supervisor API request to {base_url}{path} failed with {status_label}: {detail}"
+                ) from exc
         raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
 
 
@@ -1375,6 +1386,33 @@ def autostart_update_complete_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     try:
+        update_payload = _autostart_update_get(token=token)
+        status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
+        runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
+        root_promotion_required = bool(
+            runtime_payload.get("root_promotion_required")
+            or (
+                isinstance(runtime_payload.get("bootstrap_update"), dict)
+                and runtime_payload["bootstrap_update"].get("required")
+            )
+        )
+        current_state = str(status_payload.get("state") or "").strip().lower()
+        current_phase = str(status_payload.get("phase") or "").strip().lower()
+        if not root_promotion_required and not (
+            current_state == "validated" and current_phase == "root_promotion_pending"
+        ):
+            payload = {
+                "ok": True,
+                "noop": True,
+                "status": status_payload,
+                "runtime": runtime_payload,
+                "message": "root promotion is not required for the current update state",
+            }
+            if json_output:
+                typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+                return
+            typer.echo(json.dumps(payload, ensure_ascii=False))
+            return
         promotion = _autostart_supervisor_post(
             "/api/supervisor/update/promote-root",
             token=token,

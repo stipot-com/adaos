@@ -92,9 +92,9 @@ systemctl --user restart adaos.service
 systemctl --user status adaos.service --no-pager
 journalctl --user -u adaos.service -n 120 --no-pager
 curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если требуется)
-
 adaos autostart enable
 adaos autostart status
+adaos autostart update-complete
 adaos autostart inspect
 adaos autostart inspect --json
 adaos autostart disable
