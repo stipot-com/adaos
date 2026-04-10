@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -21,6 +22,16 @@ from adaos.services.core_slots import (
     slot_dir,
 )
 from adaos.services.runtime_paths import current_base_dir
+
+
+BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
+    "src/adaos/apps/supervisor.py",
+    "src/adaos/apps/autostart_runner.py",
+    "src/adaos/apps/core_update_apply.py",
+    "src/adaos/services/core_update.py",
+    "src/adaos/services/autostart.py",
+    "src/adaos/apps/cli/commands/setup.py",
+)
 
 
 def _base_dir() -> Path:
@@ -112,6 +123,89 @@ def manifest_requires_root_promotion(manifest: dict[str, Any] | None) -> tuple[b
     bootstrap = payload.get("bootstrap_update") if isinstance(payload.get("bootstrap_update"), dict) else {}
     required = bool(bootstrap.get("required"))
     return required, dict(bootstrap)
+
+
+def _root_promotion_state_dir() -> Path:
+    path = _base_dir() / "state" / "root_promotion"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _remove_path(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    path.unlink(missing_ok=True)
+
+
+def _copy_path(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, target, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, target)
+
+
+def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
+    slot_name = str(slot or active_slot() or "").strip().upper()
+    if not slot_name:
+        raise RuntimeError("no active slot available for root promotion")
+    manifest = read_slot_manifest(slot_name)
+    if not isinstance(manifest, dict):
+        raise RuntimeError(f"slot {slot_name} manifest is missing")
+    root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+    if not root_promotion_required:
+        return {
+            "ok": True,
+            "slot": slot_name,
+            "required": False,
+            "target_root": str(_repo_root() or ""),
+            "changed_paths": [],
+            "backup_dir": "",
+            "promoted_paths": [],
+            "removed_paths": [],
+            "restart_required": False,
+        }
+    source_repo_dir = Path(str(manifest.get("repo_dir") or "")).expanduser().resolve()
+    if not source_repo_dir.exists():
+        raise RuntimeError(f"slot {slot_name} repo_dir is missing: {source_repo_dir}")
+    root_dir = _repo_root()
+    if root_dir is None or not root_dir.exists():
+        raise RuntimeError("root checkout is unavailable for promotion")
+    changed_paths = bootstrap_update.get("changed_paths") if isinstance(bootstrap_update.get("changed_paths"), list) else []
+    if not changed_paths:
+        changed_paths = list(BOOTSTRAP_CRITICAL_PATHS)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    backup_dir = (_root_promotion_state_dir() / f"{stamp}-{slot_name.lower()}").resolve()
+    promoted_paths: list[str] = []
+    removed_paths: list[str] = []
+    for rel_path in [str(item) for item in changed_paths if str(item).strip()]:
+        source_path = (source_repo_dir / rel_path).resolve()
+        target_path = (root_dir / rel_path).resolve()
+        backup_path = (backup_dir / rel_path).resolve()
+        if target_path.exists():
+            _copy_path(target_path, backup_path)
+        if source_path.exists():
+            _remove_path(target_path)
+            _copy_path(source_path, target_path)
+            promoted_paths.append(rel_path)
+        else:
+            _remove_path(target_path)
+            removed_paths.append(rel_path)
+    payload = {
+        "ok": True,
+        "slot": slot_name,
+        "required": True,
+        "target_root": str(root_dir),
+        "changed_paths": [str(item) for item in changed_paths if str(item).strip()],
+        "backup_dir": str(backup_dir),
+        "promoted_paths": promoted_paths,
+        "removed_paths": removed_paths,
+        "restart_required": True,
+    }
+    return payload
 
 
 def write_status(payload: dict[str, Any]) -> dict[str, Any]:

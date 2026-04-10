@@ -32,6 +32,7 @@ adaos autostart update-status
 adaos autostart update-start
 adaos autostart update-cancel
 adaos autostart update-rollback
+adaos autostart update-promote-root
 adaos autostart smoke-update
 ```
 
@@ -42,6 +43,15 @@ In service mode the authoritative update surface is the supervisor, not the tran
 - production runtime is launched from the active slot manifest, not from the root checkout
 - `update-status` should remain inspectable through supervisor-backed state even while `:8777` is restarting
 - root/bootstrap code may be promoted after a successful slot validation, but the restarted production runtime still comes from slot `A|B`
+
+Current MVP operator flow for bootstrap/self-update:
+
+1. run `adaos autostart update-start`
+2. wait until `update-status` reports `phase: root_promotion_pending` when bootstrap-managed files changed
+3. run `adaos autostart update-promote-root`
+4. restart `adaos.service` to activate the newly promoted supervisor/bootstrap code
+
+`update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
 
 ## Hub and member operations
 

@@ -318,6 +318,47 @@ def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, 
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
 
 
+def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "repo_dir": str(tmp_path / "slots" / "B" / "repo"),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "promote_root_from_slot",
+        lambda slot=None: {
+            "ok": True,
+            "slot": slot or "B",
+            "required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+            "backup_dir": str(tmp_path / "backup"),
+            "promoted_paths": ["src/adaos/apps/supervisor.py"],
+            "removed_paths": [],
+            "restart_required": True,
+        },
+    )
+    supervisor._write_update_attempt({"state": "active", "action": "update", "updated_at": 1.0})
+    write_status({"state": "validated", "phase": "root_promotion_pending", "target_slot": "B"})
+
+    payload = asyncio.run(manager.promote_root(reason="test.root_promotion"))
+
+    assert payload["accepted"] is True
+    assert payload["status"]["state"] == "succeeded"
+    assert payload["status"]["phase"] == "root_promoted"
+    assert payload["root_promotion"]["restart_required"] is True
+
+
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

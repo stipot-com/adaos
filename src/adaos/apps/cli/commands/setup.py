@@ -1321,6 +1321,28 @@ def autostart_update_rollback_cmd(
     typer.echo(json.dumps(payload, ensure_ascii=False))
 
 
+@autostart_app.command("update-promote-root")
+@_run_safe
+def autostart_update_promote_root_cmd(
+    reason: str = typer.Option("cli.core_update.root_promotion", "--reason"),
+    token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        payload = _autostart_update_post(
+            "/api/supervisor/update/promote-root",
+            token=token,
+            body={"reason": reason},
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
 @autostart_app.command("smoke-update")
 @_run_safe
 def autostart_smoke_update_cmd(

@@ -31,6 +31,7 @@ from adaos.services.core_slots import (
 )
 from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import manifest_requires_root_promotion
+from adaos.services.core_update import promote_root_from_slot
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
@@ -821,6 +822,47 @@ class SupervisorManager:
         _complete_update_attempt(state="cancelled", status=status, reason=reason)
         return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
 
+    async def promote_root(self, *, reason: str) -> dict[str, Any]:
+        current_status = read_core_update_status()
+        state = str(current_status.get("state") or "").strip().lower()
+        phase = str(current_status.get("phase") or "").strip().lower()
+        if state not in {"validated", "succeeded"} and phase != "root_promotion_pending":
+            raise HTTPException(status_code=409, detail="root promotion requires a validated slot runtime")
+        manifest = active_slot_manifest()
+        root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+        if not root_promotion_required:
+            status = write_core_update_status(
+                {
+                    "state": "succeeded",
+                    "phase": "validate",
+                    "message": "no root promotion required for the active slot",
+                    "target_slot": str((manifest or {}).get("slot") or active_slot() or ""),
+                    "manifest": manifest,
+                    "root_promotion_required": False,
+                    "bootstrap_update": bootstrap_update,
+                    "finished_at": time.time(),
+                }
+            )
+            _complete_update_attempt(state="completed", status=status, reason=reason)
+            return {"ok": True, "accepted": False, "status": status, "_served_by": "supervisor"}
+        promotion = promote_root_from_slot(slot=str((manifest or {}).get("slot") or active_slot() or ""))
+        status = write_core_update_status(
+            {
+                "state": "succeeded",
+                "phase": "root_promoted",
+                "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+                "target_slot": str((manifest or {}).get("slot") or active_slot() or ""),
+                "manifest": manifest,
+                "root_promotion_required": False,
+                "bootstrap_update": bootstrap_update,
+                "root_promotion": promotion,
+                "promotion_reason": reason,
+                "finished_at": time.time(),
+            }
+        )
+        _complete_update_attempt(state="completed", status=status, reason=reason)
+        return {"ok": True, "accepted": True, "status": status, "root_promotion": promotion, "_served_by": "supervisor"}
+
     def proxy_update_post(self, path: str, *, body: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
         if self.token:
@@ -939,6 +981,11 @@ async def supervisor_update_rollback(payload: dict[str, Any]) -> dict[str, Any]:
         drain_timeout_sec=float(payload.get("drain_timeout_sec") or 10.0),
         signal_delay_sec=float(payload.get("signal_delay_sec") or 0.25),
     )
+
+
+@app.post("/api/supervisor/update/promote-root", dependencies=[Depends(require_token)])
+async def supervisor_update_promote_root(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _manager().promote_root(reason=str(payload.get("reason") or "core.root_promotion"))
 
 
 def main() -> None:

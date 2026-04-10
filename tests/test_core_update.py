@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from adaos.services.core_update import (
     clear_plan,
@@ -192,3 +193,38 @@ def test_finalize_runtime_boot_status_marks_root_promotion_pending(monkeypatch, 
     assert payload["root_promotion_required"] is True
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
     assert read_last_result()["phase"] == "root_promotion_pending"
+
+
+def test_promote_root_from_slot_copies_changed_bootstrap_files(monkeypatch, tmp_path) -> None:
+    from adaos.services.core_update import promote_root_from_slot
+
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    root_dir = tmp_path / "root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    (root_dir / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (slot_repo / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (root_dir / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr("adaos.services.core_update._repo_root", lambda: root_dir)
+
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "repo_dir": str(slot_repo),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    activate_slot("B")
+
+    payload = promote_root_from_slot()
+
+    assert payload["ok"] is True
+    assert payload["required"] is True
+    assert payload["restart_required"] is True
+    assert (root_dir / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "new\n"
+    backup_file = Path(payload["backup_dir"]) / "src" / "adaos" / "apps" / "supervisor.py"
+    assert backup_file.read_text(encoding="utf-8") == "old\n"

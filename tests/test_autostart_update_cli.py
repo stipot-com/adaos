@@ -137,6 +137,24 @@ def test_autostart_update_start_defaults_to_current_branch(monkeypatch) -> None:
     assert captured["body"]["target_version"] == "0.1.0+2.def"
 
 
+def test_autostart_update_promote_root_posts_to_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_update_post", _post)
+
+    result = runner.invoke(autostart_app, ["update-promote-root", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/promote-root"
+    assert captured["body"]["reason"] == "cli.core_update.root_promotion"
+
+
 def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> None:
     runner = CliRunner()
 
