@@ -176,7 +176,20 @@ def _migrate_installed_skill_runtimes(
             python_entries.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(entry for entry in python_entries if str(entry).strip()))
     migrate_script = repo_root_path / "src" / "adaos" / "apps" / "skill_runtime_migrate.py" if repo_root_path is not None else None
-    if migrate_script is not None and migrate_script.exists():
+    if migrate_script is not None:
+        if not migrate_script.exists():
+            apps_dir = migrate_script.parent
+            visible = []
+            if apps_dir.exists():
+                try:
+                    visible = sorted(child.name for child in apps_dir.iterdir() if child.is_file())[:20]
+                except Exception:
+                    visible = []
+            raise RuntimeError(
+                "prepared slot repo is missing skill runtime migration entrypoint: "
+                f"{migrate_script} "
+                f"(repo_root={repo_root_path}, apps_dir_exists={apps_dir.exists()}, visible_files={visible})"
+            )
         cmd = [str(python_executable), str(migrate_script), "--json"]
     else:
         cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
