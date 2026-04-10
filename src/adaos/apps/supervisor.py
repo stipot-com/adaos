@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 import requests
@@ -254,6 +255,14 @@ def _runtime_api_ready(base_url: str, *, token: str | None, timeout: float = 0.7
     return bool(isinstance(payload, dict) and payload.get("ok") is True)
 
 
+def _format_slot_value(template: str, values: dict[str, str]) -> str:
+    fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
+    payload = dict(values)
+    for field in fields:
+        payload.setdefault(field, "")
+    return template.format(**payload)
+
+
 class SupervisorManager:
     def __init__(self, *, runtime_host: str, runtime_port: int, token: str | None) -> None:
         self.runtime_host = str(runtime_host or "127.0.0.1").strip() or "127.0.0.1"
@@ -285,16 +294,51 @@ class SupervisorManager:
             env["ADAOS_TOKEN"] = self.token
         return env
 
-    def _runtime_command(self) -> list[str]:
-        return [
-            sys.executable,
-            "-m",
-            "adaos.apps.autostart_runner",
-            "--host",
-            self.runtime_host,
-            "--port",
-            str(self.runtime_port),
-        ]
+    def _runtime_launch_spec(self) -> tuple[list[str] | None, str | None, dict[str, str], str | None]:
+        env = self._runtime_env()
+        manifest = active_slot_manifest()
+        slot = active_slot()
+        if isinstance(manifest, dict):
+            manifest_env = manifest.get("env")
+            if isinstance(manifest_env, dict):
+                for key, value in manifest_env.items():
+                    env[str(key)] = str(value)
+            if slot:
+                env["ADAOS_ACTIVE_CORE_SLOT"] = slot
+                env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(core_slot_status().get("slots", {}).get(slot, {}).get("path") or "")
+            values = {
+                "host": self.runtime_host,
+                "port": str(self.runtime_port),
+                "token": str(self.token or ""),
+                "slot": str(slot or ""),
+                "slot_dir": str(core_slot_status().get("slots", {}).get(slot or "", {}).get("path") or ""),
+                "base_dir": str(current_base_dir()),
+                "python": os.sys.executable,
+            }
+            argv_raw = manifest.get("argv")
+            if isinstance(argv_raw, list):
+                argv = [_format_slot_value(str(item), values) for item in argv_raw if str(item).strip()]
+                if argv:
+                    cwd = str(manifest.get("cwd") or "").strip() or None
+                    return argv, None, env, cwd
+            command = str(manifest.get("command") or "").strip()
+            if command:
+                cwd = str(manifest.get("cwd") or "").strip() or None
+                return None, _format_slot_value(command, values), env, cwd
+        return (
+            [
+                sys.executable,
+                "-m",
+                "adaos.apps.autostart_runner",
+                "--host",
+                self.runtime_host,
+                "--port",
+                str(self.runtime_port),
+            ],
+            None,
+            env,
+            None,
+        )
 
     def _runtime_state_payload(self) -> dict[str, Any]:
         proc = self._proc
@@ -383,10 +427,12 @@ class SupervisorManager:
     async def _spawn_runtime_locked(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
+        argv, command, env, cwd = self._runtime_launch_spec()
         proc = subprocess.Popen(
-            self._runtime_command(),
-            cwd=os.getcwd(),
-            env=self._runtime_env(),
+            argv or command or [],
+            shell=bool(command),
+            cwd=cwd or os.getcwd(),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=None,
             stderr=None,

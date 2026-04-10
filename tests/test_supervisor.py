@@ -271,3 +271,47 @@ def test_runtime_state_payload_reports_slot_mismatch(monkeypatch, tmp_path) -> N
     assert payload["managed_matches_active_slot"] is False
     assert payload["slot_structure"]["ok"] is False
     assert "nested_slot_dir" in payload["slot_structure"]["issues"][0]
+
+
+def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["/slot/python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+            "cwd": "/slot/repo",
+            "env": {"PYTHONPATH": "/slot/repo/src"},
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "core_slot_status",
+        lambda: {"slots": {"A": {"path": "/slots/A"}}},
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    asyncio.run(manager._spawn_runtime_locked())
+
+    assert captured["args"][0] == "/slot/python"
+    assert captured["kwargs"]["cwd"] == "/slot/repo"
+    assert captured["kwargs"]["env"]["PYTHONPATH"] == "/slot/repo/src"
+    assert captured["kwargs"]["env"]["ADAOS_ACTIVE_CORE_SLOT"] == "A"

@@ -542,7 +542,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         stdout_path, stderr_path = _validation_log_paths(slot)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with stdout_path.open("a", encoding="utf-8", buffering=1) as stdout_fh, stderr_path.open("a", encoding="utf-8", buffering=1) as stderr_fh:
+        with stdout_path.open("w", encoding="utf-8", buffering=1) as stdout_fh, stderr_path.open("w", encoding="utf-8", buffering=1) as stderr_fh:
             proc = subprocess.Popen(
                 argv or command or [],
                 shell=bool(command),
