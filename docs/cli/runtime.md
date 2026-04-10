@@ -37,6 +37,12 @@ adaos autostart smoke-update
 
 These commands integrate with the runtime lifecycle and the `/api/admin/update/*` endpoints.
 
+In service mode the authoritative update surface is the supervisor, not the transient runtime listener:
+
+- production runtime is launched from the active slot manifest, not from the root checkout
+- `update-status` should remain inspectable through supervisor-backed state even while `:8777` is restarting
+- root/bootstrap code may be promoted after a successful slot validation, but the restarted production runtime still comes from slot `A|B`
+
 ## Hub and member operations
 
 ```bash

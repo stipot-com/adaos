@@ -13,6 +13,16 @@ from pathlib import Path
 from adaos.services.core_slots import write_slot_manifest
 
 
+BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
+    "src/adaos/apps/supervisor.py",
+    "src/adaos/apps/autostart_runner.py",
+    "src/adaos/apps/core_update_apply.py",
+    "src/adaos/services/core_update.py",
+    "src/adaos/services/autostart.py",
+    "src/adaos/apps/cli/commands/setup.py",
+)
+
+
 def _is_probably_git_sha(value: str) -> bool:
     token = str(value or "").strip()
     if len(token) < 7 or len(token) > 40:
@@ -231,6 +241,7 @@ def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: s
         checkout_dir,
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(
+            ".git",
             ".adaos",
             ".venv",
             "__pycache__",
@@ -241,6 +252,48 @@ def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: s
             "node_modules",
         ),
     )
+
+
+def _strip_repo_vcs_metadata(repo_dir: Path) -> None:
+    git_dir = repo_dir / ".git"
+    if git_dir.exists():
+        shutil.rmtree(git_dir, ignore_errors=True)
+
+
+def _path_content_differs(left: Path, right: Path) -> bool:
+    left_exists = left.exists()
+    right_exists = right.exists()
+    if left_exists != right_exists:
+        return True
+    if not left_exists:
+        return False
+    if left.is_dir() or right.is_dir():
+        return left.is_dir() != right.is_dir()
+    try:
+        return left.read_bytes() != right.read_bytes()
+    except Exception:
+        return True
+
+
+def _detect_bootstrap_promotion_requirement(candidate_repo_dir: Path, repo_root: Path | None) -> dict[str, object]:
+    checked_paths = list(BOOTSTRAP_CRITICAL_PATHS)
+    if repo_root is None or not repo_root.exists():
+        return {
+            "required": False,
+            "basis": "repo_root_unavailable",
+            "checked_paths": checked_paths,
+            "changed_paths": [],
+        }
+    changed_paths: list[str] = []
+    for rel_path in checked_paths:
+        if _path_content_differs(candidate_repo_dir / rel_path, repo_root / rel_path):
+            changed_paths.append(rel_path)
+    return {
+        "required": bool(changed_paths),
+        "basis": "path_compare",
+        "checked_paths": checked_paths,
+        "changed_paths": changed_paths,
+    }
 
 
 def _is_git_repo(path: Path | None) -> bool:
@@ -284,6 +337,7 @@ def prepare_slot(
     slot_name = str(slot).strip().upper()
     slot_dir = Path(slot_dir_path).expanduser().resolve()
     slot_dir.mkdir(parents=True, exist_ok=True)
+    repo_root_dir = Path(str(repo_root or "")).expanduser().resolve() if str(repo_root or "").strip() else None
     target_rev = str(target_rev or "").strip()
     target_version = str(target_version or "").strip()
     repo_url = str(repo_url or os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
@@ -318,11 +372,18 @@ def prepare_slot(
         git_short_commit = _git_text(checkout_tmp, "rev-parse", "--short", "HEAD")
         git_branch = _git_text(checkout_tmp, "rev-parse", "--abbrev-ref", "HEAD")
         git_subject = _git_text(checkout_tmp, "show", "-s", "--format=%s", "HEAD")
+        source_kind = "remote_git_clone"
+        if source_repo_dir is not None and source_repo_dir.exists():
+            source_kind = "local_source_tree"
+        bootstrap_update = _detect_bootstrap_promotion_requirement(checkout_tmp, repo_root_dir)
+        _strip_repo_vcs_metadata(checkout_tmp)
         manifest = {
             "slot": slot_name,
             "created_at": time.time(),
             "target_rev": target_rev,
             "target_version": str(target_version or "").strip(),
+            "source_kind": source_kind,
+            "source_repo_root": str(source_repo_dir) if source_repo_dir is not None else "",
             "repo_url": repo_url,
             "repo_dir": str(final_repo_dir),
             "venv_dir": str(final_venv_dir),
@@ -330,6 +391,7 @@ def prepare_slot(
             "git_short_commit": git_short_commit,
             "git_branch": git_branch,
             "git_subject": git_subject,
+            "bootstrap_update": bootstrap_update,
             "cwd": str(final_repo_dir),
             "argv": [
                 str(final_py),

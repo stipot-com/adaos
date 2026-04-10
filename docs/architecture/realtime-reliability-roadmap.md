@@ -191,6 +191,7 @@ In progress.
 The next reliability gap after transport isolation is local process/update supervision.
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
 This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
+Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
 
 ### Focus
 
@@ -210,6 +211,9 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - add restart/apply/validate deadlines and stale-attempt recovery
 - move update-status and restart control to a supervisor API that remains live while runtime is down
 - make systemd target supervisor instead of the main runtime process
+- keep production runtime sourced from slot `A|B` even after supervisor/root updates
+- validate every candidate in an inactive slot before allowing any root/bootstrap promotion
+- detect bootstrap-managed file changes and surface `root_promotion_required` explicitly instead of silently mixing slot and root drift
 - align sidecar lifecycle under supervisor without turning sidecar into protocol or update authority
 - migrate installed skill runtimes as an explicit core-update subflow rather than assuming old interpreter dependencies remain valid
 - persist per-skill migration diagnostics (`prepare` / `test` / `activate` / `rollback` / `deactivate`) in core-update results
@@ -218,6 +222,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - surface the active managed runtime command/source in supervisor diagnostics
 - surface active-slot structure validation in supervisor diagnostics so broken slot layouts fail explicitly
 - harden diagnostic skills so Yjs-backed operator surfaces keep the last usable local snapshot during transient control-plane file failures
+- keep browser-facing update visibility alive through supervisor status/polling while `/ws` and `/yws` reconnect during slot restart
 
 ### Candidate code areas
 
@@ -235,6 +240,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - rollback decision is owned by supervisor logic rather than only runtime-side best effort
 - sidecar remains transport-only and does not absorb process/update authority
 - operators can identify which installed skill failed during a core migration and at which stage
+- operators can distinguish `slot validation`, `root promotion pending`, and `root restart in progress` from supervisor-visible state
 
 ## Phase 4: Hub-member semantic channels
 

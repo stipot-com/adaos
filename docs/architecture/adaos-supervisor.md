@@ -38,7 +38,8 @@ The supervisor solves this by keeping the update and process-control surface ali
 - local runtime process lifecycle
 - runtime start/stop/restart sequencing
 - persisted update attempt state
-- slot apply / validate / rollback orchestration
+- candidate-to-slot prepare / validate / rollback orchestration
+- post-validation bootstrap/root promotion orchestration when bootstrap-managed files changed
 - skill runtime migration orchestration for installed skills during core slot transition
 - restart and validation deadlines
 - local admin/update API availability during runtime downtime
@@ -61,6 +62,7 @@ Target local node layout:
   - owns persisted attempt state and process supervision
 - `adaos-runtime`
   - main FastAPI/runtime process
+  - production runtime is launched from the active slot manifest
   - owns local execution semantics, storage, skills, scenarios, and APIs
 - `adaos-realtime`
   - optional transport-only sidecar
@@ -71,6 +73,20 @@ This means:
 - the runtime is restartable without losing the local control surface
 - the realtime sidecar can also be restarted independently
 - update progress remains inspectable during shutdown, apply, and validate phases
+- root checkout stays out of the production runtime path unless a developer explicitly launches it
+
+## Runtime source rule
+
+Production runtime must always come from slot `A|B`.
+
+Root checkout is reserved for:
+
+- bootstrap install
+- supervisor/autostart/update-control code
+- candidate preparation
+- explicit developer-run workflows
+
+This keeps slot switching fast and keeps production runtime independent from root checkout drift.
 
 ## Authority boundary
 
@@ -177,13 +193,15 @@ Target flow:
 
 1. operator or root-triggered action reaches supervisor
 2. supervisor writes `update_attempt.json`
-3. supervisor requests graceful runtime shutdown
-4. supervisor prepares inactive slot
-5. supervisor migrates installed skill runtimes against the target core interpreter
-6. supervisor launches runtime from target slot
-7. supervisor validates required runtime checks
-8. on success, supervisor commits update and clears active attempt
-9. on failure or deadline expiry, supervisor rolls back and records failure
+3. supervisor materializes the candidate source/artifact
+4. supervisor requests graceful runtime shutdown
+5. supervisor prepares the inactive slot from that candidate
+6. supervisor migrates installed skill runtimes against the target core interpreter
+7. supervisor launches production runtime from the target slot
+8. supervisor validates required runtime checks against that slot runtime
+9. on slot-validation success, supervisor commits the slot switch
+10. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
+11. on failure or deadline expiry, supervisor rolls back the slot and records failure
 
 Important invariants:
 
@@ -191,6 +209,21 @@ Important invariants:
 - `restarting` and `applying` are bounded by deadlines
 - interrupted supervisor boot resumes or resolves the last incomplete attempt
 - installed skills do not silently inherit old runtime dependencies after core migration
+- root/bootstrap promotion never happens before the candidate already passed slot validation
+- prepared slot contents must not inherit another slot's git remotes or become the authority for future updates
+
+## Bootstrap/root promotion
+
+Bootstrap-managed code such as supervisor, autostart, and core-update orchestration is a separate promotion step.
+
+Rules:
+
+- slot validation always happens first
+- root promotion is allowed only after the candidate is proven in a slot
+- production runtime still restarts from the active slot after root promotion
+- root promotion should use the same validated candidate source, not a fresh mutable branch tip
+
+This keeps root updates out of the fast rollback path while preserving the slot-runtime model.
 
 ## Skill runtime migration lifecycle
 

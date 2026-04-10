@@ -192,3 +192,50 @@ def test_migrate_installed_skill_runtimes_reports_missing_script_in_prepared_rep
         assert "missing skill runtime migration entrypoint" in text
         assert "autostart_runner.py" in text
 
+
+def test_strip_repo_vcs_metadata_removes_git_dir(tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    repo_dir = tmp_path / "repo"
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (git_dir / "config").write_text("[remote \"origin\"]\nurl = /tmp/source\n", encoding="utf-8")
+
+    mod._strip_repo_vcs_metadata(repo_dir)
+
+    assert not git_dir.exists()
+
+
+def test_clone_local_repo_copy_mode_skips_git_metadata(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    source_repo = tmp_path / "source"
+    checkout_dir = tmp_path / "checkout"
+    (source_repo / ".git").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    mod._clone_local_repo(source_repo, target_rev="rev2026", target_version="1.2.3", checkout_dir=checkout_dir)
+
+    assert (checkout_dir / "src" / "app.py").exists()
+    assert not (checkout_dir / ".git").exists()
+
+
+def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    current_root = tmp_path / "root"
+    candidate = tmp_path / "candidate"
+    for base in (current_root, candidate):
+        (base / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+        (base / "src" / "adaos" / "services").mkdir(parents=True, exist_ok=True)
+    (current_root / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (candidate / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+
+    payload = mod._detect_bootstrap_promotion_requirement(candidate, current_root)
+
+    assert payload["required"] is True
+    assert "src/adaos/apps/supervisor.py" in payload["changed_paths"]
+
