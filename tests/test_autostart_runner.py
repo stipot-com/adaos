@@ -140,7 +140,7 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     assert captured[-1]["skill_runtime_rollback"]["rollback_total"] == 1
 
 
-def test_autostart_runner_keeps_plan_until_validation(monkeypatch, tmp_path: Path) -> None:
+def test_autostart_runner_clears_plan_and_exits_after_successful_apply(monkeypatch, tmp_path: Path) -> None:
     calls: list[object] = []
 
     monkeypatch.setattr(
@@ -151,28 +151,35 @@ def test_autostart_runner_keeps_plan_until_validation(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
     monkeypatch.setattr(autostart_runner, "read_plan", lambda: {"target_rev": "rev2026", "target_slot": "B"})
     monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
-    monkeypatch.setattr(autostart_runner, "execute_pending_update", lambda plan: {"state": "succeeded", "returncode": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "execute_pending_update",
+        lambda plan: {
+            "state": "succeeded",
+            "returncode": 0,
+            "target_slot": "B",
+            "manifest": {"slot": "B"},
+            "started_at": 10.0,
+        },
+    )
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: calls.append("clear_plan"))
-    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append(("write_status", payload.get("state"))))
-    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
-    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
-    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
-    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
-    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
-
-    def _launch(*args, **kwargs):
-        calls.append(("launch", kwargs.get("validate")))
-        raise SystemExit(0)
-
-    monkeypatch.setattr(autostart_runner, "_launch_active_slot_if_needed", _launch)
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append(("write_status", dict(payload))))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (_ for _ in ()).throw(AssertionError("should exit before bind resolution")))
 
     try:
         autostart_runner.main()
-    except SystemExit:
-        pass
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
 
-    assert ("launch", True) in calls
-    assert "clear_plan" not in calls
+    assert "clear_plan" in calls
+    status_calls = [item for item in calls if isinstance(item, tuple) and item[0] == "write_status"]
+    assert status_calls
+    payload = status_calls[-1][1]
+    assert payload["state"] == "restarting"
+    assert payload["phase"] == "launch"
+    assert payload["target_slot"] == "B"
 
 
 def test_launch_active_slot_marks_child_to_skip_pending_update(monkeypatch) -> None:

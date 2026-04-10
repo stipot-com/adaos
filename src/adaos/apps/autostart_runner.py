@@ -673,6 +673,26 @@ def main() -> None:
                 clear_plan()
                 raise SystemExit(int(result.get("returncode") or 1) or 1)
             pending_update_succeeded = True
+            clear_plan()
+            target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
+            payload = {
+                "state": "restarting",
+                "phase": "launch",
+                "message": (
+                    f"core update applied; restarting into slot {target_slot}"
+                    if target_slot
+                    else "core update applied; restarting runtime"
+                ),
+                "target_slot": target_slot,
+                "plan": plan,
+                "started_at": float(result.get("started_at") or time.time()),
+                "finished_at": time.time(),
+            }
+            manifest = result.get("manifest")
+            if isinstance(manifest, dict) and manifest:
+                payload["manifest"] = manifest
+            write_status(payload)
+            raise SystemExit(0)
         else:
             phase = "boot"
             write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})

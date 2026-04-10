@@ -9,6 +9,12 @@ from adaos.services.core_update import read_plan, read_status, write_plan, write
 def test_reconcile_update_status_marks_stale_attempt_failed(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_UPDATE_TIMEOUT_SEC", "60")
+    monkeypatch.setattr(supervisor, "rollback_to_previous_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "rollback_installed_skill_runtimes",
+        lambda: {"ok": True, "total": 1, "failed_total": 0, "rollback_total": 1, "skills": []},
+    )
 
     monkeypatch.setattr(supervisor.time, "time", lambda: 120.0)
     write_status(
@@ -38,6 +44,9 @@ def test_reconcile_update_status_marks_stale_attempt_failed(monkeypatch, tmp_pat
 
     assert payload["status"]["state"] == "failed"
     assert payload["status"]["phase"] == "shutdown"
+    assert payload["status"]["restored_slot"] == "A"
+    assert payload["status"]["rollback"]["ok"] is True
+    assert payload["status"]["skill_runtime_rollback"]["rollback_total"] == 1
     assert payload["_served_by"] == "supervisor_timeout_recovery"
     assert read_plan() is None
     attempt = supervisor._read_update_attempt()

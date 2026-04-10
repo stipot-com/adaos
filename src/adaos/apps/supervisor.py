@@ -22,11 +22,18 @@ from adaos.apps.api.auth import require_token
 from adaos.apps.bootstrap import init_ctx
 from adaos.apps.cli.commands.api import _advertise_base, _uvicorn_loop_mode
 from adaos.services.agent_context import get_ctx
-from adaos.services.core_slots import active_slot, active_slot_manifest, slot_status as core_slot_status, validate_slot_structure
+from adaos.services.core_slots import (
+    active_slot,
+    active_slot_manifest,
+    rollback_to_previous_slot,
+    slot_status as core_slot_status,
+    validate_slot_structure,
+)
 from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.runtime_paths import current_base_dir
@@ -212,20 +219,31 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
     if max(status_age, transition_age) < timeout_sec:
         return payload
 
-    failed_status = write_core_update_status(
-        {
-            "state": "failed",
-            "phase": str(status.get("phase") or "restart_timeout"),
-            "action": str(status.get("action") or attempt.get("action") or "update"),
-            "target_rev": str(status.get("target_rev") or attempt.get("target_rev") or ""),
-            "target_version": str(status.get("target_version") or attempt.get("target_version") or ""),
-            "reason": str(status.get("reason") or attempt.get("reason") or "supervisor.timeout"),
-            "message": f"supervisor timed out waiting for runtime to finish {status.get('state') or 'update transition'}",
-            "supervisor_timeout_sec": timeout_sec,
-            "supervisor_timeout_at": now,
-            "supervisor_previous_status": status,
-        }
-    )
+    action = str(status.get("action") or attempt.get("action") or "update")
+    failed_payload: dict[str, Any] = {
+        "state": "failed",
+        "phase": str(status.get("phase") or "restart_timeout"),
+        "action": action,
+        "target_rev": str(status.get("target_rev") or attempt.get("target_rev") or ""),
+        "target_version": str(status.get("target_version") or attempt.get("target_version") or ""),
+        "reason": str(status.get("reason") or attempt.get("reason") or "supervisor.timeout"),
+        "message": f"supervisor timed out waiting for runtime to finish {status.get('state') or 'update transition'}",
+        "supervisor_timeout_sec": timeout_sec,
+        "supervisor_timeout_at": now,
+        "supervisor_previous_status": status,
+    }
+    if action == "update":
+        restored = rollback_to_previous_slot()
+        skill_runtime_rollback = rollback_installed_skill_runtimes() if restored else {}
+        if restored:
+            failed_payload["restored_slot"] = restored
+            failed_payload["rollback"] = {"ok": True, "slot": restored}
+            failed_payload["message"] += f"; rolled back to slot {restored}"
+        if skill_runtime_rollback:
+            failed_payload["skill_runtime_rollback"] = skill_runtime_rollback
+            if restored and not bool(skill_runtime_rollback.get("ok")):
+                failed_payload["message"] += " | some skill runtime rollbacks failed"
+    failed_status = write_core_update_status(failed_payload)
     with contextlib.suppress(Exception):
         clear_core_update_plan()
     payload["status"] = failed_status
