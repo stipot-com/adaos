@@ -623,6 +623,46 @@ class SupervisorManager:
                 self._persist_runtime_state()
                 raise HTTPException(status_code=503, detail=f"runtime shutdown API unavailable: {type(exc).__name__}: {exc}") from exc
 
+    async def _ensure_runtime_stopped_for_update(
+        self,
+        *,
+        drain_timeout_sec: float,
+        signal_delay_sec: float,
+        reason: str,
+    ) -> dict[str, Any]:
+        graceful_deadline = time.time() + max(3.0, float(drain_timeout_sec) + float(signal_delay_sec) + 3.0)
+        while time.time() < graceful_deadline:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                return {"ok": True, "forced": False, "reason": reason}
+            await asyncio.sleep(0.2)
+
+        forced = False
+        async with self._lock:
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                forced = True
+                with contextlib.suppress(Exception):
+                    proc.terminate()
+                kill_deadline = time.time() + 5.0
+                while time.time() < kill_deadline:
+                    if proc.poll() is not None:
+                        break
+                    await asyncio.sleep(0.1)
+                if proc.poll() is None:
+                    with contextlib.suppress(Exception):
+                        proc.kill()
+                    final_deadline = time.time() + 5.0
+                    while time.time() < final_deadline:
+                        if proc.poll() is not None:
+                            break
+                        await asyncio.sleep(0.1)
+                if proc.poll() is None:
+                    raise RuntimeError(f"runtime process did not exit after forced stop: {reason}")
+                self._last_error = f"forced runtime stop after shutdown timeout: {reason}"
+                self._persist_runtime_state()
+        return {"ok": True, "forced": forced, "reason": reason}
+
     async def _countdown_update_worker(
         self,
         *,
@@ -680,6 +720,26 @@ class SupervisorManager:
                 drain_timeout_sec=drain_timeout_sec,
                 signal_delay_sec=signal_delay_sec,
             )
+            stop_result = await self._ensure_runtime_stopped_for_update(
+                drain_timeout_sec=drain_timeout_sec,
+                signal_delay_sec=signal_delay_sec,
+                reason=reason,
+            )
+            if bool(stop_result.get("forced")):
+                write_core_update_status(
+                    {
+                        "state": "restarting",
+                        "phase": "shutdown",
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                        "drain_timeout_sec": drain_timeout_sec,
+                        "signal_delay_sec": signal_delay_sec,
+                        "message": "runtime shutdown exceeded grace period; supervisor forced process stop",
+                        "forced_shutdown": True,
+                    }
+                )
         except asyncio.CancelledError:
             clear_core_update_plan()
             status = write_core_update_status(

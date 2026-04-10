@@ -115,6 +115,7 @@ def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypat
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
     shutdown_calls: list[dict] = []
+    stop_calls: list[dict] = []
 
     async def _fake_sleep(_value: float) -> None:
         return None
@@ -129,8 +130,19 @@ def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypat
         )
         return {"ok": True, "accepted": True}
 
+    async def _fake_ensure_stopped(*, drain_timeout_sec: float, signal_delay_sec: float, reason: str) -> dict:
+        stop_calls.append(
+            {
+                "reason": reason,
+                "drain_timeout_sec": drain_timeout_sec,
+                "signal_delay_sec": signal_delay_sec,
+            }
+        )
+        return {"ok": True, "forced": False, "reason": reason}
+
     monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(manager, "_request_runtime_shutdown", _fake_shutdown)
+    monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _fake_ensure_stopped)
 
     asyncio.run(
         manager._countdown_update_worker(
@@ -151,6 +163,7 @@ def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypat
     assert status["state"] == "restarting"
     assert status["phase"] == "shutdown"
     assert shutdown_calls and shutdown_calls[0]["reason"] == "test.rollback"
+    assert stop_calls and stop_calls[0]["reason"] == "test.rollback"
 
 
 def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(monkeypatch, tmp_path) -> None:
@@ -195,6 +208,52 @@ def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(mo
     attempt = supervisor._read_update_attempt()
     assert isinstance(attempt, dict)
     assert attempt["state"] == "failed"
+
+
+def test_ensure_runtime_stopped_for_update_forces_hung_process(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    timeline = {"now": 0.0}
+
+    class _Proc:
+        def __init__(self) -> None:
+            self._alive = True
+            self.terminate_calls = 0
+            self.kill_calls = 0
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self._alive = False
+
+    proc = _Proc()
+    manager._proc = proc
+
+    async def _fake_sleep(value: float) -> None:
+        timeline["now"] += max(0.1, float(value))
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(supervisor.time, "time", lambda: timeline["now"])
+
+    result = asyncio.run(
+        manager._ensure_runtime_stopped_for_update(
+            drain_timeout_sec=1.0,
+            signal_delay_sec=0.1,
+            reason="test.hung_shutdown",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["forced"] is True
+    assert proc.terminate_calls >= 1
+    assert proc.kill_calls == 1
+    assert proc.poll() == 0
 
 
 def test_runtime_state_payload_reports_listener_and_api_readiness(monkeypatch, tmp_path) -> None:
