@@ -605,6 +605,30 @@ def _autostart_update_post(path: str, *, body: dict | None = None, token: Option
         return _autostart_admin_post(runtime_path, body=body, token=token)
 
 
+def _restart_autostart_service() -> dict[str, object]:
+    info = autostart_status(get_ctx())
+    if not isinstance(info, dict):
+        raise RuntimeError("autostart status is unavailable; cannot restart service")
+    scope = str(info.get("scope") or "").strip().lower()
+    service_name = str(info.get("service") or "adaos.service").strip() or "adaos.service"
+    if sys.platform.startswith("linux"):
+        if scope == "system":
+            cmd = ["systemctl", "restart", service_name]
+        elif scope == "user":
+            cmd = ["systemctl", "--user", "restart", service_name]
+        else:
+            raise RuntimeError(f"unsupported autostart scope for restart: {scope or 'unknown'}")
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"failed to restart {service_name}\n"
+                f"stdout:\n{(completed.stdout or '')[-4000:]}\n"
+                f"stderr:\n{(completed.stderr or '')[-4000:]}"
+            )
+        return {"ok": True, "scope": scope, "service": service_name, "command": cmd}
+    raise RuntimeError("update-complete restart is currently supported only on Linux autostart deployments")
+
+
 def _autostart_bind_from_status(status: dict) -> tuple[str, int] | None:
     candidates = [status.get("live_url"), status.get("url"), status.get("configured_url")]
     for candidate in candidates:
@@ -1337,6 +1361,35 @@ def autostart_update_promote_root_cmd(
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
+@autostart_app.command("update-complete")
+@_run_safe
+def autostart_update_complete_cmd(
+    reason: str = typer.Option("cli.core_update.complete", "--reason"),
+    token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        promotion = _autostart_supervisor_post(
+            "/api/supervisor/update/promote-root",
+            token=token,
+            body={"reason": reason},
+        )
+        restart = _restart_autostart_service()
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    payload = {
+        "ok": True,
+        "promotion": promotion,
+        "restart": restart,
+        "message": "root promotion completed and autostart service restart requested",
+    }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return

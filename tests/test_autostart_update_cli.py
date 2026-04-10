@@ -155,6 +155,30 @@ def test_autostart_update_promote_root_posts_to_supervisor(monkeypatch) -> None:
     assert captured["body"]["reason"] == "cli.core_update.root_promotion"
 
 
+def test_autostart_update_complete_promotes_root_and_restarts_service(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True, "status": {"phase": "root_promoted"}}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
+    monkeypatch.setattr(
+        setup_cmd,
+        "_restart_autostart_service",
+        lambda: {"ok": True, "scope": "system", "service": "adaos.service", "command": ["systemctl", "restart", "adaos.service"]},
+    )
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/promote-root"
+    assert captured["body"]["reason"] == "cli.core_update.complete"
+    assert '"service": "adaos.service"' in result.output
+
+
 def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> None:
     runner = CliRunner()
 
