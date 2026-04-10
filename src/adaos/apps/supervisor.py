@@ -30,6 +30,7 @@ from adaos.services.core_slots import (
     validate_slot_structure,
 )
 from adaos.services.core_update import clear_plan as clear_core_update_plan
+from adaos.services.core_update import manifest_requires_root_promotion
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
@@ -362,6 +363,7 @@ class SupervisorManager:
         proc = self._proc
         current_slot = active_slot()
         active_manifest = active_slot_manifest()
+        root_promotion_required, bootstrap_update = manifest_requires_root_promotion(active_manifest)
         slot_structure = validate_slot_structure(current_slot) if current_slot else None
         managed_pid = None
         managed_alive = False
@@ -429,6 +431,8 @@ class SupervisorManager:
             "expected_managed_cwd": expected_cwd,
             "managed_matches_active_slot": managed_matches_active_slot,
             "active_manifest": active_manifest,
+            "root_promotion_required": root_promotion_required,
+            "bootstrap_update": bootstrap_update,
             "slot_structure": slot_structure,
             "restart_count": int(self._restart_count),
             "last_start_at": self._last_start_at,

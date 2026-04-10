@@ -5,7 +5,9 @@ import subprocess
 from adaos.services.core_update import (
     clear_plan,
     execute_pending_update,
+    finalize_runtime_boot_status,
     configured_update_command,
+    read_last_result,
     read_plan,
     read_status,
     rollback_installed_skill_runtimes,
@@ -164,3 +166,29 @@ def test_rollback_installed_skill_runtimes_marks_expected_skips(monkeypatch) -> 
     assert payload["rollback_total"] == 1
     assert payload["skipped_total"] == 1
     assert payload["failed_total"] == 0
+
+
+def test_finalize_runtime_boot_status_marks_root_promotion_pending(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    activate_slot("B")
+    write_status({"state": "restarting", "phase": "launch", "target_slot": "B"})
+
+    payload = finalize_runtime_boot_status()
+
+    assert payload is not None
+    assert payload["state"] == "validated"
+    assert payload["phase"] == "root_promotion_pending"
+    assert payload["root_promotion_required"] is True
+    assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
+    assert read_last_result()["phase"] == "root_promotion_pending"

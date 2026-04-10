@@ -1222,6 +1222,12 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    if bool(status.get("root_promotion_required")):
+        typer.echo("root promotion required: yes")
+        bootstrap_update = status.get("bootstrap_update") if isinstance(status.get("bootstrap_update"), dict) else {}
+        changed_paths = bootstrap_update.get("changed_paths") if isinstance(bootstrap_update.get("changed_paths"), list) else []
+        if changed_paths:
+            typer.echo(f"bootstrap changes: {', '.join(str(path) for path in changed_paths[:6])}")
     typer.echo(f"active slot: {_format_slot_line(active_slot)}")
     typer.echo(f"previous slot: {_format_slot_line(previous_slot)}")
     active_manifest = _slot_manifest(active_slot)

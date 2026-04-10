@@ -225,6 +225,52 @@ def test_launch_active_slot_marks_child_to_skip_pending_update(monkeypatch) -> N
     assert captured_env[autostart_runner._SKIP_PENDING_UPDATE_ENV] == "1"
 
 
+def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_it(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "env": {},
+            "cwd": "",
+            "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
+        },
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("terminate should not be called on validation success")
+
+        def kill(self):
+            raise AssertionError("kill should not be called on validation success")
+
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
+    monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
+    captured: list[dict] = []
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert captured[-1]["state"] == "validated"
+    assert captured[-1]["phase"] == "root_promotion_pending"
+    assert captured[-1]["root_promotion_required"] is True
+
+
 def test_autostart_runner_skips_pending_update_when_requested(monkeypatch, tmp_path: Path) -> None:
     calls: list[object] = []
 

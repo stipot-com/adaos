@@ -28,7 +28,14 @@ from adaos.apps.cli.commands.api import (
     _write_pidfile,
 )
 from adaos.services.agent_context import get_ctx
-from adaos.services.core_update import clear_plan, execute_pending_update, read_plan, rollback_installed_skill_runtimes, write_status
+from adaos.services.core_update import (
+    clear_plan,
+    execute_pending_update,
+    manifest_requires_root_promotion,
+    read_plan,
+    rollback_installed_skill_runtimes,
+    write_status,
+)
 from adaos.services.core_slots import active_slot, active_slot_manifest, rollback_to_previous_slot, slot_dir, slot_status
 from adaos.services.node_config import load_config, save_config
 from adaos.services.runtime_paths import current_base_dir, current_logs_dir
@@ -591,15 +598,25 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                             f" deactivated={deactivated_total}"
                         )
                 clear_plan()
+                root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+                status_state = "validated" if root_promotion_required else "succeeded"
+                status_phase = "root_promotion_pending" if root_promotion_required else "validate"
+                status_message = (
+                    f"slot {slot} passed post-switch validation; root promotion pending{post_commit_note}"
+                    if root_promotion_required
+                    else f"slot {slot} passed post-switch validation{post_commit_note}"
+                )
                 write_status(
                     {
-                        "state": "succeeded",
-                        "phase": "validate",
-                        "message": f"slot {slot} passed post-switch validation{post_commit_note}",
+                        "state": status_state,
+                        "phase": status_phase,
+                        "message": status_message,
                         "target_slot": slot,
                         "manifest": manifest,
                         "validated_at": time.time(),
                         "skill_post_commit_checks": post_commit_skill_checks,
+                        "root_promotion_required": root_promotion_required,
+                        "bootstrap_update": bootstrap_update,
                         "validation_logs": {
                             "stdout_path": str(stdout_path),
                             "stderr_path": str(stderr_path),

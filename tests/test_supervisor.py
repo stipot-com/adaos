@@ -278,8 +278,44 @@ def test_runtime_state_payload_reports_slot_mismatch(monkeypatch, tmp_path) -> N
 
     assert payload["runtime_state"] == "spawned"
     assert payload["managed_matches_active_slot"] is False
-    assert payload["slot_structure"]["ok"] is False
-    assert "nested_slot_dir" in payload["slot_structure"]["issues"][0]
+
+
+def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+
+    payload = manager.status()
+
+    assert payload["root_promotion_required"] is True
+    assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
 
 
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:

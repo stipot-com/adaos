@@ -107,6 +107,13 @@ def _is_terminal_status(payload: dict[str, Any]) -> bool:
     return bool(state == "idle" and phase == "validate")
 
 
+def manifest_requires_root_promotion(manifest: dict[str, Any] | None) -> tuple[bool, dict[str, Any]]:
+    payload = manifest if isinstance(manifest, dict) else {}
+    bootstrap = payload.get("bootstrap_update") if isinstance(payload.get("bootstrap_update"), dict) else {}
+    required = bool(bootstrap.get("required"))
+    return required, dict(bootstrap)
+
+
 def write_status(payload: dict[str, Any]) -> dict[str, Any]:
     merged = dict(payload)
     merged.setdefault("updated_at", time.time())
@@ -153,6 +160,17 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         payload["target_slot"] = slot
     if isinstance(manifest, dict) and manifest:
         payload["manifest"] = manifest
+    root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+    if root_promotion_required:
+        payload["state"] = "validated"
+        payload["phase"] = "root_promotion_pending"
+        payload["message"] = (
+            f"runtime boot validated on slot {slot}; root promotion pending"
+            if slot
+            else "runtime boot validated; root promotion pending"
+        )
+        payload["root_promotion_required"] = True
+        payload["bootstrap_update"] = bootstrap_update
     return write_status(payload)
 
 
