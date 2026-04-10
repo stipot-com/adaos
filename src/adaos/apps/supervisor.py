@@ -21,7 +21,7 @@ from adaos.apps.api.auth import require_token
 from adaos.apps.bootstrap import init_ctx
 from adaos.apps.cli.commands.api import _advertise_base, _uvicorn_loop_mode
 from adaos.services.agent_context import get_ctx
-from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_slots import active_slot, active_slot_manifest, slot_status as core_slot_status, validate_slot_structure
 from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
@@ -298,6 +298,9 @@ class SupervisorManager:
 
     def _runtime_state_payload(self) -> dict[str, Any]:
         proc = self._proc
+        current_slot = active_slot()
+        active_manifest = active_slot_manifest()
+        slot_structure = validate_slot_structure(current_slot) if current_slot else None
         managed_pid = None
         managed_alive = False
         managed_cmdline: list[str] = []
@@ -328,6 +331,20 @@ class SupervisorManager:
             runtime_state = "starting"
         elif managed_alive:
             runtime_state = "spawned"
+        expected_executable = None
+        expected_cwd = None
+        managed_matches_active_slot = None
+        if isinstance(active_manifest, dict):
+            argv = active_manifest.get("argv")
+            if isinstance(argv, list) and argv:
+                expected_executable = str(argv[0] or "").strip() or None
+            expected_cwd = str(active_manifest.get("cwd") or "").strip() or None
+        if expected_executable or expected_cwd:
+            managed_matches_active_slot = True
+            if expected_executable and str(managed_executable or "").strip() != expected_executable:
+                managed_matches_active_slot = False
+            if expected_cwd and str(managed_cwd or "").strip() != expected_cwd:
+                managed_matches_active_slot = False
         return {
             "ok": True,
             "supervisor_pid": os.getpid(),
@@ -335,6 +352,7 @@ class SupervisorManager:
             "runtime_url": self.runtime_base_url,
             "runtime_host": self.runtime_host,
             "runtime_port": self.runtime_port,
+            "active_slot": current_slot,
             "desired_running": bool(self._desired_running),
             "stopping": bool(self._stopping),
             "managed_pid": managed_pid,
@@ -345,6 +363,11 @@ class SupervisorManager:
             "managed_cmdline": managed_cmdline,
             "managed_executable": managed_executable,
             "managed_cwd": managed_cwd,
+            "expected_managed_executable": expected_executable,
+            "expected_managed_cwd": expected_cwd,
+            "managed_matches_active_slot": managed_matches_active_slot,
+            "active_manifest": active_manifest,
+            "slot_structure": slot_structure,
             "restart_count": int(self._restart_count),
             "last_start_at": self._last_start_at,
             "last_exit_at": self._last_exit_at,

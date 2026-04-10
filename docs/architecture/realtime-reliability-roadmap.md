@@ -216,6 +216,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - surface skill migration failures and selective post-commit deactivations in Infra State and Infrascope
 - separate runtime liveness from listener/API readiness in supervisor-visible status
 - surface the active managed runtime command/source in supervisor diagnostics
+- surface active-slot structure validation in supervisor diagnostics so broken slot layouts fail explicitly
 - harden diagnostic skills so Yjs-backed operator surfaces keep the last usable local snapshot during transient control-plane file failures
 
 ### Candidate code areas

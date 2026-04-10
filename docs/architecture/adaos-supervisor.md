@@ -134,6 +134,7 @@ This API is the source of truth for:
 - current skill runtime migration diagnostics for the active core update attempt
 - runtime liveness separate from listener bind and runtime API readiness
 - active managed runtime command/executable source for the current slot
+- active slot structure diagnostics (`manifest` / `repo` / `venv` / nested-slot anomalies)
 
 ### Runtime API
 

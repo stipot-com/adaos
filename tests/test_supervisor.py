@@ -202,14 +202,72 @@ def test_runtime_state_payload_reports_listener_and_api_readiness(monkeypatch, t
             return None
 
     manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "validate_slot_structure",
+        lambda slot: {"slot": slot, "ok": True, "issues": [], "repo_dir": "/slots/B/repo", "venv_dir": "/slots/B/venv"},
+    )
     monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
     monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: False)
 
     payload = manager.status()
 
+    assert payload["active_slot"] == "B"
     assert payload["managed_alive"] is True
     assert payload["listener_running"] is True
     assert payload["runtime_api_ready"] is False
     assert payload["runtime_state"] == "starting"
     assert payload["managed_executable"] == "python"
+    assert payload["managed_matches_active_slot"] is True
+    assert payload["slot_structure"]["ok"] is True
     assert payload["managed_cmdline"][1:3] == ["-m", "adaos.apps.autostart_runner"]
+
+
+def test_runtime_state_payload_reports_slot_mismatch(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["/wrong/python", "-m", "adaos.apps.autostart_runner"]
+        cwd = "/wrong"
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["/expected/python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": "/expected",
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "validate_slot_structure",
+        lambda slot: {"slot": slot, "ok": False, "issues": ["nested_slot_dir:/slots/A/A"]},
+    )
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: False)
+
+    payload = manager.status()
+
+    assert payload["runtime_state"] == "spawned"
+    assert payload["managed_matches_active_slot"] is False
+    assert payload["slot_structure"]["ok"] is False
+    assert "nested_slot_dir" in payload["slot_structure"]["issues"][0]
