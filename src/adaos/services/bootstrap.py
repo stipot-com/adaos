@@ -131,6 +131,52 @@ def _hub_channel_console_allow_rl(key: str, msg: str) -> bool:
     return True
 
 
+def _is_local_http_base(url: str) -> bool:
+    try:
+        u = urlparse(url)
+        host = (u.hostname or "").lower()
+        return host in ("127.0.0.1", "localhost")
+    except Exception:
+        return False
+
+
+def _hub_route_prefers_supervisor_public_status(path_norm: str, method: str) -> bool:
+    return method in ("GET", "HEAD") and path_norm == "/api/supervisor/public/update-status"
+
+
+def _build_hub_route_http_bases(*, path_norm: str, method: str, cfg: Any | None) -> list[str]:
+    bases: list[str] = []
+    env_base = (
+        os.getenv("ADAOS_SELF_BASE_URL")
+        or os.getenv("ADAOS_BASE")
+        or os.getenv("ADAOS_API_BASE")
+        or ""
+    ).strip()
+    cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
+
+    if _hub_route_prefers_supervisor_public_status(path_norm, method):
+        supervisor_base = (
+            os.getenv("ADAOS_SUPERVISOR_URL")
+            or os.getenv("ADAOS_SUPERVISOR_BASE")
+            or ""
+        ).strip()
+        if supervisor_base and _is_local_http_base(supervisor_base):
+            bases.append(supervisor_base.rstrip("/"))
+        supervisor_port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "").strip() or "8776"
+        bases.append(f"http://127.0.0.1:{supervisor_port}")
+
+    if env_base:
+        bases.append(env_base.rstrip("/"))
+    if cfg_base and _is_local_http_base(cfg_base):
+        bases.append(cfg_base.rstrip("/"))
+
+    # Keep runtime ports as fallback even for the browser-safe supervisor status path.
+    bases.extend(["http://127.0.0.1:8778", "http://127.0.0.1:8777"])
+
+    seen_bases: set[str] = set()
+    return [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
+
+
 def _hub_root_transport_kind(server: str | None) -> str | None:
     text = str(server or "").strip().lower()
     if not text:
@@ -5489,37 +5535,18 @@ class BootstrapService:
                                                 cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
                                                 # IMPORTANT: Route-proxy HTTP requests must target the local hub instance,
                                                 # not the public Root proxy URL that might be stored in node.yaml as hub_url.
-                                                env_base = (
-                                                    os.getenv("ADAOS_SELF_BASE_URL")
-                                                    or os.getenv("ADAOS_BASE")
-                                                    or os.getenv("ADAOS_API_BASE")
-                                                    or ""
-                                                ).strip()
-                                                cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
-
-                                                def _is_local_base(url: str) -> bool:
-                                                    try:
-                                                        from urllib.parse import urlparse
-
-                                                        u = urlparse(url)
-                                                        host = (u.hostname or "").lower()
-                                                        return host in ("127.0.0.1", "localhost")
-                                                    except Exception:
-                                                        return False
-
-                                                bases: list[str] = []
-                                                if env_base:
-                                                    bases.append(env_base.rstrip("/"))
-                                                if cfg_base and _is_local_base(cfg_base):
-                                                    bases.append(cfg_base.rstrip("/"))
-                                                # Prefer direct core port, then sentinel gateway.
-                                                bases.extend(["http://127.0.0.1:8778", "http://127.0.0.1:8777"])
-                                                # Deduplicate while preserving order.
-                                                seen_bases: set[str] = set()
-                                                bases = [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
+                                                bases = _build_hub_route_http_bases(
+                                                    path_norm=path_norm,
+                                                    method=method,
+                                                    cfg=cfg,
+                                                )
                                                 token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                             except Exception:
-                                                bases = ["http://127.0.0.1:8778", "http://127.0.0.1:8777"]
+                                                bases = _build_hub_route_http_bases(
+                                                    path_norm=path_norm,
+                                                    method=method,
+                                                    cfg=None,
+                                                )
                                                 token_local = os.getenv("ADAOS_TOKEN", "") or None
 
                                             # Add optional target/core port fallback for local setups.

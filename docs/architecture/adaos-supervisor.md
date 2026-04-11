@@ -163,8 +163,8 @@ That surface is intended only for restart/update visibility such as:
 
 It must not expose mutating control operations or become a substitute for the authenticated operator API.
 
-Current MVP browser behavior may preserve and display the last known transition state during reconnect windows even when live supervisor polling is unavailable on the browser-facing route.
-The target end state is stronger: browser-reachable routed deployments should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
+Current MVP browser behavior may preserve and display the last known transition state during reconnect windows, and routed hub sessions can now poll a live browser-safe supervisor view at `/hubs/<id>/api/supervisor/public/update-status`.
+The target end state is stronger: every supported browser entry topology should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
 
 ### Runtime API
 

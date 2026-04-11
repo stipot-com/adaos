@@ -192,8 +192,8 @@ The next reliability gap after transport isolation is local process/update super
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
 This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
 Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
-Current MVP coverage now includes slot-first validation, explicit root-promotion states, forced shutdown recovery for hung runtime restarts, and a browser-shell transition badge that preserves the last known update/restart state during reconnect windows.
-The remaining gap is a browser-reachable live supervisor status path through routed/root-proxied deployments, so browser status can keep advancing from supervisor truth even while runtime HTTP/WS is down.
+Current MVP coverage now includes slot-first validation, explicit root-promotion states, forced shutdown recovery for hung runtime restarts, a browser-shell transition badge, and routed read-only supervisor transition polling on `/hubs/<id>/api/supervisor/public/update-status`.
+The remaining gap is broader deployment coverage for that live supervisor path across stricter root-proxied and multi-zone browser topologies, so browser status can keep advancing from supervisor truth in every supported entry mode even while runtime HTTP/WS is down.
 
 ### Focus
 
@@ -227,7 +227,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - keep browser-facing update visibility alive through supervisor status/polling while `/ws` and `/yws` reconnect during slot restart
 - expose a read-only browser-safe supervisor transition surface so restart/update state is not collapsed into generic `offline`
 - distinguish browser-facing `hub restarting`, `update applying`, `rollback`, `root promotion pending`, and `update failed` from ordinary transport reconnect state
-- route that read-only supervisor transition surface through the browser-reachable hub/root path, not only local loopback deployments
+- extend the routed read-only supervisor transition surface across every browser deployment topology, not only the default `/hubs/<id>/api/...` entry path
 
 ### Candidate code areas
 
