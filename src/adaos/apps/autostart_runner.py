@@ -33,6 +33,7 @@ from adaos.services.core_update import (
     execute_pending_update,
     manifest_requires_root_promotion,
     read_plan,
+    read_status,
     rollback_installed_skill_runtimes,
     write_status,
 )
@@ -139,6 +140,19 @@ def _update_validation_runtime_guards_enabled() -> bool:
     if raw is None:
         return True
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _reconcile_post_root_promotion_restart(current: dict[str, Any]) -> dict[str, Any] | None:
+    state = str(current.get("state") or "").strip().lower()
+    phase = str(current.get("phase") or "").strip().lower()
+    if state != "succeeded" or phase != "root_promoted":
+        return None
+    payload = dict(current)
+    payload["phase"] = "validate"
+    payload["message"] = "root promotion restart completed; validated slot runtime booted under updated supervisor"
+    payload["root_restart_completed_at"] = time.time()
+    payload["updated_at"] = time.time()
+    return payload
 
 
 def _update_validation_webspace_id() -> str:
@@ -712,7 +726,12 @@ def main() -> None:
             raise SystemExit(0)
         else:
             phase = "boot"
-            write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
+            current_status = read_status()
+            reconciled = _reconcile_post_root_promotion_restart(current_status)
+            if reconciled is not None:
+                write_status(reconciled)
+            else:
+                write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
 
         phase = "resolve_bind"
         host, port = _resolve_bind(conf, args.host, args.port)

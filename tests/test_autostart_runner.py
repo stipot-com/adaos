@@ -33,6 +33,41 @@ def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> Non
     assert "pidfile" in calls
 
 
+def test_autostart_runner_reconciles_root_promotion_restart_before_idle(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict] = []
+
+    monkeypatch.setattr(autostart_runner, "_parse_args", lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})())
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(autostart_runner, "read_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(
+        autostart_runner,
+        "read_status",
+        lambda: {"state": "succeeded", "phase": "root_promoted", "message": "restart adaos.service to activate"},
+    )
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_launch_active_slot_if_needed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+    )
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert captured
+    assert captured[0]["state"] == "succeeded"
+    assert captured[0]["phase"] == "validate"
+    assert "root promotion restart completed" in captured[0]["message"]
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(
