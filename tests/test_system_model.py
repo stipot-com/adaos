@@ -30,6 +30,7 @@ from adaos.services.system_model import (
     canonical_object_from_protocol_traffic_budget,
     canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
+    canonical_object_from_supervisor_runtime,
     canonical_projection_from_reliability_snapshot,
     canonical_object_from_skill_status,
     canonical_object_from_subnet_directory_node,
@@ -677,6 +678,38 @@ def test_canonical_overview_projection_builds_health_strip_runtime_and_recent_ch
     assert projection["context"]["quota_summary"][0]["object_id"] == "quota:telegram-outbox"
     assert projection["context"]["active_runtimes"][0]["object_id"] == "runtime:hub:alpha/yjs-sync"
     assert any(item["category"] == "drift" for item in projection["context"]["recent_changes"])
+
+
+def test_canonical_object_from_supervisor_runtime_surfaces_transition_state() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "A",
+                "runtime_state": "spawned",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": False,
+                "supervisor_url": "http://127.0.0.1:8776",
+                "runtime_url": "http://127.0.0.1:8777",
+            },
+            "update_status": {
+                "state": "restarting",
+                "phase": "shutdown",
+                "message": "countdown completed; pending update written",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+40.deadbee",
+            },
+        }
+    ).to_dict()
+
+    assert obj["id"] == "runtime:node:alpha/supervisor"
+    assert obj["kind"] == "runtime"
+    assert obj["status"] == "warning"
+    assert obj["runtime"]["assessment"]["state"] == "restarting"
+    assert obj["runtime"]["phase"] == "shutdown"
+    assert obj["runtime"]["active_slot"] == "A"
+    assert obj["actions"][0]["id"] == "restart_runtime"
 
 
 def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:
