@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,24 @@ def _root_verify_from_conf(conf: Any) -> str | bool | ssl.SSLContext:
     except Exception:
         verify = True
     return verify
+
+
+def _resolve_root_base_url(conf: Any, explicit_root: str | None = None) -> str:
+    base_url = (
+        explicit_root
+        or getattr(getattr(conf, "root_settings", None), "base_url", None)
+        or "https://api.inimatic.com"
+    ).rstrip("/")
+    zone_id = (
+        str(os.getenv("ADAOS_ZONE_ID") or getattr(conf, "zone_id", None) or "")
+        .strip()
+        .lower()
+    )
+    if not re.fullmatch(r"[a-z]{2}", zone_id or ""):
+        zone_id = ""
+    if zone_id == "ru" and base_url in {"https://api.inimatic.com", "http://api.inimatic.com"}:
+        return f"https://{zone_id}.api.inimatic.com"
+    return base_url
 
 
 @root_link_app.command("status")
@@ -481,7 +500,7 @@ def hub_root_reports(
     """
     ctx = get_ctx()
     conf = ctx.config
-    root_base = (root or getattr(getattr(conf, "root_settings", None), "base_url", None) or "https://api.inimatic.com").rstrip("/")
+    root_base = _resolve_root_base_url(conf, root)
     root_token = str(
         token
         or os.getenv("HUB_ROOT_TOKEN")
@@ -664,7 +683,7 @@ def join_code_create(
         _print(out, json_output=json_output)
         return
 
-    root_base = (root or getattr(getattr(conf, "root_settings", None), "base_url", None) or "https://api.inimatic.com").rstrip("/")
+    root_base = _resolve_root_base_url(conf, root)
 
     path = "/v1/subnets/join-code"
     url = root_base + path

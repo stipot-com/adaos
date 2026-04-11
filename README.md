@@ -157,6 +157,7 @@ cd adaos
 bash tools/bootstrap.sh
 source .venv/bin/activate
 adaos --help
+# bash tools/bootstrap.sh --zone ru --dev
 ```
 
 ### Windows PowerShell
@@ -167,6 +168,7 @@ Using `uv`:
 powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1
 .\.venv\Scripts\Activate.ps1
 adaos --help
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -ZoneId ru -Dev
 ```
 
 Using `pip`:
@@ -175,7 +177,10 @@ Using `pip`:
 powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1
 .\.venv\Scripts\Activate.ps1
 adaos --help
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -ZoneId ru -Dev
 ```
+
+Repo bootstrap scripts support zone-aware Root routing via `--zone` or `-ZoneId`. Use only a two-letter country or region code such as `ru`. When the default public Root URL is in use, national zones follow the `[zone].api.inimatic.com` rule; right now `ru` resolves to `https://ru.api.inimatic.com`, while the other zones still stay on `https://api.inimatic.com`. The optional `--dev` / `-Dev` flag writes `ENV_TYPE=dev` into `.env`.
 
 ### Install from an existing environment
 

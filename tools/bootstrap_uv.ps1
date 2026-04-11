@@ -2,6 +2,7 @@
 param(
   [string]$JoinCode = "",
   [string]$Role = "",
+  [switch]$Dev,
   [switch]$NoVoice,
   [ValidateSet("auto", "always", "never")]
   [string]$InstallService = "auto",
@@ -9,7 +10,8 @@ param(
   [int]$ServePort = 8777,
   [int]$ControlPort = 8777,
   [string]$RootUrl = "https://api.inimatic.com",
-  [string]$Rev = "rev2026"
+  [string]$Rev = "rev2026",
+  [string]$ZoneId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,10 +22,62 @@ $infraSubPath = "src\adaos\integrations\infra-inimatic"
 # Ensure we operate from repo root even if invoked from elsewhere.
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
+if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
+  $ZoneId = $ZoneId.Trim().ToLower()
+  if ($ZoneId -notmatch '^[a-z]{2}$') {
+    throw "ZoneId must be a two-letter lowercase country/region code (example: ru)"
+  }
+}
 
 function Have($cmd) {
   try { Get-Command $cmd -ErrorAction Stop | Out-Null; return $true }
   catch { return $false }
+}
+
+function Write-EnvVar {
+  param(
+    [Parameter(Mandatory = $true)][string]$Key,
+    [Parameter(Mandatory = $true)][string]$Value,
+    [string]$EnvFile = ".env"
+  )
+  if ([string]::IsNullOrWhiteSpace($Key)) { return }
+  if (-not (Test-Path $EnvFile)) {
+    New-Item -ItemType File -Path $EnvFile -Force | Out-Null
+  }
+  $lines = @()
+  if (Test-Path $EnvFile) {
+    $lines = @(Get-Content $EnvFile -ErrorAction SilentlyContinue)
+  }
+  $updated = $false
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match "^\Q$Key\E=") {
+      $lines[$i] = "$Key=$Value"
+      $updated = $true
+      break
+    }
+  }
+  if (-not $updated) {
+    $lines += "$Key=$Value"
+  }
+  Set-Content -Path $EnvFile -Value $lines
+}
+
+function Resolve-EffectiveRootUrl {
+  param(
+    [string]$RootUrlValue,
+    [string]$ZoneValue
+  )
+  $normalizedZone = [string]$ZoneValue
+  if ([string]::IsNullOrWhiteSpace($normalizedZone)) { $normalizedZone = "" }
+  $normalizedZone = $normalizedZone.Trim().ToLower()
+  if ($normalizedZone -notmatch '^[a-z]{2}$') { $normalizedZone = "" }
+  $normalizedRoot = [string]$RootUrlValue
+  if ([string]::IsNullOrWhiteSpace($normalizedRoot)) { $normalizedRoot = "https://api.inimatic.com" }
+  $normalizedRoot = $normalizedRoot.Trim().TrimEnd("/")
+  if ($normalizedZone -eq "ru" -and $normalizedRoot -in @("https://api.inimatic.com", "http://api.inimatic.com")) {
+    return "https://$normalizedZone.api.inimatic.com"
+  }
+  return $normalizedRoot
 }
 
 # 1) Install uv if missing
@@ -69,6 +123,12 @@ if (-not (Test-Path ".env")) {
     Write-Host ".env created from .env.prod.sample"
   }
 }
+if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
+  Write-EnvVar -Key "ADAOS_ZONE_ID" -Value $ZoneId.Trim().ToLower() -EnvFile ".env"
+}
+if ($Dev) {
+  Write-EnvVar -Key "ENV_TYPE" -Value "dev" -EnvFile ".env"
+}
 
 # 5) Short command: add .venv\Scripts to PATH for current session
 $venvBin = Join-Path $PWD ".venv\Scripts"
@@ -88,6 +148,15 @@ function Invoke-Adaos {
 function Install-VoiceDeps {
   if ($NoVoice) { return }
   Write-Host "Installing voice deps (Rasa)..."
+  $pyVer = ""
+  try {
+    $pyVer = (& .\.venv\Scripts\python.exe -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>$null).Trim()
+  } catch { }
+  if ($pyVer -in @("3.11", "3.12", "3.13")) {
+    Write-Warning "Skipping voice NLU deps: rasa==3.6.21 is not available for Python $pyVer."
+    Write-Warning "If you need voice NLU, use Python 3.10 or run with -NoVoice to silence this step."
+    return
+  }
   try {
     & .\.venv\Scripts\python.exe -c "import rasa; print(getattr(rasa,'__version__',''))" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
@@ -96,7 +165,7 @@ function Install-VoiceDeps {
     }
   } catch { }
   try {
-    & .\.venv\Scripts\python.exe -m pip install "rasa==3.6.20"
+    & .\.venv\Scripts\python.exe -m pip install "rasa==3.6.21"
     if ($LASTEXITCODE -ne 0) { throw "pip install rasa failed" }
     Write-Host "Rasa installed."
   } catch {
@@ -116,6 +185,7 @@ if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
   } catch { }
 }
 if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "dev" }
+if ($Dev) { $envType = "dev" }
 $env:ENV_TYPE = $envType
 
 if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
@@ -143,8 +213,12 @@ try {
   exit 1
 }
 
+$effectiveRootUrl = Resolve-EffectiveRootUrl -RootUrlValue $RootUrl -ZoneValue $ZoneId
 $env:ADAOS_REV = $Rev
-$env:ADAOS_API_BASE = $RootUrl
+$env:ADAOS_API_BASE = $effectiveRootUrl
+if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
+  $env:ADAOS_ZONE_ID = $ZoneId.Trim().ToLower()
+}
 
 function Test-TcpPortAvailable {
   param([Parameter(Mandatory = $true)][int]$Port)
@@ -258,7 +332,7 @@ function Show-OptionalModulesNote {
 
 if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
   Write-Host "Joining subnet via join-code..."
-  Invoke-Adaos node join --code $JoinCode --root $RootUrl | Out-Null
+  Invoke-Adaos node join --code $JoinCode --root $effectiveRootUrl | Out-Null
   if ($LASTEXITCODE -ne 0) {
     Write-Error "adaos node join failed (see output above)."
     exit 1

@@ -16,12 +16,32 @@ ROOT_URL="https://api.inimatic.com"
 REV="rev2026"
 ZONE_ID=""
 NO_VOICE="0"
+DEV_MODE="0"
 
 log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m[!] %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m[x] %s\033[0m\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+effective_root_url() {
+  local root_url="$1"
+  local zone_id="${2:-}"
+  local normalized_zone
+  normalized_zone="$(printf '%s' "${zone_id:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ ! "$normalized_zone" =~ ^[a-z]{2}$ ]]; then
+    normalized_zone=""
+  fi
+  case "$root_url" in
+    ""|"https://api.inimatic.com"|"http://api.inimatic.com")
+      if [[ "$normalized_zone" == "ru" ]]; then
+        printf '%s' "https://${normalized_zone}.api.inimatic.com"
+        return 0
+      fi
+      ;;
+  esac
+  printf '%s' "$root_url"
+}
 
 write_env_var() {
   local key="$1"
@@ -195,7 +215,7 @@ install_voice_deps() {
   py_ver="$("$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
   case "$py_ver" in
     3.11|3.12|3.13)
-      warn "Skipping voice NLU deps: rasa==3.6.20 is not available for Python ${py_ver}."
+      warn "Skipping voice NLU deps: rasa==3.6.21 is not available for Python ${py_ver}."
       warn "If you need voice NLU, use Python 3.10 or run with --no_voice to silence this step."
       return 0
       ;;
@@ -205,7 +225,7 @@ install_voice_deps() {
     return 0
   fi
   set +e
-  "$py" -m pip install "rasa==3.6.20"
+  "$py" -m pip install "rasa==3.6.21"
   local rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
@@ -230,6 +250,7 @@ while [[ $# -gt 0 ]]; do
     --rev) REV="${2:-}"; shift 2 ;;
     --zone|--zone-id) ZONE_ID="${2:-}"; shift 2 ;;
     --no_voice|--no-voice) NO_VOICE="1"; shift ;;
+    --dev) DEV_MODE="1"; shift ;;
     -h|--help)
       cat <<EOF
 Usage: tools/bootstrap_uv.sh [options]
@@ -242,6 +263,7 @@ Usage: tools/bootstrap_uv.sh [options]
   --root-url URL
   --rev REV
   --zone ZONE_ID
+  --dev
   --no_voice            Skip voice/NLU deps (Rasa)
 EOF
       exit 0
@@ -249,6 +271,13 @@ EOF
     *) die "Unknown arg: $1 (try --help)" ;;
   esac
 done
+
+if [[ -n "${ZONE_ID:-}" ]]; then
+  ZONE_ID="$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')"
+  if [[ ! "$ZONE_ID" =~ ^[a-z]{2}$ ]]; then
+    die "ZONE_ID must be a two-letter lowercase country/region code (example: ru)"
+  fi
+fi
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   if [[ "${SERVE_PORT:-}" == "8777" ]]; then
@@ -321,6 +350,9 @@ fi
 if [[ -n "${ZONE_ID:-}" ]]; then
   write_env_var "ADAOS_ZONE_ID" "$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')" ".env"
 fi
+if [[ "${DEV_MODE:-0}" == "1" ]]; then
+  write_env_var "ENV_TYPE" "dev" ".env"
+fi
 
 # 5) Convenience PATH for current shell session
 if [[ -d ".venv/bin" ]]; then
@@ -330,6 +362,9 @@ fi
 # 6) Default webspace content (scenarios + skills) via built-in `adaos install`
 if [[ -z "${ENV_TYPE:-}" ]]; then
   ENV_TYPE="$(read_env_type_from_file ".env" || true)"
+fi
+if [[ "${DEV_MODE:-0}" == "1" ]]; then
+  ENV_TYPE="dev"
 fi
 export ENV_TYPE="${ENV_TYPE:-dev}"
 ADAOS_BASE_DIR="$(resolve_adaos_base_dir)"
@@ -345,14 +380,15 @@ if ! "$ADAOS_PY" -m adaos install; then
 fi
 
 export ADAOS_REV="$REV"
-export ADAOS_API_BASE="$ROOT_URL"
+EFFECTIVE_ROOT_URL="$(effective_root_url "$ROOT_URL" "${ZONE_ID:-}")"
+export ADAOS_API_BASE="$EFFECTIVE_ROOT_URL"
 if [[ -n "${ZONE_ID:-}" ]]; then
   export ADAOS_ZONE_ID="$(printf '%s' "$ZONE_ID" | tr '[:upper:]' '[:lower:]')"
 fi
 
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
-  if ! "$ADAOS_PY" -m adaos node join --code "$JOIN_CODE" --root "$ROOT_URL"; then
+  if ! "$ADAOS_PY" -m adaos node join --code "$JOIN_CODE" --root "$EFFECTIVE_ROOT_URL"; then
     warn "adaos node join failed (check output above)"
   fi
 fi

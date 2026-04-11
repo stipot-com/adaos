@@ -38,28 +38,44 @@ python -m adaos hub join-code create --local
 - Online mode: Root (default: `https://api.inimatic.com`)
 - Offline mode: Hub URL (the hub node accepts join directly)
 
+Zone-aware bootstrap is supported too:
+
+- Repo bootstrap scripts accept `--zone <id>` on Bash or `-ZoneId <id>` on PowerShell.
+- Use only a two-letter country or region code such as `ru`.
+- With the default public Root URL, national zones follow the `[zone].api.inimatic.com` rule.
+- Right now this is active for `ru`, which resolves to `https://ru.api.inimatic.com`; the other zones still use `https://api.inimatic.com`.
+- This zone selection affects hub bootstrap, owner login, member join via join-code, and hub join-code creation.
+
 For offline/LAN-only setups you can still override the hub address explicitly via `adaos node join --hub-url http://<HUB_LAN_IP>:8777` (advanced).
 
 ### Windows (PowerShell, pip bootstrap)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE>
+# example for RU Root:
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -JoinCode <CODE> -ZoneId ru -Dev
 ```
 
 ### Linux/macOS (pip bootstrap)
 
 ```bash
 bash tools/bootstrap.sh --join-code <CODE>
+# example for RU Root:
+# bash tools/bootstrap.sh --join-code <CODE> --zone ru --dev
 ```
 
 ### Windows/Linux/macOS (uv bootstrap)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -JoinCode <CODE>
+# example for RU Root:
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -JoinCode <CODE> -ZoneId ru -Dev
 ```
 
 ```bash
 bash tools/bootstrap_uv.sh --join-code <CODE>
+# example for RU Root:
+# bash tools/bootstrap_uv.sh --join-code <CODE> --zone ru --dev
 ```
 
 ### Offline/LAN member bootstrap (using `--local` join-code)
