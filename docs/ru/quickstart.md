@@ -34,6 +34,7 @@ git submodule update --init --recursive \
 ```bash
 bash tools/bootstrap.sh
 source .venv/bin/activate
+# bash tools/bootstrap.sh --zone ru --dev
 ```
 
 ### Windows PowerShell через `uv`
@@ -41,6 +42,7 @@ source .venv/bin/activate
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1
 .\.venv\Scripts\Activate.ps1
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1 -ZoneId ru -Dev
 ```
 
 ### Windows PowerShell через `pip`
@@ -48,7 +50,10 @@ powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1
 .\.venv\Scripts\Activate.ps1
+# powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -ZoneId ru -Dev
 ```
+
+Bootstrap-скрипты поддерживают zonal Root routing через `--zone` или `-ZoneId`. Используем только двухбуквенный код страны или региона, например `ru`. Это влияет на `adaos dev root init`, `adaos dev root login`, member join по join-code и создание join-code на hub, если используется стандартный публичный Root URL. Для национальных зон действует правило `[zone].api.inimatic.com`; сейчас это актуально для `ru`, поэтому будет выбран `https://ru.api.inimatic.com`, а остальные зоны пока остаются на `https://api.inimatic.com`. Дополнительно флаг `--dev` / `-Dev` записывает `ENV_TYPE=dev` в `.env`.
 
 ### Ручная editable-установка
 

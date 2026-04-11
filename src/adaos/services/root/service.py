@@ -661,6 +661,11 @@ def _insecure_tls_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _is_default_root_base_url(value: str | None) -> bool:
+    normalized = str(value or "").strip().rstrip("/").lower()
+    return normalized in {"", "https://api.inimatic.com", "http://api.inimatic.com"}
+
+
 class RootDeveloperService:
     """High-level orchestration for Root developer workflows."""
 
@@ -820,6 +825,14 @@ class RootDeveloperService:
                 ca_cert_path=ca_path,
                 workspace_path=workspace,
             )
+        except RootHttpError as exc:
+            if exc.status_code == 0 and "handshake operation timed out" in str(exc).lower():
+                zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or cfg.zone_id or "").strip().lower())
+                current_base = self._client(cfg).base_url
+                zone_hint = f" Try ADAOS_ZONE_ID={zone_id}." if zone_id else " Try setting ADAOS_ZONE_ID=ru if this machine should use the RU Root."
+                raise RootServiceError(f"TLS handshake with Root timed out at {current_base}.{zone_hint}") from exc
+            emit(self.ctx.bus, "root.dev.init.error", {"node_id": node_id}, "root.dev")
+            raise
         except Exception:
             emit(self.ctx.bus, "root.dev.init.error", {"node_id": node_id}, "root.dev")
             raise
@@ -1537,6 +1550,9 @@ class RootDeveloperService:
         if self._client_factory:
             return self._client_factory(cfg)
         base_url = cfg.root_settings.base_url or "https://api.inimatic.com"
+        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or cfg.zone_id or "").strip().lower())
+        if zone_id and _is_default_root_base_url(base_url):
+            base_url = zone_public_base_url(zone_id)
         return RootHttpClient(base_url=base_url)
 
     def _owner_auth_client(self, cfg: NodeConfig) -> RootHttpClient:
