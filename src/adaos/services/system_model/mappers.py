@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Mapping
 
 from adaos.services.system_model.model import (
+    CanonicalActionDescriptor,
     CanonicalGovernance,
     CanonicalKind,
     CanonicalObject,
@@ -109,6 +110,133 @@ def canonical_object_from_node_status(payload: Any) -> CanonicalObject:
         relations=relations,
         runtime=runtime,
         representations=representations,
+    )
+
+
+def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
+    data = coerce_mapping(payload)
+    runtime = coerce_mapping(data.get("runtime_state"))
+    update_status = coerce_mapping(data.get("update_status"))
+    node_id = str(data.get("node_id") or "local").strip() or "local"
+    active_slot = str(
+        runtime.get("active_slot")
+        or coerce_mapping(runtime.get("active_manifest")).get("slot")
+        or update_status.get("target_slot")
+        or "--"
+    ).strip() or "--"
+    runtime_state = str(runtime.get("runtime_state") or "unknown").strip().lower() or "unknown"
+    update_state = str(update_status.get("state") or "").strip().lower()
+    update_phase = str(update_status.get("phase") or "").strip().lower()
+    runtime_api_ready = bool(runtime.get("runtime_api_ready"))
+    managed_alive = bool(runtime.get("managed_alive"))
+    desired_running = bool(runtime.get("desired_running")) if "desired_running" in runtime else None
+    root_promotion_required = bool(
+        runtime.get("root_promotion_required")
+        or coerce_mapping(runtime.get("bootstrap_update")).get("required")
+    )
+
+    if update_state == "failed":
+        status = CanonicalStatus.DEGRADED
+    elif update_state in {"countdown", "draining", "stopping", "restarting", "applying", "validated"}:
+        status = CanonicalStatus.WARNING
+    elif runtime_api_ready:
+        status = CanonicalStatus.ONLINE
+    elif managed_alive and (desired_running is not False):
+        status = CanonicalStatus.WARNING
+    elif desired_running and not managed_alive:
+        status = CanonicalStatus.OFFLINE
+    else:
+        status = normalize_operational_status(runtime_state)
+        if status == CanonicalStatus.UNKNOWN:
+            status = CanonicalStatus.WARNING if managed_alive else CanonicalStatus.UNKNOWN
+
+    assessment_state = update_state or ("ready" if runtime_api_ready else runtime_state) or "unknown"
+    assessment_reason = str(
+        update_status.get("message")
+        or runtime.get("last_error")
+        or runtime_state
+        or "local supervisor runtime state"
+    ).strip() or "local supervisor runtime state"
+
+    subtitle_bits = [f"slot {active_slot}"]
+    target_version = str(update_status.get("target_version") or "").strip()
+    if target_version:
+        subtitle_bits.append(target_version)
+
+    actions = [
+        CanonicalActionDescriptor(
+            id="restart_runtime",
+            title="restart runtime",
+            risk="medium",
+            metadata={"api_path": "/api/supervisor/runtime/restart"},
+        )
+    ]
+    if root_promotion_required or (update_state == "validated" and update_phase == "root_promotion_pending"):
+        actions.append(
+            CanonicalActionDescriptor(
+                id="promote_root",
+                title="promote root",
+                risk="high",
+                metadata={"api_path": "/api/supervisor/update/promote-root"},
+            )
+        )
+
+    return CanonicalObject(
+        id=f"runtime:node:{node_id}/supervisor",
+        kind=CanonicalKind.RUNTIME.value,
+        title="Core runtime supervisor",
+        summary="Supervisor-managed slot runtime transition state",
+        status=status,
+        health=compact_mapping(
+            {
+                "availability": status,
+                "connectivity": normalize_connectivity_status(runtime_api_ready),
+                "runtime_api_ready": runtime_api_ready,
+                "managed_alive": managed_alive,
+            }
+        ),
+        runtime=compact_mapping(
+            {
+                "scope": "core_runtime",
+                "phase": update_phase or runtime_state,
+                "active_slot": active_slot,
+                "runtime_state": runtime_state,
+                "desired_running": desired_running,
+                "managed_alive": managed_alive,
+                "runtime_api_ready": runtime_api_ready,
+                "root_promotion_required": root_promotion_required,
+                "assessment": {
+                    "state": assessment_state,
+                    "reason": assessment_reason,
+                },
+            }
+        ),
+        actual_state=compact_mapping(
+            {
+                "supervisor_url": runtime.get("supervisor_url"),
+                "runtime_url": runtime.get("runtime_url"),
+                "expected_managed_cwd": runtime.get("expected_managed_cwd"),
+                "managed_matches_active_slot": runtime.get("managed_matches_active_slot"),
+                "target_rev": update_status.get("target_rev"),
+                "target_version": update_status.get("target_version"),
+            }
+        ),
+        relations=compact_mapping(
+            {
+                RelationKind.HOSTED_ON.value: [canonical_ref(CanonicalKind.NODE, node_id) or f"node:{node_id}"],
+            }
+        ),
+        actions=actions,
+        representations=compact_mapping(
+            {
+                "operator": {
+                    "title": "Core runtime supervisor",
+                    "subtitle": " | ".join(subtitle_bits),
+                    "update_state": update_state or None,
+                    "update_phase": update_phase or None,
+                }
+            }
+        ),
     )
 
 
@@ -676,6 +804,7 @@ def canonical_object_from_workspace_manifest(payload: Any) -> CanonicalObject:
 
 __all__ = [
     "canonical_object_from_node_status",
+    "canonical_object_from_supervisor_runtime",
     "canonical_object_from_browser_session",
     "canonical_object_from_capacity_snapshot",
     "canonical_object_from_device_endpoint",

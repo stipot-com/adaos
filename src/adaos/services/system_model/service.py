@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from typing import Any
 
+from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.bootstrap import is_ready, load_config
 from adaos.services.reliability import reliability_snapshot
 from adaos.services.registry.subnet_directory import get_directory
+from adaos.services.runtime_paths import current_base_dir
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.subnet.link_client import get_member_link_client
 from adaos.services.system_model.catalog import (
@@ -23,6 +27,7 @@ from adaos.services.system_model.model import CanonicalKind, canonical_ref
 from adaos.services.system_model.mappers import (
     canonical_object_from_capacity_snapshot,
     canonical_object_from_node_status,
+    canonical_object_from_supervisor_runtime,
     canonical_object_from_subnet_directory_node,
 )
 from adaos.services.system_model.projections import (
@@ -39,6 +44,16 @@ from adaos.services.system_model.projections import (
 
 _CONTROL_PLANE_CACHE_TTL_S = 1.0
 _CONTROL_PLANE_CACHE: dict[str, tuple[float, list[Any]]] = {}
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
 
 
 def route_info(role: str) -> tuple[str | None, bool | None]:
@@ -102,6 +117,28 @@ def current_node_object():
     tenant_id, owner_id = _control_plane_scope_refs()
     return apply_governance_defaults(
         canonical_object_from_node_status(current_node_status_payload()),
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+    )
+
+
+def current_supervisor_runtime_object():
+    tenant_id, owner_id = _control_plane_scope_refs()
+    node_payload = current_node_status_payload()
+    node_id = str(node_payload.get("node_id") or "local").strip() or "local"
+    base_dir = current_base_dir()
+    runtime_state = _read_json_file((base_dir / "state" / "supervisor" / "runtime.json").resolve())
+    update_status = read_core_update_status()
+    if not runtime_state and not update_status:
+        return None
+    return apply_governance_defaults(
+        canonical_object_from_supervisor_runtime(
+            {
+                "node_id": node_id,
+                "runtime_state": runtime_state,
+                "update_status": update_status,
+            }
+        ),
         tenant_id=tenant_id,
         owner_id=owner_id,
     )
@@ -215,9 +252,19 @@ def current_control_plane_objects(*, webspace_id: str | None = None) -> list[Any
     inventory = current_inventory_projection()
     reliability = current_reliability_projection(webspace_id=webspace_id)
     neighborhood = _current_node_neighborhood_projection(webspace_id=webspace_id)
+    supervisor_runtime = current_supervisor_runtime_object()
     objects: list[Any] = []
     seen: set[str] = set()
-    for item in [subject, inventory.subject, reliability.subject, neighborhood.subject, *inventory.objects, *reliability.objects, *neighborhood.objects]:
+    for item in [
+        subject,
+        inventory.subject,
+        reliability.subject,
+        neighborhood.subject,
+        supervisor_runtime,
+        *inventory.objects,
+        *reliability.objects,
+        *neighborhood.objects,
+    ]:
         _append_unique(objects, item, seen)
     _CONTROL_PLANE_CACHE[cache_key] = (now, list(objects))
     return objects
