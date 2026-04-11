@@ -164,6 +164,20 @@ def _is_terminal_update_status(payload: dict[str, Any] | None) -> bool:
     return str(payload.get("state") or "").strip().lower() in _terminal_update_states()
 
 
+def _is_root_restart_pending_attempt(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("state") or "").strip().lower() == "awaiting_root_restart"
+
+
+def _is_root_restart_completed_status(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    state = str(payload.get("state") or "").strip().lower()
+    phase = str(payload.get("phase") or "").strip().lower()
+    return state == "succeeded" and phase == "validate" and float(payload.get("root_restart_completed_at") or 0.0) > 0.0
+
+
 def _build_attempt_payload(*, action: str, request: dict[str, Any], status: dict[str, Any] | None, accepted: bool) -> dict[str, Any]:
     now = time.time()
     current_status = dict(status or {})
@@ -207,6 +221,15 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     payload["attempt"] = dict(attempt)
+    if _is_root_restart_pending_attempt(attempt):
+        if _is_root_restart_completed_status(status):
+            payload["attempt"] = _complete_update_attempt(
+                state="completed",
+                status=status,
+                reason="root restart completed",
+            )
+        return payload
+
     if str(attempt.get("state") or "").strip().lower() != "active":
         return payload
 
@@ -953,7 +976,20 @@ class SupervisorManager:
                 "finished_at": time.time(),
             }
         )
-        _complete_update_attempt(state="completed", status=status, reason=reason)
+        _write_update_attempt(
+            {
+                "state": "awaiting_root_restart",
+                "action": "update",
+                "accepted": True,
+                "awaiting_restart": True,
+                "restart_required": True,
+                "requested_at": time.time(),
+                "transitioned_at": time.time(),
+                "updated_at": time.time(),
+                "completion_reason": "",
+                "last_status": status,
+            }
+        )
         return {"ok": True, "accepted": True, "status": status, "root_promotion": promotion, "_served_by": "supervisor"}
 
     def proxy_update_post(self, path: str, *, body: dict[str, Any]) -> dict[str, Any]:

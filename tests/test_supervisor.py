@@ -84,6 +84,39 @@ def test_reconcile_update_status_completes_attempt_on_terminal_status(monkeypatc
     assert attempt["last_status"]["state"] == "succeeded"
 
 
+def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    supervisor._write_update_attempt(
+        {
+            "state": "awaiting_root_restart",
+            "action": "update",
+            "requested_at": 450.0,
+            "transitioned_at": 460.0,
+            "updated_at": 460.0,
+        }
+    )
+
+    payload = supervisor._reconcile_update_status(
+        {
+            "ok": True,
+            "status": {
+                "state": "succeeded",
+                "phase": "validate",
+                "root_restart_completed_at": 499.0,
+                "updated_at": 499.0,
+            },
+            "_served_by": "runtime",
+        }
+    )
+
+    attempt = payload.get("attempt")
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "completed"
+    assert attempt["completion_reason"] == "root restart completed"
+    assert attempt["last_status"]["root_restart_completed_at"] == 499.0
+
+
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
@@ -418,6 +451,10 @@ def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -
     assert payload["status"]["state"] == "succeeded"
     assert payload["status"]["phase"] == "root_promoted"
     assert payload["root_promotion"]["restart_required"] is True
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "awaiting_root_restart"
+    assert attempt["last_status"]["phase"] == "root_promoted"
 
 
 def test_public_update_status_payload_is_browser_safe() -> None:
