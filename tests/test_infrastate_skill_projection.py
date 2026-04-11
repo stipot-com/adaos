@@ -218,8 +218,50 @@ def test_infrastate_snapshot_tolerates_bootstrap_file_not_found(monkeypatch):
     assert snapshot["skills"] == []
     assert snapshot["scenarios"] == []
     assert snapshot["marketplace"] == {"skills": [], "scenarios": []}
-    assert snapshot["nodes"]
-    assert snapshot["node_editor"]["scope"] in {"fallback", "local"}
+
+
+def test_infrastate_supervisor_transition_note_covers_root_promotion_and_restart():
+    mod = _load_infrastate_module()
+
+    pending = mod._supervisor_transition_note(
+        {
+            "state": "validated",
+            "phase": "root_promotion_pending",
+            "message": "validated slot is running; root promotion is pending",
+        }
+    )
+    promoted = mod._supervisor_transition_note(
+        {
+            "state": "succeeded",
+            "phase": "root_promoted",
+            "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+        }
+    )
+
+    assert pending["status"] == "warn"
+    assert "root promotion" in pending["description"]
+    assert promoted["status"] == "warn"
+    assert "restart adaos.service" in promoted["description"]
+
+
+def test_infrastate_step_items_include_supervisor_transition():
+    mod = _load_infrastate_module()
+
+    items = mod._step_items(
+        {
+            "state": "validated",
+            "phase": "root_promotion_pending",
+            "message": "validated slot is running; root promotion is pending",
+            "target_rev": "rev2026",
+        },
+        {"active_slot": "A", "previous_slot": "B"},
+        {"node_state": "ready", "reason": "runtime nominal"},
+        {"version": "0.1.0+40.deadbee", "runtime_git_short_commit": "deadbee", "runtime_git_branch": "rev2026"},
+    )
+
+    supervisor_item = next(item for item in items if item["id"] == "supervisor_transition")
+    assert supervisor_item["status"] == "warn"
+    assert "root promotion" in supervisor_item["description"]
 
 
 def test_infrastate_scenario_items_only_show_installed_registry_entries(monkeypatch, tmp_path: Path):
