@@ -127,6 +127,12 @@ def _looks_like_control_api_response(code: int | None, payload: dict[str, Any] |
     if code is None:
         return False
     if isinstance(payload, dict):
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        transition_role = str(runtime.get("transition_role") or "").strip().lower()
+        if transition_role == "candidate":
+            return False
+        if runtime.get("admin_mutation_allowed") is False:
+            return False
         return True
     return int(code) in {401, 403}
 
@@ -238,4 +244,10 @@ def probe_control_api(*, base_url: str, token: str, timeout_s: float = 2.0) -> t
         return None, None
     if int(resp.status_code) != 200:
         return int(resp.status_code), None
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        return int(resp.status_code), payload
     return int(resp.status_code), {"ok": True, "ping": True}

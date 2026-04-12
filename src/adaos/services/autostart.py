@@ -351,6 +351,16 @@ def _http_probe_local_control(host: str, port: int, *, timeout: float = 0.5) -> 
     try:
         resp = sess.get(f"{base}/api/ping", headers={"Accept": "application/json"}, timeout=timeout)
         if int(resp.status_code) == 200:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = None
+            runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+            transition_role = str((runtime or {}).get("transition_role") or "").strip().lower()
+            if transition_role == "candidate":
+                return False
+            if isinstance(runtime, dict) and runtime.get("admin_mutation_allowed") is False:
+                return False
             return True
     except Exception:
         pass

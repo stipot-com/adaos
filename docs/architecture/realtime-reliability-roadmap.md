@@ -192,8 +192,8 @@ The next reliability gap after transport isolation is local process/update super
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
 This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
 Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
-Current MVP coverage now includes slot-first validation, explicit root-promotion states, an explicit `root restart in progress` attempt stage after root promotion, forced shutdown recovery for hung runtime restarts, one queued subsequent transition after an in-flight transition, minimum-interval scheduling for normal update requests, operator-driven defer for planned/countdown updates, a browser-shell transition badge, routed read-only supervisor transition polling on `/hubs/<id>/api/supervisor/public/update-status`, a canonical supervisor runtime object in the control-plane model so Infrascope/overview surfaces can project transition state as an operator runtime instead of only a transport outage, and a slot-bound runtime-port model with an explicit supervisor-side warm-switch admission decision (`warm_switch` vs `stop_and_switch`) based on reserved A/B ports and local memory headroom.
-The remaining gap is full candidate-runtime prewarm and fast cutover: the browser/control path can now see which mode supervisor selected and which candidate URL/port is reserved, but the actual dual-runtime launch/cutover path still needs to be completed so low-downtime switching becomes operational rather than only planned/observable.
+Current MVP coverage now includes slot-first validation, explicit root-promotion states, an explicit `root restart in progress` attempt stage after root promotion, forced shutdown recovery for hung runtime restarts, one queued subsequent transition after an in-flight transition, minimum-interval scheduling for normal update requests, operator-driven defer for planned/countdown updates, a browser-shell transition badge, routed read-only supervisor transition polling on `/hubs/<id>/api/supervisor/public/update-status`, a canonical supervisor runtime object in the control-plane model so Infrascope/overview surfaces can project transition state as an operator runtime instead of only a transport outage, a slot-bound runtime-port model with an explicit supervisor-side warm-switch admission decision (`warm_switch` vs `stop_and_switch`) based on reserved A/B ports and local memory headroom, per-runtime identity (`runtime_instance_id`, `transition_role`) threaded into supervisor/root-facing reports so parallel runtimes no longer collapse into one opaque `hub_id`, and runtime self-identification/guardrails so candidate runtimes are skipped by local fallback control discovery and reject mutating local update commands until cutover.
+The remaining gap is full candidate-runtime prewarm and fast cutover: the browser/control path can now see which mode supervisor selected and which candidate URL/port is reserved, and root-facing identity is ready for parallel runtimes, but the actual dual-runtime launch/cutover path still needs to be completed so low-downtime switching becomes operational rather than only planned/observable.
 
 ### Focus
 
@@ -233,6 +233,8 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - reserve stable runtime ports per slot so supervisor can reason about `active` and `candidate` runtimes explicitly
 - add a memory gate that decides when dual-runtime warm-switch is safe and when supervisor must fall back to stop-and-switch
 - surface `transition_mode`, candidate runtime URL/port, and warm-switch admission reason in operator and browser-safe status
+- assign every runtime process a stable-per-boot `runtime_instance_id` and `transition_role` so root/NATS/browser can distinguish `active` from `candidate`
+- keep candidate runtimes passive on root-routed traffic subjects until cutover so prewarm does not create duplicate hub traffic consumers
 - complete candidate prewarm and fast cutover only after those control-plane signals are stable
 
 ### Candidate code areas
@@ -254,7 +256,10 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - operators can distinguish `slot validation`, `root promotion pending`, and `root restart in progress` from supervisor-visible state
 - browser header/status surfaces can distinguish controlled supervisor-managed restart/update transitions from plain hub offline or transport loss
 - routed browser sessions can continue reading live supervisor transition state even while runtime `/api`, `/ws`, and `/yws` are unavailable
+- browser/operator transition surfaces can also distinguish a passive `candidate` runtime from the current `active` runtime by `runtime_instance_id`, role, and candidate readiness state instead of showing only one opaque "hub restarting" bucket
 - operators can tell whether the next transition is planned as `warm_switch` or `stop_and_switch`, and why
+- local fallback control resolution cannot accidentally target a passive `candidate` runtime as if it were the active admin endpoint
+- root/browser diagnostics can distinguish concurrent `active` and `candidate` runtimes by explicit runtime instance identity instead of only `hub_id`
 
 ## Phase 4: Hub-member semantic channels
 
@@ -374,6 +379,370 @@ Phase 6 is complete for the current scope: bounded file-media authority and dire
 ### Focus
 
 Keep media architecture separate, but do not let it block core messaging stabilization.
+
+### Confirmed Phase 6 gap: peer rebuild couples media to control and sync
+
+Current browser-hub P2P behavior still has one architectural weakness:
+media lifecycle is coupled too tightly to peer lifecycle.
+
+Today the browser transport may intentionally rebuild the whole `RTCPeerConnection`
+when live media starts or stops, and the hub currently favors replacing the
+existing peer on every fresh offer.
+This is acceptable for operator-grade loopback validation, but it is not an
+acceptable steady-state design for a reliable multi-channel media plane.
+
+That coupling creates self-inflicted failure modes:
+
+- starting or stopping media can tear down `events` and `yjs` data channels
+- a UI component destroy path can indirectly trigger full P2P renegotiation
+- direct media actions and direct recovery policy share too much blast radius
+- file transfer over the media data channel can be interrupted by unrelated media actions
+- media growth toward multiple concurrent sources cannot be implemented safely on top of "replace the whole peer"
+
+The next Phase 6 target is therefore not "more loopback features first".
+It is to decouple media-session behavior from peer-session behavior.
+
+### Target architecture
+
+The target browser-hub direct transport model is:
+
+- one long-lived peer session per browser member session
+- one stable control/data container peer, not a disposable peer per media action
+- independent logical channel lifecycles on top of that peer:
+  - control/events
+  - sync/Yjs
+  - file media transfer
+  - live media tracks
+- media source enable/disable must not require tearing down data-path authority
+- failures in one logical media flow must degrade locally before escalating to whole-peer recovery
+
+In that target design, `RTCPeerConnection` is transport state, while media is
+workload state carried over that transport.
+The browser shell, scenario layer, and widget lifecycle must not own peer
+teardown authority except for explicit session shutdown.
+
+### Architectural invariants
+
+- peer lifecycle and media lifecycle are separate state machines
+- control and sync channels remain valid when live media is added, removed, muted, or replaced
+- UI open/close behavior must not implicitly stop or rebuild the underlying peer session
+- one logical stream keeps one active authority path, but different logical streams may use different paths simultaneously when explicitly designed
+- direct media recovery is local-first:
+  - restart ICE if the peer is intact
+  - renegotiate the affected media shape if needed
+  - rebuild the whole peer only as the final fallback
+- peer replacement must be explicit and versioned, not an automatic side effect of every fresh offer
+
+### Media multi-channel target
+
+Phase 6 should evolve toward a multi-channel media model rather than one
+"live session" toggle.
+
+The intended shape is:
+
+- one control peer session
+- multiple media subflows on that session
+- explicit per-flow identity such as `media_session_id`, `slot_id`, or source id
+- independent enable/disable and health for:
+  - microphone
+  - camera
+  - screen share
+  - file upload / binary media transfer
+  - hub loopback validation
+  - later broadcast or room-style media flows
+
+This does not mean uncontrolled multipath authority.
+It means media concurrency must be explicit inside the semantic channel model
+instead of being approximated by repeated whole-peer rebuilds.
+
+### Preferred implementation shape
+
+The preferred technical direction is:
+
+- keep `events` and `yjs` data channels long-lived once the peer is established
+- stop treating `negotiate()` as synonymous with `close existing peer and rebuild`
+- move to serialized renegotiation with one negotiation authority at a time
+- keep stable peer/session identifiers so stale answers or superseded negotiations can be rejected safely
+- use transceiver- and sender-level media control where possible:
+  - pre-created transceivers
+  - `replaceTrack(...)`
+  - direction changes such as `inactive`, `recvonly`, `sendrecv`
+- keep media upload/data transfer logic independent from live A/V track lifecycle
+
+### Migration roadmap
+
+#### Stage 1: remove UI-owned peer teardown side effects
+
+- stop binding widget/component destroy directly to live-media shutdown semantics
+- ensure closing a modal or unmounting a media widget only detaches UI observers unless the user explicitly requested media stop
+- document and test that ordinary scenario/UI transitions do not call whole-peer teardown implicitly
+
+#### Stage 2: split peer shutdown from renegotiation
+
+- separate `closePeer()` from `renegotiatePeer()` in the browser transport runtime
+- remove the current "always `close()` before `negotiate()`" behavior
+- preserve existing data channels and peer state when only media shape changes
+- keep explicit full teardown only for logout, page unload, protocol incompatibility, or unrecoverable peer corruption
+
+#### Stage 3: stop unconditional hub-side peer replacement
+
+- hub should no longer replace an existing peer on every fresh browser offer by default
+- introduce explicit peer/session generation or epoch checks
+- only supersede the old peer when the offer belongs to a new session generation or the old peer is proven unrecoverable
+
+#### Stage 4: introduce serialized negotiation ownership
+
+- add a negotiation mutex / coordinator on the browser side
+- coalesce multiple local changes into one negotiation pass
+- implement glare-safe / stale-answer-safe handling so concurrent UI actions do not create negotiation races
+- expose negotiation diagnostics separately from raw connection state
+
+#### Stage 5: move media control to subflow semantics
+
+- treat live media as one or more explicit media subflows on top of the stable peer
+- add per-subflow health, diagnostics, and recovery tracking
+- keep file upload over media data channel independent from audio/video track transitions
+- make semantic channel snapshots report media-subflow readiness separately from control/sync readiness
+
+#### Stage 6: support real media multi-channel behavior
+
+- support multiple simultaneous local sources without peer rebuild
+- support explicit policy for which media subflows are direct, relayed, loopback-only, or bounded
+- keep multi-channel media observable in operator surfaces without collapsing it into a single boolean `webrtc connected`
+
+### Exit criteria for the next Phase 6 checkpoint
+
+- starting or stopping live media does not tear down control and sync data channels
+- closing or reopening a media UI surface does not implicitly rebuild the peer
+- direct file upload over media data channel survives unrelated media UI transitions
+- whole-peer rebuild becomes an explicit last-resort recovery action rather than a routine media operation
+- runtime and operator diagnostics distinguish:
+  - peer session health
+  - control/sync path health
+  - per-media-subflow health
+- the architecture is ready for true media multi-channel expansion without introducing hidden authority conflicts between control, sync, and media
+
+### Implementation plan by code area
+
+This section turns the target architecture into an implementation backlog tied
+to the current codebase.
+
+#### Browser transport runtime: `webrtc-transport.service.ts`
+
+Current role:
+
+- owns peer creation and teardown
+- owns data-channel wiring
+- owns media upload data channel
+- currently equates `negotiate()` with "close old peer and build a new one"
+
+Current coupling to remove:
+
+- `negotiate()` begins with unconditional `close()`
+- media start/stop depends on full peer rebuild
+- media upload session is tied to whole-peer lifetime rather than a narrower channel/session scope
+
+Planned refactor:
+
+- split lifecycle entry points into explicit operations:
+  - `ensurePeer(sendCommand)`
+  - `renegotiatePeer(reason, options)`
+  - `closePeer(reason)`
+  - `restartIceTransport()`
+- preserve an existing peer when renegotiation is only updating media shape
+- add explicit negotiation state tracking:
+  - peer session id
+  - negotiation id
+  - negotiation in-flight flag / mutex
+  - last negotiated media shape
+- add explicit media sender/transceiver registry:
+  - audio sender/transceiver
+  - video sender/transceiver
+  - later screen-share sender/transceiver
+- change live media control from "replace peer" to:
+  - acquire local track
+  - attach or replace track on an existing sender/transceiver
+  - request serialized renegotiation only if SDP shape changed
+- keep media upload over the `media` data channel independent from live track enable/disable as much as possible
+
+Expected code changes:
+
+- replace the current unconditional `this.close()` path in `negotiate()`
+- introduce internal helpers for peer bootstrap vs peer update
+- introduce a transport snapshot that distinguishes:
+  - peer state
+  - negotiation state
+  - media-subflow state
+- ensure pending media upload is failed only when the media data channel or peer actually becomes unusable, not merely because UI toggled a live preview
+
+Minimum acceptance tests:
+
+- direct command/events data channel stays open while starting camera loopback
+- direct Yjs data channel stays open while stopping microphone loopback
+- file upload can continue across unrelated media preview UI detach/reattach
+
+#### Browser semantic orchestration: `hub-member-channels.service.ts`
+
+Current role:
+
+- owns semantic path selection and direct-path recovery policy
+- owns initial direct negotiation and direct recovery
+- currently triggers full renegotiation for media start/stop
+
+Current coupling to remove:
+
+- `startMediaLoopback()` calls full `rtc.negotiate(...)`
+- `stopMediaLoopback()` calls full `rtc.negotiate(...)`
+- direct recovery and media lifecycle both escalate too quickly to whole-peer rebuild semantics
+
+Planned refactor:
+
+- keep semantic ownership of policy, but narrow the commands it sends to the transport runtime
+- replace "start/stop media loopback => full renegotiate" with explicit media-intent calls:
+  - `ensureLiveMediaSubflow(...)`
+  - `disableLiveMediaSubflow(...)`
+  - `refreshMediaNegotiation(...)`
+- separate recovery ladders:
+  - peer recovery ladder
+  - live-media recovery ladder
+  - media-upload recovery ladder
+- expose media-subflow evidence in the semantic snapshot, for example:
+  - `live_audio`
+  - `live_video`
+  - `media_upload`
+  - later `screen_share`
+- keep control/sync path selection authority unchanged unless peer-level health actually degrades
+
+Expected code changes:
+
+- `prepareDirectPaths()` should create or validate a stable peer session, not create an assumption that every future media action will rebuild it
+- `startMediaLoopback()` should become a policy method that requests the live media subflow rather than a whole-peer rebuild
+- `stopMediaLoopback()` should disable the relevant subflow and only renegotiate the affected media shape if necessary
+- direct recovery should prefer:
+  - `ICE restart`
+  - targeted peer renegotiation
+  - full peer rebuild last
+
+Minimum acceptance tests:
+
+- semantic `command` and `sync` active paths remain unchanged while live media starts and stops
+- `media` semantic state can degrade independently without forcing `command` and `sync` to fallback
+- visibility changes or modal/widget lifecycle do not trigger whole-peer rebuild unless actual peer health requires it
+
+#### Browser sync/runtime integration: `ydoc.service.ts` and media widgets
+
+Current role:
+
+- `ydoc.service.ts` owns sync provider recreation and webspace switching
+- media widgets subscribe to semantic channel snapshots and currently may stop loopback on component destroy
+
+Current coupling to remove:
+
+- media widget/component destroy currently implies live media shutdown in some paths
+- UI attachment is too close to session ownership
+
+Planned refactor:
+
+- move live media session ownership fully into service state
+- keep widgets as observers/controllers, not owners of peer lifetime
+- make component unmount close only the local UI binding by default
+- require explicit user or policy action to stop live media capture
+
+Expected code changes:
+
+- remove implicit live-media stop from widget destroy paths
+- add explicit media session controller APIs for:
+  - attach local preview
+  - attach remote preview
+  - detach preview
+  - stop live media session
+- keep webspace/sync resync logic isolated from peer/media state except where browser reload naturally resets everything
+
+Minimum acceptance tests:
+
+- opening and closing a media modal does not interrupt an ongoing direct upload
+- destroying a media component does not drop the peer unless the page itself unloads
+
+#### Hub WebRTC peer runtime: `services/webrtc/peer.py`
+
+Current role:
+
+- owns hub-side peer instances keyed by `device_id`
+- currently replaces the peer unconditionally on every fresh `rtc.offer`
+- loops received live tracks back to the browser
+
+Current coupling to remove:
+
+- "new offer => replace existing peer" is used as a safety shortcut
+- this makes browser-side renegotiation indistinguishable from full peer replacement
+
+Planned refactor:
+
+- introduce explicit peer-session identity on the signaling path
+- keep one active peer session per browser member unless a new session generation is explicitly declared
+- allow in-session offer handling for renegotiation on the existing peer
+- support explicit supersede only when:
+  - protocol/session epoch changed
+  - existing peer is failed/closed/unrecoverable
+  - operator/debug policy explicitly requests reset
+- keep loopback sender/transceiver bookkeeping scoped per subflow instead of relying on full peer replacement cleanup
+
+Expected code changes:
+
+- extend signaling payloads with stable peer session identity and negotiation identity
+- teach `handle_rtc_offer(...)` to distinguish:
+  - renegotiation for existing peer session
+  - replacement of an old peer session
+- maintain stronger diagnostics for:
+  - active peer session id
+  - last negotiation id
+  - supersede reason
+  - active loopback tracks by subflow
+
+Minimum acceptance tests:
+
+- a renegotiation offer for the current peer session does not close the existing data channels on the hub side
+- stale or superseded answers/offers are ignored safely
+- repeated start/stop of live media does not accumulate duplicate loopback senders or invalid SDP state
+
+#### Signaling contract and protocol changes
+
+The browser-hub signaling contract will need a small explicit upgrade.
+
+Additions to the signaling model:
+
+- `peer_session_id`
+- `negotiation_id`
+- optional `media_shape` or equivalent declarative summary of intended live media subflows
+- explicit supersede/reset reason when full peer replacement is required
+
+Protocol rules:
+
+- one `peer_session_id` identifies the long-lived direct session
+- many `negotiation_id` values may exist within one peer session
+- stale answers or ICE for an unknown/superseded session are ignored
+- full replacement is explicit, not inferred from the existence of a new offer alone
+
+#### Recommended delivery order
+
+1. browser UI/session ownership cleanup
+2. browser transport split between peer shutdown and renegotiation
+3. browser semantic-channel API split between peer and media-subflow control
+4. signaling contract upgrade with `peer_session_id` and `negotiation_id`
+5. hub-side in-session renegotiation support
+6. transceiver-based live media control
+7. media-subflow observability and later multi-source expansion
+
+#### Definition of done for the refactor tranche
+
+- direct peer session is long-lived across ordinary media start/stop actions
+- semantic channel routing no longer treats media toggles as peer replacement events
+- hub no longer assumes every offer means "new peer instance"
+- operator surfaces can tell whether an incident is:
+  - peer-session failure
+  - negotiation failure
+  - live-media-subflow failure
+  - media-upload-subflow failure
 
 ### Work items
 

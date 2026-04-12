@@ -173,8 +173,9 @@ from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
-from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_slots import active_slot, active_slot_manifest, slot_status as core_slot_status
 from adaos.services.node_config import save_config
+from adaos.services.runtime_identity import runtime_identity_snapshot, runtime_transition_role
 from adaos.services.runtime_lifecycle import (
     is_draining,
     request_drain,
@@ -189,6 +190,48 @@ init_ctx()
 _DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
 _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
 _DEFAULT_UPDATE_COUNTDOWN_SEC = 60.0
+
+
+def _runtime_identity_public_payload() -> dict[str, Any]:
+    identity = runtime_identity_snapshot()
+    slot_name = ""
+    try:
+        slot_name = str(active_slot() or "").strip().upper()
+    except Exception:
+        slot_name = ""
+    runtime_port = None
+    try:
+        runtime_port_value = int(str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip() or "0")
+        if runtime_port_value > 0:
+            runtime_port = runtime_port_value
+    except Exception:
+        runtime_port = None
+    transition_role = str(identity.get("transition_role") or runtime_transition_role() or "active").strip().lower() or "active"
+    return {
+        "runtime_instance_id": str(identity.get("runtime_instance_id") or "").strip() or None,
+        "transition_role": transition_role,
+        "slot": slot_name or None,
+        "runtime_port": runtime_port,
+        "admin_mutation_allowed": transition_role != "candidate",
+    }
+
+
+def _ensure_runtime_admin_mutation_allowed(action: str) -> None:
+    info = _runtime_identity_public_payload()
+    if str(info.get("transition_role") or "active").strip().lower() != "candidate":
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "error": "candidate_runtime_is_passive",
+            "message": (
+                f"candidate runtime rejects {str(action or 'mutation').strip() or 'mutation'} "
+                "until supervisor cutover completes"
+            ),
+            "runtime": info,
+        },
+    )
 
 
 async def _wait_bus_idle(timeout: float) -> bool:
@@ -806,7 +849,12 @@ app.add_middleware(
 
 @app.get("/api/ping")
 async def ping():
-    return {"ok": True, "ts": time.time()}
+    return {
+        "ok": True,
+        "ts": time.time(),
+        "service": "adaos-runtime",
+        "runtime": _runtime_identity_public_payload(),
+    }
 
 
 class SayRequest(BaseModel):
@@ -958,11 +1006,12 @@ async def admin_drain(body: DrainRequest):
 
 @app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
 async def admin_lifecycle():
-    return {"ok": True, "lifecycle": runtime_lifecycle_snapshot()}
+    return {"ok": True, "lifecycle": runtime_lifecycle_snapshot(), "runtime": _runtime_identity_public_payload()}
 
 
 @app.post("/api/admin/update/start", dependencies=[Depends(require_token)])
 async def admin_update_start(body: CoreUpdateStartRequest):
+    _ensure_runtime_admin_mutation_allowed("update.start")
     existing = getattr(app.state, "core_update_task", None)
     if existing is not None and not existing.done():
         return {"ok": True, "accepted": False, "status": read_core_update_status()}
@@ -1004,6 +1053,7 @@ async def admin_update_start(body: CoreUpdateStartRequest):
 
 @app.post("/api/admin/update/cancel", dependencies=[Depends(require_token)])
 async def admin_update_cancel(body: CoreUpdateCancelRequest):
+    _ensure_runtime_admin_mutation_allowed("update.cancel")
     task = getattr(app.state, "core_update_task", None)
     clear_core_update_plan()
     if task is None or task.done():
@@ -1035,6 +1085,7 @@ async def admin_update_cancel(body: CoreUpdateCancelRequest):
 
 @app.post("/api/admin/update/rollback", dependencies=[Depends(require_token)])
 async def admin_update_rollback(body: CoreUpdateRollbackRequest):
+    _ensure_runtime_admin_mutation_allowed("update.rollback")
     existing = getattr(app.state, "core_update_task", None)
     if existing is not None and not existing.done():
         return {"ok": True, "accepted": False, "status": read_core_update_status()}
@@ -1085,6 +1136,7 @@ async def admin_update_status():
         "plan": read_core_update_plan(),
         "slots": core_slot_status(),
         "active_manifest": active_slot_manifest(),
+        "runtime": _runtime_identity_public_payload(),
     }
 
 
@@ -1100,6 +1152,7 @@ async def status():
             "build_date": BUILD_INFO.build_date,
         },
         "lifecycle": runtime_lifecycle_snapshot(),
+        "runtime": _runtime_identity_public_payload(),
     }
 
 

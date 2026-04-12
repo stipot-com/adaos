@@ -177,6 +177,12 @@ The intent is:
 - active runtime remains the only consumer of live hub traffic before cutover
 - candidate reconnects or retries do not supersede the active runtime's root/NATS session merely because they share the same `hub_id`
 
+The same rule must apply to local control discovery:
+
+- `candidate` runtime surfaces must self-identify through lightweight probes such as `/api/ping` and `/api/admin/update/status`
+- local fallback control resolvers must ignore a runtime that reports `transition_role=candidate` or `admin_mutation_allowed=false`
+- a candidate runtime must reject mutating local update operations (`update.start`, `update.cancel`, `update.rollback`) with an explicit conflict instead of behaving like a second control plane
+
 ## Authority boundary
 
 ### Supervisor

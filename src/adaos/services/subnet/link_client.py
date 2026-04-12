@@ -685,6 +685,15 @@ class MemberLinkClient:
         for base in candidates:
             try:
                 resp = sess.get(base + "/api/ping", headers={"Accept": "application/json"}, timeout=0.5)
+                if int(resp.status_code) != 200:
+                    continue
+                payload = resp.json()
+                runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+                transition_role = str((runtime or {}).get("transition_role") or "").strip().lower()
+                if transition_role == "candidate":
+                    continue
+                if isinstance(runtime, dict) and runtime.get("admin_mutation_allowed") is False:
+                    continue
                 if int(resp.status_code) == 200:
                     return base
             except Exception:
