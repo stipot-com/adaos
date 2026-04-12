@@ -646,6 +646,8 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
     state_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("state:")), "")
     mode_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("mode:")), "")
     reason_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("reason:")), "")
+    producer_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("producer:")), "")
+    topology_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("topology:")), "")
     status = CanonicalStatus.OFFLINE if state_token == "unavailable" else CanonicalStatus.ONLINE
     if not capabilities and status == CanonicalStatus.ONLINE:
         status = CanonicalStatus.UNKNOWN
@@ -666,6 +668,8 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
                 "priority": data.get("priority"),
                 "mode": mode_token or None,
                 "reason": reason_token or None,
+                "producer": producer_token or None,
+                "topology": topology_token or None,
             }
         ),
         actual_state=compact_mapping({"capabilities": capabilities}),

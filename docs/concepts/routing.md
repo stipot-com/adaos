@@ -165,6 +165,8 @@ Current foundation in code:
   `webrtc:av`, `producer:member`, and `topology:member_browser_direct`
 - router/reliability/media runtime now select candidate members from persisted subnet capacity and preserve
   `preferred_member_id` in the normalized route contract, even when the active route degrades to hub loopback or relay
+- router now re-evaluates existing `data.media.route` contracts when browser session state or member media inventory changes,
+  so route administration is a live control function rather than a one-shot projection
 - direct-media admission policy and dedicated signaling still need to be completed before this path becomes production-default
 
 ## Typical Flows

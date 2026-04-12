@@ -177,6 +177,15 @@ def test_node_control_plane_inventory_projection_returns_canonical_payload(monke
 
 
 def test_current_control_plane_objects_reuses_short_ttl_cache(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    sys.modules.setdefault("y_py", types.SimpleNamespace(YDoc=type("YDoc", (), {}), apply_update=lambda *args, **kwargs: None))
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
     from adaos.services.system_model import service as mod
 
     calls = {"inventory": 0, "reliability": 0, "neighborhood": 0}
@@ -225,6 +234,76 @@ def test_current_control_plane_objects_reuses_short_ttl_cache(monkeypatch) -> No
 
     assert [item.id for item in first] == [item.id for item in second]
     assert calls == {"inventory": 1, "reliability": 1, "neighborhood": 1}
+
+
+def test_current_node_neighborhood_projection_includes_remote_io_capacity_objects(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    sys.modules.setdefault("y_py", types.SimpleNamespace(YDoc=type("YDoc", (), {}), apply_update=lambda *args, **kwargs: None))
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.services.system_model import service as mod
+
+    node = CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online")
+    monkeypatch.setattr(mod, "_control_plane_scope_refs", lambda: (None, None))
+    monkeypatch.setattr(mod, "current_node_object", lambda: node)
+    monkeypatch.setattr(mod, "local_capacity_object", lambda node_id=None: CanonicalObject(id="capacity:alpha", kind="capacity", title="Local capacity", status="online"))
+    monkeypatch.setattr(
+        mod,
+        "current_reliability_projection",
+        lambda webspace_id=None: CanonicalProjection(
+            id="projection:reliability",
+            kind="reliability",
+            title="Reliability",
+            subject=node,
+            objects=[],
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "get_directory",
+        lambda: types.SimpleNamespace(
+            list_known_nodes=lambda: [
+                {
+                    "node_id": "member-2",
+                    "subnet_id": "main",
+                    "roles": ["member"],
+                    "hostname": "Kitchen member",
+                    "base_url": "http://member-2.local",
+                    "node_state": "ready",
+                    "online": True,
+                    "capacity": {
+                        "io": [
+                            {
+                                "io_type": "webrtc_media",
+                                "priority": 60,
+                                "capabilities": [
+                                    "webrtc:av",
+                                    "producer:member",
+                                    "topology:member_browser_direct",
+                                    "state:available",
+                                ],
+                            }
+                        ],
+                        "skills": [],
+                        "scenarios": [],
+                    },
+                }
+            ]
+        ),
+    )
+
+    projection = mod._current_node_neighborhood_projection().to_dict()
+    objects = {item["id"]: item for item in projection["objects"]}
+
+    assert "member:member-2" in objects
+    assert "capacity:member-2" in objects
+    assert "io:member-2:webrtc_media" in objects
+    assert objects["io:member-2:webrtc_media"]["runtime"]["topology"] == "member_browser_direct"
 
 
 def test_node_control_plane_neighborhood_projection_returns_canonical_payload(monkeypatch) -> None:

@@ -40,6 +40,7 @@ class RouterService:
         self._subscribed = False
         self._vlog = logging.getLogger("adaos.router.voice_chat")
         self._tg_reply_via_root_http = str(os.getenv("HUB_TG_REPLY_VIA_ROOT_HTTP") or "").strip() == "1"
+        self._media_route_webspaces: set[str] = set()
 
     def _pick_target_node(self, desired_io: str, this_node: str) -> str:
         node = this_node
@@ -581,6 +582,126 @@ class RouterService:
                 with ydoc.begin_transaction() as txn:
                     data_map.set(txn, "media", next_state)
 
+        async def _get_media_route_state(webspace_id: str) -> dict[str, Any] | None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = _coerce_y(data_map.get("media"))
+                if not isinstance(current, dict):
+                    return None
+                route = current.get("route")
+                return dict(route) if isinstance(route, dict) else None
+
+        def _remember_media_webspaces(webspace_ids: list[str] | None) -> None:
+            for item in list(webspace_ids or []):
+                token = str(item or "").strip()
+                if token:
+                    self._media_route_webspaces.add(token)
+
+        def _active_browser_session_totals() -> tuple[int, int]:
+            try:
+                from adaos.services.yjs.gateway_ws import active_browser_session_snapshot
+
+                snapshot = active_browser_session_snapshot()
+            except Exception:
+                return (0, 0)
+            peers = snapshot.get("peers") if isinstance(snapshot.get("peers"), list) else []
+            total = 0
+            connected = 0
+            for item in peers:
+                if not isinstance(item, dict):
+                    continue
+                total += 1
+                if str(item.get("connection_state") or "").strip().lower() == "connected":
+                    connected += 1
+            return (total, connected)
+
+        def _route_ability_available(route_state: dict[str, Any], topology_id: str) -> bool:
+            capabilities = route_state.get("capabilities") if isinstance(route_state.get("capabilities"), dict) else {}
+            abilities = capabilities.get("ability") if isinstance(capabilities.get("ability"), dict) else {}
+            entry = abilities.get(topology_id) if isinstance(abilities.get(topology_id), dict) else {}
+            return _coerce_bool(entry.get("available"))
+
+        def _refresh_media_route_payload(route_state: dict[str, Any], *, cause: str, observed_failure: str | None = None) -> dict[str, Any]:
+            member_browser = (
+                route_state.get("member_browser_direct")
+                if isinstance(route_state.get("member_browser_direct"), dict)
+                else {}
+            )
+            browser_session_total, connected_browser_session_total = _active_browser_session_totals()
+            payload: dict[str, Any] = {
+                "need": str(route_state.get("route_intent") or "scenario_response_media"),
+                "producer_preference": str(route_state.get("producer_preference") or ""),
+                "direct_local_ready": _route_ability_available(route_state, "local_http"),
+                "root_routed_ready": _route_ability_available(route_state, "root_media_relay"),
+                "hub_webrtc_ready": _route_ability_available(route_state, "hub_webrtc_loopback"),
+                "browser_session_total": browser_session_total,
+                "connected_browser_session_total": connected_browser_session_total,
+                "refresh_cause": cause,
+            }
+            if member_browser:
+                payload["member_browser_direct"] = {}
+                if "admitted" in member_browser:
+                    payload["member_browser_direct"]["admitted"] = _coerce_bool(member_browser.get("admitted"))
+            monitoring = route_state.get("monitoring") if isinstance(route_state.get("monitoring"), dict) else {}
+            existing_failure = str(monitoring.get("observed_failure") or "").strip()
+            if observed_failure:
+                payload["observed_failure"] = observed_failure
+            elif existing_failure:
+                payload["observed_failure"] = existing_failure
+            return payload
+
+        async def _refresh_media_route_for_webspace(
+            webspace_id: str,
+            *,
+            cause: str,
+            observed_failure: str | None = None,
+        ) -> bool:
+            route_state = await _get_media_route_state(webspace_id)
+            if not isinstance(route_state, dict):
+                return False
+            if str(route_state.get("route_administrator") or "router").strip().lower() not in {"", "router"}:
+                return False
+            payload = _refresh_media_route_payload(
+                route_state,
+                cause=cause,
+                observed_failure=observed_failure,
+            )
+            payload["ts"] = time.time()
+            next_route_state = _resolve_media_route_state(payload, webspace_id=webspace_id)
+            if not isinstance(next_route_state, dict):
+                return False
+            monitoring = next_route_state.get("monitoring") if isinstance(next_route_state.get("monitoring"), dict) else {}
+            if monitoring:
+                monitoring = dict(monitoring)
+                monitoring["refresh_cause"] = cause
+                next_route_state["monitoring"] = monitoring
+            await _set_media_route_state(webspace_id, next_route_state)
+            return True
+
+        async def _refresh_media_routes(
+            *,
+            webspace_ids: list[str] | None = None,
+            cause: str,
+            observed_failure: str | None = None,
+        ) -> None:
+            targets = [
+                str(item or "").strip()
+                for item in list(webspace_ids or self._media_route_webspaces)
+                if str(item or "").strip()
+            ]
+            if not targets:
+                return
+            _remember_media_webspaces(targets)
+            for ws in targets:
+                try:
+                    await _refresh_media_route_for_webspace(
+                        ws,
+                        cause=cause,
+                        observed_failure=observed_failure,
+                    )
+                except Exception:
+                    continue
+
         def _resolve_media_route_state(payload: dict[str, Any], *, webspace_id: str) -> dict[str, Any] | None:
             raw_route = payload.get("route")
             if not isinstance(raw_route, dict) and isinstance(payload.get("route_intent"), dict):
@@ -589,6 +710,7 @@ class RouterService:
             route_state = _coerce_y(raw_route) if isinstance(raw_route, dict) else None
             member_browser = payload.get("member_browser_direct")
             member_browser = member_browser if isinstance(member_browser, dict) else {}
+            current_browser_session_total, current_connected_browser_session_total = _active_browser_session_totals()
             route_producer_target = (
                 route_state.get("producer_target")
                 if isinstance(route_state, dict) and isinstance(route_state.get("producer_target"), dict)
@@ -627,12 +749,20 @@ class RouterService:
                         browser_session_total=(
                             _coerce_int(member_browser.get("browser_session_total"))
                             if member_browser and "browser_session_total" in member_browser
-                            else _coerce_int(payload.get("browser_session_total"))
+                            else (
+                                _coerce_int(payload.get("browser_session_total"))
+                                if "browser_session_total" in payload
+                                else current_browser_session_total
+                            )
                         ),
                         connected_browser_session_total=(
                             _coerce_int(member_browser.get("connected_browser_session_total"))
                             if member_browser and "connected_browser_session_total" in member_browser
-                            else _coerce_int(payload.get("connected_browser_session_total"))
+                            else (
+                                _coerce_int(payload.get("connected_browser_session_total"))
+                                if "connected_browser_session_total" in payload
+                                else current_connected_browser_session_total
+                            )
                         ),
                         admitted=admitted_member_browser,
                     )
@@ -855,12 +985,39 @@ class RouterService:
             route_payload = dict(payload)
             route_payload["ts"] = float(route_payload.get("ts") or ev.ts or time.time())
             targets = await _resolve_webspace_ids(route_payload)
+            _remember_media_webspaces(targets)
             for ws in targets:
                 route_state = _resolve_media_route_state(route_payload, webspace_id=ws)
                 if not isinstance(route_state, dict):
                     continue
                 await _ensure_media_state(ws)
                 await _set_media_route_state(ws, route_state)
+
+        async def _on_browser_session_changed(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            targets = _resolve_webspace_ids_basic(payload)
+            _remember_media_webspaces(targets)
+            observed_failure = None
+            if str(payload.get("connection_state") or "").strip().lower() in {"failed", "closed", "disconnected"}:
+                observed_failure = f"browser_session_{str(payload.get('connection_state') or '').strip().lower()}"
+            await _refresh_media_routes(
+                webspace_ids=targets,
+                cause="browser.session.changed",
+                observed_failure=observed_failure,
+            )
+
+        async def _on_member_media_inventory_changed(ev: Event) -> None:
+            payload = ev.payload or {}
+            observed_failure = None
+            if isinstance(payload, dict) and ev.type == "subnet.member.link.down":
+                node_id = str(payload.get("node_id") or "").strip()
+                observed_failure = f"member_link_down:{node_id}" if node_id else "member_link_down"
+            await _refresh_media_routes(
+                cause=ev.type,
+                observed_failure=observed_failure,
+            )
 
         def _call_voice_chat_tool(text: str, meta: dict) -> Any:
             ctx = get_ctx()
@@ -1071,6 +1228,11 @@ class RouterService:
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
         self.bus.subscribe("io.out.media.route", _on_io_out_media_route)
+        self.bus.subscribe("browser.session.changed", _on_browser_session_changed)
+        self.bus.subscribe("subnet.member.snapshot.changed", _on_member_media_inventory_changed)
+        self.bus.subscribe("subnet.member.link.up", _on_member_media_inventory_changed)
+        self.bus.subscribe("subnet.member.link.down", _on_member_media_inventory_changed)
+        self.bus.subscribe("capacity.changed", _on_member_media_inventory_changed)
         self.bus.subscribe("nlp.intent.not_obtained", _on_nlp_intent_not_obtained)
         self.bus.subscribe("nlp.teacher.candidate.proposed", _on_nlp_teacher_candidate_proposed)
 
@@ -1094,4 +1256,5 @@ class RouterService:
             except Exception:
                 pass
             self._stop_watch = None
+        self._media_route_webspaces.clear()
         self._started = False

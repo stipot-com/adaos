@@ -48,6 +48,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - router/reliability/media runtime now resolve member-browser direct candidates from persisted subnet capacity instead of raw `connected_total`
 - normalized media route contracts now preserve `preferred_member_id` even when the selected path degrades to hub loopback or relay
 - live member `node.snapshot` payloads now include local capacity, so router/reliability can use a fresher fallback view before the next heartbeat lands
+- router now re-evaluates tracked browser media routes on `browser.session.changed`, member snapshot/link changes, and local `capacity.changed`
 
 ### Confirmed gaps
 

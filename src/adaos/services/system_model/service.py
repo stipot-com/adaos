@@ -26,6 +26,7 @@ from adaos.services.system_model.governance import apply_governance_defaults, ap
 from adaos.services.system_model.model import CanonicalKind, canonical_ref
 from adaos.services.system_model.mappers import (
     canonical_object_from_capacity_snapshot,
+    canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_object_from_supervisor_runtime,
     canonical_object_from_subnet_directory_node,
@@ -233,6 +234,15 @@ def _current_node_neighborhood_projection(*, webspace_id: str | None = None):
             owner_id=owner_id,
         )
         _append_unique(objects, capacity_obj, seen)
+        for io_item in list(capacity.get("io") or []):
+            if not isinstance(io_item, dict):
+                continue
+            io_obj = apply_governance_defaults(
+                canonical_object_from_io_capacity_entry(io_item, node_id=node_id),
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+            )
+            _append_unique(objects, io_obj, seen)
 
     return apply_projection_governance(
         canonical_neighborhood_projection(subject, objects),

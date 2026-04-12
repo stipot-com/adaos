@@ -352,6 +352,27 @@ def test_canonical_object_from_io_capacity_entry_tracks_availability_tokens() ->
     assert obj["runtime"]["reason"] == "token_missing"
 
 
+def test_canonical_object_from_io_capacity_entry_tracks_media_route_tokens() -> None:
+    obj = canonical_object_from_io_capacity_entry(
+        {
+            "io_type": "webrtc_media",
+            "priority": 60,
+            "capabilities": [
+                "webrtc:av",
+                "producer:member",
+                "topology:member_browser_direct",
+                "state:available",
+            ],
+        },
+        node_id="member-2",
+    ).to_dict()
+
+    assert obj["id"] == "io:member-2:webrtc_media"
+    assert obj["status"] == "online"
+    assert obj["runtime"]["producer"] == "member"
+    assert obj["runtime"]["topology"] == "member_browser_direct"
+
+
 def test_canonical_object_from_integration_quota_exposes_usage_and_pressure() -> None:
     obj = canonical_object_from_integration_quota(
         {
