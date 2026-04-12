@@ -84,6 +84,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Source:
   - `io.out.chat.append` (chat message append)
   - `io.out.say` (enqueue TTS)
+  - `io.out.media.route` (media route intent / normalized route contract)
 - Target selection:
   - default: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`)
   - broadcast: set `_meta.webspace_ids = [...]` to fan-out into multiple webspaces
@@ -91,6 +92,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Projection:
   - `io.out.chat.append` -> `data.voice_chat.messages`
   - `io.out.say` -> `data.tts.queue`
+  - `io.out.media.route` -> `data.media.route`
 
 ### Routeless skills
 
@@ -119,6 +121,7 @@ Target-state note:
   - scenario responses
   - browser-directed outputs
   - future direct media delivery
+- transport adapters should execute the chosen route, not own the decision of which runtime/browser/member answers the response
 
 ## Capacity Reporting
 
@@ -146,6 +149,19 @@ Target model:
   media peer is browser-member
 - media route degradation should be visible as a routing fact, not hidden as a
   generic transport reconnect
+
+Current foundation in code:
+
+- the normalized browser-visible carrier is `data.media.route`
+- router-owned state already uses one vocabulary for:
+  - `route_intent`
+  - `preferred_route` / `active_route`
+  - `producer_authority` / `producer_target`
+  - `selection_reason` / `degradation_reason`
+  - `member_browser_direct`
+  - `monitoring.observed_failure`
+- `browser <-> member` direct media is represented today as a routed capability foundation,
+  but admission policy and per-member producer resolution still need dedicated capability inventory and signaling support
 
 ## Typical Flows
 

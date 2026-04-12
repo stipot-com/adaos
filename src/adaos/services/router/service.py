@@ -18,6 +18,7 @@ from adaos.domain import Event
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import load_config
 from .rules_loader import load_rules, watch_rules
+from .media_routes import resolve_media_route_intent
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
 from adaos.services.subnet_alias import display_subnet_alias
@@ -545,6 +546,104 @@ class RouterService:
                 with ydoc.begin_transaction() as txn:
                     data_map.set(txn, "tts", {"queue": queue})
 
+        def _coerce_bool(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return False
+
+        def _coerce_int(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except Exception:
+                return 0
+
+        async def _ensure_media_state(webspace_id: str) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = _coerce_y(data_map.get("media"))
+                if isinstance(current, dict) and isinstance(current.get("route"), dict):
+                    return
+                next_state = dict(current) if isinstance(current, dict) else {}
+                next_state.setdefault("route", {})
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "media", next_state)
+
+        async def _set_media_route_state(webspace_id: str, route_state: dict[str, Any]) -> None:
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                current = _coerce_y(data_map.get("media"))
+                next_state = dict(current) if isinstance(current, dict) else {}
+                next_state["route"] = route_state
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "media", next_state)
+
+        def _resolve_media_route_state(payload: dict[str, Any], *, webspace_id: str) -> dict[str, Any] | None:
+            raw_route = payload.get("route")
+            if not isinstance(raw_route, dict) and isinstance(payload.get("route_intent"), dict):
+                raw_route = payload.get("route_intent")
+
+            route_state = _coerce_y(raw_route) if isinstance(raw_route, dict) else None
+            member_browser = payload.get("member_browser_direct")
+            member_browser = member_browser if isinstance(member_browser, dict) else {}
+
+            if route_state is None:
+                route_state = resolve_media_route_intent(
+                    need=str(payload.get("need") or payload.get("route_intent") or "scenario_response_media"),
+                    target_webspace_id=webspace_id,
+                    producer_preference=str(payload.get("producer_preference") or ""),
+                    preferred_member_id=str(payload.get("preferred_member_id") or "") or None,
+                    direct_local_ready=_coerce_bool(payload.get("direct_local_ready")),
+                    root_routed_ready=_coerce_bool(payload.get("root_routed_ready")),
+                    hub_webrtc_ready=_coerce_bool(payload.get("hub_webrtc_ready")),
+                    member_browser_direct_possible=(
+                        _coerce_bool(member_browser.get("possible"))
+                        if member_browser
+                        else _coerce_bool(payload.get("member_browser_direct_possible"))
+                    ),
+                    member_browser_direct_admitted=(
+                        _coerce_bool(member_browser.get("admitted"))
+                        if member_browser
+                        else _coerce_bool(payload.get("member_browser_direct_admitted"))
+                    ),
+                    member_browser_direct_reason=(
+                        str(member_browser.get("reason") or "").strip()
+                        or str(payload.get("member_browser_direct_reason") or "").strip()
+                        or None
+                    ),
+                    candidate_member_total=(
+                        _coerce_int(member_browser.get("candidate_member_total"))
+                        if member_browser
+                        else _coerce_int(payload.get("candidate_member_total"))
+                    ),
+                    browser_session_total=(
+                        _coerce_int(member_browser.get("browser_session_total"))
+                        if member_browser
+                        else _coerce_int(payload.get("browser_session_total"))
+                    ),
+                    observed_failure=str(payload.get("observed_failure") or "").strip() or None,
+                )
+
+            if not isinstance(route_state, dict):
+                return None
+
+            monitoring = _coerce_y(route_state.get("monitoring"))
+            monitoring = dict(monitoring) if isinstance(monitoring, dict) else {}
+            observed_failure = str(payload.get("observed_failure") or "").strip()
+            if observed_failure and not monitoring.get("observed_failure"):
+                monitoring["observed_failure"] = observed_failure
+
+            normalized = dict(route_state)
+            normalized["target_webspace_id"] = webspace_id
+            normalized["route_administrator"] = "router"
+            normalized["updated_at"] = float(payload.get("ts") or time.time())
+            if monitoring:
+                normalized["monitoring"] = monitoring
+            return normalized
+
         def _now_ms() -> int:
             return int(time.time() * 1000)
 
@@ -661,6 +760,20 @@ class RouterService:
             for ws in await _resolve_webspace_ids(payload):
                 await _ensure_tts_state(ws)
                 await _append_tts_queue_item(ws, item)
+
+        async def _on_io_out_media_route(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            route_payload = dict(payload)
+            route_payload["ts"] = float(route_payload.get("ts") or ev.ts or time.time())
+            targets = await _resolve_webspace_ids(route_payload)
+            for ws in targets:
+                route_state = _resolve_media_route_state(route_payload, webspace_id=ws)
+                if not isinstance(route_state, dict):
+                    continue
+                await _ensure_media_state(ws)
+                await _set_media_route_state(ws, route_state)
 
         def _call_voice_chat_tool(text: str, meta: dict) -> Any:
             ctx = get_ctx()
@@ -870,6 +983,7 @@ class RouterService:
         self.bus.subscribe("voice.chat.user", _on_voice_user)
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
+        self.bus.subscribe("io.out.media.route", _on_io_out_media_route)
         self.bus.subscribe("nlp.intent.not_obtained", _on_nlp_intent_not_obtained)
         self.bus.subscribe("nlp.teacher.candidate.proposed", _on_nlp_teacher_candidate_proposed)
 

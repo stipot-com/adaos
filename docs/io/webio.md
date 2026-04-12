@@ -65,8 +65,11 @@ For chat/TTS in webspaces prefer the dedicated “web IO” topics:
 
 - `io.out.chat.append` -> RouterService appends into `data.voice_chat.messages`.
 - `io.out.say` -> RouterService enqueues into `data.tts.queue`.
+- `io.out.media.route` -> RouterService writes the normalized media route contract into `data.media.route`.
 
 These events are routed purely by `_meta.webspace_id`, so different devices/webspaces can receive replies independently.
+`data.media.route` is intentionally a plain JSON subtree so browser widgets can observe one router-owned view of
+need/capability/ability/attempt/degradation/observed-failure state without depending on a specific transport adapter.
 
 ## Frontend Experience
 

@@ -40,6 +40,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - sidecar ownership boundary is documented, but not yet the default hardened runtime path
 - local process/update supervision is still coupled to runtime lifecycle rather than a separate supervisor authority
 - Yjs ownership boundaries for desktop and scenario state are still implicit
+- router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
 
 ### Confirmed gaps
 
@@ -676,6 +677,20 @@ Target role:
 - router should become the semantic administrator of response routing for skills and scenarios
 - router should also become the semantic administrator of browser-visible media route choice
 - transport implementations remain executors of the chosen route, not owners of route semantics
+
+Current foundation in code:
+
+- `resolve_media_route_intent(...)` defines one normalized route-administration contract for media needs
+- reliability and media runtime snapshots already expose that contract through the shared vocabulary:
+  - `need`
+  - `capability`
+  - `ability`
+  - `attempt`
+  - `degradation`
+  - `observed failure`
+  - `monitoring`
+- `RouterService` now projects this router-owned view into `data.media.route` so browser surfaces can observe the chosen route without inferring it from transport internals
+- `browser <-> member` direct media is represented as a capability foundation only until per-member capability inventory and signaling rendezvous are implemented
 
 Route-administration state to make explicit:
 
