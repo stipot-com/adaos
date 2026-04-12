@@ -478,6 +478,11 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
                 "managed_cmdline": ["hidden"],
             },
+            "attempt": {
+                "state": "awaiting_root_restart",
+                "awaiting_restart": True,
+                "updated_at": 222.0,
+            },
             "_served_by": "supervisor_fallback",
         }
     )
@@ -485,6 +490,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["ok"] is True
     assert payload["status"]["state"] == "restarting"
     assert payload["status"]["phase"] == "shutdown"
+    assert payload["attempt"]["state"] == "awaiting_root_restart"
+    assert payload["attempt"]["awaiting_restart"] is True
     assert payload["runtime"]["active_slot"] == "A"
     assert payload["runtime"]["root_promotion_required"] is True
     assert payload["_served_by"] == "supervisor_fallback"

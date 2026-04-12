@@ -343,9 +343,10 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 
 - `adaos autostart/update-status` resolves to supervisor API first
 - `adaos node reliability` reports `runtime_restarting_under_supervisor` instead of only connection failure
-- Infra State surfaces supervisor attempt state alongside runtime readiness
+- Infra State surfaces supervisor attempt state alongside runtime readiness, including `root promotion pending` and `root restart in progress`
 - Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
 - browser header/status surfaces poll a read-only supervisor transition view so controlled restarts are not shown only as generic `offline`
+- canonical control-plane projections keep supervisor-owned restart/promotion phases visible even when runtime API readiness has not converged yet
 
 ## Exit criteria
 

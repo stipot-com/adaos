@@ -128,8 +128,9 @@ def current_supervisor_runtime_object():
     node_id = str(node_payload.get("node_id") or "local").strip() or "local"
     base_dir = current_base_dir()
     runtime_state = _read_json_file((base_dir / "state" / "supervisor" / "runtime.json").resolve())
+    update_attempt = _read_json_file((base_dir / "state" / "supervisor" / "update_attempt.json").resolve())
     update_status = read_core_update_status()
-    if not runtime_state and not update_status:
+    if not runtime_state and not update_status and not update_attempt:
         return None
     return apply_governance_defaults(
         canonical_object_from_supervisor_runtime(
@@ -137,6 +138,7 @@ def current_supervisor_runtime_object():
                 "node_id": node_id,
                 "runtime_state": runtime_state,
                 "update_status": update_status,
+                "update_attempt": update_attempt,
             }
         ),
         tenant_id=tenant_id,

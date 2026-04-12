@@ -50,6 +50,7 @@ Current MVP operator flow for bootstrap/self-update:
 1. run `adaos autostart update-start`
 2. wait until `update-status` reports `phase: root_promotion_pending` when bootstrap-managed files changed
 3. run `adaos autostart update-complete`
+4. if bootstrap files were promoted, `update-status` may briefly show `supervisor attempt: awaiting_root_restart` while the restarted service is still converging under the new supervisor/bootstrap code
 
 `update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
 `update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs).

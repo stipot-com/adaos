@@ -95,6 +95,25 @@ def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypat
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 
+def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "root_promoted"},
+            "attempt": {"state": "awaiting_root_restart"},
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "supervisor attempt: awaiting_root_restart" in result.output
+
+
 def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr(setup_cmd, "BUILD_INFO", types.SimpleNamespace(version="0.1.0+1.abc"))

@@ -281,6 +281,7 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
     source = dict(payload or {})
     status = source.get("status") if isinstance(source.get("status"), dict) else {}
     runtime = source.get("runtime") if isinstance(source.get("runtime"), dict) else {}
+    attempt = source.get("attempt") if isinstance(source.get("attempt"), dict) else {}
     bootstrap_update = runtime.get("bootstrap_update") if isinstance(runtime.get("bootstrap_update"), dict) else {}
     public_status = {
         "state": str(status.get("state") or "").strip().lower() or "unknown",
@@ -293,6 +294,11 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
     return {
         "ok": True,
         "status": public_status,
+        "attempt": {
+            "state": str(attempt.get("state") or "").strip().lower() or None,
+            "awaiting_restart": bool(attempt.get("awaiting_restart")),
+            "updated_at": attempt.get("updated_at"),
+        },
         "runtime": {
             "active_slot": str(runtime.get("active_slot") or "").strip() or None,
             "runtime_state": str(runtime.get("runtime_state") or "").strip() or None,

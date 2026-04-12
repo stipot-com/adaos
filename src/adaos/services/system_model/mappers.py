@@ -117,6 +117,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     data = coerce_mapping(payload)
     runtime = coerce_mapping(data.get("runtime_state"))
     update_status = coerce_mapping(data.get("update_status"))
+    update_attempt = coerce_mapping(data.get("update_attempt"))
     node_id = str(data.get("node_id") or "local").strip() or "local"
     active_slot = str(
         runtime.get("active_slot")
@@ -127,6 +128,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     runtime_state = str(runtime.get("runtime_state") or "unknown").strip().lower() or "unknown"
     update_state = str(update_status.get("state") or "").strip().lower()
     update_phase = str(update_status.get("phase") or "").strip().lower()
+    attempt_state = str(update_attempt.get("state") or "").strip().lower()
     runtime_api_ready = bool(runtime.get("runtime_api_ready"))
     managed_alive = bool(runtime.get("managed_alive"))
     desired_running = bool(runtime.get("desired_running")) if "desired_running" in runtime else None
@@ -137,7 +139,11 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
 
     if update_state == "failed":
         status = CanonicalStatus.DEGRADED
+    elif attempt_state == "awaiting_root_restart":
+        status = CanonicalStatus.WARNING
     elif update_state in {"countdown", "draining", "stopping", "restarting", "applying", "validated"}:
+        status = CanonicalStatus.WARNING
+    elif update_state == "succeeded" and update_phase == "root_promoted":
         status = CanonicalStatus.WARNING
     elif runtime_api_ready:
         status = CanonicalStatus.ONLINE
@@ -150,7 +156,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
         if status == CanonicalStatus.UNKNOWN:
             status = CanonicalStatus.WARNING if managed_alive else CanonicalStatus.UNKNOWN
 
-    assessment_state = update_state or ("ready" if runtime_api_ready else runtime_state) or "unknown"
+    assessment_state = attempt_state or update_state or ("ready" if runtime_api_ready else runtime_state) or "unknown"
     assessment_reason = str(
         update_status.get("message")
         or runtime.get("last_error")
@@ -201,6 +207,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "phase": update_phase or runtime_state,
                 "active_slot": active_slot,
                 "runtime_state": runtime_state,
+                "attempt_state": attempt_state or None,
                 "desired_running": desired_running,
                 "managed_alive": managed_alive,
                 "runtime_api_ready": runtime_api_ready,

@@ -1210,6 +1210,7 @@ def autostart_update_status_cmd(
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
     active_slot = str(slots.get("active_slot") or "")
@@ -1257,6 +1258,8 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    if attempt.get("state"):
+        typer.echo(f"supervisor attempt: {attempt.get('state')}")
     if bool(status.get("root_promotion_required")):
         typer.echo("root promotion required: yes")
         bootstrap_update = status.get("bootstrap_update") if isinstance(status.get("bootstrap_update"), dict) else {}
