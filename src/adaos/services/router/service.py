@@ -1129,17 +1129,21 @@ class RouterService:
             if not isinstance(payload, dict):
                 return
             targets = _resolve_webspace_ids_basic(payload)
-            _remember_media_webspaces(targets)
+            tracked_targets = [ws for ws in targets if ws in self._media_route_webspaces]
+            if not tracked_targets:
+                return
             observed_failure = None
             if str(payload.get("connection_state") or "").strip().lower() in {"failed", "closed", "disconnected"}:
                 observed_failure = f"browser_session_{str(payload.get('connection_state') or '').strip().lower()}"
             await _refresh_media_routes(
-                webspace_ids=targets,
+                webspace_ids=tracked_targets,
                 cause="browser.session.changed",
                 observed_failure=observed_failure,
             )
 
         async def _on_member_media_inventory_changed(ev: Event) -> None:
+            if not self._media_route_webspaces:
+                return
             payload = ev.payload or {}
             observed_failure = None
             if isinstance(payload, dict) and ev.type == "subnet.member.link.down":

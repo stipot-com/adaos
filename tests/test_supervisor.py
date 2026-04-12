@@ -121,6 +121,10 @@ def test_last_update_completion_at_ignores_idle_status() -> None:
     assert supervisor._last_update_completion_at({"state": "idle", "updated_at": 123.0}, None) == 0.0
 
 
+def test_runtime_shutdown_request_timeout_scales_with_drain_window() -> None:
+    assert supervisor._runtime_shutdown_request_timeout(drain_timeout_sec=10.0, signal_delay_sec=0.25) >= 12.0
+
+
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")
@@ -911,8 +915,12 @@ def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(mo
     async def _fake_shutdown(*, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict:
         raise RuntimeError("runtime shutdown API unavailable")
 
+    async def _fake_ensure_stopped(*, drain_timeout_sec: float, signal_delay_sec: float, reason: str) -> dict:
+        raise RuntimeError("runtime process did not exit")
+
     monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(manager, "_request_runtime_shutdown", _fake_shutdown)
+    monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _fake_ensure_stopped)
     supervisor._write_update_attempt(
         {
             "state": "active",
@@ -943,6 +951,54 @@ def test_supervisor_countdown_worker_marks_failed_when_shutdown_request_fails(mo
     attempt = supervisor._read_update_attempt()
     assert isinstance(attempt, dict)
     assert attempt["state"] == "failed"
+
+
+def test_supervisor_countdown_worker_continues_when_shutdown_request_fails_but_runtime_stops(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _fake_sleep(_value: float) -> None:
+        return None
+
+    async def _fake_shutdown(*, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict:
+        raise RuntimeError("runtime shutdown API unavailable")
+
+    async def _fake_ensure_stopped(*, drain_timeout_sec: float, signal_delay_sec: float, reason: str) -> dict:
+        return {"ok": True, "forced": True, "reason": reason}
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _fake_shutdown)
+    monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _fake_ensure_stopped)
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "requested_at": 1.0,
+            "transitioned_at": 2.0,
+            "updated_at": 2.0,
+        }
+    )
+
+    asyncio.run(
+        manager._countdown_update_worker(
+            action="update",
+            target_rev="HEAD",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=0.0,
+            drain_timeout_sec=5.0,
+            signal_delay_sec=0.1,
+        )
+    )
+
+    status = read_status()
+    assert status["state"] == "restarting"
+    assert status["phase"] == "shutdown"
+    assert status["forced_shutdown"] is True
+    assert status["shutdown_request_error_type"] == "RuntimeError"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "active"
 
 
 def test_ensure_runtime_stopped_for_update_forces_hung_process(monkeypatch, tmp_path) -> None:
@@ -1114,6 +1170,44 @@ def test_runtime_state_payload_reports_slot_mismatch(monkeypatch, tmp_path) -> N
 
     assert payload["runtime_state"] == "spawned"
     assert payload["managed_matches_active_slot"] is False
+
+
+def test_runtime_state_payload_uses_supervisor_recorded_cwd_when_subprocess_hides_it(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._managed_runtime_cwd = str(tmp_path)
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "validate_slot_structure",
+        lambda slot: {"slot": slot, "ok": True, "issues": [], "repo_dir": "/slots/A/repo", "venv_dir": "/slots/A/venv"},
+    )
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: False)
+
+    payload = manager.status()
+
+    assert payload["managed_cwd"] == str(tmp_path)
+    assert payload["managed_matches_active_slot"] is True
 
 
 def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, tmp_path) -> None:

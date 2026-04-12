@@ -120,6 +120,39 @@ async def test_router_projects_media_route_contract_to_yjs(monkeypatch) -> None:
     assert route["member_browser_direct"]["admitted"] is False
 
 
+async def test_router_media_projection_ignores_untracked_browser_session_changes(monkeypatch) -> None:
+    docs: dict[str, dict[str, _FakeMap]] = {}
+    ydoc_calls: list[str] = []
+
+    def _fake_async_get_ydoc(webspace_id: str) -> _FakeAsyncDoc:
+        ydoc_calls.append(webspace_id)
+        return _FakeAsyncDoc(docs.setdefault(webspace_id, {"data": _FakeMap()}))
+
+    monkeypatch.setattr(router_service_module, "async_get_ydoc", _fake_async_get_ydoc)
+    monkeypatch.setattr(router_service_module, "load_rules", lambda *args, **kwargs: [])
+    monkeypatch.setattr(router_service_module, "watch_rules", lambda *args, **kwargs: (lambda: None))
+
+    bus = LocalEventBus()
+    router = RouterService(eventbus=bus, base_dir=Path("."))
+    await router.start()
+
+    bus.publish(
+        Event(
+            type="browser.session.changed",
+            source="test",
+            ts=time.time(),
+            payload={
+                "device_id": "browser-1",
+                "webspace_id": "default",
+                "connection_state": "connected",
+            },
+        )
+    )
+
+    assert await bus.wait_for_idle()
+    assert ydoc_calls == []
+
+
 async def test_router_media_projection_preserves_existing_media_subtree(monkeypatch) -> None:
     docs: dict[str, dict[str, _FakeMap]] = {
         "beta": {

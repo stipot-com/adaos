@@ -549,7 +549,11 @@ def _runtime_api_ready(base_url: str, *, token: str | None, timeout: float = 0.7
     return bool(isinstance(payload, dict) and payload.get("ok") is True)
 
 
-def _proc_details(proc: subprocess.Popen[Any] | None) -> dict[str, Any]:
+def _runtime_shutdown_request_timeout(*, drain_timeout_sec: float, signal_delay_sec: float) -> float:
+    return max(5.0, float(drain_timeout_sec) + float(signal_delay_sec) + 2.0)
+
+
+def _proc_details(proc: subprocess.Popen[Any] | None, *, cwd_hint: str | None = None) -> dict[str, Any]:
     managed_pid = None
     managed_alive = False
     managed_cmdline: list[str] = []
@@ -569,7 +573,7 @@ def _proc_details(proc: subprocess.Popen[Any] | None) -> dict[str, Any]:
         raw_args = proc.args if isinstance(proc.args, (list, tuple)) else [str(proc.args or "")]
         managed_cmdline = [str(item) for item in raw_args if str(item or "").strip()]
         managed_executable = managed_cmdline[0] if managed_cmdline else None
-        managed_cwd = str(proc.cwd) if getattr(proc, "cwd", None) else os.getcwd()
+        managed_cwd = str(cwd_hint or getattr(proc, "cwd", None) or "").strip() or None
     except Exception:
         managed_pid = None
         managed_alive = False
@@ -613,9 +617,11 @@ class SupervisorManager:
         self._update_task_cancel_mode: str | None = None
         self._managed_runtime_instance_id: str | None = None
         self._managed_transition_role: str | None = None
+        self._managed_runtime_cwd: str | None = None
         self._candidate_slot: str | None = None
         self._candidate_runtime_instance_id: str | None = None
         self._candidate_transition_role: str | None = None
+        self._candidate_runtime_cwd: str | None = None
 
     @property
     def active_runtime_port(self) -> int:
@@ -843,7 +849,7 @@ class SupervisorManager:
         slot_structure = validate_slot_structure(current_slot) if current_slot else None
         active_runtime_port = self.slot_runtime_port(current_slot)
         active_runtime_url = self.slot_runtime_base_url(current_slot)
-        managed = _proc_details(proc)
+        managed = _proc_details(proc, cwd_hint=self._managed_runtime_cwd)
         managed_pid = managed["managed_pid"]
         managed_alive = bool(managed["managed_alive"])
         managed_cmdline = managed["managed_cmdline"]
@@ -884,7 +890,7 @@ class SupervisorManager:
         candidate_manifest = read_slot_manifest(candidate_slot) if candidate_slot else None
         candidate_runtime_port = self.slot_runtime_port(candidate_slot) if candidate_slot else None
         candidate_runtime_url = self.slot_runtime_base_url(candidate_slot) if candidate_slot else None
-        candidate_managed = _proc_details(self._candidate_proc)
+        candidate_managed = _proc_details(self._candidate_proc, cwd_hint=self._candidate_runtime_cwd)
         candidate_managed_pid = candidate_managed["managed_pid"]
         candidate_managed_alive = bool(candidate_managed["managed_alive"])
         candidate_managed_cmdline = candidate_managed["managed_cmdline"]
@@ -1003,6 +1009,7 @@ class SupervisorManager:
         self._proc = proc
         self._managed_runtime_instance_id = runtime_instance_id
         self._managed_transition_role = transition_role
+        self._managed_runtime_cwd = str(cwd or os.getcwd())
         self._last_start_at = time.time()
         self._last_error = None
         self._persist_runtime_state()
@@ -1042,6 +1049,7 @@ class SupervisorManager:
         self._candidate_slot = resolved_slot
         self._candidate_runtime_instance_id = runtime_instance_id
         self._candidate_transition_role = transition_role
+        self._candidate_runtime_cwd = str(cwd or os.getcwd())
         self._persist_runtime_state()
 
     async def ensure_started(self) -> None:
@@ -1104,6 +1112,7 @@ class SupervisorManager:
         self._candidate_slot = None
         self._candidate_runtime_instance_id = None
         self._candidate_transition_role = None
+        self._candidate_runtime_cwd = None
         self._persist_runtime_state()
 
     async def restart_runtime(self, *, reason: str = "supervisor.restart") -> dict[str, Any]:
@@ -1272,10 +1281,12 @@ class SupervisorManager:
             self._proc = proc
             self._managed_runtime_instance_id = promoted_instance_id
             self._managed_transition_role = "active"
+            self._managed_runtime_cwd = self._candidate_runtime_cwd
             self._candidate_proc = None
             self._candidate_slot = None
             self._candidate_runtime_instance_id = None
             self._candidate_transition_role = None
+            self._candidate_runtime_cwd = None
             self._last_start_at = time.time()
             self._last_error = None
             self._restart_count += 1
@@ -1294,6 +1305,7 @@ class SupervisorManager:
                     self._candidate_slot = None
                     self._candidate_runtime_instance_id = None
                     self._candidate_transition_role = None
+                    self._candidate_runtime_cwd = None
                     self._persist_runtime_state()
             proc = self._proc
             if proc is None:
@@ -1310,6 +1322,7 @@ class SupervisorManager:
             self._proc = None
             self._managed_runtime_instance_id = None
             self._managed_transition_role = None
+            self._managed_runtime_cwd = None
             self._persist_runtime_state()
             if self._stopping or not self._desired_running:
                 continue
@@ -1389,7 +1402,10 @@ class SupervisorManager:
                         "drain_timeout_sec": float(drain_timeout_sec),
                         "signal_delay_sec": float(signal_delay_sec),
                     },
-                    timeout=5.0,
+                    timeout=_runtime_shutdown_request_timeout(
+                        drain_timeout_sec=drain_timeout_sec,
+                        signal_delay_sec=signal_delay_sec,
+                    ),
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -1720,17 +1736,21 @@ class SupervisorManager:
                     "message": "countdown completed; pending update written",
                 }
             )
-            await self._request_runtime_shutdown(
-                reason=reason,
-                drain_timeout_sec=drain_timeout_sec,
-                signal_delay_sec=signal_delay_sec,
-            )
+            shutdown_request_error: Exception | None = None
+            try:
+                await self._request_runtime_shutdown(
+                    reason=reason,
+                    drain_timeout_sec=drain_timeout_sec,
+                    signal_delay_sec=signal_delay_sec,
+                )
+            except Exception as exc:
+                shutdown_request_error = exc
             stop_result = await self._ensure_runtime_stopped_for_update(
                 drain_timeout_sec=drain_timeout_sec,
                 signal_delay_sec=signal_delay_sec,
                 reason=reason,
             )
-            if bool(stop_result.get("forced")):
+            if shutdown_request_error or bool(stop_result.get("forced")):
                 write_core_update_status(
                     {
                         "state": "restarting",
@@ -1741,8 +1761,18 @@ class SupervisorManager:
                         "reason": reason,
                         "drain_timeout_sec": drain_timeout_sec,
                         "signal_delay_sec": signal_delay_sec,
-                        "message": "runtime shutdown exceeded grace period; supervisor forced process stop",
-                        "forced_shutdown": True,
+                        "message": (
+                            "runtime shutdown API was unavailable; supervisor continued with direct process stop"
+                            if shutdown_request_error and bool(stop_result.get("forced"))
+                            else "runtime shutdown API response was unavailable; runtime still stopped during grace window"
+                            if shutdown_request_error
+                            else "runtime shutdown exceeded grace period; supervisor forced process stop"
+                        ),
+                        "forced_shutdown": bool(stop_result.get("forced")),
+                        "shutdown_request_error_type": (
+                            type(shutdown_request_error).__name__ if shutdown_request_error is not None else None
+                        ),
+                        "shutdown_request_error": str(shutdown_request_error) if shutdown_request_error is not None else None,
                     }
                 )
         except asyncio.CancelledError:
@@ -1947,11 +1977,15 @@ class SupervisorManager:
                 }
             )
             failure_phase = "shutdown"
-            await self._request_runtime_shutdown(
-                reason=reason,
-                drain_timeout_sec=drain_timeout_sec,
-                signal_delay_sec=signal_delay_sec,
-            )
+            shutdown_request_error: Exception | None = None
+            try:
+                await self._request_runtime_shutdown(
+                    reason=reason,
+                    drain_timeout_sec=drain_timeout_sec,
+                    signal_delay_sec=signal_delay_sec,
+                )
+            except Exception as exc:
+                shutdown_request_error = exc
             async with self._lock:
                 self._desired_running = False
                 self._persist_runtime_state()
@@ -1960,7 +1994,7 @@ class SupervisorManager:
                 signal_delay_sec=signal_delay_sec,
                 reason=reason,
             )
-            if bool(stop_result.get("forced")):
+            if shutdown_request_error or bool(stop_result.get("forced")):
                 write_core_update_status(
                     {
                         "state": "restarting",
@@ -1975,8 +2009,18 @@ class SupervisorManager:
                         "candidate_prewarm_state": candidate_prewarm_state,
                         "candidate_prewarm_message": candidate_prewarm_message or None,
                         "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
-                        "message": "runtime shutdown exceeded grace period; supervisor forced process stop",
-                        "forced_shutdown": True,
+                        "message": (
+                            "runtime shutdown API was unavailable; supervisor continued with direct process stop"
+                            if shutdown_request_error and bool(stop_result.get("forced"))
+                            else "runtime shutdown API response was unavailable; runtime still stopped during grace window"
+                            if shutdown_request_error
+                            else "runtime shutdown exceeded grace period; supervisor forced process stop"
+                        ),
+                        "forced_shutdown": bool(stop_result.get("forced")),
+                        "shutdown_request_error_type": (
+                            type(shutdown_request_error).__name__ if shutdown_request_error is not None else None
+                        ),
+                        "shutdown_request_error": str(shutdown_request_error) if shutdown_request_error is not None else None,
                         "manifest": manifest,
                     }
                 )
