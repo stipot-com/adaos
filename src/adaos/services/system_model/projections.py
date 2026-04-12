@@ -726,6 +726,8 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     assessment = coerce_mapping(payload.get("assessment"))
     transport = coerce_mapping(payload.get("transport"))
     counts = coerce_mapping(payload.get("counts"))
+    route_intent = coerce_mapping(payload.get("route_intent"))
+    member_browser_direct = coerce_mapping(payload.get("member_browser_direct"))
     return CanonicalObject(
         id=f"runtime:{subject.id}/media-plane",
         kind=CanonicalKind.RUNTIME.value,
@@ -758,6 +760,13 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "assessment": assessment,
                 "transport": transport,
                 "recommended_path": payload.get("recommended_path"),
+                "route_intent": route_intent,
+                "producer_authority": payload.get("producer_authority"),
+                "producer_target": payload.get("producer_target"),
+                "delivery_topology": payload.get("delivery_topology"),
+                "selection_reason": payload.get("selection_reason"),
+                "degradation_reason": payload.get("degradation_reason"),
+                "member_browser_direct": member_browser_direct,
             }
         ),
     )

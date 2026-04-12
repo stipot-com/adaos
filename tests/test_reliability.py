@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from adaos.services.reliability import (
     ReadinessStatus,
     assess_transport_diagnostics,
+    hub_member_semantic_channels_snapshot,
     observe_hub_root_route_runtime,
     mark_root_control_down,
     mark_root_control_up,
@@ -315,6 +316,45 @@ def test_assess_transport_diagnostics_marks_flapping_on_repeated_error_callbacks
     assert assessment["recent_error_records_5m"] >= 1
     assert assessment["recent_tag_changes_15m"] >= 2
     assert assessment["recent_hard_incidents_5m"] >= 1
+
+
+def test_hub_member_semantic_channels_snapshot_exposes_media_route_contract() -> None:
+    snapshot = hub_member_semantic_channels_snapshot(
+        role="hub",
+        route_mode="hub",
+        connected_to_hub=None,
+        hub_root_protocol={},
+        transport_evidence={
+            "webrtc_data:events": {"available": False},
+            "webrtc_data:yjs": {"available": False},
+            "ws": {"available": False},
+            "yws": {"available": False},
+            "root_route_proxy": {"available": False},
+            "member_link_ws": {"available": False},
+            "webrtc_media": {"available": True},
+            "member_browser_webrtc_media": {
+                "available": False,
+                "possible": True,
+                "admitted": False,
+                "reason": "member_browser_direct_not_admitted",
+                "candidate_member_total": 1,
+                "browser_session_total": 1,
+            },
+            "root_media_relay": {"available": True},
+        },
+    )
+
+    media = snapshot["channels"]["hub_member.media"]
+    assert media["route_intent"] == "live_stream"
+    assert media["delivery_topology"] == "hub_webrtc_loopback"
+    assert media["producer_authority"] == "hub"
+    assert media["member_browser_direct"]["possible"] is True
+    assert media["member_browser_direct"]["admitted"] is False
+    assert media["fallback_chain"] == [
+        "member_browser_direct",
+        "hub_webrtc_loopback",
+        "root_media_relay",
+    ]
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:

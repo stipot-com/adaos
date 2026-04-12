@@ -300,12 +300,12 @@ HUB_MEMBER_CHANNEL_SPECS: tuple[SemanticChannelSpec, ...] = (
         channel_type=ChannelType.MEDIA,
         message_types=(MessageTaxonomy.MEDIA_FRAME,),
         authority=Authority.SHARED,
-        candidate_paths=("webrtc_media", "root_media_relay"),
-        failover_order=("webrtc_media", "root_media_relay"),
+        candidate_paths=("member_browser_webrtc_media", "webrtc_media", "root_media_relay"),
+        failover_order=("member_browser_webrtc_media", "webrtc_media", "root_media_relay"),
         freeze_after_switch_s=3,
         duplicate_suppression="none; latency-first media semantics",
         description="Latency-sensitive media plane.",
-        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime now supports bounded root relay for file media and direct WebRTC audio/video loopback for live validation.",
+        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime now supports bounded root relay for file media, direct WebRTC audio/video loopback for live validation, and an explicit member-browser direct path foundation.",
     ),
 )
 
@@ -2506,6 +2506,10 @@ def _hub_member_transport_evidence_snapshot(
             "connected_to_hub": connected_to_hub,
         },
         "webrtc_media": {"available": False, "source": "webrtc.peer"},
+        "member_browser_webrtc_media": {
+            "available": False,
+            "source": "router.media_route",
+        },
         "root_media_relay": {"available": False, "source": "root.media"},
     }
 
@@ -2601,6 +2605,43 @@ def _hub_member_transport_evidence_snapshot(
                 "frame_state": str(route_frame.get("state") or ""),
             }
         )
+        try:
+            from adaos.services.yjs.gateway_ws import active_browser_session_snapshot
+
+            browser_snapshot = active_browser_session_snapshot()
+        except Exception:
+            browser_snapshot = {}
+        browser_peers = (
+            browser_snapshot.get("peers")
+            if isinstance(browser_snapshot.get("peers"), list)
+            else []
+        )
+        browser_session_total = sum(1 for item in browser_peers if isinstance(item, dict))
+        try:
+            from adaos.services.subnet.link_manager import hub_link_manager_snapshot
+
+            member_snapshot = hub_link_manager_snapshot()
+        except Exception:
+            member_snapshot = {}
+        candidate_member_total = int(member_snapshot.get("connected_total") or 0)
+        member_browser_direct_possible = (
+            candidate_member_total > 0
+            and browser_session_total > 0
+            and bool(evidence["webrtc_media"].get("available"))
+        )
+        evidence["member_browser_webrtc_media"].update(
+            {
+                "possible": bool(member_browser_direct_possible),
+                "admitted": False,
+                "reason": (
+                    "member_browser_direct_policy_not_admitted_yet"
+                    if member_browser_direct_possible
+                    else "member_browser_direct_missing_browser_or_member_candidate"
+                ),
+                "candidate_member_total": candidate_member_total,
+                "browser_session_total": browser_session_total,
+            }
+        )
     else:
         member_available = bool(connected_to_hub is True or str(route_mode or "").strip().lower() == "ws")
         evidence["member_link_ws"]["available"] = member_available
@@ -2629,6 +2670,12 @@ def _semantic_channel_status(
                 "bounded_relay",
                 "root bounded media relay is the active authority path",
             )
+        if active_path == "member_browser_webrtc_media":
+            return (
+                "ready",
+                "member_browser_direct",
+                "browser-member direct media path is the active authority path",
+            )
         if active_path.startswith("webrtc_media"):
             return ("ready", "direct_media", "direct media path is active")
         return ("ready", "active", f"{active_path} is the active media authority path")
@@ -2656,9 +2703,38 @@ def _semantic_channel_status(
         return ("ready", "direct_p2p", "direct WebRTC datachannel is the active authority path")
     if active_path in {"ws", "yws"}:
         return ("ready", "direct_ws", "direct websocket is the active authority path")
+    if active_path == "member_browser_webrtc_media":
+        return ("ready", "member_browser_direct", "browser-member direct media path is active")
     if active_path.startswith("webrtc_media"):
         return ("ready", "direct_media", "direct media path is active")
     return ("ready", "active", f"{active_path} is the active authority path")
+
+
+def _hub_member_media_route_contract(
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from adaos.services.router.media_routes import resolve_media_route_intent
+    except Exception:
+        return {}
+
+    member_browser = (
+        evidence.get("member_browser_webrtc_media")
+        if isinstance(evidence.get("member_browser_webrtc_media"), dict)
+        else {}
+    )
+    return resolve_media_route_intent(
+        need="live_stream",
+        direct_local_ready=False,
+        root_routed_ready=bool((evidence.get("root_media_relay") or {}).get("available")),
+        hub_webrtc_ready=bool((evidence.get("webrtc_media") or {}).get("available")),
+        producer_preference="member",
+        member_browser_direct_possible=bool(member_browser.get("possible")),
+        member_browser_direct_admitted=bool(member_browser.get("admitted")),
+        member_browser_direct_reason=str(member_browser.get("reason") or ""),
+        candidate_member_total=int(member_browser.get("candidate_member_total") or 0),
+        browser_session_total=int(member_browser.get("browser_session_total") or 0),
+    )
 
 
 def hub_member_semantic_channels_snapshot(
@@ -2686,6 +2762,7 @@ def hub_member_semantic_channels_snapshot(
     channels: dict[str, dict[str, Any]] = {}
     assessment_state = "nominal"
     assessment_reasons: list[str] = []
+    media_route_contract = _hub_member_media_route_contract(evidence)
 
     with _LOCK:
         for spec in HUB_MEMBER_CHANNEL_SPECS:
@@ -2768,6 +2845,25 @@ def hub_member_semantic_channels_snapshot(
                 "duplicate_suppression": spec.duplicate_suppression,
                 "candidate_state": candidate_state,
             }
+            if spec.channel_id == "hub_member.media":
+                monitoring = (
+                    media_route_contract.get("monitoring")
+                    if isinstance(media_route_contract.get("monitoring"), dict)
+                    else {}
+                )
+                entry.update(
+                    {
+                        "route_intent": media_route_contract.get("route_intent"),
+                        "delivery_topology": media_route_contract.get("delivery_topology"),
+                        "producer_authority": media_route_contract.get("producer_authority"),
+                        "producer_target": media_route_contract.get("producer_target"),
+                        "selection_reason": media_route_contract.get("selection_reason"),
+                        "degradation_reason": media_route_contract.get("degradation_reason"),
+                        "fallback_chain": list(media_route_contract.get("fallback_chain") or []),
+                        "member_browser_direct": media_route_contract.get("member_browser_direct"),
+                        "observed_failure": monitoring.get("observed_failure"),
+                    }
+                )
             channels[spec.channel_id] = entry
 
     command_channel = channels.get("hub_member.command") if isinstance(channels.get("hub_member.command"), dict) else {}

@@ -915,3 +915,65 @@ def test_canonical_object_topology_and_task_packet_projections_share_selected_ob
     assert task_packet["context"]["task_goal"] == "diagnose drift"
     assert task_packet["context"]["gap"]["version"]["desired"] == "2026.04.08"
     assert task_packet["context"]["allowed_actions"][0]["id"] == "restart"
+
+
+def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contract() -> None:
+    projection = canonical_projection_from_reliability_snapshot(
+        {
+            "node": {
+                "node_id": "hub-3",
+                "subnet_id": "main",
+                "role": "hub",
+                "ready": True,
+                "node_state": "ready",
+                "draining": False,
+            },
+            "runtime": {
+                "readiness_tree": {},
+                "channel_diagnostics": {},
+                "channel_overview": {},
+                "media_runtime": {
+                    "available": True,
+                    "scope": "hub_media",
+                    "assessment": {
+                        "state": "relay_and_webrtc_media_available",
+                        "reason": "media plane supports direct-local authority, bounded root relay authority, and live WebRTC audio/video loopback",
+                    },
+                    "transport": {
+                        "direct_local_ready": True,
+                        "root_routed_ready": True,
+                        "broadcast_ready": True,
+                    },
+                    "counts": {
+                        "file_total": 1,
+                        "total_bytes": 128,
+                        "live_peer_total": 1,
+                        "live_connected_peers": 1,
+                    },
+                    "recommended_path": "direct_local_http",
+                    "route_intent": {
+                        "route_intent": "scenario_response_media",
+                        "active_route": "local_http",
+                    },
+                    "producer_authority": "hub",
+                    "producer_target": {"kind": "hub", "webspace_id": "desk"},
+                    "delivery_topology": "local_http",
+                    "selection_reason": "local_hub_api_authority_available",
+                    "degradation_reason": None,
+                    "member_browser_direct": {
+                        "possible": True,
+                        "admitted": False,
+                        "ready": False,
+                        "reason": "member_browser_direct_policy_not_admitted_yet",
+                    },
+                },
+            },
+        }
+    ).to_dict()
+
+    objects = {item["id"]: item for item in projection["objects"]}
+    media = objects["runtime:hub:hub-3/media-plane"]
+    assert media["runtime"]["route_intent"]["route_intent"] == "scenario_response_media"
+    assert media["runtime"]["producer_authority"] == "hub"
+    assert media["runtime"]["delivery_topology"] == "local_http"
+    assert media["runtime"]["member_browser_direct"]["possible"] is True
