@@ -31,6 +31,7 @@ it prints the autostart bind, the active PID, top CPU-consuming child processes,
 adaos autostart update-status
 adaos autostart update-start
 adaos autostart update-cancel
+adaos autostart update-defer --delay-sec 300
 adaos autostart update-rollback
 adaos autostart update-promote-root
 adaos autostart update-complete
@@ -51,6 +52,13 @@ Current MVP operator flow for bootstrap/self-update:
 2. wait until `update-status` reports `phase: root_promotion_pending` when bootstrap-managed files changed
 3. run `adaos autostart update-complete`
 4. if bootstrap files were promoted, `update-status` may briefly show `supervisor attempt: awaiting_root_restart` while the restarted service is still converging under the new supervisor/bootstrap code
+
+If the supervisor enforces a minimum interval between updates, `update-start` may return a planned transition instead of an immediate countdown. In that case:
+
+1. `update-status` shows `state: planned` and `scheduled for: ...`
+2. another update signal refreshes or annotates the queued plan instead of starting a second concurrent transition
+3. `adaos autostart update-defer --delay-sec <sec>` can move the scheduled window forward
+4. if a second signal arrives while a real transition is already active, supervisor records `subsequent transition: queued` and executes it once after the current transition finishes
 
 `update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
 `update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs). If root promotion already finished and only the supervisor/bootstrap restart is still pending, rerunning `update-complete` retries only the service restart and does not promote root again.

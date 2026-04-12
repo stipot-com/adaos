@@ -137,6 +137,7 @@ Always available while the node is booted:
 - `GET /api/supervisor/update/status`
 - `POST /api/supervisor/update/start`
 - `POST /api/supervisor/update/cancel`
+- `POST /api/supervisor/update/defer`
 - `POST /api/supervisor/update/rollback`
 - `POST /api/supervisor/runtime/restart`
 
@@ -156,10 +157,12 @@ For browser-facing observability, supervisor should also expose a limited read-o
 That surface is intended only for restart/update visibility such as:
 
 - `hub restarting`
+- `update planned`
 - `update applying`
 - `rollback in progress`
 - `root promotion pending`
 - `root restart in progress`
+- `subsequent transition queued`
 - `update failed`
 
 It must not expose mutating control operations or become a substitute for the authenticated operator API.
@@ -200,6 +203,11 @@ Recommended fields for `update_attempt.json`:
 - `restored_slot`
 - `failure_summary`
 - `skill_runtime_migration`
+- `scheduled_for`
+- `planned_reason`
+- `subsequent_transition`
+- `subsequent_transition_requested_at`
+- `subsequent_transition_request`
 
 The important rule is that this state is committed by the supervisor, not inferred only from whether the runtime currently listens on `127.0.0.1:8777`.
 
@@ -224,8 +232,11 @@ Important invariants:
 - the attempt record is not cleared before validation succeeds
 - `restarting` and `applying` are bounded by deadlines
 - interrupted supervisor boot resumes or resolves the last incomplete attempt
+- if a new update signal arrives during an active transition, supervisor records exactly one deferred `subsequent_transition` and executes it once after the current transition reaches a terminal state
+- minimum update interval gating schedules a future update window instead of rejecting the request outright
 - installed skills do not silently inherit old runtime dependencies after core migration
 - root/bootstrap promotion never happens before the candidate already passed slot validation
+- root promotion must preserve any already-queued subsequent transition metadata so a self-update handoff does not lose the next requested transition
 - prepared slot contents must not inherit another slot's git remotes or become the authority for future updates
 
 ## Bootstrap/root promotion
@@ -239,6 +250,7 @@ Rules:
 - production runtime still restarts from the active slot after root promotion
 - root promotion should use the same validated candidate source, not a fresh mutable branch tip
 - current MVP implementation promotes bootstrap-managed files into root with a backup snapshot, records an explicit supervisor attempt state while waiting for that restart, and requires an explicit service restart to activate the new supervisor/bootstrap code
+- if another transition request arrives before that restart completes, it is queued as `subsequent_transition` on the supervisor attempt instead of being dropped or run concurrently
 
 This keeps root updates out of the fast rollback path while preserving the slot-runtime model.
 
@@ -342,8 +354,9 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 ### Phase 6 - Operator UX
 
 - `adaos autostart/update-status` resolves to supervisor API first
+- `adaos autostart update-defer` can reschedule a planned/countdown update window without losing the current supervisor attempt context
 - `adaos node reliability` now falls back to browser-safe supervisor transition state and reports `runtime_restarting_under_supervisor` instead of only connection failure when runtime `:8777` is temporarily unavailable during a managed transition
-- Infra State surfaces supervisor attempt state alongside runtime readiness, including `root promotion pending` and `root restart in progress`
+- Infra State surfaces supervisor attempt state alongside runtime readiness, including `planned update`, `root promotion pending`, `root restart in progress`, and `subsequent transition queued`
 - Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
 - browser header/status surfaces poll a read-only supervisor transition view so controlled restarts are not shown only as generic `offline`
 - canonical control-plane projections keep supervisor-owned restart/promotion phases visible even when runtime API readiness has not converged yet

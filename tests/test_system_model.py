@@ -739,6 +739,39 @@ def test_canonical_object_from_supervisor_runtime_keeps_root_restart_pending_vis
     assert obj["runtime"]["assessment"]["state"] == "awaiting_root_restart"
 
 
+def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_context() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "B",
+                "runtime_state": "spawned",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": True,
+            },
+            "update_status": {
+                "state": "planned",
+                "phase": "scheduled",
+                "message": "core update deferred until minimum update interval elapses",
+                "planned_reason": "minimum_update_period",
+                "scheduled_for": 1234.0,
+                "subsequent_transition": True,
+            },
+            "update_attempt": {
+                "state": "planned",
+                "subsequent_transition_requested_at": 1200.0,
+            },
+        }
+    ).to_dict()
+
+    assert obj["status"] == "warning"
+    assert obj["runtime"]["planned_reason"] == "minimum_update_period"
+    assert obj["runtime"]["scheduled_for"] == 1234.0
+    assert obj["runtime"]["subsequent_transition"] is True
+    assert obj["actual_state"]["subsequent_transition_requested_at"] == 1200.0
+
+
 def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:
     subject = CanonicalObject(
         id="hub:alpha",

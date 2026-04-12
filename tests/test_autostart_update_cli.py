@@ -115,6 +115,98 @@ def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
     assert "next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes" in result.output
 
 
+def test_autostart_update_status_prints_planned_schedule_and_subsequent_transition(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {
+                "state": "planned",
+                "phase": "scheduled",
+                "scheduled_for": 1776000000.0,
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 1775999700.0,
+            },
+            "attempt": {"state": "planned"},
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "scheduled for:" in result.output
+    assert "subsequent transition: queued" in result.output
+
+
+def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True, "planned": True}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
+
+    result = runner.invoke(autostart_app, ["update-defer", "--delay-sec", "900", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/defer"
+    assert captured["body"]["delay_sec"] == 900.0
+    assert captured["body"]["reason"] == "cli.core_update.defer"
+
+
+def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {
+                "state": "planned",
+                "phase": "scheduled",
+                "scheduled_for": 1_775_966_400.0,
+                "subsequent_transition": True,
+            },
+            "attempt": {
+                "state": "planned",
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 1_775_966_100.0,
+            },
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "scheduled for:" in result.output
+    assert "subsequent transition: queued" in result.output
+
+
+def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True, "planned": True}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
+
+    result = runner.invoke(autostart_app, ["update-defer", "--delay-sec", "900", "--reason", "test.defer", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/defer"
+    assert captured["body"] == {"delay_sec": 900.0, "reason": "test.defer"}
+
+
 def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr(setup_cmd, "BUILD_INFO", types.SimpleNamespace(version="0.1.0+1.abc"))

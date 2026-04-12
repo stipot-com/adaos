@@ -141,7 +141,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
         status = CanonicalStatus.DEGRADED
     elif attempt_state == "awaiting_root_restart":
         status = CanonicalStatus.WARNING
-    elif update_state in {"countdown", "draining", "stopping", "restarting", "applying", "validated"}:
+    elif update_state in {"planned", "countdown", "draining", "stopping", "restarting", "applying", "validated"}:
         status = CanonicalStatus.WARNING
     elif update_state == "succeeded" and update_phase == "root_promoted":
         status = CanonicalStatus.WARNING
@@ -212,6 +212,11 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "managed_alive": managed_alive,
                 "runtime_api_ready": runtime_api_ready,
                 "root_promotion_required": root_promotion_required,
+                "scheduled_for": update_status.get("scheduled_for"),
+                "planned_reason": update_status.get("planned_reason"),
+                "subsequent_transition": bool(
+                    update_status.get("subsequent_transition") or update_attempt.get("subsequent_transition")
+                ),
                 "assessment": {
                     "state": assessment_state,
                     "reason": assessment_reason,
@@ -226,6 +231,10 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "managed_matches_active_slot": runtime.get("managed_matches_active_slot"),
                 "target_rev": update_status.get("target_rev"),
                 "target_version": update_status.get("target_version"),
+                "subsequent_transition_requested_at": (
+                    update_attempt.get("subsequent_transition_requested_at")
+                    or update_status.get("subsequent_transition_requested_at")
+                ),
             }
         ),
         relations=compact_mapping(

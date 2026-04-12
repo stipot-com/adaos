@@ -120,6 +120,13 @@ def _update_attempt_timeout_sec() -> float:
         return 180.0
 
 
+def _min_update_period_sec() -> float:
+    try:
+        return max(0.0, float(str(os.getenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC") or "300").strip()))
+    except Exception:
+        return 300.0
+
+
 def _terminal_update_states() -> set[str]:
     return {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled", "idle"}
 
@@ -134,6 +141,13 @@ def _write_update_attempt(payload: dict[str, Any]) -> dict[str, Any]:
     merged.setdefault("updated_at", time.time())
     _write_json(_supervisor_update_attempt_path(), merged)
     return merged
+
+
+def _epoch(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _status_updated_at(payload: dict[str, Any]) -> float:
@@ -178,6 +192,87 @@ def _is_root_restart_completed_status(payload: dict[str, Any] | None) -> bool:
     return state == "succeeded" and phase == "validate" and float(payload.get("root_restart_completed_at") or 0.0) > 0.0
 
 
+def _is_transition_in_progress(status: dict[str, Any] | None, attempt: dict[str, Any] | None) -> bool:
+    status_map = status if isinstance(status, dict) else {}
+    attempt_map = attempt if isinstance(attempt, dict) else {}
+    state = str(status_map.get("state") or "").strip().lower()
+    phase = str(status_map.get("phase") or "").strip().lower()
+    attempt_state = str(attempt_map.get("state") or "").strip().lower()
+    if attempt_state in {"active", "awaiting_root_restart"}:
+        return True
+    if state in {"countdown", "draining", "stopping", "restarting", "applying"}:
+        return True
+    if state == "validated" and phase == "root_promotion_pending":
+        return True
+    if state == "succeeded" and phase == "root_promoted":
+        return True
+    return False
+
+
+def _transition_request_payload(
+    *,
+    action: str,
+    target_rev: str,
+    target_version: str,
+    reason: str,
+    countdown_sec: float,
+    drain_timeout_sec: float,
+    signal_delay_sec: float,
+    requested_at: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "action": str(action or "update"),
+        "target_rev": str(target_rev or ""),
+        "target_version": str(target_version or ""),
+        "reason": str(reason or ""),
+        "countdown_sec": float(countdown_sec),
+        "drain_timeout_sec": float(drain_timeout_sec),
+        "signal_delay_sec": float(signal_delay_sec),
+        "requested_at": float(requested_at or time.time()),
+    }
+
+
+def _request_from_attempt(attempt: dict[str, Any] | None) -> dict[str, Any]:
+    data = attempt if isinstance(attempt, dict) else {}
+    return _transition_request_payload(
+        action=str(data.get("action") or "update"),
+        target_rev=str(data.get("target_rev") or ""),
+        target_version=str(data.get("target_version") or ""),
+        reason=str(data.get("reason") or ""),
+        countdown_sec=float(data.get("countdown_sec") or 0.0),
+        drain_timeout_sec=float(data.get("drain_timeout_sec") or 10.0),
+        signal_delay_sec=float(data.get("signal_delay_sec") or 0.25),
+        requested_at=_epoch(data.get("requested_at")) or time.time(),
+    )
+
+
+def _subsequent_transition_request(attempt: dict[str, Any] | None) -> dict[str, Any] | None:
+    data = attempt if isinstance(attempt, dict) else {}
+    queued = data.get("subsequent_transition_request")
+    return dict(queued) if isinstance(queued, dict) and queued else None
+
+
+def _last_update_completion_at(status: dict[str, Any] | None, attempt: dict[str, Any] | None) -> float:
+    attempt_map = attempt if isinstance(attempt, dict) else {}
+    if str(attempt_map.get("action") or "").strip().lower() == "update":
+        completed_at = _epoch(attempt_map.get("completed_at"))
+        if completed_at > 0.0:
+            return completed_at
+        updated_at = _epoch(attempt_map.get("updated_at"))
+        if updated_at > 0.0 and str(attempt_map.get("state") or "").strip().lower() in {"completed", "failed", "cancelled"}:
+            return updated_at
+    status_map = status if isinstance(status, dict) else {}
+    if str(status_map.get("action") or "").strip().lower() != "update":
+        return 0.0
+    if not _is_terminal_update_status(status_map):
+        return 0.0
+    return max(
+        _epoch(status_map.get("root_restart_completed_at")),
+        _epoch(status_map.get("finished_at")),
+        _status_updated_at(status_map),
+    )
+
+
 def _build_attempt_payload(*, action: str, request: dict[str, Any], status: dict[str, Any] | None, accepted: bool) -> dict[str, Any]:
     now = time.time()
     current_status = dict(status or {})
@@ -195,6 +290,8 @@ def _build_attempt_payload(*, action: str, request: dict[str, Any], status: dict
         "target_version": str(request.get("target_version") or current_status.get("target_version") or ""),
         "reason": str(request.get("reason") or current_status.get("reason") or ""),
         "accepted": bool(accepted),
+        "scheduled_for": scheduled_for if accepted else None,
+        "min_update_period_sec": float(request.get("min_update_period_sec") or current_status.get("min_update_period_sec") or 0.0),
         "last_status": current_status,
         "updated_at": now,
     }
@@ -289,6 +386,11 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "message": str(status.get("message") or "").strip(),
         "target_rev": str(status.get("target_rev") or "").strip(),
         "target_version": str(status.get("target_version") or "").strip(),
+        "planned_reason": str(status.get("planned_reason") or "").strip() or None,
+        "min_update_period_sec": status.get("min_update_period_sec"),
+        "scheduled_for": status.get("scheduled_for"),
+        "subsequent_transition": bool(status.get("subsequent_transition")),
+        "subsequent_transition_requested_at": status.get("subsequent_transition_requested_at"),
         "updated_at": status.get("updated_at"),
     }
     return {
@@ -297,6 +399,10 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "attempt": {
             "state": str(attempt.get("state") or "").strip().lower() or None,
             "awaiting_restart": bool(attempt.get("awaiting_restart")),
+            "planned_reason": str(attempt.get("planned_reason") or "").strip() or None,
+            "scheduled_for": attempt.get("scheduled_for"),
+            "subsequent_transition": bool(attempt.get("subsequent_transition")),
+            "subsequent_transition_requested_at": attempt.get("subsequent_transition_requested_at"),
             "updated_at": attempt.get("updated_at"),
         },
         "runtime": {
@@ -358,6 +464,7 @@ class SupervisorManager:
         self._last_exit_code: int | None = None
         self._last_error: str | None = None
         self._update_task: asyncio.Task[Any] | None = None
+        self._update_task_cancel_mode: str | None = None
 
     @property
     def runtime_base_url(self) -> str:
@@ -585,6 +692,7 @@ class SupervisorManager:
     async def monitor_forever(self) -> None:
         while True:
             await asyncio.sleep(1.0)
+            await self._maybe_resume_or_continue_transition()
             proc = self._proc
             if proc is None:
                 if self._desired_running and not self._stopping:
@@ -725,6 +833,174 @@ class SupervisorManager:
                 self._persist_runtime_state()
         return {"ok": True, "forced": forced, "reason": reason}
 
+    def _begin_countdown_transition(self, request: dict[str, Any], *, countdown_sec: float | None = None) -> dict[str, Any]:
+        countdown_value = max(0.0, float(request.get("countdown_sec") if countdown_sec is None else countdown_sec))
+        status = write_core_update_status(
+            {
+                "state": "countdown",
+                "phase": "countdown",
+                "action": str(request.get("action") or "update"),
+                "target_rev": str(request.get("target_rev") or ""),
+                "target_version": str(request.get("target_version") or ""),
+                "reason": str(request.get("reason") or ""),
+                "countdown_sec": countdown_value,
+                "drain_timeout_sec": float(request.get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float(request.get("signal_delay_sec") or 0.25),
+                "started_at": time.time(),
+                "scheduled_for": time.time() + countdown_value,
+            }
+        )
+        request_payload = dict(request)
+        request_payload["countdown_sec"] = countdown_value
+        _write_update_attempt(
+            _build_attempt_payload(
+                action=str(request_payload.get("action") or "update"),
+                request=request_payload,
+                status=status,
+                accepted=True,
+            )
+        )
+        self._update_task_cancel_mode = None
+        self._update_task = asyncio.create_task(
+            self._countdown_update_worker(
+                action=str(request_payload.get("action") or "update"),
+                target_rev=str(request_payload.get("target_rev") or ""),
+                target_version=str(request_payload.get("target_version") or ""),
+                reason=str(request_payload.get("reason") or ""),
+                countdown_sec=countdown_value,
+                drain_timeout_sec=float(request_payload.get("drain_timeout_sec") or 10.0),
+                signal_delay_sec=float(request_payload.get("signal_delay_sec") or 0.25),
+            ),
+            name=f"adaos-supervisor-core-update-{request_payload.get('action') or 'update'}",
+        )
+        return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+
+    def _schedule_planned_transition(
+        self,
+        request: dict[str, Any],
+        *,
+        scheduled_for: float,
+        planned_reason: str,
+        message: str,
+    ) -> dict[str, Any]:
+        due_at = max(time.time(), float(scheduled_for))
+        status = write_core_update_status(
+            {
+                "state": "planned",
+                "phase": "scheduled",
+                "action": str(request.get("action") or "update"),
+                "target_rev": str(request.get("target_rev") or ""),
+                "target_version": str(request.get("target_version") or ""),
+                "reason": str(request.get("reason") or ""),
+                "countdown_sec": float(request.get("countdown_sec") or 0.0),
+                "drain_timeout_sec": float(request.get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float(request.get("signal_delay_sec") or 0.25),
+                "min_update_period_sec": _min_update_period_sec(),
+                "planned_reason": planned_reason,
+                "scheduled_for": due_at,
+                "message": message,
+            }
+        )
+        payload = dict(request)
+        payload.update(
+            {
+                "state": "planned",
+                "accepted": True,
+                "scheduled_for": due_at,
+                "planned_reason": planned_reason,
+                "min_update_period_sec": _min_update_period_sec(),
+                "last_status": status,
+                "updated_at": time.time(),
+            }
+        )
+        _write_update_attempt(payload)
+        return {"ok": True, "accepted": True, "planned": True, "status": status, "_served_by": "supervisor"}
+
+    def _queue_subsequent_transition(
+        self,
+        *,
+        request: dict[str, Any],
+        current_status: dict[str, Any] | None,
+        current_attempt: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        now = _epoch(request.get("requested_at")) or time.time()
+        queued = dict(request)
+        attempt = dict(current_attempt or {})
+        if not attempt:
+            attempt = {
+                "state": "active",
+                "action": str((current_status or {}).get("action") or request.get("action") or "update"),
+                "requested_at": now,
+                "updated_at": now,
+                "last_status": dict(current_status or {}),
+            }
+        previous = _subsequent_transition_request(attempt)
+        if previous:
+            queued["first_requested_at"] = _epoch(previous.get("first_requested_at")) or _epoch(previous.get("requested_at")) or now
+        attempt["subsequent_transition"] = True
+        attempt["subsequent_transition_requested_at"] = now
+        attempt["subsequent_transition_request"] = queued
+        attempt["updated_at"] = now
+        _write_update_attempt(attempt)
+
+        status_payload = dict(current_status or read_core_update_status() or {})
+        status_payload["subsequent_transition"] = True
+        status_payload["subsequent_transition_requested_at"] = now
+        status_payload["subsequent_transition_action"] = str(queued.get("action") or "update")
+        status_payload["subsequent_transition_target_rev"] = str(queued.get("target_rev") or "")
+        status_payload["subsequent_transition_target_version"] = str(queued.get("target_version") or "")
+        status_payload["updated_at"] = time.time()
+        status = write_core_update_status(status_payload)
+        return {
+            "ok": True,
+            "accepted": True,
+            "deferred": True,
+            "subsequent_transition": True,
+            "status": status,
+            "_served_by": "supervisor",
+        }
+
+    async def _maybe_resume_or_continue_transition(self) -> None:
+        payload = _reconcile_update_status(
+            {
+                "ok": True,
+                "status": read_core_update_status(),
+                "runtime": self.status(),
+                "_served_by": "supervisor_monitor",
+            }
+        )
+        status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+        attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else _read_update_attempt() or {}
+        if self._update_task is not None and not self._update_task.done():
+            return
+
+        attempt_state = str(attempt.get("state") or "").strip().lower()
+        now = time.time()
+        if attempt_state == "planned":
+            scheduled_for = _epoch(attempt.get("scheduled_for") or status.get("scheduled_for"))
+            if scheduled_for > 0.0 and scheduled_for <= now:
+                self._begin_countdown_transition(_request_from_attempt(attempt))
+            return
+
+        if attempt_state == "active" and str(status.get("state") or "").strip().lower() == "countdown":
+            scheduled_for = _epoch(status.get("scheduled_for") or attempt.get("scheduled_for"))
+            remaining = max(0.0, scheduled_for - now) if scheduled_for > 0.0 else float(attempt.get("countdown_sec") or 0.0)
+            self._begin_countdown_transition(_request_from_attempt(attempt), countdown_sec=remaining)
+            return
+
+        queued = _subsequent_transition_request(attempt)
+        if queued and _is_terminal_update_status(status):
+            await self.start_update(
+                action=str(queued.get("action") or "update"),
+                target_rev=str(queued.get("target_rev") or ""),
+                target_version=str(queued.get("target_version") or ""),
+                reason=str(queued.get("reason") or "subsequent.transition"),
+                countdown_sec=float(queued.get("countdown_sec") or 0.0),
+                drain_timeout_sec=float(queued.get("drain_timeout_sec") or 10.0),
+                signal_delay_sec=float(queued.get("signal_delay_sec") or 0.25),
+                bypass_min_period=True,
+            )
+
     async def _countdown_update_worker(
         self,
         *,
@@ -804,20 +1080,23 @@ class SupervisorManager:
                 )
         except asyncio.CancelledError:
             clear_core_update_plan()
-            status = write_core_update_status(
-                {
-                    "state": "cancelled",
-                    "phase": "countdown",
-                    "action": action,
-                    "target_rev": target_rev,
-                    "target_version": target_version,
-                    "reason": reason,
-                    "drain_timeout_sec": drain_timeout_sec,
-                    "signal_delay_sec": signal_delay_sec,
-                    "message": "core update cancelled",
-                }
-            )
-            _complete_update_attempt(state="cancelled", status=status, reason=reason)
+            cancel_mode = str(self._update_task_cancel_mode or "").strip().lower()
+            self._update_task_cancel_mode = None
+            if cancel_mode != "rescheduled":
+                status = write_core_update_status(
+                    {
+                        "state": "cancelled",
+                        "phase": "countdown",
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                        "drain_timeout_sec": drain_timeout_sec,
+                        "signal_delay_sec": signal_delay_sec,
+                        "message": "core update cancelled",
+                    }
+                )
+                _complete_update_attempt(state="cancelled", status=status, reason=reason)
             raise
         except Exception as exc:
             clear_core_update_plan()
@@ -843,6 +1122,7 @@ class SupervisorManager:
                 reason=f"shutdown request failed: {type(exc).__name__}",
             )
         finally:
+            self._update_task_cancel_mode = None
             if self._update_task is not None and self._update_task.done():
                 self._update_task = None
 
@@ -856,63 +1136,68 @@ class SupervisorManager:
         countdown_sec: float,
         drain_timeout_sec: float,
         signal_delay_sec: float,
+        bypass_min_period: bool = False,
     ) -> dict[str, Any]:
-        existing = self._update_task
-        if existing is not None and not existing.done():
-            return {"ok": True, "accepted": False, "status": read_core_update_status()}
-
+        request = _transition_request_payload(
+            action=action,
+            target_rev=target_rev,
+            target_version=target_version,
+            reason=reason,
+            countdown_sec=countdown_sec,
+            drain_timeout_sec=drain_timeout_sec,
+            signal_delay_sec=signal_delay_sec,
+        )
         current_status = read_core_update_status()
-        if str(current_status.get("state") or "").strip().lower() in {"restarting", "applying"}:
-            return {"ok": True, "accepted": False, "status": current_status}
+        current_attempt = _read_update_attempt()
+        if str((current_attempt or {}).get("state") or "").strip().lower() == "planned" and action == "update":
+            scheduled_for = _epoch((current_attempt or {}).get("scheduled_for") or current_status.get("scheduled_for")) or time.time()
+            return self._schedule_planned_transition(
+                request=request,
+                scheduled_for=scheduled_for,
+                planned_reason=str((current_attempt or {}).get("planned_reason") or "minimum_update_period"),
+                message="planned core update refreshed while waiting for scheduled window",
+            )
+
+        if _is_transition_in_progress(current_status, current_attempt):
+            return self._queue_subsequent_transition(
+                request=request,
+                current_status=current_status,
+                current_attempt=current_attempt,
+            )
+
+        if action == "update" and not bypass_min_period:
+            min_period_sec = _min_update_period_sec()
+            last_completed_at = _last_update_completion_at(current_status, current_attempt)
+            next_allowed_at = last_completed_at + min_period_sec
+            if min_period_sec > 0.0 and last_completed_at > 0.0 and next_allowed_at > time.time():
+                return self._schedule_planned_transition(
+                    request=request,
+                    scheduled_for=next_allowed_at,
+                    planned_reason="minimum_update_period",
+                    message="core update deferred until minimum update interval elapses",
+                )
 
         clear_core_update_plan()
-        status = write_core_update_status(
-            {
-                "state": "countdown",
-                "phase": "countdown",
-                "action": action,
-                "target_rev": target_rev,
-                "target_version": target_version,
-                "reason": reason,
-                "countdown_sec": float(countdown_sec),
-                "drain_timeout_sec": float(drain_timeout_sec),
-                "signal_delay_sec": float(signal_delay_sec),
-                "started_at": time.time(),
-                "scheduled_for": time.time() + float(countdown_sec),
-            }
-        )
-        _write_update_attempt(
-            _build_attempt_payload(
-                action=action,
-                request={
-                    "target_rev": target_rev,
-                    "target_version": target_version,
-                    "reason": reason,
-                    "countdown_sec": countdown_sec,
-                    "drain_timeout_sec": drain_timeout_sec,
-                    "signal_delay_sec": signal_delay_sec,
-                },
-                status=status,
-                accepted=True,
-            )
-        )
-        self._update_task = asyncio.create_task(
-            self._countdown_update_worker(
-                action=action,
-                target_rev=target_rev,
-                target_version=target_version,
-                reason=reason,
-                countdown_sec=float(countdown_sec),
-                drain_timeout_sec=float(drain_timeout_sec),
-                signal_delay_sec=float(signal_delay_sec),
-            ),
-            name=f"adaos-supervisor-core-update-{action}",
-        )
-        return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+        return self._begin_countdown_transition(request)
 
     async def cancel_update(self, *, reason: str) -> dict[str, Any]:
         task = self._update_task
         clear_core_update_plan()
+        current_attempt = _read_update_attempt() or {}
+        current_status = read_core_update_status()
+        if str(current_attempt.get("state") or "").strip().lower() == "planned":
+            status = write_core_update_status(
+                {
+                    "state": "cancelled",
+                    "phase": "scheduled",
+                    "action": str(current_status.get("action") or current_attempt.get("action") or "update"),
+                    "message": "planned core update cancelled by request",
+                    "reason": reason,
+                }
+            )
+            _complete_update_attempt(state="cancelled", status=status, reason=reason)
+            return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+
         if task is None or task.done():
             status = write_core_update_status(
                 {
@@ -926,6 +1211,7 @@ class SupervisorManager:
             self._update_task = None
             return {"ok": True, "accepted": False, "status": status, "_served_by": "supervisor"}
 
+        self._update_task_cancel_mode = "cancelled"
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -943,6 +1229,31 @@ class SupervisorManager:
         )
         _complete_update_attempt(state="cancelled", status=status, reason=reason)
         return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+
+    async def defer_update(self, *, delay_sec: float, reason: str) -> dict[str, Any]:
+        delay_value = max(0.0, float(delay_sec))
+        current_attempt = _read_update_attempt() or {}
+        current_status = read_core_update_status()
+        attempt_state = str(current_attempt.get("state") or "").strip().lower()
+        status_state = str(current_status.get("state") or "").strip().lower()
+        if attempt_state not in {"planned", "active"} and status_state not in {"planned", "countdown"}:
+            raise HTTPException(status_code=409, detail="defer requires a planned update or active countdown")
+
+        if self._update_task is not None and not self._update_task.done():
+            self._update_task_cancel_mode = "rescheduled"
+            self._update_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._update_task
+            self._update_task = None
+
+        request = _request_from_attempt(current_attempt or current_status)
+        scheduled_for = time.time() + delay_value
+        return self._schedule_planned_transition(
+            request=request,
+            scheduled_for=scheduled_for,
+            planned_reason="operator_defer",
+            message="core update deferred by request",
+        )
 
     async def promote_root(self, *, reason: str) -> dict[str, Any]:
         current_status = read_core_update_status()
@@ -982,20 +1293,24 @@ class SupervisorManager:
                 "finished_at": time.time(),
             }
         )
-        _write_update_attempt(
+        previous_attempt = _read_update_attempt() or {}
+        now = time.time()
+        awaiting_attempt = dict(previous_attempt)
+        awaiting_attempt.update(
             {
                 "state": "awaiting_root_restart",
-                "action": "update",
+                "action": str(previous_attempt.get("action") or "update"),
                 "accepted": True,
                 "awaiting_restart": True,
                 "restart_required": True,
-                "requested_at": time.time(),
-                "transitioned_at": time.time(),
-                "updated_at": time.time(),
+                "requested_at": _epoch(previous_attempt.get("requested_at")) or now,
+                "transitioned_at": now,
+                "updated_at": now,
                 "completion_reason": "",
                 "last_status": status,
             }
         )
+        _write_update_attempt(awaiting_attempt)
         return {"ok": True, "accepted": True, "status": status, "root_promotion": promotion, "_served_by": "supervisor"}
 
     def proxy_update_post(self, path: str, *, body: dict[str, Any]) -> dict[str, Any]:
@@ -1108,6 +1423,14 @@ async def supervisor_update_start(payload: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/supervisor/update/cancel", dependencies=[Depends(require_token)])
 async def supervisor_update_cancel(payload: dict[str, Any]) -> dict[str, Any]:
     return await _manager().cancel_update(reason=str(payload.get("reason") or "user.cancelled"))
+
+
+@app.post("/api/supervisor/update/defer", dependencies=[Depends(require_token)])
+async def supervisor_update_defer(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _manager().defer_update(
+        delay_sec=float(payload.get("delay_sec") or payload.get("countdown_sec") or 300.0),
+        reason=str(payload.get("reason") or "user.deferred"),
+    )
 
 
 @app.post("/api/supervisor/update/rollback", dependencies=[Depends(require_token)])

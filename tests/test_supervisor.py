@@ -117,8 +117,13 @@ def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeyp
     assert attempt["last_status"]["root_restart_completed_at"] == 499.0
 
 
+def test_last_update_completion_at_ignores_idle_status() -> None:
+    assert supervisor._last_update_completion_at({"state": "idle", "updated_at": 123.0}, None) == 0.0
+
+
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
 
     async def _exercise() -> None:
@@ -144,6 +149,393 @@ def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
         assert attempt["state"] == "cancelled"
 
     asyncio.run(_exercise())
+
+
+def test_supervisor_start_update_schedules_when_min_period_not_elapsed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "300")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    supervisor._write_update_attempt(
+        {
+            "state": "completed",
+            "action": "update",
+            "completed_at": 450.0,
+            "updated_at": 450.0,
+        }
+    )
+
+    result = asyncio.run(
+        manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["planned"] is True
+    status = read_status()
+    assert status["state"] == "planned"
+    assert status["planned_reason"] == "minimum_update_period"
+    assert status["scheduled_for"] == 750.0
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "planned"
+    assert attempt["scheduled_for"] == 750.0
+
+
+def test_supervisor_start_update_refreshes_existing_planned_update(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "300")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.2",
+            "reason": "test.older",
+            "scheduled_for": 750.0,
+            "planned_reason": "minimum_update_period",
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "planned",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.2",
+            "reason": "test.older",
+            "scheduled_for": 750.0,
+            "planned_reason": "minimum_update_period",
+            "updated_at": 450.0,
+        }
+    )
+
+    result = asyncio.run(
+        manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.refresh",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["planned"] is True
+    assert result["status"]["scheduled_for"] == 750.0
+    assert result["status"]["message"] == "planned core update refreshed while waiting for scheduled window"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "planned"
+    assert attempt["target_version"] == "1.2.3"
+    assert attempt["scheduled_for"] == 750.0
+
+
+def test_supervisor_start_update_queues_subsequent_transition_while_active(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    write_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.2",
+            "reason": "test.active",
+            "scheduled_for": 530.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.2",
+            "reason": "test.active",
+            "scheduled_for": 530.0,
+            "updated_at": 500.0,
+        }
+    )
+
+    result = asyncio.run(
+        manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.subsequent",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["deferred"] is True
+    assert result["subsequent_transition"] is True
+    status = read_status()
+    assert status["subsequent_transition"] is True
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["subsequent_transition"] is True
+    assert attempt["subsequent_transition_request"]["target_version"] == "1.2.3"
+
+
+def test_supervisor_monitor_runs_subsequent_transition_once_after_completion(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor.time, "time", lambda: 800.0)
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "validate",
+            "target_rev": "rev2026",
+            "updated_at": 799.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "completed",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.2",
+            "subsequent_transition": True,
+            "subsequent_transition_requested_at": 780.0,
+            "subsequent_transition_request": {
+                "action": "update",
+                "target_rev": "rev2026",
+                "target_version": "1.2.3",
+                "reason": "test.subsequent",
+                "countdown_sec": 15.0,
+                "drain_timeout_sec": 10.0,
+                "signal_delay_sec": 0.25,
+                "requested_at": 780.0,
+            },
+            "updated_at": 799.0,
+        }
+    )
+    calls: list[dict[str, object]] = []
+
+    async def _capture(**kwargs):
+        calls.append(dict(kwargs))
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(manager, "start_update", _capture)
+
+    asyncio.run(manager._maybe_resume_or_continue_transition())
+
+    assert len(calls) == 1
+    assert calls[0]["target_version"] == "1.2.3"
+    assert calls[0]["bypass_min_period"] is True
+
+
+def test_supervisor_start_update_queues_subsequent_transition(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "scheduled_for": 9999999999.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "requested_at": 1.0,
+            "updated_at": 1.0,
+        }
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _exercise() -> None:
+        result = await manager.start_update(
+            action="update",
+            target_rev="rev2027",
+            target_version="2.0.0",
+            reason="test.update.next",
+            countdown_sec=45.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+        assert result["accepted"] is True
+        assert result["deferred"] is True
+        assert result["subsequent_transition"] is True
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["subsequent_transition"] is True
+        assert attempt["subsequent_transition_request"]["target_rev"] == "rev2027"
+        status = read_status()
+        assert status["subsequent_transition"] is True
+
+    asyncio.run(_exercise())
+
+
+def test_supervisor_start_update_schedules_planned_update_when_min_period_not_elapsed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "300")
+    monkeypatch.setattr(supervisor.time, "time", lambda: 150.0)
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "validate",
+            "action": "update",
+            "finished_at": 100.0,
+            "updated_at": 100.0,
+        }
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _exercise() -> None:
+        result = await manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.4",
+            reason="test.update",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+        assert result["accepted"] is True
+        assert result["planned"] is True
+        status = read_status()
+        assert status["state"] == "planned"
+        assert status["phase"] == "scheduled"
+        assert status["planned_reason"] == "minimum_update_period"
+        assert status["scheduled_for"] == 400.0
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["state"] == "planned"
+        assert attempt["scheduled_for"] == 400.0
+
+    asyncio.run(_exercise())
+
+
+def test_supervisor_defer_update_reschedules_active_countdown(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_status(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "countdown_sec": 30.0,
+            "scheduled_for": 200.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "countdown_sec": 30.0,
+            "drain_timeout_sec": 10.0,
+            "signal_delay_sec": 0.25,
+            "requested_at": 100.0,
+            "updated_at": 100.0,
+        }
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _sleep_forever() -> None:
+        await asyncio.Future()
+
+    async def _exercise() -> None:
+        monkeypatch.setattr(supervisor.time, "time", lambda: 150.0)
+        manager._update_task = asyncio.create_task(_sleep_forever())
+        try:
+            result = await manager.defer_update(delay_sec=300.0, reason="test.defer")
+        finally:
+            if manager._update_task is not None and not manager._update_task.done():
+                manager._update_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await manager._update_task
+        assert result["accepted"] is True
+        assert result["planned"] is True
+        status = read_status()
+        assert status["state"] == "planned"
+        assert status["planned_reason"] == "operator_defer"
+        assert status["scheduled_for"] == 450.0
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["state"] == "planned"
+        assert attempt["scheduled_for"] == 450.0
+
+    import contextlib
+
+    asyncio.run(_exercise())
+
+
+def test_supervisor_monitor_resumes_due_planned_transition(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "countdown_sec": 30.0,
+            "drain_timeout_sec": 10.0,
+            "signal_delay_sec": 0.25,
+            "scheduled_for": 499.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "planned",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "countdown_sec": 30.0,
+            "drain_timeout_sec": 10.0,
+            "signal_delay_sec": 0.25,
+            "scheduled_for": 499.0,
+            "updated_at": 490.0,
+        }
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    calls: list[dict] = []
+
+    def _capture(request: dict, *, countdown_sec: float | None = None) -> dict:
+        calls.append({"request": dict(request), "countdown_sec": countdown_sec})
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(manager, "_begin_countdown_transition", _capture)
+
+    asyncio.run(manager._maybe_resume_or_continue_transition())
+
+    assert calls
+    assert calls[0]["request"]["target_rev"] == "rev2026"
 
 
 def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypatch, tmp_path) -> None:
@@ -457,6 +849,63 @@ def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -
     assert attempt["last_status"]["phase"] == "root_promoted"
 
 
+def test_supervisor_promote_root_preserves_subsequent_transition_request(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "repo_dir": str(tmp_path / "slots" / "B" / "repo"),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "promote_root_from_slot",
+        lambda *, slot=None: {
+            "ok": True,
+            "slot": slot or "B",
+            "required": True,
+            "restart_required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+        },
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "active",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.update",
+            "subsequent_transition": True,
+            "subsequent_transition_requested_at": 410.0,
+            "subsequent_transition_request": {
+                "action": "update",
+                "target_rev": "rev2026",
+                "target_version": "1.2.4",
+                "reason": "test.subsequent",
+            },
+            "updated_at": 400.0,
+        }
+    )
+    write_status({"state": "validated", "phase": "root_promotion_pending", "target_slot": "B"})
+
+    payload = asyncio.run(manager.promote_root(reason="test.root_promotion"))
+
+    assert payload["status"]["phase"] == "root_promoted"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "awaiting_root_restart"
+    assert attempt["subsequent_transition"] is True
+    assert attempt["subsequent_transition_request"]["target_version"] == "1.2.4"
+
+
 def test_public_update_status_payload_is_browser_safe() -> None:
     payload = supervisor._public_update_status_payload(
         {
@@ -466,6 +915,11 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "message": "countdown completed; pending update written",
                 "target_rev": "rev2026",
                 "target_version": "0.1.0+1.abc",
+                "planned_reason": "minimum_update_period",
+                "min_update_period_sec": 300.0,
+                "scheduled_for": 456.0,
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 400.0,
                 "updated_at": 123.0,
                 "error": "hidden",
             },
@@ -481,6 +935,10 @@ def test_public_update_status_payload_is_browser_safe() -> None:
             "attempt": {
                 "state": "awaiting_root_restart",
                 "awaiting_restart": True,
+                "planned_reason": "minimum_update_period",
+                "scheduled_for": 456.0,
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 400.0,
                 "updated_at": 222.0,
             },
             "_served_by": "supervisor_fallback",
@@ -490,8 +948,14 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["ok"] is True
     assert payload["status"]["state"] == "restarting"
     assert payload["status"]["phase"] == "shutdown"
+    assert payload["status"]["planned_reason"] == "minimum_update_period"
+    assert payload["status"]["scheduled_for"] == 456.0
+    assert payload["status"]["subsequent_transition"] is True
     assert payload["attempt"]["state"] == "awaiting_root_restart"
     assert payload["attempt"]["awaiting_restart"] is True
+    assert payload["attempt"]["planned_reason"] == "minimum_update_period"
+    assert payload["attempt"]["scheduled_for"] == 456.0
+    assert payload["attempt"]["subsequent_transition"] is True
     assert payload["runtime"]["active_slot"] == "A"
     assert payload["runtime"]["root_promotion_required"] is True
     assert payload["_served_by"] == "supervisor_fallback"

@@ -146,6 +146,7 @@ The current Phase 2 checkpoint turns that MVP into an installable operator works
 
 - canonical `overview` and `object inspector` projections are exposed through `src/adaos/services/system_model/projections.py`, `src/adaos/services/system_model/service.py`, `src/adaos/apps/api/node_api.py`, and the control-plane SDK surface
 - canonical runtime projections now also include the supervisor-owned core runtime object so operator surfaces can keep transition state such as `root promotion pending` and `root restart in progress` visible instead of collapsing them into generic hub instability
+- supervisor-backed operator projections now also carry scheduled/deferred core-update state, queued follow-up transitions, and countdown defer actions so operators can see when an update is planned versus actively switching slots
 - the reusable client-side page runtime now supports richer `visibleIf` expressions and state-driven data reloads for declarative widgets, so one scenario can switch between `overview`, `inventory`, and inspector tabs without bespoke UI code
 - `.adaos/workspace/skills/infrascope_skill/*` provides the UI-facing adapter skill that shapes overview sections, inventory rows, and selected-object inspector payloads for Web Desktop
 - `.adaos/workspace/scenarios/infrascope/*` provides the first desktop `Infrascope` scenario with overview panels, inventory tabs for hubs/members/browsers/devices/skills/scenarios, a unified right-side inspector, and incident-to-object drill-down without leaving context

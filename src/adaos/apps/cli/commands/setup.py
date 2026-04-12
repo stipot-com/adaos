@@ -589,9 +589,11 @@ def _local_autostart_update_payload() -> dict | None:
     status_path = selected_root / "status.json"
     plan_path = selected_root / "plan.json"
     last_result_path = selected_root / "last_result.json"
+    attempt_path = selected_root.parent / "supervisor" / "update_attempt.json"
     return {
         "ok": True,
         "status": _read_json_file(status_path) or {"state": "idle", "updated_at": time.time()},
+        "attempt": _read_json_file(attempt_path),
         "last_result": _read_json_file(last_result_path),
         "plan": _read_json_file(plan_path),
         "slots": core_slot_status(),
@@ -1258,10 +1260,30 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    if status.get("scheduled_for"):
+        try:
+            scheduled_for = float(status.get("scheduled_for") or 0.0)
+        except Exception:
+            scheduled_for = 0.0
+        if scheduled_for > 0.0:
+            typer.echo(
+                "scheduled for: "
+                + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(scheduled_for))
+            )
     if attempt.get("state"):
         typer.echo(f"supervisor attempt: {attempt.get('state')}")
         if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
             typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
+    if bool(status.get("subsequent_transition")) or bool(attempt.get("subsequent_transition")):
+        requested_at = attempt.get("subsequent_transition_requested_at") or status.get("subsequent_transition_requested_at")
+        line = "subsequent transition: queued"
+        try:
+            requested_ts = float(requested_at or 0.0)
+        except Exception:
+            requested_ts = 0.0
+        if requested_ts > 0.0:
+            line += " at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(requested_ts))
+        typer.echo(line)
     if bool(status.get("root_promotion_required")):
         typer.echo("root promotion required: yes")
         bootstrap_update = status.get("bootstrap_update") if isinstance(status.get("bootstrap_update"), dict) else {}
@@ -1351,6 +1373,29 @@ def autostart_update_rollback_cmd(
                 "signal_delay_sec": signal_delay_sec,
                 "reason": reason,
             },
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
+@autostart_app.command("update-defer")
+@_run_safe
+def autostart_update_defer_cmd(
+    delay_sec: float = typer.Option(300.0, "--delay-sec", min=0.0),
+    reason: str = typer.Option("cli.core_update.defer", "--reason"),
+    token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        payload = _autostart_supervisor_post(
+            "/api/supervisor/update/defer",
+            token=token,
+            body={"delay_sec": delay_sec, "reason": reason},
         )
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
