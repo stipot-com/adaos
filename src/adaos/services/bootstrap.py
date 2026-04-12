@@ -80,6 +80,12 @@ from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_
 from adaos.services.hub_root_outbox_store import load_outbox_items, outbox_store_path, save_outbox_items
 from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
+from adaos.services.runtime_identity import (
+    runtime_connect_name,
+    runtime_identity_snapshot,
+    runtime_instance_id,
+    runtime_transition_role,
+)
 from adaos.services.scheduler import start_scheduler, stop_scheduler
 from adaos.services.scenario import (
     webspace_runtime as _scenario_ws_runtime,  # ensure core scenario subscriptions
@@ -253,6 +259,10 @@ def _hub_route_force_close_no_upstream_s() -> float:
     if value > 30.0:
         value = 30.0
     return value
+
+
+def _hub_root_candidate_passive_mode() -> bool:
+    return runtime_transition_role() == "candidate"
 
 
 def _nats_url_needs_public_ws_refresh(value: str | None) -> bool:
@@ -1143,7 +1153,18 @@ class BootstrapService:
 
                     def _do_request() -> dict[str, Any] | None:
                         try:
-                            data = client.request("POST", "/v1/hub/nats/token")
+                            identity = runtime_identity_snapshot()
+                            data = client.request(
+                                "POST",
+                                "/v1/hub/nats/token",
+                                json={
+                                    "runtime_instance_id": str(identity.get("runtime_instance_id") or ""),
+                                    "transition_role": str(identity.get("transition_role") or "active"),
+                                    "active_slot": str(os.getenv("ADAOS_ACTIVE_CORE_SLOT") or ""),
+                                    "runtime_host": str(os.getenv("ADAOS_RUNTIME_HOST") or ""),
+                                    "runtime_port": str(os.getenv("ADAOS_RUNTIME_PORT") or ""),
+                                },
+                            )
                             return dict(data) if isinstance(data, dict) else None
                         except Exception as e:
                             if debug:
@@ -1235,6 +1256,10 @@ class BootstrapService:
                     nonlocal last_ws_transport
                     backoff = 1.0
                     trace = os.getenv("HUB_NATS_TRACE", "0") == "1"
+                    runtime_identity = runtime_identity_snapshot()
+                    runtime_role = str(runtime_identity.get("transition_role") or "active")
+                    runtime_instance = str(runtime_identity.get("runtime_instance_id") or "")
+                    candidate_passive_mode = _hub_root_candidate_passive_mode()
                     if trace or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                         try:
                             import asyncio as _asyncio
@@ -1244,11 +1269,11 @@ class BootstrapService:
                                 loop = _asyncio.get_running_loop()
                             except RuntimeError:
                                 loop = None
-                            _rl_log(
-                                "loop.info",
-                                f"[hub-io] asyncio loop policy={type(policy).__name__} loop={type(loop).__name__ if loop else None}",
-                                every_s=3600.0,
-                            )
+                                _rl_log(
+                                    "loop.info",
+                                    f"[hub-io] asyncio loop policy={type(policy).__name__} loop={type(loop).__name__ if loop else None} role={runtime_role} instance={runtime_instance}",
+                                    every_s=3600.0,
+                                )
                             if loop is not None and os.name == "nt" and "Selector" in type(loop).__name__:
                                 _rl_log(
                                     "loop.warn",
@@ -2265,7 +2290,11 @@ class BootstrapService:
                             pw_str = pw if (pw is None or isinstance(pw, str)) else str(pw)
                             if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
                                 try:
-                                    print(f"[hub-io] nats connect opts: name=hub-{hub_id_str!s} user={type(user_str).__name__} pass={type(pw_str).__name__} servers={candidates}")
+                                    print(
+                                        f"[hub-io] nats connect opts: name={runtime_connect_name(prefix=f'hub-{hub_id_str!s}')} "
+                                        f"user={type(user_str).__name__} pass={type(pw_str).__name__} "
+                                        f"role={runtime_role} instance={runtime_instance} servers={candidates}"
+                                    )
                                 except Exception:
                                     pass
 
@@ -2403,9 +2432,13 @@ class BootstrapService:
                                             servers=[connect_server],
                                             user=user_str,
                                             password=pw_str,
-                                            name=f"hub-{hub_id_str}",
+                                            name=runtime_connect_name(prefix=f"hub-{hub_id_str}"),
                                             ws_connection_headers=(
-                                                {"X-AdaOS-Nats-Conn": [ws_connect_tag]}
+                                                {
+                                                    "X-AdaOS-Nats-Conn": [ws_connect_tag],
+                                                    "X-AdaOS-Runtime-Instance": [runtime_instance],
+                                                    "X-AdaOS-Runtime-Role": [runtime_role],
+                                                }
                                                 if connect_server.startswith("ws") and isinstance(ws_connect_tag, str) and ws_connect_tag
                                                 else None
                                             ),
@@ -3047,7 +3080,9 @@ class BootstrapService:
                                     pass
 
                             try:
-                                if not bool(getattr(self, "_tg_output_bridge_hooked", False)):
+                                if candidate_passive_mode:
+                                    pass
+                                elif not bool(getattr(self, "_tg_output_bridge_hooked", False)):
 
                                     def _on_local_output(ev: Event) -> None:
                                         try:
@@ -3153,7 +3188,13 @@ class BootstrapService:
                                 pass
                             subj = f"tg.input.{hub_id}"
                             subj_legacy = f"io.tg.in.{hub_id}.text"
-                            if hub_nats_verbose or not hub_nats_quiet:
+                            if candidate_passive_mode:
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(
+                                        f"[hub-io] NATS candidate runtime connected passively hub_id={hub_id} "
+                                        f"instance={runtime_instance} role={runtime_role}"
+                                    )
+                            elif hub_nats_verbose or not hub_nats_quiet:
                                 print(f"[hub-io] NATS subscribe {subj} and legacy {subj_legacy}")
                             else:
                                 # In quiet mode we still want a single signal that we are connected, because
@@ -3165,9 +3206,12 @@ class BootstrapService:
                                 )
                             try:
                                 self._log.info(
-                                    "nats bridge connected server=%s hub_id=%s",
+                                    "nats bridge connected server=%s hub_id=%s role=%s instance=%s passive=%s",
                                     connected_server or "unknown",
                                     hub_id,
+                                    runtime_role,
+                                    runtime_instance,
+                                    candidate_passive_mode,
                                 )
                             except Exception:
                                 pass
@@ -3248,7 +3292,7 @@ class BootstrapService:
                             _emit_up()
                             try:
                                 conf_local = getattr(self.ctx, "config", None)
-                                if getattr(conf_local, "role", None) == "hub":
+                                if getattr(conf_local, "role", None) == "hub" and not candidate_passive_mode:
                                     async def _reconcile_core_release_after_connect() -> None:
                                         try:
                                             result = await asyncio.to_thread(reconcile_hub_core_update, conf_local)
@@ -3445,16 +3489,28 @@ class BootstrapService:
                         except Exception:
                             pass
 
-                    await _sub(subj, cb=cb)
-                    try:
-                        self._log.info("nats bridge subscribed subject=%s", subj)
-                    except Exception:
-                        pass
+                    if candidate_passive_mode:
+                        try:
+                            self._log.info(
+                                "nats candidate runtime stays passive on root subjects hub_id=%s instance=%s",
+                                hub_id,
+                                runtime_instance,
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        await _sub(subj, cb=cb)
+                        try:
+                            self._log.info("nats bridge subscribed subject=%s", subj)
+                        except Exception:
+                            pass
 
                     # Browser<->Hub routing over NATS (root proxy fallback).
                     # Root publishes `route.to_hub.<key>` where key is "<hub_id>--<conn_id|http--req_id>" (no dots).
                     # Hub responds on `route.to_browser.<same-key>`.
                     try:
+                        if candidate_passive_mode:
+                            raise RuntimeError("candidate runtime keeps root route relay passive until cutover")
                         # Optional dependency: if `websockets` is missing, keep HTTP proxy working
                         # and gracefully deny WS tunnel opens.
                         websockets_mod = None
@@ -5817,51 +5873,63 @@ class BootstrapService:
                     except Exception as e:
                         # Do not fail the whole IO stack: this is an optional fallback used only when
                         # browser connects through Root (api.inimatic.com) and needs a NATS tunnel.
+                        if candidate_passive_mode and str(e) == "candidate runtime keeps root route relay passive until cutover":
+                            try:
+                                self._log.info(
+                                    "nats route relay kept passive for candidate runtime hub_id=%s instance=%s",
+                                    hub_id,
+                                    runtime_instance,
+                                )
+                            except Exception:
+                                pass
+                            e = None
                         try:
                             current_route_reset = getattr(self, "_hub_root_route_reset", None)
                             if current_route_reset is _reset_route_runtime:
                                 setattr(self, "_hub_root_route_reset", None)
                         except Exception:
                             pass
-                        try:
-                            if os.getenv("HUB_ROUTE_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
-                                print(f"[hub-io] NATS route proxy init failed: {type(e).__name__}: {e}")
-                                try:
-                                    tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-                                    print(tb.rstrip())
-                                except Exception:
-                                    pass
-                            else:
-                                print(f"[hub-io] NATS route proxy disabled: {type(e).__name__}: {e}")
-                        except Exception:
-                            pass
-                        try:
-                            mark_route_degraded(
-                                summary=f"hub route relay initialization failed ({type(e).__name__})",
-                                details={"error": str(e)},
-                            )
-                        except Exception:
-                            pass
-
-                    # Optional compatibility: also listen to additional hub aliases if explicitly configured
-                    try:
-                        aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
-                        aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
-                        seen = set([hub_id])
-                        for aid in aliases:
-                            if aid in seen:
-                                continue
-                            seen.add(aid)
-                            alt = f"tg.input.{aid}"
-                            if hub_nats_verbose or not hub_nats_quiet:
-                                print(f"[hub-io] NATS subscribe (alias) {alt}")
-                            await _sub(alt, cb=cb)
+                        if e is not None:
                             try:
-                                self._log.info("nats bridge subscribed subject=%s", alt)
+                                if os.getenv("HUB_ROUTE_VERBOSE", "0") == "1" or os.getenv("HUB_NATS_VERBOSE", "0") == "1":
+                                    print(f"[hub-io] NATS route proxy init failed: {type(e).__name__}: {e}")
+                                    try:
+                                        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                                        print(tb.rstrip())
+                                    except Exception:
+                                        pass
+                                else:
+                                    print(f"[hub-io] NATS route proxy disabled: {type(e).__name__}: {e}")
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
+                            try:
+                                mark_route_degraded(
+                                    summary=f"hub route relay initialization failed ({type(e).__name__})",
+                                    details={"error": str(e)},
+                                )
+                            except Exception:
+                                pass
+
+                    # Optional compatibility: also listen to additional hub aliases if explicitly configured
+                    if not candidate_passive_mode:
+                        try:
+                            aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
+                            aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
+                            seen = set([hub_id])
+                            for aid in aliases:
+                                if aid in seen:
+                                    continue
+                                seen.add(aid)
+                                alt = f"tg.input.{aid}"
+                                if hub_nats_verbose or not hub_nats_quiet:
+                                    print(f"[hub-io] NATS subscribe (alias) {alt}")
+                                await _sub(alt, cb=cb)
+                                try:
+                                    self._log.info("nats bridge subscribed subject=%s", alt)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
 
                     # legacy text bridge -> wrap into minimal envelope and publish to same tg.input subject
                     async def cb_legacy(msg):
@@ -5901,26 +5969,27 @@ class BootstrapService:
                     from datetime import datetime
 
                     # Legacy classic path subscription only when explicitly enabled
-                    try:
-                        if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
-                            await _sub(subj_legacy, cb=cb_legacy)
-                            aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
-                            aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
-                            seen = set([hub_id])
-                            for aid in aliases:
-                                if aid in seen:
-                                    continue
-                                seen.add(aid)
-                                alt_legacy = f"io.tg.in.{aid}.text"
-                                if hub_nats_verbose or not hub_nats_quiet:
-                                    print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
-                                await _sub(alt_legacy, cb=cb_legacy)
-                                try:
-                                    self._log.info("nats bridge subscribed subject=%s", alt_legacy)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                    if not candidate_passive_mode:
+                        try:
+                            if os.getenv("HUB_LISTEN_LEGACY", "0") == "1":
+                                await _sub(subj_legacy, cb=cb_legacy)
+                                aliases_env = os.getenv("HUB_INPUT_ALIASES", "")
+                                aliases: List[str] = [a.strip() for a in aliases_env.split(",") if a.strip()]
+                                seen = set([hub_id])
+                                for aid in aliases:
+                                    if aid in seen:
+                                        continue
+                                    seen.add(aid)
+                                    alt_legacy = f"io.tg.in.{aid}.text"
+                                    if hub_nats_verbose or not hub_nats_quiet:
+                                        print(f"[hub-io] NATS subscribe (alias legacy) {alt_legacy}")
+                                    await _sub(alt_legacy, cb=cb_legacy)
+                                    try:
+                                        self._log.info("nats bridge subscribed subject=%s", alt_legacy)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                     # keep task alive
                     try:
                         last_watchdog_tick_at = time.monotonic()

@@ -88,6 +88,13 @@ Root checkout is reserved for:
 
 This keeps slot switching fast and keeps production runtime independent from root checkout drift.
 
+For runtime processes, slot resolution is process-local first:
+
+- if `ADAOS_ACTIVE_CORE_SLOT` is set in the runtime environment, that process treats the slot as its effective runtime source
+- otherwise the global slot marker from `state/core_slots/active` remains authoritative
+
+This is important for warm-switch work because it allows a `candidate` runtime to boot from the inactive slot for prewarm/diagnostics without mutating the global active-slot marker before cutover is committed.
+
 ## Slot-bound runtime ports
 
 Supervisor should treat runtime ports as slot-owned rather than as one global mutable bind.
@@ -131,6 +138,44 @@ Admission should be driven by a simple local resource gate such as:
 - configured reserve that must remain free after candidate start
 
 The important rule is that low-memory devices must fail safe into stop-and-switch instead of trying to start two full runtimes and getting stuck mid-transition.
+
+## Runtime instance identity
+
+Warm-switch means `active` and `candidate` may overlap for a short period.
+
+That requires identity stronger than just `hub_id` or `subnet_id`.
+
+Each runtime process should therefore carry:
+
+- `runtime_instance_id`
+- `transition_role` (`active` or `candidate`)
+- slot-bound runtime URL/port
+
+This identity must flow through:
+
+- supervisor runtime status
+- browser-safe transition status
+- root control lifecycle reports
+- root core-update reports
+- hub root/NATS session issuance and logs
+
+Without that, a candidate process can look indistinguishable from the active process and accidentally steal or overwrite control-plane state.
+
+## Candidate passive mode
+
+Before fast cutover is implemented, a prewarmed `candidate` runtime must stay passive on root-facing traffic subjects.
+
+That means a candidate may establish root control connectivity for diagnostics, but it must not yet subscribe to the same root-routed traffic subjects as the active runtime:
+
+- `tg.input.<hub_id>`
+- `io.tg.in.<hub_id>.text`
+- `route.v2.to_hub.<hub_id>.*`
+
+The intent is:
+
+- root can see that a candidate runtime exists
+- active runtime remains the only consumer of live hub traffic before cutover
+- candidate reconnects or retries do not supersede the active runtime's root/NATS session merely because they share the same `hub_id`
 
 ## Authority boundary
 
@@ -184,6 +229,8 @@ Always available while the node is booted:
 - `POST /api/supervisor/update/defer`
 - `POST /api/supervisor/update/rollback`
 - `POST /api/supervisor/runtime/restart`
+- `POST /api/supervisor/runtime/candidate/start`
+- `POST /api/supervisor/runtime/candidate/stop`
 
 This API is the source of truth for:
 
@@ -192,6 +239,7 @@ This API is the source of truth for:
 - validation deadlines
 - rollback decisions
 - current managed child processes
+- active and candidate runtime process identity/state (`runtime_instance_id`, `transition_role`, slot, port, readiness)
 - current skill runtime migration diagnostics for the active core update attempt
 - runtime liveness separate from listener bind and runtime API readiness
 - active managed runtime command/executable source for the current slot
@@ -214,6 +262,12 @@ It must not expose mutating control operations or become a substitute for the au
 Current MVP browser behavior may preserve and display the last known transition state during reconnect windows, and routed hub sessions can now poll a live browser-safe supervisor view at `/hubs/<id>/api/supervisor/public/update-status`.
 The target end state is stronger: every supported browser entry topology should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
 Operator-facing surfaces are also expected to consume that same supervisor truth through the canonical control-plane model, so Infrascope and related overview projections can show core-runtime transition state in `active_runtimes`, health strips, and recent changes instead of presenting a restart only as generic hub instability.
+That browser-safe surface now also includes candidate runtime diagnostics needed for warm-switch work:
+
+- `candidate_runtime_instance_id`
+- `candidate_runtime_state`
+- `candidate_runtime_api_ready`
+- `candidate_transition_role`
 
 ### Runtime API
 

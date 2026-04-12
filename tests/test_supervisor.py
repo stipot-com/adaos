@@ -1051,11 +1051,18 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "runtime_state": "spawned",
                 "runtime_url": "http://127.0.0.1:8777",
                 "runtime_port": 8777,
+                "runtime_instance_id": "rt-a-a1b2c3d4",
+                "transition_role": "active",
                 "listener_running": False,
                 "runtime_api_ready": False,
                 "candidate_slot": "B",
                 "candidate_runtime_url": "http://127.0.0.1:8778",
                 "candidate_runtime_port": 8778,
+                "candidate_runtime_instance_id": "rt-b-c9d8e7f6",
+                "candidate_transition_role": "candidate",
+                "candidate_listener_running": True,
+                "candidate_runtime_api_ready": True,
+                "candidate_runtime_state": "ready",
                 "transition_mode": "warm_switch",
                 "warm_switch_supported": True,
                 "warm_switch_allowed": True,
@@ -1090,8 +1097,14 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["attempt"]["scheduled_for"] == 456.0
     assert payload["attempt"]["subsequent_transition"] is True
     assert payload["runtime"]["active_slot"] == "A"
+    assert payload["runtime"]["runtime_instance_id"] == "rt-a-a1b2c3d4"
+    assert payload["runtime"]["transition_role"] == "active"
     assert payload["runtime"]["runtime_url"] == "http://127.0.0.1:8777"
     assert payload["runtime"]["candidate_runtime_url"] == "http://127.0.0.1:8778"
+    assert payload["runtime"]["candidate_runtime_instance_id"] == "rt-b-c9d8e7f6"
+    assert payload["runtime"]["candidate_transition_role"] == "candidate"
+    assert payload["runtime"]["candidate_runtime_state"] == "ready"
+    assert payload["runtime"]["candidate_runtime_api_ready"] is True
     assert payload["runtime"]["transition_mode"] == "warm_switch"
     assert payload["runtime"]["slot_ports"]["B"] == 8778
     assert payload["runtime"]["root_promotion_required"] is True
@@ -1160,6 +1173,9 @@ def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path
     assert captured["kwargs"]["cwd"] == "/slot/repo"
     assert captured["kwargs"]["env"]["PYTHONPATH"] == "/slot/repo/src"
     assert captured["kwargs"]["env"]["ADAOS_ACTIVE_CORE_SLOT"] == "A"
+    assert captured["kwargs"]["env"]["ADAOS_RUNTIME_TRANSITION_ROLE"] == "active"
+    assert captured["kwargs"]["env"]["ADAOS_RUNTIME_PORT"] == "8777"
+    assert str(captured["kwargs"]["env"]["ADAOS_RUNTIME_INSTANCE_ID"]).startswith("rt-a-a-")
 
 
 def test_spawn_runtime_locked_uses_slot_specific_port_for_slot_b(monkeypatch, tmp_path) -> None:
@@ -1201,3 +1217,120 @@ def test_spawn_runtime_locked_uses_slot_specific_port_for_slot_b(monkeypatch, tm
     asyncio.run(manager._spawn_runtime_locked())
 
     assert captured["args"][-1] == "8778"
+    assert captured["kwargs"]["env"]["ADAOS_RUNTIME_PORT"] == "8778"
+    assert str(captured["kwargs"]["env"]["ADAOS_RUNTIME_INSTANCE_ID"]).startswith("rt-b-a-")
+
+
+def test_spawn_candidate_runtime_locked_uses_candidate_role_and_skips_pending_update(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 5151
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "read_slot_manifest",
+        lambda slot: {
+            "slot": slot,
+            "argv": ["/slot/python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+            "cwd": f"/slots/{slot}/repo",
+            "env": {"PYTHONPATH": f"/slots/{slot}/repo/src"},
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "core_slot_status",
+        lambda: {"slots": {"B": {"path": "/slots/B"}}},
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    asyncio.run(manager._spawn_candidate_runtime_locked(slot="B"))
+
+    assert captured["args"][-1] == "8778"
+    assert captured["kwargs"]["cwd"] == "/slots/B/repo"
+    assert captured["kwargs"]["env"]["ADAOS_ACTIVE_CORE_SLOT"] == "B"
+    assert captured["kwargs"]["env"]["ADAOS_RUNTIME_TRANSITION_ROLE"] == "candidate"
+    assert captured["kwargs"]["env"]["ADAOS_RUNTIME_PORT"] == "8778"
+    assert captured["kwargs"]["env"]["ADAOS_SKIP_PENDING_CORE_UPDATE"] == "1"
+    assert str(captured["kwargs"]["env"]["ADAOS_RUNTIME_INSTANCE_ID"]).startswith("rt-b-c-")
+
+
+def test_runtime_state_payload_surfaces_candidate_runtime_state(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _ActiveProc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"]
+        cwd = str(tmp_path / "active")
+
+        @staticmethod
+        def poll():
+            return None
+
+    class _CandidateProc:
+        pid = 32124
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8778"]
+        cwd = str(tmp_path / "candidate")
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _ActiveProc()
+    manager._candidate_proc = _CandidateProc()
+    manager._candidate_slot = "B"
+    manager._candidate_runtime_instance_id = "rt-b-c-12345678"
+    manager._candidate_transition_role = "candidate"
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path / "active"),
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "read_slot_manifest",
+        lambda slot: {
+            "slot": slot,
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path / "candidate"),
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(
+        supervisor,
+        "_listener_running",
+        lambda host, port, **kwargs: int(port) in {8777, 8778},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_runtime_api_ready",
+        lambda base_url, **kwargs: base_url.endswith(":8777") or base_url.endswith(":8778"),
+    )
+
+    payload = manager.status()
+
+    assert payload["candidate_slot"] == "B"
+    assert payload["candidate_runtime_port"] == 8778
+    assert payload["candidate_runtime_instance_id"] == "rt-b-c-12345678"
+    assert payload["candidate_transition_role"] == "candidate"
+    assert payload["candidate_runtime_state"] == "ready"
+    assert payload["candidate_runtime_api_ready"] is True

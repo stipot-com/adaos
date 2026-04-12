@@ -13,6 +13,7 @@ from adaos.services.reliability import (
     runtime_signal_snapshot,
 )
 from adaos.services.root.client import RootHttpClient
+from adaos.services.runtime_identity import runtime_identity_snapshot, runtime_instance_id, runtime_transition_role
 from adaos.services.root_mcp.infra_access_skill import build_operational_surface
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 
@@ -21,7 +22,7 @@ _CONTROL_LIFECYCLE_FLOW_ID = "hub_root.control.lifecycle"
 
 def _control_lifecycle_stream_id(conf) -> str:
     subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "unknown_hub"
-    return f"hub-control:lifecycle:{subnet_id}"
+    return f"hub-control:lifecycle:{subnet_id}:{runtime_instance_id()}"
 
 
 def _control_lifecycle_authority_epoch(conf) -> str:
@@ -31,6 +32,8 @@ def _control_lifecycle_authority_epoch(conf) -> str:
     commit = str(manifest.get("git_commit") or "").strip()
     branch = str(manifest.get("target_rev") or manifest.get("git_branch") or "").strip()
     parts = [f"hub:{subnet_id}", f"node:{node_id}"]
+    parts.append(f"role:{runtime_transition_role()}")
+    parts.append(f"instance:{runtime_instance_id()}")
     if commit:
         parts.append(f"commit:{commit[:12]}")
     elif branch:
@@ -99,12 +102,15 @@ def build_control_lifecycle_report(conf) -> dict[str, Any]:
     route_diag = diagnostics.get("route") if isinstance(diagnostics.get("route"), dict) else {}
     assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     slot_manifest = active_slot_manifest() or {}
+    identity = runtime_identity_snapshot()
 
     return {
         "target_id": f"hub:{str(getattr(conf, 'subnet_id', '') or '').strip() or 'unknown_hub'}",
         "node_id": str(getattr(conf, "node_id", "") or ""),
         "subnet_id": str(getattr(conf, "subnet_id", "") or ""),
         "role": str(getattr(conf, "role", "") or ""),
+        "runtime_instance_id": str(identity.get("runtime_instance_id") or ""),
+        "transition_role": str(identity.get("transition_role") or "active"),
         "environment": _environment(conf),
         "zone": _zone(conf),
         "lifecycle": {
@@ -136,6 +142,10 @@ def build_control_lifecycle_report(conf) -> dict[str, Any]:
             "active_slot": str(slot_manifest.get("slot") or slot_manifest.get("slot_id") or ""),
             "git_commit": str(slot_manifest.get("git_commit") or ""),
             "target_rev": str(slot_manifest.get("target_rev") or slot_manifest.get("git_branch") or ""),
+            "runtime_instance_id": str(identity.get("runtime_instance_id") or ""),
+            "transition_role": str(identity.get("transition_role") or "active"),
+            "started_at": identity.get("started_at"),
+            "hostname": str(identity.get("hostname") or ""),
         },
         "operational_surface": _infra_access_operational_surface(),
     }

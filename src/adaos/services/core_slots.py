@@ -51,7 +51,15 @@ def _write_text(path: Path, value: str) -> None:
     path.write_text(str(value), encoding="utf-8")
 
 
+def _runtime_slot_override() -> str | None:
+    value = str(os.getenv("ADAOS_ACTIVE_CORE_SLOT") or "").strip().upper()
+    return value if value in SLOTS else None
+
+
 def active_slot() -> str | None:
+    override = _runtime_slot_override()
+    if override:
+        return override
     value = _read_text(_marker_path("active"))
     return value if value in SLOTS else None
 

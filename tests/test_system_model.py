@@ -746,6 +746,8 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
             "runtime_state": {
                 "active_slot": "B",
                 "runtime_state": "spawned",
+                "runtime_instance_id": "rt-b-a-12345678",
+                "transition_role": "active",
                 "desired_running": True,
                 "managed_alive": True,
                 "runtime_api_ready": True,
@@ -753,6 +755,10 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
                 "candidate_slot": "A",
                 "candidate_runtime_url": "http://127.0.0.1:8777",
                 "candidate_runtime_port": 8777,
+                "candidate_runtime_instance_id": "rt-a-c-87654321",
+                "candidate_runtime_state": "ready",
+                "candidate_transition_role": "candidate",
+                "candidate_runtime_api_ready": True,
                 "warm_switch_supported": True,
                 "warm_switch_allowed": True,
                 "warm_switch_reason": "warm switch admitted",
@@ -777,8 +783,17 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
     assert obj["runtime"]["scheduled_for"] == 1234.0
     assert obj["runtime"]["transition_mode"] == "warm_switch"
     assert obj["runtime"]["candidate_slot"] == "A"
+    assert obj["runtime"]["runtime_instance_id"] == "rt-b-a-12345678"
+    assert obj["runtime"]["transition_role"] == "active"
+    assert obj["runtime"]["candidate_runtime_instance_id"] == "rt-a-c-87654321"
+    assert obj["runtime"]["candidate_runtime_state"] == "ready"
+    assert obj["runtime"]["candidate_transition_role"] == "candidate"
+    assert obj["runtime"]["candidate_runtime_api_ready"] is True
     assert obj["runtime"]["warm_switch_allowed"] is True
     assert obj["runtime"]["subsequent_transition"] is True
+    assert obj["actual_state"]["runtime_instance_id"] == "rt-b-a-12345678"
+    assert obj["actual_state"]["candidate_runtime_instance_id"] == "rt-a-c-87654321"
+    assert obj["actual_state"]["candidate_runtime_state"] == "ready"
     assert obj["actual_state"]["subsequent_transition_requested_at"] == 1200.0
     assert obj["actual_state"]["candidate_runtime_port"] == 8777
 

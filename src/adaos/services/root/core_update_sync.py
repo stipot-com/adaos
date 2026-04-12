@@ -12,13 +12,14 @@ from adaos.services.core_slots import active_slot_manifest, slot_status
 from adaos.services.core_update import read_status
 from adaos.services.hub_root_protocol_store import ack_stream_message, prepare_stream_message
 from adaos.services.root.client import RootHttpClient
+from adaos.services.runtime_identity import runtime_identity_snapshot, runtime_instance_id, runtime_transition_role
 
 _CORE_UPDATE_STREAM_FLOW_ID = "hub_root.integration.github_core_update"
 
 
 def _core_update_stream_id(conf) -> str:
     subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "unknown_hub"
-    return f"hub-integration:github-core-update:{subnet_id}"
+    return f"hub-integration:github-core-update:{subnet_id}:{runtime_instance_id()}"
 
 
 def _core_update_authority_epoch(conf) -> str:
@@ -27,6 +28,8 @@ def _core_update_authority_epoch(conf) -> str:
     commit = str(manifest.get("git_commit") or "").strip()
     branch = str(manifest.get("target_rev") or manifest.get("git_branch") or "").strip()
     parts = [f"hub:{subnet_id}"]
+    parts.append(f"role:{runtime_transition_role()}")
+    parts.append(f"instance:{runtime_instance_id()}")
     if commit:
         parts.append(f"commit:{commit[:12]}")
     elif branch:
@@ -52,12 +55,21 @@ def _root_client(conf) -> RootHttpClient | None:
 
 
 def build_core_update_report(conf) -> dict[str, Any]:
+    identity = runtime_identity_snapshot()
     return {
         "status": read_status(),
         "slot_status": slot_status(),
         "node_id": str(getattr(conf, "node_id", "") or ""),
         "subnet_id": str(getattr(conf, "subnet_id", "") or ""),
         "role": str(getattr(conf, "role", "") or ""),
+        "runtime_instance_id": str(identity.get("runtime_instance_id") or ""),
+        "transition_role": str(identity.get("transition_role") or "active"),
+        "runtime": {
+            "runtime_instance_id": str(identity.get("runtime_instance_id") or ""),
+            "transition_role": str(identity.get("transition_role") or "active"),
+            "started_at": identity.get("started_at"),
+            "hostname": str(identity.get("hostname") or ""),
+        },
     }
 
 

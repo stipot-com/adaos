@@ -306,6 +306,17 @@ def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_
     assert captured[-1]["root_promotion_required"] is True
 
 
+def test_launch_active_slot_respects_process_slot_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "B")
+    monkeypatch.setattr(autostart_runner, "active_slot_manifest", lambda: (_ for _ in ()).throw(AssertionError("should not read manifest")))
+    monkeypatch.setattr(autostart_runner.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not launch subprocess")))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+
+    assert autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8778, validate=False) is None
+
+
 def test_autostart_runner_skips_pending_update_when_requested(monkeypatch, tmp_path: Path) -> None:
     calls: list[object] = []
 

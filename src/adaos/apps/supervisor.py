@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from string import Formatter
 from typing import Any
@@ -31,6 +32,7 @@ from adaos.services.core_slots import (
     active_slot,
     active_slot_manifest,
     choose_inactive_slot,
+    read_slot_manifest,
     rollback_to_previous_slot,
     slot_status as core_slot_status,
     validate_slot_structure,
@@ -45,6 +47,9 @@ from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.runtime_paths import current_base_dir
+
+
+_SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -186,6 +191,12 @@ def _warm_switch_rss_multiplier() -> float:
 
 def _terminal_update_states() -> set[str]:
     return {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled", "idle"}
+
+
+def _new_runtime_instance_id(*, slot: str | None, transition_role: str) -> str:
+    slot_token = str(slot or "x").strip().lower() or "x"
+    role_token = str(transition_role or "active").strip().lower() or "active"
+    return f"rt-{slot_token}-{role_token[:1]}-{uuid.uuid4().hex[:8]}"
 
 
 def _read_update_attempt() -> dict[str, Any] | None:
@@ -467,11 +478,18 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
             "runtime_state": str(runtime.get("runtime_state") or "").strip() or None,
             "runtime_url": str(runtime.get("runtime_url") or "").strip() or None,
             "runtime_port": runtime.get("runtime_port"),
+            "runtime_instance_id": str(runtime.get("runtime_instance_id") or "").strip() or None,
+            "transition_role": str(runtime.get("transition_role") or "").strip() or None,
             "listener_running": bool(runtime.get("listener_running")),
             "runtime_api_ready": bool(runtime.get("runtime_api_ready")),
             "candidate_slot": str(runtime.get("candidate_slot") or "").strip() or None,
             "candidate_runtime_url": str(runtime.get("candidate_runtime_url") or "").strip() or None,
             "candidate_runtime_port": runtime.get("candidate_runtime_port"),
+            "candidate_runtime_instance_id": str(runtime.get("candidate_runtime_instance_id") or "").strip() or None,
+            "candidate_transition_role": str(runtime.get("candidate_transition_role") or "").strip() or None,
+            "candidate_listener_running": bool(runtime.get("candidate_listener_running")),
+            "candidate_runtime_api_ready": bool(runtime.get("candidate_runtime_api_ready")),
+            "candidate_runtime_state": str(runtime.get("candidate_runtime_state") or "").strip() or None,
             "transition_mode": str(runtime.get("transition_mode") or "").strip() or None,
             "warm_switch_supported": runtime.get("warm_switch_supported"),
             "warm_switch_allowed": runtime.get("warm_switch_allowed"),
@@ -507,6 +525,42 @@ def _runtime_api_ready(base_url: str, *, token: str | None, timeout: float = 0.7
     return bool(isinstance(payload, dict) and payload.get("ok") is True)
 
 
+def _proc_details(proc: subprocess.Popen[Any] | None) -> dict[str, Any]:
+    managed_pid = None
+    managed_alive = False
+    managed_cmdline: list[str] = []
+    managed_executable = None
+    managed_cwd = None
+    if proc is None:
+        return {
+            "managed_pid": None,
+            "managed_alive": False,
+            "managed_cmdline": [],
+            "managed_executable": None,
+            "managed_cwd": None,
+        }
+    try:
+        managed_pid = int(proc.pid or 0) or None
+        managed_alive = proc.poll() is None
+        raw_args = proc.args if isinstance(proc.args, (list, tuple)) else [str(proc.args or "")]
+        managed_cmdline = [str(item) for item in raw_args if str(item or "").strip()]
+        managed_executable = managed_cmdline[0] if managed_cmdline else None
+        managed_cwd = str(proc.cwd) if getattr(proc, "cwd", None) else os.getcwd()
+    except Exception:
+        managed_pid = None
+        managed_alive = False
+        managed_cmdline = []
+        managed_executable = None
+        managed_cwd = None
+    return {
+        "managed_pid": managed_pid,
+        "managed_alive": managed_alive,
+        "managed_cmdline": managed_cmdline,
+        "managed_executable": managed_executable,
+        "managed_cwd": managed_cwd,
+    }
+
+
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
     fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
     payload = dict(values)
@@ -521,6 +575,7 @@ class SupervisorManager:
         self.runtime_port = int(runtime_port)
         self.token = str(token or "").strip() or None
         self._proc: subprocess.Popen[Any] | None = None
+        self._candidate_proc: subprocess.Popen[Any] | None = None
         self._desired_running = True
         self._stopping = False
         self._lock = asyncio.Lock()
@@ -532,6 +587,11 @@ class SupervisorManager:
         self._last_error: str | None = None
         self._update_task: asyncio.Task[Any] | None = None
         self._update_task_cancel_mode: str | None = None
+        self._managed_runtime_instance_id: str | None = None
+        self._managed_transition_role: str | None = None
+        self._candidate_slot: str | None = None
+        self._candidate_runtime_instance_id: str | None = None
+        self._candidate_transition_role: str | None = None
 
     @property
     def active_runtime_port(self) -> int:
@@ -632,6 +692,7 @@ class SupervisorManager:
             "candidate_slot": candidate_slot,
             "candidate_runtime_port": candidate_port if candidate_slot else None,
             "candidate_runtime_url": self.slot_runtime_base_url(candidate_slot) if candidate_slot else None,
+            "candidate_transition_role": "candidate" if candidate_slot else None,
             "transition_mode": transition_mode,
             "warm_switch_enabled": enabled,
             "warm_switch_supported": supported,
@@ -647,48 +708,88 @@ class SupervisorManager:
             "slot_urls": self.slot_runtime_urls(),
         }
 
-    def _runtime_env(self) -> dict[str, str]:
+    def _runtime_env(
+        self,
+        *,
+        slot: str | None,
+        slot_dir: str,
+        slot_port: int,
+        transition_role: str,
+        runtime_instance_id: str,
+        skip_pending_update: bool = False,
+    ) -> dict[str, str]:
         env = dict(os.environ)
         env["ADAOS_SUPERVISOR_ENABLED"] = "1"
         env["ADAOS_SUPERVISOR_URL"] = _supervisor_base_url()
         env["ADAOS_SUPERVISOR_HOST"] = _supervisor_host()
         env["ADAOS_SUPERVISOR_PORT"] = str(_supervisor_port())
+        env["ADAOS_RUNTIME_INSTANCE_ID"] = str(runtime_instance_id)
+        env["ADAOS_RUNTIME_TRANSITION_ROLE"] = str(transition_role or "active")
+        env["ADAOS_RUNTIME_HOST"] = self.runtime_host
+        env["ADAOS_RUNTIME_PORT"] = str(slot_port)
         if self.token:
             env["ADAOS_TOKEN"] = self.token
+        if slot:
+            env["ADAOS_ACTIVE_CORE_SLOT"] = slot
+            env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = slot_dir
+        if skip_pending_update:
+            env[_SKIP_PENDING_UPDATE_ENV] = "1"
         return env
 
-    def _runtime_launch_spec(self) -> tuple[list[str] | None, str | None, dict[str, str], str | None]:
-        env = self._runtime_env()
-        manifest = active_slot_manifest()
-        slot = active_slot()
-        slot_port = self.slot_runtime_port(slot)
+    def _runtime_launch_spec(
+        self,
+        *,
+        slot: str | None = None,
+        transition_role: str = "active",
+        runtime_instance_id: str | None = None,
+        skip_pending_update: bool = False,
+    ) -> tuple[list[str] | None, str | None, dict[str, str], str | None, str, str]:
+        resolved_slot = str(slot or active_slot() or "").strip().upper() or None
+        manifest = read_slot_manifest(resolved_slot) if slot else active_slot_manifest()
+        slot_port = self.slot_runtime_port(resolved_slot)
+        slot_dir = str(core_slot_status().get("slots", {}).get(resolved_slot or "", {}).get("path") or "")
+        resolved_runtime_instance_id = str(
+            runtime_instance_id or _new_runtime_instance_id(slot=resolved_slot, transition_role=transition_role)
+        )
+        env = self._runtime_env(
+            slot=resolved_slot,
+            slot_dir=slot_dir,
+            slot_port=slot_port,
+            transition_role=transition_role,
+            runtime_instance_id=resolved_runtime_instance_id,
+            skip_pending_update=skip_pending_update,
+        )
         if isinstance(manifest, dict):
             manifest_env = manifest.get("env")
             if isinstance(manifest_env, dict):
                 for key, value in manifest_env.items():
                     env[str(key)] = str(value)
-            if slot:
-                env["ADAOS_ACTIVE_CORE_SLOT"] = slot
-                env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(core_slot_status().get("slots", {}).get(slot, {}).get("path") or "")
+            if resolved_slot:
+                env["ADAOS_ACTIVE_CORE_SLOT"] = resolved_slot
+                env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = slot_dir
             values = {
                 "host": self.runtime_host,
                 "port": str(slot_port),
                 "token": str(self.token or ""),
-                "slot": str(slot or ""),
-                "slot_dir": str(core_slot_status().get("slots", {}).get(slot or "", {}).get("path") or ""),
+                "slot": str(resolved_slot or ""),
+                "slot_dir": slot_dir,
                 "base_dir": str(current_base_dir()),
                 "python": os.sys.executable,
+                "runtime_instance_id": resolved_runtime_instance_id,
+                "transition_role": str(transition_role or "active"),
             }
             argv_raw = manifest.get("argv")
             if isinstance(argv_raw, list):
                 argv = [_format_slot_value(str(item), values) for item in argv_raw if str(item).strip()]
                 if argv:
                     cwd = str(manifest.get("cwd") or "").strip() or None
-                    return argv, None, env, cwd
+                    return argv, None, env, cwd, resolved_runtime_instance_id, str(transition_role or "active")
             command = str(manifest.get("command") or "").strip()
             if command:
                 cwd = str(manifest.get("cwd") or "").strip() or None
-                return None, _format_slot_value(command, values), env, cwd
+                return None, _format_slot_value(command, values), env, cwd, resolved_runtime_instance_id, str(
+                    transition_role or "active"
+                )
         return (
             [
                 sys.executable,
@@ -702,6 +803,8 @@ class SupervisorManager:
             None,
             env,
             None,
+            resolved_runtime_instance_id,
+            str(transition_role or "active"),
         )
 
     def _runtime_state_payload(self) -> dict[str, Any]:
@@ -714,25 +817,12 @@ class SupervisorManager:
         slot_structure = validate_slot_structure(current_slot) if current_slot else None
         active_runtime_port = self.slot_runtime_port(current_slot)
         active_runtime_url = self.slot_runtime_base_url(current_slot)
-        managed_pid = None
-        managed_alive = False
-        managed_cmdline: list[str] = []
-        managed_executable = None
-        managed_cwd = None
-        if proc is not None:
-            try:
-                managed_pid = int(proc.pid or 0) or None
-                managed_alive = proc.poll() is None
-                raw_args = proc.args if isinstance(proc.args, (list, tuple)) else [str(proc.args or "")]
-                managed_cmdline = [str(item) for item in raw_args if str(item or "").strip()]
-                managed_executable = managed_cmdline[0] if managed_cmdline else None
-                managed_cwd = str(proc.cwd) if getattr(proc, "cwd", None) else os.getcwd()
-            except Exception:
-                managed_pid = None
-                managed_alive = False
-                managed_cmdline = []
-                managed_executable = None
-                managed_cwd = None
+        managed = _proc_details(proc)
+        managed_pid = managed["managed_pid"]
+        managed_alive = bool(managed["managed_alive"])
+        managed_cmdline = managed["managed_cmdline"]
+        managed_executable = managed["managed_executable"]
+        managed_cwd = managed["managed_cwd"]
         listener_running = bool(managed_alive) and _listener_running(self.runtime_host, active_runtime_port)
         api_ready = listener_running and _runtime_api_ready(active_runtime_url, token=self.token)
         runtime_state = "stopped"
@@ -764,6 +854,50 @@ class SupervisorManager:
             update_attempt=update_attempt,
             managed_pid=managed_pid,
         )
+        candidate_slot = str(self._candidate_slot or warm_switch.get("candidate_slot") or "").strip().upper() or None
+        candidate_manifest = read_slot_manifest(candidate_slot) if candidate_slot else None
+        candidate_runtime_port = self.slot_runtime_port(candidate_slot) if candidate_slot else None
+        candidate_runtime_url = self.slot_runtime_base_url(candidate_slot) if candidate_slot else None
+        candidate_managed = _proc_details(self._candidate_proc)
+        candidate_managed_pid = candidate_managed["managed_pid"]
+        candidate_managed_alive = bool(candidate_managed["managed_alive"])
+        candidate_managed_cmdline = candidate_managed["managed_cmdline"]
+        candidate_managed_executable = candidate_managed["managed_executable"]
+        candidate_managed_cwd = candidate_managed["managed_cwd"]
+        candidate_listener_running = bool(candidate_managed_alive and candidate_runtime_port) and _listener_running(
+            self.runtime_host,
+            int(candidate_runtime_port or 0),
+        )
+        candidate_runtime_api_ready = bool(candidate_listener_running and candidate_runtime_url) and _runtime_api_ready(
+            str(candidate_runtime_url),
+            token=self.token,
+        )
+        candidate_runtime_state = None
+        if candidate_slot:
+            candidate_runtime_state = "stopped"
+            if candidate_managed_alive and candidate_runtime_api_ready:
+                candidate_runtime_state = "ready"
+            elif candidate_managed_alive and candidate_listener_running:
+                candidate_runtime_state = "starting"
+            elif candidate_managed_alive:
+                candidate_runtime_state = "spawned"
+        candidate_expected_executable = None
+        candidate_expected_cwd = None
+        candidate_matches_candidate_slot = None
+        if isinstance(candidate_manifest, dict):
+            argv = candidate_manifest.get("argv")
+            if isinstance(argv, list) and argv:
+                candidate_expected_executable = str(argv[0] or "").strip() or None
+            candidate_expected_cwd = str(candidate_manifest.get("cwd") or "").strip() or None
+        if candidate_slot and (candidate_expected_executable or candidate_expected_cwd):
+            candidate_matches_candidate_slot = True
+            if (
+                candidate_expected_executable
+                and str(candidate_managed_executable or "").strip() != candidate_expected_executable
+            ):
+                candidate_matches_candidate_slot = False
+            if candidate_expected_cwd and str(candidate_managed_cwd or "").strip() != candidate_expected_cwd:
+                candidate_matches_candidate_slot = False
         return {
             "ok": True,
             "supervisor_pid": os.getpid(),
@@ -771,6 +905,8 @@ class SupervisorManager:
             "runtime_url": active_runtime_url,
             "runtime_host": self.runtime_host,
             "runtime_port": active_runtime_port,
+            "runtime_instance_id": self._managed_runtime_instance_id,
+            "transition_role": self._managed_transition_role if self._managed_runtime_instance_id else None,
             "active_slot": current_slot,
             "desired_running": bool(self._desired_running),
             "stopping": bool(self._stopping),
@@ -785,6 +921,27 @@ class SupervisorManager:
             "expected_managed_executable": expected_executable,
             "expected_managed_cwd": expected_cwd,
             "managed_matches_active_slot": managed_matches_active_slot,
+            **warm_switch,
+            "candidate_slot": candidate_slot,
+            "candidate_runtime_url": candidate_runtime_url,
+            "candidate_runtime_port": candidate_runtime_port,
+            "candidate_runtime_instance_id": self._candidate_runtime_instance_id,
+            "candidate_transition_role": (
+                self._candidate_transition_role
+                if self._candidate_runtime_instance_id
+                else str(warm_switch.get("candidate_transition_role") or "").strip() or None
+            ),
+            "candidate_managed_pid": candidate_managed_pid,
+            "candidate_managed_alive": candidate_managed_alive,
+            "candidate_listener_running": candidate_listener_running,
+            "candidate_runtime_api_ready": candidate_runtime_api_ready,
+            "candidate_runtime_state": candidate_runtime_state,
+            "candidate_managed_cmdline": candidate_managed_cmdline,
+            "candidate_managed_executable": candidate_managed_executable,
+            "candidate_managed_cwd": candidate_managed_cwd,
+            "candidate_expected_managed_executable": candidate_expected_executable,
+            "candidate_expected_managed_cwd": candidate_expected_cwd,
+            "candidate_matches_candidate_slot": candidate_matches_candidate_slot,
             "active_manifest": active_manifest,
             "root_promotion_required": root_promotion_required,
             "bootstrap_update": bootstrap_update,
@@ -794,7 +951,6 @@ class SupervisorManager:
             "last_exit_at": self._last_exit_at,
             "last_exit_code": self._last_exit_code,
             "last_error": self._last_error,
-            **warm_switch,
             "updated_at": time.time(),
         }
 
@@ -805,7 +961,7 @@ class SupervisorManager:
     async def _spawn_runtime_locked(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
-        argv, command, env, cwd = self._runtime_launch_spec()
+        argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec()
         proc = subprocess.Popen(
             argv or command or [],
             shell=bool(command),
@@ -818,8 +974,47 @@ class SupervisorManager:
             creationflags=(int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0),
         )
         self._proc = proc
+        self._managed_runtime_instance_id = runtime_instance_id
+        self._managed_transition_role = transition_role
         self._last_start_at = time.time()
         self._last_error = None
+        self._persist_runtime_state()
+
+    async def _spawn_candidate_runtime_locked(self, *, slot: str) -> None:
+        resolved_slot = str(slot or "").strip().upper()
+        if not resolved_slot:
+            raise RuntimeError("candidate slot is required")
+        if resolved_slot == str(active_slot() or "").strip().upper():
+            raise RuntimeError("candidate slot must differ from the active slot")
+        existing = self._candidate_proc
+        if (
+            existing is not None
+            and existing.poll() is None
+            and str(self._candidate_slot or "").strip().upper() == resolved_slot
+        ):
+            return
+        if existing is not None and existing.poll() is None:
+            await self._terminate_candidate_proc_locked(graceful=True, reason="supervisor.candidate.replace")
+        argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec(
+            slot=resolved_slot,
+            transition_role="candidate",
+            skip_pending_update=True,
+        )
+        proc = subprocess.Popen(
+            argv or command or [],
+            shell=bool(command),
+            cwd=cwd or os.getcwd(),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=None,
+            stderr=None,
+            start_new_session=(os.name != "nt"),
+            creationflags=(int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0),
+        )
+        self._candidate_proc = proc
+        self._candidate_slot = resolved_slot
+        self._candidate_runtime_instance_id = runtime_instance_id
+        self._candidate_transition_role = transition_role
         self._persist_runtime_state()
 
     async def ensure_started(self) -> None:
@@ -828,8 +1023,15 @@ class SupervisorManager:
             self._desired_running = True
             await self._spawn_runtime_locked()
 
-    async def _terminate_proc_locked(self, *, graceful: bool, reason: str) -> None:
-        proc = self._proc
+    async def _terminate_proc_locked(
+        self,
+        *,
+        proc: subprocess.Popen[Any] | None = None,
+        base_url: str | None = None,
+        graceful: bool,
+        reason: str,
+    ) -> None:
+        proc = proc or self._proc
         if proc is None:
             return
         if proc.poll() is not None:
@@ -840,7 +1042,7 @@ class SupervisorManager:
                 if self.token:
                     headers["X-AdaOS-Token"] = self.token
                 requests.post(
-                    self.runtime_base_url + "/api/admin/shutdown",
+                    str(base_url or self.runtime_base_url) + "/api/admin/shutdown",
                     headers=headers,
                     json={"reason": reason, "drain_timeout_sec": 5.0, "signal_delay_sec": 0.25},
                     timeout=3.0,
@@ -862,6 +1064,21 @@ class SupervisorManager:
         with contextlib.suppress(Exception):
             proc.kill()
 
+    async def _terminate_candidate_proc_locked(self, *, graceful: bool, reason: str) -> None:
+        candidate_slot = str(self._candidate_slot or "").strip().upper() or None
+        candidate_base_url = self.slot_runtime_base_url(candidate_slot) if candidate_slot else None
+        await self._terminate_proc_locked(
+            proc=self._candidate_proc,
+            base_url=candidate_base_url,
+            graceful=graceful,
+            reason=reason,
+        )
+        self._candidate_proc = None
+        self._candidate_slot = None
+        self._candidate_runtime_instance_id = None
+        self._candidate_transition_role = None
+        self._persist_runtime_state()
+
     async def restart_runtime(self, *, reason: str = "supervisor.restart") -> dict[str, Any]:
         async with self._lock:
             self._desired_running = True
@@ -876,12 +1093,45 @@ class SupervisorManager:
             self._desired_running = False
             self._stopping = True
             await self._terminate_proc_locked(graceful=True, reason=reason)
+            await self._terminate_candidate_proc_locked(graceful=True, reason=f"{reason}.candidate")
             self._persist_runtime_state()
+
+    async def start_candidate_runtime(self, *, slot: str | None = None) -> dict[str, Any]:
+        resolved_slot = str(slot or choose_inactive_slot() or "").strip().upper()
+        if resolved_slot not in {"A", "B"}:
+            raise HTTPException(status_code=409, detail="candidate slot is unavailable")
+        current_slot = str(active_slot() or "").strip().upper()
+        if resolved_slot == current_slot:
+            raise HTTPException(status_code=409, detail="candidate slot must differ from the active slot")
+        if self.slot_runtime_port(resolved_slot) == self.slot_runtime_port(current_slot):
+            raise HTTPException(status_code=409, detail="candidate slot uses the same runtime port as the active slot")
+        structure = validate_slot_structure(resolved_slot)
+        if not bool(structure.get("ok")):
+            raise HTTPException(status_code=409, detail=f"candidate slot {resolved_slot} is not launchable")
+        async with self._lock:
+            await self._spawn_candidate_runtime_locked(slot=resolved_slot)
+            self._persist_runtime_state()
+            return self._runtime_state_payload()
+
+    async def stop_candidate_runtime(self, *, reason: str = "supervisor.candidate.stop") -> dict[str, Any]:
+        async with self._lock:
+            await self._terminate_candidate_proc_locked(graceful=True, reason=reason)
+            self._persist_runtime_state()
+            return self._runtime_state_payload()
 
     async def monitor_forever(self) -> None:
         while True:
             await asyncio.sleep(1.0)
             await self._maybe_resume_or_continue_transition()
+            candidate_proc = self._candidate_proc
+            if candidate_proc is not None:
+                candidate_rc = candidate_proc.poll()
+                if candidate_rc is not None:
+                    self._candidate_proc = None
+                    self._candidate_slot = None
+                    self._candidate_runtime_instance_id = None
+                    self._candidate_transition_role = None
+                    self._persist_runtime_state()
             proc = self._proc
             if proc is None:
                 if self._desired_running and not self._stopping:
@@ -895,6 +1145,8 @@ class SupervisorManager:
             self._last_exit_code = int(rc)
             self._last_exit_at = time.time()
             self._proc = None
+            self._managed_runtime_instance_id = None
+            self._managed_transition_role = None
             self._persist_runtime_state()
             if self._stopping or not self._desired_running:
                 continue
@@ -918,6 +1170,8 @@ class SupervisorManager:
             self._monitor_task.cancel()
             with contextlib.suppress(BaseException):
                 await self._monitor_task
+        async with self._lock:
+            await self._terminate_candidate_proc_locked(graceful=True, reason="supervisor.shutdown.candidate")
         await self.stop(reason="supervisor.shutdown")
 
     def status(self) -> dict[str, Any]:
@@ -1583,6 +1837,20 @@ async def supervisor_status() -> dict[str, Any]:
 @app.post("/api/supervisor/runtime/restart", dependencies=[Depends(require_token)])
 async def supervisor_runtime_restart() -> dict[str, Any]:
     status = await _manager().restart_runtime()
+    return {"ok": True, "runtime": status}
+
+
+@app.post("/api/supervisor/runtime/candidate/start", dependencies=[Depends(require_token)])
+async def supervisor_runtime_candidate_start(payload: dict[str, Any]) -> dict[str, Any]:
+    status = await _manager().start_candidate_runtime(slot=str(payload.get("slot") or "").strip().upper() or None)
+    return {"ok": True, "runtime": status}
+
+
+@app.post("/api/supervisor/runtime/candidate/stop", dependencies=[Depends(require_token)])
+async def supervisor_runtime_candidate_stop(payload: dict[str, Any]) -> dict[str, Any]:
+    status = await _manager().stop_candidate_runtime(
+        reason=str(payload.get("reason") or "supervisor.candidate.stop")
+    )
     return {"ok": True, "runtime": status}
 
 
