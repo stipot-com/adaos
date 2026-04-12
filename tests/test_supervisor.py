@@ -1587,6 +1587,41 @@ def test_public_update_status_endpoint_is_unauthenticated(monkeypatch) -> None:
     assert response.json()["status"]["state"] == "restarting"
 
 
+def test_public_update_status_does_not_probe_runtime_admin_status(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(
+        manager,
+        "status",
+        lambda: {
+            "ok": True,
+            "runtime_api_ready": False,
+            "runtime_state": "spawned",
+            "active_slot": "A",
+        },
+    )
+    write_status(
+        {
+            "state": "restarting",
+            "phase": "shutdown",
+            "action": "update",
+            "message": "countdown completed; pending update written",
+        }
+    )
+
+    def _unexpected_get(*args, **kwargs):
+        raise AssertionError("public_update_status must not call runtime admin update endpoint")
+
+    monkeypatch.setattr(supervisor.requests, "get", _unexpected_get)
+
+    payload = manager.public_update_status()
+
+    assert payload["status"]["state"] == "restarting"
+    assert payload["status"]["phase"] == "shutdown"
+    assert payload["runtime"]["runtime_state"] == "spawned"
+
+
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

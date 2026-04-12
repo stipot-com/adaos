@@ -991,6 +991,12 @@ class SupervisorManager:
         with contextlib.suppress(Exception):
             _write_json(_supervisor_runtime_state_path(), self._runtime_state_payload())
 
+    def _local_supervisor_update_status_payload(self) -> dict[str, Any]:
+        payload = _local_update_payload()
+        payload["runtime"] = self.status()
+        payload["_served_by"] = "supervisor_fallback"
+        return _reconcile_update_status(payload)
+
     async def _spawn_runtime_locked(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -1375,13 +1381,10 @@ class SupervisorManager:
                 return _reconcile_update_status(payload)
         except Exception:
             pass
-        payload = _local_update_payload()
-        payload["runtime"] = self.status()
-        payload["_served_by"] = "supervisor_fallback"
-        return _reconcile_update_status(payload)
+        return self._local_supervisor_update_status_payload()
 
     def public_update_status(self) -> dict[str, Any]:
-        return _public_update_status_payload(self.supervisor_update_status())
+        return _public_update_status_payload(self._local_supervisor_update_status_payload())
 
     async def _request_runtime_shutdown(self, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict[str, Any]:
         async with self._lock:
