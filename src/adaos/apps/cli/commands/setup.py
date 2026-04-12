@@ -1213,6 +1213,7 @@ def autostart_update_status_cmd(
         return
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
     active_slot = str(slots.get("active_slot") or "")
@@ -1283,6 +1284,23 @@ def autostart_update_status_cmd(
             requested_ts = 0.0
         if requested_ts > 0.0:
             line += " at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(requested_ts))
+        typer.echo(line)
+    if runtime.get("transition_mode"):
+        typer.echo(f"transition mode: {runtime.get('transition_mode')}")
+    candidate_prewarm_state = str(status.get("candidate_prewarm_state") or attempt.get("candidate_prewarm_state") or "").strip()
+    candidate_prewarm_message = str(status.get("candidate_prewarm_message") or attempt.get("candidate_prewarm_message") or "").strip()
+    if candidate_prewarm_state:
+        line = f"candidate prewarm: {candidate_prewarm_state}"
+        if candidate_prewarm_message:
+            line += f" | {candidate_prewarm_message}"
+        typer.echo(line)
+    elif runtime.get("candidate_slot") and runtime.get("candidate_runtime_state"):
+        line = (
+            f"candidate runtime: slot {runtime.get('candidate_slot')} | "
+            f"state={runtime.get('candidate_runtime_state')}"
+        )
+        if runtime.get("candidate_runtime_url"):
+            line += f" | {runtime.get('candidate_runtime_url')}"
         typer.echo(line)
     if bool(status.get("root_promotion_required")):
         typer.echo("root promotion required: yes")

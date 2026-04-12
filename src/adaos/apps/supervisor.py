@@ -191,6 +191,13 @@ def _warm_switch_rss_multiplier() -> float:
         return 1.15
 
 
+def _warm_switch_candidate_ready_timeout_sec() -> float:
+    try:
+        return max(0.0, float(str(os.getenv("ADAOS_SUPERVISOR_CANDIDATE_READY_TIMEOUT_SEC") or "12").strip()))
+    except Exception:
+        return 12.0
+
+
 def _terminal_update_states() -> set[str]:
     return {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled", "idle"}
 
@@ -362,6 +369,14 @@ def _build_attempt_payload(*, action: str, request: dict[str, Any], status: dict
         "accepted": bool(accepted),
         "scheduled_for": scheduled_for if accepted else None,
         "min_update_period_sec": float(request.get("min_update_period_sec") or current_status.get("min_update_period_sec") or 0.0),
+        "candidate_prewarm_state": str(
+            request.get("candidate_prewarm_state") or current_status.get("candidate_prewarm_state") or ""
+        ).strip()
+        or None,
+        "candidate_prewarm_message": str(
+            request.get("candidate_prewarm_message") or current_status.get("candidate_prewarm_message") or ""
+        ).strip()
+        or None,
         "last_status": current_status,
         "updated_at": now,
     }
@@ -461,6 +476,9 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "scheduled_for": status.get("scheduled_for"),
         "subsequent_transition": bool(status.get("subsequent_transition")),
         "subsequent_transition_requested_at": status.get("subsequent_transition_requested_at"),
+        "candidate_prewarm_state": str(status.get("candidate_prewarm_state") or "").strip() or None,
+        "candidate_prewarm_message": str(status.get("candidate_prewarm_message") or "").strip() or None,
+        "candidate_prewarm_ready_at": status.get("candidate_prewarm_ready_at"),
         "updated_at": status.get("updated_at"),
     }
     return {
@@ -473,6 +491,8 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
             "scheduled_for": attempt.get("scheduled_for"),
             "subsequent_transition": bool(attempt.get("subsequent_transition")),
             "subsequent_transition_requested_at": attempt.get("subsequent_transition_requested_at"),
+            "candidate_prewarm_state": str(attempt.get("candidate_prewarm_state") or "").strip() or None,
+            "candidate_prewarm_message": str(attempt.get("candidate_prewarm_message") or "").strip() or None,
             "updated_at": attempt.get("updated_at"),
         },
         "runtime": {
@@ -1121,6 +1141,95 @@ class SupervisorManager:
             self._persist_runtime_state()
             return self._runtime_state_payload()
 
+    async def _candidate_prewarm(self, *, target_slot: str | None) -> dict[str, Any]:
+        resolved_target = str(target_slot or "").strip().upper()
+        if not resolved_target:
+            return {
+                "attempted": False,
+                "state": "skipped",
+                "message": "candidate prewarm skipped: target slot is unavailable",
+            }
+
+        runtime_snapshot = self.status()
+        candidate_slot = str(runtime_snapshot.get("candidate_slot") or "").strip().upper()
+        transition_mode = str(runtime_snapshot.get("transition_mode") or "").strip().lower()
+        warm_switch_allowed = bool(runtime_snapshot.get("warm_switch_allowed"))
+        warm_switch_reason = str(runtime_snapshot.get("warm_switch_reason") or "").strip()
+        if candidate_slot != resolved_target or transition_mode != "warm_switch" or not warm_switch_allowed:
+            return {
+                "attempted": False,
+                "state": "skipped",
+                "message": warm_switch_reason or "candidate prewarm skipped: warm switch is not admitted",
+                "runtime": runtime_snapshot,
+            }
+
+        await self.start_candidate_runtime(slot=resolved_target)
+        timeout_sec = _warm_switch_candidate_ready_timeout_sec()
+        deadline = time.time() + timeout_sec
+        snapshot = self.status()
+        while timeout_sec > 0.0 and time.time() < deadline:
+            snapshot = self.status()
+            if str(snapshot.get("candidate_slot") or "").strip().upper() != resolved_target:
+                break
+            if bool(snapshot.get("candidate_runtime_api_ready")):
+                return {
+                    "attempted": True,
+                    "state": "ready",
+                    "message": (
+                        f"passive candidate runtime is ready on {snapshot.get('candidate_runtime_url')}"
+                    ),
+                    "ready_at": time.time(),
+                    "runtime": snapshot,
+                }
+            await asyncio.sleep(0.25)
+
+        snapshot = self.status()
+        candidate_alive = bool(snapshot.get("candidate_managed_alive"))
+        candidate_ready = bool(snapshot.get("candidate_runtime_api_ready"))
+        candidate_url = str(snapshot.get("candidate_runtime_url") or "").strip()
+        if candidate_ready:
+            return {
+                "attempted": True,
+                "state": "ready",
+                "message": f"passive candidate runtime is ready on {candidate_url}",
+                "ready_at": time.time(),
+                "runtime": snapshot,
+            }
+        if candidate_alive:
+            return {
+                "attempted": True,
+                "state": "starting",
+                "message": (
+                    f"passive candidate runtime is still warming on {candidate_url or resolved_target}"
+                ),
+                "runtime": snapshot,
+            }
+        return {
+            "attempted": True,
+            "state": "failed",
+            "message": "candidate prewarm failed before the runtime became ready",
+            "runtime": snapshot,
+        }
+
+    async def _cleanup_candidate_runtime(self, *, reason: str, slot: str | None = None) -> dict[str, Any]:
+        resolved_slot = str(slot or "").strip().upper() or None
+        async with self._lock:
+            current_slot = str(self._candidate_slot or "").strip().upper() or None
+            if self._candidate_proc is None or (resolved_slot and current_slot != resolved_slot):
+                self._persist_runtime_state()
+                return {
+                    "ok": True,
+                    "stopped": False,
+                    "slot": current_slot,
+                }
+            await self._terminate_candidate_proc_locked(graceful=True, reason=reason)
+            self._persist_runtime_state()
+            return {
+                "ok": True,
+                "stopped": True,
+                "slot": current_slot,
+            }
+
     async def monitor_forever(self) -> None:
         while True:
             await asyncio.sleep(1.0)
@@ -1460,6 +1569,18 @@ class SupervisorManager:
         )
         status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
         attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else _read_update_attempt() or {}
+        if self._candidate_proc is not None and not _is_transition_in_progress(status, attempt):
+            await self._cleanup_candidate_runtime(reason="supervisor.candidate.idle_cleanup")
+            payload = _reconcile_update_status(
+                {
+                    "ok": True,
+                    "status": read_core_update_status(),
+                    "runtime": self.status(),
+                    "_served_by": "supervisor_monitor",
+                }
+            )
+            status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+            attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else _read_update_attempt() or {}
         if self._update_task is not None and not self._update_task.done():
             return
 
@@ -1483,6 +1604,7 @@ class SupervisorManager:
 
         queued = _subsequent_transition_request(attempt)
         if queued and _is_terminal_update_status(status):
+            await self._cleanup_candidate_runtime(reason="supervisor.candidate.before_subsequent_transition")
             await self.start_update(
                 action=str(queued.get("action") or "update"),
                 target_rev=str(queued.get("target_rev") or ""),
@@ -1632,6 +1754,11 @@ class SupervisorManager:
     ) -> None:
         cancel_phase = "prepare"
         failure_phase = "prepare"
+        target_slot = ""
+        manifest: dict[str, Any] | None = None
+        candidate_prewarm_state = "skipped"
+        candidate_prewarm_message = ""
+        candidate_prewarm_ready_at = None
         prepare_result = prepare_pending_update(
             {
                 "action": action,
@@ -1666,6 +1793,17 @@ class SupervisorManager:
                 or ""
             ).strip().upper()
             manifest = prepare_result.get("manifest") if isinstance(prepare_result.get("manifest"), dict) else None
+            try:
+                candidate_prewarm = await self._candidate_prewarm(target_slot=target_slot)
+            except Exception as exc:
+                candidate_prewarm = {
+                    "attempted": True,
+                    "state": "failed",
+                    "message": f"candidate prewarm failed: {type(exc).__name__}: {exc}",
+                }
+            candidate_prewarm_state = str(candidate_prewarm.get("state") or "").strip().lower() or "skipped"
+            candidate_prewarm_message = str(candidate_prewarm.get("message") or "").strip()
+            candidate_prewarm_ready_at = candidate_prewarm.get("ready_at")
             countdown_started_at = time.time()
             status = write_core_update_status(
                 {
@@ -1682,8 +1820,19 @@ class SupervisorManager:
                     "scheduled_for": countdown_started_at + countdown_sec,
                     "prepared_at": float(prepare_result.get("finished_at") or countdown_started_at),
                     "target_slot": target_slot,
+                    "candidate_prewarm_state": candidate_prewarm_state,
+                    "candidate_prewarm_message": candidate_prewarm_message or None,
+                    "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                     "message": (
-                        f"slot {target_slot} prepared; countdown started"
+                        (
+                            f"slot {target_slot} prepared; passive candidate ready; countdown started"
+                            if candidate_prewarm_state == "ready"
+                            else f"slot {target_slot} prepared; passive candidate warming; countdown started"
+                            if candidate_prewarm_state == "starting"
+                            else f"slot {target_slot} prepared; passive candidate prewarm failed; countdown started"
+                            if candidate_prewarm_state == "failed"
+                            else f"slot {target_slot} prepared; countdown started"
+                        )
                         if target_slot
                         else "inactive slot prepared; countdown started"
                     ),
@@ -1701,6 +1850,8 @@ class SupervisorManager:
                         "countdown_sec": countdown_sec,
                         "drain_timeout_sec": drain_timeout_sec,
                         "signal_delay_sec": signal_delay_sec,
+                        "candidate_prewarm_state": candidate_prewarm_state,
+                        "candidate_prewarm_message": candidate_prewarm_message,
                     },
                     status=status,
                     accepted=True,
@@ -1733,6 +1884,9 @@ class SupervisorManager:
                     "drain_timeout_sec": drain_timeout_sec,
                     "signal_delay_sec": signal_delay_sec,
                     "prepared_at": float(prepare_result.get("finished_at") or time.time()),
+                    "candidate_prewarm_state": candidate_prewarm_state,
+                    "candidate_prewarm_message": candidate_prewarm_message or None,
+                    "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                     "message": "countdown completed; prepared restart written",
                     "manifest": manifest,
                 }
@@ -1763,11 +1917,18 @@ class SupervisorManager:
                         "target_slot": target_slot,
                         "drain_timeout_sec": drain_timeout_sec,
                         "signal_delay_sec": signal_delay_sec,
+                        "candidate_prewarm_state": candidate_prewarm_state,
+                        "candidate_prewarm_message": candidate_prewarm_message or None,
+                        "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                         "message": "runtime shutdown exceeded grace period; supervisor forced process stop",
                         "forced_shutdown": True,
                         "manifest": manifest,
                     }
                 )
+            await self._cleanup_candidate_runtime(
+                reason="supervisor.candidate.stop_before_active_launch",
+                slot=target_slot,
+            )
             activate_slot(target_slot)
             failure_phase = "launch"
             write_core_update_status(
@@ -1780,6 +1941,13 @@ class SupervisorManager:
                     "reason": reason,
                     "target_slot": target_slot,
                     "prepared_at": float(prepare_result.get("finished_at") or time.time()),
+                    "candidate_prewarm_state": "stopped_for_launch" if candidate_prewarm_state != "skipped" else candidate_prewarm_state,
+                    "candidate_prewarm_message": (
+                        "passive candidate runtime stopped before active launch"
+                        if candidate_prewarm_state != "skipped"
+                        else candidate_prewarm_message or None
+                    ),
+                    "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                     "message": (
                         f"prepared slot {target_slot} activated; awaiting runtime launch"
                         if target_slot
@@ -1793,6 +1961,10 @@ class SupervisorManager:
                 self._persist_runtime_state()
         except asyncio.CancelledError:
             clear_core_update_plan()
+            await self._cleanup_candidate_runtime(
+                reason="supervisor.candidate.cancelled_transition",
+                slot=target_slot or None,
+            )
             cancel_mode = str(self._update_task_cancel_mode or "").strip().lower()
             self._update_task_cancel_mode = None
             if cancel_mode != "rescheduled":
@@ -1806,6 +1978,9 @@ class SupervisorManager:
                         "reason": reason,
                         "drain_timeout_sec": drain_timeout_sec,
                         "signal_delay_sec": signal_delay_sec,
+                        "candidate_prewarm_state": candidate_prewarm_state,
+                        "candidate_prewarm_message": candidate_prewarm_message or None,
+                        "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                         "message": "core update cancelled",
                     }
                 )
@@ -1813,6 +1988,10 @@ class SupervisorManager:
             raise
         except Exception as exc:
             clear_core_update_plan()
+            await self._cleanup_candidate_runtime(
+                reason="supervisor.candidate.failed_transition",
+                slot=target_slot or None,
+            )
             async with self._lock:
                 self._desired_running = True
                 self._persist_runtime_state()
@@ -1826,6 +2005,9 @@ class SupervisorManager:
                     "reason": reason,
                     "drain_timeout_sec": drain_timeout_sec,
                     "signal_delay_sec": signal_delay_sec,
+                    "candidate_prewarm_state": candidate_prewarm_state,
+                    "candidate_prewarm_message": candidate_prewarm_message or None,
+                    "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                     "message": "prepared core update transition failed",
                     "error_type": type(exc).__name__,
                     "error": str(exc),

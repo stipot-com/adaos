@@ -226,6 +226,7 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
     lifecycle_calls: list[str] = []
     desired_running_states: list[bool] = []
     activated_slots: list[str] = []
+    candidate_calls: list[tuple[str, str | None]] = []
 
     async def _shutdown(**kwargs):
         lifecycle_calls.append("shutdown")
@@ -235,8 +236,23 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
         lifecycle_calls.append("stopped")
         return {"ok": True, "forced": False}
 
+    async def _candidate_prewarm(*, target_slot: str | None):
+        candidate_calls.append(("prewarm", target_slot))
+        return {
+            "attempted": True,
+            "state": "ready",
+            "message": "passive candidate runtime is ready on http://127.0.0.1:8778",
+            "ready_at": 223.0,
+        }
+
+    async def _cleanup_candidate_runtime(*, reason: str, slot: str | None = None):
+        candidate_calls.append((reason, slot))
+        return {"ok": True, "stopped": True, "slot": slot}
+
     monkeypatch.setattr(manager, "_request_runtime_shutdown", _shutdown)
     monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _ensure_stopped)
+    monkeypatch.setattr(manager, "_candidate_prewarm", _candidate_prewarm)
+    monkeypatch.setattr(manager, "_cleanup_candidate_runtime", _cleanup_candidate_runtime)
     monkeypatch.setattr(supervisor, "activate_slot", lambda slot: activated_slots.append(str(slot)))
     monkeypatch.setattr(manager, "_persist_runtime_state", lambda: desired_running_states.append(bool(manager._desired_running)))
 
@@ -259,10 +275,51 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
     status = read_status()
     assert status["state"] == "restarting"
     assert status["phase"] == "launch"
+    assert status["candidate_prewarm_state"] == "stopped_for_launch"
     assert activated_slots == ["B"]
     assert lifecycle_calls == ["shutdown", "stopped"]
+    assert candidate_calls == [
+        ("prewarm", "B"),
+        ("supervisor.candidate.stop_before_active_launch", "B"),
+    ]
     assert False in desired_running_states
     assert desired_running_states[-1] is True
+
+
+def test_supervisor_monitor_cleans_idle_candidate_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 9999
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._candidate_proc = _Proc()
+    manager._candidate_slot = "B"
+    manager._candidate_runtime_instance_id = "rt-b-c-12345678"
+    manager._candidate_transition_role = "candidate"
+    write_status({"state": "idle", "updated_at": 10.0})
+    supervisor._write_update_attempt({"state": "completed", "updated_at": 9.0})
+
+    cleanup_calls: list[tuple[str, str | None]] = []
+
+    async def _cleanup_candidate_runtime(*, reason: str, slot: str | None = None):
+        cleanup_calls.append((reason, slot))
+        manager._candidate_proc = None
+        manager._candidate_slot = None
+        manager._candidate_runtime_instance_id = None
+        manager._candidate_transition_role = None
+        return {"ok": True, "stopped": True}
+
+    monkeypatch.setattr(manager, "_cleanup_candidate_runtime", _cleanup_candidate_runtime)
+
+    asyncio.run(manager._maybe_resume_or_continue_transition())
+
+    assert cleanup_calls == [("supervisor.candidate.idle_cleanup", None)]
+    assert manager._candidate_proc is None
 
 
 def test_supervisor_start_update_schedules_when_min_period_not_elapsed(monkeypatch, tmp_path) -> None:
@@ -1157,6 +1214,9 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "scheduled_for": 456.0,
                 "subsequent_transition": True,
                 "subsequent_transition_requested_at": 400.0,
+                "candidate_prewarm_state": "ready",
+                "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8778",
+                "candidate_prewarm_ready_at": 430.0,
                 "updated_at": 123.0,
                 "error": "hidden",
             },
@@ -1193,6 +1253,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "scheduled_for": 456.0,
                 "subsequent_transition": True,
                 "subsequent_transition_requested_at": 400.0,
+                "candidate_prewarm_state": "ready",
+                "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8778",
                 "updated_at": 222.0,
             },
             "_served_by": "supervisor_fallback",
@@ -1205,11 +1267,14 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["status"]["planned_reason"] == "minimum_update_period"
     assert payload["status"]["scheduled_for"] == 456.0
     assert payload["status"]["subsequent_transition"] is True
+    assert payload["status"]["candidate_prewarm_state"] == "ready"
+    assert payload["status"]["candidate_prewarm_ready_at"] == 430.0
     assert payload["attempt"]["state"] == "awaiting_root_restart"
     assert payload["attempt"]["awaiting_restart"] is True
     assert payload["attempt"]["planned_reason"] == "minimum_update_period"
     assert payload["attempt"]["scheduled_for"] == 456.0
     assert payload["attempt"]["subsequent_transition"] is True
+    assert payload["attempt"]["candidate_prewarm_state"] == "ready"
     assert payload["runtime"]["active_slot"] == "A"
     assert payload["runtime"]["runtime_instance_id"] == "rt-a-a1b2c3d4"
     assert payload["runtime"]["transition_role"] == "active"

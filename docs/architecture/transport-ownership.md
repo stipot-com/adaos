@@ -80,6 +80,40 @@ Examples:
 - `SyncChannel` state may be hub-owned even if a relay path carries it
 - `MediaChannel` transport may be peer-to-peer while signaling remains hub- or root-mediated
 
+This distinction is especially important for direct media:
+
+- a browser may consume media from the hub over a direct peer
+- a browser may later consume media from a member over a direct peer
+- in both cases, transport endpoint ownership may be `browser <-> hub` or `browser <-> member`
+- but admission, path authority, degradation policy, and signaling rendezvous may still remain hub- or root-mediated
+
+AdaOS should therefore treat "who terminates the media peer" and
+"who decides whether that peer is allowed/preferred/degraded" as separate questions.
+
+## Routing authority versus transport ownership
+
+Transport ownership does not answer:
+
+- which target should answer a skill or scenario response
+- whether direct, relayed, or deferred delivery is currently allowed
+- whether a path should be retried, degraded, quarantined, or declared failed
+- whether a response should switch from one target/path to another
+
+Those are routing semantics, not socket semantics.
+
+AdaOS should keep an explicit routing authority layer that can evaluate:
+
+- need: what response or media flow is being requested
+- capability: which node or runtime claims it can serve it
+- ability: whether it is currently reachable and allowed to serve it
+- attempt: which route/path is currently being tried
+- degradation: which fallback policy applies when the preferred route is weak
+- observed failure: what concrete incident happened on the active attempt
+- monitoring: whether the route has become healthy, stale, pressured, or failed
+
+That routing authority may be implemented by a `router` service or semantic
+layer, but it must not be hidden inside transport adapters.
+
 ## Path selection policy
 
 AdaOS must not allow uncontrolled path flapping.

@@ -177,6 +177,14 @@ def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monk
                 "state": "planned",
                 "subsequent_transition": True,
                 "subsequent_transition_requested_at": 1_775_966_100.0,
+                "candidate_prewarm_state": "starting",
+                "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            },
+            "runtime": {
+                "transition_mode": "warm_switch",
+                "candidate_slot": "B",
+                "candidate_runtime_state": "starting",
+                "candidate_runtime_url": "http://127.0.0.1:8778",
             },
             "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
         },
@@ -187,6 +195,8 @@ def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monk
     assert result.exit_code == 0, result.output
     assert "scheduled for:" in result.output
     assert "subsequent transition: queued" in result.output
+    assert "transition mode: warm_switch" in result.output
+    assert "candidate prewarm: starting" in result.output
 
 
 def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:

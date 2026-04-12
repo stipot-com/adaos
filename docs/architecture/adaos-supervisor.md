@@ -274,6 +274,8 @@ That browser-safe surface now also includes candidate runtime diagnostics needed
 - `candidate_runtime_state`
 - `candidate_runtime_api_ready`
 - `candidate_transition_role`
+- `candidate_prewarm_state`
+- `candidate_prewarm_message`
 
 ### Runtime API
 
@@ -379,6 +381,20 @@ Current MVP implementation now splits this into two moments:
 
 - early slot preparation may build the inactive core slot and mark skill migration as deferred while the old runtime is still live
 - the mutating skill runtime commit step still happens only after the old runtime has stopped, so countdown traffic does not start reading partially-switched skill runtime state
+
+Current MVP implementation also starts a best-effort passive `candidate` runtime prewarm when:
+
+- the inactive slot is already prepared
+- slot ports are reserved distinctly
+- supervisor admitted `warm_switch`
+
+That prewarm is currently diagnostic rather than authoritative cutover:
+
+- candidate readiness is surfaced through supervisor runtime/public status
+- candidate remains passive on root-routed traffic subjects
+- candidate is stopped before active-slot launch so the node still finishes through the current stop-and-switch commit path
+
+This gives an early signal that the candidate core runtime can boot on its reserved port without yet making the browser/root control plane depend on fast cutover semantics.
 
 Recommended per-skill diagnostic fields:
 
