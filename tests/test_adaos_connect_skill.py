@@ -67,6 +67,7 @@ def _fake_cfg(*, zone_id: str | None = "ru", base_url: str = "https://api.inimat
 def test_browser_current_uses_zone_and_new_app_domain(monkeypatch, tmp_path: Path):
     mod = _load_adaos_connect_module()
     calls: list[dict[str, object]] = []
+    expires_at = 1_800_000_000
 
     monkeypatch.setattr(mod, "get_ctx", lambda: _fake_ctx())
     monkeypatch.setattr(mod, "load_config", lambda ctx=None: _fake_cfg())
@@ -89,7 +90,7 @@ def test_browser_current_uses_zone_and_new_app_domain(monkeypatch, tmp_path: Pat
                     "headers": headers,
                 }
             )
-            return {"pair_code": "PAIR1234", "zone_id": "ru"}
+            return {"pair_code": "PAIR1234", "zone_id": "ru", "expires_at": expires_at}
 
     monkeypatch.setattr(mod, "RootHttpClient", _FakeRootHttpClient)
 
@@ -110,11 +111,16 @@ def test_browser_current_uses_zone_and_new_app_domain(monkeypatch, tmp_path: Pat
     assert current["app_base_url"] == "https://myinimatic.web.app"
     assert current["link"] == "https://myinimatic.web.app/?pair_code=PAIR1234&zone=ru"
     assert current["qr_text"] == current["link"]
+    assert current["expires_at_epoch"] == expires_at
+    assert current["expires_at"] == mod._format_expiry_iso(expires_at)
+    assert current["expires_at_display"] == mod._format_expiry_display(expires_at)
+    assert "Valid until" in current["summary"]
 
 
 def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(monkeypatch, tmp_path: Path):
     mod = _load_adaos_connect_module()
     calls: list[dict[str, object]] = []
+    expires_at_utc = "2030-01-02T03:04:05Z"
 
     cert_path = tmp_path / "keys" / "hub_cert.pem"
     key_path = tmp_path / "keys" / "hub_private.pem"
@@ -160,7 +166,7 @@ def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(mo
                     payload={"ok": False, "error": "unauthorized"},
                 )
             assert headers == {"X-Root-Token": "root-secret"}
-            return {"code": "ABCD-EFGH"}
+            return {"code": "ABCD-EFGH", "expires_at_utc": expires_at_utc}
 
     monkeypatch.setattr(mod, "RootHttpClient", _FakeRootHttpClient)
 
@@ -183,6 +189,9 @@ def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(mo
     assert "init.bat" not in current["windows_cmd_command"]
     assert '-RootUrl "https://ru.api.inimatic.com"' in current["windows_cmd_command"]
     assert '-ZoneId "ru"' in current["windows_cmd_command"]
+    assert current["expires_at"] == expires_at_utc
+    assert current["expires_at_display"] == "2030-01-02 03:04:05 UTC"
+    assert "Valid until 2030-01-02 03:04:05 UTC" in current["summary"]
 
 
 @pytest.mark.asyncio
@@ -234,3 +243,112 @@ async def test_on_prepare_writes_pending_before_background_result(monkeypatch):
     assert last_payload["status"] == "ready"
     assert last_payload["busy"] is False
     assert last_payload["code"] == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_on_prepare_reuses_cached_result_while_code_is_alive(monkeypatch):
+    mod = _load_adaos_connect_module()
+    writes: list[tuple[str, dict[str, object]]] = []
+    prepare_calls = {"count": 0}
+    now = {"value": 1_800_000_000.0}
+
+    monkeypatch.setattr(
+        mod,
+        "_resolve_context",
+        lambda: {
+            "cfg": SimpleNamespace(),
+            "hub_id": "sn_test",
+            "zone_id": "ru",
+            "verify": True,
+            "cert_tuple": None,
+            "root_base_url": "https://ru.api.inimatic.com",
+            "app_base_url": "https://myinimatic.web.app",
+        },
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: now["value"])
+
+    async def _write_current(webspace_id: str, current: dict[str, object]) -> None:
+        writes.append((webspace_id, copy.deepcopy(current)))
+
+    def _prepare_current(mode: str, context: dict[str, object], *, request_id: str) -> dict[str, object]:
+        prepare_calls["count"] += 1
+        current = mod._decorate_current(mod._base_current(mode), context, request_id=request_id, status="ready", busy=False)
+        current["summary"] = "cached"
+        current["code"] = "CACHE-1"
+        mod._apply_expiry_fields(current, expires_at=now["value"] + 600)
+        return current
+
+    monkeypatch.setattr(mod, "_write_current", _write_current)
+    monkeypatch.setattr(mod, "_prepare_current", _prepare_current)
+
+    await mod.on_prepare({"mode": "node", "webspace_id": "ws-cache"})
+    await asyncio.sleep(0.05)
+
+    assert prepare_calls["count"] == 1
+    assert writes[-1][1]["code"] == "CACHE-1"
+
+    writes.clear()
+
+    await mod.on_prepare({"mode": "node", "webspace_id": "ws-cache"})
+    await asyncio.sleep(0.05)
+
+    assert prepare_calls["count"] == 1
+    assert len(writes) == 1
+    assert writes[0][1]["status"] == "ready"
+    assert writes[0][1]["busy"] is False
+    assert writes[0][1]["code"] == "CACHE-1"
+
+
+@pytest.mark.asyncio
+async def test_on_prepare_renews_code_after_cache_expires(monkeypatch):
+    mod = _load_adaos_connect_module()
+    writes: list[tuple[str, dict[str, object]]] = []
+    prepare_calls = {"count": 0}
+    now = {"value": 1_800_000_000.0}
+
+    monkeypatch.setattr(
+        mod,
+        "_resolve_context",
+        lambda: {
+            "cfg": SimpleNamespace(),
+            "hub_id": "sn_test",
+            "zone_id": "ru",
+            "verify": True,
+            "cert_tuple": None,
+            "root_base_url": "https://ru.api.inimatic.com",
+            "app_base_url": "https://myinimatic.web.app",
+        },
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: now["value"])
+
+    async def _write_current(webspace_id: str, current: dict[str, object]) -> None:
+        writes.append((webspace_id, copy.deepcopy(current)))
+
+    def _prepare_current(mode: str, context: dict[str, object], *, request_id: str) -> dict[str, object]:
+        prepare_calls["count"] += 1
+        code = f"CACHE-{prepare_calls['count']}"
+        current = mod._decorate_current(mod._base_current(mode), context, request_id=request_id, status="ready", busy=False)
+        current["summary"] = code
+        current["code"] = code
+        mod._apply_expiry_fields(current, expires_at=now["value"] + 5)
+        return current
+
+    monkeypatch.setattr(mod, "_write_current", _write_current)
+    monkeypatch.setattr(mod, "_prepare_current", _prepare_current)
+
+    await mod.on_prepare({"mode": "telegram", "webspace_id": "ws-expire"})
+    await asyncio.sleep(0.05)
+
+    assert prepare_calls["count"] == 1
+    assert writes[-1][1]["code"] == "CACHE-1"
+
+    now["value"] += 6
+    writes.clear()
+
+    await mod.on_prepare({"mode": "telegram", "webspace_id": "ws-expire"})
+    await asyncio.sleep(0.05)
+
+    assert prepare_calls["count"] == 2
+    assert writes[0][1]["status"] == "pending"
+    assert writes[-1][1]["status"] == "ready"
+    assert writes[-1][1]["code"] == "CACHE-2"

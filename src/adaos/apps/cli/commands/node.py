@@ -759,7 +759,14 @@ def node_join(
         if last_body:
             typer.echo(last_body)
         if resp.status_code == 404 and isinstance(last_body, dict) and last_body.get("detail") == "join-code not found":
-            typer.echo("hint: if the code was created in hub local mode (--local), join against the hub URL: --root http://<HUB_HOST>:8777")
+            typer.echo(
+                "hint: join-code was not found on this Root. Common causes: "
+                "the code was created on a different Root/zone "
+                "(for example https://api.inimatic.com vs https://ru.api.inimatic.com), "
+                "the code has already been used or expired, "
+                "or it was created in hub local mode (--local)."
+            )
+            typer.echo("hint: for --local codes, join against the hub URL: --root http://<HUB_HOST>:8777")
         raise typer.Exit(code=1)
 
     data = resp.json() or {}

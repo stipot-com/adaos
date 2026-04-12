@@ -389,7 +389,7 @@ fi
 if [[ -n "${JOIN_CODE:-}" ]]; then
   log "Joining subnet via join-code..."
   if ! "$ADAOS_PY" -m adaos node join --code "$JOIN_CODE" --root "$EFFECTIVE_ROOT_URL"; then
-    warn "adaos node join failed (check output above)"
+    die "adaos node join failed (check output above)"
   fi
 fi
 
