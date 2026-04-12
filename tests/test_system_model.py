@@ -983,6 +983,19 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
                     "delivery_topology": "local_http",
                     "selection_reason": "local_hub_api_authority_available",
                     "degradation_reason": None,
+                    "attempt": {
+                        "sequence": 2,
+                        "active_route": "local_http",
+                        "delivery_topology": "local_http",
+                        "preferred_route": "member_browser_direct",
+                        "previous_route": "member_browser_direct",
+                        "previous_member_id": "member-1",
+                        "switch_total": 1,
+                    },
+                    "monitoring": {
+                        "refresh_cause": "browser.session.changed",
+                        "observed_failure": "browser_session_closed",
+                    },
                     "member_browser_direct": {
                         "possible": True,
                         "admitted": False,
@@ -1000,4 +1013,7 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
     assert media["runtime"]["preferred_member_id"] == "member-2"
     assert media["runtime"]["producer_authority"] == "hub"
     assert media["runtime"]["delivery_topology"] == "local_http"
+    assert media["runtime"]["attempt"]["sequence"] == 2
+    assert media["runtime"]["attempt"]["previous_route"] == "member_browser_direct"
+    assert media["runtime"]["monitoring"]["refresh_cause"] == "browser.session.changed"
     assert media["runtime"]["member_browser_direct"]["possible"] is True

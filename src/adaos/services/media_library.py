@@ -351,6 +351,8 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
         "delivery_topology": default_route.get("delivery_topology"),
         "selection_reason": default_route.get("selection_reason"),
         "degradation_reason": default_route.get("degradation_reason"),
+        "attempt": default_route.get("attempt"),
+        "monitoring": default_route.get("monitoring"),
         "member_browser_direct": member_browser_direct,
         "counts": {
             "file_total": len(items),

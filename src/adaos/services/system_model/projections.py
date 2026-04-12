@@ -727,6 +727,8 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     transport = coerce_mapping(payload.get("transport"))
     counts = coerce_mapping(payload.get("counts"))
     route_intent = coerce_mapping(payload.get("route_intent"))
+    attempt = coerce_mapping(payload.get("attempt") or route_intent.get("attempt"))
+    monitoring = coerce_mapping(payload.get("monitoring") or route_intent.get("monitoring"))
     member_browser_direct = coerce_mapping(payload.get("member_browser_direct"))
     return CanonicalObject(
         id=f"runtime:{subject.id}/media-plane",
@@ -761,12 +763,17 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "transport": transport,
                 "recommended_path": payload.get("recommended_path"),
                 "route_intent": route_intent,
+                "active_route": payload.get("active_route") or route_intent.get("active_route"),
+                "preferred_route": payload.get("preferred_route") or route_intent.get("preferred_route"),
                 "preferred_member_id": payload.get("preferred_member_id") or route_intent.get("preferred_member_id"),
                 "producer_authority": payload.get("producer_authority"),
                 "producer_target": payload.get("producer_target"),
                 "delivery_topology": payload.get("delivery_topology"),
                 "selection_reason": payload.get("selection_reason"),
                 "degradation_reason": payload.get("degradation_reason"),
+                "fallback_chain": payload.get("fallback_chain") or route_intent.get("fallback_chain"),
+                "attempt": attempt,
+                "monitoring": monitoring,
                 "member_browser_direct": member_browser_direct,
             }
         ),

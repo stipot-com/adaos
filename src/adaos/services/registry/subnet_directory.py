@@ -69,6 +69,19 @@ class SubnetDirectory:
         n = self.repo.get_node(node_id)
         return n.get("base_url") if n else None
 
+    def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
+        node = self.repo.get_node(node_id)
+        if not node:
+            return None
+        item = dict(node)
+        item["online"] = self.is_online(node_id)
+        item["capacity"] = {
+            "io": self.repo.io_for_node(node_id),
+            "skills": self.repo.skills_for_node(node_id),
+            "scenarios": self.repo.scenarios_for_node(node_id),
+        }
+        return item
+
     def list_known_nodes(self) -> List[Dict[str, Any]]:
         items = []
         for n in self.repo.list_nodes():

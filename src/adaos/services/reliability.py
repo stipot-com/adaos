@@ -2879,6 +2879,7 @@ def hub_member_semantic_channels_snapshot(
                         "selection_reason": media_route_contract.get("selection_reason"),
                         "degradation_reason": media_route_contract.get("degradation_reason"),
                         "fallback_chain": list(media_route_contract.get("fallback_chain") or []),
+                        "attempt": media_route_contract.get("attempt"),
                         "member_browser_direct": media_route_contract.get("member_browser_direct"),
                         "observed_failure": monitoring.get("observed_failure"),
                     }

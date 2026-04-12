@@ -113,6 +113,9 @@ async def test_router_projects_media_route_contract_to_yjs(monkeypatch) -> None:
     assert route["degradation_reason"] == "member_browser_direct_policy_not_admitted_yet"
     assert route["route_administrator"] == "router"
     assert route["target_webspace_id"] == "alpha"
+    assert route["attempt"]["sequence"] == 1
+    assert route["attempt"]["active_route"] == "hub_webrtc_loopback"
+    assert route["attempt"]["switch_total"] == 0
     assert route["member_browser_direct"]["possible"] is True
     assert route["member_browser_direct"]["admitted"] is False
 
@@ -361,6 +364,10 @@ async def test_router_media_projection_refreshes_route_on_browser_session_change
     assert refreshed["active_route"] == "hub_webrtc_loopback"
     assert refreshed["member_browser_direct"]["browser_session_total"] == 0
     assert refreshed["degradation_reason"] == "member_browser_direct_missing_browser_session"
+    assert refreshed["attempt"]["sequence"] == 2
+    assert refreshed["attempt"]["switch_total"] == 1
+    assert refreshed["attempt"]["previous_route"] == "member_browser_direct"
+    assert refreshed["attempt"]["refresh_cause"] == "browser.session.changed"
     assert refreshed["monitoring"]["refresh_cause"] == "browser.session.changed"
     assert refreshed["monitoring"]["observed_failure"] == "browser_session_closed"
 
@@ -485,4 +492,8 @@ async def test_router_media_projection_refreshes_preferred_member_on_member_inve
     assert refreshed["preferred_member_id"] == "member-new"
     assert refreshed["producer_target"]["member_id"] == "member-new"
     assert refreshed["member_browser_direct"]["candidate_members"] == ["member-new"]
+    assert refreshed["attempt"]["sequence"] == 2
+    assert refreshed["attempt"]["switch_total"] == 1
+    assert refreshed["attempt"]["previous_route"] == "member_browser_direct"
+    assert refreshed["attempt"]["previous_member_id"] == "member-old"
     assert refreshed["monitoring"]["refresh_cause"] == "subnet.member.snapshot.changed"

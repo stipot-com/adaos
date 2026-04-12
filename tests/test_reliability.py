@@ -355,6 +355,8 @@ def test_hub_member_semantic_channels_snapshot_exposes_media_route_contract() ->
     assert media["member_browser_direct"]["possible"] is True
     assert media["member_browser_direct"]["admitted"] is False
     assert media["member_browser_direct"]["candidate_members"] == ["member-1"]
+    assert media["attempt"]["active_route"] == "hub_webrtc_loopback"
+    assert media["attempt"]["sequence"] == 1
     assert media["fallback_chain"] == [
         "member_browser_direct",
         "hub_webrtc_loopback",

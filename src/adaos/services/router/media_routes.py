@@ -179,6 +179,7 @@ def resolve_media_route_intent(
         if selected_topology
         else "none"
     )
+    observed_failure_token = str(observed_failure or "").strip() or None
 
     return {
         "route_intent": need_norm,
@@ -196,6 +197,19 @@ def resolve_media_route_intent(
         "capabilities": {
             "candidate_routes": list(fallback_chain),
             "ability": abilities,
+        },
+        "attempt": {
+            "sequence": 1,
+            "state": "selected" if active_route else "unavailable",
+            "active_route": active_route,
+            "delivery_topology": active_route,
+            "preferred_route": preferred_topology,
+            "preferred_member_id": preferred_member,
+            "producer_target": producer_target,
+            "selection_reason": selection_reason,
+            "degradation_reason": degradation_reason,
+            "observed_failure": observed_failure_token,
+            "switch_total": 0,
         },
         "member_browser_direct": {
             "possible": member_direct_possible,
@@ -216,7 +230,7 @@ def resolve_media_route_intent(
                 "browser_session_total",
                 "candidate_member_total",
             ],
-            "observed_failure": str(observed_failure or "").strip() or None,
+            "observed_failure": observed_failure_token,
         },
     }
 

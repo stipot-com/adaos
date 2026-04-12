@@ -23,6 +23,12 @@ HTTP/WebSocket/WebRTC clients execute a route.
 The router should decide whether that route is preferred, degraded, unavailable,
 or superseded.
 
+For browser-visible media routing this contract should stay explicit in
+`data.media.route`, including the active `attempt`, its `sequence`,
+`switch_total`, `previous_route`, `previous_member_id`, `last_switch_at`,
+current `observed_failure`, and the `monitoring` cause that triggered the last
+re-evaluation.
+
 ## Route administration model
 
 For any response path chosen on behalf of a skill or scenario, the router
@@ -167,6 +173,7 @@ Current foundation in code:
   `preferred_member_id` in the normalized route contract, even when the active route degrades to hub loopback or relay
 - router now re-evaluates existing `data.media.route` contracts when browser session state or member media inventory changes,
   so route administration is a live control function rather than a one-shot projection
+- router now advances an explicit `attempt` contract across those re-evaluations, so route switches and target-member changes are observable state rather than hidden transport behavior
 - direct-media admission policy and dedicated signaling still need to be completed before this path becomes production-default
 
 ## Typical Flows

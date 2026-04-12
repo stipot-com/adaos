@@ -698,6 +698,7 @@ Current foundation in code:
   - `observed failure`
   - `monitoring`
 - `RouterService` now projects this router-owned view into `data.media.route` so browser surfaces can observe the chosen route without inferring it from transport internals
+- the router now also advances an explicit media-route `attempt` contract with `sequence`, `switch_total`, `previous_route`, `previous_member_id`, `last_switch_at`, `observed_failure`, and refresh cause whenever the chosen topology or member target changes
 - `browser <-> member` direct media is represented as a capability foundation only until per-member capability inventory and signaling rendezvous are implemented
 
 Route-administration state to make explicit:

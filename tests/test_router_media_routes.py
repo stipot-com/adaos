@@ -26,6 +26,9 @@ def test_resolve_media_route_intent_prefers_member_browser_direct_when_admitted(
     assert route["producer_authority"] == "member"
     assert route["preferred_member_id"] == "member-1"
     assert route["producer_target"]["member_id"] == "member-1"
+    assert route["attempt"]["sequence"] == 1
+    assert route["attempt"]["active_route"] == "member_browser_direct"
+    assert route["attempt"]["switch_total"] == 0
     assert route["member_browser_direct"]["candidate_members"] == ["member-1"]
     assert route["member_browser_direct"]["ready"] is True
 
@@ -70,6 +73,8 @@ def test_resolve_media_route_intent_falls_back_to_hub_webrtc_when_member_route_n
     assert route["preferred_member_id"] == "member-1"
     assert route["member_browser_direct"]["candidate_members"] == ["member-1"]
     assert route["degradation_reason"] == "member_browser_direct_not_admitted"
+    assert route["attempt"]["active_route"] == "hub_webrtc_loopback"
+    assert route["attempt"]["degradation_reason"] == "member_browser_direct_not_admitted"
 
 
 def test_media_runtime_snapshot_exposes_member_browser_direct_foundation(monkeypatch, tmp_path) -> None:
