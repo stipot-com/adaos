@@ -179,7 +179,10 @@ def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(mo
     assert "https://ru.api.inimatic.com" in current["linux_command"]
     assert "myinimatic.web.app/assets/windows/init.ps1" in current["windows_ps_command"]
     assert "-ZoneId 'ru'" in current["windows_ps_command"]
+    assert "myinimatic.web.app/assets/windows/init.ps1" in current["windows_cmd_command"]
+    assert "init.bat" not in current["windows_cmd_command"]
     assert '-RootUrl "https://ru.api.inimatic.com"' in current["windows_cmd_command"]
+    assert '-ZoneId "ru"' in current["windows_cmd_command"]
 
 
 @pytest.mark.asyncio

@@ -59,27 +59,27 @@ With AdaOS you can:
 
 ```bash
 # use optional key to join member to subnet: --join-code CODE 
-curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s --
+curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s --
 # pick zone explicitly when needed:
-# curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --zone ru
+# curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s -- --zone ru
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
 # use optional key to join member to subnet: -JoinCode CODE
-iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1
+iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1
 # pick zone explicitly when needed:
-# iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
+# iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
 ```
 
-### Windows (CMD / .bat)
+### Windows (CMD)
 
 ```bat
 # use optional key to join member to subnet: -JoinCode CODE
-curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -JoinCode CODE
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -JoinCode CODE
 REM pick zone explicitly when needed:
-REM curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -ZoneId ru
+REM powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -ZoneId ru
 ```
 
 ## AdaOS Service management
