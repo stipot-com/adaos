@@ -34,6 +34,7 @@ adaos autostart update-cancel
 adaos autostart update-defer --delay-sec 300
 adaos autostart update-rollback
 adaos autostart update-promote-root
+adaos autostart update-restore-root --backup-dir <PATH>
 adaos autostart update-complete
 adaos autostart smoke-update
 ```
@@ -62,6 +63,7 @@ If the supervisor enforces a minimum interval between updates, `update-start` ma
 
 `update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
 `update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs). If root promotion already finished and only the supervisor/bootstrap restart is still pending, rerunning `update-complete` retries only the service restart and does not promote root again.
+If a promoted supervisor/bootstrap revision fails to come back cleanly, `update-restore-root --backup-dir <PATH>` restores the root checkout from that backup snapshot without requiring a live supervisor process. Add `--restart` to request an immediate autostart service restart after the restore.
 
 ## Hub and member operations
 

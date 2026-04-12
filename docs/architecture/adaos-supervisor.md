@@ -367,7 +367,7 @@ Rules:
 - root promotion is allowed only after the candidate is proven in a slot
 - production runtime still restarts from the active slot after root promotion
 - root promotion should use the same validated candidate source, not a fresh mutable branch tip
-- current MVP implementation promotes bootstrap-managed files into root with a backup snapshot, records an explicit supervisor attempt state while waiting for that restart, and requires an explicit service restart to activate the new supervisor/bootstrap code
+- current MVP implementation promotes bootstrap-managed files into the explicit validated root target recorded for that slot, writes a backup snapshot plus restore metadata, records an explicit supervisor attempt state while waiting for restart, and requires an explicit service restart to activate the new supervisor/bootstrap code
 - if another transition request arrives before that restart completes, it is queued as `subsequent_transition` on the supervisor attempt instead of being dropped or run concurrently
 
 This keeps root updates out of the fast rollback path while preserving the slot-runtime model.

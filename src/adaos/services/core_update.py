@@ -22,7 +22,7 @@ from adaos.services.core_slots import (
     rollback_to_previous_slot,
     slot_dir,
 )
-from adaos.services.runtime_paths import current_base_dir
+from adaos.services.runtime_paths import current_base_dir, current_repo_root
 
 
 def _base_dir() -> Path:
@@ -122,6 +122,10 @@ def _root_promotion_state_dir() -> Path:
     return path
 
 
+def _root_promotion_metadata_path(backup_dir: Path) -> Path:
+    return (backup_dir / "metadata.json").resolve()
+
+
 def _remove_path(path: Path) -> None:
     if not path.exists():
         return
@@ -148,11 +152,13 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         raise RuntimeError(f"slot {slot_name} manifest is missing")
     root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
     if not root_promotion_required:
+        resolved_root_dir, resolved_root_basis = _resolve_root_promotion_target(manifest)
         return {
             "ok": True,
             "slot": slot_name,
             "required": False,
-            "target_root": str(_repo_root() or ""),
+            "target_root": str(resolved_root_dir or ""),
+            "target_root_basis": resolved_root_basis,
             "changed_paths": [],
             "backup_dir": "",
             "promoted_paths": [],
@@ -162,7 +168,7 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
     source_repo_dir = Path(str(manifest.get("repo_dir") or "")).expanduser().resolve()
     if not source_repo_dir.exists():
         raise RuntimeError(f"slot {slot_name} repo_dir is missing: {source_repo_dir}")
-    root_dir = _repo_root()
+    root_dir, root_basis = _resolve_root_promotion_target(manifest)
     if root_dir is None or not root_dir.exists():
         raise RuntimeError("root checkout is unavailable for promotion")
     changed_paths = bootstrap_update.get("changed_paths") if isinstance(bootstrap_update.get("changed_paths"), list) else []
@@ -170,6 +176,7 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         changed_paths = list(BOOTSTRAP_CRITICAL_PATHS)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     backup_dir = (_root_promotion_state_dir() / f"{stamp}-{slot_name.lower()}").resolve()
+    backup_dir.mkdir(parents=True, exist_ok=True)
     promoted_paths: list[str] = []
     removed_paths: list[str] = []
     for rel_path in [str(item) for item in changed_paths if str(item).strip()]:
@@ -190,12 +197,15 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         "slot": slot_name,
         "required": True,
         "target_root": str(root_dir),
+        "target_root_basis": root_basis,
         "changed_paths": [str(item) for item in changed_paths if str(item).strip()],
         "backup_dir": str(backup_dir),
+        "backup_metadata_path": str(_root_promotion_metadata_path(backup_dir)),
         "promoted_paths": promoted_paths,
         "removed_paths": removed_paths,
         "restart_required": True,
     }
+    _write_json(_root_promotion_metadata_path(backup_dir), payload)
     return payload
 
 
@@ -260,16 +270,82 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
 
 
 def _repo_root() -> Path | None:
-    try:
-        ctx = get_ctx()
-        package = ctx.paths.package_path()
-        package = package() if callable(package) else package
-        return Path(package).resolve().parents[1]
-    except Exception:
-        try:
-            return Path(__file__).resolve().parents[3]
-        except Exception:
-            return None
+    return current_repo_root()
+
+
+def _resolve_root_promotion_target(manifest: dict[str, Any] | None) -> tuple[Path | None, str]:
+    payload = manifest if isinstance(manifest, dict) else {}
+    explicit = str(payload.get("root_repo_root") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve(), "manifest.root_repo_root"
+    resolved = _repo_root()
+    if resolved is not None:
+        if str(os.getenv("ADAOS_ROOT_REPO_ROOT") or os.getenv("ADAOS_REPO_ROOT") or "").strip():
+            return resolved, "env.ADAOS_ROOT_REPO_ROOT"
+        return resolved, "runtime_context"
+    return None, "unavailable"
+
+
+def restore_root_from_backup(
+    *,
+    backup_dir: str | Path,
+    target_root: str | Path | None = None,
+) -> dict[str, Any]:
+    backup_path = Path(str(backup_dir)).expanduser().resolve()
+    state_root = _root_promotion_state_dir().resolve()
+    if backup_path != state_root and state_root not in backup_path.parents:
+        raise RuntimeError("root promotion backup must live under state/root_promotion")
+    if not backup_path.exists() or not backup_path.is_dir():
+        raise RuntimeError(f"root promotion backup does not exist: {backup_path}")
+
+    metadata = _read_json(_root_promotion_metadata_path(backup_path)) or {}
+    metadata_target_root = str(metadata.get("target_root") or "").strip()
+    changed_paths = [str(item) for item in metadata.get("changed_paths") or [] if str(item).strip()]
+    if not changed_paths:
+        changed_paths = []
+        for child in backup_path.rglob("*"):
+            if child.is_dir():
+                continue
+            if child == _root_promotion_metadata_path(backup_path):
+                continue
+            changed_paths.append(str(child.relative_to(backup_path)).replace("\\", "/"))
+
+    explicit_target = str(target_root or "").strip()
+    resolved_target_root = explicit_target or metadata_target_root
+    target_basis = "argument.target_root" if explicit_target else "backup.metadata.target_root"
+    if not resolved_target_root:
+        fallback = _repo_root()
+        if fallback is None:
+            raise RuntimeError("target root is unavailable for root promotion restore")
+        resolved_target_root = str(fallback)
+        target_basis = "runtime_context"
+    root_dir = Path(resolved_target_root).expanduser().resolve()
+    root_dir.mkdir(parents=True, exist_ok=True)
+
+    restored_paths: list[str] = []
+    removed_paths: list[str] = []
+    for rel_path in changed_paths:
+        source_path = (backup_path / rel_path).resolve()
+        target_path = (root_dir / rel_path).resolve()
+        if source_path.exists():
+            _remove_path(target_path)
+            _copy_path(source_path, target_path)
+            restored_paths.append(rel_path)
+        else:
+            _remove_path(target_path)
+            removed_paths.append(rel_path)
+
+    return {
+        "ok": True,
+        "backup_dir": str(backup_path),
+        "target_root": str(root_dir),
+        "target_root_basis": target_basis,
+        "changed_paths": changed_paths,
+        "restored_paths": restored_paths,
+        "removed_paths": removed_paths,
+        "restart_required": True,
+        "metadata": metadata,
+    }
 
 
 def rollback_installed_skill_runtimes() -> dict[str, Any]:

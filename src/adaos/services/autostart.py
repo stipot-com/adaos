@@ -123,6 +123,9 @@ def default_spec(
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv:
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv)
+    repo_root = _repo_root(ctx)
+    if repo_root is not None:
+        env["ADAOS_ROOT_REPO_ROOT"] = str(repo_root)
     env.setdefault("ADAOS_SUPERVISOR_HOST", "127.0.0.1")
     env.setdefault("ADAOS_SUPERVISOR_PORT", "8776")
     resolved_token = str(token or _default_control_token() or "").strip()

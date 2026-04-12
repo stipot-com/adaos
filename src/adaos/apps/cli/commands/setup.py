@@ -36,6 +36,7 @@ from adaos.services.autostart import status as autostart_status
 from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
 from adaos.services.core_update import plan_path as core_update_plan_path
+from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
 from adaos.services.core_update import status_path as core_update_status_path
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -1440,6 +1441,32 @@ def autostart_update_promote_root_cmd(
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
+@autostart_app.command("update-restore-root")
+@_run_safe
+def autostart_update_restore_root_cmd(
+    backup_dir: str = typer.Option(..., "--backup-dir", help="Path under .adaos/state/root_promotion created by update-promote-root"),
+    target_root: Optional[str] = typer.Option(None, "--target-root", help="Override target root checkout path"),
+    restart: bool = typer.Option(False, "--restart/--no-restart", help="Restart the autostart service after restoring root files"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        restore_payload = restore_root_promotion_backup(backup_dir=backup_dir, target_root=target_root)
+        restart_payload = _restart_autostart_service() if restart else None
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    payload = {
+        "ok": True,
+        "restore": restore_payload,
+        "restart": restart_payload,
+        "message": "root promotion backup restored" + (" and autostart service restart requested" if restart else ""),
+    }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return

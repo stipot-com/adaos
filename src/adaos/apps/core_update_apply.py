@@ -374,6 +374,7 @@ def prepare_slot(
             "created_at": time.time(),
             "target_rev": target_rev,
             "target_version": str(target_version or "").strip(),
+            "root_repo_root": str(repo_root_dir) if repo_root_dir is not None else "",
             "source_kind": source_kind,
             "source_repo_root": str(source_repo_dir) if source_repo_dir is not None else "",
             "repo_url": repo_url,

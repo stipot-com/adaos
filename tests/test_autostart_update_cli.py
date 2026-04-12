@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -392,6 +393,36 @@ def test_autostart_update_complete_retries_restart_for_root_promoted_without_att
     assert result.exit_code == 0, result.output
     assert captured["restart_calls"] == 1
     assert "autostart service restart requested" in result.output
+
+
+def test_autostart_update_restore_root_restores_backup_and_optionally_restarts(monkeypatch) -> None:
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        setup_cmd,
+        "restore_root_promotion_backup",
+        lambda *, backup_dir, target_root=None: {
+            "ok": True,
+            "backup_dir": backup_dir,
+            "target_root": target_root or "/root/adaos",
+            "restart_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_restart_autostart_service",
+        lambda: {"ok": True, "service": "adaos.service"},
+    )
+
+    result = runner.invoke(
+        autostart_app,
+        ["update-restore-root", "--backup-dir", "/tmp/root-backup", "--restart", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["restore"]["backup_dir"] == "/tmp/root-backup"
+    assert payload["restart"]["ok"] is True
 
 
 def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> None:

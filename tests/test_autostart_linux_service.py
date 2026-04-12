@@ -62,6 +62,7 @@ def test_default_spec_exports_shared_dotenv(monkeypatch, tmp_path: Path) -> None
 
     spec = autostart.default_spec(_CtxWithPackage(tmp_path / "base"))
     assert spec.env["ADAOS_SHARED_DOTENV_PATH"] == str(dotenv_path.resolve())
+    assert spec.env["ADAOS_ROOT_REPO_ROOT"] == str(repo_root.resolve())
 
 
 def test_bootstrap_core_slot_uses_explicit_revision(monkeypatch, tmp_path: Path) -> None:
