@@ -76,6 +76,7 @@ class HubPeer:
         self._incoming_tracks: dict[str, dict[str, Any]] = {}
         self._loopback_tracks: dict[str, dict[str, Any]] = {}
         self._media_upload: dict[str, Any] | None = None
+        self._offer_lock = asyncio.Lock()
 
         # Browser creates the DataChannels – hub receives them here.
         @self.pc.on("datachannel")
@@ -132,6 +133,7 @@ class HubPeer:
                     "id": track_id,
                     "kind": str(getattr(track, "kind", "") or "unknown"),
                     "added_at": now,
+                    "sender": sender,
                     "sender_kind": str(getattr(getattr(sender, "track", None), "kind", "") or getattr(track, "kind", "unknown")),
                 }
                 self._incoming_tracks[track_id]["loopback"] = True
@@ -150,6 +152,8 @@ class HubPeer:
                 if rec is not None:
                     rec["ready_state"] = "ended"
                     rec["ended_at"] = time.time()
+                loopback = self._loopback_tracks.pop(track_id, None)
+                await self._detach_loopback_sender(loopback)
                 _log.info(
                     "media track ended: kind=%s id=%s device=%s",
                     getattr(track, "kind", "unknown"),
@@ -200,6 +204,8 @@ class HubPeer:
                 )
                 if new_ws:
                     state["webspace_id"] = new_ws
+                    if self._yjs_channel is None:
+                        self.webspace_id = new_ws
 
             asyncio.ensure_future(_handle())
 
@@ -384,19 +390,52 @@ class HubPeer:
             except Exception:
                 pass
 
+    async def _detach_loopback_sender(self, loopback: dict[str, Any] | None) -> None:
+        if not isinstance(loopback, dict):
+            return
+        sender = loopback.get("sender")
+        if sender is None:
+            return
+        try:
+            remove_track = getattr(self.pc, "removeTrack", None)
+            if callable(remove_track):
+                result = remove_track(sender)
+                if asyncio.iscoroutine(result):
+                    await result
+                return
+        except Exception:
+            _log.debug("removeTrack failed device=%s", self.device_id, exc_info=True)
+        try:
+            replace_track = getattr(sender, "replaceTrack", None)
+            if callable(replace_track):
+                result = replace_track(None)
+                if asyncio.iscoroutine(result):
+                    await result
+                return
+        except Exception:
+            _log.debug("replaceTrack(None) failed device=%s", self.device_id, exc_info=True)
+        try:
+            stop_sender = getattr(sender, "stop", None)
+            if callable(stop_sender):
+                result = stop_sender()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception:
+            _log.debug("sender stop failed device=%s", self.device_id, exc_info=True)
+
     # -- SDP / ICE ------------------------------------------------------------
 
     async def handle_offer(self, sdp: str, type: str = "offer") -> dict[str, str]:
-        offer = RTCSessionDescription(sdp=sdp, type=type)
-        await self.pc.setRemoteDescription(offer)
-        answer = await self.pc.createAnswer()
+        async with self._offer_lock:
+            await self._cancel_local_desc_task()
+            offer = RTCSessionDescription(sdp=sdp, type=type)
+            await self.pc.setRemoteDescription(offer)
+            answer = await self.pc.createAnswer()
+            self._local_desc_task = asyncio.ensure_future(
+                self._set_local_description(answer)
+            )
         # Run setLocalDescription in background — avoids blocking on STUN
         # resolution (2-5 s).  ICE candidates trickle via the on_ice callback.
-        if self._local_desc_task and not self._local_desc_task.done():
-            self._local_desc_task.cancel()
-        self._local_desc_task = asyncio.ensure_future(
-            self._set_local_description(answer)
-        )
         return {
             "sdp": answer.sdp,
             "type": answer.type,
@@ -407,6 +446,21 @@ class HubPeer:
             await self.pc.setLocalDescription(answer)
         except Exception:
             _log.warning("setLocalDescription failed device=%s", self.device_id, exc_info=True)
+
+    async def _cancel_local_desc_task(self) -> None:
+        task = self._local_desc_task
+        if not task or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _log.debug("previous local description task failed device=%s", self.device_id, exc_info=True)
+        finally:
+            if self._local_desc_task is task:
+                self._local_desc_task = None
 
     async def add_ice_candidate(self, candidate_dict: dict[str, Any]) -> None:
         if not candidate_dict:
@@ -530,13 +584,17 @@ async def handle_rtc_offer(
     """
     existing = _peers.get(device_id)
     if existing:
-        # Favor a clean peer replacement on every fresh offer.
-        #
-        # This keeps operator-grade media loopback predictable and avoids
-        # accumulating stale transceivers / loopback senders on the hub side,
-        # which can surface as invalid SDP answers (for example duplicate mids)
-        # after repeated start/stop or renegotiation cycles.
-        _log.info("replacing existing peer for device=%s on new offer", device_id)
+        state = str(getattr(existing.pc, "connectionState", "") or "").strip().lower()
+        if state not in {"failed", "closed"}:
+            existing.webspace_id = webspace_id
+            existing._send_ice = send_ice_cb
+            existing._emit_state_event(reason="offer.renegotiate")
+            return await existing.handle_offer(offer_sdp, offer_type)
+        _log.info(
+            "replacing closed/failed peer for device=%s on new offer state=%s",
+            device_id,
+            state or "unknown",
+        )
         await existing.close()
 
     peer = HubPeer(device_id, webspace_id, send_ice_cb)
