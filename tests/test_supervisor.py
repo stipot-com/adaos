@@ -124,6 +124,18 @@ def test_last_update_completion_at_ignores_idle_status() -> None:
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")
+    monkeypatch.setattr(
+        supervisor,
+        "prepare_pending_update",
+        lambda plan: {
+            "state": "prepared",
+            "phase": "prepare",
+            "target_slot": "B",
+            "manifest": {"slot": "B"},
+            "plan": {"target_slot": "B"},
+            "finished_at": 123.0,
+        },
+    )
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
 
     async def _exercise() -> None:
@@ -149,6 +161,108 @@ def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
         assert attempt["state"] == "cancelled"
 
     asyncio.run(_exercise())
+
+
+def test_supervisor_prepare_failure_does_not_request_runtime_shutdown(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")
+    monkeypatch.setattr(
+        supervisor,
+        "prepare_pending_update",
+        lambda plan: {
+            "state": "failed",
+            "phase": "prepare",
+            "message": "prepare exploded",
+            "target_slot": "B",
+            "plan": {"target_slot": "B"},
+        },
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    async def _unexpected_shutdown(**kwargs):
+        raise AssertionError("runtime shutdown must not be requested when prepare fails")
+
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _unexpected_shutdown)
+
+    async def _exercise() -> None:
+        result = await manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+        assert result["accepted"] is True
+        task = manager._update_task
+        assert task is not None
+        await task
+        status = read_status()
+        assert status["state"] == "failed"
+        assert status["phase"] == "prepare"
+        attempt = supervisor._read_update_attempt()
+        assert isinstance(attempt, dict)
+        assert attempt["state"] == "failed"
+
+    asyncio.run(_exercise())
+
+
+def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        supervisor,
+        "prepare_pending_update",
+        lambda plan: {
+            "state": "prepared",
+            "phase": "prepare",
+            "target_slot": "B",
+            "manifest": {"slot": "B"},
+            "plan": {"target_slot": "B"},
+            "finished_at": 222.0,
+        },
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    lifecycle_calls: list[str] = []
+    desired_running_states: list[bool] = []
+    activated_slots: list[str] = []
+
+    async def _shutdown(**kwargs):
+        lifecycle_calls.append("shutdown")
+        return {"ok": True}
+
+    async def _ensure_stopped(**kwargs):
+        lifecycle_calls.append("stopped")
+        return {"ok": True, "forced": False}
+
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _shutdown)
+    monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _ensure_stopped)
+    monkeypatch.setattr(supervisor, "activate_slot", lambda slot: activated_slots.append(str(slot)))
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: desired_running_states.append(bool(manager._desired_running)))
+
+    asyncio.run(
+        manager._prepare_and_countdown_update_worker(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=0.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    plan = read_plan()
+    assert isinstance(plan, dict)
+    assert plan["state"] == "prepared_restart"
+    assert plan["target_slot"] == "B"
+    status = read_status()
+    assert status["state"] == "restarting"
+    assert status["phase"] == "launch"
+    assert activated_slots == ["B"]
+    assert lifecycle_calls == ["shutdown", "stopped"]
+    assert False in desired_running_states
+    assert desired_running_states[-1] is True
 
 
 def test_supervisor_start_update_schedules_when_min_period_not_elapsed(monkeypatch, tmp_path) -> None:

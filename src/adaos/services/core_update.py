@@ -460,6 +460,58 @@ def _plan_with_slot_context(plan: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def prepare_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
+    slot_plan = _plan_with_slot_context(plan)
+    started_at = time.time()
+    target_slot = str(slot_plan.get("target_slot") or "").strip().upper()
+    if not target_slot:
+        return {
+            "state": "failed",
+            "phase": "prepare",
+            "message": "target slot is unavailable for preparation",
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "plan": slot_plan,
+        }
+    try:
+        from adaos.apps.core_update_apply import prepare_slot
+
+        repo_root = _repo_root()
+        manifest = prepare_slot(
+            slot=target_slot,
+            slot_dir_path=str(slot_plan.get("inactive_slot_dir") or ""),
+            base_dir=str(_base_dir()),
+            repo_root=str(repo_root or ""),
+            source_repo_root=str(repo_root or ""),
+            shared_dotenv_path=_shared_dotenv_path(),
+            target_rev=str(slot_plan.get("target_rev") or ""),
+            target_version=str(slot_plan.get("target_version") or ""),
+            migrate_skill_runtimes=False,
+        )
+    except Exception as exc:
+        return {
+            "state": "failed",
+            "phase": "prepare",
+            "message": f"core update slot preparation failed: {exc}",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "target_slot": target_slot,
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "plan": slot_plan,
+        }
+    return {
+        "state": "prepared",
+        "phase": "prepare",
+        "message": f"prepared target slot {target_slot} for restart",
+        "target_slot": target_slot,
+        "manifest": manifest,
+        "started_at": started_at,
+        "finished_at": time.time(),
+        "plan": slot_plan,
+    }
+
+
 def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
     action = str(plan.get("action") or "update").strip().lower()
     if action == "rollback":

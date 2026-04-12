@@ -333,6 +333,7 @@ def prepare_slot(
     target_rev: str = "",
     target_version: str = "",
     repo_url: str | None = None,
+    migrate_skill_runtimes: bool = True,
 ) -> dict[str, object]:
     slot_name = str(slot).strip().upper()
     slot_dir = Path(slot_dir_path).expanduser().resolve()
@@ -412,28 +413,42 @@ def prepare_slot(
         }
         _replace_slot_dir(prepared_slot, slot_dir)
         repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
-        skill_runtime_migration = _migrate_installed_skill_runtimes(
-            final_py,
-            repo_root=str(final_repo_dir),
-            base_dir=str(base_dir or ""),
-            shared_dotenv_path=shared_dotenv,
-            run_tests=True,
-        )
-        if not bool(skill_runtime_migration.get("ok")):
-            failed = []
-            for item in skill_runtime_migration.get("skills") or []:
-                if not isinstance(item, dict) or bool(item.get("ok")):
-                    continue
-                failed.append(
-                    f"{item.get('skill') or 'skill'}:{item.get('failed_stage') or 'failed'}"
-                )
-            suffix = ", ".join(failed[:5])
-            if len(failed) > 5:
-                suffix += f" (+{len(failed) - 5} more)"
-            if suffix:
-                raise RuntimeError(f"installed skill runtime migration failed: {suffix}")
-            raise RuntimeError(f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}")
         manifest["venv_repair"] = repair
+        if migrate_skill_runtimes:
+            skill_runtime_migration = _migrate_installed_skill_runtimes(
+                final_py,
+                repo_root=str(final_repo_dir),
+                base_dir=str(base_dir or ""),
+                shared_dotenv_path=shared_dotenv,
+                run_tests=True,
+            )
+            if not bool(skill_runtime_migration.get("ok")):
+                failed = []
+                for item in skill_runtime_migration.get("skills") or []:
+                    if not isinstance(item, dict) or bool(item.get("ok")):
+                        continue
+                    failed.append(
+                        f"{item.get('skill') or 'skill'}:{item.get('failed_stage') or 'failed'}"
+                    )
+                suffix = ", ".join(failed[:5])
+                if len(failed) > 5:
+                    suffix += f" (+{len(failed) - 5} more)"
+                if suffix:
+                    raise RuntimeError(f"installed skill runtime migration failed: {suffix}")
+                raise RuntimeError(
+                    f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}"
+                )
+        else:
+            skill_runtime_migration = {
+                "ok": True,
+                "total": 0,
+                "failed_total": 0,
+                "rollback_total": 0,
+                "deactivated_total": 0,
+                "run_tests": False,
+                "deferred": True,
+                "skills": [],
+            }
         manifest["skill_runtime_migration"] = skill_runtime_migration
         write_slot_manifest(slot_name, manifest)
         return manifest

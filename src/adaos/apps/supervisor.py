@@ -29,6 +29,7 @@ from adaos.apps.bootstrap import init_ctx
 from adaos.apps.cli.commands.api import _advertise_base, _uvicorn_loop_mode
 from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import (
+    activate_slot,
     active_slot,
     active_slot_manifest,
     choose_inactive_slot,
@@ -39,6 +40,7 @@ from adaos.services.core_slots import (
 )
 from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import manifest_requires_root_promotion
+from adaos.services.core_update import prepare_pending_update
 from adaos.services.core_update import promote_root_from_slot
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
@@ -268,7 +270,7 @@ def _is_transition_in_progress(status: dict[str, Any] | None, attempt: dict[str,
     attempt_state = str(attempt_map.get("state") or "").strip().lower()
     if attempt_state in {"active", "awaiting_root_restart"}:
         return True
-    if state in {"countdown", "draining", "stopping", "restarting", "applying"}:
+    if state in {"preparing", "countdown", "draining", "stopping", "restarting", "applying"}:
         return True
     if state == "validated" and phase == "root_promotion_pending":
         return True
@@ -624,7 +626,7 @@ class SupervisorManager:
                 return target_slot
         state = str((update_status or {}).get("state") or "").strip().lower()
         attempt_state = str((update_attempt or {}).get("state") or "").strip().lower()
-        transition_active = state in {"planned", "countdown", "draining", "stopping", "restarting", "applying", "validated"} or attempt_state in {"planned", "active"}
+        transition_active = state in {"planned", "preparing", "countdown", "draining", "stopping", "restarting", "applying", "validated"} or attempt_state in {"planned", "active"}
         if not transition_active and attempt_state == "awaiting_root_restart":
             transition_active = _subsequent_transition_request(update_attempt) is not None
         if transition_active:
@@ -1318,6 +1320,50 @@ class SupervisorManager:
         )
         return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
 
+    def _begin_prepare_transition(self, request: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.time()
+        status = write_core_update_status(
+            {
+                "state": "preparing",
+                "phase": "prepare",
+                "action": str(request.get("action") or "update"),
+                "target_rev": str(request.get("target_rev") or ""),
+                "target_version": str(request.get("target_version") or ""),
+                "reason": str(request.get("reason") or ""),
+                "countdown_sec": float(request.get("countdown_sec") or 0.0),
+                "drain_timeout_sec": float(request.get("drain_timeout_sec") or 10.0),
+                "signal_delay_sec": float(request.get("signal_delay_sec") or 0.25),
+                "started_at": started_at,
+                "message": "preparing inactive slot before restart",
+            }
+        )
+        attempt_payload = dict(request)
+        attempt_payload.update(
+            {
+                "state": "active",
+                "accepted": True,
+                "requested_at": _epoch(request.get("requested_at")) or started_at,
+                "prepare_started_at": started_at,
+                "last_status": status,
+                "updated_at": started_at,
+            }
+        )
+        _write_update_attempt(attempt_payload)
+        self._update_task_cancel_mode = None
+        self._update_task = asyncio.create_task(
+            self._prepare_and_countdown_update_worker(
+                action=str(request.get("action") or "update"),
+                target_rev=str(request.get("target_rev") or ""),
+                target_version=str(request.get("target_version") or ""),
+                reason=str(request.get("reason") or ""),
+                countdown_sec=float(request.get("countdown_sec") or 0.0),
+                drain_timeout_sec=float(request.get("drain_timeout_sec") or 10.0),
+                signal_delay_sec=float(request.get("signal_delay_sec") or 0.25),
+            ),
+            name=f"adaos-supervisor-core-update-prepare-{request.get('action') or 'update'}",
+        )
+        return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
+
     def _schedule_planned_transition(
         self,
         request: dict[str, Any],
@@ -1423,6 +1469,10 @@ class SupervisorManager:
             scheduled_for = _epoch(attempt.get("scheduled_for") or status.get("scheduled_for"))
             if scheduled_for > 0.0 and scheduled_for <= now:
                 self._begin_countdown_transition(_request_from_attempt(attempt))
+            return
+
+        if attempt_state == "active" and str(status.get("state") or "").strip().lower() == "preparing":
+            self._begin_prepare_transition(_request_from_attempt(attempt))
             return
 
         if attempt_state == "active" and str(status.get("state") or "").strip().lower() == "countdown":
@@ -1569,6 +1619,229 @@ class SupervisorManager:
             if self._update_task is not None and self._update_task.done():
                 self._update_task = None
 
+    async def _prepare_and_countdown_update_worker(
+        self,
+        *,
+        action: str,
+        target_rev: str,
+        target_version: str,
+        reason: str,
+        countdown_sec: float,
+        drain_timeout_sec: float,
+        signal_delay_sec: float,
+    ) -> None:
+        cancel_phase = "prepare"
+        failure_phase = "prepare"
+        prepare_result = prepare_pending_update(
+            {
+                "action": action,
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+            }
+        )
+        try:
+            if str(prepare_result.get("state") or "").strip().lower() != "prepared":
+                status = write_core_update_status(
+                    {
+                        **dict(prepare_result),
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                    }
+                )
+                _complete_update_attempt(
+                    state="failed",
+                    status=status,
+                    reason=str(prepare_result.get("message") or "prepare failed"),
+                )
+                return
+
+            prepared_plan = prepare_result.get("plan") if isinstance(prepare_result.get("plan"), dict) else {}
+            target_slot = str(
+                prepare_result.get("target_slot")
+                or prepared_plan.get("target_slot")
+                or choose_inactive_slot()
+                or ""
+            ).strip().upper()
+            manifest = prepare_result.get("manifest") if isinstance(prepare_result.get("manifest"), dict) else None
+            countdown_started_at = time.time()
+            status = write_core_update_status(
+                {
+                    "state": "countdown",
+                    "phase": "countdown",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "countdown_sec": countdown_sec,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "started_at": countdown_started_at,
+                    "scheduled_for": countdown_started_at + countdown_sec,
+                    "prepared_at": float(prepare_result.get("finished_at") or countdown_started_at),
+                    "target_slot": target_slot,
+                    "message": (
+                        f"slot {target_slot} prepared; countdown started"
+                        if target_slot
+                        else "inactive slot prepared; countdown started"
+                    ),
+                    "manifest": manifest,
+                }
+            )
+            _write_update_attempt(
+                _build_attempt_payload(
+                    action=action,
+                    request={
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                        "countdown_sec": countdown_sec,
+                        "drain_timeout_sec": drain_timeout_sec,
+                        "signal_delay_sec": signal_delay_sec,
+                    },
+                    status=status,
+                    accepted=True,
+                )
+            )
+            cancel_phase = "countdown"
+            await asyncio.sleep(max(0.0, float(countdown_sec)))
+
+            plan = {
+                "state": "prepared_restart",
+                "action": action,
+                "target_rev": target_rev,
+                "target_version": target_version,
+                "reason": reason,
+                "target_slot": target_slot,
+                "prepared_at": float(prepare_result.get("finished_at") or time.time()),
+                "created_at": time.time(),
+                "expires_at": time.time() + 1800.0,
+            }
+            write_core_update_plan(plan)
+            write_core_update_status(
+                {
+                    "state": "restarting",
+                    "phase": "shutdown",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "target_slot": target_slot,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "prepared_at": float(prepare_result.get("finished_at") or time.time()),
+                    "message": "countdown completed; prepared restart written",
+                    "manifest": manifest,
+                }
+            )
+            failure_phase = "shutdown"
+            await self._request_runtime_shutdown(
+                reason=reason,
+                drain_timeout_sec=drain_timeout_sec,
+                signal_delay_sec=signal_delay_sec,
+            )
+            async with self._lock:
+                self._desired_running = False
+                self._persist_runtime_state()
+            stop_result = await self._ensure_runtime_stopped_for_update(
+                drain_timeout_sec=drain_timeout_sec,
+                signal_delay_sec=signal_delay_sec,
+                reason=reason,
+            )
+            if bool(stop_result.get("forced")):
+                write_core_update_status(
+                    {
+                        "state": "restarting",
+                        "phase": "shutdown",
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                        "target_slot": target_slot,
+                        "drain_timeout_sec": drain_timeout_sec,
+                        "signal_delay_sec": signal_delay_sec,
+                        "message": "runtime shutdown exceeded grace period; supervisor forced process stop",
+                        "forced_shutdown": True,
+                        "manifest": manifest,
+                    }
+                )
+            activate_slot(target_slot)
+            failure_phase = "launch"
+            write_core_update_status(
+                {
+                    "state": "restarting",
+                    "phase": "launch",
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "target_slot": target_slot,
+                    "prepared_at": float(prepare_result.get("finished_at") or time.time()),
+                    "message": (
+                        f"prepared slot {target_slot} activated; awaiting runtime launch"
+                        if target_slot
+                        else "prepared slot activated; awaiting runtime launch"
+                    ),
+                    "manifest": manifest,
+                }
+            )
+            async with self._lock:
+                self._desired_running = True
+                self._persist_runtime_state()
+        except asyncio.CancelledError:
+            clear_core_update_plan()
+            cancel_mode = str(self._update_task_cancel_mode or "").strip().lower()
+            self._update_task_cancel_mode = None
+            if cancel_mode != "rescheduled":
+                status = write_core_update_status(
+                    {
+                        "state": "cancelled",
+                        "phase": cancel_phase,
+                        "action": action,
+                        "target_rev": target_rev,
+                        "target_version": target_version,
+                        "reason": reason,
+                        "drain_timeout_sec": drain_timeout_sec,
+                        "signal_delay_sec": signal_delay_sec,
+                        "message": "core update cancelled",
+                    }
+                )
+                _complete_update_attempt(state="cancelled", status=status, reason=reason)
+            raise
+        except Exception as exc:
+            clear_core_update_plan()
+            async with self._lock:
+                self._desired_running = True
+                self._persist_runtime_state()
+            status = write_core_update_status(
+                {
+                    "state": "failed",
+                    "phase": failure_phase,
+                    "action": action,
+                    "target_rev": target_rev,
+                    "target_version": target_version,
+                    "reason": reason,
+                    "drain_timeout_sec": drain_timeout_sec,
+                    "signal_delay_sec": signal_delay_sec,
+                    "message": "prepared core update transition failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "updated_at": time.time(),
+                }
+            )
+            _complete_update_attempt(
+                state="failed",
+                status=status,
+                reason=f"prepared transition failed: {type(exc).__name__}",
+            )
+        finally:
+            self._update_task_cancel_mode = None
+            if self._update_task is not None and self._update_task.done():
+                self._update_task = None
+
     async def start_update(
         self,
         *,
@@ -1621,6 +1894,8 @@ class SupervisorManager:
                 )
 
         clear_core_update_plan()
+        if action == "update":
+            return self._begin_prepare_transition(request)
         return self._begin_countdown_transition(request)
 
     async def cancel_update(self, *, reason: str) -> dict[str, Any]:
@@ -1642,10 +1917,11 @@ class SupervisorManager:
             return {"ok": True, "accepted": True, "status": status, "_served_by": "supervisor"}
 
         if task is None or task.done():
+            current_phase = str(current_status.get("phase") or "").strip().lower() or "countdown"
             status = write_core_update_status(
                 {
                     "state": "cancelled",
-                    "phase": "countdown",
+                    "phase": current_phase,
                     "message": "no pending countdown task",
                     "reason": reason,
                 }
@@ -1659,10 +1935,11 @@ class SupervisorManager:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         self._update_task = None
+        current_phase = str((read_core_update_status() or {}).get("phase") or "").strip().lower() or "countdown"
         status = write_core_update_status(
             {
                 "state": "cancelled",
-                "phase": "countdown",
+                "phase": current_phase,
                 "action": str((read_core_update_status() or {}).get("action") or "update"),
                 "message": "core update cancelled by request",
                 "reason": reason,

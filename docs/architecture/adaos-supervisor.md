@@ -40,7 +40,7 @@ The supervisor solves this by keeping the update and process-control surface ali
 - persisted update attempt state
 - candidate-to-slot prepare / validate / rollback orchestration
 - post-validation bootstrap/root promotion orchestration when bootstrap-managed files changed
-- skill runtime migration orchestration for installed skills during core slot transition
+- skill runtime migration orchestration for installed skills during core slot transition, including deferred commit after old runtime shutdown when early slot preparation is used
 - restart and validation deadlines
 - local admin/update API availability during runtime downtime
 - recovery from interrupted update attempts
@@ -322,14 +322,15 @@ Target flow:
 1. operator or root-triggered action reaches supervisor
 2. supervisor writes `update_attempt.json`
 3. supervisor materializes the candidate source/artifact
-4. supervisor requests graceful runtime shutdown
-5. supervisor prepares the inactive slot from that candidate
-6. supervisor migrates installed skill runtimes against the target core interpreter
-7. supervisor launches production runtime from the target slot
-8. supervisor validates required runtime checks against that slot runtime
-9. on slot-validation success, supervisor commits the slot switch
-10. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
-11. on failure or deadline expiry, supervisor rolls back the slot and records failure
+4. supervisor prepares the inactive slot from that candidate while the active runtime is still serving traffic
+5. supervisor starts countdown only after the target slot is materially ready
+6. supervisor requests graceful runtime shutdown
+7. supervisor commits deferred installed-skill runtime migration against the target core interpreter after the old runtime is down
+8. supervisor launches production runtime from the target slot
+9. supervisor validates required runtime checks against that slot runtime
+10. on slot-validation success, supervisor commits the slot switch
+11. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
+12. on failure or deadline expiry, supervisor rolls back the slot and records failure
 
 Important invariants:
 
@@ -373,6 +374,11 @@ Target lifecycle per installed skill:
 5. `deactivate` if core transition is committed but a subset of skills must be quarantined afterward
 
 The supervisor remains the authority for the overall core-update decision, but individual skill runtime outcomes must be persisted as part of the update result.
+
+Current MVP implementation now splits this into two moments:
+
+- early slot preparation may build the inactive core slot and mark skill migration as deferred while the old runtime is still live
+- the mutating skill runtime commit step still happens only after the old runtime has stopped, so countdown traffic does not start reading partially-switched skill runtime state
 
 Recommended per-skill diagnostic fields:
 

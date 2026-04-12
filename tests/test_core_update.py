@@ -8,6 +8,7 @@ from adaos.services.core_update import (
     execute_pending_update,
     finalize_runtime_boot_status,
     configured_update_command,
+    prepare_pending_update,
     read_last_result,
     read_plan,
     read_status,
@@ -128,6 +129,24 @@ def test_execute_pending_update_inherits_target_rev_from_active_slot(monkeypatch
     result = execute_pending_update({"target_version": "0.1.0"})
     assert result["state"] == "succeeded"
     assert "rev2026" in seen["command"]
+
+
+def test_prepare_pending_update_defers_skill_runtime_migration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def _fake_prepare_slot(**kwargs):
+        captured.update(kwargs)
+        return {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"]}
+
+    monkeypatch.setattr("adaos.apps.core_update_apply.prepare_slot", _fake_prepare_slot)
+
+    result = prepare_pending_update({"target_rev": "rev2026", "target_slot": "B"})
+
+    assert result["state"] == "prepared"
+    assert result["target_slot"] == "B"
+    assert captured["slot"] == "B"
+    assert captured["migrate_skill_runtimes"] is False
 
 
 def test_rollback_installed_skill_runtimes_marks_expected_skips(monkeypatch) -> None:
