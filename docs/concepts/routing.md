@@ -2,6 +2,54 @@
 
 This document describes how AdaOS routes outgoing UI notifications (IO routing) and how a hub proxies tool calls to members (Skills routing).
 
+## Router role
+
+`RouterService` should not remain only a forwarding helper.
+Its target role is a semantic route administrator for outputs, responses, and
+browser-visible delivery paths.
+
+The router should own decisions such as:
+
+- what response or output is needed
+- which node/runtime/browser session advertises the capability
+- which target is currently able to serve it
+- which path should be attempted first
+- which fallback/degradation class is allowed
+- which observed failures belong to the current attempt
+- which health signals should keep the route active, trigger failover, or expose degradation
+
+This means route execution and route administration are related but separate.
+HTTP/WebSocket/WebRTC clients execute a route.
+The router should decide whether that route is preferred, degraded, unavailable,
+or superseded.
+
+## Route administration model
+
+For any response path chosen on behalf of a skill or scenario, the router
+should track a small semantic state machine:
+
+- need:
+  - what the caller is trying to deliver or obtain
+- capability:
+  - which targets claim they can satisfy the need
+- ability:
+  - whether those targets are currently reachable, authorized, and healthy enough
+- attempt:
+  - which target/path is currently in flight
+- degradation:
+  - which fallback class is currently allowed
+- observed failure:
+  - the concrete failure attached to the active attempt
+- monitoring:
+  - the health/freshness signals that determine whether the route remains valid
+
+This is the right place to model:
+
+- direct vs relayed browser delivery
+- local hub vs remote member execution
+- response routing for skills and scenarios
+- later media delivery choices such as browser-hub vs browser-member direct media
+
 ## IO Routing (stdout)
 
 - Source: Any skill can emit `ui.notify` events. The local RouterService subscribes to `ui.notify` on the process-local `LocalEventBus`.
@@ -63,6 +111,15 @@ If the hub receives `/api/tools/call` for a skill that is not installed locally,
 
 Selection prefers active runtimes and most recent `last_seen`.
 
+Target-state note:
+
+- this should evolve from a single ad-hoc proxy rule into router-owned semantic route selection
+- the same route-administration model should cover:
+  - skill responses
+  - scenario responses
+  - browser-directed outputs
+  - future direct media delivery
+
 ## Capacity Reporting
 
 - Each node reports its capacity via `register` and `heartbeat`:
@@ -72,6 +129,23 @@ Selection prefers active runtimes and most recent `last_seen`.
   - `capacity.scenarios`: scenarios present on the node `{ name, version, active, dev }`.
 
 - When a skill or scenario is installed/activated/removed via the service layer, the node updates `.adaos/node.yaml` and the next heartbeat includes the updated capacity for the hub to persist. On the hub, capacity is also written to SQLite immediately for the hub node.
+
+## Media routing target
+
+The same router semantics should eventually be extended to media.
+
+Target model:
+
+- a media-producing skill or scenario may run on hub or member
+- the router chooses whether the browser consumes that media through:
+  - local direct hub path
+  - browser-hub direct WebRTC
+  - browser-member direct WebRTC
+  - root-routed bounded relay
+- direct media signaling may still be hub- or root-mediated even when the
+  media peer is browser-member
+- media route degradation should be visible as a routing fact, not hidden as a
+  generic transport reconnect
 
 ## Typical Flows
 

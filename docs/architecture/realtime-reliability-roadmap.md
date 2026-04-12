@@ -402,6 +402,12 @@ That coupling creates self-inflicted failure modes:
 The next Phase 6 target is therefore not "more loopback features first".
 It is to decouple media-session behavior from peer-session behavior.
 
+Another confirmed gap is topology:
+current direct WebRTC covers `browser <-> hub`, but not a direct
+`browser <-> member` media peer for member-hosted media producers.
+That means a media-producing skill running on a member cannot yet expose its
+best direct browser path even when the network topology would allow it.
+
 ### Target architecture
 
 The target browser-hub direct transport model is:
@@ -454,6 +460,31 @@ The intended shape is:
 This does not mean uncontrolled multipath authority.
 It means media concurrency must be explicit inside the semantic channel model
 instead of being approximated by repeated whole-peer rebuilds.
+
+### Member-browser direct media target
+
+Phase 6 should also grow from one direct topology into an explicit set of
+direct media topologies:
+
+- `browser <-> hub`
+- `browser <-> member`
+- bounded relayed fallback when direct peer setup is not allowed or not possible
+
+The intended authority split is:
+
+- router chooses which runtime should answer the media need
+- hub and/or root act as rendezvous, signaling, and policy authorities
+- the direct media peer may still terminate on the selected member rather than on the hub
+
+This is especially important for member-hosted media skills.
+If a media server skill runs on a member, the preferred target state is not
+"member sends media to hub and hub re-originates it by default".
+The preferred target state is:
+
+- router resolves the member as the media producer
+- signaling is mediated by hub/root as needed
+- browser attempts a direct peer to that member when policy and topology allow it
+- fallback remains available through bounded relay paths when direct media is unavailable
 
 ### Preferred implementation shape
 
@@ -629,6 +660,43 @@ Minimum acceptance tests:
 - `media` semantic state can degrade independently without forcing `command` and `sync` to fallback
 - visibility changes or modal/widget lifecycle do not trigger whole-peer rebuild unless actual peer health requires it
 
+#### Router authority for response and media routing
+
+Current gap:
+
+- media path choice and skill-response path choice are still too fragmented across local helpers
+- transport layers know too much about fallback intent
+- there is no single semantic owner of "need -> capability -> ability -> attempt -> degradation -> observed failure"
+
+Target role:
+
+- router should become the semantic administrator of response routing for skills and scenarios
+- router should also become the semantic administrator of browser-visible media route choice
+- transport implementations remain executors of the chosen route, not owners of route semantics
+
+Route-administration state to make explicit:
+
+- need:
+  - what the caller is trying to receive or deliver
+- capability:
+  - which targets advertise they can satisfy that need
+- ability:
+  - whether those targets are currently reachable, authorized, and healthy enough
+- attempt:
+  - which target/path is currently active or in-flight
+- degradation:
+  - which fallback class is allowed
+- observed failure:
+  - which concrete incident happened on the current route
+- monitoring:
+  - which signals determine recovery, failover, or operator-visible degraded mode
+
+Implication for implementation:
+
+- route selection for skill/scenario response delivery should move toward router-owned semantics
+- media path selection should reuse the same route-administration vocabulary
+- direct `browser <-> member` media should be introduced as a new routed capability, not as a transport-only shortcut
+
 #### Browser sync/runtime integration: `ydoc.service.ts` and media widgets
 
 Current role:
@@ -723,15 +791,26 @@ Protocol rules:
 - stale answers or ICE for an unknown/superseded session are ignored
 - full replacement is explicit, not inferred from the existence of a new offer alone
 
+For `browser <-> member` direct media, the signaling contract will also need:
+
+- target runtime identity, for example `target_node_id`
+- explicit media-producer identity, for example `media_session_id` or producer id
+- router-visible route intent so signaling can distinguish:
+  - browser-hub media
+  - browser-member media
+  - bounded relay fallback
+
 #### Recommended delivery order
 
 1. browser UI/session ownership cleanup
 2. browser transport split between peer shutdown and renegotiation
 3. browser semantic-channel API split between peer and media-subflow control
-4. signaling contract upgrade with `peer_session_id` and `negotiation_id`
-5. hub-side in-session renegotiation support
-6. transceiver-based live media control
-7. media-subflow observability and later multi-source expansion
+4. router semantic contract for response/media route administration
+5. signaling contract upgrade with `peer_session_id`, `negotiation_id`, and target route identity
+6. hub-side in-session renegotiation support
+7. transceiver-based live media control
+8. explicit `browser <-> member` direct media path via hub/root-mediated signaling
+9. media-subflow observability and later multi-source expansion
 
 #### Definition of done for the refactor tranche
 
@@ -743,6 +822,7 @@ Protocol rules:
   - negotiation failure
   - live-media-subflow failure
   - media-upload-subflow failure
+  - route-administration failure such as capability mismatch, policy denial, or producer unavailability
 
 ### Work items
 
