@@ -1204,6 +1204,7 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     payload = supervisor._public_update_status_payload(
         {
             "status": {
+                "action": "update",
                 "state": "restarting",
                 "phase": "shutdown",
                 "message": "countdown completed; pending update written",
@@ -1247,6 +1248,7 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "managed_cmdline": ["hidden"],
             },
             "attempt": {
+                "action": "update",
                 "state": "awaiting_root_restart",
                 "awaiting_restart": True,
                 "planned_reason": "minimum_update_period",
@@ -1262,6 +1264,7 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     )
 
     assert payload["ok"] is True
+    assert payload["status"]["action"] == "update"
     assert payload["status"]["state"] == "restarting"
     assert payload["status"]["phase"] == "shutdown"
     assert payload["status"]["planned_reason"] == "minimum_update_period"
@@ -1270,6 +1273,7 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["status"]["candidate_prewarm_state"] == "ready"
     assert payload["status"]["candidate_prewarm_ready_at"] == 430.0
     assert payload["attempt"]["state"] == "awaiting_root_restart"
+    assert payload["attempt"]["action"] == "update"
     assert payload["attempt"]["awaiting_restart"] is True
     assert payload["attempt"]["planned_reason"] == "minimum_update_period"
     assert payload["attempt"]["scheduled_for"] == 456.0

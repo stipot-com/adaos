@@ -270,12 +270,14 @@ The target end state is stronger: every supported browser entry topology should 
 Operator-facing surfaces are also expected to consume that same supervisor truth through the canonical control-plane model, so Infrascope and related overview projections can show core-runtime transition state in `active_runtimes`, health strips, and recent changes instead of presenting a restart only as generic hub instability.
 That browser-safe surface now also includes candidate runtime diagnostics needed for warm-switch work:
 
+- `action`
 - `candidate_runtime_instance_id`
 - `candidate_runtime_state`
 - `candidate_runtime_api_ready`
 - `candidate_transition_role`
 - `candidate_prewarm_state`
 - `candidate_prewarm_message`
+- `candidate_prewarm_ready_at`
 
 ### Runtime API
 
