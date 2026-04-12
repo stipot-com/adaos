@@ -168,6 +168,12 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     target_version = str(update_status.get("target_version") or "").strip()
     if target_version:
         subtitle_bits.append(target_version)
+    transition_mode = str(runtime.get("transition_mode") or "").strip()
+    candidate_slot = str(runtime.get("candidate_slot") or "").strip()
+    if transition_mode:
+        subtitle_bits.append(transition_mode.replace("_", " "))
+    if candidate_slot:
+        subtitle_bits.append(f"candidate {candidate_slot}")
 
     actions = [
         CanonicalActionDescriptor(
@@ -214,6 +220,12 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "root_promotion_required": root_promotion_required,
                 "scheduled_for": update_status.get("scheduled_for"),
                 "planned_reason": update_status.get("planned_reason"),
+                "transition_mode": runtime.get("transition_mode"),
+                "candidate_slot": runtime.get("candidate_slot"),
+                "candidate_runtime_url": runtime.get("candidate_runtime_url"),
+                "warm_switch_supported": runtime.get("warm_switch_supported"),
+                "warm_switch_allowed": runtime.get("warm_switch_allowed"),
+                "warm_switch_reason": runtime.get("warm_switch_reason"),
                 "subsequent_transition": bool(
                     update_status.get("subsequent_transition") or update_attempt.get("subsequent_transition")
                 ),
@@ -227,6 +239,9 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
             {
                 "supervisor_url": runtime.get("supervisor_url"),
                 "runtime_url": runtime.get("runtime_url"),
+                "runtime_port": runtime.get("runtime_port"),
+                "candidate_runtime_url": runtime.get("candidate_runtime_url"),
+                "candidate_runtime_port": runtime.get("candidate_runtime_port"),
                 "expected_managed_cwd": runtime.get("expected_managed_cwd"),
                 "managed_matches_active_slot": runtime.get("managed_matches_active_slot"),
                 "target_rev": update_status.get("target_rev"),

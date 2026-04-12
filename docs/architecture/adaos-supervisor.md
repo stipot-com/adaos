@@ -88,6 +88,50 @@ Root checkout is reserved for:
 
 This keeps slot switching fast and keeps production runtime independent from root checkout drift.
 
+## Slot-bound runtime ports
+
+Supervisor should treat runtime ports as slot-owned rather than as one global mutable bind.
+
+Target rule:
+
+- slot `A` keeps a stable local runtime port
+- slot `B` keeps a different stable local runtime port
+- supervisor stays on its own always-on control port
+
+Current MVP direction is:
+
+- default `A` runtime port: `8777`
+- default `B` runtime port: `8778`
+- supervisor port: `8776`
+
+This creates a clean foundation for warm-switch behavior because the inactive slot can be prepared and, later, prewarmed without fighting for the active slot's listener.
+
+The mapping must remain supervisor-visible in diagnostics and browser-safe transition payloads so local clients can discover:
+
+- active runtime URL
+- candidate runtime URL
+- current transition mode
+- whether warm-switch was admitted or downgraded to stop-and-switch
+
+## Warm-switch admission
+
+Warm-switch is desirable, but not always safe on constrained hardware.
+
+Supervisor should therefore make an explicit admission decision before using a dual-runtime transition:
+
+- if candidate slot uses a different reserved port and memory headroom is sufficient, transition mode is `warm_switch`
+- if memory headroom is not sufficient, transition mode is `stop_and_switch`
+- this decision must be visible to operator and browser-facing status surfaces before shutdown starts
+
+Admission should be driven by a simple local resource gate such as:
+
+- available memory
+- current runtime RSS
+- estimated candidate runtime footprint
+- configured reserve that must remain free after candidate start
+
+The important rule is that low-memory devices must fail safe into stop-and-switch instead of trying to start two full runtimes and getting stuck mid-transition.
+
 ## Authority boundary
 
 ### Supervisor

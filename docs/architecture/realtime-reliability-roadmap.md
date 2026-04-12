@@ -192,8 +192,8 @@ The next reliability gap after transport isolation is local process/update super
 AdaOS currently loses its primary local admin/update surface exactly when the runtime is stopped for update or restart.
 This phase introduces a dedicated `adaos-supervisor` that remains available while the main runtime is down.
 Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
-Current MVP coverage now includes slot-first validation, explicit root-promotion states, an explicit `root restart in progress` attempt stage after root promotion, forced shutdown recovery for hung runtime restarts, one queued subsequent transition after an in-flight transition, minimum-interval scheduling for normal update requests, operator-driven defer for planned/countdown updates, a browser-shell transition badge, routed read-only supervisor transition polling on `/hubs/<id>/api/supervisor/public/update-status`, and a canonical supervisor runtime object in the control-plane model so Infrascope/overview surfaces can project transition state as an operator runtime instead of only a transport outage.
-The remaining gap is broader deployment coverage for that live supervisor path across stricter root-proxied and multi-zone browser topologies, so browser status can keep advancing from supervisor truth in every supported entry mode even while runtime HTTP/WS is down.
+Current MVP coverage now includes slot-first validation, explicit root-promotion states, an explicit `root restart in progress` attempt stage after root promotion, forced shutdown recovery for hung runtime restarts, one queued subsequent transition after an in-flight transition, minimum-interval scheduling for normal update requests, operator-driven defer for planned/countdown updates, a browser-shell transition badge, routed read-only supervisor transition polling on `/hubs/<id>/api/supervisor/public/update-status`, a canonical supervisor runtime object in the control-plane model so Infrascope/overview surfaces can project transition state as an operator runtime instead of only a transport outage, and a slot-bound runtime-port model with an explicit supervisor-side warm-switch admission decision (`warm_switch` vs `stop_and_switch`) based on reserved A/B ports and local memory headroom.
+The remaining gap is full candidate-runtime prewarm and fast cutover: the browser/control path can now see which mode supervisor selected and which candidate URL/port is reserved, but the actual dual-runtime launch/cutover path still needs to be completed so low-downtime switching becomes operational rather than only planned/observable.
 
 ### Focus
 
@@ -230,6 +230,10 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - distinguish browser-facing `hub restarting`, `update applying`, `rollback`, `root promotion pending`, `root restart in progress`, and `update failed` from ordinary transport reconnect state
 - surface `planned`, `deferred`, minimum-window scheduling, and queued follow-up transition state through that same browser-safe/read-only supervisor surface
 - extend the routed read-only supervisor transition surface across every browser deployment topology, not only the default `/hubs/<id>/api/...` entry path
+- reserve stable runtime ports per slot so supervisor can reason about `active` and `candidate` runtimes explicitly
+- add a memory gate that decides when dual-runtime warm-switch is safe and when supervisor must fall back to stop-and-switch
+- surface `transition_mode`, candidate runtime URL/port, and warm-switch admission reason in operator and browser-safe status
+- complete candidate prewarm and fast cutover only after those control-plane signals are stable
 
 ### Candidate code areas
 
@@ -250,6 +254,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - operators can distinguish `slot validation`, `root promotion pending`, and `root restart in progress` from supervisor-visible state
 - browser header/status surfaces can distinguish controlled supervisor-managed restart/update transitions from plain hub offline or transport loss
 - routed browser sessions can continue reading live supervisor transition state even while runtime `/api`, `/ws`, and `/yws` are unavailable
+- operators can tell whether the next transition is planned as `warm_switch` or `stop_and_switch`, and why
 
 ## Phase 4: Hub-member semantic channels
 

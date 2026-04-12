@@ -13,6 +13,11 @@ from pathlib import Path
 from string import Formatter
 from typing import Any
 
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in some environments
+    psutil = None  # type: ignore
+
 import requests
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException
@@ -25,6 +30,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.core_slots import (
     active_slot,
     active_slot_manifest,
+    choose_inactive_slot,
     rollback_to_previous_slot,
     slot_status as core_slot_status,
     validate_slot_structure,
@@ -125,6 +131,57 @@ def _min_update_period_sec() -> float:
         return max(0.0, float(str(os.getenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC") or "300").strip()))
     except Exception:
         return 300.0
+
+
+def _slot_runtime_ports(primary_port: int) -> dict[str, int]:
+    fallback_a = int(primary_port)
+    fallback_b = fallback_a + 1
+    try:
+        slot_a = int(str(os.getenv("ADAOS_SUPERVISOR_SLOT_A_PORT") or fallback_a).strip() or fallback_a)
+    except Exception:
+        slot_a = fallback_a
+    try:
+        slot_b = int(str(os.getenv("ADAOS_SUPERVISOR_SLOT_B_PORT") or fallback_b).strip() or fallback_b)
+    except Exception:
+        slot_b = fallback_b
+    if slot_a <= 0:
+        slot_a = fallback_a
+    if slot_b <= 0:
+        slot_b = fallback_b
+    return {"A": slot_a, "B": slot_b}
+
+
+def _slot_runtime_port(slot: str | None, primary_port: int) -> int:
+    slot_name = str(slot or "").strip().upper()
+    return int(_slot_runtime_ports(primary_port).get(slot_name, int(primary_port)))
+
+
+def _warm_switch_enabled() -> bool:
+    raw = os.getenv("ADAOS_SUPERVISOR_WARM_SWITCH_ENABLED")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _warm_switch_min_available_bytes() -> int:
+    try:
+        return max(0, int(float(str(os.getenv("ADAOS_SUPERVISOR_WARM_SWITCH_MIN_AVAILABLE_MB") or "256").strip()) * 1024 * 1024))
+    except Exception:
+        return 256 * 1024 * 1024
+
+
+def _warm_switch_min_candidate_bytes() -> int:
+    try:
+        return max(0, int(float(str(os.getenv("ADAOS_SUPERVISOR_WARM_SWITCH_MIN_CANDIDATE_MB") or "192").strip()) * 1024 * 1024))
+    except Exception:
+        return 192 * 1024 * 1024
+
+
+def _warm_switch_rss_multiplier() -> float:
+    try:
+        return max(1.0, float(str(os.getenv("ADAOS_SUPERVISOR_WARM_SWITCH_RSS_MULTIPLIER") or "1.15").strip()))
+    except Exception:
+        return 1.15
 
 
 def _terminal_update_states() -> set[str]:
@@ -408,8 +465,18 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "runtime": {
             "active_slot": str(runtime.get("active_slot") or "").strip() or None,
             "runtime_state": str(runtime.get("runtime_state") or "").strip() or None,
+            "runtime_url": str(runtime.get("runtime_url") or "").strip() or None,
+            "runtime_port": runtime.get("runtime_port"),
             "listener_running": bool(runtime.get("listener_running")),
             "runtime_api_ready": bool(runtime.get("runtime_api_ready")),
+            "candidate_slot": str(runtime.get("candidate_slot") or "").strip() or None,
+            "candidate_runtime_url": str(runtime.get("candidate_runtime_url") or "").strip() or None,
+            "candidate_runtime_port": runtime.get("candidate_runtime_port"),
+            "transition_mode": str(runtime.get("transition_mode") or "").strip() or None,
+            "warm_switch_supported": runtime.get("warm_switch_supported"),
+            "warm_switch_allowed": runtime.get("warm_switch_allowed"),
+            "warm_switch_reason": str(runtime.get("warm_switch_reason") or "").strip() or None,
+            "slot_ports": runtime.get("slot_ports") if isinstance(runtime.get("slot_ports"), dict) else {},
             "root_promotion_required": bool(
                 runtime.get("root_promotion_required")
                 or bootstrap_update.get("required")
@@ -467,8 +534,118 @@ class SupervisorManager:
         self._update_task_cancel_mode: str | None = None
 
     @property
+    def active_runtime_port(self) -> int:
+        return self.slot_runtime_port(active_slot())
+
+    @property
     def runtime_base_url(self) -> str:
-        return f"http://{self.runtime_host}:{self.runtime_port}"
+        return self.slot_runtime_base_url(active_slot())
+
+    def slot_runtime_port(self, slot: str | None) -> int:
+        return _slot_runtime_port(slot, self.runtime_port)
+
+    def slot_runtime_base_url(self, slot: str | None) -> str:
+        return f"http://{self.runtime_host}:{self.slot_runtime_port(slot)}"
+
+    def slot_runtime_urls(self) -> dict[str, str]:
+        ports = _slot_runtime_ports(self.runtime_port)
+        return {slot_name: f"http://{self.runtime_host}:{port}" for slot_name, port in ports.items()}
+
+    def _candidate_transition_slot(
+        self,
+        *,
+        current_slot: str | None,
+        update_status: dict[str, Any] | None,
+        update_attempt: dict[str, Any] | None,
+    ) -> str | None:
+        for source in (update_status or {}, update_attempt or {}):
+            target_slot = str(source.get("target_slot") or "").strip().upper()
+            if target_slot in {"A", "B"}:
+                return target_slot
+        state = str((update_status or {}).get("state") or "").strip().lower()
+        attempt_state = str((update_attempt or {}).get("state") or "").strip().lower()
+        transition_active = state in {"planned", "countdown", "draining", "stopping", "restarting", "applying", "validated"} or attempt_state in {"planned", "active"}
+        if not transition_active and attempt_state == "awaiting_root_restart":
+            transition_active = _subsequent_transition_request(update_attempt) is not None
+        if transition_active:
+            target_slot = choose_inactive_slot()
+            if target_slot and target_slot != str(current_slot or "").strip().upper():
+                return target_slot
+        return None
+
+    def _warm_switch_state(
+        self,
+        *,
+        current_slot: str | None,
+        update_status: dict[str, Any] | None,
+        update_attempt: dict[str, Any] | None,
+        managed_pid: int | None,
+    ) -> dict[str, Any]:
+        candidate_slot = self._candidate_transition_slot(
+            current_slot=current_slot,
+            update_status=update_status,
+            update_attempt=update_attempt,
+        )
+        slot_ports = _slot_runtime_ports(self.runtime_port)
+        active_port = self.slot_runtime_port(current_slot)
+        candidate_port = self.slot_runtime_port(candidate_slot)
+        supported = bool(candidate_slot) and candidate_port != active_port
+        enabled = _warm_switch_enabled()
+        allowed = False
+        reason = "warm switch is disabled"
+        available_bytes = None
+        estimated_candidate_bytes = None
+        reserve_bytes = _warm_switch_min_available_bytes()
+        current_rss_bytes = None
+        if not candidate_slot:
+            reason = "no transition candidate slot"
+        elif not supported:
+            reason = "candidate runtime uses the same port as the active slot"
+        elif not enabled:
+            reason = "warm switch is disabled"
+        elif psutil is None:
+            reason = "psutil unavailable; cannot evaluate memory gate"
+        else:
+            try:
+                vm = psutil.virtual_memory()
+                available_bytes = int(getattr(vm, "available", 0) or 0)
+            except Exception:
+                available_bytes = None
+            if managed_pid:
+                with contextlib.suppress(Exception):
+                    current_rss_bytes = int(psutil.Process(int(managed_pid)).memory_info().rss)
+            estimated_candidate_bytes = max(
+                _warm_switch_min_candidate_bytes(),
+                int(float(current_rss_bytes or 0) * _warm_switch_rss_multiplier()),
+            )
+            if available_bytes is None or available_bytes <= 0:
+                reason = "available memory is unknown"
+            elif available_bytes < estimated_candidate_bytes + reserve_bytes:
+                reason = "insufficient memory for warm switch; using stop-and-switch"
+            else:
+                allowed = True
+                reason = "warm switch admitted"
+        transition_mode = None
+        if candidate_slot:
+            transition_mode = "warm_switch" if supported and enabled and allowed else "stop_and_switch"
+        return {
+            "candidate_slot": candidate_slot,
+            "candidate_runtime_port": candidate_port if candidate_slot else None,
+            "candidate_runtime_url": self.slot_runtime_base_url(candidate_slot) if candidate_slot else None,
+            "transition_mode": transition_mode,
+            "warm_switch_enabled": enabled,
+            "warm_switch_supported": supported,
+            "warm_switch_allowed": allowed if candidate_slot else None,
+            "warm_switch_reason": reason if candidate_slot else None,
+            "warm_switch_memory": {
+                "available_bytes": available_bytes,
+                "current_rss_bytes": current_rss_bytes,
+                "estimated_candidate_bytes": estimated_candidate_bytes,
+                "reserve_bytes": reserve_bytes,
+            },
+            "slot_ports": slot_ports,
+            "slot_urls": self.slot_runtime_urls(),
+        }
 
     def _runtime_env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -484,6 +661,7 @@ class SupervisorManager:
         env = self._runtime_env()
         manifest = active_slot_manifest()
         slot = active_slot()
+        slot_port = self.slot_runtime_port(slot)
         if isinstance(manifest, dict):
             manifest_env = manifest.get("env")
             if isinstance(manifest_env, dict):
@@ -494,7 +672,7 @@ class SupervisorManager:
                 env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(core_slot_status().get("slots", {}).get(slot, {}).get("path") or "")
             values = {
                 "host": self.runtime_host,
-                "port": str(self.runtime_port),
+                "port": str(slot_port),
                 "token": str(self.token or ""),
                 "slot": str(slot or ""),
                 "slot_dir": str(core_slot_status().get("slots", {}).get(slot or "", {}).get("path") or ""),
@@ -519,7 +697,7 @@ class SupervisorManager:
                 "--host",
                 self.runtime_host,
                 "--port",
-                str(self.runtime_port),
+                str(slot_port),
             ],
             None,
             env,
@@ -530,8 +708,12 @@ class SupervisorManager:
         proc = self._proc
         current_slot = active_slot()
         active_manifest = active_slot_manifest()
+        update_status = read_core_update_status()
+        update_attempt = _read_update_attempt()
         root_promotion_required, bootstrap_update = manifest_requires_root_promotion(active_manifest)
         slot_structure = validate_slot_structure(current_slot) if current_slot else None
+        active_runtime_port = self.slot_runtime_port(current_slot)
+        active_runtime_url = self.slot_runtime_base_url(current_slot)
         managed_pid = None
         managed_alive = False
         managed_cmdline: list[str] = []
@@ -551,8 +733,8 @@ class SupervisorManager:
                 managed_cmdline = []
                 managed_executable = None
                 managed_cwd = None
-        listener_running = bool(managed_alive) and _listener_running(self.runtime_host, self.runtime_port)
-        api_ready = listener_running and _runtime_api_ready(self.runtime_base_url, token=self.token)
+        listener_running = bool(managed_alive) and _listener_running(self.runtime_host, active_runtime_port)
+        api_ready = listener_running and _runtime_api_ready(active_runtime_url, token=self.token)
         runtime_state = "stopped"
         if self._stopping:
             runtime_state = "stopping"
@@ -576,13 +758,19 @@ class SupervisorManager:
                 managed_matches_active_slot = False
             if expected_cwd and str(managed_cwd or "").strip() != expected_cwd:
                 managed_matches_active_slot = False
+        warm_switch = self._warm_switch_state(
+            current_slot=current_slot,
+            update_status=update_status,
+            update_attempt=update_attempt,
+            managed_pid=managed_pid,
+        )
         return {
             "ok": True,
             "supervisor_pid": os.getpid(),
             "supervisor_url": _supervisor_base_url(),
-            "runtime_url": self.runtime_base_url,
+            "runtime_url": active_runtime_url,
             "runtime_host": self.runtime_host,
-            "runtime_port": self.runtime_port,
+            "runtime_port": active_runtime_port,
             "active_slot": current_slot,
             "desired_running": bool(self._desired_running),
             "stopping": bool(self._stopping),
@@ -606,6 +794,7 @@ class SupervisorManager:
             "last_exit_at": self._last_exit_at,
             "last_exit_code": self._last_exit_code,
             "last_error": self._last_error,
+            **warm_switch,
             "updated_at": time.time(),
         }
 

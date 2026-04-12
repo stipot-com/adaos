@@ -749,6 +749,13 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
                 "desired_running": True,
                 "managed_alive": True,
                 "runtime_api_ready": True,
+                "transition_mode": "warm_switch",
+                "candidate_slot": "A",
+                "candidate_runtime_url": "http://127.0.0.1:8777",
+                "candidate_runtime_port": 8777,
+                "warm_switch_supported": True,
+                "warm_switch_allowed": True,
+                "warm_switch_reason": "warm switch admitted",
             },
             "update_status": {
                 "state": "planned",
@@ -768,8 +775,12 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
     assert obj["status"] == "warning"
     assert obj["runtime"]["planned_reason"] == "minimum_update_period"
     assert obj["runtime"]["scheduled_for"] == 1234.0
+    assert obj["runtime"]["transition_mode"] == "warm_switch"
+    assert obj["runtime"]["candidate_slot"] == "A"
+    assert obj["runtime"]["warm_switch_allowed"] is True
     assert obj["runtime"]["subsequent_transition"] is True
     assert obj["actual_state"]["subsequent_transition_requested_at"] == 1200.0
+    assert obj["actual_state"]["candidate_runtime_port"] == 8777
 
 
 def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:

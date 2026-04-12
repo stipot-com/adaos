@@ -804,6 +804,129 @@ def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, 
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
 
 
+def test_runtime_state_payload_surfaces_warm_switch_admission(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    class _Psutil:
+        class Process:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def memory_info(self):
+                return type("Mem", (), {"rss": 256 * 1024 * 1024})()
+
+        @staticmethod
+        def virtual_memory():
+            return type("VM", (), {"available": 1024 * 1024 * 1024})()
+
+    manager._proc = _Proc()
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "planned_reason": "minimum_update_period",
+        }
+    )
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "choose_inactive_slot", lambda: "B")
+    monkeypatch.setattr(supervisor, "psutil", _Psutil)
+
+    payload = manager.status()
+
+    assert payload["runtime_port"] == 8777
+    assert payload["candidate_slot"] == "B"
+    assert payload["candidate_runtime_port"] == 8778
+    assert payload["transition_mode"] == "warm_switch"
+    assert payload["warm_switch_supported"] is True
+    assert payload["warm_switch_allowed"] is True
+    assert payload["slot_ports"]["A"] == 8777
+    assert payload["slot_ports"]["B"] == 8778
+
+
+def test_runtime_state_payload_falls_back_to_stop_and_switch_when_memory_is_low(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    class _Psutil:
+        class Process:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def memory_info(self):
+                return type("Mem", (), {"rss": 256 * 1024 * 1024})()
+
+        @staticmethod
+        def virtual_memory():
+            return type("VM", (), {"available": 300 * 1024 * 1024})()
+
+    manager._proc = _Proc()
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+        }
+    )
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "choose_inactive_slot", lambda: "B")
+    monkeypatch.setattr(supervisor, "psutil", _Psutil)
+
+    payload = manager.status()
+
+    assert payload["candidate_slot"] == "B"
+    assert payload["transition_mode"] == "stop_and_switch"
+    assert payload["warm_switch_allowed"] is False
+    assert "insufficient memory" in str(payload["warm_switch_reason"] or "")
+
+
 def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
@@ -926,8 +1049,18 @@ def test_public_update_status_payload_is_browser_safe() -> None:
             "runtime": {
                 "active_slot": "A",
                 "runtime_state": "spawned",
+                "runtime_url": "http://127.0.0.1:8777",
+                "runtime_port": 8777,
                 "listener_running": False,
                 "runtime_api_ready": False,
+                "candidate_slot": "B",
+                "candidate_runtime_url": "http://127.0.0.1:8778",
+                "candidate_runtime_port": 8778,
+                "transition_mode": "warm_switch",
+                "warm_switch_supported": True,
+                "warm_switch_allowed": True,
+                "warm_switch_reason": "warm switch admitted",
+                "slot_ports": {"A": 8777, "B": 8778},
                 "root_promotion_required": True,
                 "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
                 "managed_cmdline": ["hidden"],
@@ -957,6 +1090,10 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["attempt"]["scheduled_for"] == 456.0
     assert payload["attempt"]["subsequent_transition"] is True
     assert payload["runtime"]["active_slot"] == "A"
+    assert payload["runtime"]["runtime_url"] == "http://127.0.0.1:8777"
+    assert payload["runtime"]["candidate_runtime_url"] == "http://127.0.0.1:8778"
+    assert payload["runtime"]["transition_mode"] == "warm_switch"
+    assert payload["runtime"]["slot_ports"]["B"] == 8778
     assert payload["runtime"]["root_promotion_required"] is True
     assert payload["_served_by"] == "supervisor_fallback"
     assert "managed_cmdline" not in payload["runtime"]
@@ -1023,3 +1160,44 @@ def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path
     assert captured["kwargs"]["cwd"] == "/slot/repo"
     assert captured["kwargs"]["env"]["PYTHONPATH"] == "/slot/repo/src"
     assert captured["kwargs"]["env"]["ADAOS_ACTIVE_CORE_SLOT"] == "A"
+
+
+def test_spawn_runtime_locked_uses_slot_specific_port_for_slot_b(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4343
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["/slot/python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+            "cwd": "/slot/repo",
+            "env": {"PYTHONPATH": "/slot/repo/src"},
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "core_slot_status",
+        lambda: {"slots": {"B": {"path": "/slots/B"}}},
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    asyncio.run(manager._spawn_runtime_locked())
+
+    assert captured["args"][-1] == "8778"
