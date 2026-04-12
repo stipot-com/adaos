@@ -12,6 +12,7 @@ from typing import Any
 
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx
+from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
 from adaos.services.core_slots import (
     activate_slot,
     active_slot,
@@ -22,16 +23,6 @@ from adaos.services.core_slots import (
     slot_dir,
 )
 from adaos.services.runtime_paths import current_base_dir
-
-
-BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
-    "src/adaos/apps/supervisor.py",
-    "src/adaos/apps/autostart_runner.py",
-    "src/adaos/apps/core_update_apply.py",
-    "src/adaos/services/core_update.py",
-    "src/adaos/services/autostart.py",
-    "src/adaos/apps/cli/commands/setup.py",
-)
 
 
 def _base_dir() -> Path:

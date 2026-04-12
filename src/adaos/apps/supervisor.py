@@ -1235,6 +1235,53 @@ class SupervisorManager:
                 "slot": current_slot,
             }
 
+    async def _promote_candidate_runtime(self, *, slot: str, reason: str) -> dict[str, Any]:
+        resolved_slot = str(slot or "").strip().upper()
+        current_candidate_slot = str(self._candidate_slot or "").strip().upper()
+        candidate_proc = self._candidate_proc
+        if resolved_slot not in {"A", "B"}:
+            raise RuntimeError("candidate slot is unavailable for fast cutover")
+        if current_candidate_slot != resolved_slot:
+            raise RuntimeError("candidate runtime slot does not match the prepared target slot")
+        if candidate_proc is None or candidate_proc.poll() is not None:
+            raise RuntimeError("candidate runtime is not running for fast cutover")
+
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-AdaOS-Token"] = self.token
+        candidate_base_url = self.slot_runtime_base_url(resolved_slot)
+        response = requests.post(
+            candidate_base_url + "/api/admin/runtime/promote-active",
+            headers=headers,
+            json={"reason": reason, "reconnect_hub_root": True},
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("candidate promotion returned a non-object payload")
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        promoted_role = str(runtime.get("transition_role") or "").strip().lower()
+        if promoted_role != "active":
+            raise RuntimeError("candidate runtime did not report active role after promotion")
+        promoted_instance_id = str(runtime.get("runtime_instance_id") or self._candidate_runtime_instance_id or "").strip() or None
+        async with self._lock:
+            proc = self._candidate_proc
+            if proc is None or proc.poll() is not None:
+                raise RuntimeError("candidate runtime exited before supervisor adopted it")
+            self._proc = proc
+            self._managed_runtime_instance_id = promoted_instance_id
+            self._managed_transition_role = "active"
+            self._candidate_proc = None
+            self._candidate_slot = None
+            self._candidate_runtime_instance_id = None
+            self._candidate_transition_role = None
+            self._last_start_at = time.time()
+            self._last_error = None
+            self._restart_count += 1
+            self._persist_runtime_state()
+        return payload
+
     async def monitor_forever(self) -> None:
         while True:
             await asyncio.sleep(1.0)
@@ -1764,6 +1811,9 @@ class SupervisorManager:
         candidate_prewarm_state = "skipped"
         candidate_prewarm_message = ""
         candidate_prewarm_ready_at = None
+        candidate_launch_state = "skipped"
+        candidate_launch_message = ""
+        used_candidate_cutover = False
         prepare_result = prepare_pending_update(
             {
                 "action": action,
@@ -1930,11 +1980,38 @@ class SupervisorManager:
                         "manifest": manifest,
                     }
                 )
-            await self._cleanup_candidate_runtime(
-                reason="supervisor.candidate.stop_before_active_launch",
-                slot=target_slot,
-            )
             activate_slot(target_slot)
+            candidate_cleanup: dict[str, Any] | None = None
+            candidate_launch_state = candidate_prewarm_state
+            candidate_launch_message = candidate_prewarm_message
+            if candidate_prewarm_state == "ready":
+                try:
+                    await self._promote_candidate_runtime(
+                        slot=target_slot,
+                        reason="supervisor.fast_cutover",
+                    )
+                    used_candidate_cutover = True
+                    candidate_launch_state = "promoted_to_active"
+                    candidate_launch_message = (
+                        "passive candidate runtime promoted to active via warm-switch cutover"
+                    )
+                except Exception as exc:
+                    candidate_cleanup = await self._cleanup_candidate_runtime(
+                        reason="supervisor.candidate.cutover_fallback",
+                        slot=target_slot,
+                    )
+                    candidate_launch_state = "cutover_fallback"
+                    candidate_launch_message = (
+                        f"warm-switch cutover fallback: {type(exc).__name__}: {exc}"
+                    )
+            elif candidate_prewarm_state != "skipped":
+                candidate_cleanup = await self._cleanup_candidate_runtime(
+                    reason="supervisor.candidate.stop_before_active_launch",
+                    slot=target_slot,
+                )
+                if bool((candidate_cleanup or {}).get("stopped")):
+                    candidate_launch_state = "stopped_for_launch"
+                    candidate_launch_message = "passive candidate runtime stopped before active launch"
             failure_phase = "launch"
             write_core_update_status(
                 {
@@ -1946,15 +2023,15 @@ class SupervisorManager:
                     "reason": reason,
                     "target_slot": target_slot,
                     "prepared_at": float(prepare_result.get("finished_at") or time.time()),
-                    "candidate_prewarm_state": "stopped_for_launch" if candidate_prewarm_state != "skipped" else candidate_prewarm_state,
-                    "candidate_prewarm_message": (
-                        "passive candidate runtime stopped before active launch"
-                        if candidate_prewarm_state != "skipped"
-                        else candidate_prewarm_message or None
-                    ),
+                    "candidate_prewarm_state": candidate_launch_state,
+                    "candidate_prewarm_message": candidate_launch_message or None,
                     "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                     "message": (
-                        f"prepared slot {target_slot} activated; awaiting runtime launch"
+                        f"prepared slot {target_slot} activated via warm-switch cutover; awaiting validation"
+                        if used_candidate_cutover and target_slot
+                        else "prepared slot activated via warm-switch cutover; awaiting validation"
+                        if used_candidate_cutover
+                        else f"prepared slot {target_slot} activated; awaiting runtime launch"
                         if target_slot
                         else "prepared slot activated; awaiting runtime launch"
                     ),

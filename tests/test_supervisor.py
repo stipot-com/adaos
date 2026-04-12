@@ -227,6 +227,7 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
     desired_running_states: list[bool] = []
     activated_slots: list[str] = []
     candidate_calls: list[tuple[str, str | None]] = []
+    promote_calls: list[tuple[str, str]] = []
 
     async def _shutdown(**kwargs):
         lifecycle_calls.append("shutdown")
@@ -249,10 +250,23 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
         candidate_calls.append((reason, slot))
         return {"ok": True, "stopped": True, "slot": slot}
 
+    async def _promote_candidate_runtime(*, slot: str, reason: str):
+        promote_calls.append((slot, reason))
+        return {
+            "ok": True,
+            "accepted": True,
+            "runtime": {
+                "transition_role": "active",
+                "runtime_instance_id": "rt-b-c-12345678",
+                "runtime_port": 8778,
+            },
+        }
+
     monkeypatch.setattr(manager, "_request_runtime_shutdown", _shutdown)
     monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _ensure_stopped)
     monkeypatch.setattr(manager, "_candidate_prewarm", _candidate_prewarm)
     monkeypatch.setattr(manager, "_cleanup_candidate_runtime", _cleanup_candidate_runtime)
+    monkeypatch.setattr(manager, "_promote_candidate_runtime", _promote_candidate_runtime)
     monkeypatch.setattr(supervisor, "activate_slot", lambda slot: activated_slots.append(str(slot)))
     monkeypatch.setattr(manager, "_persist_runtime_state", lambda: desired_running_states.append(bool(manager._desired_running)))
 
@@ -275,15 +289,138 @@ def test_prepare_worker_writes_prepared_restart_plan_and_reenables_runtime(monke
     status = read_status()
     assert status["state"] == "restarting"
     assert status["phase"] == "launch"
-    assert status["candidate_prewarm_state"] == "stopped_for_launch"
+    assert status["candidate_prewarm_state"] == "promoted_to_active"
     assert activated_slots == ["B"]
     assert lifecycle_calls == ["shutdown", "stopped"]
-    assert candidate_calls == [
-        ("prewarm", "B"),
-        ("supervisor.candidate.stop_before_active_launch", "B"),
-    ]
+    assert candidate_calls == [("prewarm", "B")]
+    assert promote_calls == [("B", "supervisor.fast_cutover")]
     assert False in desired_running_states
     assert desired_running_states[-1] is True
+
+
+def test_prepare_worker_falls_back_to_stop_and_switch_when_candidate_cutover_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        supervisor,
+        "prepare_pending_update",
+        lambda plan: {
+            "state": "prepared",
+            "phase": "prepare",
+            "target_slot": "B",
+            "manifest": {"slot": "B"},
+            "plan": {"target_slot": "B"},
+            "finished_at": 222.0,
+        },
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    cleanup_calls: list[tuple[str, str | None]] = []
+
+    async def _shutdown(**kwargs):
+        return {"ok": True}
+
+    async def _ensure_stopped(**kwargs):
+        return {"ok": True, "forced": False}
+
+    async def _candidate_prewarm(*, target_slot: str | None):
+        return {
+            "attempted": True,
+            "state": "ready",
+            "message": "passive candidate runtime is ready on http://127.0.0.1:8778",
+            "ready_at": 223.0,
+        }
+
+    async def _cleanup_candidate_runtime(*, reason: str, slot: str | None = None):
+        cleanup_calls.append((reason, slot))
+        return {"ok": True, "stopped": True, "slot": slot}
+
+    async def _promote_candidate_runtime(*, slot: str, reason: str):
+        raise RuntimeError("candidate reconnect failed")
+
+    monkeypatch.setattr(manager, "_request_runtime_shutdown", _shutdown)
+    monkeypatch.setattr(manager, "_ensure_runtime_stopped_for_update", _ensure_stopped)
+    monkeypatch.setattr(manager, "_candidate_prewarm", _candidate_prewarm)
+    monkeypatch.setattr(manager, "_cleanup_candidate_runtime", _cleanup_candidate_runtime)
+    monkeypatch.setattr(manager, "_promote_candidate_runtime", _promote_candidate_runtime)
+    monkeypatch.setattr(supervisor, "activate_slot", lambda slot: None)
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
+
+    asyncio.run(
+        manager._prepare_and_countdown_update_worker(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.update",
+            countdown_sec=0.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    status = read_status()
+    assert status["state"] == "restarting"
+    assert status["phase"] == "launch"
+    assert status["candidate_prewarm_state"] == "cutover_fallback"
+    assert "candidate reconnect failed" in str(status["candidate_prewarm_message"] or "")
+    assert cleanup_calls == [("supervisor.candidate.cutover_fallback", "B")]
+
+
+def test_promote_candidate_runtime_adopts_candidate_process(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _CandidateProc:
+        pid = 42424
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._candidate_proc = _CandidateProc()
+    manager._candidate_slot = "B"
+    manager._candidate_runtime_instance_id = "rt-b-c-12345678"
+    manager._candidate_transition_role = "candidate"
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "ok": True,
+                "accepted": True,
+                "runtime": {
+                    "transition_role": "active",
+                    "runtime_instance_id": "rt-b-c-12345678",
+                    "runtime_port": 8778,
+                },
+            }
+
+    captured: dict[str, object] = {}
+
+    def _post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _Response()
+
+    persisted: list[bool] = []
+
+    monkeypatch.setattr(supervisor.requests, "post", _post)
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: persisted.append(True))
+
+    payload = asyncio.run(manager._promote_candidate_runtime(slot="B", reason="test.cutover"))
+
+    assert payload["accepted"] is True
+    assert captured["url"] == "http://127.0.0.1:8778/api/admin/runtime/promote-active"
+    assert captured["kwargs"]["json"]["reason"] == "test.cutover"
+    assert manager._proc is not None
+    assert manager._candidate_proc is None
+    assert manager._managed_runtime_instance_id == "rt-b-c-12345678"
+    assert manager._managed_transition_role == "active"
+    assert persisted
 
 
 def test_supervisor_monitor_cleans_idle_candidate_runtime(monkeypatch, tmp_path) -> None:

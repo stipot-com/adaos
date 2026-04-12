@@ -163,7 +163,7 @@ Without that, a candidate process can look indistinguishable from the active pro
 
 ## Candidate passive mode
 
-Before fast cutover is implemented, a prewarmed `candidate` runtime must stay passive on root-facing traffic subjects.
+Before cutover is explicitly committed, a prewarmed `candidate` runtime must stay passive on root-facing traffic subjects.
 
 That means a candidate may establish root control connectivity for diagnostics, but it must not yet subscribe to the same root-routed traffic subjects as the active runtime:
 
@@ -182,6 +182,14 @@ The same rule must apply to local control discovery:
 - `candidate` runtime surfaces must self-identify through lightweight probes such as `/api/ping` and `/api/admin/update/status`
 - local fallback control resolvers must ignore a runtime that reports `transition_role=candidate` or `admin_mutation_allowed=false`
 - a candidate runtime must reject mutating local update operations (`update.start`, `update.cancel`, `update.rollback`) with an explicit conflict instead of behaving like a second control plane
+
+Fast cutover does not remove that rule.
+It only defines the moment when supervisor may end passive mode:
+
+- supervisor explicitly authorizes the already-running candidate to promote itself through `POST /api/admin/runtime/promote-active`
+- the candidate flips to `transition_role=active`, reconnects root-facing transport under that new authority, and only then becomes eligible to own live hub traffic
+- supervisor adopts that promoted process as the managed active runtime instead of launching a second fresh process when warm-switch succeeds
+- if promotion or adoption fails, supervisor tears the candidate down and falls back to the existing stop-and-switch launch path
 
 ## Authority boundary
 
@@ -285,6 +293,7 @@ Available only while `adaos-runtime` is running:
 
 - current node APIs
 - current admin APIs that belong to runtime semantics
+- cutover-only runtime identity operations such as `POST /api/admin/runtime/promote-active`
 - reliability, scenario, skill, Yjs, media, and operator surfaces
 
 ## Persisted state
@@ -330,9 +339,9 @@ Target flow:
 5. supervisor starts countdown only after the target slot is materially ready
 6. supervisor requests graceful runtime shutdown
 7. supervisor commits deferred installed-skill runtime migration against the target core interpreter after the old runtime is down
-8. supervisor launches production runtime from the target slot
-9. supervisor validates required runtime checks against that slot runtime
-10. on slot-validation success, supervisor commits the slot switch
+8. supervisor activates the target slot and either promotes the prewarmed candidate runtime to active authority or launches production runtime from that slot
+9. supervisor validates required runtime checks against that target-slot runtime
+10. on slot-validation success, supervisor commits the transition result
 11. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
 12. on failure or deadline expiry, supervisor rolls back the slot and records failure
 
@@ -390,13 +399,14 @@ Current MVP implementation also starts a best-effort passive `candidate` runtime
 - slot ports are reserved distinctly
 - supervisor admitted `warm_switch`
 
-That prewarm is currently diagnostic rather than authoritative cutover:
+That prewarm now feeds a real fast-cutover path:
 
 - candidate readiness is surfaced through supervisor runtime/public status
-- candidate remains passive on root-routed traffic subjects
-- candidate is stopped before active-slot launch so the node still finishes through the current stop-and-switch commit path
+- candidate remains passive on root-routed traffic subjects until supervisor explicitly commits cutover
+- once the old runtime is down and the prepared slot is activated, supervisor may promote/adopt the already-running candidate instead of starting a fresh runtime process
+- if candidate promotion, root reconnect, or supervisor adoption fails, supervisor falls back to the existing stop-and-switch launch path from the same prepared slot
 
-This gives an early signal that the candidate core runtime can boot on its reserved port without yet making the browser/root control plane depend on fast cutover semantics.
+This keeps warm-switch opportunistic and reversible: the node gets a genuine low-downtime cutover path when the candidate is ready, but constrained or unhealthy cases still converge through the proven fallback path.
 
 Recommended per-skill diagnostic fields:
 

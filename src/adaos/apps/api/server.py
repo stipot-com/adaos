@@ -151,7 +151,7 @@ from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 
 from adaos.apps.bootstrap import init_ctx
-from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
+from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready, request_hub_root_reconnect
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
@@ -925,6 +925,11 @@ class CoreUpdateRollbackRequest(BaseModel):
     signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
 
 
+class RuntimePromoteActiveRequest(BaseModel):
+    reason: str = Field(default="supervisor.fast_cutover", min_length=1, max_length=128)
+    reconnect_hub_root: bool = Field(default=True)
+
+
 @app.post("/api/subnet/alias")
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
@@ -1121,6 +1126,37 @@ async def admin_update_rollback(body: CoreUpdateRollbackRequest):
     )
     app.state.core_update_task = task
     return {"ok": True, "accepted": True, "status": read_core_update_status()}
+
+
+@app.post("/api/admin/runtime/promote-active", dependencies=[Depends(require_token)])
+async def admin_runtime_promote_active(body: RuntimePromoteActiveRequest):
+    info = _runtime_identity_public_payload()
+    current_role = str(info.get("transition_role") or "active").strip().lower() or "active"
+    if current_role == "active":
+        return {
+            "ok": True,
+            "accepted": False,
+            "message": "runtime already active",
+            "reason": body.reason,
+            "runtime": _runtime_identity_public_payload(),
+            "reconnect": None,
+        }
+
+    os.environ["ADAOS_RUNTIME_TRANSITION_ROLE"] = "active"
+    reconnect_result: dict[str, Any] | None = None
+    if bool(body.reconnect_hub_root):
+        try:
+            reconnect_result = await request_hub_root_reconnect()
+        except Exception as exc:
+            reconnect_result = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+    return {
+        "ok": True,
+        "accepted": True,
+        "message": "candidate runtime promoted to active",
+        "reason": body.reason,
+        "runtime": _runtime_identity_public_payload(),
+        "reconnect": reconnect_result,
+    }
 
 
 @app.get("/api/admin/update/status", dependencies=[Depends(require_token)])

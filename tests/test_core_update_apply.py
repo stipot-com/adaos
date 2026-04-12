@@ -239,3 +239,12 @@ def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: 
     assert payload["required"] is True
     assert "src/adaos/apps/supervisor.py" in payload["changed_paths"]
 
+
+def test_bootstrap_critical_paths_are_shared_with_core_update_service() -> None:
+    import adaos.apps.core_update_apply as apply_mod
+    import adaos.services.core_update as core_mod
+    from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
+
+    assert apply_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
+    assert core_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
+

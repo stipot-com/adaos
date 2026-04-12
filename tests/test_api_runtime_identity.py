@@ -91,3 +91,50 @@ def test_admin_update_status_includes_runtime_identity(monkeypatch) -> None:
     assert payload["runtime"]["slot"] == "B"
     assert payload["runtime"]["runtime_port"] == 8778
     assert payload["runtime"]["admin_mutation_allowed"] is False
+
+
+def test_candidate_runtime_can_be_promoted_to_active(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_RUNTIME_TRANSITION_ROLE", "candidate")
+    monkeypatch.setenv("ADAOS_RUNTIME_INSTANCE_ID", "rt-b-c-abcdef12")
+    monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "B")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8778")
+
+    reconnect_calls: list[tuple[str | None, str | None]] = []
+
+    async def _reconnect(*, transport: str | None = None, url_override: str | None = None):
+        reconnect_calls.append((transport, url_override))
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(api_server, "request_hub_root_reconnect", _reconnect)
+
+    payload = asyncio.run(
+        api_server.admin_runtime_promote_active(
+            api_server.RuntimePromoteActiveRequest(reason="test.cutover", reconnect_hub_root=True)
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["accepted"] is True
+    assert payload["runtime"]["transition_role"] == "active"
+    assert payload["runtime"]["runtime_instance_id"] == "rt-b-c-abcdef12"
+    assert payload["runtime"]["admin_mutation_allowed"] is True
+    assert payload["reconnect"]["ok"] is True
+    assert reconnect_calls == [(None, None)]
+
+
+def test_promote_active_is_idempotent_for_active_runtime(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_RUNTIME_TRANSITION_ROLE", "active")
+    monkeypatch.setenv("ADAOS_RUNTIME_INSTANCE_ID", "rt-a-a-abcdef12")
+    monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "A")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+
+    payload = asyncio.run(
+        api_server.admin_runtime_promote_active(
+            api_server.RuntimePromoteActiveRequest(reason="test.cutover", reconnect_hub_root=True)
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["accepted"] is False
+    assert payload["runtime"]["transition_role"] == "active"
+    assert payload["runtime"]["admin_mutation_allowed"] is True

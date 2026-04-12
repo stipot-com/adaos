@@ -10,17 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
 from adaos.services.core_slots import write_slot_manifest
-
-
-BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
-    "src/adaos/apps/supervisor.py",
-    "src/adaos/apps/autostart_runner.py",
-    "src/adaos/apps/core_update_apply.py",
-    "src/adaos/services/core_update.py",
-    "src/adaos/services/autostart.py",
-    "src/adaos/apps/cli/commands/setup.py",
-)
 
 
 def _is_probably_git_sha(value: str) -> bool:

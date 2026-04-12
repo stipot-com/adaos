@@ -1370,6 +1370,10 @@ class BootstrapService:
                         return False
 
                     while True:
+                        runtime_identity = runtime_identity_snapshot()
+                        runtime_role = str(runtime_identity.get("transition_role") or "active")
+                        runtime_instance = str(runtime_identity.get("runtime_instance_id") or "")
+                        candidate_passive_mode = _hub_root_candidate_passive_mode()
                         try:
                             nats_attempt_server = None
                             nurl, nuser, npass = _read_node_nats()
