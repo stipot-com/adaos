@@ -42,6 +42,13 @@ The project must not start with sidecar or transport adapters as if they alone s
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
 
+### Newly implemented foundation
+
+- per-member `browser <-> member` media capability is now advertised through `capacity.io` as `io_type=webrtc_media`
+- router/reliability/media runtime now resolve member-browser direct candidates from persisted subnet capacity instead of raw `connected_total`
+- normalized media route contracts now preserve `preferred_member_id` even when the selected path degrades to hub loopback or relay
+- live member `node.snapshot` payloads now include local capacity, so router/reliability can use a fresher fallback view before the next heartbeat lands
+
 ### Confirmed gaps
 
 - transport/resource isolation is still weaker than subject naming suggests

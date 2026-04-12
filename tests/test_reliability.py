@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
     hub_member_semantic_channels_snapshot,
     observe_hub_root_route_runtime,
@@ -338,6 +339,8 @@ def test_hub_member_semantic_channels_snapshot_exposes_media_route_contract() ->
                 "admitted": False,
                 "reason": "member_browser_direct_not_admitted",
                 "candidate_member_total": 1,
+                "candidate_members": ["member-1"],
+                "preferred_member_id": "member-1",
                 "browser_session_total": 1,
             },
             "root_media_relay": {"available": True},
@@ -348,13 +351,104 @@ def test_hub_member_semantic_channels_snapshot_exposes_media_route_contract() ->
     assert media["route_intent"] == "live_stream"
     assert media["delivery_topology"] == "hub_webrtc_loopback"
     assert media["producer_authority"] == "hub"
+    assert media["preferred_member_id"] == "member-1"
     assert media["member_browser_direct"]["possible"] is True
     assert media["member_browser_direct"]["admitted"] is False
+    assert media["member_browser_direct"]["candidate_members"] == ["member-1"]
     assert media["fallback_chain"] == [
         "member_browser_direct",
         "hub_webrtc_loopback",
         "root_media_relay",
     ]
+
+
+def test_hub_member_transport_evidence_counts_only_media_capable_members(monkeypatch) -> None:
+    import adaos.services.media_capability as media_capability
+
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway_ws",
+        SimpleNamespace(
+            gateway_transport_snapshot=lambda: {"transports": {}},
+            active_browser_session_snapshot=lambda: {
+                "peers": [
+                    {"device_id": "browser-1", "connection_state": "connected"},
+                ]
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.webrtc.peer",
+        SimpleNamespace(
+            webrtc_peer_snapshot=lambda: {
+                "peer_total": 0,
+                "connected_peers": 0,
+                "incoming_audio_tracks": 0,
+                "incoming_video_tracks": 0,
+                "loopback_audio_tracks": 0,
+                "loopback_video_tracks": 0,
+                "open_events_channels": 0,
+                "open_yjs_channels": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        media_capability,
+        "_directory_nodes",
+        lambda: [
+            {
+                "node_id": "member-capable",
+                "roles": ["member"],
+                "online": True,
+                "node_state": "ready",
+                "capacity": {
+                    "io": [
+                        {
+                            "io_type": "webrtc_media",
+                            "capabilities": [
+                                "webrtc:av",
+                                "producer:member",
+                                "topology:member_browser_direct",
+                                "media:live_stream",
+                                "state:available",
+                            ],
+                            "priority": 60,
+                        }
+                    ]
+                },
+            },
+            {
+                "node_id": "member-incapable",
+                "roles": ["member"],
+                "online": True,
+                "node_state": "ready",
+                "capacity": {
+                    "io": [
+                        {
+                            "io_type": "say",
+                            "capabilities": ["text", "state:available"],
+                            "priority": 40,
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(media_capability, "_live_member_links", lambda: [])
+
+    evidence = _hub_member_transport_evidence_snapshot(
+        role="hub",
+        route_mode="hub",
+        connected_to_hub=None,
+        hub_root_protocol={},
+    )
+
+    member_browser = evidence["member_browser_webrtc_media"]
+    assert member_browser["possible"] is True
+    assert member_browser["candidate_member_total"] == 1
+    assert member_browser["candidate_members"] == ["member-capable"]
+    assert member_browser["preferred_member_id"] == "member-capable"
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:

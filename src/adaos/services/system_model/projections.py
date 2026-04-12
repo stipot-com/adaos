@@ -761,6 +761,7 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "transport": transport,
                 "recommended_path": payload.get("recommended_path"),
                 "route_intent": route_intent,
+                "preferred_member_id": payload.get("preferred_member_id") or route_intent.get("preferred_member_id"),
                 "producer_authority": payload.get("producer_authority"),
                 "producer_target": payload.get("producer_target"),
                 "delivery_topology": payload.get("delivery_topology"),

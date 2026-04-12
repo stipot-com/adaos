@@ -48,6 +48,7 @@ def resolve_media_route_intent(
     target_webspace_id: str | None = None,
     producer_preference: str | None = None,
     preferred_member_id: str | None = None,
+    candidate_member_ids: list[str] | None = None,
     direct_local_ready: bool,
     root_routed_ready: bool,
     hub_webrtc_ready: bool,
@@ -61,6 +62,14 @@ def resolve_media_route_intent(
     need_norm = _normalize_need(need)
     producer_pref = _normalize_producer_preference(producer_preference)
     target_ws = str(target_webspace_id or "").strip() or None
+    preferred_member = str(preferred_member_id or "").strip() or None
+    candidate_members = [
+        str(item or "").strip()
+        for item in list(candidate_member_ids or [])
+        if str(item or "").strip()
+    ]
+    if not preferred_member and candidate_members:
+        preferred_member = candidate_members[0]
     member_direct_possible = bool(member_browser_direct_possible)
     member_direct_admitted = bool(member_browser_direct_admitted)
     member_direct_ready = (
@@ -141,7 +150,7 @@ def resolve_media_route_intent(
     if selected_topology == "member_browser_direct":
         producer_target: dict[str, Any] | None = {
             "kind": "member",
-            "member_id": str(preferred_member_id or "").strip() or None,
+            "member_id": preferred_member,
             "webspace_id": target_ws,
         }
     elif selected_topology:
@@ -175,6 +184,7 @@ def resolve_media_route_intent(
         "route_intent": need_norm,
         "target_webspace_id": target_ws,
         "producer_preference": producer_pref,
+        "preferred_member_id": preferred_member,
         "preferred_route": preferred_topology,
         "active_route": active_route,
         "delivery_topology": active_route,
@@ -193,6 +203,8 @@ def resolve_media_route_intent(
             "ready": member_direct_ready,
             "reason": member_direct_reason,
             "candidate_member_total": int(candidate_member_total),
+            "candidate_members": list(candidate_members),
+            "preferred_member_id": preferred_member,
             "browser_session_total": int(browser_session_total),
         },
         "monitoring": {

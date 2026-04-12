@@ -160,8 +160,12 @@ Current foundation in code:
   - `selection_reason` / `degradation_reason`
   - `member_browser_direct`
   - `monitoring.observed_failure`
-- `browser <-> member` direct media is represented today as a routed capability foundation,
-  but admission policy and per-member producer resolution still need dedicated capability inventory and signaling support
+- `browser <-> member` direct media is now backed by explicit per-member capability inventory in `capacity.io`
+  using `io_type: webrtc_media` and flat capability tokens such as
+  `webrtc:av`, `producer:member`, and `topology:member_browser_direct`
+- router/reliability/media runtime now select candidate members from persisted subnet capacity and preserve
+  `preferred_member_id` in the normalized route contract, even when the active route degrades to hub loopback or relay
+- direct-media admission policy and dedicated signaling still need to be completed before this path becomes production-default
 
 ## Typical Flows
 

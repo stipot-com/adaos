@@ -2617,29 +2617,45 @@ def _hub_member_transport_evidence_snapshot(
             else []
         )
         browser_session_total = sum(1 for item in browser_peers if isinstance(item, dict))
-        try:
-            from adaos.services.subnet.link_manager import hub_link_manager_snapshot
-
-            member_snapshot = hub_link_manager_snapshot()
-        except Exception:
-            member_snapshot = {}
-        candidate_member_total = int(member_snapshot.get("connected_total") or 0)
-        member_browser_direct_possible = (
-            candidate_member_total > 0
-            and browser_session_total > 0
-            and bool(evidence["webrtc_media"].get("available"))
+        connected_browser_session_total = sum(
+            1
+            for item in browser_peers
+            if isinstance(item, dict)
+            and str(item.get("connection_state") or "").strip().lower() == "connected"
         )
+        try:
+            from adaos.services.media_capability import member_browser_direct_foundation
+
+            member_browser_direct = member_browser_direct_foundation(
+                browser_session_total=browser_session_total,
+                connected_browser_session_total=connected_browser_session_total,
+                admitted=False,
+            )
+        except Exception:
+            member_browser_direct = {
+                "possible": False,
+                "admitted": False,
+                "ready": False,
+                "reason": "member_browser_direct_inventory_unavailable",
+                "candidate_member_total": 0,
+                "candidate_members": [],
+                "preferred_member_id": None,
+                "preferred_candidate_source": None,
+                "browser_session_total": browser_session_total,
+                "connected_browser_session_total": connected_browser_session_total,
+            }
         evidence["member_browser_webrtc_media"].update(
             {
-                "possible": bool(member_browser_direct_possible),
-                "admitted": False,
-                "reason": (
-                    "member_browser_direct_policy_not_admitted_yet"
-                    if member_browser_direct_possible
-                    else "member_browser_direct_missing_browser_or_member_candidate"
-                ),
-                "candidate_member_total": candidate_member_total,
-                "browser_session_total": browser_session_total,
+                "available": bool(member_browser_direct.get("ready")),
+                "possible": bool(member_browser_direct.get("possible")),
+                "admitted": bool(member_browser_direct.get("admitted")),
+                "reason": str(member_browser_direct.get("reason") or ""),
+                "candidate_member_total": int(member_browser_direct.get("candidate_member_total") or 0),
+                "candidate_members": list(member_browser_direct.get("candidate_members") or []),
+                "preferred_member_id": str(member_browser_direct.get("preferred_member_id") or "") or None,
+                "preferred_candidate_source": str(member_browser_direct.get("preferred_candidate_source") or "") or None,
+                "browser_session_total": int(member_browser_direct.get("browser_session_total") or 0),
+                "connected_browser_session_total": int(member_browser_direct.get("connected_browser_session_total") or 0),
             }
         )
     else:
@@ -2729,6 +2745,8 @@ def _hub_member_media_route_contract(
         root_routed_ready=bool((evidence.get("root_media_relay") or {}).get("available")),
         hub_webrtc_ready=bool((evidence.get("webrtc_media") or {}).get("available")),
         producer_preference="member",
+        preferred_member_id=str(member_browser.get("preferred_member_id") or "") or None,
+        candidate_member_ids=list(member_browser.get("candidate_members") or []),
         member_browser_direct_possible=bool(member_browser.get("possible")),
         member_browser_direct_admitted=bool(member_browser.get("admitted")),
         member_browser_direct_reason=str(member_browser.get("reason") or ""),
@@ -2857,6 +2875,7 @@ def hub_member_semantic_channels_snapshot(
                         "delivery_topology": media_route_contract.get("delivery_topology"),
                         "producer_authority": media_route_contract.get("producer_authority"),
                         "producer_target": media_route_contract.get("producer_target"),
+                        "preferred_member_id": media_route_contract.get("preferred_member_id"),
                         "selection_reason": media_route_contract.get("selection_reason"),
                         "degradation_reason": media_route_contract.get("degradation_reason"),
                         "fallback_chain": list(media_route_contract.get("fallback_chain") or []),
@@ -3009,6 +3028,23 @@ def hub_member_connection_state_snapshot(
             directory_item = directory_by_id.get(member_id) if isinstance(directory_by_id.get(member_id), dict) else {}
             online = bool(directory_item.get("online")) if directory_item else connected
             last_seen = float(directory_item.get("last_seen") or 0.0) if directory_item else 0.0
+            media_capability: dict[str, Any] = {}
+            try:
+                from adaos.services.media_capability import (
+                    parse_webrtc_media_capacity_entry,
+                    select_member_browser_direct_capacity_entry,
+                )
+
+                snapshot_capacity = node_snapshot.get("capacity") if isinstance(node_snapshot.get("capacity"), dict) else {}
+                directory_capacity = directory_item.get("capacity") if isinstance(directory_item.get("capacity"), dict) else {}
+                capability_entry = select_member_browser_direct_capacity_entry(snapshot_capacity or directory_capacity)
+                media_capability = (
+                    parse_webrtc_media_capacity_entry(capability_entry)
+                    if isinstance(capability_entry, dict)
+                    else {}
+                )
+            except Exception:
+                media_capability = {}
             snapshot_state = _member_snapshot_state(
                 connected=connected,
                 last_snapshot_ago_s=item.get("last_snapshot_ago_s"),
@@ -3048,6 +3084,8 @@ def hub_member_connection_state_snapshot(
                     "snapshot_update_phase": str(update_status.get("phase") or ""),
                     "snapshot_runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
                     "snapshot_runtime_version": str(build.get("runtime_version") or build.get("version") or ""),
+                    "media_capability": media_capability,
+                    "media_capable": bool(media_capability.get("member_browser_direct")),
                 }
             )
             known_members.append(items[-1])
@@ -3063,6 +3101,23 @@ def hub_member_connection_state_snapshot(
                 linkless_online_total += 1
             last_seen = float(node.get("last_seen") or 0.0)
             label = _node_label([], fallback=f"member {len(known_members) + 1}")
+            media_capability = {}
+            try:
+                from adaos.services.media_capability import (
+                    parse_webrtc_media_capacity_entry,
+                    select_member_browser_direct_capacity_entry,
+                )
+
+                capability_entry = select_member_browser_direct_capacity_entry(
+                    node.get("capacity") if isinstance(node.get("capacity"), dict) else {}
+                )
+                media_capability = (
+                    parse_webrtc_media_capacity_entry(capability_entry)
+                    if isinstance(capability_entry, dict)
+                    else {}
+                )
+            except Exception:
+                media_capability = {}
             known_members.append(
                 {
                     "node_id": known_id,
@@ -3086,6 +3141,8 @@ def hub_member_connection_state_snapshot(
                     "snapshot_update_phase": "",
                     "snapshot_runtime_git_short_commit": "",
                     "snapshot_runtime_version": "",
+                    "media_capability": media_capability,
+                    "media_capable": bool(media_capability.get("member_browser_direct")),
                 }
             )
         assessment_state = "idle"

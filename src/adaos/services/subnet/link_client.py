@@ -138,6 +138,7 @@ class MemberLinkClient:
             "draining": bool(lifecycle.get("draining")),
             "route_mode": "ws" if self.is_connected() else "none",
             "connected_to_hub": bool(self.is_connected()),
+            "capacity": get_local_capacity(),
             "build": {
                 "version": str(BUILD_INFO.version or ""),
                 "build_date": str(BUILD_INFO.build_date or ""),

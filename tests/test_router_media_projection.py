@@ -183,3 +183,78 @@ async def test_router_media_projection_preserves_existing_media_subtree(monkeypa
     assert media["route"]["active_route"] == "member_browser_direct"
     assert media["route"]["route_administrator"] == "router"
     assert media["route"]["updated_at"] == 123.0
+
+
+async def test_router_media_projection_auto_selects_preferred_member_from_capacity(monkeypatch) -> None:
+    import adaos.services.media_capability as media_capability
+
+    docs: dict[str, dict[str, _FakeMap]] = {}
+
+    monkeypatch.setattr(
+        router_service_module,
+        "async_get_ydoc",
+        lambda webspace_id: _FakeAsyncDoc(docs.setdefault(webspace_id, {"data": _FakeMap()})),
+    )
+    monkeypatch.setattr(router_service_module, "load_rules", lambda *args, **kwargs: [])
+    monkeypatch.setattr(router_service_module, "watch_rules", lambda *args, **kwargs: (lambda: None))
+    monkeypatch.setattr(
+        media_capability,
+        "_directory_nodes",
+        lambda: [
+            {
+                "node_id": "member-auto",
+                "roles": ["member"],
+                "online": True,
+                "node_state": "ready",
+                "capacity": {
+                    "io": [
+                        {
+                            "io_type": "webrtc_media",
+                            "capabilities": [
+                                "webrtc:av",
+                                "producer:member",
+                                "topology:member_browser_direct",
+                                "media:live_stream",
+                                "state:available",
+                            ],
+                            "priority": 60,
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(media_capability, "_live_member_links", lambda: [])
+
+    bus = LocalEventBus()
+    router = RouterService(eventbus=bus, base_dir=Path("."))
+    await router.start()
+
+    bus.publish(
+        Event(
+            type="io.out.media.route",
+            source="test",
+            ts=456.0,
+            payload={
+                "need": "live_stream",
+                "producer_preference": "member",
+                "direct_local_ready": False,
+                "root_routed_ready": True,
+                "hub_webrtc_ready": True,
+                "member_browser_direct": {
+                    "possible": True,
+                    "admitted": True,
+                    "browser_session_total": 1,
+                },
+                "_meta": {"webspace_id": "gamma"},
+            },
+        )
+    )
+
+    assert await bus.wait_for_idle()
+
+    route = docs["gamma"]["data"]["media"]["route"]
+    assert route["active_route"] == "member_browser_direct"
+    assert route["preferred_member_id"] == "member-auto"
+    assert route["producer_target"]["member_id"] == "member-auto"
+    assert route["member_browser_direct"]["candidate_members"] == ["member-auto"]

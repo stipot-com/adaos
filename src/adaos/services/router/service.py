@@ -589,40 +589,115 @@ class RouterService:
             route_state = _coerce_y(raw_route) if isinstance(raw_route, dict) else None
             member_browser = payload.get("member_browser_direct")
             member_browser = member_browser if isinstance(member_browser, dict) else {}
+            route_producer_target = (
+                route_state.get("producer_target")
+                if isinstance(route_state, dict) and isinstance(route_state.get("producer_target"), dict)
+                else {}
+            )
+            preferred_member_id = str(payload.get("preferred_member_id") or "").strip()
+            if not preferred_member_id and isinstance(route_state, dict):
+                preferred_member_id = str(route_state.get("preferred_member_id") or "").strip()
+            if not preferred_member_id:
+                preferred_member_id = str(route_producer_target.get("member_id") or "").strip()
+            raw_candidate_members = (
+                member_browser.get("candidate_members")
+                if isinstance(member_browser.get("candidate_members"), list)
+                else payload.get("candidate_member_ids")
+            )
+            candidate_member_ids = (
+                [
+                    str(item or "").strip()
+                    for item in raw_candidate_members
+                    if str(item or "").strip()
+                ]
+                if isinstance(raw_candidate_members, list)
+                else []
+            )
+            admitted_member_browser = (
+                _coerce_bool(member_browser.get("admitted"))
+                if member_browser and "admitted" in member_browser
+                else _coerce_bool(payload.get("member_browser_direct_admitted"))
+            )
+            auto_member_browser: dict[str, Any] = {}
+            if not preferred_member_id or not candidate_member_ids:
+                try:
+                    from adaos.services.media_capability import member_browser_direct_foundation
+
+                    auto_member_browser = member_browser_direct_foundation(
+                        browser_session_total=(
+                            _coerce_int(member_browser.get("browser_session_total"))
+                            if member_browser and "browser_session_total" in member_browser
+                            else _coerce_int(payload.get("browser_session_total"))
+                        ),
+                        connected_browser_session_total=(
+                            _coerce_int(member_browser.get("connected_browser_session_total"))
+                            if member_browser and "connected_browser_session_total" in member_browser
+                            else _coerce_int(payload.get("connected_browser_session_total"))
+                        ),
+                        admitted=admitted_member_browser,
+                    )
+                except Exception:
+                    auto_member_browser = {}
+            if not preferred_member_id:
+                preferred_member_id = str(auto_member_browser.get("preferred_member_id") or "").strip()
+            if not candidate_member_ids:
+                candidate_member_ids = [
+                    str(item or "").strip()
+                    for item in list(auto_member_browser.get("candidate_members") or [])
+                    if str(item or "").strip()
+                ]
 
             if route_state is None:
                 route_state = resolve_media_route_intent(
                     need=str(payload.get("need") or payload.get("route_intent") or "scenario_response_media"),
                     target_webspace_id=webspace_id,
                     producer_preference=str(payload.get("producer_preference") or ""),
-                    preferred_member_id=str(payload.get("preferred_member_id") or "") or None,
+                    preferred_member_id=preferred_member_id or None,
+                    candidate_member_ids=candidate_member_ids,
                     direct_local_ready=_coerce_bool(payload.get("direct_local_ready")),
                     root_routed_ready=_coerce_bool(payload.get("root_routed_ready")),
                     hub_webrtc_ready=_coerce_bool(payload.get("hub_webrtc_ready")),
                     member_browser_direct_possible=(
                         _coerce_bool(member_browser.get("possible"))
-                        if member_browser
-                        else _coerce_bool(payload.get("member_browser_direct_possible"))
+                        if member_browser and "possible" in member_browser
+                        else (
+                            _coerce_bool(payload.get("member_browser_direct_possible"))
+                            if "member_browser_direct_possible" in payload
+                            else _coerce_bool(auto_member_browser.get("possible"))
+                        )
                     ),
                     member_browser_direct_admitted=(
                         _coerce_bool(member_browser.get("admitted"))
-                        if member_browser
-                        else _coerce_bool(payload.get("member_browser_direct_admitted"))
+                        if member_browser and "admitted" in member_browser
+                        else (
+                            _coerce_bool(payload.get("member_browser_direct_admitted"))
+                            if "member_browser_direct_admitted" in payload
+                            else _coerce_bool(auto_member_browser.get("admitted"))
+                        )
                     ),
                     member_browser_direct_reason=(
                         str(member_browser.get("reason") or "").strip()
                         or str(payload.get("member_browser_direct_reason") or "").strip()
+                        or str(auto_member_browser.get("reason") or "").strip()
                         or None
                     ),
                     candidate_member_total=(
                         _coerce_int(member_browser.get("candidate_member_total"))
-                        if member_browser
-                        else _coerce_int(payload.get("candidate_member_total"))
+                        if member_browser and "candidate_member_total" in member_browser
+                        else (
+                            _coerce_int(payload.get("candidate_member_total"))
+                            if "candidate_member_total" in payload
+                            else _coerce_int(auto_member_browser.get("candidate_member_total"))
+                        )
                     ),
                     browser_session_total=(
                         _coerce_int(member_browser.get("browser_session_total"))
-                        if member_browser
-                        else _coerce_int(payload.get("browser_session_total"))
+                        if member_browser and "browser_session_total" in member_browser
+                        else (
+                            _coerce_int(payload.get("browser_session_total"))
+                            if "browser_session_total" in payload
+                            else _coerce_int(auto_member_browser.get("browser_session_total"))
+                        )
                     ),
                     observed_failure=str(payload.get("observed_failure") or "").strip() or None,
                 )
@@ -637,6 +712,18 @@ class RouterService:
                 monitoring["observed_failure"] = observed_failure
 
             normalized = dict(route_state)
+            normalized_member_browser = _coerce_y(normalized.get("member_browser_direct"))
+            normalized_member_browser = dict(normalized_member_browser) if isinstance(normalized_member_browser, dict) else {}
+            if preferred_member_id and not normalized.get("preferred_member_id"):
+                normalized["preferred_member_id"] = preferred_member_id
+            if candidate_member_ids and not isinstance(normalized_member_browser.get("candidate_members"), list):
+                normalized_member_browser["candidate_members"] = list(candidate_member_ids)
+            if preferred_member_id and not normalized_member_browser.get("preferred_member_id"):
+                normalized_member_browser["preferred_member_id"] = preferred_member_id
+            if candidate_member_ids and not normalized_member_browser.get("candidate_member_total"):
+                normalized_member_browser["candidate_member_total"] = len(candidate_member_ids)
+            if normalized_member_browser:
+                normalized["member_browser_direct"] = normalized_member_browser
             normalized["target_webspace_id"] = webspace_id
             normalized["route_administrator"] = "router"
             normalized["updated_at"] = float(payload.get("ts") or time.time())

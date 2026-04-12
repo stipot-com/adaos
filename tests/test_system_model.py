@@ -954,7 +954,9 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
                     "route_intent": {
                         "route_intent": "scenario_response_media",
                         "active_route": "local_http",
+                        "preferred_member_id": "member-2",
                     },
+                    "preferred_member_id": "member-2",
                     "producer_authority": "hub",
                     "producer_target": {"kind": "hub", "webspace_id": "desk"},
                     "delivery_topology": "local_http",
@@ -974,6 +976,7 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
     objects = {item["id"]: item for item in projection["objects"]}
     media = objects["runtime:hub:hub-3/media-plane"]
     assert media["runtime"]["route_intent"]["route_intent"] == "scenario_response_media"
+    assert media["runtime"]["preferred_member_id"] == "member-2"
     assert media["runtime"]["producer_authority"] == "hub"
     assert media["runtime"]["delivery_topology"] == "local_http"
     assert media["runtime"]["member_browser_direct"]["possible"] is True

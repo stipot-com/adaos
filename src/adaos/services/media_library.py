@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from adaos.services.agent_context import get_ctx
+from adaos.services.media_capability import member_browser_direct_foundation
 from adaos.services.router.media_routes import resolve_media_route_intent
 from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 
@@ -109,28 +110,20 @@ def _active_browser_session_totals() -> tuple[int, int]:
     return (total, connected)
 
 
-def _connected_member_total() -> int:
-    try:
-        from adaos.services.subnet.link_manager import hub_link_manager_snapshot
-
-        snapshot = hub_link_manager_snapshot()
-    except Exception:
-        return 0
-    return int(snapshot.get("connected_total") or 0)
-
-
 def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     browser_session_total, connected_browser_total = _active_browser_session_totals()
-    candidate_member_total = _connected_member_total()
-    member_browser_direct_possible = (
-        bool(webrtc_supported)
-        and candidate_member_total > 0
-        and browser_session_total > 0
+    foundation = member_browser_direct_foundation(
+        browser_session_total=browser_session_total,
+        connected_browser_session_total=connected_browser_total,
+        admitted=False,
     )
+    candidate_member_total = int(foundation.get("candidate_member_total") or 0)
+    preferred_member_id = str(foundation.get("preferred_member_id") or "").strip() or None
+    candidate_member_ids = list(foundation.get("candidate_members") or [])
+    member_browser_direct_possible = bool(webrtc_supported) and bool(foundation.get("possible"))
     member_browser_direct_reason = (
-        "member_browser_direct_policy_not_admitted_yet"
-        if member_browser_direct_possible
-        else "member_browser_direct_missing_browser_or_member_candidate"
+        str(foundation.get("reason") or "").strip()
+        or "member_browser_direct_missing_browser_or_member_candidate"
     )
     route_profiles = {
         "upload": resolve_media_route_intent(
@@ -139,6 +132,8 @@ def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], di
             root_routed_ready=True,
             hub_webrtc_ready=False,
             producer_preference="hub",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
             member_browser_direct_possible=member_browser_direct_possible,
             member_browser_direct_admitted=False,
             member_browser_direct_reason=member_browser_direct_reason,
@@ -151,6 +146,8 @@ def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], di
             root_routed_ready=True,
             hub_webrtc_ready=False,
             producer_preference="hub",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
             member_browser_direct_possible=member_browser_direct_possible,
             member_browser_direct_admitted=False,
             member_browser_direct_reason=member_browser_direct_reason,
@@ -163,6 +160,8 @@ def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], di
             root_routed_ready=True,
             hub_webrtc_ready=bool(webrtc_supported),
             producer_preference="member",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
             member_browser_direct_possible=member_browser_direct_possible,
             member_browser_direct_admitted=False,
             member_browser_direct_reason=member_browser_direct_reason,
@@ -175,6 +174,8 @@ def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], di
             root_routed_ready=True,
             hub_webrtc_ready=bool(webrtc_supported),
             producer_preference="member",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
             member_browser_direct_possible=member_browser_direct_possible,
             member_browser_direct_admitted=False,
             member_browser_direct_reason=member_browser_direct_reason,
@@ -182,15 +183,9 @@ def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], di
             browser_session_total=browser_session_total,
         ),
     }
-    foundation = {
-        "possible": member_browser_direct_possible,
-        "admitted": False,
-        "ready": False,
-        "reason": member_browser_direct_reason,
-        "candidate_member_total": candidate_member_total,
-        "browser_session_total": browser_session_total,
-        "connected_browser_session_total": connected_browser_total,
-    }
+    foundation = dict(foundation)
+    foundation["possible"] = member_browser_direct_possible
+    foundation["reason"] = member_browser_direct_reason
     return route_profiles, foundation
 
 
@@ -342,6 +337,8 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
                 "mode": "webrtc_browser_member_direct",
                 "reason": str(member_browser_direct.get("reason") or "member_browser_direct_not_admitted"),
                 "candidate_member_total": int(member_browser_direct.get("candidate_member_total") or 0),
+                "candidate_members": list(member_browser_direct.get("candidate_members") or []),
+                "preferred_member_id": member_browser_direct.get("preferred_member_id"),
                 "browser_session_total": int(member_browser_direct.get("browser_session_total") or 0),
             },
         },
@@ -350,6 +347,7 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
         "route_profiles": route_profiles,
         "producer_authority": default_route.get("producer_authority"),
         "producer_target": default_route.get("producer_target"),
+        "preferred_member_id": default_route.get("preferred_member_id"),
         "delivery_topology": default_route.get("delivery_topology"),
         "selection_reason": default_route.get("selection_reason"),
         "degradation_reason": default_route.get("degradation_reason"),
@@ -374,6 +372,7 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
             "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered /api proxy.",
             "WebRTC audio/video loopback is available for live end-to-end media validation against the hub.",
             "Member-browser direct media is represented as an explicit route contract foundation and can be admitted later without changing the media runtime shape.",
+            "Candidate member selection now comes from explicit member WebRTC media capability advertised via subnet capacity, not only from raw connected-member counts.",
         ],
     }
 
