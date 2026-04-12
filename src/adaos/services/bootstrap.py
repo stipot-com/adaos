@@ -5072,6 +5072,10 @@ class BootstrapService:
                                     tunnels[key] = {"ws": ws, "url": url}
                                     _clear_pending_tunnel_state(key, drop_events=False)
                                     tunnel_tasks[key] = asyncio.create_task(_tunnel_reader(key, ws), name=f"hub-route-{key}")
+                                    try:
+                                        await _route_reply(key, {"t": "open_ack"})
+                                    except Exception:
+                                        pass
                                     pending = pending_tunnel_events.pop(key, None) or []
                                     for pending_payload in pending:
                                         try:
