@@ -833,7 +833,9 @@ class SupervisorManager:
 
     def _runtime_state_payload(self) -> dict[str, Any]:
         proc = self._proc
-        current_slot = active_slot()
+        slot_snapshot = core_slot_status()
+        current_slot = str(slot_snapshot.get("active_slot") or active_slot() or "").strip().upper() or None
+        previous_slot = str(slot_snapshot.get("previous_slot") or "").strip().upper() or None
         active_manifest = active_slot_manifest()
         update_status = read_core_update_status()
         update_attempt = _read_update_attempt()
@@ -932,6 +934,7 @@ class SupervisorManager:
             "runtime_instance_id": self._managed_runtime_instance_id,
             "transition_role": self._managed_transition_role if self._managed_runtime_instance_id else None,
             "active_slot": current_slot,
+            "previous_slot": previous_slot,
             "desired_running": bool(self._desired_running),
             "stopping": bool(self._stopping),
             "managed_pid": managed_pid,

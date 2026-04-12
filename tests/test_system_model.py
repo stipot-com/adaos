@@ -712,6 +712,46 @@ def test_canonical_object_from_supervisor_runtime_surfaces_transition_state() ->
     assert obj["actions"][0]["id"] == "restart_runtime"
 
 
+def test_canonical_object_from_supervisor_runtime_surfaces_reschedulable_transition_actions() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "B",
+                "previous_slot": "A",
+                "runtime_state": "ready",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": True,
+                "update_task_running": True,
+            },
+            "update_status": {
+                "action": "update",
+                "state": "preparing",
+                "phase": "prepare",
+                "message": "preparing inactive slot before restart",
+            },
+            "update_attempt": {
+                "action": "update",
+                "state": "active",
+            },
+        }
+    ).to_dict()
+
+    actions = {item["id"]: item for item in obj["actions"]}
+
+    assert obj["status"] == "warning"
+    assert actions["restart_runtime"]["metadata"]["api_path"] == "/api/supervisor/runtime/restart"
+    assert actions["cancel_transition"]["title"] == "cancel update"
+    assert actions["cancel_transition"]["metadata"]["api_path"] == "/api/supervisor/update/cancel"
+    assert actions["defer_transition_5m"]["title"] == "defer update 5 min"
+    assert actions["defer_transition_5m"]["metadata"]["delay_sec"] == 300.0
+    assert actions["defer_transition_15m"]["title"] == "defer update 15 min"
+    assert actions["defer_transition_15m"]["metadata"]["delay_sec"] == 900.0
+    assert actions["rollback_runtime"]["title"] == "rollback to slot A"
+    assert actions["rollback_runtime"]["metadata"]["api_path"] == "/api/supervisor/update/rollback"
+
+
 def test_canonical_object_from_supervisor_runtime_keeps_root_restart_pending_visible() -> None:
     obj = canonical_object_from_supervisor_runtime(
         {
@@ -764,14 +804,20 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
                 "warm_switch_reason": "warm switch admitted",
             },
             "update_status": {
+                "action": "update",
                 "state": "planned",
                 "phase": "scheduled",
                 "message": "core update deferred until minimum update interval elapses",
                 "planned_reason": "minimum_update_period",
+                "min_update_period_sec": 300.0,
                 "scheduled_for": 1234.0,
                 "subsequent_transition": True,
+                "candidate_prewarm_state": "ready",
+                "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8777",
+                "candidate_prewarm_ready_at": 1225.0,
             },
             "update_attempt": {
+                "action": "update",
                 "state": "planned",
                 "subsequent_transition_requested_at": 1200.0,
             },
@@ -779,7 +825,9 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
     ).to_dict()
 
     assert obj["status"] == "warning"
+    assert obj["runtime"]["action"] == "update"
     assert obj["runtime"]["planned_reason"] == "minimum_update_period"
+    assert obj["runtime"]["min_update_period_sec"] == 300.0
     assert obj["runtime"]["scheduled_for"] == 1234.0
     assert obj["runtime"]["transition_mode"] == "warm_switch"
     assert obj["runtime"]["candidate_slot"] == "A"
@@ -789,13 +837,26 @@ def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_contex
     assert obj["runtime"]["candidate_runtime_state"] == "ready"
     assert obj["runtime"]["candidate_transition_role"] == "candidate"
     assert obj["runtime"]["candidate_runtime_api_ready"] is True
+    assert obj["runtime"]["candidate_prewarm_state"] == "ready"
+    assert obj["runtime"]["candidate_prewarm_ready_at"] == 1225.0
     assert obj["runtime"]["warm_switch_allowed"] is True
     assert obj["runtime"]["subsequent_transition"] is True
     assert obj["actual_state"]["runtime_instance_id"] == "rt-b-a-12345678"
+    assert obj["actual_state"]["action"] == "update"
     assert obj["actual_state"]["candidate_runtime_instance_id"] == "rt-a-c-87654321"
     assert obj["actual_state"]["candidate_runtime_state"] == "ready"
+    assert obj["actual_state"]["candidate_prewarm_state"] == "ready"
+    assert obj["actual_state"]["candidate_prewarm_ready_at"] == 1225.0
     assert obj["actual_state"]["subsequent_transition_requested_at"] == 1200.0
     assert obj["actual_state"]["candidate_runtime_port"] == 8777
+    assert obj["representations"]["operator"]["update_action"] == "update"
+    assert obj["representations"]["operator"]["candidate_prewarm_state"] == "ready"
+    assert "previous_slot" not in obj["runtime"]
+    assert "prewarm ready" in obj["representations"]["operator"]["subtitle"]
+    action_ids = [item["id"] for item in obj["actions"]]
+    assert "cancel_transition" in action_ids
+    assert "defer_transition_5m" in action_ids
+    assert "defer_transition_15m" in action_ids
 
 
 def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:
