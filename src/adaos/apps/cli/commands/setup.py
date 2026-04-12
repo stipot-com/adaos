@@ -1260,6 +1260,8 @@ def autostart_update_status_cmd(
         typer.echo(f"target version: {status.get('target_version')}")
     if attempt.get("state"):
         typer.echo(f"supervisor attempt: {attempt.get('state')}")
+        if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
+            typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
     if bool(status.get("root_promotion_required")):
         typer.echo("root promotion required: yes")
         bootstrap_update = status.get("bootstrap_update") if isinstance(status.get("bootstrap_update"), dict) else {}
@@ -1391,6 +1393,7 @@ def autostart_update_complete_cmd(
     try:
         update_payload = _autostart_update_get(token=token)
         status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
+        attempt_payload = update_payload.get("attempt") if isinstance(update_payload.get("attempt"), dict) else {}
         runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
         root_promotion_required = bool(
             runtime_payload.get("root_promotion_required")
@@ -1401,13 +1404,21 @@ def autostart_update_complete_cmd(
         )
         current_state = str(status_payload.get("state") or "").strip().lower()
         current_phase = str(status_payload.get("phase") or "").strip().lower()
-        if not root_promotion_required and not (
+        attempt_state = str(attempt_payload.get("state") or "").strip().lower()
+        needs_promotion = root_promotion_required or (
             current_state == "validated" and current_phase == "root_promotion_pending"
-        ):
+        )
+        root_restart_pending = (
+            attempt_state == "awaiting_root_restart"
+            or (current_state == "succeeded" and current_phase == "root_promoted")
+        )
+
+        if not needs_promotion and not root_restart_pending:
             payload = {
                 "ok": True,
                 "noop": True,
                 "status": status_payload,
+                "attempt": attempt_payload,
                 "runtime": runtime_payload,
                 "message": "root promotion is not required for the current update state",
             }
@@ -1416,11 +1427,23 @@ def autostart_update_complete_cmd(
                 return
             typer.echo(json.dumps(payload, ensure_ascii=False))
             return
-        promotion = _autostart_supervisor_post(
-            "/api/supervisor/update/promote-root",
-            token=token,
-            body={"reason": reason},
-        )
+
+        if needs_promotion:
+            promotion = _autostart_supervisor_post(
+                "/api/supervisor/update/promote-root",
+                token=token,
+                body={"reason": reason},
+            )
+            message = "root promotion completed and autostart service restart requested"
+        else:
+            promotion = {
+                "ok": True,
+                "accepted": False,
+                "status": status_payload,
+                "attempt": attempt_payload,
+                "message": "root promotion already completed; retrying autostart service restart",
+            }
+            message = "root promotion already completed; autostart service restart requested"
         restart = _restart_autostart_service()
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
@@ -1429,7 +1452,7 @@ def autostart_update_complete_cmd(
         "ok": True,
         "promotion": promotion,
         "restart": restart,
-        "message": "root promotion completed and autostart service restart requested",
+        "message": message,
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))

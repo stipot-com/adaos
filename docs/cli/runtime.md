@@ -53,7 +53,7 @@ Current MVP operator flow for bootstrap/self-update:
 4. if bootstrap files were promoted, `update-status` may briefly show `supervisor attempt: awaiting_root_restart` while the restarted service is still converging under the new supervisor/bootstrap code
 
 `update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
-`update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs).
+`update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs). If root promotion already finished and only the supervisor/bootstrap restart is still pending, rerunning `update-complete` retries only the service restart and does not promote root again.
 
 ## Hub and member operations
 
