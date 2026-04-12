@@ -42,6 +42,69 @@ def _control_error_message(prefix: str, payload: Any) -> str:
     return f"[AdaOS] {prefix} failed: local control API is unreachable"
 
 
+def _supervisor_public_base_url(control: str) -> str | None:
+    raw = str(control or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    port = parsed.port
+    target_port = 8776 if port in {None, 8777, 8778} else port
+    netloc = f"{parsed.hostname}:{target_port}"
+    return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def _supervisor_transition_probe(*, control: str, token: str) -> tuple[int | None, Any]:
+    base = _supervisor_public_base_url(control)
+    if not base:
+        return None, {"error": "connection_error", "detail": "unable to resolve supervisor base url"}
+    return _control_get_json(
+        control=base,
+        path="/api/supervisor/public/update-status",
+        token=token,
+        timeout=2.5,
+    )
+
+
+def _is_supervisor_controlled_transition(payload: Any) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    status = data.get("status") if isinstance(data.get("status"), dict) else {}
+    attempt = data.get("attempt") if isinstance(data.get("attempt"), dict) else {}
+    state = str(status.get("state") or "").strip().lower()
+    phase = str(status.get("phase") or "").strip().lower()
+    attempt_state = str(attempt.get("state") or "").strip().lower()
+    if attempt_state == "awaiting_root_restart":
+        return True
+    if state in {"countdown", "applying", "restarting", "failed", "cancelled"}:
+        return True
+    if state == "validated" and phase == "root_promotion_pending":
+        return True
+    if state == "succeeded" and phase == "root_promoted":
+        return True
+    return False
+
+
+def _print_supervisor_transition_summary(payload: dict[str, Any]) -> None:
+    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    typer.echo("runtime_restarting_under_supervisor: yes")
+    if status.get("state"):
+        typer.echo(f"supervisor.state: {status.get('state')}")
+    if status.get("phase"):
+        typer.echo(f"supervisor.phase: {status.get('phase')}")
+    if attempt.get("state"):
+        typer.echo(f"supervisor.attempt: {attempt.get('state')}")
+    if runtime.get("active_slot"):
+        typer.echo(f"supervisor.active_slot: {runtime.get('active_slot')}")
+    if status.get("message"):
+        typer.echo(f"supervisor.message: {status.get('message')}")
+
+
 def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
     url = control.rstrip("/") + path
     headers = {"X-AdaOS-Token": token or resolve_control_token()}
@@ -774,13 +837,28 @@ def node_reliability(
 
     cfg = load_config()
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    token = resolve_control_token(explicit=cfg.token)
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/reliability",
-        token=resolve_control_token(explicit=cfg.token),
+        token=token,
         timeout=5.0,
     )
     if status_code is None:
+        supervisor_status, supervisor_payload = _supervisor_transition_probe(control=control0, token=token)
+        if supervisor_status == 200 and isinstance(supervisor_payload, dict) and _is_supervisor_controlled_transition(supervisor_payload):
+            fallback_payload = {
+                "ok": True,
+                "fallback": "supervisor_public_update_status",
+                "controlled_transition": True,
+                "message": "runtime_restarting_under_supervisor",
+                "supervisor": supervisor_payload,
+            }
+            if json_output:
+                _print(fallback_payload, json_output=True)
+            else:
+                _print_supervisor_transition_summary(supervisor_payload)
+            raise typer.Exit(code=0)
         typer.secho(_control_error_message("reliability probe", payload), fg=typer.colors.RED)
         raise typer.Exit(code=2)
     if status_code != 200 or not isinstance(payload, dict):

@@ -499,3 +499,38 @@ def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:
 
     assert result.exit_code == 2
     assert "timed out" in result.output
+
+
+def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+
+    calls: list[str] = []
+
+    def _fake_get_json(**kwargs):
+        calls.append(str(kwargs.get("path") or ""))
+        if kwargs.get("path") == "/api/node/reliability":
+            return None, {"error": "connection_error", "detail": "connection refused"}
+        return (
+            200,
+            {
+                "ok": True,
+                "status": {
+                    "state": "succeeded",
+                    "phase": "root_promoted",
+                    "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+                },
+                "attempt": {"state": "awaiting_root_restart"},
+                "runtime": {"active_slot": "A"},
+            },
+        )
+
+    monkeypatch.setattr(node_cli, "_control_get_json", _fake_get_json)
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert "/api/node/reliability" in calls
+    assert "/api/supervisor/public/update-status" in calls
+    assert "runtime_restarting_under_supervisor: yes" in result.output
+    assert "supervisor.attempt: awaiting_root_restart" in result.output

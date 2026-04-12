@@ -342,7 +342,7 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 ### Phase 6 - Operator UX
 
 - `adaos autostart/update-status` resolves to supervisor API first
-- `adaos node reliability` reports `runtime_restarting_under_supervisor` instead of only connection failure
+- `adaos node reliability` now falls back to browser-safe supervisor transition state and reports `runtime_restarting_under_supervisor` instead of only connection failure when runtime `:8777` is temporarily unavailable during a managed transition
 - Infra State surfaces supervisor attempt state alongside runtime readiness, including `root promotion pending` and `root restart in progress`
 - Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
 - browser header/status surfaces poll a read-only supervisor transition view so controlled restarts are not shown only as generic `offline`
