@@ -34,6 +34,7 @@
 * [ ] Маршруты ввода-вывода (routing graph).
 * [ ] Streaming SDK (аудио/видео, back-pressure).
 * [ ] Web-интеграция (multi-browser подключение, WS).
+* [ ] `member-browser direct` media routing c bounded relay fallback и router-owned policy деградации.
 * [ ] Драйверы/адаптеры устройств (`os://device/{capability}`, health-checks).
   *DoD:* hot-swap источника звука без рестарта навыка; стрим с back-pressure не рвёт кадры.
 

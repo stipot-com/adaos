@@ -5,7 +5,9 @@ import sys
 from types import SimpleNamespace
 import types
 
-if "nats" not in sys.modules:
+try:
+    import nats  # noqa: F401
+except Exception:
     sys.modules["nats"] = types.ModuleType("nats")
 if "y_py" not in sys.modules:
     sys.modules["y_py"] = types.SimpleNamespace(YDoc=object)
@@ -20,7 +22,10 @@ from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
+    hub_member_semantic_channels_snapshot,
+    media_plane_runtime_snapshot,
     observe_hub_root_route_runtime,
     mark_root_control_down,
     mark_root_control_up,
@@ -29,6 +34,8 @@ from adaos.services.reliability import (
     reliability_snapshot,
     reset_reliability_runtime_state,
     set_integration_readiness,
+    sidecar_runtime_snapshot,
+    yjs_sync_runtime_snapshot,
 )
 from adaos.services.runtime_lifecycle import reset_runtime_lifecycle
 
@@ -317,6 +324,420 @@ def test_assess_transport_diagnostics_marks_flapping_on_repeated_error_callbacks
     assert assessment["recent_hard_incidents_5m"] >= 1
 
 
+def test_hub_member_semantic_channels_snapshot_exposes_media_route_contract() -> None:
+    snapshot = hub_member_semantic_channels_snapshot(
+        role="hub",
+        route_mode="hub",
+        connected_to_hub=None,
+        hub_root_protocol={},
+        transport_evidence={
+            "webrtc_data:events": {"available": False},
+            "webrtc_data:yjs": {"available": False},
+            "ws": {"available": False},
+            "yws": {"available": False},
+            "root_route_proxy": {"available": False},
+            "member_link_ws": {"available": False},
+            "webrtc_media": {"available": True},
+            "member_browser_webrtc_media": {
+                "available": False,
+                "possible": True,
+                "admitted": False,
+                "reason": "member_browser_direct_not_admitted",
+                "candidate_member_total": 1,
+                "candidate_members": ["member-1"],
+                "preferred_member_id": "member-1",
+                "browser_session_total": 1,
+            },
+            "root_media_relay": {"available": True},
+        },
+    )
+
+    media = snapshot["channels"]["hub_member.media"]
+    assert media["route_intent"] == "live_stream"
+    assert media["delivery_topology"] == "hub_webrtc_loopback"
+    assert media["producer_authority"] == "hub"
+    assert media["preferred_member_id"] == "member-1"
+    assert media["member_browser_direct"]["possible"] is True
+    assert media["member_browser_direct"]["admitted"] is False
+    assert media["member_browser_direct"]["candidate_members"] == ["member-1"]
+    assert media["attempt"]["active_route"] == "hub_webrtc_loopback"
+    assert media["attempt"]["sequence"] == 1
+    assert media["fallback_chain"] == [
+        "member_browser_direct",
+        "hub_webrtc_loopback",
+        "root_media_relay",
+    ]
+
+
+def test_hub_member_transport_evidence_counts_only_media_capable_members(monkeypatch) -> None:
+    import adaos.services.media_capability as media_capability
+
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway_ws",
+        SimpleNamespace(
+            gateway_transport_snapshot=lambda: {
+                "transports": {},
+                "ownership": {
+                    "ws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                    },
+                    "yws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                    },
+                },
+            },
+            active_browser_session_snapshot=lambda: {
+                "peers": [
+                    {"device_id": "browser-1", "connection_state": "connected"},
+                ]
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.webrtc.peer",
+        SimpleNamespace(
+            webrtc_peer_snapshot=lambda: {
+                "peer_total": 0,
+                "connected_peers": 0,
+                "incoming_audio_tracks": 0,
+                "incoming_video_tracks": 0,
+                "loopback_audio_tracks": 0,
+                "loopback_video_tracks": 0,
+                "open_events_channels": 0,
+                "open_yjs_channels": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        media_capability,
+        "_directory_nodes",
+        lambda: [
+            {
+                "node_id": "member-capable",
+                "roles": ["member"],
+                "online": True,
+                "node_state": "ready",
+                "capacity": {
+                    "io": [
+                        {
+                            "io_type": "webrtc_media",
+                            "capabilities": [
+                                "webrtc:av",
+                                "producer:member",
+                                "topology:member_browser_direct",
+                                "media:live_stream",
+                                "state:available",
+                            ],
+                            "priority": 60,
+                        }
+                    ]
+                },
+            },
+            {
+                "node_id": "member-incapable",
+                "roles": ["member"],
+                "online": True,
+                "node_state": "ready",
+                "capacity": {
+                    "io": [
+                        {
+                            "io_type": "say",
+                            "capabilities": ["text", "state:available"],
+                            "priority": 40,
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(media_capability, "_live_member_links", lambda: [])
+
+    evidence = _hub_member_transport_evidence_snapshot(
+        role="hub",
+        route_mode="hub",
+        connected_to_hub=None,
+        hub_root_protocol={},
+    )
+
+    member_browser = evidence["member_browser_webrtc_media"]
+    assert member_browser["possible"] is True
+    assert member_browser["candidate_member_total"] == 1
+    assert member_browser["candidate_members"] == ["member-capable"]
+    assert member_browser["preferred_member_id"] == "member-capable"
+    assert evidence["ws"]["owner"] == "runtime"
+    assert evidence["ws"]["planned_owner"] == "sidecar"
+    assert evidence["yws"]["lifecycle_manager"] == "supervisor"
+
+
+def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
+            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 42},
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {
+                "current_support": "planned",
+                "lifecycle_manager": "supervisor",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "handoff_ready": False,
+                    "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                },
+                "yws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "handoff_ready": False,
+                    "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                },
+            },
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+        media_runtime={
+            "update_guard": {
+                "hub_sidecar_continuity_required": True,
+                "member_runtime_update": "defer",
+                "hub_runtime_update": "preserve_sidecar",
+                "observed_live_topology": "member_browser_direct",
+                "reason": "member owns the active browser media path",
+            }
+        },
+    )
+
+    assert snapshot["enabled"] is True
+    assert snapshot["transport_owner"] == "sidecar"
+    assert snapshot["lifecycle_manager"] == "supervisor"
+    assert snapshot["scope"]["current_boundaries"] == ["hub_root_transport"]
+    assert snapshot["scope"]["runtime_fallback_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["scope"]["planned_next_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["continuity_contract"]["required"] is True
+    assert snapshot["continuity_contract"]["member_runtime_update"] == "defer"
+    assert snapshot["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
+    assert snapshot["continuity_contract"]["current_support"] == "planned"
+    assert snapshot["continuity_contract"]["pending_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["progress"]["target"] == "first_browser_realtime_tunnel"
+    assert snapshot["progress"]["completed_milestones"] == 2
+    assert snapshot["progress"]["milestone_total"] == 4
+    assert snapshot["progress"]["current_milestone"] == "browser_events_ws_handoff"
+    assert snapshot["route_ready"] == "planned"
+    assert snapshot["sync_ready"] == "planned"
+    assert snapshot["delegations"]["route_tunnel_transport"] is False
+    assert snapshot["delegations"]["sync_transport"] is False
+    assert snapshot["route_tunnel_contract"]["ownership_boundary"] == "transport_only"
+    assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
+    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"
+
+
+def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and_continuity(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
+            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 77},
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {
+                "current_support": "planned",
+                "lifecycle_manager": "supervisor",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "local_ipc_proxy",
+                    "listener_ready": True,
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+                "yws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "local_ipc_proxy",
+                    "listener_ready": True,
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+            },
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+        media_runtime={
+            "update_guard": {
+                "hub_sidecar_continuity_required": True,
+                "member_runtime_update": "defer",
+                "hub_runtime_update": "preserve_sidecar",
+                "observed_live_topology": "member_browser_direct",
+                "reason": "member owns the active browser media path",
+            }
+        },
+    )
+
+    assert snapshot["route_ready"] == "ready"
+    assert snapshot["sync_ready"] == "ready"
+    assert snapshot["delegations"]["route_tunnel_transport"] is True
+    assert snapshot["delegations"]["sync_transport"] is True
+    assert snapshot["scope"]["current_boundaries"] == [
+        "hub_root_transport",
+        "browser_events_ws",
+        "browser_yjs_ws",
+    ]
+    assert snapshot["scope"]["planned_next_boundaries"] == []
+    assert snapshot["continuity_contract"]["current_support"] == "ready"
+    assert snapshot["continuity_contract"]["ready_boundaries"] == [
+        "browser_events_ws",
+        "browser_yjs_ws",
+    ]
+    assert snapshot["continuity_contract"]["pending_boundaries"] == []
+    assert snapshot["progress"]["state"] == "ready"
+    assert snapshot["progress"]["completed_milestones"] == 4
+    assert snapshot["progress"]["current_milestone"] is None
+
+
+def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        SimpleNamespace(
+            ystore_runtime_snapshot=lambda **kwargs: {
+                "webspace_total": 1,
+                "active_webspace_total": 1,
+                "webspaces": {
+                    "default": {
+                        "log_mode": "snapshot_plus_diff",
+                        "update_log_entries": 3,
+                        "max_update_log_entries": 128,
+                        "replay_window_entries": 2,
+                        "compact_total": 0,
+                    }
+                },
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway_ws",
+        SimpleNamespace(
+            gateway_transport_snapshot=lambda: {
+                "transports": {
+                    "yws": {
+                        "active_connections": 2,
+                        "recent_open_10s": 1,
+                        "recent_open_60s": 2,
+                        "storm_detected": False,
+                        "hot_clients": [],
+                    }
+                },
+                "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True}},
+                "ownership": {
+                    "yws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                    }
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_selected_webspace_snapshot",
+        lambda webspace_id: {"webspace_id": webspace_id or "default"},
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_recovery_policy",
+        lambda selected_entry, selected_webspace: ({}, {}, {}),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_webspace_guidance",
+        lambda selected_webspace, action_overrides: {},
+    )
+
+    snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
+    transport = snapshot["transport"]
+
+    assert snapshot["available"] is True
+    assert transport["owner"] == "runtime"
+    assert transport["planned_owner"] == "sidecar"
+    assert transport["lifecycle_manager"] == "supervisor"
+    assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
+    assert transport["handoff_ready"] is False
+
+
+def test_media_plane_runtime_snapshot_exposes_live_update_guard(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.media_library",
+        SimpleNamespace(
+            media_runtime_snapshot=lambda: {
+                "available": True,
+                "paths": {
+                    "direct_local_http": {"ready": True},
+                    "root_routed_http": {"ready": True},
+                    "webrtc_tracks": {"ready": True},
+                },
+                "member_browser_direct": {
+                    "ready": True,
+                    "admitted": True,
+                    "browser_session_total": 1,
+                    "connected_browser_session_total": 1,
+                },
+                "counts": {
+                    "live_connected_peers": 0,
+                    "incoming_audio_tracks": 0,
+                    "incoming_video_tracks": 0,
+                    "loopback_audio_tracks": 0,
+                    "loopback_video_tracks": 0,
+                },
+                "route_intent": {"active_route": "member_browser_direct", "preferred_route": "member_browser_direct"},
+                "attempt": {"active_route": "member_browser_direct", "preferred_route": "member_browser_direct"},
+            }
+        ),
+    )
+
+    snapshot = media_plane_runtime_snapshot(role="hub", route_mode="hub", connected_to_hub=None)
+    guard = snapshot["update_guard"]
+
+    assert guard["live_session_present"] is True
+    assert guard["observed_live_topology"] == "member_browser_direct"
+    assert guard["member_runtime_update"] == "defer"
+    assert guard["hub_runtime_update"] == "preserve_sidecar"
+    assert guard["hub_sidecar_continuity_required"] is True
+    assert guard["current_support"] == "planned"
+
+
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:
     _reset_state()
 
@@ -486,6 +907,139 @@ def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
     assert "root_routed_browser_proxy: blocked" in result.output
 
 
+def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+    monkeypatch.setattr(
+        node_cli,
+        "_control_get_json",
+        lambda **kwargs: (
+            200,
+            {
+                "node": {"node_id": "node-1", "role": "hub", "ready": True, "node_state": "ready"},
+                "runtime": {
+                    "readiness_tree": {},
+                    "sidecar_runtime": {
+                        "phase": "nats_transport_sidecar",
+                        "enabled": True,
+                        "status": "ready",
+                        "transport_owner": "sidecar",
+                        "lifecycle_manager": "supervisor",
+                        "local_listener_state": "ready",
+                        "remote_session_state": "ready",
+                        "control_ready": "ready",
+                        "route_ready": "not_owned",
+                        "transport_ready": True,
+                        "local_url": "nats://127.0.0.1:7422",
+                        "diag_age_s": 1.5,
+                        "transport_provenance": {
+                            "remote_connect_total": 2,
+                            "remote_connect_fail_total": 0,
+                            "superseded_total": 0,
+                        },
+                        "process": {"listener_pid": 12345},
+                        "scope": {
+                            "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
+                        },
+                        "continuity_contract": {
+                            "current_support": "planned",
+                            "hub_runtime_update": "preserve_sidecar",
+                        },
+                        "progress": {
+                            "target": "first_browser_realtime_tunnel",
+                            "state": "in_progress",
+                            "completed_milestones": 2,
+                            "milestone_total": 4,
+                            "percent": 50,
+                            "current_milestone": "browser_events_ws_handoff",
+                            "next_blocker": "browser route websocket still terminates in the runtime FastAPI app",
+                        },
+                        "route_tunnel_contract": {
+                            "current_support": "planned",
+                            "ownership_boundary": "transport_only",
+                            "ws": {
+                                "current_owner": "runtime",
+                                "planned_owner": "sidecar",
+                                "delegation_mode": "not_implemented",
+                                "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                            },
+                            "yws": {
+                                "current_owner": "runtime",
+                                "planned_owner": "sidecar",
+                                "delegation_mode": "not_implemented",
+                                "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                            },
+                        },
+                    },
+                    "sync_runtime": {
+                        "assessment": {"state": "nominal"},
+                        "webspace_total": 1,
+                        "active_webspace_total": 1,
+                        "compacted_webspace_total": 0,
+                        "update_log_total": 3,
+                        "replay_window_total": 2,
+                        "webspaces": {
+                            "default": {
+                                "log_mode": "snapshot_plus_diff",
+                                "update_log_entries": 3,
+                                "max_update_log_entries": 128,
+                            }
+                        },
+                        "transport": {
+                            "active_yws_connections": 2,
+                            "owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "recent_open_10s": 1,
+                        },
+                    },
+                    "media_runtime": {
+                        "assessment": {"state": "nominal"},
+                        "counts": {
+                            "file_total": 0,
+                            "total_bytes": 0,
+                            "live_peer_total": 1,
+                            "live_connected_peers": 1,
+                        },
+                        "paths": {
+                            "direct_local_http": {"ready": True},
+                            "root_routed_http": {"ready": True, "playback": "full"},
+                            "webrtc_tracks": {"ready": True},
+                        },
+                        "transport": {
+                            "control_readiness_impact": "none",
+                        },
+                        "update_guard": {
+                            "live_session_present": True,
+                            "criticality": "member_live_media",
+                            "member_runtime_update": "defer",
+                            "hub_runtime_update": "preserve_sidecar",
+                            "current_support": "planned",
+                            "observed_live_topology": "member_browser_direct",
+                        },
+                    },
+                },
+            },
+        ),
+    )
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert "owner=sidecar manager=supervisor" in result.output
+    assert "continuity=planned:preserve_sidecar" in result.output
+    assert "next=browser_events_ws,browser_yjs_ws" in result.output
+    assert "sidecar.progress: target=first_browser_realtime_tunnel state=in_progress done=2/4 percent=50 current=browser_events_ws_handoff" in result.output
+    assert "sidecar.progress.blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
+    assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
+    assert "ws=runtime->sidecar:not_implemented" in result.output
+    assert "yws=runtime->sidecar:not_implemented" in result.output
+    assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
+    assert "sidecar.route_tunnel.yws_blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
+    assert "owner=runtime->sidecar" in result.output
+    assert "media.update_guard: live=yes" in result.output
+    assert "member=defer hub=preserve_sidecar" in result.output
+
+
 def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:
     node_cli = importlib.import_module("adaos.apps.cli.commands.node")
     monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
@@ -499,3 +1053,38 @@ def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:
 
     assert result.exit_code == 2
     assert "timed out" in result.output
+
+
+def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+
+    calls: list[str] = []
+
+    def _fake_get_json(**kwargs):
+        calls.append(str(kwargs.get("path") or ""))
+        if kwargs.get("path") == "/api/node/reliability":
+            return None, {"error": "connection_error", "detail": "connection refused"}
+        return (
+            200,
+            {
+                "ok": True,
+                "status": {
+                    "state": "succeeded",
+                    "phase": "root_promoted",
+                    "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+                },
+                "attempt": {"state": "awaiting_root_restart"},
+                "runtime": {"active_slot": "A"},
+            },
+        )
+
+    monkeypatch.setattr(node_cli, "_control_get_json", _fake_get_json)
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert "/api/node/reliability" in calls
+    assert "/api/supervisor/public/update-status" in calls
+    assert "runtime_restarting_under_supervisor: yes" in result.output
+    assert "supervisor.attempt: awaiting_root_restart" in result.output

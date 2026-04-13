@@ -2,6 +2,43 @@
 
 This document describes how AdaOS routes outgoing UI notifications (IO routing) and how a hub proxies tool calls to members (Skills routing).
 
+## Роль router
+
+`RouterService` не должен оставаться только forwarding-helper.
+Его целевая роль - semantic route administrator для outputs, ответов навыков/сценариев и browser-visible delivery paths.
+
+Router должен владеть решениями такого класса:
+
+- какой `response` или `output` вообще нужен
+- какие runtime/node/browser-session заявляют capability
+- какой target сейчас действительно способен ответить
+- какой path нужно пробовать первым
+- какой fallback/degradation class разрешен
+- какой observed failure относится к текущей попытке
+- какие monitoring signals должны держать маршрут активным, переводить его в degraded mode или инициировать failover
+
+Transport-слои должны исполнять выбранный маршрут, а не владеть его семантикой.
+
+## Модель администрирования маршрута
+
+Для любого response/media path, который router выбирает от имени навыка или сценария,
+нужно держать небольшой semantic state machine:
+
+- need:
+  - что именно нужно доставить или получить
+- capability:
+  - какие targets заявляют, что могут это выполнить
+- ability:
+  - какие из них сейчас достижимы, разрешены и достаточно здоровы
+- attempt:
+  - какой target/path сейчас активен или in-flight
+- degradation:
+  - какой fallback class сейчас разрешен
+- observed failure:
+  - какой конкретный инцидент произошел на активной попытке
+- monitoring:
+  - какие сигналы определяют, остается ли маршрут валидным
+
 ## IO Routing (stdout)
 
 - Source: Any skill can emit `ui.notify` events. The local RouterService subscribes to `ui.notify` on the process-local `LocalEventBus`.
@@ -36,6 +73,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Source:
   - `io.out.chat.append` (chat message append)
   - `io.out.say` (enqueue TTS)
+  - `io.out.media.route` (media route intent / normalized route contract)
 - Target selection:
   - default: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`)
   - broadcast: set `_meta.webspace_ids = [...]` to fan-out into multiple webspaces
@@ -43,6 +81,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Projection:
   - `io.out.chat.append` -> `data.voice_chat.messages`
   - `io.out.say` -> `data.tts.queue`
+  - `io.out.media.route` -> `data.media.route`
 
 ### Routeless skills
 
@@ -63,6 +102,16 @@ If the hub receives `/api/tools/call` for a skill that is not installed locally,
 
 Selection prefers active runtimes and most recent `last_seen`.
 
+Целевое состояние:
+
+- это должно эволюционировать из одного ad-hoc proxy ruleset в router-owned semantic route selection
+- тот же route-administration model должен покрывать:
+  - ответы навыков
+  - ответы сценариев
+  - browser-directed outputs
+  - future direct media delivery
+- transport adapters должны исполнять выбранный маршрут, а не решать, кто отвечает на response
+
 ## Capacity Reporting
 
 - Each node reports its capacity via `register` and `heartbeat`:
@@ -72,6 +121,34 @@ Selection prefers active runtimes and most recent `last_seen`.
   - `capacity.scenarios`: scenarios present on the node `{ name, version, active, dev }`.
 
 - When a skill or scenario is installed/activated/removed via the service layer, the node updates `.adaos/node.yaml` and the next heartbeat includes the updated capacity for the hub to persist. On the hub, capacity is also written to SQLite immediately for the hub node.
+
+## Целевая модель media routing
+
+Та же router-semantics должна расширяться и на media.
+
+Target model:
+
+- media-producing skill или scenario может жить на hub или на member
+- router выбирает, как браузер получает media:
+  - local direct hub path
+  - browser-hub direct WebRTC
+  - browser-member direct WebRTC
+  - root-routed bounded relay
+- direct media signaling может оставаться hub/root-mediated даже когда media peer заканчивается на member
+- degradation media path должна быть видна как routing fact, а не как безликий transport reconnect
+
+Current foundation in code:
+
+- browser-visible carrier для этой semantics - `data.media.route`
+- router-owned state уже использует одну vocabulary для:
+  - `route_intent`
+  - `preferred_route` / `active_route`
+  - `producer_authority` / `producer_target`
+  - `selection_reason` / `degradation_reason`
+  - `member_browser_direct`
+  - `monitoring.observed_failure`
+- `browser <-> member` direct media пока представлено как routed capability foundation:
+  admission policy, per-member producer resolution и dedicated signaling еще предстоит довести до production shape
 
 ## Typical Flows
 

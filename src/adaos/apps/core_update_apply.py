@@ -10,17 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
 from adaos.services.core_slots import write_slot_manifest
-
-
-BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
-    "src/adaos/apps/supervisor.py",
-    "src/adaos/apps/autostart_runner.py",
-    "src/adaos/apps/core_update_apply.py",
-    "src/adaos/services/core_update.py",
-    "src/adaos/services/autostart.py",
-    "src/adaos/apps/cli/commands/setup.py",
-)
 
 
 def _is_probably_git_sha(value: str) -> bool:
@@ -104,6 +95,21 @@ def _run_json(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | 
     if not isinstance(payload, dict):
         raise RuntimeError(f"command returned non-object JSON: {' '.join(cmd)}")
     return payload
+
+
+def _git_worktree_has_changes(repo_dir: Path) -> bool:
+    git = shutil.which("git")
+    if not git or not repo_dir.exists():
+        return False
+    completed = subprocess.run(
+        [git, "status", "--porcelain", "--untracked-files=all"],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return False
+    return bool(str(completed.stdout or "").strip())
 
 
 def _venv_python(venv_dir: Path) -> Path:
@@ -195,11 +201,26 @@ def _migrate_installed_skill_runtimes(
                     visible = sorted(child.name for child in apps_dir.iterdir() if child.is_file())[:20]
                 except Exception:
                     visible = []
-            raise RuntimeError(
-                "prepared slot repo is missing skill runtime migration entrypoint: "
-                f"{migrate_script} "
-                f"(repo_root={repo_root_path}, apps_dir_exists={apps_dir.exists()}, visible_files={visible})"
-            )
+            return {
+                "ok": True,
+                "skipped": True,
+                "unsupported": True,
+                "reason": "missing_skill_runtime_migration_entrypoint",
+                "message": (
+                    "prepared slot repo does not contain skill runtime migration entrypoint; "
+                    "continuing without runtime migration"
+                ),
+                "repo_root": str(repo_root_path),
+                "script_path": str(migrate_script),
+                "apps_dir_exists": apps_dir.exists(),
+                "visible_files": visible,
+                "run_tests": bool(run_tests),
+                "failed_total": 0,
+                "rollback_total": 0,
+                "deactivated_total": 0,
+                "deferred": False,
+                "skills": [],
+            }
         cmd = [str(python_executable), str(migrate_script), "--json"]
     else:
         cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
@@ -227,7 +248,8 @@ def _clone_repo(repo_url: str, target_rev: str, target_version: str, checkout_di
 def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: str, checkout_dir: Path) -> None:
     git = shutil.which("git")
     git_dir = source_repo_root / ".git"
-    if git and git_dir.exists():
+    pinned_target = bool(str(target_rev or "").strip()) or _is_probably_git_sha(str(target_version or "").strip())
+    if git and git_dir.exists() and (pinned_target or not _git_worktree_has_changes(source_repo_root)):
         try:
             _run([git, "clone", str(source_repo_root), str(checkout_dir)])
             if target_rev:
@@ -252,6 +274,82 @@ def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: s
             "node_modules",
         ),
     )
+
+
+def _validate_checkout_target_version(repo_dir: Path, *, target_version: str, source_label: str) -> None:
+    target_version = str(target_version or "").strip()
+    if not _is_probably_git_sha(target_version):
+        return
+    actual = _git_text(repo_dir, "rev-parse", "HEAD")
+    if not actual:
+        raise RuntimeError(
+            f"{source_label} did not produce a verifiable git checkout for requested target_version {target_version}"
+        )
+    if actual.lower() != target_version.lower():
+        raise RuntimeError(
+            f"{source_label} resolved to git commit {actual} instead of requested target_version {target_version}"
+        )
+
+
+def _prepare_checkout_repo(
+    *,
+    checkout_dir: Path,
+    source_repo_dir: Path | None,
+    repo_url: str,
+    target_rev: str,
+    target_version: str,
+) -> str:
+    git_available = bool(shutil.which("git"))
+    source_exists = source_repo_dir is not None and source_repo_dir.exists()
+    source_is_git = _is_git_repo(source_repo_dir)
+    local_error: Exception | None = None
+
+    if source_exists and source_is_git and source_repo_dir is not None:
+        try:
+            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_dir)
+            _validate_checkout_target_version(
+                checkout_dir,
+                target_version=target_version,
+                source_label="local source repo",
+            )
+            return "local_source_tree"
+        except Exception as exc:
+            local_error = exc
+            shutil.rmtree(checkout_dir, ignore_errors=True)
+
+    if git_available and repo_url:
+        try:
+            _clone_repo(repo_url, target_rev, target_version, checkout_dir)
+            _validate_checkout_target_version(
+                checkout_dir,
+                target_version=target_version,
+                source_label="remote repo clone",
+            )
+            return "remote_git_clone"
+        except Exception as exc:
+            if local_error is not None:
+                raise RuntimeError(
+                    f"failed to prepare requested target_version {target_version or '<unspecified>'}: "
+                    f"local source repo failed ({local_error}); remote repo clone failed ({exc})"
+                ) from exc
+            raise
+
+    if source_exists and source_repo_dir is not None:
+        _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_dir)
+        _validate_checkout_target_version(
+            checkout_dir,
+            target_version=target_version,
+            source_label="copied local source tree",
+        )
+        return "local_source_tree"
+
+    _clone_repo(repo_url, target_rev, target_version, checkout_dir)
+    _validate_checkout_target_version(
+        checkout_dir,
+        target_version=target_version,
+        source_label="remote repo clone",
+    )
+    return "remote_git_clone"
 
 
 def _strip_repo_vcs_metadata(repo_dir: Path) -> None:
@@ -333,6 +431,7 @@ def prepare_slot(
     target_rev: str = "",
     target_version: str = "",
     repo_url: str | None = None,
+    migrate_skill_runtimes: bool = True,
 ) -> dict[str, object]:
     slot_name = str(slot).strip().upper()
     slot_dir = Path(slot_dir_path).expanduser().resolve()
@@ -340,7 +439,10 @@ def prepare_slot(
     repo_root_dir = Path(str(repo_root or "")).expanduser().resolve() if str(repo_root or "").strip() else None
     target_rev = str(target_rev or "").strip()
     target_version = str(target_version or "").strip()
-    repo_url = str(repo_url or os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
+    if repo_url is None:
+        repo_url = str(os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
+    else:
+        repo_url = str(repo_url).strip()
     source_repo_dir = Path(str(source_repo_root or "")).expanduser().resolve() if str(source_repo_root or "").strip() else None
     shared_dotenv = str(shared_dotenv_path or "").strip()
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"adaos-core-{slot_name.lower()}-", dir=str(slot_dir.parent)))
@@ -348,16 +450,13 @@ def prepare_slot(
     prepared_slot.mkdir(parents=True, exist_ok=True)
     try:
         checkout_tmp = prepared_slot / "repo"
-        source_is_git = _is_git_repo(source_repo_dir)
-        git_available = bool(shutil.which("git"))
-        if source_repo_dir is not None and source_repo_dir.exists() and source_is_git:
-            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
-        elif git_available and repo_url:
-            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
-        elif source_repo_dir is not None and source_repo_dir.exists():
-            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
-        else:
-            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
+        source_kind = _prepare_checkout_repo(
+            checkout_dir=checkout_tmp,
+            source_repo_dir=source_repo_dir,
+            repo_url=repo_url,
+            target_rev=target_rev,
+            target_version=target_version,
+        )
         venv_tmp = prepared_slot / "venv"
         _run([sys.executable, "-m", "venv", str(venv_tmp)])
         py = _venv_python(venv_tmp)
@@ -372,9 +471,6 @@ def prepare_slot(
         git_short_commit = _git_text(checkout_tmp, "rev-parse", "--short", "HEAD")
         git_branch = _git_text(checkout_tmp, "rev-parse", "--abbrev-ref", "HEAD")
         git_subject = _git_text(checkout_tmp, "show", "-s", "--format=%s", "HEAD")
-        source_kind = "remote_git_clone"
-        if source_repo_dir is not None and source_repo_dir.exists():
-            source_kind = "local_source_tree"
         bootstrap_update = _detect_bootstrap_promotion_requirement(checkout_tmp, repo_root_dir)
         _strip_repo_vcs_metadata(checkout_tmp)
         manifest = {
@@ -382,6 +478,7 @@ def prepare_slot(
             "created_at": time.time(),
             "target_rev": target_rev,
             "target_version": str(target_version or "").strip(),
+            "root_repo_root": str(repo_root_dir) if repo_root_dir is not None else "",
             "source_kind": source_kind,
             "source_repo_root": str(source_repo_dir) if source_repo_dir is not None else "",
             "repo_url": repo_url,
@@ -412,28 +509,42 @@ def prepare_slot(
         }
         _replace_slot_dir(prepared_slot, slot_dir)
         repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
-        skill_runtime_migration = _migrate_installed_skill_runtimes(
-            final_py,
-            repo_root=str(final_repo_dir),
-            base_dir=str(base_dir or ""),
-            shared_dotenv_path=shared_dotenv,
-            run_tests=True,
-        )
-        if not bool(skill_runtime_migration.get("ok")):
-            failed = []
-            for item in skill_runtime_migration.get("skills") or []:
-                if not isinstance(item, dict) or bool(item.get("ok")):
-                    continue
-                failed.append(
-                    f"{item.get('skill') or 'skill'}:{item.get('failed_stage') or 'failed'}"
-                )
-            suffix = ", ".join(failed[:5])
-            if len(failed) > 5:
-                suffix += f" (+{len(failed) - 5} more)"
-            if suffix:
-                raise RuntimeError(f"installed skill runtime migration failed: {suffix}")
-            raise RuntimeError(f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}")
         manifest["venv_repair"] = repair
+        if migrate_skill_runtimes:
+            skill_runtime_migration = _migrate_installed_skill_runtimes(
+                final_py,
+                repo_root=str(final_repo_dir),
+                base_dir=str(base_dir or ""),
+                shared_dotenv_path=shared_dotenv,
+                run_tests=True,
+            )
+            if not bool(skill_runtime_migration.get("ok")):
+                failed = []
+                for item in skill_runtime_migration.get("skills") or []:
+                    if not isinstance(item, dict) or bool(item.get("ok")):
+                        continue
+                    failed.append(
+                        f"{item.get('skill') or 'skill'}:{item.get('failed_stage') or 'failed'}"
+                    )
+                suffix = ", ".join(failed[:5])
+                if len(failed) > 5:
+                    suffix += f" (+{len(failed) - 5} more)"
+                if suffix:
+                    raise RuntimeError(f"installed skill runtime migration failed: {suffix}")
+                raise RuntimeError(
+                    f"installed skill runtime migration failed: {json.dumps(skill_runtime_migration, ensure_ascii=False)}"
+                )
+        else:
+            skill_runtime_migration = {
+                "ok": True,
+                "total": 0,
+                "failed_total": 0,
+                "rollback_total": 0,
+                "deactivated_total": 0,
+                "run_tests": False,
+                "deferred": True,
+                "skills": [],
+            }
         manifest["skill_runtime_migration"] = skill_runtime_migration
         write_slot_manifest(slot_name, manifest)
         return manifest

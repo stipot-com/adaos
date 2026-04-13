@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import threading
@@ -300,12 +301,12 @@ HUB_MEMBER_CHANNEL_SPECS: tuple[SemanticChannelSpec, ...] = (
         channel_type=ChannelType.MEDIA,
         message_types=(MessageTaxonomy.MEDIA_FRAME,),
         authority=Authority.SHARED,
-        candidate_paths=("webrtc_media", "root_media_relay"),
-        failover_order=("webrtc_media", "root_media_relay"),
+        candidate_paths=("member_browser_webrtc_media", "webrtc_media", "root_media_relay"),
+        failover_order=("member_browser_webrtc_media", "webrtc_media", "root_media_relay"),
         freeze_after_switch_s=3,
         duplicate_suppression="none; latency-first media semantics",
         description="Latency-sensitive media plane.",
-        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime now supports bounded root relay for file media and direct WebRTC audio/video loopback for live validation.",
+        notes="Phase 6 keeps media explicitly isolated from control/sync hardening; current runtime now supports bounded root relay for file media, direct WebRTC audio/video loopback for live validation, and an explicit member-browser direct path foundation.",
     ),
 )
 
@@ -2485,6 +2486,313 @@ def _new_hub_member_channel_state(spec: SemanticChannelSpec) -> dict[str, Any]:
     }
 
 
+def _sidecar_lifecycle_manager() -> str:
+    token = str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower()
+    return "supervisor" if token in {"1", "true", "yes", "on"} else "runtime"
+
+
+def _sidecar_route_tunnel_entry(route_tunnel_contract: dict[str, Any] | None, key: str) -> dict[str, Any]:
+    payload = route_tunnel_contract if isinstance(route_tunnel_contract, dict) else {}
+    entry = payload.get(str(key or "").strip())
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def _sidecar_route_tunnel_state(*, enabled: bool, entry: dict[str, Any] | None) -> str:
+    payload = entry if isinstance(entry, dict) else {}
+    current_owner = str(payload.get("current_owner") or "").strip().lower()
+    planned_owner = str(payload.get("planned_owner") or "").strip().lower()
+    current_support = str(payload.get("current_support") or "").strip().lower()
+    listener_ready = bool(payload.get("listener_ready"))
+    handoff_ready = bool(payload.get("handoff_ready"))
+
+    if current_owner == "sidecar":
+        if handoff_ready:
+            return "ready"
+        if listener_ready:
+            return "starting"
+        return "degraded" if enabled else "disabled"
+    if planned_owner == "sidecar":
+        return "disabled" if not enabled or current_support == "disabled" else "planned"
+    if current_owner == "runtime":
+        return "not_owned"
+    return "unknown"
+
+
+def _sidecar_scope_snapshot(*, enabled: bool, route_tunnel_contract: dict[str, Any] | None = None) -> dict[str, Any]:
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    current_boundaries: list[str] = ["hub_root_transport"] if enabled else []
+    runtime_fallback_boundaries: list[str] = ["hub_root_transport"] if not enabled else []
+    planned_next_boundaries: list[str] = []
+
+    for boundary, entry in (
+        ("browser_events_ws", ws_entry),
+        ("browser_yjs_ws", yws_entry),
+    ):
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        planned_owner = str(entry.get("planned_owner") or "").strip().lower()
+        if current_owner == "sidecar":
+            current_boundaries.append(boundary)
+            continue
+        runtime_fallback_boundaries.append(boundary)
+        if planned_owner == "sidecar":
+            planned_next_boundaries.append(boundary)
+
+    def _uniq(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            key = str(item or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(key)
+        return result
+
+    return {
+        "current_boundaries": _uniq(current_boundaries),
+        "runtime_fallback_boundaries": _uniq(runtime_fallback_boundaries),
+        "planned_next_boundaries": _uniq(planned_next_boundaries),
+        "planned_later_boundaries": [
+            "webrtc_signaling",
+            "webrtc_media",
+            "yjs_session_authority",
+        ],
+    }
+
+
+def _media_update_guard_snapshot(*, role: str, runtime: dict[str, Any] | None) -> dict[str, Any]:
+    payload = runtime if isinstance(runtime, dict) else {}
+    role_norm = str(role or "").strip().lower() or None
+    route_intent = payload.get("route_intent") if isinstance(payload.get("route_intent"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    member_browser = payload.get("member_browser_direct") if isinstance(payload.get("member_browser_direct"), dict) else {}
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+
+    connected_browser_session_total = int(
+        member_browser.get("connected_browser_session_total")
+        or member_browser.get("browser_session_total")
+        or 0
+    )
+    live_connected_peers = int(counts.get("live_connected_peers") or 0)
+    live_tracks_total = sum(
+        int(counts.get(key) or 0)
+        for key in (
+            "incoming_audio_tracks",
+            "incoming_video_tracks",
+            "loopback_audio_tracks",
+            "loopback_video_tracks",
+        )
+    )
+
+    observed_live_topology: str | None = None
+    if bool(member_browser.get("ready")) and connected_browser_session_total > 0:
+        observed_live_topology = "member_browser_direct"
+    elif live_connected_peers > 0 or live_tracks_total > 0:
+        observed_live_topology = "hub_webrtc_loopback"
+
+    live_session_present = observed_live_topology is not None
+    member_runtime_update = "allow"
+    hub_runtime_update = "allow"
+    hub_sidecar_continuity_required = False
+    current_support = "not_applicable"
+    criticality = "idle"
+    reason = "no live media session observed"
+
+    if observed_live_topology == "member_browser_direct":
+        member_runtime_update = "defer"
+        hub_runtime_update = "preserve_sidecar"
+        hub_sidecar_continuity_required = True
+        current_support = "planned"
+        criticality = "member_live_media"
+        reason = (
+            "member owns the active browser media path; member update should be deferred and "
+            "hub restart should preserve an independent sidecar continuity path"
+        )
+    elif observed_live_topology == "hub_webrtc_loopback":
+        hub_runtime_update = "preserve_sidecar"
+        hub_sidecar_continuity_required = True
+        current_support = "planned"
+        criticality = "hub_live_media"
+        reason = (
+            "hub participates in the active live media path; target behavior is to keep sidecar alive "
+            "while the hub runtime restarts"
+        )
+
+    return {
+        "role": role_norm,
+        "live_session_present": live_session_present,
+        "observed_live_topology": observed_live_topology,
+        "active_route": payload.get("active_route") or route_intent.get("active_route") or attempt.get("active_route"),
+        "preferred_route": payload.get("preferred_route") or route_intent.get("preferred_route") or attempt.get("preferred_route"),
+        "member_runtime_update": member_runtime_update,
+        "hub_runtime_update": hub_runtime_update,
+        "hub_sidecar_continuity_required": hub_sidecar_continuity_required,
+        "current_support": current_support,
+        "criticality": criticality,
+        "reason": reason,
+    }
+
+
+def _sidecar_continuity_contract(
+    *,
+    enabled: bool,
+    media_runtime: dict[str, Any] | None,
+    route_tunnel_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = media_runtime if isinstance(media_runtime, dict) else {}
+    guard = payload.get("update_guard") if isinstance(payload.get("update_guard"), dict) else {}
+    required = bool(guard.get("hub_sidecar_continuity_required"))
+    member_policy = str(guard.get("member_runtime_update") or "allow")
+    hub_policy = str(guard.get("hub_runtime_update") or "allow")
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    required_boundaries = ["browser_events_ws", "browser_yjs_ws"] if required else []
+    ready_boundaries: list[str] = []
+    pending_boundaries: list[str] = []
+    blockers: list[str] = []
+
+    for boundary, entry in (
+        ("browser_events_ws", ws_entry),
+        ("browser_yjs_ws", yws_entry),
+    ):
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        handoff_ready = bool(entry.get("handoff_ready"))
+        if current_owner == "sidecar" and handoff_ready:
+            ready_boundaries.append(boundary)
+            continue
+        if required:
+            pending_boundaries.append(boundary)
+            blocker = next(
+                (
+                    str(item).strip()
+                    for item in (entry.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            if blocker:
+                blockers.append(f"{boundary}: {blocker}")
+
+    if not required:
+        current_support = "not_applicable"
+    elif not enabled:
+        current_support = "disabled"
+    elif pending_boundaries and ready_boundaries:
+        current_support = "partial"
+    elif pending_boundaries:
+        current_support = "planned"
+    else:
+        current_support = "ready"
+    reason = str(guard.get("reason") or "").strip() or (
+        "no live media continuity requirement observed"
+        if not required
+        else "live media continuity requires sidecar independence from the hub runtime"
+    )
+    return {
+        "required": required,
+        "enabled": bool(enabled),
+        "member_runtime_update": member_policy,
+        "hub_runtime_update": hub_policy,
+        "observed_live_topology": guard.get("observed_live_topology"),
+        "current_support": current_support,
+        "required_boundaries": required_boundaries,
+        "ready_boundaries": ready_boundaries,
+        "pending_boundaries": pending_boundaries,
+        "blockers": blockers,
+        "target_behavior": (
+            "keep sidecar alive while the hub runtime restarts during live media sessions"
+            if required
+            else "transport sidecar currently isolates only hub_root transport"
+        ),
+        "reason": reason,
+    }
+
+
+def _sidecar_progress_snapshot(
+    *,
+    enabled: bool,
+    transport_ready: bool,
+    lifecycle_manager: str,
+    route_tunnel_contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+
+    def _step_blocker(entry: dict[str, Any]) -> str | None:
+        return next((str(item).strip() for item in (entry.get("blockers") or []) if str(item).strip()), None)
+
+    def _handoff_step(step_id: str, title: str, entry: dict[str, Any]) -> dict[str, Any]:
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        planned_owner = str(entry.get("planned_owner") or "").strip().lower()
+        handoff_ready = bool(entry.get("handoff_ready"))
+        listener_ready = bool(entry.get("listener_ready"))
+        blocker = _step_blocker(entry)
+        if current_owner == "sidecar" and handoff_ready:
+            status = "completed"
+        elif current_owner == "sidecar" or planned_owner == "sidecar":
+            status = "in_progress"
+        else:
+            status = "planned"
+        return {
+            "id": step_id,
+            "title": title,
+            "status": status,
+            "active_on_node": current_owner == "sidecar",
+            "ready_on_node": current_owner == "sidecar" and handoff_ready,
+            "listener_ready": listener_ready,
+            "blocker": blocker,
+            "delegation_mode": entry.get("delegation_mode"),
+            "summary": (
+                "handoff is complete"
+                if status == "completed"
+                else blocker or "ownership handoff is not complete yet"
+            ),
+        }
+
+    milestones = [
+        {
+            "id": "hub_root_transport_sidecar",
+            "title": "Hub-root transport sidecar",
+            "status": "completed",
+            "active_on_node": bool(enabled),
+            "ready_on_node": bool(transport_ready),
+            "summary": "sidecar owns the hub-root transport boundary",
+        },
+        {
+            "id": "supervisor_managed_sidecar",
+            "title": "Supervisor-managed sidecar lifecycle",
+            "status": "completed",
+            "active_on_node": str(lifecycle_manager or "").strip().lower() == "supervisor",
+            "ready_on_node": str(lifecycle_manager or "").strip().lower() == "supervisor",
+            "summary": "supervisor-managed sidecar lifecycle is implemented",
+        },
+        _handoff_step("browser_events_ws_handoff", "Browser /ws handoff", ws_entry),
+        _handoff_step("browser_yjs_ws_handoff", "Browser /yws handoff", yws_entry),
+    ]
+    completed = sum(1 for item in milestones if str(item.get("status") or "") == "completed")
+    total = len(milestones)
+    percent = int((completed * 100) / total) if total > 0 else 0
+    current = next((item for item in milestones if str(item.get("status") or "") != "completed"), None)
+    next_blocker = str(current.get("blocker") or "").strip() or None if isinstance(current, dict) else None
+    return {
+        "target": "first_browser_realtime_tunnel",
+        "state": "ready" if completed >= total and total > 0 else "in_progress",
+        "completed_milestones": completed,
+        "milestone_total": total,
+        "percent": percent,
+        "current_milestone": current.get("id") if isinstance(current, dict) else None,
+        "next_blocker": next_blocker,
+        "summary": f"{completed}/{total} milestones completed toward first browser realtime sidecar use case",
+        "milestones": milestones,
+        "future_targets": [
+            "live_media_continuity",
+            "webrtc_signaling",
+            "webrtc_media",
+        ],
+    }
+
+
 def _hub_member_transport_evidence_snapshot(
     *,
     role: str,
@@ -2506,6 +2814,10 @@ def _hub_member_transport_evidence_snapshot(
             "connected_to_hub": connected_to_hub,
         },
         "webrtc_media": {"available": False, "source": "webrtc.peer"},
+        "member_browser_webrtc_media": {
+            "available": False,
+            "source": "router.media_route",
+        },
         "root_media_relay": {"available": False, "source": "root.media"},
     }
 
@@ -2517,13 +2829,22 @@ def _hub_member_transport_evidence_snapshot(
         except Exception:
             gateway = {}
         transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+        ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
         ws_entry = transports.get("ws") if isinstance(transports.get("ws"), dict) else {}
         yws_entry = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+        ws_ownership = ownership.get("ws") if isinstance(ownership.get("ws"), dict) else {}
+        yws_ownership = ownership.get("yws") if isinstance(ownership.get("yws"), dict) else {}
         evidence["ws"].update(
             {
                 "available": int(ws_entry.get("active_connections") or 0) > 0,
                 "active_connections": int(ws_entry.get("active_connections") or 0),
                 "last_open_ago_s": ws_entry.get("last_open_ago_s"),
+                "owner": ws_ownership.get("current_owner") or "runtime",
+                "lifecycle_manager": ws_ownership.get("lifecycle_manager"),
+                "planned_owner": ws_ownership.get("planned_owner"),
+                "migration_phase": ws_ownership.get("migration_phase"),
+                "handoff_ready": bool(ws_ownership.get("handoff_ready")),
+                "handoff_blockers": list(ws_ownership.get("handoff_blockers") or []),
             }
         )
         evidence["yws"].update(
@@ -2533,6 +2854,12 @@ def _hub_member_transport_evidence_snapshot(
                 "last_open_ago_s": yws_entry.get("last_open_ago_s"),
                 "recent_open_10s": int(yws_entry.get("recent_open_10s") or 0),
                 "storm_detected": bool(yws_entry.get("storm_detected")),
+                "owner": yws_ownership.get("current_owner") or "runtime",
+                "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
+                "planned_owner": yws_ownership.get("planned_owner"),
+                "migration_phase": yws_ownership.get("migration_phase"),
+                "handoff_ready": bool(yws_ownership.get("handoff_ready")),
+                "handoff_blockers": list(yws_ownership.get("handoff_blockers") or []),
             }
         )
 
@@ -2601,6 +2928,59 @@ def _hub_member_transport_evidence_snapshot(
                 "frame_state": str(route_frame.get("state") or ""),
             }
         )
+        try:
+            from adaos.services.yjs.gateway_ws import active_browser_session_snapshot
+
+            browser_snapshot = active_browser_session_snapshot()
+        except Exception:
+            browser_snapshot = {}
+        browser_peers = (
+            browser_snapshot.get("peers")
+            if isinstance(browser_snapshot.get("peers"), list)
+            else []
+        )
+        browser_session_total = sum(1 for item in browser_peers if isinstance(item, dict))
+        connected_browser_session_total = sum(
+            1
+            for item in browser_peers
+            if isinstance(item, dict)
+            and str(item.get("connection_state") or "").strip().lower() == "connected"
+        )
+        try:
+            from adaos.services.media_capability import member_browser_direct_foundation
+
+            member_browser_direct = member_browser_direct_foundation(
+                browser_session_total=browser_session_total,
+                connected_browser_session_total=connected_browser_session_total,
+                admitted=False,
+            )
+        except Exception:
+            member_browser_direct = {
+                "possible": False,
+                "admitted": False,
+                "ready": False,
+                "reason": "member_browser_direct_inventory_unavailable",
+                "candidate_member_total": 0,
+                "candidate_members": [],
+                "preferred_member_id": None,
+                "preferred_candidate_source": None,
+                "browser_session_total": browser_session_total,
+                "connected_browser_session_total": connected_browser_session_total,
+            }
+        evidence["member_browser_webrtc_media"].update(
+            {
+                "available": bool(member_browser_direct.get("ready")),
+                "possible": bool(member_browser_direct.get("possible")),
+                "admitted": bool(member_browser_direct.get("admitted")),
+                "reason": str(member_browser_direct.get("reason") or ""),
+                "candidate_member_total": int(member_browser_direct.get("candidate_member_total") or 0),
+                "candidate_members": list(member_browser_direct.get("candidate_members") or []),
+                "preferred_member_id": str(member_browser_direct.get("preferred_member_id") or "") or None,
+                "preferred_candidate_source": str(member_browser_direct.get("preferred_candidate_source") or "") or None,
+                "browser_session_total": int(member_browser_direct.get("browser_session_total") or 0),
+                "connected_browser_session_total": int(member_browser_direct.get("connected_browser_session_total") or 0),
+            }
+        )
     else:
         member_available = bool(connected_to_hub is True or str(route_mode or "").strip().lower() == "ws")
         evidence["member_link_ws"]["available"] = member_available
@@ -2629,6 +3009,12 @@ def _semantic_channel_status(
                 "bounded_relay",
                 "root bounded media relay is the active authority path",
             )
+        if active_path == "member_browser_webrtc_media":
+            return (
+                "ready",
+                "member_browser_direct",
+                "browser-member direct media path is the active authority path",
+            )
         if active_path.startswith("webrtc_media"):
             return ("ready", "direct_media", "direct media path is active")
         return ("ready", "active", f"{active_path} is the active media authority path")
@@ -2656,9 +3042,40 @@ def _semantic_channel_status(
         return ("ready", "direct_p2p", "direct WebRTC datachannel is the active authority path")
     if active_path in {"ws", "yws"}:
         return ("ready", "direct_ws", "direct websocket is the active authority path")
+    if active_path == "member_browser_webrtc_media":
+        return ("ready", "member_browser_direct", "browser-member direct media path is active")
     if active_path.startswith("webrtc_media"):
         return ("ready", "direct_media", "direct media path is active")
     return ("ready", "active", f"{active_path} is the active authority path")
+
+
+def _hub_member_media_route_contract(
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from adaos.services.router.media_routes import resolve_media_route_intent
+    except Exception:
+        return {}
+
+    member_browser = (
+        evidence.get("member_browser_webrtc_media")
+        if isinstance(evidence.get("member_browser_webrtc_media"), dict)
+        else {}
+    )
+    return resolve_media_route_intent(
+        need="live_stream",
+        direct_local_ready=False,
+        root_routed_ready=bool((evidence.get("root_media_relay") or {}).get("available")),
+        hub_webrtc_ready=bool((evidence.get("webrtc_media") or {}).get("available")),
+        producer_preference="member",
+        preferred_member_id=str(member_browser.get("preferred_member_id") or "") or None,
+        candidate_member_ids=list(member_browser.get("candidate_members") or []),
+        member_browser_direct_possible=bool(member_browser.get("possible")),
+        member_browser_direct_admitted=bool(member_browser.get("admitted")),
+        member_browser_direct_reason=str(member_browser.get("reason") or ""),
+        candidate_member_total=int(member_browser.get("candidate_member_total") or 0),
+        browser_session_total=int(member_browser.get("browser_session_total") or 0),
+    )
 
 
 def hub_member_semantic_channels_snapshot(
@@ -2686,6 +3103,7 @@ def hub_member_semantic_channels_snapshot(
     channels: dict[str, dict[str, Any]] = {}
     assessment_state = "nominal"
     assessment_reasons: list[str] = []
+    media_route_contract = _hub_member_media_route_contract(evidence)
 
     with _LOCK:
         for spec in HUB_MEMBER_CHANNEL_SPECS:
@@ -2768,6 +3186,27 @@ def hub_member_semantic_channels_snapshot(
                 "duplicate_suppression": spec.duplicate_suppression,
                 "candidate_state": candidate_state,
             }
+            if spec.channel_id == "hub_member.media":
+                monitoring = (
+                    media_route_contract.get("monitoring")
+                    if isinstance(media_route_contract.get("monitoring"), dict)
+                    else {}
+                )
+                entry.update(
+                    {
+                        "route_intent": media_route_contract.get("route_intent"),
+                        "delivery_topology": media_route_contract.get("delivery_topology"),
+                        "producer_authority": media_route_contract.get("producer_authority"),
+                        "producer_target": media_route_contract.get("producer_target"),
+                        "preferred_member_id": media_route_contract.get("preferred_member_id"),
+                        "selection_reason": media_route_contract.get("selection_reason"),
+                        "degradation_reason": media_route_contract.get("degradation_reason"),
+                        "fallback_chain": list(media_route_contract.get("fallback_chain") or []),
+                        "attempt": media_route_contract.get("attempt"),
+                        "member_browser_direct": media_route_contract.get("member_browser_direct"),
+                        "observed_failure": monitoring.get("observed_failure"),
+                    }
+                )
             channels[spec.channel_id] = entry
 
     command_channel = channels.get("hub_member.command") if isinstance(channels.get("hub_member.command"), dict) else {}
@@ -2913,6 +3352,23 @@ def hub_member_connection_state_snapshot(
             directory_item = directory_by_id.get(member_id) if isinstance(directory_by_id.get(member_id), dict) else {}
             online = bool(directory_item.get("online")) if directory_item else connected
             last_seen = float(directory_item.get("last_seen") or 0.0) if directory_item else 0.0
+            media_capability: dict[str, Any] = {}
+            try:
+                from adaos.services.media_capability import (
+                    parse_webrtc_media_capacity_entry,
+                    select_member_browser_direct_capacity_entry,
+                )
+
+                snapshot_capacity = node_snapshot.get("capacity") if isinstance(node_snapshot.get("capacity"), dict) else {}
+                directory_capacity = directory_item.get("capacity") if isinstance(directory_item.get("capacity"), dict) else {}
+                capability_entry = select_member_browser_direct_capacity_entry(snapshot_capacity or directory_capacity)
+                media_capability = (
+                    parse_webrtc_media_capacity_entry(capability_entry)
+                    if isinstance(capability_entry, dict)
+                    else {}
+                )
+            except Exception:
+                media_capability = {}
             snapshot_state = _member_snapshot_state(
                 connected=connected,
                 last_snapshot_ago_s=item.get("last_snapshot_ago_s"),
@@ -2952,6 +3408,8 @@ def hub_member_connection_state_snapshot(
                     "snapshot_update_phase": str(update_status.get("phase") or ""),
                     "snapshot_runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
                     "snapshot_runtime_version": str(build.get("runtime_version") or build.get("version") or ""),
+                    "media_capability": media_capability,
+                    "media_capable": bool(media_capability.get("member_browser_direct")),
                 }
             )
             known_members.append(items[-1])
@@ -2967,6 +3425,23 @@ def hub_member_connection_state_snapshot(
                 linkless_online_total += 1
             last_seen = float(node.get("last_seen") or 0.0)
             label = _node_label([], fallback=f"member {len(known_members) + 1}")
+            media_capability = {}
+            try:
+                from adaos.services.media_capability import (
+                    parse_webrtc_media_capacity_entry,
+                    select_member_browser_direct_capacity_entry,
+                )
+
+                capability_entry = select_member_browser_direct_capacity_entry(
+                    node.get("capacity") if isinstance(node.get("capacity"), dict) else {}
+                )
+                media_capability = (
+                    parse_webrtc_media_capacity_entry(capability_entry)
+                    if isinstance(capability_entry, dict)
+                    else {}
+                )
+            except Exception:
+                media_capability = {}
             known_members.append(
                 {
                     "node_id": known_id,
@@ -2990,6 +3465,8 @@ def hub_member_connection_state_snapshot(
                     "snapshot_update_phase": "",
                     "snapshot_runtime_git_short_commit": "",
                     "snapshot_runtime_version": "",
+                    "media_capability": media_capability,
+                    "media_capable": bool(media_capability.get("member_browser_direct")),
                 }
             )
         assessment_state = "idle"
@@ -3104,7 +3581,7 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
         "tracked_streams": [
             {
                 "flow_id": "hub_root.control.lifecycle",
-                "stream_id_pattern": "hub-control:lifecycle:<hub_id>",
+                "stream_id_pattern": "hub-control:lifecycle:<hub_id>:<runtime_instance_id>",
                 "delivery_class": "must_not_lose",
                 "message_type": "state_report",
                 "ack_required": True,
@@ -3113,7 +3590,7 @@ def hub_root_protocol_model_snapshot() -> dict[str, Any]:
             },
             {
                 "flow_id": "hub_root.integration.github_core_update",
-                "stream_id_pattern": "hub-integration:github-core-update:<hub_id>",
+                "stream_id_pattern": "hub-integration:github-core-update:<hub_id>:<runtime_instance_id>",
                 "delivery_class": "must_not_lose",
                 "message_type": "state_report",
                 "ack_required": True,
@@ -3540,16 +4017,18 @@ def sidecar_runtime_snapshot(
     readiness_tree: dict[str, Any] | None = None,
     hub_root_protocol: dict[str, Any] | None = None,
     transport_strategy: dict[str, Any] | None = None,
+    media_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        from adaos.services.realtime_sidecar import (
-            realtime_sidecar_diag_path,
-            realtime_sidecar_enabled,
-            realtime_sidecar_listener_snapshot,
-            realtime_sidecar_local_url,
-        )
+        _realtime_sidecar_mod = importlib.import_module("adaos.services.realtime_sidecar")
     except Exception:
         return {"enabled": False, "status": "unavailable", "summary": "sidecar runtime module is unavailable"}
+
+    realtime_sidecar_diag_path = _realtime_sidecar_mod.realtime_sidecar_diag_path
+    realtime_sidecar_enabled = _realtime_sidecar_mod.realtime_sidecar_enabled
+    realtime_sidecar_listener_snapshot = _realtime_sidecar_mod.realtime_sidecar_listener_snapshot
+    realtime_sidecar_local_url = _realtime_sidecar_mod.realtime_sidecar_local_url
+    route_tunnel_contract_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_route_tunnel_contract", None)
 
     enabled = bool(realtime_sidecar_enabled())
     diag_path = realtime_sidecar_diag_path()
@@ -3563,12 +4042,12 @@ def sidecar_runtime_snapshot(
         "owns": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("may_own") or []),
         "must_not_own": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("must_not_own") or []),
     }
-    delegations = {
-        "hub_root_transport": bool(enabled),
-        "route_tunnel_transport": False,
-        "sync_transport": False,
-        "media_transport": False,
-    }
+    lifecycle_manager = _sidecar_lifecycle_manager()
+    route_tunnel_contract = (
+        route_tunnel_contract_fn()
+        if callable(route_tunnel_contract_fn)
+        else {}
+    )
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -3589,6 +4068,32 @@ def sidecar_runtime_snapshot(
         "last_transport_event": transport_strategy.get("last_event"),
     }
     process_snapshot = realtime_sidecar_listener_snapshot()
+    if not route_tunnel_contract and isinstance(process_snapshot.get("route_tunnel_contract"), dict):
+        route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
+    if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
+        route_tunnel_contract = dict(record.get("route_tunnel_contract") or route_tunnel_contract or {})
+    ws_route_contract = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_route_contract = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    route_ready = _sidecar_route_tunnel_state(enabled=enabled, entry=ws_route_contract)
+    sync_ready = _sidecar_route_tunnel_state(enabled=enabled, entry=yws_route_contract)
+    delegations = {
+        "hub_root_transport": bool(enabled),
+        "route_tunnel_transport": str(ws_route_contract.get("current_owner") or "").strip().lower() == "sidecar",
+        "sync_transport": str(yws_route_contract.get("current_owner") or "").strip().lower() == "sidecar",
+        "media_transport": False,
+    }
+    scope = _sidecar_scope_snapshot(enabled=enabled, route_tunnel_contract=route_tunnel_contract)
+    continuity_contract = _sidecar_continuity_contract(
+        enabled=enabled,
+        media_runtime=media_runtime,
+        route_tunnel_contract=route_tunnel_contract,
+    )
+    progress = _sidecar_progress_snapshot(
+        enabled=enabled,
+        transport_ready=transport_ready,
+        lifecycle_manager=lifecycle_manager,
+        route_tunnel_contract=route_tunnel_contract,
+    )
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
@@ -3655,9 +4160,15 @@ def sidecar_runtime_snapshot(
         return {
             "enabled": enabled,
             "phase": "nats_transport_sidecar",
+            "transport_owner": "sidecar" if enabled else "runtime",
+            "lifecycle_manager": lifecycle_manager,
             "ownership_boundary": "transport_only",
             "ownership": ownership,
             "delegations": delegations,
+            "scope": scope,
+            "continuity_contract": continuity_contract,
+            "progress": progress,
+            "route_tunnel_contract": route_tunnel_contract,
             "status": status,
             "summary": summary,
             "local_url": realtime_sidecar_local_url(),
@@ -3678,9 +4189,15 @@ def sidecar_runtime_snapshot(
     return {
         "enabled": enabled,
         "phase": "nats_transport_sidecar",
+        "transport_owner": "sidecar" if enabled else "runtime",
+        "lifecycle_manager": lifecycle_manager,
         "ownership_boundary": "transport_only",
         "ownership": ownership,
         "delegations": delegations,
+        "scope": scope,
+        "continuity_contract": continuity_contract,
+        "progress": progress,
+        "route_tunnel_contract": route_tunnel_contract,
         "status": status,
         "summary": summary,
         "local_url": realtime_sidecar_local_url(),
@@ -3767,7 +4284,9 @@ def yjs_sync_runtime_snapshot(
     except Exception:
         gateway = {}
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+    ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+    yws_ownership = ownership.get("yws") if isinstance(ownership.get("yws"), dict) else {}
     servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
     yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
 
@@ -3838,6 +4357,12 @@ def yjs_sync_runtime_snapshot(
             "recent_open_60s": int(yws_transport.get("recent_open_60s") or 0),
             "storm_detected": bool(yws_transport.get("storm_detected")),
             "hot_clients": list(yws_transport.get("hot_clients") or []),
+            "owner": yws_ownership.get("current_owner") or "runtime",
+            "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
+            "planned_owner": yws_ownership.get("planned_owner"),
+            "migration_phase": yws_ownership.get("migration_phase"),
+            "handoff_ready": bool(yws_ownership.get("handoff_ready")),
+            "handoff_blockers": list(yws_ownership.get("handoff_blockers") or []),
             "server_requested": bool(yws_server.get("requested")),
             "server_started_event": bool(yws_server.get("started_event")),
             "server_task_running": bool(yws_server.get("task_running")),
@@ -4135,6 +4660,7 @@ def media_plane_runtime_snapshot(
         "root_routed_ready": bool(root_routed.get("ready")),
         "broadcast_ready": bool(webrtc_tracks.get("ready")),
     }
+    runtime["update_guard"] = _media_update_guard_snapshot(role=role_norm, runtime=runtime)
     return runtime
 
 
@@ -4270,11 +4796,6 @@ def reliability_snapshot(
         channel_diagnostics=channel_diagnostics,
         transport_strategy=transport_strategy,
     )
-    sidecar_runtime = sidecar_runtime_snapshot(
-        readiness_tree=readiness_tree,
-        hub_root_protocol=hub_root_protocol,
-        transport_strategy=transport_strategy,
-    )
     section_timeout = _runtime_snapshot_timeout_sec()
     sync_runtime = _run_bounded_runtime_section(
         section="sync",
@@ -4312,6 +4833,12 @@ def reliability_snapshot(
                 "control_readiness_impact": "none",
             },
         },
+    )
+    sidecar_runtime = sidecar_runtime_snapshot(
+        readiness_tree=readiness_tree,
+        hub_root_protocol=hub_root_protocol,
+        transport_strategy=transport_strategy,
+        media_runtime=media_runtime,
     )
     return {
         "ok": True,

@@ -2,6 +2,60 @@
 
 This document describes how AdaOS routes outgoing UI notifications (IO routing) and how a hub proxies tool calls to members (Skills routing).
 
+## Router role
+
+`RouterService` should not remain only a forwarding helper.
+Its target role is a semantic route administrator for outputs, responses, and
+browser-visible delivery paths.
+
+The router should own decisions such as:
+
+- what response or output is needed
+- which node/runtime/browser session advertises the capability
+- which target is currently able to serve it
+- which path should be attempted first
+- which fallback/degradation class is allowed
+- which observed failures belong to the current attempt
+- which health signals should keep the route active, trigger failover, or expose degradation
+
+This means route execution and route administration are related but separate.
+HTTP/WebSocket/WebRTC clients execute a route.
+The router should decide whether that route is preferred, degraded, unavailable,
+or superseded.
+
+For browser-visible media routing this contract should stay explicit in
+`data.media.route`, including the active `attempt`, its `sequence`,
+`switch_total`, `previous_route`, `previous_member_id`, `last_switch_at`,
+current `observed_failure`, and the `monitoring` cause that triggered the last
+re-evaluation.
+
+## Route administration model
+
+For any response path chosen on behalf of a skill or scenario, the router
+should track a small semantic state machine:
+
+- need:
+  - what the caller is trying to deliver or obtain
+- capability:
+  - which targets claim they can satisfy the need
+- ability:
+  - whether those targets are currently reachable, authorized, and healthy enough
+- attempt:
+  - which target/path is currently in flight
+- degradation:
+  - which fallback class is currently allowed
+- observed failure:
+  - the concrete failure attached to the active attempt
+- monitoring:
+  - the health/freshness signals that determine whether the route remains valid
+
+This is the right place to model:
+
+- direct vs relayed browser delivery
+- local hub vs remote member execution
+- response routing for skills and scenarios
+- later media delivery choices such as browser-hub vs browser-member direct media
+
 ## IO Routing (stdout)
 
 - Source: Any skill can emit `ui.notify` events. The local RouterService subscribes to `ui.notify` on the process-local `LocalEventBus`.
@@ -36,6 +90,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Source:
   - `io.out.chat.append` (chat message append)
   - `io.out.say` (enqueue TTS)
+  - `io.out.media.route` (media route intent / normalized route contract)
 - Target selection:
   - default: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`)
   - broadcast: set `_meta.webspace_ids = [...]` to fan-out into multiple webspaces
@@ -43,6 +98,7 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
 - Projection:
   - `io.out.chat.append` -> `data.voice_chat.messages`
   - `io.out.say` -> `data.tts.queue`
+  - `io.out.media.route` -> `data.media.route`
 
 ### Routeless skills
 
@@ -63,6 +119,16 @@ If the hub receives `/api/tools/call` for a skill that is not installed locally,
 
 Selection prefers active runtimes and most recent `last_seen`.
 
+Target-state note:
+
+- this should evolve from a single ad-hoc proxy rule into router-owned semantic route selection
+- the same route-administration model should cover:
+  - skill responses
+  - scenario responses
+  - browser-directed outputs
+  - future direct media delivery
+- transport adapters should execute the chosen route, not own the decision of which runtime/browser/member answers the response
+
 ## Capacity Reporting
 
 - Each node reports its capacity via `register` and `heartbeat`:
@@ -72,6 +138,43 @@ Selection prefers active runtimes and most recent `last_seen`.
   - `capacity.scenarios`: scenarios present on the node `{ name, version, active, dev }`.
 
 - When a skill or scenario is installed/activated/removed via the service layer, the node updates `.adaos/node.yaml` and the next heartbeat includes the updated capacity for the hub to persist. On the hub, capacity is also written to SQLite immediately for the hub node.
+
+## Media routing target
+
+The same router semantics should eventually be extended to media.
+
+Target model:
+
+- a media-producing skill or scenario may run on hub or member
+- the router chooses whether the browser consumes that media through:
+  - local direct hub path
+  - browser-hub direct WebRTC
+  - browser-member direct WebRTC
+  - root-routed bounded relay
+- direct media signaling may still be hub- or root-mediated even when the
+  media peer is browser-member
+- media route degradation should be visible as a routing fact, not hidden as a
+  generic transport reconnect
+
+Current foundation in code:
+
+- the normalized browser-visible carrier is `data.media.route`
+- router-owned state already uses one vocabulary for:
+  - `route_intent`
+  - `preferred_route` / `active_route`
+  - `producer_authority` / `producer_target`
+  - `selection_reason` / `degradation_reason`
+  - `member_browser_direct`
+  - `monitoring.observed_failure`
+- `browser <-> member` direct media is now backed by explicit per-member capability inventory in `capacity.io`
+  using `io_type: webrtc_media` and flat capability tokens such as
+  `webrtc:av`, `producer:member`, and `topology:member_browser_direct`
+- router/reliability/media runtime now select candidate members from persisted subnet capacity and preserve
+  `preferred_member_id` in the normalized route contract, even when the active route degrades to hub loopback or relay
+- router now re-evaluates existing `data.media.route` contracts when browser session state or member media inventory changes,
+  so route administration is a live control function rather than a one-shot projection
+- router now advances an explicit `attempt` contract across those re-evaluations, so route switches and target-member changes are observable state rather than hidden transport behavior
+- direct-media admission policy and dedicated signaling still need to be completed before this path becomes production-default
 
 ## Typical Flows
 

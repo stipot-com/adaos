@@ -7,6 +7,8 @@ from typing import Any
 from urllib.parse import quote
 
 from adaos.services.agent_context import get_ctx
+from adaos.services.media_capability import member_browser_direct_foundation
+from adaos.services.router.media_routes import resolve_media_route_intent
 from adaos.services.skill.runtime_env import SkillRuntimeEnvironment
 
 
@@ -89,6 +91,104 @@ def guess_media_type(filename: str) -> str:
     return "application/octet-stream"
 
 
+def _active_browser_session_totals() -> tuple[int, int]:
+    try:
+        from adaos.services.yjs.gateway_ws import active_browser_session_snapshot
+
+        snapshot = active_browser_session_snapshot()
+    except Exception:
+        return (0, 0)
+    peers = snapshot.get("peers") if isinstance(snapshot.get("peers"), list) else []
+    total = 0
+    connected = 0
+    for item in peers:
+        if not isinstance(item, dict):
+            continue
+        total += 1
+        if str(item.get("connection_state") or "").strip().lower() == "connected":
+            connected += 1
+    return (total, connected)
+
+
+def _media_route_profiles(*, webrtc_supported: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    browser_session_total, connected_browser_total = _active_browser_session_totals()
+    foundation = member_browser_direct_foundation(
+        browser_session_total=browser_session_total,
+        connected_browser_session_total=connected_browser_total,
+        admitted=False,
+    )
+    candidate_member_total = int(foundation.get("candidate_member_total") or 0)
+    preferred_member_id = str(foundation.get("preferred_member_id") or "").strip() or None
+    candidate_member_ids = list(foundation.get("candidate_members") or [])
+    member_browser_direct_possible = bool(webrtc_supported) and bool(foundation.get("possible"))
+    member_browser_direct_reason = (
+        str(foundation.get("reason") or "").strip()
+        or "member_browser_direct_missing_browser_or_member_candidate"
+    )
+    route_profiles = {
+        "upload": resolve_media_route_intent(
+            need="upload",
+            direct_local_ready=True,
+            root_routed_ready=True,
+            hub_webrtc_ready=False,
+            producer_preference="hub",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
+            member_browser_direct_possible=member_browser_direct_possible,
+            member_browser_direct_admitted=False,
+            member_browser_direct_reason=member_browser_direct_reason,
+            candidate_member_total=candidate_member_total,
+            browser_session_total=browser_session_total,
+        ),
+        "playback": resolve_media_route_intent(
+            need="playback",
+            direct_local_ready=True,
+            root_routed_ready=True,
+            hub_webrtc_ready=False,
+            producer_preference="hub",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
+            member_browser_direct_possible=member_browser_direct_possible,
+            member_browser_direct_admitted=False,
+            member_browser_direct_reason=member_browser_direct_reason,
+            candidate_member_total=candidate_member_total,
+            browser_session_total=browser_session_total,
+        ),
+        "live_stream": resolve_media_route_intent(
+            need="live_stream",
+            direct_local_ready=False,
+            root_routed_ready=True,
+            hub_webrtc_ready=bool(webrtc_supported),
+            producer_preference="member",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
+            member_browser_direct_possible=member_browser_direct_possible,
+            member_browser_direct_admitted=False,
+            member_browser_direct_reason=member_browser_direct_reason,
+            candidate_member_total=candidate_member_total,
+            browser_session_total=connected_browser_total,
+        ),
+        "scenario_response_media": resolve_media_route_intent(
+            need="scenario_response_media",
+            direct_local_ready=True,
+            root_routed_ready=True,
+            hub_webrtc_ready=bool(webrtc_supported),
+            producer_preference="member",
+            preferred_member_id=preferred_member_id,
+            candidate_member_ids=candidate_member_ids,
+            member_browser_direct_possible=member_browser_direct_possible,
+            member_browser_direct_admitted=False,
+            member_browser_direct_reason=member_browser_direct_reason,
+            candidate_member_total=candidate_member_total,
+            browser_session_total=browser_session_total,
+        ),
+    }
+    foundation = dict(foundation)
+    foundation["possible"] = member_browser_direct_possible
+    foundation["reason"] = member_browser_direct_reason
+    return route_profiles, foundation
+
+
 def media_capabilities() -> dict[str, Any]:
     try:
         from adaos.services.webrtc.peer import webrtc_peer_snapshot
@@ -98,6 +198,9 @@ def media_capabilities() -> dict[str, Any]:
     except Exception:
         live_webrtc = {}
         webrtc_supported = False
+    route_profiles, member_browser_direct = _media_route_profiles(
+        webrtc_supported=webrtc_supported,
+    )
     return {
         "storage": {
             "dir": str(media_video_dir()),
@@ -145,11 +248,14 @@ def media_capabilities() -> dict[str, Any]:
             "incoming_video_tracks": int(live_webrtc.get("incoming_video_tracks") or 0),
             "loopback_audio_tracks": int(live_webrtc.get("loopback_audio_tracks") or 0),
             "loopback_video_tracks": int(live_webrtc.get("loopback_video_tracks") or 0),
+            "member_browser_direct": member_browser_direct,
         },
+        "route_profiles": route_profiles,
         "notes": [
             "Direct local hub API remains the preferred path for operator-grade upload and playback validation.",
             "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered JSON /api proxy.",
             "WebRTC audio/video loopback is available for live end-to-end media channel validation.",
+            "Member-browser direct media is now represented as an explicit route contract foundation, even before admission policy is enabled.",
         ],
     }
 
@@ -165,10 +271,19 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
     except Exception:
         live_webrtc = {}
         webrtc_supported = False
+    route_profiles, member_browser_direct = _media_route_profiles(
+        webrtc_supported=webrtc_supported,
+    )
+    default_route = (
+        route_profiles.get("scenario_response_media")
+        if isinstance(route_profiles.get("scenario_response_media"), dict)
+        else {}
+    )
     return {
         "available": True,
         "scope": MEDIA_RUNTIME_SCOPE,
         "authority": {
+            "route_administrator": "router",
             "storage": "local_hub_api",
             "playback": "local_hub_api",
             "relay": "root_media_relay",
@@ -214,8 +329,31 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
                 "loopback_audio_tracks": int(live_webrtc.get("loopback_audio_tracks") or 0),
                 "loopback_video_tracks": int(live_webrtc.get("loopback_video_tracks") or 0),
             },
+            "member_browser_webrtc": {
+                "ready": bool(member_browser_direct.get("ready")),
+                "upload": False,
+                "playback": "live_direct" if bool(member_browser_direct.get("ready")) else "not_admitted",
+                "authority": "router_selected_member" if bool(member_browser_direct.get("admitted")) else "none",
+                "mode": "webrtc_browser_member_direct",
+                "reason": str(member_browser_direct.get("reason") or "member_browser_direct_not_admitted"),
+                "candidate_member_total": int(member_browser_direct.get("candidate_member_total") or 0),
+                "candidate_members": list(member_browser_direct.get("candidate_members") or []),
+                "preferred_member_id": member_browser_direct.get("preferred_member_id"),
+                "browser_session_total": int(member_browser_direct.get("browser_session_total") or 0),
+            },
         },
         "recommended_path": "direct_local_http",
+        "route_intent": default_route,
+        "route_profiles": route_profiles,
+        "producer_authority": default_route.get("producer_authority"),
+        "producer_target": default_route.get("producer_target"),
+        "preferred_member_id": default_route.get("preferred_member_id"),
+        "delivery_topology": default_route.get("delivery_topology"),
+        "selection_reason": default_route.get("selection_reason"),
+        "degradation_reason": default_route.get("degradation_reason"),
+        "attempt": default_route.get("attempt"),
+        "monitoring": default_route.get("monitoring"),
+        "member_browser_direct": member_browser_direct,
         "counts": {
             "file_total": len(items),
             "total_bytes": total_bytes,
@@ -235,6 +373,8 @@ def media_runtime_snapshot(items: list[dict[str, Any]] | None = None) -> dict[st
             "Direct local hub API remains the preferred path for real upload and playback validation.",
             "Root-routed media now uses a dedicated bounded relay path instead of the generic buffered /api proxy.",
             "WebRTC audio/video loopback is available for live end-to-end media validation against the hub.",
+            "Member-browser direct media is represented as an explicit route contract foundation and can be admitted later without changing the media runtime shape.",
+            "Candidate member selection now comes from explicit member WebRTC media capability advertised via subnet capacity, not only from raw connected-member counts.",
         ],
     }
 

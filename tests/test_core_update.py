@@ -8,6 +8,7 @@ from adaos.services.core_update import (
     execute_pending_update,
     finalize_runtime_boot_status,
     configured_update_command,
+    prepare_pending_update,
     read_last_result,
     read_plan,
     read_status,
@@ -51,6 +52,42 @@ def test_core_update_status_roundtrip(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     write_status({"state": "countdown", "message": "scheduled"})
     assert read_status()["state"] == "countdown"
+
+
+def test_core_update_status_keeps_rollout_metadata_across_validate(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_status(
+        {
+            "state": "restarting",
+            "phase": "launch",
+            "plan": {
+                "action": "update",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+77.d7d79d5",
+                "reason": "infrastate.start_update",
+            },
+        }
+    )
+
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "validate",
+            "target_slot": "B",
+            "manifest": {
+                "slot": "B",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+77.d7d79d5",
+            },
+        }
+    )
+
+    status = read_status()
+    assert status["action"] == "update"
+    assert status["target_rev"] == "rev2026"
+    assert status["target_version"] == "0.1.0+77.d7d79d5"
+    assert status["planned_reason"] == "infrastate.start_update"
+    assert read_last_result()["target_version"] == "0.1.0+77.d7d79d5"
 
 
 def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
@@ -128,6 +165,24 @@ def test_execute_pending_update_inherits_target_rev_from_active_slot(monkeypatch
     result = execute_pending_update({"target_version": "0.1.0"})
     assert result["state"] == "succeeded"
     assert "rev2026" in seen["command"]
+
+
+def test_prepare_pending_update_defers_skill_runtime_migration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def _fake_prepare_slot(**kwargs):
+        captured.update(kwargs)
+        return {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"]}
+
+    monkeypatch.setattr("adaos.apps.core_update_apply.prepare_slot", _fake_prepare_slot)
+
+    result = prepare_pending_update({"target_rev": "rev2026", "target_slot": "B"})
+
+    assert result["state"] == "prepared"
+    assert result["target_slot"] == "B"
+    assert captured["slot"] == "B"
+    assert captured["migrate_skill_runtimes"] is False
 
 
 def test_rollback_installed_skill_runtimes_marks_expected_skips(monkeypatch) -> None:
@@ -228,3 +283,112 @@ def test_promote_root_from_slot_copies_changed_bootstrap_files(monkeypatch, tmp_
     assert (root_dir / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "new\n"
     backup_file = Path(payload["backup_dir"]) / "src" / "adaos" / "apps" / "supervisor.py"
     assert backup_file.read_text(encoding="utf-8") == "old\n"
+
+
+def test_promote_root_from_slot_prefers_manifest_root_repo_root(monkeypatch, tmp_path) -> None:
+    from adaos.services.core_update import promote_root_from_slot
+
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    wrong_root = tmp_path / "wrong-root"
+    right_root = tmp_path / "right-root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    for base in (wrong_root, right_root, slot_repo):
+        (base / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (wrong_root / "src" / "adaos" / "apps" / "supervisor.py").write_text("wrong\n", encoding="utf-8")
+    (right_root / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr("adaos.services.core_update._repo_root", lambda: wrong_root)
+
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "repo_dir": str(slot_repo),
+            "root_repo_root": str(right_root),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    activate_slot("B")
+
+    payload = promote_root_from_slot()
+
+    assert payload["target_root"] == str(right_root.resolve())
+    assert payload["target_root_basis"] == "manifest.root_repo_root"
+    assert (right_root / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "new\n"
+    assert (wrong_root / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "wrong\n"
+
+
+def test_resolved_root_promotion_requirement_tracks_current_root_state(monkeypatch, tmp_path) -> None:
+    from adaos.services.core_update import promote_root_from_slot, resolved_root_promotion_requirement
+
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    root_dir = tmp_path / "root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    (root_dir / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (slot_repo / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (root_dir / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr("adaos.services.core_update._repo_root", lambda: root_dir)
+
+    manifest = {
+        "slot": "B",
+        "repo_dir": str(slot_repo),
+        "bootstrap_update": {
+            "required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+        },
+    }
+    write_slot_manifest("B", manifest)
+    activate_slot("B")
+
+    required_before, details_before = resolved_root_promotion_requirement(manifest)
+
+    assert required_before is True
+    assert details_before["effective_required"] is True
+    assert details_before["effective_mismatched_paths"] == ["src/adaos/apps/supervisor.py"]
+
+    promote_root_from_slot()
+
+    required_after, details_after = resolved_root_promotion_requirement(manifest)
+
+    assert required_after is False
+    assert details_after["effective_required"] is False
+    assert details_after["effective_mismatched_paths"] == []
+
+
+def test_restore_root_from_backup_restores_previous_root_files(monkeypatch, tmp_path) -> None:
+    from adaos.services.core_update import promote_root_from_slot, restore_root_from_backup
+
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    root_dir = tmp_path / "root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    (root_dir / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (slot_repo / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (root_dir / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr("adaos.services.core_update._repo_root", lambda: root_dir)
+
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "repo_dir": str(slot_repo),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    activate_slot("B")
+
+    promotion = promote_root_from_slot()
+    assert (root_dir / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "new\n"
+
+    restored = restore_root_from_backup(backup_dir=str(promotion["backup_dir"]))
+
+    assert restored["ok"] is True
+    assert restored["target_root"] == str(root_dir.resolve())
+    assert (root_dir / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "old\n"

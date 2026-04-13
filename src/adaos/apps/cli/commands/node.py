@@ -42,6 +42,69 @@ def _control_error_message(prefix: str, payload: Any) -> str:
     return f"[AdaOS] {prefix} failed: local control API is unreachable"
 
 
+def _supervisor_public_base_url(control: str) -> str | None:
+    raw = str(control or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    port = parsed.port
+    target_port = 8776 if port in {None, 8777, 8778} else port
+    netloc = f"{parsed.hostname}:{target_port}"
+    return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def _supervisor_transition_probe(*, control: str, token: str) -> tuple[int | None, Any]:
+    base = _supervisor_public_base_url(control)
+    if not base:
+        return None, {"error": "connection_error", "detail": "unable to resolve supervisor base url"}
+    return _control_get_json(
+        control=base,
+        path="/api/supervisor/public/update-status",
+        token=token,
+        timeout=2.5,
+    )
+
+
+def _is_supervisor_controlled_transition(payload: Any) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    status = data.get("status") if isinstance(data.get("status"), dict) else {}
+    attempt = data.get("attempt") if isinstance(data.get("attempt"), dict) else {}
+    state = str(status.get("state") or "").strip().lower()
+    phase = str(status.get("phase") or "").strip().lower()
+    attempt_state = str(attempt.get("state") or "").strip().lower()
+    if attempt_state == "awaiting_root_restart":
+        return True
+    if state in {"countdown", "applying", "restarting", "failed", "cancelled"}:
+        return True
+    if state == "validated" and phase == "root_promotion_pending":
+        return True
+    if state == "succeeded" and phase == "root_promoted":
+        return True
+    return False
+
+
+def _print_supervisor_transition_summary(payload: dict[str, Any]) -> None:
+    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    typer.echo("runtime_restarting_under_supervisor: yes")
+    if status.get("state"):
+        typer.echo(f"supervisor.state: {status.get('state')}")
+    if status.get("phase"):
+        typer.echo(f"supervisor.phase: {status.get('phase')}")
+    if attempt.get("state"):
+        typer.echo(f"supervisor.attempt: {attempt.get('state')}")
+    if runtime.get("active_slot"):
+        typer.echo(f"supervisor.active_slot: {runtime.get('active_slot')}")
+    if status.get("message"):
+        typer.echo(f"supervisor.message: {status.get('message')}")
+
+
 def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
     url = control.rstrip("/") + path
     headers = {"X-AdaOS-Token": token or resolve_control_token()}
@@ -125,6 +188,15 @@ def _control_patch_json(
     return response.status_code, payload
 
 
+def _resolved_local_control_token(control: str, cfg: Any) -> str:
+    explicit = getattr(cfg, "token", None)
+    try:
+        return resolve_control_token(explicit=explicit, base_url=control)
+    except TypeError:
+        # Test doubles may still expose the older one-argument signature.
+        return resolve_control_token(explicit=explicit)
+
+
 def _print_reliability_summary(payload: dict[str, Any]) -> None:
     node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -176,11 +248,18 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     if sidecar:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
+        scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
+        continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
+        progress = sidecar.get("progress") if isinstance(sidecar.get("progress"), dict) else {}
+        route_tunnel = sidecar.get("route_tunnel_contract") if isinstance(sidecar.get("route_tunnel_contract"), dict) else {}
+        planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
         typer.echo(
             "sidecar: "
             f"phase={sidecar.get('phase') or '-'} "
             f"enabled={bool(sidecar.get('enabled'))} "
             f"status={sidecar.get('status') or 'unknown'} "
+            f"owner={sidecar.get('transport_owner') or '-'} "
+            f"manager={sidecar.get('lifecycle_manager') or '-'} "
             f"transport={sidecar.get('local_listener_state') or ('ready' if sidecar.get('transport_ready') else 'down')}/"
             f"{sidecar.get('remote_session_state') or '-'} "
             f"control={sidecar.get('control_ready') or '-'} "
@@ -190,8 +269,53 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"superseded={provenance.get('superseded_total') or 0} "
             f"pid={process.get('listener_pid') or '-'} "
             f"local={sidecar.get('local_url') or '-'} "
+            f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
+            f"next={planned_next or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if progress:
+            typer.echo(
+                "sidecar.progress: "
+                f"target={progress.get('target') or '-'} "
+                f"state={progress.get('state') or '-'} "
+                f"done={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+                f"percent={progress.get('percent') if progress.get('percent') is not None else '-'} "
+                f"current={progress.get('current_milestone') or '-'}"
+            )
+            if progress.get("next_blocker"):
+                typer.echo(f"sidecar.progress.blocker: {progress.get('next_blocker')}")
+        if route_tunnel:
+            ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+            yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+            typer.echo(
+                "sidecar.route_tunnel: "
+                f"support={route_tunnel.get('current_support') or '-'} "
+                f"boundary={route_tunnel.get('ownership_boundary') or '-'} "
+                f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+                f"{ws_contract.get('delegation_mode') or '-'} "
+                f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+                f"{yws_contract.get('delegation_mode') or '-'}"
+            )
+            ws_blocker = next(
+                (
+                    str(item).strip()
+                    for item in (ws_contract.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            yws_blocker = next(
+                (
+                    str(item).strip()
+                    for item in (yws_contract.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            if ws_blocker:
+                typer.echo(f"sidecar.route_tunnel.ws_blocker: {ws_blocker}")
+            if yws_blocker and yws_blocker != ws_blocker:
+                typer.echo(f"sidecar.route_tunnel.yws_blocker: {yws_blocker}")
     if sync_runtime:
         assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
         transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
@@ -206,6 +330,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"updates={sync_runtime.get('update_log_total') or 0} "
             f"replay={sync_runtime.get('replay_window_total') or 0} "
             f"yws={transport.get('active_yws_connections') or 0} "
+            f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "
             f"yws10s={transport.get('recent_open_10s') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
@@ -215,6 +340,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         transport = media_runtime.get("transport") if isinstance(media_runtime.get("transport"), dict) else {}
         counts = media_runtime.get("counts") if isinstance(media_runtime.get("counts"), dict) else {}
         paths = media_runtime.get("paths") if isinstance(media_runtime.get("paths"), dict) else {}
+        update_guard = media_runtime.get("update_guard") if isinstance(media_runtime.get("update_guard"), dict) else {}
         direct_local = paths.get("direct_local_http") if isinstance(paths.get("direct_local_http"), dict) else {}
         root_routed = paths.get("root_routed_http") if isinstance(paths.get("root_routed_http"), dict) else {}
         webrtc_tracks = paths.get("webrtc_tracks") if isinstance(paths.get("webrtc_tracks"), dict) else {}
@@ -233,6 +359,16 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"broadcast={'yes' if webrtc_tracks.get('ready') else 'no'} "
             f"impact={transport.get('control_readiness_impact') or '-'}"
         )
+        if update_guard:
+            typer.echo(
+                "media.update_guard: "
+                f"live={'yes' if update_guard.get('live_session_present') else 'no'} "
+                f"criticality={update_guard.get('criticality') or '-'} "
+                f"member={update_guard.get('member_runtime_update') or '-'} "
+                f"hub={update_guard.get('hub_runtime_update') or '-'} "
+                f"support={update_guard.get('current_support') or '-'} "
+                f"topology={update_guard.get('observed_live_topology') or '-'}"
+            )
     if protocol:
         assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
         coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}
@@ -696,7 +832,14 @@ def node_join(
         if last_body:
             typer.echo(last_body)
         if resp.status_code == 404 and isinstance(last_body, dict) and last_body.get("detail") == "join-code not found":
-            typer.echo("hint: if the code was created in hub local mode (--local), join against the hub URL: --root http://<HUB_HOST>:8777")
+            typer.echo(
+                "hint: join-code was not found on this Root. Common causes: "
+                "the code was created on a different Root/zone "
+                "(for example https://api.inimatic.com vs https://ru.api.inimatic.com), "
+                "the code has already been used or expired, "
+                "or it was created in hub local mode (--local)."
+            )
+            typer.echo("hint: for --local codes, join against the hub URL: --root http://<HUB_HOST>:8777")
         raise typer.Exit(code=1)
 
     data = resp.json() or {}
@@ -756,7 +899,7 @@ def node_status(
         status_code, payload = _control_get_json(
             control=control0,
             path="/api/node/status",
-            token=resolve_control_token(explicit=cfg.token),
+            token=_resolved_local_control_token(control0, cfg),
         )
         if status_code == 200 and isinstance(payload, dict):
             result["ready"] = bool(payload.get("ready"))
@@ -774,13 +917,28 @@ def node_reliability(
 
     cfg = load_config()
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    token = _resolved_local_control_token(control0, cfg)
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/reliability",
-        token=resolve_control_token(explicit=cfg.token),
+        token=token,
         timeout=5.0,
     )
     if status_code is None:
+        supervisor_status, supervisor_payload = _supervisor_transition_probe(control=control0, token=token)
+        if supervisor_status == 200 and isinstance(supervisor_payload, dict) and _is_supervisor_controlled_transition(supervisor_payload):
+            fallback_payload = {
+                "ok": True,
+                "fallback": "supervisor_public_update_status",
+                "controlled_transition": True,
+                "message": "runtime_restarting_under_supervisor",
+                "supervisor": supervisor_payload,
+            }
+            if json_output:
+                _print(fallback_payload, json_output=True)
+            else:
+                _print_supervisor_transition_summary(supervisor_payload)
+            raise typer.Exit(code=0)
         typer.secho(_control_error_message("reliability probe", payload), fg=typer.colors.RED)
         raise typer.Exit(code=2)
     if status_code != 200 or not isinstance(payload, dict):
@@ -807,7 +965,7 @@ def node_members(
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/members",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
     )
     if status_code is None:
         typer.secho("[AdaOS] member probe failed: local control API is unreachable", fg=typer.colors.RED)
@@ -881,7 +1039,7 @@ def node_yjs_status(
     status_code, payload = _control_get_json(
         control=control0,
         path=path,
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=5.0,
     )
     if status_code is None:
@@ -911,7 +1069,7 @@ def node_yjs_backup(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/backup",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={},
         timeout=8.0,
     )
@@ -950,7 +1108,7 @@ def _node_yjs_control_action(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/{action}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "scenario_id": scenario_id or None,
             **({"set_home": bool(set_home)} if set_home is not None else {}),
@@ -994,7 +1152,7 @@ def _node_yjs_ensure_dev_action(
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/dev-webspaces/ensure",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "scenario_id": str(scenario_id or "").strip() or None,
             "requested_id": str(requested_id or "").strip() or None,
@@ -1040,7 +1198,7 @@ def _node_yjs_create_action(
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/webspaces",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "id": str(webspace or "").strip() or None,
             "title": str(title or "").strip() or None,
@@ -1087,7 +1245,7 @@ def _node_yjs_update_action(
     status_code, payload = _control_patch_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "title": str(title or "").strip() or None,
             "home_scenario": str(home_scenario or "").strip() or None,
@@ -1129,7 +1287,7 @@ def _node_yjs_describe_action(
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=8.0,
     )
     if status_code is None:
@@ -1173,7 +1331,7 @@ def _node_yjs_desktop_action(
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/desktop",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=8.0,
     )
     if status_code is None:
@@ -1403,7 +1561,7 @@ def node_member_refresh(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/snapshot/request",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={},
     )
     if status_code is None:
@@ -1444,7 +1602,7 @@ def node_member_update(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/update",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "action": action,
             "target_rev": target_rev,

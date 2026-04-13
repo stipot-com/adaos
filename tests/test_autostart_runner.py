@@ -33,6 +33,41 @@ def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> Non
     assert "pidfile" in calls
 
 
+def test_autostart_runner_reconciles_root_promotion_restart_before_idle(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict] = []
+
+    monkeypatch.setattr(autostart_runner, "_parse_args", lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})())
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(autostart_runner, "read_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(
+        autostart_runner,
+        "read_status",
+        lambda: {"state": "succeeded", "phase": "root_promoted", "message": "restart adaos.service to activate"},
+    )
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_launch_active_slot_if_needed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+    )
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert captured
+    assert captured[0]["state"] == "succeeded"
+    assert captured[0]["phase"] == "validate"
+    assert "root promotion restart completed" in captured[0]["message"]
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(
@@ -182,6 +217,62 @@ def test_autostart_runner_clears_plan_and_exits_after_successful_apply(monkeypat
     assert payload["target_slot"] == "B"
 
 
+def test_autostart_runner_prepared_restart_commits_deferred_skill_migration(monkeypatch, tmp_path: Path) -> None:
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        autostart_runner,
+        "_parse_args",
+        lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})(),
+    )
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(
+        autostart_runner,
+        "read_plan",
+        lambda: {"state": "prepared_restart", "action": "update", "target_slot": "B", "prepared_at": 10.0},
+    )
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "env": {}, "cwd": str(tmp_path), "skill_runtime_migration": {"deferred": True}},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_prepared_restart_skill_migration",
+        lambda slot, manifest: (
+            {"ok": True, "total": 1, "failed_total": 0, "rollback_total": 0, "deferred": False, "skills": []},
+            {**dict(manifest), "skill_runtime_migration": {"ok": True, "deferred": False}},
+        ),
+    )
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: calls.append("clear_plan"))
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: calls.append(("write_status", dict(payload))))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_launch_active_slot_if_needed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+    )
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert "clear_plan" in calls
+    status_calls = [item for item in calls if isinstance(item, tuple) and item[0] == "write_status"]
+    assert status_calls
+    payload = status_calls[0][1]
+    assert payload["state"] == "restarting"
+    assert payload["phase"] == "launch"
+    assert payload["target_slot"] == "B"
+    assert payload["skill_runtime_migration"]["ok"] is True
+
+
 def test_launch_active_slot_marks_child_to_skip_pending_update(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(
@@ -269,6 +360,17 @@ def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_
     assert captured[-1]["state"] == "validated"
     assert captured[-1]["phase"] == "root_promotion_pending"
     assert captured[-1]["root_promotion_required"] is True
+
+
+def test_launch_active_slot_respects_process_slot_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "B")
+    monkeypatch.setattr(autostart_runner, "active_slot_manifest", lambda: (_ for _ in ()).throw(AssertionError("should not read manifest")))
+    monkeypatch.setattr(autostart_runner.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not launch subprocess")))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+
+    assert autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8778, validate=False) is None
 
 
 def test_autostart_runner_skips_pending_update_when_requested(monkeypatch, tmp_path: Path) -> None:
@@ -360,6 +462,52 @@ def test_validate_sidecar_runtime_payload_requires_listener_when_enabled() -> No
     assert "listener" in str(error).lower()
     assert details["enabled"] is True
     assert details["listener_running"] is False
+
+
+def test_validate_sidecar_runtime_payload_requires_transport_when_enabled() -> None:
+    ok, error, details = autostart_runner._validate_sidecar_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "enabled": True,
+                "status": "degraded",
+                "local_listener_state": "ready",
+                "transport_ready": False,
+                "control_ready": "unknown",
+            },
+            "process": {
+                "listener_running": True,
+            },
+        }
+    )
+
+    assert ok is False
+    assert "hub-root transport is not ready" in str(error)
+    assert details["listener_running"] is True
+    assert details["transport_ready"] is False
+
+
+def test_validate_sidecar_runtime_payload_accepts_ready_transport_when_enabled() -> None:
+    ok, error, details = autostart_runner._validate_sidecar_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "enabled": True,
+                "status": "ready",
+                "local_listener_state": "ready",
+                "transport_ready": True,
+                "control_ready": "ready",
+            },
+            "process": {
+                "listener_running": True,
+            },
+        }
+    )
+
+    assert ok is True
+    assert error is None
+    assert details["listener_running"] is True
+    assert details["transport_ready"] is True
 
 
 def test_validate_yjs_runtime_payload_requires_server_ready() -> None:

@@ -12,6 +12,7 @@ from typing import Any
 
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx
+from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
 from adaos.services.core_slots import (
     activate_slot,
     active_slot,
@@ -21,17 +22,7 @@ from adaos.services.core_slots import (
     rollback_to_previous_slot,
     slot_dir,
 )
-from adaos.services.runtime_paths import current_base_dir
-
-
-BOOTSTRAP_CRITICAL_PATHS: tuple[str, ...] = (
-    "src/adaos/apps/supervisor.py",
-    "src/adaos/apps/autostart_runner.py",
-    "src/adaos/apps/core_update_apply.py",
-    "src/adaos/services/core_update.py",
-    "src/adaos/services/autostart.py",
-    "src/adaos/apps/cli/commands/setup.py",
-)
+from adaos.services.runtime_paths import current_base_dir, current_repo_root
 
 
 def _base_dir() -> Path:
@@ -110,6 +101,57 @@ def read_last_result() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_ROLLOUT_STATUS_KEYS = (
+    "action",
+    "target_rev",
+    "target_version",
+    "planned_reason",
+    "min_update_period_sec",
+    "scheduled_for",
+    "subsequent_transition",
+    "subsequent_transition_requested_at",
+    "candidate_prewarm_state",
+    "candidate_prewarm_message",
+    "candidate_prewarm_ready_at",
+)
+
+
+def _hydrate_rollout_status_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    plan = merged.get("plan") if isinstance(merged.get("plan"), dict) else {}
+    manifest = merged.get("manifest") if isinstance(merged.get("manifest"), dict) else {}
+    state = str(merged.get("state") or "").strip().lower()
+    if state == "idle" and not plan and not manifest:
+        return merged
+
+    current = read_status()
+    for key in _ROLLOUT_STATUS_KEYS:
+        if key not in merged and key in current:
+            merged[key] = current[key]
+
+    if not str(merged.get("action") or "").strip():
+        action = str(plan.get("action") or "").strip()
+        if action:
+            merged["action"] = action
+
+    if not str(merged.get("target_rev") or "").strip():
+        target_rev = str(plan.get("target_rev") or manifest.get("target_rev") or "").strip()
+        if target_rev:
+            merged["target_rev"] = target_rev
+
+    if not str(merged.get("target_version") or "").strip():
+        target_version = str(plan.get("target_version") or manifest.get("target_version") or "").strip()
+        if target_version:
+            merged["target_version"] = target_version
+
+    if not str(merged.get("planned_reason") or "").strip():
+        planned_reason = str(plan.get("reason") or "").strip()
+        if planned_reason:
+            merged["planned_reason"] = planned_reason
+
+    return merged
+
+
 def _is_terminal_status(payload: dict[str, Any]) -> bool:
     state = str(payload.get("state") or "").strip().lower()
     phase = str(payload.get("phase") or "").strip().lower()
@@ -125,10 +167,72 @@ def manifest_requires_root_promotion(manifest: dict[str, Any] | None) -> tuple[b
     return required, dict(bootstrap)
 
 
+def _paths_equivalent(source: Path, target: Path) -> bool:
+    if source.exists() != target.exists():
+        return False
+    if not source.exists():
+        return True
+    if source.is_dir() != target.is_dir():
+        return False
+    if source.is_dir():
+        try:
+            source_names = sorted(child.name for child in source.iterdir())
+            target_names = sorted(child.name for child in target.iterdir())
+        except Exception:
+            return False
+        if source_names != target_names:
+            return False
+        return all(_paths_equivalent(source / name, target / name) for name in source_names)
+    try:
+        return source.read_bytes() == target.read_bytes()
+    except Exception:
+        return False
+
+
+def resolved_root_promotion_requirement(manifest: dict[str, Any] | None) -> tuple[bool, dict[str, Any]]:
+    required, bootstrap = manifest_requires_root_promotion(manifest)
+    payload = manifest if isinstance(manifest, dict) else {}
+    resolved = dict(bootstrap)
+    changed_paths = bootstrap.get("changed_paths") if isinstance(bootstrap.get("changed_paths"), list) else []
+    effective_paths = [str(item) for item in changed_paths if str(item).strip()] or list(BOOTSTRAP_CRITICAL_PATHS)
+    resolved["effective_changed_paths"] = list(effective_paths)
+    resolved["effective_basis"] = "root_checkout_compare"
+    resolved["effective_required"] = bool(required)
+    if not required:
+        return False, resolved
+
+    repo_dir_raw = str(payload.get("repo_dir") or "").strip()
+    source_repo_dir = Path(repo_dir_raw).expanduser().resolve() if repo_dir_raw else None
+    root_dir, root_basis = _resolve_root_promotion_target(manifest)
+    resolved["effective_target_root"] = str(root_dir) if root_dir is not None else ""
+    resolved["effective_target_root_basis"] = root_basis
+
+    if source_repo_dir is None or not source_repo_dir.exists():
+        resolved["effective_unavailable_reason"] = "slot repo_dir is unavailable for root promotion comparison"
+        return True, resolved
+    if root_dir is None or not root_dir.exists():
+        resolved["effective_unavailable_reason"] = "root checkout is unavailable for root promotion comparison"
+        return True, resolved
+
+    mismatched_paths: list[str] = []
+    for rel_path in effective_paths:
+        source_path = (source_repo_dir / rel_path).resolve()
+        target_path = (root_dir / rel_path).resolve()
+        if not _paths_equivalent(source_path, target_path):
+            mismatched_paths.append(rel_path)
+    resolved["effective_mismatched_paths"] = mismatched_paths
+    resolved["effective_required"] = bool(mismatched_paths)
+    return bool(mismatched_paths), resolved
+
+
 def _root_promotion_state_dir() -> Path:
     path = _base_dir() / "state" / "root_promotion"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _root_promotion_metadata_path(backup_dir: Path) -> Path:
+    return (backup_dir / "metadata.json").resolve()
 
 
 def _remove_path(path: Path) -> None:
@@ -157,11 +261,13 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         raise RuntimeError(f"slot {slot_name} manifest is missing")
     root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
     if not root_promotion_required:
+        resolved_root_dir, resolved_root_basis = _resolve_root_promotion_target(manifest)
         return {
             "ok": True,
             "slot": slot_name,
             "required": False,
-            "target_root": str(_repo_root() or ""),
+            "target_root": str(resolved_root_dir or ""),
+            "target_root_basis": resolved_root_basis,
             "changed_paths": [],
             "backup_dir": "",
             "promoted_paths": [],
@@ -171,7 +277,7 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
     source_repo_dir = Path(str(manifest.get("repo_dir") or "")).expanduser().resolve()
     if not source_repo_dir.exists():
         raise RuntimeError(f"slot {slot_name} repo_dir is missing: {source_repo_dir}")
-    root_dir = _repo_root()
+    root_dir, root_basis = _resolve_root_promotion_target(manifest)
     if root_dir is None or not root_dir.exists():
         raise RuntimeError("root checkout is unavailable for promotion")
     changed_paths = bootstrap_update.get("changed_paths") if isinstance(bootstrap_update.get("changed_paths"), list) else []
@@ -179,6 +285,7 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         changed_paths = list(BOOTSTRAP_CRITICAL_PATHS)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     backup_dir = (_root_promotion_state_dir() / f"{stamp}-{slot_name.lower()}").resolve()
+    backup_dir.mkdir(parents=True, exist_ok=True)
     promoted_paths: list[str] = []
     removed_paths: list[str] = []
     for rel_path in [str(item) for item in changed_paths if str(item).strip()]:
@@ -199,17 +306,20 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
         "slot": slot_name,
         "required": True,
         "target_root": str(root_dir),
+        "target_root_basis": root_basis,
         "changed_paths": [str(item) for item in changed_paths if str(item).strip()],
         "backup_dir": str(backup_dir),
+        "backup_metadata_path": str(_root_promotion_metadata_path(backup_dir)),
         "promoted_paths": promoted_paths,
         "removed_paths": removed_paths,
         "restart_required": True,
     }
+    _write_json(_root_promotion_metadata_path(backup_dir), payload)
     return payload
 
 
 def write_status(payload: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(payload)
+    merged = _hydrate_rollout_status_fields(payload)
     merged.setdefault("updated_at", time.time())
     _write_json(status_path(), merged)
     if _is_terminal_status(merged):
@@ -269,16 +379,82 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
 
 
 def _repo_root() -> Path | None:
-    try:
-        ctx = get_ctx()
-        package = ctx.paths.package_path()
-        package = package() if callable(package) else package
-        return Path(package).resolve().parents[1]
-    except Exception:
-        try:
-            return Path(__file__).resolve().parents[3]
-        except Exception:
-            return None
+    return current_repo_root()
+
+
+def _resolve_root_promotion_target(manifest: dict[str, Any] | None) -> tuple[Path | None, str]:
+    payload = manifest if isinstance(manifest, dict) else {}
+    explicit = str(payload.get("root_repo_root") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve(), "manifest.root_repo_root"
+    resolved = _repo_root()
+    if resolved is not None:
+        if str(os.getenv("ADAOS_ROOT_REPO_ROOT") or os.getenv("ADAOS_REPO_ROOT") or "").strip():
+            return resolved, "env.ADAOS_ROOT_REPO_ROOT"
+        return resolved, "runtime_context"
+    return None, "unavailable"
+
+
+def restore_root_from_backup(
+    *,
+    backup_dir: str | Path,
+    target_root: str | Path | None = None,
+) -> dict[str, Any]:
+    backup_path = Path(str(backup_dir)).expanduser().resolve()
+    state_root = _root_promotion_state_dir().resolve()
+    if backup_path != state_root and state_root not in backup_path.parents:
+        raise RuntimeError("root promotion backup must live under state/root_promotion")
+    if not backup_path.exists() or not backup_path.is_dir():
+        raise RuntimeError(f"root promotion backup does not exist: {backup_path}")
+
+    metadata = _read_json(_root_promotion_metadata_path(backup_path)) or {}
+    metadata_target_root = str(metadata.get("target_root") or "").strip()
+    changed_paths = [str(item) for item in metadata.get("changed_paths") or [] if str(item).strip()]
+    if not changed_paths:
+        changed_paths = []
+        for child in backup_path.rglob("*"):
+            if child.is_dir():
+                continue
+            if child == _root_promotion_metadata_path(backup_path):
+                continue
+            changed_paths.append(str(child.relative_to(backup_path)).replace("\\", "/"))
+
+    explicit_target = str(target_root or "").strip()
+    resolved_target_root = explicit_target or metadata_target_root
+    target_basis = "argument.target_root" if explicit_target else "backup.metadata.target_root"
+    if not resolved_target_root:
+        fallback = _repo_root()
+        if fallback is None:
+            raise RuntimeError("target root is unavailable for root promotion restore")
+        resolved_target_root = str(fallback)
+        target_basis = "runtime_context"
+    root_dir = Path(resolved_target_root).expanduser().resolve()
+    root_dir.mkdir(parents=True, exist_ok=True)
+
+    restored_paths: list[str] = []
+    removed_paths: list[str] = []
+    for rel_path in changed_paths:
+        source_path = (backup_path / rel_path).resolve()
+        target_path = (root_dir / rel_path).resolve()
+        if source_path.exists():
+            _remove_path(target_path)
+            _copy_path(source_path, target_path)
+            restored_paths.append(rel_path)
+        else:
+            _remove_path(target_path)
+            removed_paths.append(rel_path)
+
+    return {
+        "ok": True,
+        "backup_dir": str(backup_path),
+        "target_root": str(root_dir),
+        "target_root_basis": target_basis,
+        "changed_paths": changed_paths,
+        "restored_paths": restored_paths,
+        "removed_paths": removed_paths,
+        "restart_required": True,
+        "metadata": metadata,
+    }
 
 
 def rollback_installed_skill_runtimes() -> dict[str, Any]:
@@ -458,6 +634,58 @@ def _plan_with_slot_context(plan: dict[str, Any]) -> dict[str, Any]:
         ).strip()
         payload["target_rev"] = resolved_rev
     return payload
+
+
+def prepare_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
+    slot_plan = _plan_with_slot_context(plan)
+    started_at = time.time()
+    target_slot = str(slot_plan.get("target_slot") or "").strip().upper()
+    if not target_slot:
+        return {
+            "state": "failed",
+            "phase": "prepare",
+            "message": "target slot is unavailable for preparation",
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "plan": slot_plan,
+        }
+    try:
+        from adaos.apps.core_update_apply import prepare_slot
+
+        repo_root = _repo_root()
+        manifest = prepare_slot(
+            slot=target_slot,
+            slot_dir_path=str(slot_plan.get("inactive_slot_dir") or ""),
+            base_dir=str(_base_dir()),
+            repo_root=str(repo_root or ""),
+            source_repo_root=str(repo_root or ""),
+            shared_dotenv_path=_shared_dotenv_path(),
+            target_rev=str(slot_plan.get("target_rev") or ""),
+            target_version=str(slot_plan.get("target_version") or ""),
+            migrate_skill_runtimes=False,
+        )
+    except Exception as exc:
+        return {
+            "state": "failed",
+            "phase": "prepare",
+            "message": f"core update slot preparation failed: {exc}",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "target_slot": target_slot,
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "plan": slot_plan,
+        }
+    return {
+        "state": "prepared",
+        "phase": "prepare",
+        "message": f"prepared target slot {target_slot} for restart",
+        "target_slot": target_slot,
+        "manifest": manifest,
+        "started_at": started_at,
+        "finished_at": time.time(),
+        "plan": slot_plan,
+    }
 
 
 def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:

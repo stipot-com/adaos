@@ -43,3 +43,19 @@ def current_logs_dir() -> Path:
     if logs_dir is not None:
         return logs_dir
     return (current_base_dir() / "logs").resolve()
+
+
+def current_repo_root() -> Path | None:
+    raw = str(os.getenv("ADAOS_ROOT_REPO_ROOT") or os.getenv("ADAOS_REPO_ROOT") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    repo_root = _ctx_path("repo_root")
+    if repo_root is not None:
+        return repo_root
+    package_dir = _ctx_path("package_path")
+    if package_dir is not None:
+        try:
+            return package_dir.parents[1].resolve()
+        except Exception:
+            return None
+    return None

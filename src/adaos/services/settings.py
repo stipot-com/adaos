@@ -47,7 +47,7 @@ class Settings:
     owner_id: Optional[str] = None
     subnet_id: Optional[str] = None
     api_base: str = "https://api.inimatic.com"
-    app_base: str = "https://app.inimatic.com"
+    app_base: str = "https://myinimatic.web.app"
 
     # имена каталогов для PathProvider (dev/workspace)
     dev_skills_dirname: str = "skills"
@@ -178,7 +178,7 @@ class Settings:
         subnet_id = node_cfg.get("subnet_id")
         root_cfg = node_cfg.get("root") or {}
         api_base = root_cfg.get("api_base") or "https://api.inimatic.com"
-        app_base = root_cfg.get("app_base") or "https://app.inimatic.com"
+        app_base = root_cfg.get("app_base") or "https://myinimatic.web.app"
         owner_cfg = root_cfg.get("owner") or {}
         owner_id = owner_cfg.get("owner_id") or None
         dev_cfg = node_cfg.get("dev") or {}

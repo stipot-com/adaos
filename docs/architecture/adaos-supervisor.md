@@ -40,7 +40,7 @@ The supervisor solves this by keeping the update and process-control surface ali
 - persisted update attempt state
 - candidate-to-slot prepare / validate / rollback orchestration
 - post-validation bootstrap/root promotion orchestration when bootstrap-managed files changed
-- skill runtime migration orchestration for installed skills during core slot transition
+- skill runtime migration orchestration for installed skills during core slot transition, including deferred commit after old runtime shutdown when early slot preparation is used
 - restart and validation deadlines
 - local admin/update API availability during runtime downtime
 - recovery from interrupted update attempts
@@ -75,6 +75,12 @@ This means:
 - update progress remains inspectable during shutdown, apply, and validate phases
 - root checkout stays out of the production runtime path unless a developer explicitly launches it
 
+For the target media-continuity path, this split also enables a more selective policy:
+
+- if a member currently owns an active live media session, that member update should be deferred
+- a hub runtime restart may still be allowed if the hub-side realtime sidecar can stay alive and continue serving the delegated realtime continuity path
+- supervisor should therefore treat "restart runtime" and "tear down sidecar" as different actions once live media continuity depends on sidecar ownership
+
 ## Runtime source rule
 
 Production runtime must always come from slot `A|B`.
@@ -87,6 +93,109 @@ Root checkout is reserved for:
 - explicit developer-run workflows
 
 This keeps slot switching fast and keeps production runtime independent from root checkout drift.
+
+For runtime processes, slot resolution is process-local first:
+
+- if `ADAOS_ACTIVE_CORE_SLOT` is set in the runtime environment, that process treats the slot as its effective runtime source
+- otherwise the global slot marker from `state/core_slots/active` remains authoritative
+
+This is important for warm-switch work because it allows a `candidate` runtime to boot from the inactive slot for prewarm/diagnostics without mutating the global active-slot marker before cutover is committed.
+
+## Slot-bound runtime ports
+
+Supervisor should treat runtime ports as slot-owned rather than as one global mutable bind.
+
+Target rule:
+
+- slot `A` keeps a stable local runtime port
+- slot `B` keeps a different stable local runtime port
+- supervisor stays on its own always-on control port
+
+Current MVP direction is:
+
+- default `A` runtime port: `8777`
+- default `B` runtime port: `8778`
+- supervisor port: `8776`
+
+This creates a clean foundation for warm-switch behavior because the inactive slot can be prepared and, later, prewarmed without fighting for the active slot's listener.
+
+The mapping must remain supervisor-visible in diagnostics and browser-safe transition payloads so local clients can discover:
+
+- active runtime URL
+- candidate runtime URL
+- current transition mode
+- whether warm-switch was admitted or downgraded to stop-and-switch
+
+## Warm-switch admission
+
+Warm-switch is desirable, but not always safe on constrained hardware.
+
+Supervisor should therefore make an explicit admission decision before using a dual-runtime transition:
+
+- if candidate slot uses a different reserved port and memory headroom is sufficient, transition mode is `warm_switch`
+- if memory headroom is not sufficient, transition mode is `stop_and_switch`
+- this decision must be visible to operator and browser-facing status surfaces before shutdown starts
+
+Admission should be driven by a simple local resource gate such as:
+
+- available memory
+- current runtime RSS
+- estimated candidate runtime footprint
+- configured reserve that must remain free after candidate start
+
+The important rule is that low-memory devices must fail safe into stop-and-switch instead of trying to start two full runtimes and getting stuck mid-transition.
+
+## Runtime instance identity
+
+Warm-switch means `active` and `candidate` may overlap for a short period.
+
+That requires identity stronger than just `hub_id` or `subnet_id`.
+
+Each runtime process should therefore carry:
+
+- `runtime_instance_id`
+- `transition_role` (`active` or `candidate`)
+- slot-bound runtime URL/port
+
+This identity must flow through:
+
+- supervisor runtime status
+- browser-safe transition status
+- root control lifecycle reports
+- root core-update reports
+- hub root/NATS session issuance and logs
+
+Without that, a candidate process can look indistinguishable from the active process and accidentally steal or overwrite control-plane state.
+
+## Candidate passive mode
+
+Before cutover is explicitly committed, a prewarmed `candidate` runtime must stay passive on root-facing traffic subjects.
+
+That means a candidate may establish root control connectivity for diagnostics, but it must not yet subscribe to the same root-routed traffic subjects as the active runtime:
+
+- `tg.input.<hub_id>`
+- `io.tg.in.<hub_id>.text`
+- `route.v2.to_hub.<hub_id>.*`
+
+The intent is:
+
+- root can see that a candidate runtime exists
+- active runtime remains the only consumer of live hub traffic before cutover
+- candidate reconnects or retries do not supersede the active runtime's root/NATS session merely because they share the same `hub_id`
+
+The same rule must apply to local control discovery:
+
+- `candidate` runtime surfaces must self-identify through lightweight probes such as `/api/ping` and `/api/admin/update/status`
+- local fallback control resolvers must ignore a runtime that reports `transition_role=candidate` or `admin_mutation_allowed=false`
+- a candidate runtime must reject mutating local update operations (`update.start`, `update.cancel`, `update.rollback`) with an explicit conflict instead of behaving like a second control plane
+
+Fast cutover does not remove that rule.
+It only defines the moment when supervisor may end passive mode:
+
+- supervisor explicitly authorizes the already-running candidate to promote itself through `POST /api/admin/runtime/promote-active`
+- the candidate flips to `transition_role=active`, reconnects root-facing transport under that new authority, and only then becomes eligible to own live hub traffic
+- supervisor adopts that promoted process as the managed active runtime instead of launching a second fresh process when warm-switch succeeds
+- if promotion or adoption fails, supervisor tears the candidate down and falls back to the existing stop-and-switch launch path
 
 ## Authority boundary
 
@@ -104,6 +213,18 @@ The supervisor is not the authority for:
 - whether root-side protocol acks were accepted as global truth
 - whether transport-level path selection is healthy beyond its delegated runtimes
 - business-policy decisions inside degraded hub execution
+
+But the supervisor must remain able to enforce locally visible continuity guards exposed by the runtime model, for example:
+
+- defer member update while member-owned live media remains active
+- refuse a hub restart path that would drop a sidecar continuity contract the system currently depends on
+- distinguish "runtime restart allowed with sidecar continuity" from "full local media teardown"
+
+The first conservative version of this policy is now implemented:
+
+- supervisor reads runtime continuity guard data from `GET /api/node/reliability`
+- update transitions are deferred into explicit `planned/live_media_guard` state when the continuity contract says restart would be unsafe
+- manual runtime restart is refused until sidecar continuity becomes a real ready capability rather than only a planned target
 
 ### Runtime
 
@@ -137,8 +258,11 @@ Always available while the node is booted:
 - `GET /api/supervisor/update/status`
 - `POST /api/supervisor/update/start`
 - `POST /api/supervisor/update/cancel`
+- `POST /api/supervisor/update/defer`
 - `POST /api/supervisor/update/rollback`
 - `POST /api/supervisor/runtime/restart`
+- `POST /api/supervisor/runtime/candidate/start`
+- `POST /api/supervisor/runtime/candidate/stop`
 
 This API is the source of truth for:
 
@@ -147,6 +271,7 @@ This API is the source of truth for:
 - validation deadlines
 - rollback decisions
 - current managed child processes
+- active and candidate runtime process identity/state (`runtime_instance_id`, `transition_role`, slot, port, readiness)
 - current skill runtime migration diagnostics for the active core update attempt
 - runtime liveness separate from listener bind and runtime API readiness
 - active managed runtime command/executable source for the current slot
@@ -156,9 +281,12 @@ For browser-facing observability, supervisor should also expose a limited read-o
 That surface is intended only for restart/update visibility such as:
 
 - `hub restarting`
+- `update planned`
 - `update applying`
 - `rollback in progress`
 - `root promotion pending`
+- `root restart in progress`
+- `subsequent transition queued`
 - `update failed`
 
 It must not expose mutating control operations or become a substitute for the authenticated operator API.
@@ -166,6 +294,16 @@ It must not expose mutating control operations or become a substitute for the au
 Current MVP browser behavior may preserve and display the last known transition state during reconnect windows, and routed hub sessions can now poll a live browser-safe supervisor view at `/hubs/<id>/api/supervisor/public/update-status`.
 The target end state is stronger: every supported browser entry topology should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
 Operator-facing surfaces are also expected to consume that same supervisor truth through the canonical control-plane model, so Infrascope and related overview projections can show core-runtime transition state in `active_runtimes`, health strips, and recent changes instead of presenting a restart only as generic hub instability.
+That browser-safe surface now also includes candidate runtime diagnostics needed for warm-switch work:
+
+- `action`
+- `candidate_runtime_instance_id`
+- `candidate_runtime_state`
+- `candidate_runtime_api_ready`
+- `candidate_transition_role`
+- `candidate_prewarm_state`
+- `candidate_prewarm_message`
+- `candidate_prewarm_ready_at`
 
 ### Runtime API
 
@@ -173,6 +311,7 @@ Available only while `adaos-runtime` is running:
 
 - current node APIs
 - current admin APIs that belong to runtime semantics
+- cutover-only runtime identity operations such as `POST /api/admin/runtime/promote-active`
 - reliability, scenario, skill, Yjs, media, and operator surfaces
 
 ## Persisted state
@@ -199,6 +338,11 @@ Recommended fields for `update_attempt.json`:
 - `restored_slot`
 - `failure_summary`
 - `skill_runtime_migration`
+- `scheduled_for`
+- `planned_reason`
+- `subsequent_transition`
+- `subsequent_transition_requested_at`
+- `subsequent_transition_request`
 
 The important rule is that this state is committed by the supervisor, not inferred only from whether the runtime currently listens on `127.0.0.1:8777`.
 
@@ -209,22 +353,26 @@ Target flow:
 1. operator or root-triggered action reaches supervisor
 2. supervisor writes `update_attempt.json`
 3. supervisor materializes the candidate source/artifact
-4. supervisor requests graceful runtime shutdown
-5. supervisor prepares the inactive slot from that candidate
-6. supervisor migrates installed skill runtimes against the target core interpreter
-7. supervisor launches production runtime from the target slot
-8. supervisor validates required runtime checks against that slot runtime
-9. on slot-validation success, supervisor commits the slot switch
-10. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
-11. on failure or deadline expiry, supervisor rolls back the slot and records failure
+4. supervisor prepares the inactive slot from that candidate while the active runtime is still serving traffic
+5. supervisor starts countdown only after the target slot is materially ready
+6. supervisor requests graceful runtime shutdown
+7. supervisor commits deferred installed-skill runtime migration against the target core interpreter after the old runtime is down
+8. supervisor activates the target slot and either promotes the prewarmed candidate runtime to active authority or launches production runtime from that slot
+9. supervisor validates required runtime checks against that target-slot runtime
+10. on slot-validation success, supervisor commits the transition result
+11. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
+12. on failure or deadline expiry, supervisor rolls back the slot and records failure
 
 Important invariants:
 
 - the attempt record is not cleared before validation succeeds
 - `restarting` and `applying` are bounded by deadlines
 - interrupted supervisor boot resumes or resolves the last incomplete attempt
+- if a new update signal arrives during an active transition, supervisor records exactly one deferred `subsequent_transition` and executes it once after the current transition reaches a terminal state
+- minimum update interval gating schedules a future update window instead of rejecting the request outright
 - installed skills do not silently inherit old runtime dependencies after core migration
 - root/bootstrap promotion never happens before the candidate already passed slot validation
+- root promotion must preserve any already-queued subsequent transition metadata so a self-update handoff does not lose the next requested transition
 - prepared slot contents must not inherit another slot's git remotes or become the authority for future updates
 
 ## Bootstrap/root promotion
@@ -237,7 +385,8 @@ Rules:
 - root promotion is allowed only after the candidate is proven in a slot
 - production runtime still restarts from the active slot after root promotion
 - root promotion should use the same validated candidate source, not a fresh mutable branch tip
-- current MVP implementation promotes bootstrap-managed files into root with a backup snapshot and requires an explicit service restart to activate the new supervisor/bootstrap code
+- current MVP implementation promotes bootstrap-managed files into the explicit validated root target recorded for that slot, writes a backup snapshot plus restore metadata, records an explicit supervisor attempt state while waiting for restart, and requires an explicit service restart to activate the new supervisor/bootstrap code
+- if another transition request arrives before that restart completes, it is queued as `subsequent_transition` on the supervisor attempt instead of being dropped or run concurrently
 
 This keeps root updates out of the fast rollback path while preserving the slot-runtime model.
 
@@ -256,6 +405,26 @@ Target lifecycle per installed skill:
 5. `deactivate` if core transition is committed but a subset of skills must be quarantined afterward
 
 The supervisor remains the authority for the overall core-update decision, but individual skill runtime outcomes must be persisted as part of the update result.
+
+Current MVP implementation now splits this into two moments:
+
+- early slot preparation may build the inactive core slot and mark skill migration as deferred while the old runtime is still live
+- the mutating skill runtime commit step still happens only after the old runtime has stopped, so countdown traffic does not start reading partially-switched skill runtime state
+
+Current MVP implementation also starts a best-effort passive `candidate` runtime prewarm when:
+
+- the inactive slot is already prepared
+- slot ports are reserved distinctly
+- supervisor admitted `warm_switch`
+
+That prewarm now feeds a real fast-cutover path:
+
+- candidate readiness is surfaced through supervisor runtime/public status
+- candidate remains passive on root-routed traffic subjects until supervisor explicitly commits cutover
+- once the old runtime is down and the prepared slot is activated, supervisor may promote/adopt the already-running candidate instead of starting a fresh runtime process
+- if candidate promotion, root reconnect, or supervisor adoption fails, supervisor falls back to the existing stop-and-switch launch path from the same prepared slot
+
+This keeps warm-switch opportunistic and reversible: the node gets a genuine low-downtime cutover path when the candidate is ready, but constrained or unhealthy cases still converge through the proven fallback path.
 
 Recommended per-skill diagnostic fields:
 
@@ -292,7 +461,7 @@ Target deployment:
 
 - systemd manages `adaos-supervisor`
 - `adaos-supervisor` manages `adaos-runtime`
-- optional `adaos-realtime` may be managed directly by supervisor
+- `adaos-supervisor` also manages `adaos-realtime` when sidecar mode is enabled in managed topology
 
 This is preferred over systemd managing the main runtime process directly because systemd alone does not hold AdaOS-specific update semantics, slot state, or validation rules.
 
@@ -303,7 +472,9 @@ The supervisor and realtime sidecar solve different problems:
 - `adaos-supervisor`: process and update authority
 - `adaos-realtime`: transport isolation
 
-The supervisor may launch and monitor the sidecar, but the sidecar must remain transport-only.
+In the managed topology, the supervisor launches, monitors, and restarts the sidecar.
+Standalone runtime-owned sidecar startup remains only as compatibility fallback when supervisor is absent.
+The sidecar must remain transport-only.
 The sidecar must not become the hidden owner of update status, rollback state, or degraded-mode business policy.
 
 ## Migration plan
@@ -334,17 +505,19 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 
 ### Phase 5 - Sidecar alignment
 
-- allow supervisor to manage `adaos-realtime`
-- remove runtime-lifespan ownership of sidecar startup/shutdown
+- keep `adaos-realtime` lifecycle under supervisor in managed topology
+- keep runtime-owned startup/shutdown only as standalone fallback when supervisor is absent
 - keep sidecar contract transport-only
 
 ### Phase 6 - Operator UX
 
 - `adaos autostart/update-status` resolves to supervisor API first
-- `adaos node reliability` reports `runtime_restarting_under_supervisor` instead of only connection failure
-- Infra State surfaces supervisor attempt state alongside runtime readiness
+- `adaos autostart update-defer` can reschedule a planned/countdown update window without losing the current supervisor attempt context
+- `adaos node reliability` now falls back to browser-safe supervisor transition state and reports `runtime_restarting_under_supervisor` instead of only connection failure when runtime `:8777` is temporarily unavailable during a managed transition
+- Infra State surfaces supervisor attempt state alongside runtime readiness, including `planned update`, `root promotion pending`, `root restart in progress`, and `subsequent transition queued`
 - Infra State and Infrascope surface skill runtime migration diagnostics for the current or last core update attempt
 - browser header/status surfaces poll a read-only supervisor transition view so controlled restarts are not shown only as generic `offline`
+- canonical control-plane projections keep supervisor-owned restart/promotion phases visible even when runtime API readiness has not converged yet
 
 ## Exit criteria
 

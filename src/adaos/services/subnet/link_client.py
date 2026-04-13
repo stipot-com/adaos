@@ -138,6 +138,7 @@ class MemberLinkClient:
             "draining": bool(lifecycle.get("draining")),
             "route_mode": "ws" if self.is_connected() else "none",
             "connected_to_hub": bool(self.is_connected()),
+            "capacity": get_local_capacity(),
             "build": {
                 "version": str(BUILD_INFO.version or ""),
                 "build_date": str(BUILD_INFO.build_date or ""),
@@ -639,6 +640,11 @@ class MemberLinkClient:
     @staticmethod
     def _resolve_local_control_base() -> str:
         candidates: list[str] = []
+        supervisor_candidates = [
+            str(os.getenv("ADAOS_SUPERVISOR_URL") or "").strip().rstrip("/"),
+            "http://127.0.0.1:8776",
+            "http://localhost:8776",
+        ]
         for raw in (
             os.getenv("ADAOS_SELF_BASE_URL"),
             os.getenv("ADAOS_CONTROL_URL"),
@@ -659,9 +665,36 @@ class MemberLinkClient:
             sess.trust_env = False
         except Exception:
             pass
+        for supervisor_base in supervisor_candidates:
+            if not supervisor_base:
+                continue
+            try:
+                resp = sess.get(
+                    supervisor_base + "/api/supervisor/public/update-status",
+                    headers={"Accept": "application/json"},
+                    timeout=0.6,
+                )
+                if int(resp.status_code) != 200:
+                    continue
+                payload = resp.json()
+                runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+                runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
+                if runtime_url and runtime_url not in candidates:
+                    candidates.insert(0, runtime_url)
+            except Exception:
+                continue
         for base in candidates:
             try:
                 resp = sess.get(base + "/api/ping", headers={"Accept": "application/json"}, timeout=0.5)
+                if int(resp.status_code) != 200:
+                    continue
+                payload = resp.json()
+                runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+                transition_role = str((runtime or {}).get("transition_role") or "").strip().lower()
+                if transition_role == "candidate":
+                    continue
+                if isinstance(runtime, dict) and runtime.get("admin_mutation_allowed") is False:
+                    continue
                 if int(resp.status_code) == 200:
                     return base
             except Exception:

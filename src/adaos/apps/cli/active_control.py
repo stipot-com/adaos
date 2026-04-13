@@ -58,6 +58,22 @@ def _pick_env_token() -> str | None:
     return None
 
 
+def _autostart_service_token() -> str | None:
+    try:
+        from adaos.services.agent_context import get_ctx
+        from adaos.services.autostart import status as autostart_status
+
+        info = autostart_status(get_ctx())
+        wrapper_env = info.get("wrapper_env") if isinstance(info, dict) and isinstance(info.get("wrapper_env"), dict) else {}
+        for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+            raw = str(wrapper_env.get(key, "") or "").strip()
+            if raw:
+                return raw
+    except Exception:
+        pass
+    return None
+
+
 def _append_candidate(candidates: list[str], seen: set[str], raw: str | None) -> None:
     url = _normalize_url(raw)
     if not url or url in seen:
@@ -127,8 +143,54 @@ def _looks_like_control_api_response(code: int | None, payload: dict[str, Any] |
     if code is None:
         return False
     if isinstance(payload, dict):
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        transition_role = str(runtime.get("transition_role") or "").strip().lower()
+        if transition_role == "candidate":
+            return False
+        if runtime.get("admin_mutation_allowed") is False:
+            return False
         return True
     return int(code) in {401, 403}
+
+
+def _control_token_candidates(*, explicit: str | None = None) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: str | None) -> None:
+        token = str(raw or "").strip()
+        if not token or token in seen:
+            return
+        candidates.append(token)
+        seen.add(token)
+
+    _push(explicit)
+    _push(_pick_env_token())
+    _push(_autostart_service_token())
+    try:
+        from adaos.services.node_config import load_config
+
+        conf = load_config()
+        _push(getattr(conf, "token", None))
+    except Exception:
+        pass
+    _push("dev-local-token")
+    return candidates
+
+
+def _probe_control_token_status(*, base_url: str, token: str, timeout_s: float = 0.5) -> int | None:
+    base = str(base_url).rstrip("/")
+    headers = {"X-AdaOS-Token": str(token or "")}
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        resp = sess.get(base + "/api/node/status", headers=headers, timeout=float(timeout_s))
+        return int(resp.status_code)
+    except Exception:
+        return None
 
 
 def resolve_control_base_url(
@@ -190,24 +252,14 @@ def resolve_control_base_url(
     return "http://127.0.0.1:8777"
 
 
-def resolve_control_token(*, explicit: str | None = None) -> str:
-    if explicit is not None:
-        txt = str(explicit or "").strip()
-        if txt:
-            return txt
-    env_tok = _pick_env_token()
-    if env_tok:
-        return env_tok
-    try:
-        from adaos.services.node_config import load_config
-
-        conf = load_config()
-        tok = str(getattr(conf, "token", "") or "").strip()
-        if tok:
-            return tok
-    except Exception:
-        pass
-    return "dev-local-token"
+def resolve_control_token(*, explicit: str | None = None, base_url: str | None = None) -> str:
+    candidates = _control_token_candidates(explicit=explicit)
+    base = _normalize_url(base_url)
+    if base and _is_local_url(base):
+        for token in candidates:
+            if _probe_control_token_status(base_url=base, token=token, timeout_s=0.35) == 200:
+                return token
+    return candidates[0] if candidates else "dev-local-token"
 
 
 def probe_control_api(*, base_url: str, token: str, timeout_s: float = 2.0) -> tuple[int | None, dict[str, Any] | None]:
@@ -238,4 +290,10 @@ def probe_control_api(*, base_url: str, token: str, timeout_s: float = 2.0) -> t
         return None, None
     if int(resp.status_code) != 200:
         return int(resp.status_code), None
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        return int(resp.status_code), payload
     return int(resp.status_code), {"ok": True, "ping": True}

@@ -144,6 +144,8 @@ def sync_target_from_control_report(
                 "report_auth_method": auth_method,
                 "report_verified": verified,
                 "report_trust": trust_state,
+                "runtime_instance_id": str(report.get("runtime_instance_id") or ((report.get("runtime") or {}) if isinstance(report.get("runtime"), Mapping) else {}).get("runtime_instance_id") or ""),
+                "transition_role": str(report.get("transition_role") or ((report.get("runtime") or {}) if isinstance(report.get("runtime"), Mapping) else {}).get("transition_role") or ""),
             },
         }
     )

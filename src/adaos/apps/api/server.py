@@ -151,7 +151,7 @@ from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 
 from adaos.apps.bootstrap import init_ctx
-from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready
+from adaos.services.bootstrap import run_boot_sequence, shutdown, is_ready, request_hub_root_reconnect
 from adaos.services.observe import start_observer, stop_observer
 from adaos.services.agent_context import get_ctx
 from adaos.services.router import RouterService
@@ -173,8 +173,9 @@ from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
-from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_slots import active_slot, active_slot_manifest, slot_status as core_slot_status
 from adaos.services.node_config import save_config
+from adaos.services.runtime_identity import runtime_identity_snapshot, runtime_transition_role
 from adaos.services.runtime_lifecycle import (
     is_draining,
     request_drain,
@@ -189,6 +190,53 @@ init_ctx()
 _DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
 _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
 _DEFAULT_UPDATE_COUNTDOWN_SEC = 60.0
+
+
+def _runtime_identity_public_payload() -> dict[str, Any]:
+    identity = runtime_identity_snapshot()
+    slot_name = ""
+    try:
+        slot_name = str(active_slot() or "").strip().upper()
+    except Exception:
+        slot_name = ""
+    runtime_port = None
+    try:
+        runtime_port_value = int(str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip() or "0")
+        if runtime_port_value > 0:
+            runtime_port = runtime_port_value
+    except Exception:
+        runtime_port = None
+    transition_role = str(identity.get("transition_role") or runtime_transition_role() or "active").strip().lower() or "active"
+    return {
+        "runtime_instance_id": str(identity.get("runtime_instance_id") or "").strip() or None,
+        "transition_role": transition_role,
+        "slot": slot_name or None,
+        "runtime_port": runtime_port,
+        "admin_mutation_allowed": transition_role != "candidate",
+    }
+
+
+def _supervisor_manages_sidecar() -> bool:
+    raw = str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _ensure_runtime_admin_mutation_allowed(action: str) -> None:
+    info = _runtime_identity_public_payload()
+    if str(info.get("transition_role") or "active").strip().lower() != "candidate":
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "error": "candidate_runtime_is_passive",
+            "message": (
+                f"candidate runtime rejects {str(action or 'mutation').strip() or 'mutation'} "
+                "until supervisor cutover completes"
+            ),
+            "runtime": info,
+        },
+    )
 
 
 async def _wait_bus_idle(timeout: float) -> bool:
@@ -442,7 +490,7 @@ async def lifespan(app: FastAPI):
     try:
         conf = get_ctx().config
         role = str(getattr(conf, "role", "") or "").strip().lower()
-        if realtime_sidecar_enabled(role=role):
+        if not _supervisor_manages_sidecar() and realtime_sidecar_enabled(role=role):
             app.state.realtime_sidecar_proc = await start_realtime_sidecar_subprocess(role=role)
     except Exception:
         logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
@@ -785,10 +833,11 @@ async def lifespan(app: FastAPI):
             pass
         except Exception:
             pass
-        try:
-            await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
-        except Exception:
-            logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
+        if not _supervisor_manages_sidecar():
+            try:
+                await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
+            except Exception:
+                logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
         await shutdown()
 
 
@@ -806,7 +855,12 @@ app.add_middleware(
 
 @app.get("/api/ping")
 async def ping():
-    return {"ok": True, "ts": time.time()}
+    return {
+        "ok": True,
+        "ts": time.time(),
+        "service": "adaos-runtime",
+        "runtime": _runtime_identity_public_payload(),
+    }
 
 
 class SayRequest(BaseModel):
@@ -875,6 +929,11 @@ class CoreUpdateRollbackRequest(BaseModel):
     countdown_sec: float = Field(default=0.0, ge=0.0, le=3600.0)
     drain_timeout_sec: float = Field(default=_DEFAULT_SHUTDOWN_DRAIN_SEC, ge=0.0, le=30.0)
     signal_delay_sec: float = Field(default=_DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC, ge=0.0, le=5.0)
+
+
+class RuntimePromoteActiveRequest(BaseModel):
+    reason: str = Field(default="supervisor.fast_cutover", min_length=1, max_length=128)
+    reconnect_hub_root: bool = Field(default=True)
 
 
 @app.post("/api/subnet/alias")
@@ -958,11 +1017,12 @@ async def admin_drain(body: DrainRequest):
 
 @app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
 async def admin_lifecycle():
-    return {"ok": True, "lifecycle": runtime_lifecycle_snapshot()}
+    return {"ok": True, "lifecycle": runtime_lifecycle_snapshot(), "runtime": _runtime_identity_public_payload()}
 
 
 @app.post("/api/admin/update/start", dependencies=[Depends(require_token)])
 async def admin_update_start(body: CoreUpdateStartRequest):
+    _ensure_runtime_admin_mutation_allowed("update.start")
     existing = getattr(app.state, "core_update_task", None)
     if existing is not None and not existing.done():
         return {"ok": True, "accepted": False, "status": read_core_update_status()}
@@ -1004,6 +1064,7 @@ async def admin_update_start(body: CoreUpdateStartRequest):
 
 @app.post("/api/admin/update/cancel", dependencies=[Depends(require_token)])
 async def admin_update_cancel(body: CoreUpdateCancelRequest):
+    _ensure_runtime_admin_mutation_allowed("update.cancel")
     task = getattr(app.state, "core_update_task", None)
     clear_core_update_plan()
     if task is None or task.done():
@@ -1035,6 +1096,7 @@ async def admin_update_cancel(body: CoreUpdateCancelRequest):
 
 @app.post("/api/admin/update/rollback", dependencies=[Depends(require_token)])
 async def admin_update_rollback(body: CoreUpdateRollbackRequest):
+    _ensure_runtime_admin_mutation_allowed("update.rollback")
     existing = getattr(app.state, "core_update_task", None)
     if existing is not None and not existing.done():
         return {"ok": True, "accepted": False, "status": read_core_update_status()}
@@ -1072,6 +1134,37 @@ async def admin_update_rollback(body: CoreUpdateRollbackRequest):
     return {"ok": True, "accepted": True, "status": read_core_update_status()}
 
 
+@app.post("/api/admin/runtime/promote-active", dependencies=[Depends(require_token)])
+async def admin_runtime_promote_active(body: RuntimePromoteActiveRequest):
+    info = _runtime_identity_public_payload()
+    current_role = str(info.get("transition_role") or "active").strip().lower() or "active"
+    if current_role == "active":
+        return {
+            "ok": True,
+            "accepted": False,
+            "message": "runtime already active",
+            "reason": body.reason,
+            "runtime": _runtime_identity_public_payload(),
+            "reconnect": None,
+        }
+
+    os.environ["ADAOS_RUNTIME_TRANSITION_ROLE"] = "active"
+    reconnect_result: dict[str, Any] | None = None
+    if bool(body.reconnect_hub_root):
+        try:
+            reconnect_result = await request_hub_root_reconnect()
+        except Exception as exc:
+            reconnect_result = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+    return {
+        "ok": True,
+        "accepted": True,
+        "message": "candidate runtime promoted to active",
+        "reason": body.reason,
+        "runtime": _runtime_identity_public_payload(),
+        "reconnect": reconnect_result,
+    }
+
+
 @app.get("/api/admin/update/status", dependencies=[Depends(require_token)])
 async def admin_update_status():
     try:
@@ -1085,6 +1178,7 @@ async def admin_update_status():
         "plan": read_core_update_plan(),
         "slots": core_slot_status(),
         "active_manifest": active_slot_manifest(),
+        "runtime": _runtime_identity_public_payload(),
     }
 
 
@@ -1100,6 +1194,7 @@ async def status():
             "build_date": BUILD_INFO.build_date,
         },
         "lifecycle": runtime_lifecycle_snapshot(),
+        "runtime": _runtime_identity_public_payload(),
     }
 
 

@@ -123,6 +123,9 @@ def default_spec(
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv:
         env["ADAOS_SHARED_DOTENV_PATH"] = str(shared_dotenv)
+    repo_root = _repo_root(ctx)
+    if repo_root is not None:
+        env["ADAOS_ROOT_REPO_ROOT"] = str(repo_root)
     env.setdefault("ADAOS_SUPERVISOR_HOST", "127.0.0.1")
     env.setdefault("ADAOS_SUPERVISOR_PORT", "8776")
     resolved_token = str(token or _default_control_token() or "").strip()
@@ -204,6 +207,10 @@ def _bootstrap_core_slot(ctx: AgentContext, *, token: str | None = None) -> None
         "--target-version",
         str(BUILD_INFO.version or ""),
     ]
+    if not (repo_root / ".git").exists():
+        # Archive/package installs should bootstrap the slot from the local unpacked tree,
+        # not from a potentially different remote branch tip.
+        cmd.extend(["--repo-url", ""])
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv is not None:
         cmd.extend(["--shared-dotenv-path", str(shared_dotenv)])
@@ -351,6 +358,16 @@ def _http_probe_local_control(host: str, port: int, *, timeout: float = 0.5) -> 
     try:
         resp = sess.get(f"{base}/api/ping", headers={"Accept": "application/json"}, timeout=timeout)
         if int(resp.status_code) == 200:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = None
+            runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+            transition_role = str((runtime or {}).get("transition_role") or "").strip().lower()
+            if transition_role == "candidate":
+                return False
+            if isinstance(runtime, dict) and runtime.get("admin_mutation_allowed") is False:
+                return False
             return True
     except Exception:
         pass

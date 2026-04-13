@@ -36,6 +36,7 @@ from adaos.services.autostart import status as autostart_status
 from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
 from adaos.services.core_update import plan_path as core_update_plan_path
+from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
 from adaos.services.core_update import status_path as core_update_status_path
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -405,7 +406,7 @@ def _autostart_admin_base_url(token: Optional[str] = None) -> str:
         _push(f"http://{host}:{int(port)}")
     _push(resolve_control_base_url())
 
-    resolved_token = resolve_control_token(explicit=token)
+    resolved_token = str(token or _autostart_service_token() or resolve_control_token(explicit=token)).strip()
     for base in candidates:
         code, _payload = probe_control_api(base_url=base, token=resolved_token, timeout_s=0.75)
         if code is not None:
@@ -413,10 +414,33 @@ def _autostart_admin_base_url(token: Optional[str] = None) -> str:
     return candidates[0] if candidates else resolve_control_base_url()
 
 
+def _autostart_service_token() -> str:
+    try:
+        info = autostart_status(get_ctx())
+    except Exception:
+        info = None
+    if not isinstance(info, dict):
+        return ""
+    wrapper_env = info.get("wrapper_env") if isinstance(info.get("wrapper_env"), dict) else {}
+    for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+        raw = str(wrapper_env.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
 def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
     ctx = get_ctx()
     conf = getattr(ctx, "config", None)
-    resolved = str(token or getattr(conf, "token", None) or os.getenv("ADAOS_TOKEN") or "").strip()
+    resolved = str(
+        token
+        or _autostart_service_token()
+        or os.getenv("ADAOS_TOKEN")
+        or os.getenv("ADAOS_HUB_TOKEN")
+        or os.getenv("HUB_TOKEN")
+        or getattr(conf, "token", None)
+        or ""
+    ).strip()
     headers = {"Content-Type": "application/json"}
     if resolved:
         headers["X-AdaOS-Token"] = resolved
@@ -589,9 +613,11 @@ def _local_autostart_update_payload() -> dict | None:
     status_path = selected_root / "status.json"
     plan_path = selected_root / "plan.json"
     last_result_path = selected_root / "last_result.json"
+    attempt_path = selected_root.parent / "supervisor" / "update_attempt.json"
     return {
         "ok": True,
         "status": _read_json_file(status_path) or {"state": "idle", "updated_at": time.time()},
+        "attempt": _read_json_file(attempt_path),
         "last_result": _read_json_file(last_result_path),
         "plan": _read_json_file(plan_path),
         "slots": core_slot_status(),
@@ -1210,6 +1236,8 @@ def autostart_update_status_cmd(
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
     active_slot = str(slots.get("active_slot") or "")
@@ -1257,6 +1285,47 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    if status.get("scheduled_for"):
+        try:
+            scheduled_for = float(status.get("scheduled_for") or 0.0)
+        except Exception:
+            scheduled_for = 0.0
+        if scheduled_for > 0.0:
+            typer.echo(
+                "scheduled for: "
+                + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(scheduled_for))
+            )
+    if attempt.get("state"):
+        typer.echo(f"supervisor attempt: {attempt.get('state')}")
+        if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
+            typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
+    if bool(status.get("subsequent_transition")) or bool(attempt.get("subsequent_transition")):
+        requested_at = attempt.get("subsequent_transition_requested_at") or status.get("subsequent_transition_requested_at")
+        line = "subsequent transition: queued"
+        try:
+            requested_ts = float(requested_at or 0.0)
+        except Exception:
+            requested_ts = 0.0
+        if requested_ts > 0.0:
+            line += " at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(requested_ts))
+        typer.echo(line)
+    if runtime.get("transition_mode"):
+        typer.echo(f"transition mode: {runtime.get('transition_mode')}")
+    candidate_prewarm_state = str(status.get("candidate_prewarm_state") or attempt.get("candidate_prewarm_state") or "").strip()
+    candidate_prewarm_message = str(status.get("candidate_prewarm_message") or attempt.get("candidate_prewarm_message") or "").strip()
+    if candidate_prewarm_state:
+        line = f"candidate prewarm: {candidate_prewarm_state}"
+        if candidate_prewarm_message:
+            line += f" | {candidate_prewarm_message}"
+        typer.echo(line)
+    elif runtime.get("candidate_slot") and runtime.get("candidate_runtime_state"):
+        line = (
+            f"candidate runtime: slot {runtime.get('candidate_slot')} | "
+            f"state={runtime.get('candidate_runtime_state')}"
+        )
+        if runtime.get("candidate_runtime_url"):
+            line += f" | {runtime.get('candidate_runtime_url')}"
+        typer.echo(line)
     if bool(status.get("root_promotion_required")):
         typer.echo("root promotion required: yes")
         bootstrap_update = status.get("bootstrap_update") if isinstance(status.get("bootstrap_update"), dict) else {}
@@ -1356,6 +1425,29 @@ def autostart_update_rollback_cmd(
     typer.echo(json.dumps(payload, ensure_ascii=False))
 
 
+@autostart_app.command("update-defer")
+@_run_safe
+def autostart_update_defer_cmd(
+    delay_sec: float = typer.Option(300.0, "--delay-sec", min=0.0),
+    reason: str = typer.Option("cli.core_update.defer", "--reason"),
+    token: Optional[str] = typer.Option(None, "--token", help="Override X-AdaOS-Token for local admin API"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        payload = _autostart_supervisor_post(
+            "/api/supervisor/update/defer",
+            token=token,
+            body={"delay_sec": delay_sec, "reason": reason},
+        )
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
 @autostart_app.command("update-promote-root")
 @_run_safe
 def autostart_update_promote_root_cmd(
@@ -1378,6 +1470,32 @@ def autostart_update_promote_root_cmd(
     typer.echo(json.dumps(payload, ensure_ascii=False))
 
 
+@autostart_app.command("update-restore-root")
+@_run_safe
+def autostart_update_restore_root_cmd(
+    backup_dir: str = typer.Option(..., "--backup-dir", help="Path under .adaos/state/root_promotion created by update-promote-root"),
+    target_root: Optional[str] = typer.Option(None, "--target-root", help="Override target root checkout path"),
+    restart: bool = typer.Option(False, "--restart/--no-restart", help="Restart the autostart service after restoring root files"),
+    json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
+):
+    try:
+        restore_payload = restore_root_promotion_backup(backup_dir=backup_dir, target_root=target_root)
+        restart_payload = _restart_autostart_service() if restart else None
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    payload = {
+        "ok": True,
+        "restore": restore_payload,
+        "restart": restart_payload,
+        "message": "root promotion backup restored" + (" and autostart service restart requested" if restart else ""),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
 @autostart_app.command("update-complete")
 @_run_safe
 def autostart_update_complete_cmd(
@@ -1388,23 +1506,26 @@ def autostart_update_complete_cmd(
     try:
         update_payload = _autostart_update_get(token=token)
         status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
+        attempt_payload = update_payload.get("attempt") if isinstance(update_payload.get("attempt"), dict) else {}
         runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
-        root_promotion_required = bool(
-            runtime_payload.get("root_promotion_required")
-            or (
-                isinstance(runtime_payload.get("bootstrap_update"), dict)
-                and runtime_payload["bootstrap_update"].get("required")
-            )
-        )
+        root_promotion_required = bool(runtime_payload.get("root_promotion_required"))
         current_state = str(status_payload.get("state") or "").strip().lower()
         current_phase = str(status_payload.get("phase") or "").strip().lower()
-        if not root_promotion_required and not (
+        attempt_state = str(attempt_payload.get("state") or "").strip().lower()
+        needs_promotion = root_promotion_required or (
             current_state == "validated" and current_phase == "root_promotion_pending"
-        ):
+        )
+        root_restart_pending = (
+            attempt_state == "awaiting_root_restart"
+            or (current_state == "succeeded" and current_phase == "root_promoted")
+        )
+
+        if not needs_promotion and not root_restart_pending:
             payload = {
                 "ok": True,
                 "noop": True,
                 "status": status_payload,
+                "attempt": attempt_payload,
                 "runtime": runtime_payload,
                 "message": "root promotion is not required for the current update state",
             }
@@ -1413,11 +1534,23 @@ def autostart_update_complete_cmd(
                 return
             typer.echo(json.dumps(payload, ensure_ascii=False))
             return
-        promotion = _autostart_supervisor_post(
-            "/api/supervisor/update/promote-root",
-            token=token,
-            body={"reason": reason},
-        )
+
+        if needs_promotion:
+            promotion = _autostart_supervisor_post(
+                "/api/supervisor/update/promote-root",
+                token=token,
+                body={"reason": reason},
+            )
+            message = "root promotion completed and autostart service restart requested"
+        else:
+            promotion = {
+                "ok": True,
+                "accepted": False,
+                "status": status_payload,
+                "attempt": attempt_payload,
+                "message": "root promotion already completed; retrying autostart service restart",
+            }
+            message = "root promotion already completed; autostart service restart requested"
         restart = _restart_autostart_service()
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
@@ -1426,7 +1559,7 @@ def autostart_update_complete_cmd(
         "ok": True,
         "promotion": promotion,
         "restart": restart,
-        "message": "root promotion completed and autostart service restart requested",
+        "message": message,
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -39,6 +39,14 @@ def _local_api_base() -> str:
     return resolve_control_base_url()
 
 
+def _local_control_token(base_url: str) -> str:
+    try:
+        return resolve_control_token(base_url=base_url)
+    except TypeError:
+        # Test doubles may still expose the older one-argument signature.
+        return resolve_control_token()
+
+
 def _root_verify_from_conf(conf: Any) -> str | bool | ssl.SSLContext:
     verify: str | bool | ssl.SSLContext = True
     try:
@@ -86,7 +94,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/reliability"
     headers = {"X-AdaOS-Token": token}
     r = requests.get(url, headers=headers, timeout=5.0)
@@ -275,7 +283,7 @@ def hub_root_watch(
     import requests, time as _time
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/reliability"
     headers = {"X-AdaOS-Token": token}
     while True:
@@ -443,7 +451,7 @@ def hub_root_reconnect(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/hub-root/reconnect"
     headers = {"X-AdaOS-Token": token}
     payload = {"transport": transport, "url_override": url_override}
@@ -595,7 +603,7 @@ def hub_root_sidecar_status(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/sidecar/status"
     headers = {"X-AdaOS-Token": token}
     r = requests.get(url, headers=headers, timeout=5.0)
@@ -606,16 +614,56 @@ def hub_root_sidecar_status(
         return
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
+    scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
+    continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
+    route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
+    planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"sidecar={runtime.get('status') or 'unknown'} "
         f"phase={runtime.get('phase') or '-'} "
+        f"owner={runtime.get('transport_owner') or '-'} "
+        f"manager={runtime.get('lifecycle_manager') or '-'} "
         f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
         f"control={runtime.get('control_ready') or '-'} "
         f"route={runtime.get('route_ready') or '-'} "
+        f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
+        f"next={planned_next or '-'} "
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'} "
         f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
     )
+    if progress:
+        typer.echo(
+            f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+            f"target={progress.get('target') or '-'} "
+            f"state={progress.get('state') or '-'} "
+            f"current={progress.get('current_milestone') or '-'}"
+        )
+        if progress.get("next_blocker"):
+            typer.echo(f"progress_blocker={progress.get('next_blocker')}")
+    if route_tunnel:
+        ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+        yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+        typer.echo(
+            f"route_tunnel={route_tunnel.get('current_support') or '-'} "
+            f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+            f"{ws_contract.get('delegation_mode') or '-'} "
+            f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+            f"{yws_contract.get('delegation_mode') or '-'}"
+        )
+        ws_blocker = next(
+            (str(item).strip() for item in (ws_contract.get("blockers") or []) if str(item).strip()),
+            "",
+        )
+        yws_blocker = next(
+            (str(item).strip() for item in (yws_contract.get("blockers") or []) if str(item).strip()),
+            "",
+        )
+        if ws_blocker:
+            typer.echo(f"ws_blocker={ws_blocker}")
+        if yws_blocker and yws_blocker != ws_blocker:
+            typer.echo(f"yws_blocker={yws_blocker}")
 
 
 @sidecar_app.command("restart")
@@ -629,7 +677,7 @@ def hub_root_sidecar_restart(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/sidecar/restart"
     headers = {"X-AdaOS-Token": token}
     payload = {"reconnect_hub_root": bool(reconnect_hub_root)}
@@ -642,14 +690,40 @@ def hub_root_sidecar_restart(
     restart = data.get("restart") if isinstance(data.get("restart"), dict) else {}
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
+    continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
+    route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
+    planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"accepted={bool(restart.get('accepted'))} "
         f"reason={restart.get('reason') or '-'} "
         f"sidecar={runtime.get('status') or 'unknown'}/{runtime.get('control_ready') or '-'} "
+        f"owner={runtime.get('transport_owner') or '-'} "
+        f"manager={runtime.get('lifecycle_manager') or '-'} "
         f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
+        f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
+        f"next={planned_next or '-'} "
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'}"
     )
+    if progress:
+        typer.echo(
+            f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+            f"target={progress.get('target') or '-'} "
+            f"state={progress.get('state') or '-'} "
+            f"current={progress.get('current_milestone') or '-'}"
+        )
+    if route_tunnel:
+        ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+        yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+        typer.echo(
+            f"route_tunnel={route_tunnel.get('current_support') or '-'} "
+            f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+            f"{ws_contract.get('delegation_mode') or '-'} "
+            f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+            f"{yws_contract.get('delegation_mode') or '-'}"
+        )
 
 
 @join_code_app.command("create")

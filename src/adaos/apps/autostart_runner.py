@@ -33,10 +33,18 @@ from adaos.services.core_update import (
     execute_pending_update,
     manifest_requires_root_promotion,
     read_plan,
+    read_status,
     rollback_installed_skill_runtimes,
     write_status,
 )
-from adaos.services.core_slots import active_slot, active_slot_manifest, rollback_to_previous_slot, slot_dir, slot_status
+from adaos.services.core_slots import (
+    active_slot,
+    active_slot_manifest,
+    rollback_to_previous_slot,
+    slot_dir,
+    slot_status,
+    write_slot_manifest,
+)
 from adaos.services.node_config import load_config, save_config
 from adaos.services.runtime_paths import current_base_dir, current_logs_dir
 from adaos.services.root.client import RootHttpClient
@@ -141,6 +149,19 @@ def _update_validation_runtime_guards_enabled() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _reconcile_post_root_promotion_restart(current: dict[str, Any]) -> dict[str, Any] | None:
+    state = str(current.get("state") or "").strip().lower()
+    phase = str(current.get("phase") or "").strip().lower()
+    if state != "succeeded" or phase != "root_promoted":
+        return None
+    payload = dict(current)
+    payload["phase"] = "validate"
+    payload["message"] = "root promotion restart completed; validated slot runtime booted under updated supervisor"
+    payload["root_restart_completed_at"] = time.time()
+    payload["updated_at"] = time.time()
+    return payload
+
+
 def _update_validation_webspace_id() -> str:
     value = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_WEBSPACE_ID") or "default").strip()
     return value or "default"
@@ -169,18 +190,21 @@ def _validate_sidecar_runtime_payload(payload: dict[str, Any]) -> tuple[bool, st
     enabled = bool(runtime.get("enabled"))
     status = str(runtime.get("status") or "").strip().lower() or ("enabled" if enabled else "disabled")
     listener_running = bool(process.get("listener_running") or str(runtime.get("local_listener_state") or "").strip().lower() == "ready")
+    transport_ready = bool(runtime.get("transport_ready"))
     details = {
         "enabled": enabled,
         "status": status,
         "listener_running": listener_running,
-        "transport_ready": bool(runtime.get("transport_ready")),
+        "transport_ready": transport_ready,
         "control_ready": runtime.get("control_ready"),
     }
     if not enabled:
         return True, None, details
-    if listener_running:
-        return True, None, details
-    return False, "sidecar runtime is enabled but local listener is not running", details
+    if not listener_running:
+        return False, "sidecar runtime is enabled but local listener is not running", details
+    if not transport_ready:
+        return False, "sidecar runtime listener is up but hub-root transport is not ready", details
+    return True, None, details
 
 
 def _validate_yjs_runtime_payload(
@@ -286,6 +310,51 @@ def _run_post_commit_skill_checks() -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("post-commit skill checks returned non-object payload")
     return payload
+
+
+def _run_prepared_restart_skill_migration(slot: str, manifest: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    slot_name = str(slot or "").strip().upper()
+    if not slot_name:
+        raise RuntimeError("prepared restart is missing target slot")
+    current_migration = manifest.get("skill_runtime_migration") if isinstance(manifest.get("skill_runtime_migration"), dict) else {}
+    if current_migration and not bool(current_migration.get("deferred")):
+        return dict(current_migration), dict(manifest)
+
+    env = dict(os.environ)
+    manifest_env = manifest.get("env")
+    if isinstance(manifest_env, dict):
+        for key, value in manifest_env.items():
+            env[str(key)] = str(value)
+    env["ADAOS_ACTIVE_CORE_SLOT"] = slot_name
+    env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = str(slot_dir(slot_name))
+    cwd_raw = str(manifest.get("cwd") or "").strip()
+    cwd = Path(cwd_raw).expanduser().resolve() if cwd_raw else None
+    completed = subprocess.run(
+        [sys.executable, "-m", "adaos.apps.skill_runtime_migrate", "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(cwd) if cwd else None,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"deferred skill runtime migration failed rc={completed.returncode}: "
+            f"{(completed.stderr or completed.stdout or '').strip()[-4000:]}"
+        )
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except Exception as exc:
+        raise RuntimeError(
+            f"deferred skill runtime migration returned invalid JSON: {(completed.stdout or '')[-4000:]}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("deferred skill runtime migration returned non-object payload")
+    if not bool(payload.get("ok")):
+        raise RuntimeError(f"deferred skill runtime migration failed: {json.dumps(payload, ensure_ascii=False)}")
+    updated_manifest = dict(manifest)
+    updated_manifest["skill_runtime_migration"] = payload
+    write_slot_manifest(slot_name, updated_manifest)
+    return payload, updated_manifest
 
 
 def _probe_update_runtime(
@@ -676,43 +745,105 @@ def main() -> None:
         skip_pending_update = _skip_pending_update_requested()
         plan = None if skip_pending_update else read_plan()
         pending_update_succeeded = False
+        prepared_restart_boot = False
         conf = None
         try:
             conf = load_config()
         except Exception:
             conf = None
         if plan:
-            phase = "execute_pending_update"
-            result = execute_pending_update(plan)
-            if conf is not None:
-                _upload_update_report(result, conf)
-            if str(result.get("state") or "") != "succeeded":
+            plan_state = str(plan.get("state") or "").strip().lower()
+            plan_action = str(plan.get("action") or "update").strip().lower()
+            if plan_state == "prepared_restart" and plan_action == "update":
+                phase = "prepared_restart"
+                target_slot = str(plan.get("target_slot") or active_slot() or "").strip().upper()
+                manifest = active_slot_manifest()
+                manifest = dict(manifest) if isinstance(manifest, dict) else {}
+                try:
+                    skill_runtime_migration, manifest = _run_prepared_restart_skill_migration(target_slot, manifest)
+                except Exception as exc:
+                    clear_plan()
+                    restored = rollback_to_previous_slot()
+                    skill_runtime_rollback = rollback_installed_skill_runtimes() if restored else {}
+                    payload: dict[str, Any] = {
+                        "state": "failed",
+                        "phase": "apply",
+                        "message": (
+                            f"prepared slot {target_slot} failed deferred skill runtime migration"
+                            if target_slot
+                            else "prepared slot failed deferred skill runtime migration"
+                        ),
+                        "target_slot": target_slot,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "manifest": manifest,
+                        "started_at": float(plan.get("prepared_at") or plan.get("created_at") or time.time()),
+                        "finished_at": time.time(),
+                        "restored_slot": restored or "",
+                    }
+                    if restored:
+                        payload["rollback"] = {"ok": True, "slot": restored}
+                    if skill_runtime_rollback:
+                        payload["skill_runtime_rollback"] = skill_runtime_rollback
+                        if not bool(skill_runtime_rollback.get("ok")):
+                            payload["message"] += " | some skill runtime rollbacks failed"
+                    write_status(payload)
+                    raise SystemExit(1) from exc
                 clear_plan()
-                raise SystemExit(int(result.get("returncode") or 1) or 1)
-            pending_update_succeeded = True
-            clear_plan()
-            target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
-            payload = {
-                "state": "restarting",
-                "phase": "launch",
-                "message": (
-                    f"core update applied; restarting into slot {target_slot}"
-                    if target_slot
-                    else "core update applied; restarting runtime"
-                ),
-                "target_slot": target_slot,
-                "plan": plan,
-                "started_at": float(result.get("started_at") or time.time()),
-                "finished_at": time.time(),
-            }
-            manifest = result.get("manifest")
-            if isinstance(manifest, dict) and manifest:
-                payload["manifest"] = manifest
-            write_status(payload)
-            raise SystemExit(0)
-        else:
+                prepared_restart_boot = True
+                payload = {
+                    "state": "restarting",
+                    "phase": "launch",
+                    "message": (
+                        f"prepared core update activated; launching slot {target_slot}"
+                        if target_slot
+                        else "prepared core update activated; launching runtime"
+                    ),
+                    "target_slot": target_slot,
+                    "plan": plan,
+                    "started_at": float(plan.get("prepared_at") or plan.get("created_at") or time.time()),
+                    "finished_at": time.time(),
+                    "manifest": manifest,
+                    "skill_runtime_migration": skill_runtime_migration,
+                }
+                write_status(payload)
+            else:
+                phase = "execute_pending_update"
+                result = execute_pending_update(plan)
+                if conf is not None:
+                    _upload_update_report(result, conf)
+                if str(result.get("state") or "") != "succeeded":
+                    clear_plan()
+                    raise SystemExit(int(result.get("returncode") or 1) or 1)
+                pending_update_succeeded = True
+                clear_plan()
+                target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
+                payload = {
+                    "state": "restarting",
+                    "phase": "launch",
+                    "message": (
+                        f"core update applied; restarting into slot {target_slot}"
+                        if target_slot
+                        else "core update applied; restarting runtime"
+                    ),
+                    "target_slot": target_slot,
+                    "plan": plan,
+                    "started_at": float(result.get("started_at") or time.time()),
+                    "finished_at": time.time(),
+                }
+                manifest = result.get("manifest")
+                if isinstance(manifest, dict) and manifest:
+                    payload["manifest"] = manifest
+                write_status(payload)
+                raise SystemExit(0)
+        if not prepared_restart_boot:
             phase = "boot"
-            write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
+            current_status = read_status()
+            reconciled = _reconcile_post_root_promotion_restart(current_status)
+            if reconciled is not None:
+                write_status(reconciled)
+            else:
+                write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
 
         phase = "resolve_bind"
         host, port = _resolve_bind(conf, args.host, args.port)

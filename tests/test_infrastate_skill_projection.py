@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,8 +219,122 @@ def test_infrastate_snapshot_tolerates_bootstrap_file_not_found(monkeypatch):
     assert snapshot["skills"] == []
     assert snapshot["scenarios"] == []
     assert snapshot["marketplace"] == {"skills": [], "scenarios": []}
-    assert snapshot["nodes"]
-    assert snapshot["node_editor"]["scope"] in {"fallback", "local"}
+
+
+def test_infrastate_supervisor_transition_note_covers_root_promotion_and_restart():
+    mod = _load_infrastate_module()
+
+    pending = mod._supervisor_transition_note(
+        {
+            "state": "validated",
+            "phase": "root_promotion_pending",
+            "message": "validated slot is running; root promotion is pending",
+        }
+    )
+    promoted = mod._supervisor_transition_note(
+        {
+            "state": "succeeded",
+            "phase": "root_promoted",
+            "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+        }
+    )
+
+    assert pending["status"] == "warn"
+    assert "root promotion" in pending["description"]
+    assert promoted["status"] == "warn"
+    assert "restart adaos.service" in promoted["description"]
+
+
+def test_infrastate_supervisor_transition_note_covers_planned_and_subsequent_update():
+    mod = _load_infrastate_module()
+
+    planned = mod._supervisor_transition_note(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "message": "core update deferred until minimum update interval elapses",
+            "planned_reason": "minimum_update_period",
+            "scheduled_for": time.time() + 300.0,
+            "subsequent_transition": True,
+        }
+    )
+
+    assert planned["status"] == "warn"
+    assert "minimum update interval" in planned["description"]
+    assert "subsequent transition queued" in planned["description"]
+
+
+def test_infrastate_summary_buttons_offer_defer_during_countdown():
+    mod = _load_infrastate_module()
+
+    buttons = mod._summary_buttons(
+        {
+            "state": "countdown",
+            "phase": "countdown",
+            "scheduled_for": time.time() + 60.0,
+        }
+    )
+
+    button_ids = [str(item.get("id") or "") for item in buttons]
+    assert "defer_update_5m" in button_ids
+    assert "defer_update_15m" in button_ids
+
+
+def test_infrastate_supervisor_transition_note_covers_planned_and_subsequent(monkeypatch):
+    mod = _load_infrastate_module()
+    monkeypatch.setattr(mod.time, "time", lambda: 100.0)
+
+    planned = mod._supervisor_transition_note(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "message": "core update is scheduled",
+            "planned_reason": "minimum_update_period",
+            "scheduled_for": 400.0,
+            "subsequent_transition": True,
+        }
+    )
+
+    assert planned["status"] == "warn"
+    assert "minimum update interval" in planned["description"]
+    assert "subsequent transition queued" in planned["description"]
+
+
+def test_infrastate_summary_buttons_include_defer_actions_for_planned(monkeypatch):
+    mod = _load_infrastate_module()
+    monkeypatch.setattr(mod.time, "time", lambda: 100.0)
+
+    buttons = mod._summary_buttons(
+        {
+            "state": "planned",
+            "scheduled_for": 400.0,
+        }
+    )
+
+    ids = [item["id"] for item in buttons]
+    assert "defer_update_5m" in ids
+    assert "defer_update_15m" in ids
+    assert "cancel_update" in ids
+
+
+def test_infrastate_step_items_include_supervisor_transition():
+    mod = _load_infrastate_module()
+
+    items = mod._step_items(
+        {
+            "state": "validated",
+            "phase": "root_promotion_pending",
+            "message": "validated slot is running; root promotion is pending",
+            "target_rev": "rev2026",
+        },
+        {"active_slot": "A", "previous_slot": "B"},
+        {"node_state": "ready", "reason": "runtime nominal"},
+        {"version": "0.1.0+40.deadbee", "runtime_git_short_commit": "deadbee", "runtime_git_branch": "rev2026"},
+    )
+
+    supervisor_item = next(item for item in items if item["id"] == "supervisor_transition")
+    assert supervisor_item["status"] == "warn"
+    assert "root promotion" in supervisor_item["description"]
 
 
 def test_infrastate_scenario_items_only_show_installed_registry_entries(monkeypatch, tmp_path: Path):

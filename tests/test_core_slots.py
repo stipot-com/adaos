@@ -41,3 +41,11 @@ def test_validate_slot_structure_reports_valid_slot(monkeypatch, tmp_path: Path)
 
     assert payload["ok"] is True
     assert payload["issues"] == []
+
+
+def test_active_slot_prefers_process_env_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    core_slots.activate_slot("A")
+    monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "B")
+
+    assert core_slots.active_slot() == "B"

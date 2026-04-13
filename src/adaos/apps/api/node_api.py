@@ -6,6 +6,7 @@ import time
 from typing import Any, Optional
 
 import anyio
+import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -73,6 +74,81 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 
 def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+def _supervisor_enabled() -> bool:
+    raw = str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _supervisor_base_url() -> str | None:
+    raw = str(os.getenv("ADAOS_SUPERVISOR_URL") or "").strip()
+    if raw:
+        return raw.rstrip("/")
+    host = str(os.getenv("ADAOS_SUPERVISOR_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "8776").strip() or "8776"
+    return f"http://{host}:{port}"
+
+
+async def _proxy_supervisor_json(
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    if not _supervisor_enabled():
+        raise HTTPException(status_code=503, detail="supervisor-backed control surface is unavailable")
+    base_url = _supervisor_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="supervisor control URL is unavailable")
+
+    headers = {"Accept": "application/json"}
+    token = str(os.getenv("ADAOS_TOKEN") or "").strip()
+    if token:
+        headers["X-AdaOS-Token"] = token
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    url = f"{base_url}{path}"
+
+    def _send() -> dict[str, Any]:
+        session = requests.Session()
+        try:
+            try:
+                session.trust_env = False
+            except Exception:
+                pass
+            response = session.request(
+                str(method or "GET").upper(),
+                url,
+                headers=headers,
+                json=payload,
+                timeout=float(timeout),
+            )
+            if int(response.status_code or 0) >= 400:
+                try:
+                    detail: Any = response.json()
+                except Exception:
+                    detail = (response.text or f"supervisor returned HTTP {response.status_code}").strip()[:500]
+                if isinstance(detail, dict) and set(detail.keys()) == {"detail"}:
+                    detail = detail["detail"]
+                raise HTTPException(status_code=int(response.status_code), detail=detail)
+            body = response.json()
+            if not isinstance(body, dict):
+                raise RuntimeError("supervisor returned a non-object payload")
+            return body
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    try:
+        return await anyio.to_thread.run_sync(_send)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor API unavailable: {type(exc).__name__}: {exc}") from exc
 
 
 def _publish_yjs_control_event(
@@ -446,6 +522,8 @@ async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]
 
 @router.get("/sidecar/status", dependencies=[Depends(require_token)])
 async def sidecar_status(request: Request) -> dict[str, Any]:
+    if _supervisor_enabled():
+        return await _proxy_supervisor_json(method="GET", path="/api/supervisor/sidecar/status", timeout=3.0)
     reliability = current_reliability_payload()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     process = realtime_sidecar_listener_snapshot(getattr(request.app.state, "realtime_sidecar_proc", None))
@@ -458,6 +536,13 @@ async def sidecar_status(request: Request) -> dict[str, Any]:
 
 @router.post("/sidecar/restart", dependencies=[Depends(require_token)])
 async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> dict[str, Any]:
+    if _supervisor_enabled():
+        return await _proxy_supervisor_json(
+            method="POST",
+            path="/api/supervisor/sidecar/restart",
+            payload={"reconnect_hub_root": bool(payload.reconnect_hub_root)},
+            timeout=10.0,
+        )
     conf = load_config()
     proc = getattr(request.app.state, "realtime_sidecar_proc", None)
     new_proc, restart_result = await restart_realtime_sidecar_subprocess(proc=proc, role=conf.role)

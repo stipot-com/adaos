@@ -64,6 +64,7 @@ def load_capacity_from_node_yaml(base_dir: Path | None = None) -> Dict[str, Any]
                     "io_type": item.get("io_type") or item.get("type") or "stdout",
                     "capabilities": list(item.get("capabilities") or []),
                     "priority": int(item.get("priority") or 50),
+                    "id_hint": str(item.get("id_hint") or ""),
                 })
     raw_sk = io_cfg.get("skills") if isinstance(io_cfg, dict) else None
     if isinstance(raw_sk, list):
@@ -321,12 +322,37 @@ def get_io_capacity_entry(io_type: str, *, base_dir: Path | None = None) -> dict
     return None
 
 
-def is_io_available(io_type: str, *, base_dir: Path | None = None, default: bool = True) -> bool:
-    it = get_io_capacity_entry(io_type, base_dir=base_dir)
-    if not it:
-        return default
-    caps = [str(x) for x in (it.get("capabilities") or [])]
-    # explicit unavailable/disabled wins
+def io_capacity_capabilities(entry: dict[str, Any] | None) -> list[str]:
+    if not isinstance(entry, dict):
+        return []
+    out: list[str] = []
+    for item in list(entry.get("capabilities") or []):
+        token = str(item or "").strip()
+        if token:
+            out.append(token)
+    return out
+
+
+def io_capacity_token_values(entry: dict[str, Any] | None, prefix: str) -> list[str]:
+    prefix_norm = f"{str(prefix or '').strip().lower()}:"
+    if prefix_norm == ":":
+        return []
+    out: list[str] = []
+    for item in io_capacity_capabilities(entry):
+        if item.lower().startswith(prefix_norm):
+            value = item.split(":", 1)[1].strip()
+            if value:
+                out.append(value)
+    return out
+
+
+def io_capacity_first_token_value(entry: dict[str, Any] | None, prefix: str) -> str | None:
+    values = io_capacity_token_values(entry, prefix)
+    return values[0] if values else None
+
+
+def is_io_capacity_entry_available(entry: dict[str, Any] | None, *, default: bool = True) -> bool:
+    caps = io_capacity_capabilities(entry)
     if any(c.startswith("state:unavailable") for c in caps):
         return False
     if any(c.startswith("mode:disabled") for c in caps):
@@ -334,6 +360,11 @@ def is_io_available(io_type: str, *, base_dir: Path | None = None, default: bool
     if any(c.startswith("state:available") for c in caps):
         return True
     return default
+
+
+def is_io_available(io_type: str, *, base_dir: Path | None = None, default: bool = True) -> bool:
+    it = get_io_capacity_entry(io_type, base_dir=base_dir)
+    return is_io_capacity_entry_available(it, default=default)
 
 
 def refresh_native_io_capacity(*, base_dir: Path | None = None) -> Dict[str, Any]:
@@ -384,5 +415,31 @@ def refresh_native_io_capacity(*, base_dir: Path | None = None) -> Dict[str, Any
         out["updated"].append({"io_type": "voice", "available": available})
     except Exception as exc:
         out["warnings"].append(f"voice detect failed: {exc}")
+
+    # WebRTC AV runtime: aiortc
+    try:
+        from adaos.services.agent_context import get_ctx
+        from adaos.services.media_capability import local_webrtc_media_capabilities
+
+        available = True
+        reason = None
+        try:
+            import aiortc  # type: ignore  # noqa: F401
+        except Exception as exc:
+            available = False
+            reason = str(exc)
+        role = str(getattr(get_ctx().config, "role", "") or "")
+        _set_io_state(
+            "webrtc_media",
+            available=available,
+            base_capabilities=local_webrtc_media_capabilities(role=role),
+            reason=reason,
+            mode="webrtc",
+            priority=35,
+            base_dir=base_dir,
+        )
+        out["updated"].append({"io_type": "webrtc_media", "available": available})
+    except Exception as exc:
+        out["warnings"].append(f"webrtc_media detect failed: {exc}")
 
     return out

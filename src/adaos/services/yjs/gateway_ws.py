@@ -362,6 +362,71 @@ def _y_server_runtime_snapshot() -> dict[str, Any]:
     }
 
 
+def _gateway_lifecycle_manager() -> str:
+    token = str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower()
+    return "supervisor" if token in {"1", "true", "yes", "on"} else "runtime"
+
+
+def _gateway_transport_ownership_snapshot() -> dict[str, dict[str, Any]]:
+    lifecycle_manager = _gateway_lifecycle_manager()
+    try:
+        from adaos.services import realtime_sidecar as _realtime_sidecar_mod
+
+        route_contract = _realtime_sidecar_mod.realtime_sidecar_route_tunnel_contract()
+    except Exception:
+        route_contract = {}
+    ws_contract = route_contract.get("ws") if isinstance(route_contract.get("ws"), dict) else {}
+    yws_contract = route_contract.get("yws") if isinstance(route_contract.get("yws"), dict) else {}
+    return {
+        "ws": {
+            "current_owner": ws_contract.get("current_owner") or "runtime",
+            "lifecycle_manager": ws_contract.get("lifecycle_manager") or lifecycle_manager,
+            "planned_owner": ws_contract.get("planned_owner") or "sidecar",
+            "migration_phase": ws_contract.get("migration_phase") or "phase_2_route_tunnel_ownership",
+            "logical_channels": list(
+                ws_contract.get("logical_channels")
+                or [
+                    "hub_member.command",
+                    "hub_member.event",
+                    "hub_member.presence",
+                ]
+            ),
+            "current_support": ws_contract.get("current_support") or "planned",
+            "delegation_mode": ws_contract.get("delegation_mode") or "not_implemented",
+            "listener_ready": bool(ws_contract.get("listener_ready")),
+            "handoff_ready": bool(ws_contract.get("handoff_ready")),
+            "handoff_blockers": list(
+                ws_contract.get("blockers")
+                or [
+                    "browser route websocket still terminates in the runtime FastAPI app",
+                ]
+            ),
+        },
+        "yws": {
+            "current_owner": yws_contract.get("current_owner") or "runtime",
+            "lifecycle_manager": yws_contract.get("lifecycle_manager") or lifecycle_manager,
+            "planned_owner": yws_contract.get("planned_owner") or "sidecar",
+            "migration_phase": yws_contract.get("migration_phase") or "phase_2_route_tunnel_ownership",
+            "logical_channels": list(
+                yws_contract.get("logical_channels")
+                or [
+                    "hub_member.sync",
+                ]
+            ),
+            "current_support": yws_contract.get("current_support") or "planned",
+            "delegation_mode": yws_contract.get("delegation_mode") or "not_implemented",
+            "listener_ready": bool(yws_contract.get("listener_ready")),
+            "handoff_ready": bool(yws_contract.get("handoff_ready")),
+            "handoff_blockers": list(
+                yws_contract.get("blockers")
+                or [
+                    "Yjs websocket/session ownership still lives in the runtime gateway",
+                ]
+            ),
+        },
+    }
+
+
 def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
     with _TRANSPORT_LOCK:
@@ -389,6 +454,7 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
         "servers": {
             "yws": _y_server_runtime_snapshot(),
         },
+        "ownership": _gateway_transport_ownership_snapshot(),
         "updated_at": now,
     }
 

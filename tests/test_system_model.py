@@ -352,6 +352,27 @@ def test_canonical_object_from_io_capacity_entry_tracks_availability_tokens() ->
     assert obj["runtime"]["reason"] == "token_missing"
 
 
+def test_canonical_object_from_io_capacity_entry_tracks_media_route_tokens() -> None:
+    obj = canonical_object_from_io_capacity_entry(
+        {
+            "io_type": "webrtc_media",
+            "priority": 60,
+            "capabilities": [
+                "webrtc:av",
+                "producer:member",
+                "topology:member_browser_direct",
+                "state:available",
+            ],
+        },
+        node_id="member-2",
+    ).to_dict()
+
+    assert obj["id"] == "io:member-2:webrtc_media"
+    assert obj["status"] == "online"
+    assert obj["runtime"]["producer"] == "member"
+    assert obj["runtime"]["topology"] == "member_browser_direct"
+
+
 def test_canonical_object_from_integration_quota_exposes_usage_and_pressure() -> None:
     obj = canonical_object_from_integration_quota(
         {
@@ -458,6 +479,8 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "status": "ready",
                     "summary": "sidecar remote session is connected",
                     "phase": "nats_transport_sidecar",
+                    "transport_owner": "sidecar",
+                    "lifecycle_manager": "supervisor",
                     "local_listener_state": "ready",
                     "remote_session_state": "ready",
                     "transport_ready": True,
@@ -466,6 +489,33 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "sync_ready": "not_owned",
                     "media_ready": "not_owned",
                     "process": {"pid": 41},
+                    "continuity_contract": {
+                        "required": True,
+                        "member_runtime_update": "defer",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "current_support": "planned",
+                    },
+                    "progress": {
+                        "target": "first_browser_realtime_tunnel",
+                        "state": "in_progress",
+                        "completed_milestones": 2,
+                        "milestone_total": 4,
+                        "current_milestone": "browser_events_ws_handoff",
+                    },
+                    "route_tunnel_contract": {
+                        "current_support": "planned",
+                        "ownership_boundary": "transport_only",
+                        "ws": {
+                            "current_owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "delegation_mode": "not_implemented",
+                        },
+                        "yws": {
+                            "current_owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "delegation_mode": "not_implemented",
+                        },
+                    },
                     "transport_provenance": {"selected_server": "wss://api.inimatic.com/nats"},
                 },
                 "sync_runtime": {
@@ -498,6 +548,11 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "transport": {"direct_local_ready": True, "root_routed_ready": True, "broadcast_ready": False},
                     "counts": {"file_total": 2, "total_bytes": 1024, "live_peer_total": 0, "live_connected_peers": 0},
                     "recommended_path": "direct_local_http",
+                    "update_guard": {
+                        "member_runtime_update": "allow",
+                        "hub_runtime_update": "allow",
+                        "current_support": "not_applicable",
+                    },
                 },
                 "hub_root_protocol": {
                     "traffic_classes": {
@@ -531,9 +586,16 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["quota:telegram-outbox"]["kind"] == "quota"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
     assert objects["runtime:hub:hub-1/sidecar"]["health"]["availability"] == "online"
+    assert objects["runtime:hub:hub-1/sidecar"]["runtime"]["transport_owner"] == "sidecar"
+    assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
+    assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["progress"]["target"] == "first_browser_realtime_tunnel"
+    assert (
+        objects["runtime:hub:hub-1/sidecar"]["actual_state"]["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
+    )
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
+    assert objects["runtime:hub:hub-1/media-plane"]["runtime"]["update_guard"]["current_support"] == "not_applicable"
 
 
 def test_canonical_projection_from_reliability_snapshot_maps_actions_and_incidents() -> None:
@@ -712,6 +774,153 @@ def test_canonical_object_from_supervisor_runtime_surfaces_transition_state() ->
     assert obj["actions"][0]["id"] == "restart_runtime"
 
 
+def test_canonical_object_from_supervisor_runtime_surfaces_reschedulable_transition_actions() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "B",
+                "previous_slot": "A",
+                "runtime_state": "ready",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": True,
+                "update_task_running": True,
+            },
+            "update_status": {
+                "action": "update",
+                "state": "preparing",
+                "phase": "prepare",
+                "message": "preparing inactive slot before restart",
+            },
+            "update_attempt": {
+                "action": "update",
+                "state": "active",
+            },
+        }
+    ).to_dict()
+
+    actions = {item["id"]: item for item in obj["actions"]}
+
+    assert obj["status"] == "warning"
+    assert actions["restart_runtime"]["metadata"]["api_path"] == "/api/supervisor/runtime/restart"
+    assert actions["cancel_transition"]["title"] == "cancel update"
+    assert actions["cancel_transition"]["metadata"]["api_path"] == "/api/supervisor/update/cancel"
+    assert actions["defer_transition_5m"]["title"] == "defer update 5 min"
+    assert actions["defer_transition_5m"]["metadata"]["delay_sec"] == 300.0
+    assert actions["defer_transition_15m"]["title"] == "defer update 15 min"
+    assert actions["defer_transition_15m"]["metadata"]["delay_sec"] == 900.0
+    assert actions["rollback_runtime"]["title"] == "rollback to slot A"
+    assert actions["rollback_runtime"]["metadata"]["api_path"] == "/api/supervisor/update/rollback"
+
+
+def test_canonical_object_from_supervisor_runtime_keeps_root_restart_pending_visible() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "A",
+                "runtime_state": "spawned",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": True,
+            },
+            "update_status": {
+                "state": "succeeded",
+                "phase": "root_promoted",
+                "message": "root bootstrap files promoted from validated slot; restart adaos.service to activate",
+            },
+            "update_attempt": {
+                "state": "awaiting_root_restart",
+            },
+        }
+    ).to_dict()
+
+    assert obj["status"] == "warning"
+    assert obj["runtime"]["attempt_state"] == "awaiting_root_restart"
+    assert obj["runtime"]["assessment"]["state"] == "awaiting_root_restart"
+
+
+def test_canonical_object_from_supervisor_runtime_surfaces_planned_update_context() -> None:
+    obj = canonical_object_from_supervisor_runtime(
+        {
+            "node_id": "alpha",
+            "runtime_state": {
+                "active_slot": "B",
+                "runtime_state": "spawned",
+                "runtime_instance_id": "rt-b-a-12345678",
+                "transition_role": "active",
+                "desired_running": True,
+                "managed_alive": True,
+                "runtime_api_ready": True,
+                "transition_mode": "warm_switch",
+                "candidate_slot": "A",
+                "candidate_runtime_url": "http://127.0.0.1:8777",
+                "candidate_runtime_port": 8777,
+                "candidate_runtime_instance_id": "rt-a-c-87654321",
+                "candidate_runtime_state": "ready",
+                "candidate_transition_role": "candidate",
+                "candidate_runtime_api_ready": True,
+                "warm_switch_supported": True,
+                "warm_switch_allowed": True,
+                "warm_switch_reason": "warm switch admitted",
+            },
+            "update_status": {
+                "action": "update",
+                "state": "planned",
+                "phase": "scheduled",
+                "message": "core update deferred until minimum update interval elapses",
+                "planned_reason": "minimum_update_period",
+                "min_update_period_sec": 300.0,
+                "scheduled_for": 1234.0,
+                "subsequent_transition": True,
+                "candidate_prewarm_state": "ready",
+                "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8777",
+                "candidate_prewarm_ready_at": 1225.0,
+            },
+            "update_attempt": {
+                "action": "update",
+                "state": "planned",
+                "subsequent_transition_requested_at": 1200.0,
+            },
+        }
+    ).to_dict()
+
+    assert obj["status"] == "warning"
+    assert obj["runtime"]["action"] == "update"
+    assert obj["runtime"]["planned_reason"] == "minimum_update_period"
+    assert obj["runtime"]["min_update_period_sec"] == 300.0
+    assert obj["runtime"]["scheduled_for"] == 1234.0
+    assert obj["runtime"]["transition_mode"] == "warm_switch"
+    assert obj["runtime"]["candidate_slot"] == "A"
+    assert obj["runtime"]["runtime_instance_id"] == "rt-b-a-12345678"
+    assert obj["runtime"]["transition_role"] == "active"
+    assert obj["runtime"]["candidate_runtime_instance_id"] == "rt-a-c-87654321"
+    assert obj["runtime"]["candidate_runtime_state"] == "ready"
+    assert obj["runtime"]["candidate_transition_role"] == "candidate"
+    assert obj["runtime"]["candidate_runtime_api_ready"] is True
+    assert obj["runtime"]["candidate_prewarm_state"] == "ready"
+    assert obj["runtime"]["candidate_prewarm_ready_at"] == 1225.0
+    assert obj["runtime"]["warm_switch_allowed"] is True
+    assert obj["runtime"]["subsequent_transition"] is True
+    assert obj["actual_state"]["runtime_instance_id"] == "rt-b-a-12345678"
+    assert obj["actual_state"]["action"] == "update"
+    assert obj["actual_state"]["candidate_runtime_instance_id"] == "rt-a-c-87654321"
+    assert obj["actual_state"]["candidate_runtime_state"] == "ready"
+    assert obj["actual_state"]["candidate_prewarm_state"] == "ready"
+    assert obj["actual_state"]["candidate_prewarm_ready_at"] == 1225.0
+    assert obj["actual_state"]["subsequent_transition_requested_at"] == 1200.0
+    assert obj["actual_state"]["candidate_runtime_port"] == 8777
+    assert obj["representations"]["operator"]["update_action"] == "update"
+    assert obj["representations"]["operator"]["candidate_prewarm_state"] == "ready"
+    assert "previous_slot" not in obj["runtime"]
+    assert "prewarm ready" in obj["representations"]["operator"]["subtitle"]
+    action_ids = [item["id"] for item in obj["actions"]]
+    assert "cancel_transition" in action_ids
+    assert "defer_transition_5m" in action_ids
+    assert "defer_transition_15m" in action_ids
+
+
 def test_canonical_object_inspector_collects_actions_topology_and_task_packet() -> None:
     subject = CanonicalObject(
         id="hub:alpha",
@@ -768,3 +977,90 @@ def test_canonical_object_topology_and_task_packet_projections_share_selected_ob
     assert task_packet["context"]["task_goal"] == "diagnose drift"
     assert task_packet["context"]["gap"]["version"]["desired"] == "2026.04.08"
     assert task_packet["context"]["allowed_actions"][0]["id"] == "restart"
+
+
+def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contract() -> None:
+    projection = canonical_projection_from_reliability_snapshot(
+        {
+            "node": {
+                "node_id": "hub-3",
+                "subnet_id": "main",
+                "role": "hub",
+                "ready": True,
+                "node_state": "ready",
+                "draining": False,
+            },
+            "runtime": {
+                "readiness_tree": {},
+                "channel_diagnostics": {},
+                "channel_overview": {},
+                "media_runtime": {
+                    "available": True,
+                    "scope": "hub_media",
+                    "assessment": {
+                        "state": "relay_and_webrtc_media_available",
+                        "reason": "media plane supports direct-local authority, bounded root relay authority, and live WebRTC audio/video loopback",
+                    },
+                    "transport": {
+                        "direct_local_ready": True,
+                        "root_routed_ready": True,
+                        "broadcast_ready": True,
+                    },
+                    "counts": {
+                        "file_total": 1,
+                        "total_bytes": 128,
+                        "live_peer_total": 1,
+                        "live_connected_peers": 1,
+                    },
+                    "recommended_path": "direct_local_http",
+                    "route_intent": {
+                        "route_intent": "scenario_response_media",
+                        "active_route": "local_http",
+                        "preferred_member_id": "member-2",
+                    },
+                    "preferred_member_id": "member-2",
+                    "producer_authority": "hub",
+                    "producer_target": {"kind": "hub", "webspace_id": "desk"},
+                    "delivery_topology": "local_http",
+                    "selection_reason": "local_hub_api_authority_available",
+                    "degradation_reason": None,
+                    "attempt": {
+                        "sequence": 2,
+                        "active_route": "local_http",
+                        "delivery_topology": "local_http",
+                        "preferred_route": "member_browser_direct",
+                        "previous_route": "member_browser_direct",
+                        "previous_member_id": "member-1",
+                        "switch_total": 1,
+                    },
+                    "monitoring": {
+                        "refresh_cause": "browser.session.changed",
+                        "observed_failure": "browser_session_closed",
+                    },
+                    "member_browser_direct": {
+                        "possible": True,
+                        "admitted": False,
+                        "ready": False,
+                        "reason": "member_browser_direct_policy_not_admitted_yet",
+                    },
+                    "update_guard": {
+                        "member_runtime_update": "allow",
+                        "hub_runtime_update": "allow",
+                        "current_support": "not_applicable",
+                    },
+                },
+            },
+        }
+    ).to_dict()
+
+    objects = {item["id"]: item for item in projection["objects"]}
+    media = objects["runtime:hub:hub-3/media-plane"]
+    assert media["runtime"]["route_intent"]["route_intent"] == "scenario_response_media"
+    assert media["runtime"]["preferred_member_id"] == "member-2"
+    assert media["runtime"]["producer_authority"] == "hub"
+    assert media["runtime"]["delivery_topology"] == "local_http"
+    assert media["runtime"]["attempt"]["sequence"] == 2
+    assert media["runtime"]["attempt"]["previous_route"] == "member_browser_direct"
+    assert media["runtime"]["monitoring"]["refresh_cause"] == "browser.session.changed"
+    assert media["runtime"]["member_browser_direct"]["possible"] is True
+    assert media["runtime"]["update_guard"]["current_support"] == "not_applicable"

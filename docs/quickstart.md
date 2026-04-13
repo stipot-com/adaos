@@ -106,21 +106,21 @@ AdaOS also supports one-line bootstrap flows used by hosted onboarding:
 ### Linux
 
 ```bash
-curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s --
-# curl -fsSL https://app.inimatic.com/assets/linux/init.sh | bash -s -- --zone ru
+curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s --
+# curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s -- --zone ru
 ```
 
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1
-# iwr -UseBasicParsing https://app.inimatic.com/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
+iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1
+# iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
 ```
 
 ### Windows CMD
 
 ```bat
-curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat
-# curl -fsSL -o init.bat https://app.inimatic.com/assets/windows/init.bat && init.bat -ZoneId ru
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1
+# powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -ZoneId ru
 ```
 These scripts can optionally receive a join code for member-node onboarding and a zone identifier for zonal Root routing.

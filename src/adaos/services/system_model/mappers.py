@@ -117,6 +117,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     data = coerce_mapping(payload)
     runtime = coerce_mapping(data.get("runtime_state"))
     update_status = coerce_mapping(data.get("update_status"))
+    update_attempt = coerce_mapping(data.get("update_attempt"))
     node_id = str(data.get("node_id") or "local").strip() or "local"
     active_slot = str(
         runtime.get("active_slot")
@@ -127,17 +128,37 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     runtime_state = str(runtime.get("runtime_state") or "unknown").strip().lower() or "unknown"
     update_state = str(update_status.get("state") or "").strip().lower()
     update_phase = str(update_status.get("phase") or "").strip().lower()
+    update_action = str(update_status.get("action") or update_attempt.get("action") or "").strip().lower() or None
+    attempt_state = str(update_attempt.get("state") or "").strip().lower()
+    previous_slot = str(runtime.get("previous_slot") or "").strip().upper() or None
     runtime_api_ready = bool(runtime.get("runtime_api_ready"))
     managed_alive = bool(runtime.get("managed_alive"))
     desired_running = bool(runtime.get("desired_running")) if "desired_running" in runtime else None
-    root_promotion_required = bool(
-        runtime.get("root_promotion_required")
-        or coerce_mapping(runtime.get("bootstrap_update")).get("required")
+    root_promotion_required = bool(runtime.get("root_promotion_required"))
+    candidate_prewarm_state = (
+        str(update_status.get("candidate_prewarm_state") or update_attempt.get("candidate_prewarm_state") or "")
+        .strip()
+        .lower()
+        or None
     )
+    candidate_prewarm_message = str(
+        update_status.get("candidate_prewarm_message") or update_attempt.get("candidate_prewarm_message") or ""
+    ).strip() or None
+    candidate_prewarm_ready_at = update_status.get("candidate_prewarm_ready_at") or update_attempt.get("candidate_prewarm_ready_at")
+    transition_title = (update_action or "transition").replace("_", " ")
+    update_task_running = bool(runtime.get("update_task_running"))
+    reschedule_allowed = update_state in {"planned", "preparing", "countdown"} or (
+        update_task_running and update_phase in {"prepare", "countdown"}
+    )
+    cancel_allowed = reschedule_allowed or attempt_state == "planned"
 
     if update_state == "failed":
         status = CanonicalStatus.DEGRADED
-    elif update_state in {"countdown", "draining", "stopping", "restarting", "applying", "validated"}:
+    elif attempt_state == "awaiting_root_restart":
+        status = CanonicalStatus.WARNING
+    elif update_state in {"planned", "preparing", "countdown", "draining", "stopping", "restarting", "applying", "validated"}:
+        status = CanonicalStatus.WARNING
+    elif update_state == "succeeded" and update_phase == "root_promoted":
         status = CanonicalStatus.WARNING
     elif runtime_api_ready:
         status = CanonicalStatus.ONLINE
@@ -150,7 +171,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
         if status == CanonicalStatus.UNKNOWN:
             status = CanonicalStatus.WARNING if managed_alive else CanonicalStatus.UNKNOWN
 
-    assessment_state = update_state or ("ready" if runtime_api_ready else runtime_state) or "unknown"
+    assessment_state = attempt_state or update_state or ("ready" if runtime_api_ready else runtime_state) or "unknown"
     assessment_reason = str(
         update_status.get("message")
         or runtime.get("last_error")
@@ -159,9 +180,21 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     ).strip() or "local supervisor runtime state"
 
     subtitle_bits = [f"slot {active_slot}"]
+    if update_action:
+        subtitle_bits.append(update_action.replace("_", " "))
     target_version = str(update_status.get("target_version") or "").strip()
     if target_version:
         subtitle_bits.append(target_version)
+    transition_mode = str(runtime.get("transition_mode") or "").strip()
+    candidate_slot = str(runtime.get("candidate_slot") or "").strip()
+    if transition_mode:
+        subtitle_bits.append(transition_mode.replace("_", " "))
+    if candidate_slot:
+        subtitle_bits.append(f"candidate {candidate_slot}")
+    if previous_slot:
+        subtitle_bits.append(f"previous {previous_slot}")
+    if candidate_prewarm_state and candidate_prewarm_state != "skipped":
+        subtitle_bits.append(f"prewarm {candidate_prewarm_state.replace('_', ' ')}")
 
     actions = [
         CanonicalActionDescriptor(
@@ -171,6 +204,41 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
             metadata={"api_path": "/api/supervisor/runtime/restart"},
         )
     ]
+    if cancel_allowed:
+        actions.append(
+            CanonicalActionDescriptor(
+                id="cancel_transition",
+                title=f"cancel {transition_title}",
+                risk="medium",
+                metadata={"api_path": "/api/supervisor/update/cancel"},
+            )
+        )
+    if reschedule_allowed:
+        actions.extend(
+            [
+                CanonicalActionDescriptor(
+                    id="defer_transition_5m",
+                    title=f"defer {transition_title} 5 min",
+                    risk="low",
+                    metadata={"api_path": "/api/supervisor/update/defer", "delay_sec": 300.0},
+                ),
+                CanonicalActionDescriptor(
+                    id="defer_transition_15m",
+                    title=f"defer {transition_title} 15 min",
+                    risk="low",
+                    metadata={"api_path": "/api/supervisor/update/defer", "delay_sec": 900.0},
+                ),
+            ]
+        )
+    if previous_slot and update_action != "rollback":
+        actions.append(
+            CanonicalActionDescriptor(
+                id="rollback_runtime",
+                title=f"rollback to slot {previous_slot}",
+                risk="high",
+                metadata={"api_path": "/api/supervisor/update/rollback", "target_slot": previous_slot},
+            )
+        )
     if root_promotion_required or (update_state == "validated" and update_phase == "root_promotion_pending"):
         actions.append(
             CanonicalActionDescriptor(
@@ -200,11 +268,35 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "scope": "core_runtime",
                 "phase": update_phase or runtime_state,
                 "active_slot": active_slot,
+                "previous_slot": previous_slot,
+                "action": update_action,
                 "runtime_state": runtime_state,
+                "runtime_instance_id": runtime.get("runtime_instance_id"),
+                "transition_role": runtime.get("transition_role"),
+                "attempt_state": attempt_state or None,
                 "desired_running": desired_running,
                 "managed_alive": managed_alive,
                 "runtime_api_ready": runtime_api_ready,
                 "root_promotion_required": root_promotion_required,
+                "scheduled_for": update_status.get("scheduled_for"),
+                "planned_reason": update_status.get("planned_reason"),
+                "min_update_period_sec": update_status.get("min_update_period_sec"),
+                "transition_mode": runtime.get("transition_mode"),
+                "candidate_slot": runtime.get("candidate_slot"),
+                "candidate_runtime_url": runtime.get("candidate_runtime_url"),
+                "candidate_runtime_state": runtime.get("candidate_runtime_state"),
+                "candidate_runtime_instance_id": runtime.get("candidate_runtime_instance_id"),
+                "candidate_transition_role": runtime.get("candidate_transition_role"),
+                "candidate_runtime_api_ready": runtime.get("candidate_runtime_api_ready"),
+                "candidate_prewarm_state": candidate_prewarm_state,
+                "candidate_prewarm_message": candidate_prewarm_message,
+                "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
+                "warm_switch_supported": runtime.get("warm_switch_supported"),
+                "warm_switch_allowed": runtime.get("warm_switch_allowed"),
+                "warm_switch_reason": runtime.get("warm_switch_reason"),
+                "subsequent_transition": bool(
+                    update_status.get("subsequent_transition") or update_attempt.get("subsequent_transition")
+                ),
                 "assessment": {
                     "state": assessment_state,
                     "reason": assessment_reason,
@@ -215,10 +307,25 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
             {
                 "supervisor_url": runtime.get("supervisor_url"),
                 "runtime_url": runtime.get("runtime_url"),
+                "runtime_port": runtime.get("runtime_port"),
+                "runtime_instance_id": runtime.get("runtime_instance_id"),
+                "action": update_action,
+                "previous_slot": previous_slot,
+                "candidate_runtime_url": runtime.get("candidate_runtime_url"),
+                "candidate_runtime_port": runtime.get("candidate_runtime_port"),
+                "candidate_runtime_state": runtime.get("candidate_runtime_state"),
+                "candidate_runtime_instance_id": runtime.get("candidate_runtime_instance_id"),
+                "candidate_prewarm_state": candidate_prewarm_state,
+                "candidate_prewarm_ready_at": candidate_prewarm_ready_at,
                 "expected_managed_cwd": runtime.get("expected_managed_cwd"),
                 "managed_matches_active_slot": runtime.get("managed_matches_active_slot"),
+                "candidate_matches_candidate_slot": runtime.get("candidate_matches_candidate_slot"),
                 "target_rev": update_status.get("target_rev"),
                 "target_version": update_status.get("target_version"),
+                "subsequent_transition_requested_at": (
+                    update_attempt.get("subsequent_transition_requested_at")
+                    or update_status.get("subsequent_transition_requested_at")
+                ),
             }
         ),
         relations=compact_mapping(
@@ -232,8 +339,10 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
                 "operator": {
                     "title": "Core runtime supervisor",
                     "subtitle": " | ".join(subtitle_bits),
+                    "update_action": update_action,
                     "update_state": update_state or None,
                     "update_phase": update_phase or None,
+                    "candidate_prewarm_state": candidate_prewarm_state,
                 }
             }
         ),
@@ -534,6 +643,8 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
     state_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("state:")), "")
     mode_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("mode:")), "")
     reason_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("reason:")), "")
+    producer_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("producer:")), "")
+    topology_token = next((item.split(":", 1)[1] for item in capabilities if item.startswith("topology:")), "")
     status = CanonicalStatus.OFFLINE if state_token == "unavailable" else CanonicalStatus.ONLINE
     if not capabilities and status == CanonicalStatus.ONLINE:
         status = CanonicalStatus.UNKNOWN
@@ -554,6 +665,8 @@ def canonical_object_from_io_capacity_entry(payload: Any, *, node_id: str | None
                 "priority": data.get("priority"),
                 "mode": mode_token or None,
                 "reason": reason_token or None,
+                "producer": producer_token or None,
+                "topology": topology_token or None,
             }
         ),
         actual_state=compact_mapping({"capabilities": capabilities}),

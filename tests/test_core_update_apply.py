@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -180,17 +181,20 @@ def test_migrate_installed_skill_runtimes_reports_missing_script_in_prepared_rep
     apps_dir.mkdir(parents=True, exist_ok=True)
     (apps_dir / "autostart_runner.py").write_text("print('ok')\n", encoding="utf-8")
 
-    try:
-        mod._migrate_installed_skill_runtimes(
-            tmp_path / "venv" / "bin" / "python",
-            repo_root=repo_root,
-            run_tests=True,
-        )
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        text = str(exc)
-        assert "missing skill runtime migration entrypoint" in text
-        assert "autostart_runner.py" in text
+    payload = mod._migrate_installed_skill_runtimes(
+        tmp_path / "venv" / "bin" / "python",
+        repo_root=repo_root,
+        run_tests=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["skipped"] is True
+    assert payload["unsupported"] is True
+    assert payload["reason"] == "missing_skill_runtime_migration_entrypoint"
+    assert payload["apps_dir_exists"] is True
+    assert "autostart_runner.py" in payload["visible_files"]
+    assert payload["deferred"] is False
+    assert payload["skills"] == []
 
 
 def test_strip_repo_vcs_metadata_removes_git_dir(tmp_path: Path) -> None:
@@ -223,6 +227,133 @@ def test_clone_local_repo_copy_mode_skips_git_metadata(monkeypatch, tmp_path: Pa
     assert not (checkout_dir / ".git").exists()
 
 
+def test_clone_local_repo_copy_mode_when_worktree_dirty_and_target_unpinned(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    source_repo = tmp_path / "source"
+    checkout_dir = tmp_path / "checkout"
+    (source_repo / ".git").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    def _fake_run(*_args, **_kwargs):
+        raise AssertionError("git clone path should not run for dirty unpinned worktree")
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(mod, "_git_worktree_has_changes", lambda _path: True)
+    monkeypatch.setattr(mod, "_run", _fake_run)
+
+    mod._clone_local_repo(source_repo, target_rev="", target_version="1.2.3", checkout_dir=checkout_dir)
+
+    assert (checkout_dir / "src" / "app.py").exists()
+    assert not (checkout_dir / ".git").exists()
+
+
+def test_validate_checkout_target_version_rejects_mismatched_sha(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    monkeypatch.setattr(mod, "_git_text", lambda *_args: "d7d79d5d08eb12446a4f7bf6069246368df6d4d0")
+
+    try:
+        mod._validate_checkout_target_version(
+            tmp_path,
+            target_version="f7d14e92e38bb6b37f9068c2ee894de61710b92e",
+            source_label="local source repo",
+        )
+        assert False, "expected RuntimeError on git commit mismatch"
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "local source repo" in text
+        assert "d7d79d5d08eb12446a4f7bf6069246368df6d4d0" in text
+        assert "f7d14e92e38bb6b37f9068c2ee894de61710b92e" in text
+
+
+def test_prepare_checkout_repo_falls_back_to_remote_when_local_source_misses_target_sha(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    target_version = "f7d14e92e38bb6b37f9068c2ee894de61710b92e"
+    source_repo = tmp_path / "source"
+    checkout_dir = tmp_path / "checkout"
+    (source_repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    clone_calls: list[str] = []
+    validate_calls: list[str] = []
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "git")
+
+    def _fake_clone_local(_source_repo_root, _target_rev, _target_version, target_dir):
+        clone_calls.append("local")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_clone_repo(_repo_url, _target_rev, _target_version, target_dir):
+        clone_calls.append("remote")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_validate(_repo_dir, *, target_version: str, source_label: str):
+        validate_calls.append(source_label)
+        if source_label == "local source repo":
+            raise RuntimeError(f"resolved to d7d79d5 instead of {target_version}")
+
+    monkeypatch.setattr(mod, "_clone_local_repo", _fake_clone_local)
+    monkeypatch.setattr(mod, "_clone_repo", _fake_clone_repo)
+    monkeypatch.setattr(mod, "_validate_checkout_target_version", _fake_validate)
+
+    source_kind = mod._prepare_checkout_repo(
+        checkout_dir=checkout_dir,
+        source_repo_dir=source_repo,
+        repo_url="https://github.com/stipot-com/adaos.git",
+        target_rev="rev2026",
+        target_version=target_version,
+    )
+
+    assert source_kind == "remote_git_clone"
+    assert clone_calls == ["local", "remote"]
+    assert validate_calls == ["local source repo", "remote repo clone"]
+
+
+def test_prepare_slot_preserves_explicit_empty_repo_url(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_prepare_checkout_repo(**kwargs):
+        captured.update(kwargs)
+        checkout_dir = Path(kwargs["checkout_dir"])
+        apps_dir = checkout_dir / "src" / "adaos" / "apps"
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        (apps_dir / "__init__.py").write_text("", encoding="utf-8")
+        return "local_source_tree"
+
+    def _fake_run(_cmd, *, cwd=None):
+        if cwd is None:
+            return
+
+    monkeypatch.setattr(mod, "_prepare_checkout_repo", _fake_prepare_checkout_repo)
+    monkeypatch.setattr(mod, "_run", _fake_run)
+    monkeypatch.setattr(mod, "_strip_repo_vcs_metadata", lambda _repo_dir: None)
+    monkeypatch.setattr(mod, "_replace_slot_dir", lambda prepared_slot, slot_dir: shutil.move(str(prepared_slot), str(slot_dir)))
+    monkeypatch.setattr(mod, "_repair_moved_venv", lambda _venv_dir, original_venv_dir=None: {"ok": True, "repaired_files": []})
+    monkeypatch.setattr(mod, "_migrate_installed_skill_runtimes", lambda *args, **kwargs: {"ok": True, "skills": []})
+    monkeypatch.setattr(mod, "_git_text", lambda *_args: "value")
+    monkeypatch.setattr(mod, "_detect_bootstrap_promotion_requirement", lambda *_args, **_kwargs: {"required": False, "changed_paths": []})
+
+    slot_dir = tmp_path / "slots" / "A"
+    manifest = mod.prepare_slot(
+        slot="A",
+        slot_dir_path=str(slot_dir),
+        base_dir=str(tmp_path / "base"),
+        repo_root=str(tmp_path / "repo-root"),
+        source_repo_root=str(tmp_path / "source"),
+        repo_url="",
+        migrate_skill_runtimes=False,
+    )
+
+    assert manifest["slot"] == "A"
+    assert captured["repo_url"] == ""
+
+
 def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: Path) -> None:
     import adaos.apps.core_update_apply as mod
 
@@ -238,4 +369,13 @@ def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: 
 
     assert payload["required"] is True
     assert "src/adaos/apps/supervisor.py" in payload["changed_paths"]
+
+
+def test_bootstrap_critical_paths_are_shared_with_core_update_service() -> None:
+    import adaos.apps.core_update_apply as apply_mod
+    import adaos.services.core_update as core_mod
+    from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
+
+    assert apply_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
+    assert core_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -93,6 +94,128 @@ def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypat
     assert result.exit_code == 0, result.output
     assert "active slot: B | 0.1.0 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
+
+
+def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "root_promoted"},
+            "attempt": {"state": "awaiting_root_restart"},
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "supervisor attempt: awaiting_root_restart" in result.output
+    assert "next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes" in result.output
+
+
+def test_autostart_update_status_prints_planned_schedule_and_subsequent_transition(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {
+                "state": "planned",
+                "phase": "scheduled",
+                "scheduled_for": 1776000000.0,
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 1775999700.0,
+            },
+            "attempt": {"state": "planned"},
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "scheduled for:" in result.output
+    assert "subsequent transition: queued" in result.output
+
+
+def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True, "planned": True}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
+
+    result = runner.invoke(autostart_app, ["update-defer", "--delay-sec", "900", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/defer"
+    assert captured["body"]["delay_sec"] == 900.0
+    assert captured["body"]["reason"] == "cli.core_update.defer"
+
+
+def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_admin_get",
+        lambda path, token=None: {
+            "ok": True,
+            "status": {
+                "state": "planned",
+                "phase": "scheduled",
+                "scheduled_for": 1_775_966_400.0,
+                "subsequent_transition": True,
+            },
+            "attempt": {
+                "state": "planned",
+                "subsequent_transition": True,
+                "subsequent_transition_requested_at": 1_775_966_100.0,
+                "candidate_prewarm_state": "starting",
+                "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            },
+            "runtime": {
+                "transition_mode": "warm_switch",
+                "candidate_slot": "B",
+                "candidate_runtime_state": "starting",
+                "candidate_runtime_url": "http://127.0.0.1:8778",
+            },
+            "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "scheduled for:" in result.output
+    assert "subsequent transition: queued" in result.output
+    assert "transition mode: warm_switch" in result.output
+    assert "candidate prewarm: starting" in result.output
+
+
+def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _post(path, *, body=None, token=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ok": True, "accepted": True, "planned": True}
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
+
+    result = runner.invoke(autostart_app, ["update-defer", "--delay-sec", "900", "--reason", "test.defer", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/defer"
+    assert captured["body"] == {"delay_sec": 900.0, "reason": "test.defer"}
 
 
 def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:
@@ -189,6 +312,39 @@ def test_autostart_update_complete_promotes_root_and_restarts_service(monkeypatc
     assert '"service": "adaos.service"' in result.output
 
 
+def test_autostart_update_complete_retries_restart_when_root_already_promoted(monkeypatch) -> None:
+    runner = CliRunner()
+    captured = {"restart_calls": 0}
+
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "root_promoted"},
+            "attempt": {"state": "awaiting_root_restart"},
+            "runtime": {"root_promotion_required": False, "bootstrap_update": {"required": False}},
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("promote-root should not be called")),
+    )
+
+    def _restart():
+        captured["restart_calls"] += 1
+        return {"ok": True, "scope": "system", "service": "adaos.service", "command": ["systemctl", "restart", "adaos.service"]}
+
+    monkeypatch.setattr(setup_cmd, "_restart_autostart_service", _restart)
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["restart_calls"] == 1
+    assert "already completed" in result.output
+
+
 def test_autostart_update_complete_noops_when_root_promotion_not_required(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr(
@@ -206,6 +362,94 @@ def test_autostart_update_complete_noops_when_root_promotion_not_required(monkey
     assert result.exit_code == 0, result.output
     assert '"noop": true' in result.output.lower()
     assert "root promotion is not required" in result.output
+
+
+def test_autostart_update_complete_noops_when_runtime_flag_is_resolved_even_if_manifest_history_remains(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "validate"},
+            "runtime": {
+                "root_promotion_required": False,
+                "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("promote-root should not be called")),
+    )
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert '"noop": true' in result.output.lower()
+    assert "root promotion is not required" in result.output
+
+
+def test_autostart_update_complete_retries_restart_for_root_promoted_without_attempt_payload(monkeypatch) -> None:
+    runner = CliRunner()
+    captured = {"restart_calls": 0}
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "root_promoted"},
+            "runtime": {"root_promotion_required": False, "bootstrap_update": {"required": False}},
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("promote-root should not be called")),
+    )
+
+    def _restart():
+        captured["restart_calls"] += 1
+        return {"ok": True, "scope": "system", "service": "adaos.service", "command": ["systemctl", "restart", "adaos.service"]}
+
+    monkeypatch.setattr(setup_cmd, "_restart_autostart_service", _restart)
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["restart_calls"] == 1
+    assert "autostart service restart requested" in result.output
+
+
+def test_autostart_update_restore_root_restores_backup_and_optionally_restarts(monkeypatch) -> None:
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        setup_cmd,
+        "restore_root_promotion_backup",
+        lambda *, backup_dir, target_root=None: {
+            "ok": True,
+            "backup_dir": backup_dir,
+            "target_root": target_root or "/root/adaos",
+            "restart_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_restart_autostart_service",
+        lambda: {"ok": True, "service": "adaos.service"},
+    )
+
+    result = runner.invoke(
+        autostart_app,
+        ["update-restore-root", "--backup-dir", "/tmp/root-backup", "--restart", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["restore"]["backup_dir"] == "/tmp/root-backup"
+    assert payload["restart"]["ok"] is True
 
 
 def test_autostart_update_status_reports_service_unavailable(monkeypatch) -> None:
@@ -414,6 +658,24 @@ def test_probe_http_json_uses_default_autostart_headers(monkeypatch) -> None:
     assert captured["url"] == "http://127.0.0.1:8776/api/supervisor/status"
     assert captured["headers"]["X-AdaOS-Token"] == "dev-local-token"
     assert captured["headers"]["Accept"] == "application/json"
+
+
+def test_autostart_admin_headers_prefer_wrapper_service_token(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_TOKEN", "shell-token")
+    monkeypatch.setattr(
+        setup_cmd,
+        "get_ctx",
+        lambda: types.SimpleNamespace(config=types.SimpleNamespace(token="stale-config-token")),
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "autostart_status",
+        lambda ctx: {"wrapper_env": {"ADAOS_TOKEN": "wrapper-service-token"}},
+    )
+
+    headers = setup_cmd._autostart_admin_headers()
+
+    assert headers["X-AdaOS-Token"] == "wrapper-service-token"
 
 
 def test_autostart_inspect_json_outputs_payload(monkeypatch) -> None:

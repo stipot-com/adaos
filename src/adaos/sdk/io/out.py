@@ -15,7 +15,7 @@ from adaos.sdk.io.context import get_current_meta
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as _emit
 
-__all__ = ["chat_append", "say"]
+__all__ = ["chat_append", "say", "media_route"]
 
 
 def _publish(topic: str, payload: dict, *, source: str) -> None:
@@ -97,4 +97,76 @@ def say(
         payload["_meta"] = meta
 
     _publish("io.out.say", payload, source="sdk.io.out")
+    return {"ok": True}
+
+
+@tool(
+    "io.out.media.route",
+    summary="Publish a media route intent or normalized route contract for router-owned projection.",
+    stability="experimental",
+    examples=[
+        "io.out.media.route(need='scenario_response_media', _meta={'webspace_id':'default'})",
+        "io.out.media.route(route={'route_intent':'live_stream','active_route':'hub_webrtc_loopback'})",
+    ],
+)
+def media_route(
+    *,
+    need: str | None = None,
+    route: Mapping[str, Any] | None = None,
+    producer_preference: str | None = None,
+    preferred_member_id: str | None = None,
+    direct_local_ready: bool | None = None,
+    root_routed_ready: bool | None = None,
+    hub_webrtc_ready: bool | None = None,
+    member_browser_direct_possible: bool | None = None,
+    member_browser_direct_admitted: bool | None = None,
+    member_browser_direct_reason: str | None = None,
+    candidate_member_total: int | None = None,
+    browser_session_total: int | None = None,
+    observed_failure: str | None = None,
+    _meta: Mapping[str, Any] | None = None,
+) -> Mapping[str, bool]:
+    if not isinstance(route, Mapping) and (not isinstance(need, str) or not need.strip()):
+        return {"ok": False}
+
+    payload: dict[str, Any] = {
+        "ts": time.time(),
+    }
+    if isinstance(need, str) and need.strip():
+        payload["need"] = need.strip()
+    if isinstance(route, Mapping):
+        payload["route"] = dict(route)
+    if isinstance(producer_preference, str) and producer_preference.strip():
+        payload["producer_preference"] = producer_preference.strip()
+    if isinstance(preferred_member_id, str) and preferred_member_id.strip():
+        payload["preferred_member_id"] = preferred_member_id.strip()
+    if direct_local_ready is not None:
+        payload["direct_local_ready"] = bool(direct_local_ready)
+    if root_routed_ready is not None:
+        payload["root_routed_ready"] = bool(root_routed_ready)
+    if hub_webrtc_ready is not None:
+        payload["hub_webrtc_ready"] = bool(hub_webrtc_ready)
+    member_browser_direct: dict[str, Any] = {}
+    if member_browser_direct_possible is not None:
+        member_browser_direct["possible"] = bool(member_browser_direct_possible)
+    if member_browser_direct_admitted is not None:
+        member_browser_direct["admitted"] = bool(member_browser_direct_admitted)
+    if isinstance(member_browser_direct_reason, str) and member_browser_direct_reason.strip():
+        member_browser_direct["reason"] = member_browser_direct_reason.strip()
+    if isinstance(candidate_member_total, int):
+        member_browser_direct["candidate_member_total"] = candidate_member_total
+    if isinstance(browser_session_total, int):
+        member_browser_direct["browser_session_total"] = browser_session_total
+    if member_browser_direct:
+        payload["member_browser_direct"] = member_browser_direct
+    if isinstance(observed_failure, str) and observed_failure.strip():
+        payload["observed_failure"] = observed_failure.strip()
+
+    meta = get_current_meta()
+    if _meta:
+        meta.update(dict(_meta))
+    if meta:
+        payload["_meta"] = meta
+
+    _publish("io.out.media.route", payload, source="sdk.io.out")
     return {"ok": True}

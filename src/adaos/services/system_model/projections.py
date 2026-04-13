@@ -646,6 +646,8 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
             {
                 "enabled": enabled,
                 "phase": payload.get("phase"),
+                "transport_owner": payload.get("transport_owner"),
+                "lifecycle_manager": payload.get("lifecycle_manager"),
                 "local_listener_state": payload.get("local_listener_state"),
                 "remote_session_state": payload.get("remote_session_state"),
                 "transport_ready": payload.get("transport_ready"),
@@ -661,6 +663,10 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
                 "local_url": payload.get("local_url"),
                 "diag_path": payload.get("diag_path"),
                 "diag_age_s": payload.get("diag_age_s"),
+                "scope": payload.get("scope"),
+                "continuity_contract": payload.get("continuity_contract"),
+                "progress": payload.get("progress"),
+                "route_tunnel_contract": payload.get("route_tunnel_contract"),
                 "transport_provenance": payload.get("transport_provenance"),
             }
         ),
@@ -706,6 +712,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "scope": payload.get("scope"),
                 "assessment": assessment,
                 "transport": payload.get("transport"),
+                "update_guard": payload.get("update_guard"),
                 "recovery_guidance": payload.get("recovery_guidance"),
                 "recovery_playbook": payload.get("recovery_playbook"),
                 "webspace_guidance": payload.get("webspace_guidance"),
@@ -715,6 +722,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
             {
                 "selected_webspace_id": selected_webspace_id,
                 "selected_webspace": selected_webspace,
+                "transport_ownership": coerce_mapping(payload.get("transport")),
             }
         ),
         actions=_actions_from_yjs_overrides(coerce_mapping(payload.get("action_overrides")), webspace_id=selected_webspace_id),
@@ -726,6 +734,10 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
     assessment = coerce_mapping(payload.get("assessment"))
     transport = coerce_mapping(payload.get("transport"))
     counts = coerce_mapping(payload.get("counts"))
+    route_intent = coerce_mapping(payload.get("route_intent"))
+    attempt = coerce_mapping(payload.get("attempt") or route_intent.get("attempt"))
+    monitoring = coerce_mapping(payload.get("monitoring") or route_intent.get("monitoring"))
+    member_browser_direct = coerce_mapping(payload.get("member_browser_direct"))
     return CanonicalObject(
         id=f"runtime:{subject.id}/media-plane",
         kind=CanonicalKind.RUNTIME.value,
@@ -758,6 +770,20 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "assessment": assessment,
                 "transport": transport,
                 "recommended_path": payload.get("recommended_path"),
+                "route_intent": route_intent,
+                "active_route": payload.get("active_route") or route_intent.get("active_route"),
+                "preferred_route": payload.get("preferred_route") or route_intent.get("preferred_route"),
+                "preferred_member_id": payload.get("preferred_member_id") or route_intent.get("preferred_member_id"),
+                "producer_authority": payload.get("producer_authority"),
+                "producer_target": payload.get("producer_target"),
+                "delivery_topology": payload.get("delivery_topology"),
+                "selection_reason": payload.get("selection_reason"),
+                "degradation_reason": payload.get("degradation_reason"),
+                "fallback_chain": payload.get("fallback_chain") or route_intent.get("fallback_chain"),
+                "attempt": attempt,
+                "monitoring": monitoring,
+                "member_browser_direct": member_browser_direct,
+                "update_guard": payload.get("update_guard"),
             }
         ),
     )

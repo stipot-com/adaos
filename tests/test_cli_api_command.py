@@ -42,6 +42,18 @@ def test_resolve_bind_ignores_remote_hub_url_for_local_bind():
     assert not _is_local_url(conf.hub_url)
 
 
+def test_resolve_bind_keeps_explicit_slot_port_for_supervisor_managed_runtime(monkeypatch):
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    conf = NodeConfig(
+        node_id="n1",
+        subnet_id="sn_1",
+        role="hub",
+        hub_url="http://127.0.0.1:8778",
+        token="t1",
+    )
+    assert _resolve_bind(conf, "127.0.0.1", 8777) == ("127.0.0.1", 8777)
+
+
 def test_resolve_stop_bind_uses_local_hub_url():
     conf = NodeConfig(
         node_id="n1",
