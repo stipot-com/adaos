@@ -1485,13 +1485,7 @@ def autostart_update_complete_cmd(
         status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
         attempt_payload = update_payload.get("attempt") if isinstance(update_payload.get("attempt"), dict) else {}
         runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
-        root_promotion_required = bool(
-            runtime_payload.get("root_promotion_required")
-            or (
-                isinstance(runtime_payload.get("bootstrap_update"), dict)
-                and runtime_payload["bootstrap_update"].get("required")
-            )
-        )
+        root_promotion_required = bool(runtime_payload.get("root_promotion_required"))
         current_state = str(status_payload.get("state") or "").strip().lower()
         current_phase = str(status_payload.get("phase") or "").strip().lower()
         attempt_state = str(attempt_payload.get("state") or "").strip().lower()

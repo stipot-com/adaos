@@ -23,6 +23,7 @@ from adaos.services.reliability import (
     _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
     hub_member_semantic_channels_snapshot,
+    media_plane_runtime_snapshot,
     observe_hub_root_route_runtime,
     mark_root_control_down,
     mark_root_control_up,
@@ -495,6 +496,15 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
         readiness_tree={},
         hub_root_protocol={},
         transport_strategy={},
+        media_runtime={
+            "update_guard": {
+                "hub_sidecar_continuity_required": True,
+                "member_runtime_update": "defer",
+                "hub_runtime_update": "preserve_sidecar",
+                "observed_live_topology": "member_browser_direct",
+                "reason": "member owns the active browser media path",
+            }
+        },
     )
 
     assert snapshot["enabled"] is True
@@ -502,6 +512,10 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     assert snapshot["lifecycle_manager"] == "supervisor"
     assert snapshot["scope"]["current_boundaries"] == ["hub_root_transport"]
     assert snapshot["scope"]["planned_next_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["continuity_contract"]["required"] is True
+    assert snapshot["continuity_contract"]["member_runtime_update"] == "defer"
+    assert snapshot["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
+    assert snapshot["continuity_contract"]["current_support"] == "planned"
 
 
 def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:
@@ -574,6 +588,48 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert transport["lifecycle_manager"] == "supervisor"
     assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
     assert transport["handoff_ready"] is False
+
+
+def test_media_plane_runtime_snapshot_exposes_live_update_guard(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.media_library",
+        SimpleNamespace(
+            media_runtime_snapshot=lambda: {
+                "available": True,
+                "paths": {
+                    "direct_local_http": {"ready": True},
+                    "root_routed_http": {"ready": True},
+                    "webrtc_tracks": {"ready": True},
+                },
+                "member_browser_direct": {
+                    "ready": True,
+                    "admitted": True,
+                    "browser_session_total": 1,
+                    "connected_browser_session_total": 1,
+                },
+                "counts": {
+                    "live_connected_peers": 0,
+                    "incoming_audio_tracks": 0,
+                    "incoming_video_tracks": 0,
+                    "loopback_audio_tracks": 0,
+                    "loopback_video_tracks": 0,
+                },
+                "route_intent": {"active_route": "member_browser_direct", "preferred_route": "member_browser_direct"},
+                "attempt": {"active_route": "member_browser_direct", "preferred_route": "member_browser_direct"},
+            }
+        ),
+    )
+
+    snapshot = media_plane_runtime_snapshot(role="hub", route_mode="hub", connected_to_hub=None)
+    guard = snapshot["update_guard"]
+
+    assert guard["live_session_present"] is True
+    assert guard["observed_live_topology"] == "member_browser_direct"
+    assert guard["member_runtime_update"] == "defer"
+    assert guard["hub_runtime_update"] == "preserve_sidecar"
+    assert guard["hub_sidecar_continuity_required"] is True
+    assert guard["current_support"] == "planned"
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:
@@ -779,6 +835,10 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                         "scope": {
                             "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
                         },
+                        "continuity_contract": {
+                            "current_support": "planned",
+                            "hub_runtime_update": "preserve_sidecar",
+                        },
                     },
                     "sync_runtime": {
                         "assessment": {"state": "nominal"},
@@ -801,6 +861,31 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "recent_open_10s": 1,
                         },
                     },
+                    "media_runtime": {
+                        "assessment": {"state": "nominal"},
+                        "counts": {
+                            "file_total": 0,
+                            "total_bytes": 0,
+                            "live_peer_total": 1,
+                            "live_connected_peers": 1,
+                        },
+                        "paths": {
+                            "direct_local_http": {"ready": True},
+                            "root_routed_http": {"ready": True, "playback": "full"},
+                            "webrtc_tracks": {"ready": True},
+                        },
+                        "transport": {
+                            "control_readiness_impact": "none",
+                        },
+                        "update_guard": {
+                            "live_session_present": True,
+                            "criticality": "member_live_media",
+                            "member_runtime_update": "defer",
+                            "hub_runtime_update": "preserve_sidecar",
+                            "current_support": "planned",
+                            "observed_live_topology": "member_browser_direct",
+                        },
+                    },
                 },
             },
         ),
@@ -810,8 +895,11 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
 
     assert result.exit_code == 0
     assert "owner=sidecar manager=supervisor" in result.output
+    assert "continuity=planned:preserve_sidecar" in result.output
     assert "next=browser_events_ws,browser_yjs_ws" in result.output
     assert "owner=runtime->sidecar" in result.output
+    assert "media.update_guard: live=yes" in result.output
+    assert "member=defer hub=preserve_sidecar" in result.output
 
 
 def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:

@@ -364,6 +364,33 @@ def test_autostart_update_complete_noops_when_root_promotion_not_required(monkey
     assert "root promotion is not required" in result.output
 
 
+def test_autostart_update_complete_noops_when_runtime_flag_is_resolved_even_if_manifest_history_remains(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_update_get",
+        lambda token=None: {
+            "ok": True,
+            "status": {"state": "succeeded", "phase": "validate"},
+            "runtime": {
+                "root_promotion_required": False,
+                "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("promote-root should not be called")),
+    )
+
+    result = runner.invoke(autostart_app, ["update-complete", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert '"noop": true' in result.output.lower()
+    assert "root promotion is not required" in result.output
+
+
 def test_autostart_update_complete_retries_restart_for_root_promoted_without_attempt_payload(monkeypatch) -> None:
     runner = CliRunner()
     captured = {"restart_calls": 0}

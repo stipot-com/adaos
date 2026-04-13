@@ -75,6 +75,12 @@ This means:
 - update progress remains inspectable during shutdown, apply, and validate phases
 - root checkout stays out of the production runtime path unless a developer explicitly launches it
 
+For the target media-continuity path, this split also enables a more selective policy:
+
+- if a member currently owns an active live media session, that member update should be deferred
+- a hub runtime restart may still be allowed if the hub-side realtime sidecar can stay alive and continue serving the delegated realtime continuity path
+- supervisor should therefore treat "restart runtime" and "tear down sidecar" as different actions once live media continuity depends on sidecar ownership
+
 ## Runtime source rule
 
 Production runtime must always come from slot `A|B`.
@@ -207,6 +213,12 @@ The supervisor is not the authority for:
 - whether root-side protocol acks were accepted as global truth
 - whether transport-level path selection is healthy beyond its delegated runtimes
 - business-policy decisions inside degraded hub execution
+
+But the supervisor must remain able to enforce locally visible continuity guards exposed by the runtime model, for example:
+
+- defer member update while member-owned live media remains active
+- refuse a hub restart path that would drop a sidecar continuity contract the system currently depends on
+- distinguish "runtime restart allowed with sidecar continuity" from "full local media teardown"
 
 ### Runtime
 

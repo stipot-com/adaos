@@ -69,6 +69,27 @@ Those remain protocol and system responsibilities.
 
 In the target local architecture, those process/update responsibilities belong to `adaos-supervisor`, not to `adaos-realtime`.
 
+## Live Media Continuity Target
+
+There is one especially important target scenario for the later phases.
+
+- a member is currently producing live media over WebRTC
+- the member update must be deferred while that member remains the live media producer
+- the hub may still need to restart or switch runtime slots
+- hub-side continuity should therefore depend on an independent sidecar path, not on the main hub runtime staying up
+
+The intended future behavior is:
+
+- `member` update policy: defer while member-owned live media is active
+- `hub` update policy: allow runtime restart only if the hub-side realtime sidecar stays alive and can continue serving the browser/hub proxy or signaling continuity path
+- sidecar continuity must be visible in diagnostics before the orchestration logic is allowed to rely on it
+
+Current status:
+
+- this is a target contract, not a completed capability
+- reliability/runtime diagnostics now expose this as planned continuity behavior rather than silently assuming restart safety
+- the current sidecar still owns only `hub_root` transport and does not yet preserve live WebRTC continuity during hub runtime restart
+
 ## Rollout
 
 ### Phase 1 - NATS transport sidecar
@@ -110,11 +131,16 @@ Later.
 - move WebRTC signaling/media control into sidecar
 - move Yjs session ownership into sidecar
 - keep hub core focused on orchestration, skills, API, state transitions
+- make live media continuity explicit during updates:
+  - defer member updates while member-owned live media is active
+  - preserve hub-side sidecar continuity while hub runtime restarts
+  - keep that continuity observable through reliability, CLI, and supervisor surfaces
 
 Success criteria:
 
 - all long-lived realtime sockets are owned by one dedicated runtime
 - hub restart and realtime restart can be reasoned about independently
+- a hub runtime restart does not implicitly terminate the live media continuity path that has already been delegated to sidecar ownership
 
 ## Operational Notes
 

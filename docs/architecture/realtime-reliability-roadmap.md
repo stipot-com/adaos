@@ -39,6 +39,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar owns the current `hub_root` transport boundary and is supervisor-managed in managed deployments, but `/ws`, `/yws`, Yjs, and media transport are still outside sidecar scope
 - runtime diagnostics now explicitly report that `/ws` and `/yws` remain runtime-owned with `planned_owner=sidecar`, so partial sidecar adoption is observable instead of implicit
+- media/runtime diagnostics now also expose a planned continuity contract for live member media: member update should defer, while future hub restart behavior is expected to preserve an independent sidecar path
 - local process/update supervision now has a separate supervisor authority in managed deployments, but browser-safe visibility and warm-switch recovery hardening are still in progress
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented

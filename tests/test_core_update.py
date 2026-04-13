@@ -321,6 +321,44 @@ def test_promote_root_from_slot_prefers_manifest_root_repo_root(monkeypatch, tmp
     assert (wrong_root / "src" / "adaos" / "apps" / "supervisor.py").read_text(encoding="utf-8") == "wrong\n"
 
 
+def test_resolved_root_promotion_requirement_tracks_current_root_state(monkeypatch, tmp_path) -> None:
+    from adaos.services.core_update import promote_root_from_slot, resolved_root_promotion_requirement
+
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    root_dir = tmp_path / "root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    (root_dir / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (slot_repo / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (root_dir / "src" / "adaos" / "apps" / "supervisor.py").write_text("old\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr("adaos.services.core_update._repo_root", lambda: root_dir)
+
+    manifest = {
+        "slot": "B",
+        "repo_dir": str(slot_repo),
+        "bootstrap_update": {
+            "required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+        },
+    }
+    write_slot_manifest("B", manifest)
+    activate_slot("B")
+
+    required_before, details_before = resolved_root_promotion_requirement(manifest)
+
+    assert required_before is True
+    assert details_before["effective_required"] is True
+    assert details_before["effective_mismatched_paths"] == ["src/adaos/apps/supervisor.py"]
+
+    promote_root_from_slot()
+
+    required_after, details_after = resolved_root_promotion_requirement(manifest)
+
+    assert required_after is False
+    assert details_after["effective_required"] is False
+    assert details_after["effective_mismatched_paths"] == []
+
+
 def test_restore_root_from_backup_restores_previous_root_files(monkeypatch, tmp_path) -> None:
     from adaos.services.core_update import promote_root_from_slot, restore_root_from_backup
 

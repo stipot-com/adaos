@@ -240,6 +240,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
         scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
+        continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
         planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
         typer.echo(
             "sidecar: "
@@ -257,6 +258,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"superseded={provenance.get('superseded_total') or 0} "
             f"pid={process.get('listener_pid') or '-'} "
             f"local={sidecar.get('local_url') or '-'} "
+            f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
             f"next={planned_next or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
@@ -284,6 +286,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         transport = media_runtime.get("transport") if isinstance(media_runtime.get("transport"), dict) else {}
         counts = media_runtime.get("counts") if isinstance(media_runtime.get("counts"), dict) else {}
         paths = media_runtime.get("paths") if isinstance(media_runtime.get("paths"), dict) else {}
+        update_guard = media_runtime.get("update_guard") if isinstance(media_runtime.get("update_guard"), dict) else {}
         direct_local = paths.get("direct_local_http") if isinstance(paths.get("direct_local_http"), dict) else {}
         root_routed = paths.get("root_routed_http") if isinstance(paths.get("root_routed_http"), dict) else {}
         webrtc_tracks = paths.get("webrtc_tracks") if isinstance(paths.get("webrtc_tracks"), dict) else {}
@@ -302,6 +305,16 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"broadcast={'yes' if webrtc_tracks.get('ready') else 'no'} "
             f"impact={transport.get('control_readiness_impact') or '-'}"
         )
+        if update_guard:
+            typer.echo(
+                "media.update_guard: "
+                f"live={'yes' if update_guard.get('live_session_present') else 'no'} "
+                f"criticality={update_guard.get('criticality') or '-'} "
+                f"member={update_guard.get('member_runtime_update') or '-'} "
+                f"hub={update_guard.get('hub_runtime_update') or '-'} "
+                f"support={update_guard.get('current_support') or '-'} "
+                f"topology={update_guard.get('observed_live_topology') or '-'}"
+            )
     if protocol:
         assessment = protocol.get("assessment") if isinstance(protocol.get("assessment"), dict) else {}
         coverage = protocol.get("hardening_coverage") if isinstance(protocol.get("hardening_coverage"), dict) else {}

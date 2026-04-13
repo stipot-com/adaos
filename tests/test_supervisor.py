@@ -1326,6 +1326,55 @@ def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, 
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
 
 
+def test_runtime_state_payload_clears_root_promotion_requirement_when_root_matches_slot(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    root_dir = tmp_path / "root"
+    slot_repo = tmp_path / "slots" / "B" / "repo"
+    (root_dir / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (slot_repo / "src" / "adaos" / "apps").mkdir(parents=True, exist_ok=True)
+    (root_dir / "src" / "adaos" / "apps" / "supervisor.py").write_text("same\n", encoding="utf-8")
+    (slot_repo / "src" / "adaos" / "apps" / "supervisor.py").write_text("same\n", encoding="utf-8")
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "repo_dir": str(slot_repo),
+            "root_repo_root": str(root_dir),
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+
+    payload = manager.status()
+
+    assert payload["root_promotion_required"] is False
+    assert payload["bootstrap_update"]["required"] is True
+    assert payload["bootstrap_update"]["effective_required"] is False
+    assert payload["bootstrap_update"]["effective_mismatched_paths"] == []
+
+
 def test_runtime_state_payload_surfaces_warm_switch_admission(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
@@ -1645,6 +1694,23 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["_served_by"] == "supervisor_fallback"
     assert "managed_cmdline" not in payload["runtime"]
     assert "error" not in payload["status"]
+
+
+def test_public_update_status_payload_prefers_runtime_root_promotion_flag() -> None:
+    payload = supervisor._public_update_status_payload(
+        {
+            "status": {
+                "state": "succeeded",
+                "phase": "validate",
+            },
+            "runtime": {
+                "root_promotion_required": False,
+                "bootstrap_update": {"required": True, "changed_paths": ["src/adaos/apps/supervisor.py"]},
+            },
+        }
+    )
+
+    assert payload["runtime"]["root_promotion_required"] is False
 
 
 def test_public_update_status_endpoint_is_unauthenticated(monkeypatch) -> None:

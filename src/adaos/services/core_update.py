@@ -167,6 +167,64 @@ def manifest_requires_root_promotion(manifest: dict[str, Any] | None) -> tuple[b
     return required, dict(bootstrap)
 
 
+def _paths_equivalent(source: Path, target: Path) -> bool:
+    if source.exists() != target.exists():
+        return False
+    if not source.exists():
+        return True
+    if source.is_dir() != target.is_dir():
+        return False
+    if source.is_dir():
+        try:
+            source_names = sorted(child.name for child in source.iterdir())
+            target_names = sorted(child.name for child in target.iterdir())
+        except Exception:
+            return False
+        if source_names != target_names:
+            return False
+        return all(_paths_equivalent(source / name, target / name) for name in source_names)
+    try:
+        return source.read_bytes() == target.read_bytes()
+    except Exception:
+        return False
+
+
+def resolved_root_promotion_requirement(manifest: dict[str, Any] | None) -> tuple[bool, dict[str, Any]]:
+    required, bootstrap = manifest_requires_root_promotion(manifest)
+    payload = manifest if isinstance(manifest, dict) else {}
+    resolved = dict(bootstrap)
+    changed_paths = bootstrap.get("changed_paths") if isinstance(bootstrap.get("changed_paths"), list) else []
+    effective_paths = [str(item) for item in changed_paths if str(item).strip()] or list(BOOTSTRAP_CRITICAL_PATHS)
+    resolved["effective_changed_paths"] = list(effective_paths)
+    resolved["effective_basis"] = "root_checkout_compare"
+    resolved["effective_required"] = bool(required)
+    if not required:
+        return False, resolved
+
+    repo_dir_raw = str(payload.get("repo_dir") or "").strip()
+    source_repo_dir = Path(repo_dir_raw).expanduser().resolve() if repo_dir_raw else None
+    root_dir, root_basis = _resolve_root_promotion_target(manifest)
+    resolved["effective_target_root"] = str(root_dir) if root_dir is not None else ""
+    resolved["effective_target_root_basis"] = root_basis
+
+    if source_repo_dir is None or not source_repo_dir.exists():
+        resolved["effective_unavailable_reason"] = "slot repo_dir is unavailable for root promotion comparison"
+        return True, resolved
+    if root_dir is None or not root_dir.exists():
+        resolved["effective_unavailable_reason"] = "root checkout is unavailable for root promotion comparison"
+        return True, resolved
+
+    mismatched_paths: list[str] = []
+    for rel_path in effective_paths:
+        source_path = (source_repo_dir / rel_path).resolve()
+        target_path = (root_dir / rel_path).resolve()
+        if not _paths_equivalent(source_path, target_path):
+            mismatched_paths.append(rel_path)
+    resolved["effective_mismatched_paths"] = mismatched_paths
+    resolved["effective_required"] = bool(mismatched_paths)
+    return bool(mismatched_paths), resolved
+
+
 def _root_promotion_state_dir() -> Path:
     path = _base_dir() / "state" / "root_promotion"
     path.mkdir(parents=True, exist_ok=True)

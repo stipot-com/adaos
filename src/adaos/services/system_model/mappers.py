@@ -134,10 +134,7 @@ def canonical_object_from_supervisor_runtime(payload: Any) -> CanonicalObject:
     runtime_api_ready = bool(runtime.get("runtime_api_ready"))
     managed_alive = bool(runtime.get("managed_alive"))
     desired_running = bool(runtime.get("desired_running")) if "desired_running" in runtime else None
-    root_promotion_required = bool(
-        runtime.get("root_promotion_required")
-        or coerce_mapping(runtime.get("bootstrap_update")).get("required")
-    )
+    root_promotion_required = bool(runtime.get("root_promotion_required"))
     candidate_prewarm_state = (
         str(update_status.get("candidate_prewarm_state") or update_attempt.get("candidate_prewarm_state") or "")
         .strip()

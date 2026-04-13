@@ -479,6 +479,8 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "status": "ready",
                     "summary": "sidecar remote session is connected",
                     "phase": "nats_transport_sidecar",
+                    "transport_owner": "sidecar",
+                    "lifecycle_manager": "supervisor",
                     "local_listener_state": "ready",
                     "remote_session_state": "ready",
                     "transport_ready": True,
@@ -487,6 +489,12 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "sync_ready": "not_owned",
                     "media_ready": "not_owned",
                     "process": {"pid": 41},
+                    "continuity_contract": {
+                        "required": True,
+                        "member_runtime_update": "defer",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "current_support": "planned",
+                    },
                     "transport_provenance": {"selected_server": "wss://api.inimatic.com/nats"},
                 },
                 "sync_runtime": {
@@ -519,6 +527,11 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "transport": {"direct_local_ready": True, "root_routed_ready": True, "broadcast_ready": False},
                     "counts": {"file_total": 2, "total_bytes": 1024, "live_peer_total": 0, "live_connected_peers": 0},
                     "recommended_path": "direct_local_http",
+                    "update_guard": {
+                        "member_runtime_update": "allow",
+                        "hub_runtime_update": "allow",
+                        "current_support": "not_applicable",
+                    },
                 },
                 "hub_root_protocol": {
                     "traffic_classes": {
@@ -552,9 +565,12 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["quota:telegram-outbox"]["kind"] == "quota"
     assert objects["connection:hub:hub-1/root-control"]["kind"] == "connection"
     assert objects["runtime:hub:hub-1/sidecar"]["health"]["availability"] == "online"
+    assert objects["runtime:hub:hub-1/sidecar"]["runtime"]["transport_owner"] == "sidecar"
+    assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
+    assert objects["runtime:hub:hub-1/media-plane"]["runtime"]["update_guard"]["current_support"] == "not_applicable"
 
 
 def test_canonical_projection_from_reliability_snapshot_maps_actions_and_incidents() -> None:
@@ -1002,6 +1018,11 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
                         "ready": False,
                         "reason": "member_browser_direct_policy_not_admitted_yet",
                     },
+                    "update_guard": {
+                        "member_runtime_update": "allow",
+                        "hub_runtime_update": "allow",
+                        "current_support": "not_applicable",
+                    },
                 },
             },
         }
@@ -1017,3 +1038,4 @@ def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contra
     assert media["runtime"]["attempt"]["previous_route"] == "member_browser_direct"
     assert media["runtime"]["monitoring"]["refresh_cause"] == "browser.session.changed"
     assert media["runtime"]["member_browser_direct"]["possible"] is True
+    assert media["runtime"]["update_guard"]["current_support"] == "not_applicable"

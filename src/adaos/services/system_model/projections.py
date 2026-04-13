@@ -664,6 +664,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
                 "diag_path": payload.get("diag_path"),
                 "diag_age_s": payload.get("diag_age_s"),
                 "scope": payload.get("scope"),
+                "continuity_contract": payload.get("continuity_contract"),
                 "transport_provenance": payload.get("transport_provenance"),
             }
         ),
@@ -709,6 +710,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "scope": payload.get("scope"),
                 "assessment": assessment,
                 "transport": payload.get("transport"),
+                "update_guard": payload.get("update_guard"),
                 "recovery_guidance": payload.get("recovery_guidance"),
                 "recovery_playbook": payload.get("recovery_playbook"),
                 "webspace_guidance": payload.get("webspace_guidance"),
@@ -779,6 +781,7 @@ def _media_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonica
                 "attempt": attempt,
                 "monitoring": monitoring,
                 "member_browser_direct": member_browser_direct,
+                "update_guard": payload.get("update_guard"),
             }
         ),
     )

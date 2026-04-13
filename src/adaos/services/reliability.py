@@ -2503,6 +2503,107 @@ def _sidecar_scope_snapshot(*, enabled: bool) -> dict[str, Any]:
     }
 
 
+def _media_update_guard_snapshot(*, role: str, runtime: dict[str, Any] | None) -> dict[str, Any]:
+    payload = runtime if isinstance(runtime, dict) else {}
+    role_norm = str(role or "").strip().lower() or None
+    route_intent = payload.get("route_intent") if isinstance(payload.get("route_intent"), dict) else {}
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
+    member_browser = payload.get("member_browser_direct") if isinstance(payload.get("member_browser_direct"), dict) else {}
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+
+    connected_browser_session_total = int(
+        member_browser.get("connected_browser_session_total")
+        or member_browser.get("browser_session_total")
+        or 0
+    )
+    live_connected_peers = int(counts.get("live_connected_peers") or 0)
+    live_tracks_total = sum(
+        int(counts.get(key) or 0)
+        for key in (
+            "incoming_audio_tracks",
+            "incoming_video_tracks",
+            "loopback_audio_tracks",
+            "loopback_video_tracks",
+        )
+    )
+
+    observed_live_topology: str | None = None
+    if bool(member_browser.get("ready")) and connected_browser_session_total > 0:
+        observed_live_topology = "member_browser_direct"
+    elif live_connected_peers > 0 or live_tracks_total > 0:
+        observed_live_topology = "hub_webrtc_loopback"
+
+    live_session_present = observed_live_topology is not None
+    member_runtime_update = "allow"
+    hub_runtime_update = "allow"
+    hub_sidecar_continuity_required = False
+    current_support = "not_applicable"
+    criticality = "idle"
+    reason = "no live media session observed"
+
+    if observed_live_topology == "member_browser_direct":
+        member_runtime_update = "defer"
+        hub_runtime_update = "preserve_sidecar"
+        hub_sidecar_continuity_required = True
+        current_support = "planned"
+        criticality = "member_live_media"
+        reason = (
+            "member owns the active browser media path; member update should be deferred and "
+            "hub restart should preserve an independent sidecar continuity path"
+        )
+    elif observed_live_topology == "hub_webrtc_loopback":
+        hub_runtime_update = "preserve_sidecar"
+        hub_sidecar_continuity_required = True
+        current_support = "planned"
+        criticality = "hub_live_media"
+        reason = (
+            "hub participates in the active live media path; target behavior is to keep sidecar alive "
+            "while the hub runtime restarts"
+        )
+
+    return {
+        "role": role_norm,
+        "live_session_present": live_session_present,
+        "observed_live_topology": observed_live_topology,
+        "active_route": payload.get("active_route") or route_intent.get("active_route") or attempt.get("active_route"),
+        "preferred_route": payload.get("preferred_route") or route_intent.get("preferred_route") or attempt.get("preferred_route"),
+        "member_runtime_update": member_runtime_update,
+        "hub_runtime_update": hub_runtime_update,
+        "hub_sidecar_continuity_required": hub_sidecar_continuity_required,
+        "current_support": current_support,
+        "criticality": criticality,
+        "reason": reason,
+    }
+
+
+def _sidecar_continuity_contract(*, enabled: bool, media_runtime: dict[str, Any] | None) -> dict[str, Any]:
+    payload = media_runtime if isinstance(media_runtime, dict) else {}
+    guard = payload.get("update_guard") if isinstance(payload.get("update_guard"), dict) else {}
+    required = bool(guard.get("hub_sidecar_continuity_required"))
+    member_policy = str(guard.get("member_runtime_update") or "allow")
+    hub_policy = str(guard.get("hub_runtime_update") or "allow")
+    current_support = "planned" if required else "not_applicable"
+    reason = str(guard.get("reason") or "").strip() or (
+        "no live media continuity requirement observed"
+        if not required
+        else "live media continuity requires sidecar independence from the hub runtime"
+    )
+    return {
+        "required": required,
+        "enabled": bool(enabled),
+        "member_runtime_update": member_policy,
+        "hub_runtime_update": hub_policy,
+        "observed_live_topology": guard.get("observed_live_topology"),
+        "current_support": current_support,
+        "target_behavior": (
+            "keep sidecar alive while the hub runtime restarts during live media sessions"
+            if required
+            else "transport sidecar currently isolates only hub_root transport"
+        ),
+        "reason": reason,
+    }
+
+
 def _hub_member_transport_evidence_snapshot(
     *,
     role: str,
@@ -3727,6 +3828,7 @@ def sidecar_runtime_snapshot(
     readiness_tree: dict[str, Any] | None = None,
     hub_root_protocol: dict[str, Any] | None = None,
     transport_strategy: dict[str, Any] | None = None,
+    media_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         from adaos.services.realtime_sidecar import (
@@ -3758,6 +3860,7 @@ def sidecar_runtime_snapshot(
     }
     lifecycle_manager = _sidecar_lifecycle_manager()
     scope = _sidecar_scope_snapshot(enabled=enabled)
+    continuity_contract = _sidecar_continuity_contract(enabled=enabled, media_runtime=media_runtime)
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -3850,6 +3953,7 @@ def sidecar_runtime_snapshot(
             "ownership": ownership,
             "delegations": delegations,
             "scope": scope,
+            "continuity_contract": continuity_contract,
             "status": status,
             "summary": summary,
             "local_url": realtime_sidecar_local_url(),
@@ -3876,6 +3980,7 @@ def sidecar_runtime_snapshot(
         "ownership": ownership,
         "delegations": delegations,
         "scope": scope,
+        "continuity_contract": continuity_contract,
         "status": status,
         "summary": summary,
         "local_url": realtime_sidecar_local_url(),
@@ -4338,6 +4443,7 @@ def media_plane_runtime_snapshot(
         "root_routed_ready": bool(root_routed.get("ready")),
         "broadcast_ready": bool(webrtc_tracks.get("ready")),
     }
+    runtime["update_guard"] = _media_update_guard_snapshot(role=role_norm, runtime=runtime)
     return runtime
 
 
@@ -4473,11 +4579,6 @@ def reliability_snapshot(
         channel_diagnostics=channel_diagnostics,
         transport_strategy=transport_strategy,
     )
-    sidecar_runtime = sidecar_runtime_snapshot(
-        readiness_tree=readiness_tree,
-        hub_root_protocol=hub_root_protocol,
-        transport_strategy=transport_strategy,
-    )
     section_timeout = _runtime_snapshot_timeout_sec()
     sync_runtime = _run_bounded_runtime_section(
         section="sync",
@@ -4515,6 +4616,12 @@ def reliability_snapshot(
                 "control_readiness_impact": "none",
             },
         },
+    )
+    sidecar_runtime = sidecar_runtime_snapshot(
+        readiness_tree=readiness_tree,
+        hub_root_protocol=hub_root_protocol,
+        transport_strategy=transport_strategy,
+        media_runtime=media_runtime,
     )
     return {
         "ok": True,

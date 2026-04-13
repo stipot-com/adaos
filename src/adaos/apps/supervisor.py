@@ -46,6 +46,7 @@ from adaos.services.core_update import promote_root_from_slot
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_plan as read_core_update_plan
 from adaos.services.core_update import read_status as read_core_update_status
+from adaos.services.core_update import resolved_root_promotion_requirement
 from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
@@ -473,7 +474,6 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
     status = source.get("status") if isinstance(source.get("status"), dict) else {}
     runtime = source.get("runtime") if isinstance(source.get("runtime"), dict) else {}
     attempt = source.get("attempt") if isinstance(source.get("attempt"), dict) else {}
-    bootstrap_update = runtime.get("bootstrap_update") if isinstance(runtime.get("bootstrap_update"), dict) else {}
     public_status = {
         "action": str(status.get("action") or "").strip().lower() or None,
         "state": str(status.get("state") or "").strip().lower() or "unknown",
@@ -528,10 +528,7 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
             "warm_switch_allowed": runtime.get("warm_switch_allowed"),
             "warm_switch_reason": str(runtime.get("warm_switch_reason") or "").strip() or None,
             "slot_ports": runtime.get("slot_ports") if isinstance(runtime.get("slot_ports"), dict) else {},
-            "root_promotion_required": bool(
-                runtime.get("root_promotion_required")
-                or bootstrap_update.get("required")
-            ),
+            "root_promotion_required": bool(runtime.get("root_promotion_required")),
         },
         "_served_by": str(source.get("_served_by") or "").strip() or "unknown",
     }
@@ -919,7 +916,7 @@ class SupervisorManager:
         active_manifest = active_slot_manifest()
         update_status = read_core_update_status()
         update_attempt = _read_update_attempt()
-        root_promotion_required, bootstrap_update = manifest_requires_root_promotion(active_manifest)
+        root_promotion_required, bootstrap_update = resolved_root_promotion_requirement(active_manifest)
         slot_structure = validate_slot_structure(current_slot) if current_slot else None
         active_runtime_port = self.slot_runtime_port(current_slot)
         active_runtime_url = self.slot_runtime_base_url(current_slot)
