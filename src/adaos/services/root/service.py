@@ -916,7 +916,9 @@ class RootDeveloperService:
     ) -> tuple[DeviceAuthorization, ssl.SSLContext | bool, tuple[str, str] | None]:
         authorize_cert: tuple[str, str] | None = None
         authorize_verify: ssl.SSLContext | bool = verify_plain
-        requested_zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
+        requested_zone_id = canonical_zone_id(
+            (os.getenv("ADAOS_ZONE_ID") or cfg.zone_id or "").strip().lower()
+        )
         authorize_payload: dict[str, Any] = {"owner_id": owner_id_hint}
         if requested_zone_id:
             authorize_payload["zone_id"] = requested_zone_id
@@ -1558,7 +1560,7 @@ class RootDeveloperService:
     def _owner_auth_client(self, cfg: NodeConfig) -> RootHttpClient:
         if self._client_factory:
             return self._client_factory(cfg)
-        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or "").strip().lower())
+        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or cfg.zone_id or "").strip().lower())
         if zone_id:
             return RootHttpClient(base_url=zone_public_base_url(zone_id))
         return self._client(cfg)

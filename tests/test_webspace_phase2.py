@@ -333,6 +333,76 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
 
 
+def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH", "1")
+
+    webspace_id = "phase-pointer-switch"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Pointer Switch",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = _patch_switch_dependencies(
+        monkeypatch,
+        state={
+            "ui": _FakeMap(
+                {
+                    "current_scenario": "web_desktop",
+                    "application": {"desktop": {"pageSchema": {"id": "old-page"}}},
+                    "scenarios": {
+                        "web_desktop": {"application": {"desktop": {"pageSchema": {"id": "old-cache"}}}}
+                    },
+                }
+            ),
+            "registry": _FakeMap(
+                {
+                    "merged": {"modals": ["old-modal"]},
+                    "scenarios": {"web_desktop": {"modals": ["old-cache-modal"]}},
+                }
+            ),
+            "data": _FakeMap(
+                {
+                    "catalog": {"apps": [{"id": "old-app"}]},
+                    "scenarios": {"web_desktop": {"catalog": {"apps": [{"id": "old-cache-app"}]}}},
+                }
+            ),
+        },
+    )
+    scheduled: list[tuple[str, str, str | None]] = []
+
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_scenario_switch_rebuild",
+        lambda webspace_id, *, scenario_id, scenario_resolution: scheduled.append(
+            (webspace_id, scenario_id, scenario_resolution)
+        ),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["background_rebuild"] is True
+    assert result["scenario_switch_mode"] == "pointer_first"
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit")]
+    assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "old-page"
+    assert "prompt_engineer_scenario" not in fake_state["ui"]["scenarios"]
+    assert fake_state["registry"]["merged"]["modals"] == ["old-modal"]
+    assert "prompt_engineer_scenario" not in fake_state["registry"]["scenarios"]
+    assert fake_state["data"]["catalog"]["apps"] == [{"id": "old-app"}]
+    assert "prompt_engineer_scenario" not in fake_state["data"]["scenarios"]
+
+
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "phase2-go-home"
     ensure_workspace(webspace_id)
@@ -641,6 +711,109 @@ def test_phase4_collect_resolver_inputs_does_not_refresh_projection_registry(mon
 
     assert inputs.scenario_id == "web_desktop"
     assert projection_calls == []
+
+
+def test_phase_pointer_collect_resolver_inputs_prefers_loader_payload_over_legacy_yjs(monkeypatch) -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
+    monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
+    monkeypatch.setattr(
+        webspace_runtime_module.scenarios_loader,
+        "read_content",
+        lambda scenario_id, space="workspace": {
+            "id": scenario_id,
+            "ui": {"application": {"desktop": {"pageSchema": {"id": f"loader-page:{space}:{scenario_id}"}}}},
+            "catalog": {"apps": [{"id": f"loader-app:{space}:{scenario_id}"}]},
+            "registry": {"modals": [f"loader-modal:{space}:{scenario_id}"]},
+        },
+    )
+
+    fake_doc = _FakeDoc(
+        {
+            "ui": _FakeMap(
+                {
+                    "current_scenario": "prompt_engineer_scenario",
+                    "scenarios": {
+                        "prompt_engineer_scenario": {
+                            "application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}
+                        }
+                    },
+                }
+            ),
+            "data": _FakeMap(
+                {
+                    "scenarios": {
+                        "prompt_engineer_scenario": {
+                            "catalog": {"apps": [{"id": "legacy-app"}]}
+                        }
+                    }
+                }
+            ),
+            "registry": _FakeMap(
+                {
+                    "scenarios": {
+                        "prompt_engineer_scenario": {"modals": ["legacy-modal"]}
+                    }
+                }
+            ),
+        }
+    )
+
+    inputs = runtime._collect_resolver_inputs_in_doc(fake_doc, "phase-pointer-loader")
+
+    assert inputs.scenario_application["desktop"]["pageSchema"]["id"] == "loader-page:workspace:prompt_engineer_scenario"
+    assert inputs.scenario_catalog["apps"] == [{"id": "loader-app:workspace:prompt_engineer_scenario"}]
+    assert inputs.scenario_registry["modals"] == ["loader-modal:workspace:prompt_engineer_scenario"]
+    assert inputs.scenario_source == "loader:workspace"
+    assert inputs.legacy_scenario_fallback is False
+    assert inputs.metadata["scenario_source"] == "loader:workspace"
+
+
+def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loader_missing(monkeypatch) -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
+    monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
+    monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda scenario_id, space="workspace": {})
+
+    fake_doc = _FakeDoc(
+        {
+            "ui": _FakeMap(
+                {
+                    "current_scenario": "prompt_engineer_scenario",
+                    "scenarios": {
+                        "prompt_engineer_scenario": {
+                            "application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}
+                        }
+                    },
+                }
+            ),
+            "data": _FakeMap(
+                {
+                    "scenarios": {
+                        "prompt_engineer_scenario": {
+                            "catalog": {"apps": [{"id": "legacy-app"}]}
+                        }
+                    }
+                }
+            ),
+            "registry": _FakeMap(
+                {
+                    "scenarios": {
+                        "prompt_engineer_scenario": {"modals": ["legacy-modal"]}
+                    }
+                }
+            ),
+        }
+    )
+
+    inputs = runtime._collect_resolver_inputs_in_doc(fake_doc, "phase-pointer-legacy")
+
+    assert inputs.scenario_application["desktop"]["pageSchema"]["id"] == "legacy-page"
+    assert inputs.scenario_catalog["apps"] == [{"id": "legacy-app"}]
+    assert inputs.scenario_registry["modals"] == ["legacy-modal"]
+    assert inputs.scenario_source == "legacy_yjs"
+    assert inputs.legacy_scenario_fallback is True
+    assert inputs.metadata["legacy_scenario_fallback"] is True
 
 
 def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) -> None:

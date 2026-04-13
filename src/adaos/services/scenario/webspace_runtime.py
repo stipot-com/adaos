@@ -7,6 +7,7 @@ from collections.abc import Iterable
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -123,6 +124,8 @@ class WebspaceResolverInputs:
     live_state: Dict[str, Any] = field(default_factory=dict)
     skill_decls: List[Dict[str, Any]] = field(default_factory=list)
     desktop_scenarios: List[Tuple[str, str]] = field(default_factory=list)
+    scenario_source: str = "legacy_yjs"
+    legacy_scenario_fallback: bool = False
 
 
 @dataclass(slots=True)
@@ -326,6 +329,131 @@ def _load_scenario_switch_content(scenario_id: str, *, space: str) -> Dict[str, 
     return {}
 
 
+def _scenario_loader_space(source_mode: str) -> str:
+    return "dev" if str(source_mode or "").strip().lower() == "dev" else "workspace"
+
+
+def _pointer_first_scenario_switch_enabled() -> bool:
+    raw = os.getenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_scenario_sections_from_content(content: Mapping[str, Any] | None) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    payload = _coerce_dict(content or {})
+    ui_section = _coerce_dict(_coerce_dict(payload.get("ui") or {}).get("application") or {})
+    registry_section = _coerce_dict(payload.get("registry") or {})
+    catalog_section = _coerce_dict(payload.get("catalog") or {})
+    return ui_section, catalog_section, registry_section
+
+
+def _read_legacy_materialized_scenario_sections(
+    ui_map: Any,
+    data_map: Any,
+    registry_map: Any,
+    scenario_id: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
+    scenario_ui_entry = _coerce_dict(scenarios_ui.get(scenario_id) or {})
+    scenario_app_ui = _coerce_dict(scenario_ui_entry.get("application") or {})
+
+    scenarios_data = _coerce_dict(data_map.get("scenarios") or {})
+    scenario_entry = _coerce_dict(scenarios_data.get(scenario_id) or {})
+    base_catalog = _coerce_dict(scenario_entry.get("catalog") or {})
+
+    scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
+    registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
+    return scenario_app_ui, base_catalog, registry_entry
+
+
+def _resolve_scenario_sections_in_doc(
+    ydoc: Any,
+    *,
+    webspace_id: str,
+    scenario_id: str,
+    source_mode: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], str, bool]:
+    ui_map = ydoc.get_map("ui")
+    data_map = ydoc.get_map("data")
+    registry_map = ydoc.get_map("registry")
+
+    loader_space = _scenario_loader_space(source_mode)
+    content = _load_scenario_switch_content(scenario_id, space=loader_space)
+    if isinstance(content, Mapping) and content:
+        ui_section, catalog_section, registry_section = _extract_scenario_sections_from_content(content)
+        return ui_section, catalog_section, registry_section, f"loader:{loader_space}", False
+
+    scenario_app_ui, base_catalog, registry_entry = _read_legacy_materialized_scenario_sections(
+        ui_map,
+        data_map,
+        registry_map,
+        scenario_id,
+    )
+    if scenario_app_ui or base_catalog or registry_entry:
+        _log.info(
+            "resolver using legacy materialized scenario payload webspace=%s scenario=%s source_mode=%s",
+            webspace_id,
+            scenario_id,
+            source_mode,
+        )
+        return scenario_app_ui, base_catalog, registry_entry, "legacy_yjs", True
+
+    _log.warning(
+        "resolver found no canonical or legacy scenario payload webspace=%s scenario=%s source_mode=%s",
+        webspace_id,
+        scenario_id,
+        source_mode,
+    )
+    return {}, {}, {}, "missing", True
+
+
+def _materialize_scenario_switch_content_in_doc(
+    ydoc: Any,
+    *,
+    scenario_id: str,
+    content: Mapping[str, Any],
+) -> None:
+    ui_section, catalog_section, registry_section = _extract_scenario_sections_from_content(content)
+    data_section = _coerce_dict(_coerce_dict(content).get("data") or {})
+
+    ui_map = ydoc.get_map("ui")
+    registry_map = ydoc.get_map("registry")
+    data_map = ydoc.get_map("data")
+
+    with ydoc.begin_transaction() as txn:
+        scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
+        updated_ui = dict(scenarios_ui)
+        updated_ui[scenario_id] = {"application": ui_section}
+        ui_map.set(txn, "scenarios", updated_ui)
+        ui_map.set(txn, "current_scenario", scenario_id)
+        ui_map.set(txn, "application", ui_section)
+
+        reg_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
+        reg_updated = dict(reg_scenarios)
+        reg_updated[scenario_id] = registry_section
+        registry_map.set(txn, "scenarios", reg_updated)
+        registry_map.set(txn, "merged", registry_section)
+
+        data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
+        data_updated = dict(data_scenarios)
+        entry_raw = data_updated.get(scenario_id) or {}
+        entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
+        entry["catalog"] = catalog_section
+        data_updated[scenario_id] = entry
+        data_map.set(txn, "scenarios", data_updated)
+        data_map.set(txn, "catalog", catalog_section)
+
+        for key, value in data_section.items():
+            if not isinstance(key, str) or key == "installed":
+                continue
+            try:
+                payload_value = json.loads(json.dumps(value))
+            except Exception:
+                payload_value = value
+            data_map.set(txn, key, payload_value)
+
+
 def _scenario_supports_catalog_controls(
     scenario_id: str,
     scenario_application: Mapping[str, Any] | None,
@@ -413,9 +541,8 @@ class WebspaceScenarioRuntime:
 
     It reads:
       - ui.current_scenario,
-      - ui.scenarios[scenario_id].application,
-      - data.scenarios[scenario_id].catalog,
-      - registry.scenarios[scenario_id],
+      - scenario content from loader-backed canonical sources,
+      - legacy Yjs scenario materialization as fallback only,
       - skill webui.json declarations (apps/widgets/registry/contributions),
       - persistent webspace desktop overlay,
     and writes:
@@ -605,19 +732,8 @@ class WebspaceScenarioRuntime:
     def _collect_resolver_inputs_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverInputs:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
-        registry_map = ydoc.get_map("registry")
 
-        scenario_id = ui_map.get("current_scenario") or "web_desktop"
-        scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
-        scenario_ui_entry = _coerce_dict(scenarios_ui.get(scenario_id) or {})
-        scenario_app_ui = _coerce_dict(scenario_ui_entry.get("application") or {})
-
-        scenarios_data = _coerce_dict(data_map.get("scenarios") or {})
-        scenario_entry = _coerce_dict(scenarios_data.get(scenario_id) or {})
-        base_catalog = _coerce_dict(scenario_entry.get("catalog") or {})
-
-        scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
-        registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
+        scenario_id = str(ui_map.get("current_scenario") or "web_desktop").strip() or "web_desktop"
 
         mode = "mixed"
         metadata: Dict[str, Any] = {}
@@ -647,6 +763,17 @@ class WebspaceScenarioRuntime:
             mode = "mixed"
             metadata = {}
 
+        scenario_app_ui, base_catalog, registry_entry, scenario_source, legacy_fallback = _resolve_scenario_sections_in_doc(
+            ydoc,
+            webspace_id=webspace_id,
+            scenario_id=scenario_id,
+            source_mode=mode,
+        )
+        if metadata:
+            metadata = dict(metadata)
+        metadata["scenario_source"] = scenario_source
+        metadata["legacy_scenario_fallback"] = legacy_fallback
+
         return WebspaceResolverInputs(
             webspace_id=webspace_id,
             scenario_id=str(scenario_id),
@@ -662,6 +789,8 @@ class WebspaceScenarioRuntime:
             },
             skill_decls=self._collect_skill_decls(mode=mode),
             desktop_scenarios=self._list_desktop_scenarios(space=mode),
+            scenario_source=scenario_source,
+            legacy_scenario_fallback=legacy_fallback,
         )
 
     def resolve_webspace(self, inputs: WebspaceResolverInputs) -> WebspaceResolverOutputs:
@@ -924,15 +1053,18 @@ class WebspaceScenarioRuntime:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
 
     def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
-        resolved = self._resolve_in_doc(ydoc, webspace_id)
+        inputs = self._collect_resolver_inputs_in_doc(ydoc, webspace_id)
+        resolved = self.resolve_webspace(inputs)
         self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved)
         entry = resolved.to_registry_entry()
 
         try:
             _log.debug(
-                "rebuilt webspace=%s scenario=%s apps=%d widgets=%d",
+                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s apps=%d widgets=%d",
                 webspace_id,
                 resolved.scenario_id,
+                str(inputs.scenario_source or ""),
+                bool(inputs.legacy_scenario_fallback),
                 len(entry.apps),
                 len(entry.widgets),
             )
@@ -2011,6 +2143,7 @@ async def switch_webspace_scenario(
         set_home,
         resolved_set_home,
     )
+    switch_mode = "pointer_first" if _pointer_first_scenario_switch_enabled() else "materialize_and_copy"
 
     try:
         async with async_get_ydoc(webspace_id) as ydoc:
@@ -2038,60 +2171,16 @@ async def switch_webspace_scenario(
                     error="scenario_not_found",
                 )
                 return {"ok": False, "accepted": False, "error": "scenario_not_found", "webspace_id": webspace_id, "scenario_id": scenario_id}
-            ui_section = ((content.get("ui") or {}).get("application")) or {}
-            if not isinstance(ui_section, dict):
-                ui_section = {}
-            registry_section = content.get("registry") or {}
-            if not isinstance(registry_section, dict):
-                registry_section = {}
-            catalog_section = content.get("catalog") or {}
-            if not isinstance(catalog_section, dict):
-                catalog_section = {}
-            data_section = content.get("data") or {}
-            if not isinstance(data_section, dict):
-                data_section = {}
-
-            ui_map = ydoc.get_map("ui")
-            registry_map = ydoc.get_map("registry")
-            data_map = ydoc.get_map("data")
-
-            with ydoc.begin_transaction() as txn:
-                scenarios_ui_raw = ui_map.get("scenarios")
-                scenarios_ui = dict(scenarios_ui_raw) if isinstance(scenarios_ui_raw, Mapping) else {}
-                updated_ui = dict(scenarios_ui)
-                updated_ui[scenario_id] = {"application": ui_section}
-                ui_map.set(txn, "scenarios", updated_ui)
-                ui_map.set(txn, "current_scenario", scenario_id)
-                ui_map.set(txn, "application", ui_section)
-
-                reg_scenarios_raw = registry_map.get("scenarios")
-                reg_scenarios = dict(reg_scenarios_raw) if isinstance(reg_scenarios_raw, Mapping) else {}
-                reg_updated = dict(reg_scenarios)
-                reg_updated[scenario_id] = registry_section
-                registry_map.set(txn, "scenarios", reg_updated)
-                registry_map.set(txn, "merged", registry_section)
-
-                data_scenarios_raw = data_map.get("scenarios")
-                data_scenarios = dict(data_scenarios_raw) if isinstance(data_scenarios_raw, Mapping) else {}
-                data_updated = dict(data_scenarios)
-                entry_raw = data_updated.get(scenario_id) or {}
-                entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
-                entry["catalog"] = catalog_section
-                data_updated[scenario_id] = entry
-                data_map.set(txn, "scenarios", data_updated)
-                data_map.set(txn, "catalog", catalog_section)
-
-                if isinstance(data_section, dict):
-                    for key, value in data_section.items():
-                        if not isinstance(key, str):
-                            continue
-                        if key == "installed":
-                            continue
-                        try:
-                            payload_value = json.loads(json.dumps(value))
-                        except Exception:
-                            payload_value = value
-                        data_map.set(txn, key, payload_value)
+            if switch_mode == "pointer_first":
+                ui_map = ydoc.get_map("ui")
+                with ydoc.begin_transaction() as txn:
+                    ui_map.set(txn, "current_scenario", scenario_id)
+            else:
+                _materialize_scenario_switch_content_in_doc(
+                    ydoc,
+                    scenario_id=scenario_id,
+                    content=content,
+                )
     except Exception:
         _set_webspace_rebuild_status(
             webspace_id,
@@ -2132,6 +2221,7 @@ async def switch_webspace_scenario(
             "home_scenario": row.effective_home_scenario,
             "set_home": resolved_set_home,
             "background_rebuild": True,
+            "scenario_switch_mode": switch_mode,
         }
 
     rebuild_result = await _complete_scenario_switch_rebuild(
@@ -2154,6 +2244,7 @@ async def switch_webspace_scenario(
         "home_scenario": row.effective_home_scenario,
         "set_home": resolved_set_home,
         "background_rebuild": False,
+        "scenario_switch_mode": switch_mode,
     }
 
 
