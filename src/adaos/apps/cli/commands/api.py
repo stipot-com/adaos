@@ -69,6 +69,10 @@ def _resolve_bind(conf, host: str, port: int) -> tuple[str, int]:
     role = str(getattr(conf, "role", "") or "").strip().lower() if conf is not None else ""
     if role != "hub":
         return host, int(port)
+    if str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        # Supervisor-managed runtimes already pass the slot-specific port explicitly.
+        # Do not override it from node.yaml `hub_url`, or slot A can get pulled onto slot B's port.
+        return host, int(port)
     if host != "127.0.0.1" or int(port) != 8777:
         return host, int(port)
     hub_url = str(getattr(conf, "hub_url", "") or "").strip()
