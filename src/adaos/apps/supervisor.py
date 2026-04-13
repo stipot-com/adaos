@@ -40,7 +40,6 @@ from adaos.services.core_slots import (
     validate_slot_structure,
 )
 from adaos.services.core_update import clear_plan as clear_core_update_plan
-from adaos.services.core_update import manifest_requires_root_promotion
 from adaos.services.core_update import prepare_pending_update
 from adaos.services.core_update import promote_root_from_slot
 from adaos.services.core_update import read_last_result as read_core_update_last_result
@@ -2675,10 +2674,10 @@ class SupervisorManager:
         current_status = read_core_update_status()
         state = str(current_status.get("state") or "").strip().lower()
         phase = str(current_status.get("phase") or "").strip().lower()
-        if state not in {"validated", "succeeded"} and phase != "root_promotion_pending":
-            raise HTTPException(status_code=409, detail="root promotion requires a validated slot runtime")
         manifest = active_slot_manifest()
-        root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+        root_promotion_required, bootstrap_update = resolved_root_promotion_requirement(manifest)
+        if state not in {"validated", "succeeded"} and phase != "root_promotion_pending" and not root_promotion_required:
+            raise HTTPException(status_code=409, detail="root promotion requires a validated slot runtime")
         if not root_promotion_required:
             status = write_core_update_status(
                 {

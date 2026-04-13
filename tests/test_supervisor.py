@@ -1846,6 +1846,59 @@ def test_supervisor_promote_root_preserves_subsequent_transition_request(monkeyp
     assert attempt["subsequent_transition_request"]["target_version"] == "1.2.4"
 
 
+def test_supervisor_promote_root_allows_idle_status_when_root_promotion_is_still_required(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "repo_dir": str(tmp_path / "slots" / "B" / "repo"),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "resolved_root_promotion_requirement",
+        lambda manifest: (
+            True,
+            {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+                "effective_required": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "promote_root_from_slot",
+        lambda slot=None: {
+            "ok": True,
+            "slot": slot or "B",
+            "required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+            "backup_dir": str(tmp_path / "backup"),
+            "promoted_paths": ["src/adaos/apps/supervisor.py"],
+            "removed_paths": [],
+            "restart_required": True,
+        },
+    )
+    write_status({"state": "idle", "message": "autostart runner boot"})
+
+    payload = asyncio.run(manager.promote_root(reason="test.root_promotion"))
+
+    assert payload["accepted"] is True
+    assert payload["status"]["phase"] == "root_promoted"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "awaiting_root_restart"
+
+
 def test_public_update_status_payload_is_browser_safe() -> None:
     payload = supervisor._public_update_status_payload(
         {

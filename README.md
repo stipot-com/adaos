@@ -58,10 +58,8 @@ With AdaOS you can:
 ### Linux
 
 ```bash
-# use optional key to join member to subnet: --join-code CODE 
-curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s --
-# pick zone explicitly when needed:
-# curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s -- --zone ru
+# use optional key to join member to subnet: --zone ru --join-code CODE 
+curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s -- --zone ru|us|eu
 ```
 
 ### Windows (PowerShell)

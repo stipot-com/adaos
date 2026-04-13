@@ -31,6 +31,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.core_update import (
     clear_plan,
     execute_pending_update,
+    finalize_runtime_boot_status,
     manifest_requires_root_promotion,
     read_plan,
     read_status,
@@ -843,7 +844,9 @@ def main() -> None:
             if reconciled is not None:
                 write_status(reconciled)
             else:
-                write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
+                finalized = finalize_runtime_boot_status()
+                if finalized is None:
+                    write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
 
         phase = "resolve_bind"
         host, port = _resolve_bind(conf, args.host, args.port)
