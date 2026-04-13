@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -180,17 +181,20 @@ def test_migrate_installed_skill_runtimes_reports_missing_script_in_prepared_rep
     apps_dir.mkdir(parents=True, exist_ok=True)
     (apps_dir / "autostart_runner.py").write_text("print('ok')\n", encoding="utf-8")
 
-    try:
-        mod._migrate_installed_skill_runtimes(
-            tmp_path / "venv" / "bin" / "python",
-            repo_root=repo_root,
-            run_tests=True,
-        )
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        text = str(exc)
-        assert "missing skill runtime migration entrypoint" in text
-        assert "autostart_runner.py" in text
+    payload = mod._migrate_installed_skill_runtimes(
+        tmp_path / "venv" / "bin" / "python",
+        repo_root=repo_root,
+        run_tests=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["skipped"] is True
+    assert payload["unsupported"] is True
+    assert payload["reason"] == "missing_skill_runtime_migration_entrypoint"
+    assert payload["apps_dir_exists"] is True
+    assert "autostart_runner.py" in payload["visible_files"]
+    assert payload["deferred"] is False
+    assert payload["skills"] == []
 
 
 def test_strip_repo_vcs_metadata_removes_git_dir(tmp_path: Path) -> None:
@@ -218,6 +222,28 @@ def test_clone_local_repo_copy_mode_skips_git_metadata(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
 
     mod._clone_local_repo(source_repo, target_rev="rev2026", target_version="1.2.3", checkout_dir=checkout_dir)
+
+    assert (checkout_dir / "src" / "app.py").exists()
+    assert not (checkout_dir / ".git").exists()
+
+
+def test_clone_local_repo_copy_mode_when_worktree_dirty_and_target_unpinned(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    source_repo = tmp_path / "source"
+    checkout_dir = tmp_path / "checkout"
+    (source_repo / ".git").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src").mkdir(parents=True, exist_ok=True)
+    (source_repo / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    def _fake_run(*_args, **_kwargs):
+        raise AssertionError("git clone path should not run for dirty unpinned worktree")
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(mod, "_git_worktree_has_changes", lambda _path: True)
+    monkeypatch.setattr(mod, "_run", _fake_run)
+
+    mod._clone_local_repo(source_repo, target_rev="", target_version="1.2.3", checkout_dir=checkout_dir)
 
     assert (checkout_dir / "src" / "app.py").exists()
     assert not (checkout_dir / ".git").exists()
@@ -285,6 +311,47 @@ def test_prepare_checkout_repo_falls_back_to_remote_when_local_source_misses_tar
     assert source_kind == "remote_git_clone"
     assert clone_calls == ["local", "remote"]
     assert validate_calls == ["local source repo", "remote repo clone"]
+
+
+def test_prepare_slot_preserves_explicit_empty_repo_url(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_prepare_checkout_repo(**kwargs):
+        captured.update(kwargs)
+        checkout_dir = Path(kwargs["checkout_dir"])
+        apps_dir = checkout_dir / "src" / "adaos" / "apps"
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        (apps_dir / "__init__.py").write_text("", encoding="utf-8")
+        return "local_source_tree"
+
+    def _fake_run(_cmd, *, cwd=None):
+        if cwd is None:
+            return
+
+    monkeypatch.setattr(mod, "_prepare_checkout_repo", _fake_prepare_checkout_repo)
+    monkeypatch.setattr(mod, "_run", _fake_run)
+    monkeypatch.setattr(mod, "_strip_repo_vcs_metadata", lambda _repo_dir: None)
+    monkeypatch.setattr(mod, "_replace_slot_dir", lambda prepared_slot, slot_dir: shutil.move(str(prepared_slot), str(slot_dir)))
+    monkeypatch.setattr(mod, "_repair_moved_venv", lambda _venv_dir, original_venv_dir=None: {"ok": True, "repaired_files": []})
+    monkeypatch.setattr(mod, "_migrate_installed_skill_runtimes", lambda *args, **kwargs: {"ok": True, "skills": []})
+    monkeypatch.setattr(mod, "_git_text", lambda *_args: "value")
+    monkeypatch.setattr(mod, "_detect_bootstrap_promotion_requirement", lambda *_args, **_kwargs: {"required": False, "changed_paths": []})
+
+    slot_dir = tmp_path / "slots" / "A"
+    manifest = mod.prepare_slot(
+        slot="A",
+        slot_dir_path=str(slot_dir),
+        base_dir=str(tmp_path / "base"),
+        repo_root=str(tmp_path / "repo-root"),
+        source_repo_root=str(tmp_path / "source"),
+        repo_url="",
+        migrate_skill_runtimes=False,
+    )
+
+    assert manifest["slot"] == "A"
+    assert captured["repo_url"] == ""
 
 
 def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: Path) -> None:

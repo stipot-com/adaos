@@ -207,6 +207,10 @@ def _bootstrap_core_slot(ctx: AgentContext, *, token: str | None = None) -> None
         "--target-version",
         str(BUILD_INFO.version or ""),
     ]
+    if not (repo_root / ".git").exists():
+        # Archive/package installs should bootstrap the slot from the local unpacked tree,
+        # not from a potentially different remote branch tip.
+        cmd.extend(["--repo-url", ""])
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv is not None:
         cmd.extend(["--shared-dotenv-path", str(shared_dotenv)])

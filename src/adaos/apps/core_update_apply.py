@@ -97,6 +97,21 @@ def _run_json(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | 
     return payload
 
 
+def _git_worktree_has_changes(repo_dir: Path) -> bool:
+    git = shutil.which("git")
+    if not git or not repo_dir.exists():
+        return False
+    completed = subprocess.run(
+        [git, "status", "--porcelain", "--untracked-files=all"],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return False
+    return bool(str(completed.stdout or "").strip())
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
@@ -186,11 +201,26 @@ def _migrate_installed_skill_runtimes(
                     visible = sorted(child.name for child in apps_dir.iterdir() if child.is_file())[:20]
                 except Exception:
                     visible = []
-            raise RuntimeError(
-                "prepared slot repo is missing skill runtime migration entrypoint: "
-                f"{migrate_script} "
-                f"(repo_root={repo_root_path}, apps_dir_exists={apps_dir.exists()}, visible_files={visible})"
-            )
+            return {
+                "ok": True,
+                "skipped": True,
+                "unsupported": True,
+                "reason": "missing_skill_runtime_migration_entrypoint",
+                "message": (
+                    "prepared slot repo does not contain skill runtime migration entrypoint; "
+                    "continuing without runtime migration"
+                ),
+                "repo_root": str(repo_root_path),
+                "script_path": str(migrate_script),
+                "apps_dir_exists": apps_dir.exists(),
+                "visible_files": visible,
+                "run_tests": bool(run_tests),
+                "failed_total": 0,
+                "rollback_total": 0,
+                "deactivated_total": 0,
+                "deferred": False,
+                "skills": [],
+            }
         cmd = [str(python_executable), str(migrate_script), "--json"]
     else:
         cmd = [str(python_executable), "-m", "adaos.apps.skill_runtime_migrate", "--json"]
@@ -218,7 +248,8 @@ def _clone_repo(repo_url: str, target_rev: str, target_version: str, checkout_di
 def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: str, checkout_dir: Path) -> None:
     git = shutil.which("git")
     git_dir = source_repo_root / ".git"
-    if git and git_dir.exists():
+    pinned_target = bool(str(target_rev or "").strip()) or _is_probably_git_sha(str(target_version or "").strip())
+    if git and git_dir.exists() and (pinned_target or not _git_worktree_has_changes(source_repo_root)):
         try:
             _run([git, "clone", str(source_repo_root), str(checkout_dir)])
             if target_rev:
@@ -408,7 +439,10 @@ def prepare_slot(
     repo_root_dir = Path(str(repo_root or "")).expanduser().resolve() if str(repo_root or "").strip() else None
     target_rev = str(target_rev or "").strip()
     target_version = str(target_version or "").strip()
-    repo_url = str(repo_url or os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
+    if repo_url is None:
+        repo_url = str(os.getenv("ADAOS_CORE_UPDATE_REPO_URL", "https://github.com/stipot-com/adaos.git")).strip()
+    else:
+        repo_url = str(repo_url).strip()
     source_repo_dir = Path(str(source_repo_root or "")).expanduser().resolve() if str(source_repo_root or "").strip() else None
     shared_dotenv = str(shared_dotenv_path or "").strip()
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"adaos-core-{slot_name.lower()}-", dir=str(slot_dir.parent)))

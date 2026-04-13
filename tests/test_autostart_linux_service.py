@@ -104,3 +104,46 @@ def test_bootstrap_core_slot_uses_explicit_revision(monkeypatch, tmp_path: Path)
 
     joined = " ".join(calls[0])
     assert "--target-rev rev2026" in joined
+
+
+def test_bootstrap_core_slot_disables_remote_repo_for_archive_install(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    package_dir = repo_root / "src" / "adaos"
+    package_dir.mkdir(parents=True)
+    base_dir = tmp_path / "base"
+
+    class _Paths(_FakePaths):
+        def package_path(self) -> Path:
+            return package_dir
+
+        def repo_root(self) -> Path:
+            return repo_root
+
+    class _CtxWithPackage(_FakeCtx):
+        def __init__(self, base_dir: Path) -> None:
+            self.paths = _Paths(base_dir)
+            self.settings = type("Settings", (), {"profile": "default"})()
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.delenv("ADAOS_REV", raising=False)
+    monkeypatch.setattr(autostart, "active_slot", lambda: None)
+    monkeypatch.setattr(autostart, "read_slot_manifest", lambda slot: None)
+    monkeypatch.setattr(autostart, "activate_slot", lambda slot: None)
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr(autostart, "subprocess", type("Subprocess", (), {"run": staticmethod(_fake_run)})())
+
+    autostart._bootstrap_core_slot(_CtxWithPackage(base_dir))
+
+    assert "--repo-url" in calls[0]
+    idx = calls[0].index("--repo-url")
+    assert calls[0][idx + 1] == ""
