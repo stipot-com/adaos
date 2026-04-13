@@ -245,6 +245,82 @@ def _clone_local_repo(source_repo_root: Path, target_rev: str, target_version: s
     )
 
 
+def _validate_checkout_target_version(repo_dir: Path, *, target_version: str, source_label: str) -> None:
+    target_version = str(target_version or "").strip()
+    if not _is_probably_git_sha(target_version):
+        return
+    actual = _git_text(repo_dir, "rev-parse", "HEAD")
+    if not actual:
+        raise RuntimeError(
+            f"{source_label} did not produce a verifiable git checkout for requested target_version {target_version}"
+        )
+    if actual.lower() != target_version.lower():
+        raise RuntimeError(
+            f"{source_label} resolved to git commit {actual} instead of requested target_version {target_version}"
+        )
+
+
+def _prepare_checkout_repo(
+    *,
+    checkout_dir: Path,
+    source_repo_dir: Path | None,
+    repo_url: str,
+    target_rev: str,
+    target_version: str,
+) -> str:
+    git_available = bool(shutil.which("git"))
+    source_exists = source_repo_dir is not None and source_repo_dir.exists()
+    source_is_git = _is_git_repo(source_repo_dir)
+    local_error: Exception | None = None
+
+    if source_exists and source_is_git and source_repo_dir is not None:
+        try:
+            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_dir)
+            _validate_checkout_target_version(
+                checkout_dir,
+                target_version=target_version,
+                source_label="local source repo",
+            )
+            return "local_source_tree"
+        except Exception as exc:
+            local_error = exc
+            shutil.rmtree(checkout_dir, ignore_errors=True)
+
+    if git_available and repo_url:
+        try:
+            _clone_repo(repo_url, target_rev, target_version, checkout_dir)
+            _validate_checkout_target_version(
+                checkout_dir,
+                target_version=target_version,
+                source_label="remote repo clone",
+            )
+            return "remote_git_clone"
+        except Exception as exc:
+            if local_error is not None:
+                raise RuntimeError(
+                    f"failed to prepare requested target_version {target_version or '<unspecified>'}: "
+                    f"local source repo failed ({local_error}); remote repo clone failed ({exc})"
+                ) from exc
+            raise
+
+    if source_exists and source_repo_dir is not None:
+        _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_dir)
+        _validate_checkout_target_version(
+            checkout_dir,
+            target_version=target_version,
+            source_label="copied local source tree",
+        )
+        return "local_source_tree"
+
+    _clone_repo(repo_url, target_rev, target_version, checkout_dir)
+    _validate_checkout_target_version(
+        checkout_dir,
+        target_version=target_version,
+        source_label="remote repo clone",
+    )
+    return "remote_git_clone"
+
+
 def _strip_repo_vcs_metadata(repo_dir: Path) -> None:
     git_dir = repo_dir / ".git"
     if git_dir.exists():
@@ -340,16 +416,13 @@ def prepare_slot(
     prepared_slot.mkdir(parents=True, exist_ok=True)
     try:
         checkout_tmp = prepared_slot / "repo"
-        source_is_git = _is_git_repo(source_repo_dir)
-        git_available = bool(shutil.which("git"))
-        if source_repo_dir is not None and source_repo_dir.exists() and source_is_git:
-            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
-        elif git_available and repo_url:
-            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
-        elif source_repo_dir is not None and source_repo_dir.exists():
-            _clone_local_repo(source_repo_dir, target_rev, target_version, checkout_tmp)
-        else:
-            _clone_repo(repo_url, target_rev, target_version, checkout_tmp)
+        source_kind = _prepare_checkout_repo(
+            checkout_dir=checkout_tmp,
+            source_repo_dir=source_repo_dir,
+            repo_url=repo_url,
+            target_rev=target_rev,
+            target_version=target_version,
+        )
         venv_tmp = prepared_slot / "venv"
         _run([sys.executable, "-m", "venv", str(venv_tmp)])
         py = _venv_python(venv_tmp)
@@ -364,9 +437,6 @@ def prepare_slot(
         git_short_commit = _git_text(checkout_tmp, "rev-parse", "--short", "HEAD")
         git_branch = _git_text(checkout_tmp, "rev-parse", "--abbrev-ref", "HEAD")
         git_subject = _git_text(checkout_tmp, "show", "-s", "--format=%s", "HEAD")
-        source_kind = "remote_git_clone"
-        if source_repo_dir is not None and source_repo_dir.exists():
-            source_kind = "local_source_tree"
         bootstrap_update = _detect_bootstrap_promotion_requirement(checkout_tmp, repo_root_dir)
         _strip_repo_vcs_metadata(checkout_tmp)
         manifest = {

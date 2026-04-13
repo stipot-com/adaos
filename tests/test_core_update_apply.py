@@ -223,6 +223,70 @@ def test_clone_local_repo_copy_mode_skips_git_metadata(monkeypatch, tmp_path: Pa
     assert not (checkout_dir / ".git").exists()
 
 
+def test_validate_checkout_target_version_rejects_mismatched_sha(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    monkeypatch.setattr(mod, "_git_text", lambda *_args: "d7d79d5d08eb12446a4f7bf6069246368df6d4d0")
+
+    try:
+        mod._validate_checkout_target_version(
+            tmp_path,
+            target_version="f7d14e92e38bb6b37f9068c2ee894de61710b92e",
+            source_label="local source repo",
+        )
+        assert False, "expected RuntimeError on git commit mismatch"
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "local source repo" in text
+        assert "d7d79d5d08eb12446a4f7bf6069246368df6d4d0" in text
+        assert "f7d14e92e38bb6b37f9068c2ee894de61710b92e" in text
+
+
+def test_prepare_checkout_repo_falls_back_to_remote_when_local_source_misses_target_sha(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    target_version = "f7d14e92e38bb6b37f9068c2ee894de61710b92e"
+    source_repo = tmp_path / "source"
+    checkout_dir = tmp_path / "checkout"
+    (source_repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    clone_calls: list[str] = []
+    validate_calls: list[str] = []
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "git")
+
+    def _fake_clone_local(_source_repo_root, _target_rev, _target_version, target_dir):
+        clone_calls.append("local")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_clone_repo(_repo_url, _target_rev, _target_version, target_dir):
+        clone_calls.append("remote")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_validate(_repo_dir, *, target_version: str, source_label: str):
+        validate_calls.append(source_label)
+        if source_label == "local source repo":
+            raise RuntimeError(f"resolved to d7d79d5 instead of {target_version}")
+
+    monkeypatch.setattr(mod, "_clone_local_repo", _fake_clone_local)
+    monkeypatch.setattr(mod, "_clone_repo", _fake_clone_repo)
+    monkeypatch.setattr(mod, "_validate_checkout_target_version", _fake_validate)
+
+    source_kind = mod._prepare_checkout_repo(
+        checkout_dir=checkout_dir,
+        source_repo_dir=source_repo,
+        repo_url="https://github.com/stipot-com/adaos.git",
+        target_rev="rev2026",
+        target_version=target_version,
+    )
+
+    assert source_kind == "remote_git_clone"
+    assert clone_calls == ["local", "remote"]
+    assert validate_calls == ["local source repo", "remote repo clone"]
+
+
 def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: Path) -> None:
     import adaos.apps.core_update_apply as mod
 
