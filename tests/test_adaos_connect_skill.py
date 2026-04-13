@@ -79,18 +79,21 @@ def test_browser_current_uses_zone_and_new_app_domain(monkeypatch, tmp_path: Pat
             self.verify = verify
             self.cert = cert
 
-        def request(self, method, path, *, json=None, headers=None, **kwargs):
+        def device_authorize(self, *, payload=None, **kwargs):
             calls.append(
                 {
                     "base_url": self.base_url,
                     "cert": self.cert,
-                    "method": method,
-                    "path": path,
-                    "json": json,
-                    "headers": headers,
+                    "method": "device_authorize",
+                    "payload": payload,
                 }
             )
-            return {"pair_code": "PAIR1234", "zone_id": "ru", "expires_at": expires_at}
+            return {
+                "user_code": "PAIR1234",
+                "verification_uri": "https://myinimatic.web.app/?mode=registration",
+                "verification_uri_complete": "https://myinimatic.web.app/?mode=registration&user_code=PAIR1234&zone=ru",
+                "expires_at": expires_at,
+            }
 
     monkeypatch.setattr(mod, "RootHttpClient", _FakeRootHttpClient)
 
@@ -101,20 +104,19 @@ def test_browser_current_uses_zone_and_new_app_domain(monkeypatch, tmp_path: Pat
         {
             "base_url": "https://ru.api.inimatic.com",
             "cert": None,
-            "method": "POST",
-            "path": "/v1/browser/pair/create",
-            "json": {"ttl": 600, "zone_id": "ru"},
-            "headers": None,
+            "method": "device_authorize",
+            "payload": {"owner_id": "sn_test", "zone_id": "ru"},
         }
     ]
     assert current["status"] == "ready"
     assert current["app_base_url"] == "https://myinimatic.web.app"
-    assert current["link"] == "https://myinimatic.web.app/?pair_code=PAIR1234&zone=ru"
+    assert current["link"] == "https://myinimatic.web.app/?mode=registration&user_code=PAIR1234&zone=ru"
     assert current["qr_text"] == current["link"]
     assert current["expires_at_epoch"] == expires_at
     assert current["expires_at"] == mod._format_expiry_iso(expires_at)
     assert current["expires_at_display"] == mod._format_expiry_display(expires_at)
-    assert "Valid until" in current["summary"]
+    assert current["code"] == "PAIR1234"
+    assert "register a new browser" in current["summary"]
 
 
 def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(monkeypatch, tmp_path: Path):
@@ -191,7 +193,7 @@ def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(mo
     assert '-ZoneId "ru"' in current["windows_cmd_command"]
     assert current["expires_at"] == expires_at_utc
     assert current["expires_at_display"] == "2030-01-02 03:04:05 UTC"
-    assert "Valid until 2030-01-02 03:04:05 UTC" in current["summary"]
+    assert "add a node to subnet sn_test in zone RU" in current["summary"]
 
 
 @pytest.mark.asyncio
