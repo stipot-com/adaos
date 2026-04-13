@@ -150,6 +150,53 @@ def _hub_route_prefers_supervisor_public_status(path_norm: str, method: str) -> 
     return method in ("GET", "HEAD") and path_norm == "/api/supervisor/public/update-status"
 
 
+def _supervisor_local_bases() -> list[str]:
+    bases: list[str] = []
+    explicit = (
+        os.getenv("ADAOS_SUPERVISOR_URL")
+        or os.getenv("ADAOS_SUPERVISOR_BASE")
+        or ""
+    ).strip()
+    if explicit and _is_local_http_base(explicit):
+        bases.append(explicit.rstrip("/"))
+    supervisor_port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "").strip() or "8776"
+    bases.append(f"http://127.0.0.1:{supervisor_port}")
+    bases.append(f"http://localhost:{supervisor_port}")
+    seen: set[str] = set()
+    return [b for b in bases if (b not in seen and not seen.add(b))]
+
+
+def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None:
+    try:
+        import requests  # type: ignore
+    except Exception:
+        return None
+
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+
+    for supervisor_base in _supervisor_local_bases():
+        try:
+            response = sess.get(
+                supervisor_base + "/api/supervisor/public/update-status",
+                headers={"Accept": "application/json"},
+                timeout=max(0.1, float(timeout_s)),
+            )
+            if int(response.status_code) != 200:
+                continue
+            payload = response.json()
+            runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+            runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
+            if runtime_url and _is_local_http_base(runtime_url):
+                return runtime_url
+        except Exception:
+            continue
+    return None
+
+
 def _build_hub_route_http_bases(*, path_norm: str, method: str, cfg: Any | None) -> list[str]:
     bases: list[str] = []
     env_base = (
@@ -159,25 +206,57 @@ def _build_hub_route_http_bases(*, path_norm: str, method: str, cfg: Any | None)
         or ""
     ).strip()
     cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
+    runtime_port = str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip()
 
     if _hub_route_prefers_supervisor_public_status(path_norm, method):
-        supervisor_base = (
-            os.getenv("ADAOS_SUPERVISOR_URL")
-            or os.getenv("ADAOS_SUPERVISOR_BASE")
-            or ""
-        ).strip()
-        if supervisor_base and _is_local_http_base(supervisor_base):
-            bases.append(supervisor_base.rstrip("/"))
-        supervisor_port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "").strip() or "8776"
-        bases.append(f"http://127.0.0.1:{supervisor_port}")
+        bases.extend(_supervisor_local_bases())
+    else:
+        active_runtime_base = _discover_active_runtime_local_base()
+        if active_runtime_base:
+            bases.append(active_runtime_base.rstrip("/"))
 
     if env_base:
         bases.append(env_base.rstrip("/"))
     if cfg_base and _is_local_http_base(cfg_base):
         bases.append(cfg_base.rstrip("/"))
+    if runtime_port.isdigit():
+        bases.append(f"http://127.0.0.1:{runtime_port}")
 
     # Keep runtime ports as fallback even for the browser-safe supervisor status path.
     bases.extend(["http://127.0.0.1:8778", "http://127.0.0.1:8777"])
+
+    seen_bases: set[str] = set()
+    return [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
+
+
+def _http_base_to_ws_base(base: str) -> str:
+    value = str(base or "").strip().rstrip("/")
+    if value.startswith("https://"):
+        return "wss://" + value[len("https://"):]
+    if value.startswith("http://"):
+        return "ws://" + value[len("http://"):]
+    return value
+
+
+def _build_hub_route_ws_bases(*, cfg: Any | None) -> list[str]:
+    bases: list[str] = []
+    env_base = str(os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
+    cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
+    active_runtime_base = _discover_active_runtime_local_base()
+
+    if active_runtime_base:
+        bases.append(_http_base_to_ws_base(active_runtime_base))
+
+    if env_base and _is_local_http_base(env_base):
+        bases.append(_http_base_to_ws_base(env_base))
+    if cfg_base and _is_local_http_base(cfg_base):
+        bases.append(_http_base_to_ws_base(cfg_base))
+
+    runtime_port = str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip()
+    if runtime_port.isdigit():
+        bases.append(f"ws://127.0.0.1:{runtime_port}")
+
+    bases.extend(["ws://127.0.0.1:8778", "ws://127.0.0.1:8777"])
 
     seen_bases: set[str] = set()
     return [b for b in bases if (b not in seen_bases and not seen_bases.add(b))]
@@ -4979,19 +5058,10 @@ class BootstrapService:
                                         from adaos.services.node_config import load_config
 
                                         cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                        # Prefer the actual base URL the hub is serving on (set by `adaos api` / dev),
-                                        # because the hub may not be reachable on the default 8777 (e.g. sentinel off).
-                                        base_http = (
-                                            os.getenv("ADAOS_SELF_BASE_URL")
-                                            or str(getattr(cfg, "hub_url", None) or "")
-                                            or "http://127.0.0.1:8777"
-                                        ).rstrip("/")
-                                        # Do not use 0.0.0.0/:: as client destinations.
-                                        base_http = base_http.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
-                                        base_ws = base_http.replace("http://", "ws://").replace("https://", "wss://")
+                                        ws_bases = _build_hub_route_ws_bases(cfg=cfg)
                                         token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                     except Exception:
-                                        base_ws = "ws://127.0.0.1:8777"
+                                        ws_bases = _build_hub_route_ws_bases(cfg=None)
                                         token_local = os.getenv("ADAOS_TOKEN", "") or None
                                     # Translate root-proxy JWT token into local hub token for upstream hub WS auth.
                                     # Local hub expects `token=<X-AdaOS-Token>`; forwarding the session JWT makes the
@@ -5011,12 +5081,6 @@ class BootstrapService:
                                         query = "?" + urlencode(q, doseq=True) if q else ""
                                     except Exception:
                                         pass
-                                    url = f"{base_ws}{path}{query}"
-                                    if _route_verbose or _route_trace:
-                                        try:
-                                            _route_log(f"[hub-route] open upstream url={url}")
-                                        except Exception:
-                                            pass
                                     # Ensure we don't leak multiple opens for same key.
                                     try:
                                         old = tunnels.get(key)
@@ -5041,18 +5105,40 @@ class BootstrapService:
                                             _route_log(
                                                 f"[hub-route] upstream.connect start key={_key_tag(key)} timeout_s={ws_connect_timeout_s}"
                                             )
-                                        t0 = time.monotonic()
-                                        ws = await asyncio.wait_for(
-                                            websockets_mod.connect(url, max_size=None),
-                                            timeout=ws_connect_timeout_s,
-                                        )
-                                        if _route_trace:
-                                            took = time.monotonic() - t0
-                                            proto = getattr(ws, "subprotocol", None) or getattr(ws, "protocol", None)
-                                            remote = getattr(ws, "remote_address", None)
-                                            _route_log(
-                                                f"[hub-route] upstream.connect ok key={_key_tag(key)} took_s={took:.3f} proto={proto} remote={remote}"
-                                            )
+                                        ws = None
+                                        last_exc = None
+                                        for base_ws in ws_bases:
+                                            url = f"{base_ws}{path}{query}"
+                                            if _route_verbose or _route_trace:
+                                                try:
+                                                    _route_log(f"[hub-route] open upstream url={url}")
+                                                except Exception:
+                                                    pass
+                                            t0 = time.monotonic()
+                                            try:
+                                                ws = await asyncio.wait_for(
+                                                    websockets_mod.connect(url, max_size=None),
+                                                    timeout=ws_connect_timeout_s,
+                                                )
+                                                if _route_trace:
+                                                    took = time.monotonic() - t0
+                                                    proto = getattr(ws, "subprotocol", None) or getattr(ws, "protocol", None)
+                                                    remote = getattr(ws, "remote_address", None)
+                                                    _route_log(
+                                                        f"[hub-route] upstream.connect ok key={_key_tag(key)} took_s={took:.3f} proto={proto} remote={remote}"
+                                                    )
+                                                break
+                                            except Exception as exc:
+                                                last_exc = exc
+                                                if _route_trace:
+                                                    try:
+                                                        _route_log(
+                                                            f"[hub-route] upstream.connect retry key={_key_tag(key)} url={url} err={type(exc).__name__}: {exc}"
+                                                        )
+                                                    except Exception:
+                                                        pass
+                                        if ws is None:
+                                            raise last_exc or RuntimeError("hub route websocket upstream failed")
                                     except Exception as e:
                                         route_outcome = f"open_connect_fail:{type(e).__name__}"
                                         _clear_pending_tunnel_state(key, drop_events=True)

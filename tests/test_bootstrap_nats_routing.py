@@ -107,6 +107,72 @@ def test_hub_route_force_close_no_upstream_can_disable(monkeypatch) -> None:
     assert bootstrap_mod._hub_route_force_close_no_upstream_s() == 0.0
 
 
+def test_build_hub_route_ws_bases_ignores_remote_hub_url(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.delenv("ADAOS_RUNTIME_PORT", raising=False)
+    monkeypatch.setattr(bootstrap_mod, "_discover_active_runtime_local_base", lambda **_: None)
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg) == [
+        "ws://127.0.0.1:8778",
+        "ws://127.0.0.1:8777",
+    ]
+
+
+def test_build_hub_route_ws_bases_prefers_local_env_base(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_SELF_BASE_URL", "http://127.0.0.1:8779")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8780")
+    monkeypatch.setattr(bootstrap_mod, "_discover_active_runtime_local_base", lambda **_: None)
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg) == [
+        "ws://127.0.0.1:8779",
+        "ws://127.0.0.1:8780",
+        "ws://127.0.0.1:8778",
+        "ws://127.0.0.1:8777",
+    ]
+
+
+def test_build_hub_route_http_bases_prefers_supervisor_active_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.delenv("ADAOS_RUNTIME_PORT", raising=False)
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_discover_active_runtime_local_base",
+        lambda **_: "http://127.0.0.1:8777",
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_http_bases(
+        path_norm="/api/ws/test",
+        method="GET",
+        cfg=cfg,
+    )[:2] == [
+        "http://127.0.0.1:8777",
+        "http://127.0.0.1:8778",
+    ]
+
+
+def test_build_hub_route_ws_bases_prefers_supervisor_active_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.delenv("ADAOS_RUNTIME_PORT", raising=False)
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_discover_active_runtime_local_base",
+        lambda **_: "http://127.0.0.1:8777",
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg)[:2] == [
+        "ws://127.0.0.1:8777",
+        "ws://127.0.0.1:8778",
+    ]
+
+
 def test_bootstrap_shutdown_stops_scheduler(monkeypatch) -> None:
     calls: list[str] = []
 
