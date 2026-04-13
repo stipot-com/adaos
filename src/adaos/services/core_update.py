@@ -101,6 +101,57 @@ def read_last_result() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_ROLLOUT_STATUS_KEYS = (
+    "action",
+    "target_rev",
+    "target_version",
+    "planned_reason",
+    "min_update_period_sec",
+    "scheduled_for",
+    "subsequent_transition",
+    "subsequent_transition_requested_at",
+    "candidate_prewarm_state",
+    "candidate_prewarm_message",
+    "candidate_prewarm_ready_at",
+)
+
+
+def _hydrate_rollout_status_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    plan = merged.get("plan") if isinstance(merged.get("plan"), dict) else {}
+    manifest = merged.get("manifest") if isinstance(merged.get("manifest"), dict) else {}
+    state = str(merged.get("state") or "").strip().lower()
+    if state == "idle" and not plan and not manifest:
+        return merged
+
+    current = read_status()
+    for key in _ROLLOUT_STATUS_KEYS:
+        if key not in merged and key in current:
+            merged[key] = current[key]
+
+    if not str(merged.get("action") or "").strip():
+        action = str(plan.get("action") or "").strip()
+        if action:
+            merged["action"] = action
+
+    if not str(merged.get("target_rev") or "").strip():
+        target_rev = str(plan.get("target_rev") or manifest.get("target_rev") or "").strip()
+        if target_rev:
+            merged["target_rev"] = target_rev
+
+    if not str(merged.get("target_version") or "").strip():
+        target_version = str(plan.get("target_version") or manifest.get("target_version") or "").strip()
+        if target_version:
+            merged["target_version"] = target_version
+
+    if not str(merged.get("planned_reason") or "").strip():
+        planned_reason = str(plan.get("reason") or "").strip()
+        if planned_reason:
+            merged["planned_reason"] = planned_reason
+
+    return merged
+
+
 def _is_terminal_status(payload: dict[str, Any]) -> bool:
     state = str(payload.get("state") or "").strip().lower()
     phase = str(payload.get("phase") or "").strip().lower()
@@ -210,7 +261,7 @@ def promote_root_from_slot(*, slot: str | None = None) -> dict[str, Any]:
 
 
 def write_status(payload: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(payload)
+    merged = _hydrate_rollout_status_fields(payload)
     merged.setdefault("updated_at", time.time())
     _write_json(status_path(), merged)
     if _is_terminal_status(merged):

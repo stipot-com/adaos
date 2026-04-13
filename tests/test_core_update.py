@@ -54,6 +54,42 @@ def test_core_update_status_roundtrip(monkeypatch, tmp_path) -> None:
     assert read_status()["state"] == "countdown"
 
 
+def test_core_update_status_keeps_rollout_metadata_across_validate(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_status(
+        {
+            "state": "restarting",
+            "phase": "launch",
+            "plan": {
+                "action": "update",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+77.d7d79d5",
+                "reason": "infrastate.start_update",
+            },
+        }
+    )
+
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "validate",
+            "target_slot": "B",
+            "manifest": {
+                "slot": "B",
+                "target_rev": "rev2026",
+                "target_version": "0.1.0+77.d7d79d5",
+            },
+        }
+    )
+
+    status = read_status()
+    assert status["action"] == "update"
+    assert status["target_rev"] == "rev2026"
+    assert status["target_version"] == "0.1.0+77.d7d79d5"
+    assert status["planned_reason"] == "infrastate.start_update"
+    assert read_last_result()["target_version"] == "0.1.0+77.d7d79d5"
+
+
 def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     published: list[object] = []
