@@ -362,6 +362,45 @@ def _y_server_runtime_snapshot() -> dict[str, Any]:
     }
 
 
+def _gateway_lifecycle_manager() -> str:
+    token = str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower()
+    return "supervisor" if token in {"1", "true", "yes", "on"} else "runtime"
+
+
+def _gateway_transport_ownership_snapshot() -> dict[str, dict[str, Any]]:
+    lifecycle_manager = _gateway_lifecycle_manager()
+    return {
+        "ws": {
+            "current_owner": "runtime",
+            "lifecycle_manager": lifecycle_manager,
+            "planned_owner": "sidecar",
+            "migration_phase": "phase_2_route_tunnel_ownership",
+            "logical_channels": [
+                "hub_member.command",
+                "hub_member.event",
+                "hub_member.presence",
+            ],
+            "handoff_ready": False,
+            "handoff_blockers": [
+                "browser route websocket still terminates in the runtime FastAPI app",
+            ],
+        },
+        "yws": {
+            "current_owner": "runtime",
+            "lifecycle_manager": lifecycle_manager,
+            "planned_owner": "sidecar",
+            "migration_phase": "phase_2_route_tunnel_ownership",
+            "logical_channels": [
+                "hub_member.sync",
+            ],
+            "handoff_ready": False,
+            "handoff_blockers": [
+                "Yjs websocket/session ownership still lives in the runtime gateway",
+            ],
+        },
+    }
+
+
 def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
     with _TRANSPORT_LOCK:
@@ -389,6 +428,7 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
         "servers": {
             "yws": _y_server_runtime_snapshot(),
         },
+        "ownership": _gateway_transport_ownership_snapshot(),
         "updated_at": now,
     }
 

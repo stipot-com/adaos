@@ -38,6 +38,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - route and root-control incident classes still need clearer separation
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar owns the current `hub_root` transport boundary and is supervisor-managed in managed deployments, but `/ws`, `/yws`, Yjs, and media transport are still outside sidecar scope
+- runtime diagnostics now explicitly report that `/ws` and `/yws` remain runtime-owned with `planned_owner=sidecar`, so partial sidecar adoption is observable instead of implicit
 - local process/update supervision now has a separate supervisor authority in managed deployments, but browser-safe visibility and warm-switch recovery hardening are still in progress
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
@@ -168,6 +169,7 @@ Completed for current `hub_root` transport-ownership scope.
 The sidecar now exposes a protocol-facing runtime surface with explicit ownership boundary, transport readiness, control readiness, reconnect counters, quarantine/supersede history, and transport provenance.
 Sidecar lifecycle is also independently observable and restartable through the local control API and CLI, and managed deployments now place that lifecycle under `adaos-supervisor` instead of the runtime lifespan.
 This completion is intentionally transport-only: the sidecar owns the `hub_root` NATS transport lifecycle, but does not yet own route tunnel transport, Yjs sync transport, or media transport.
+The intermediate ownership split is now explicit in diagnostics: current sidecar scope, lifecycle manager, and planned next boundaries are exposed alongside runtime-owned `/ws` and `/yws` transport ownership.
 
 ### Focus
 

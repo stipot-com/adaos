@@ -239,11 +239,15 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     if sidecar:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
+        scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
+        planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
         typer.echo(
             "sidecar: "
             f"phase={sidecar.get('phase') or '-'} "
             f"enabled={bool(sidecar.get('enabled'))} "
             f"status={sidecar.get('status') or 'unknown'} "
+            f"owner={sidecar.get('transport_owner') or '-'} "
+            f"manager={sidecar.get('lifecycle_manager') or '-'} "
             f"transport={sidecar.get('local_listener_state') or ('ready' if sidecar.get('transport_ready') else 'down')}/"
             f"{sidecar.get('remote_session_state') or '-'} "
             f"control={sidecar.get('control_ready') or '-'} "
@@ -253,6 +257,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"superseded={provenance.get('superseded_total') or 0} "
             f"pid={process.get('listener_pid') or '-'} "
             f"local={sidecar.get('local_url') or '-'} "
+            f"next={planned_next or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
     if sync_runtime:
@@ -269,6 +274,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"updates={sync_runtime.get('update_log_total') or 0} "
             f"replay={sync_runtime.get('replay_window_total') or 0} "
             f"yws={transport.get('active_yws_connections') or 0} "
+            f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "
             f"yws10s={transport.get('recent_open_10s') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"

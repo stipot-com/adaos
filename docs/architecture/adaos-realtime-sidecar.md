@@ -36,6 +36,7 @@ This is intentionally minimal:
   - control readiness
   - reconnect, quarantine, and supersede counters
   - transport provenance and ownership boundary
+  - current scope, lifecycle manager, and next planned boundaries
 - can be inspected and restarted independently through the local control API / CLI without restarting the hub process
 
 Supervisor / runtime boundary:
@@ -44,6 +45,7 @@ Supervisor / runtime boundary:
 - standalone runtime keeps a temporary fallback and may still start the sidecar itself when supervisor is absent
 - hub runtime connects its existing NATS client to local `nats://127.0.0.1:7422`
 - hub runtime does not install the internal WebSocket NATS transport patch while sidecar mode is enabled
+- browser `/ws` and `/yws` transport still terminate in the runtime and explicitly report that ownership as transitional until Phase 2 is implemented
 
 ## Why this split
 
@@ -94,6 +96,7 @@ Next step.
 - move `/ws` and `/yws` tunnel transport into sidecar
 - keep local IPC between hub core and sidecar narrow and explicit
 - leave HTTP/API orchestration in hub main process
+- until the move is complete, diagnostics must expose `current_owner=runtime`, `planned_owner=sidecar`, and the current blocker for each websocket transport
 
 Success criteria:
 

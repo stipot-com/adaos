@@ -606,12 +606,17 @@ def hub_root_sidecar_status(
         return
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
+    scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
+    planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"sidecar={runtime.get('status') or 'unknown'} "
         f"phase={runtime.get('phase') or '-'} "
+        f"owner={runtime.get('transport_owner') or '-'} "
+        f"manager={runtime.get('lifecycle_manager') or '-'} "
         f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
         f"control={runtime.get('control_ready') or '-'} "
         f"route={runtime.get('route_ready') or '-'} "
+        f"next={planned_next or '-'} "
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'} "
         f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
@@ -642,11 +647,16 @@ def hub_root_sidecar_restart(
     restart = data.get("restart") if isinstance(data.get("restart"), dict) else {}
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
+    planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"accepted={bool(restart.get('accepted'))} "
         f"reason={restart.get('reason') or '-'} "
         f"sidecar={runtime.get('status') or 'unknown'}/{runtime.get('control_ready') or '-'} "
+        f"owner={runtime.get('transport_owner') or '-'} "
+        f"manager={runtime.get('lifecycle_manager') or '-'} "
         f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "
+        f"next={planned_next or '-'} "
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'}"
     )

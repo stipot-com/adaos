@@ -646,6 +646,8 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
             {
                 "enabled": enabled,
                 "phase": payload.get("phase"),
+                "transport_owner": payload.get("transport_owner"),
+                "lifecycle_manager": payload.get("lifecycle_manager"),
                 "local_listener_state": payload.get("local_listener_state"),
                 "remote_session_state": payload.get("remote_session_state"),
                 "transport_ready": payload.get("transport_ready"),
@@ -661,6 +663,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
                 "local_url": payload.get("local_url"),
                 "diag_path": payload.get("diag_path"),
                 "diag_age_s": payload.get("diag_age_s"),
+                "scope": payload.get("scope"),
                 "transport_provenance": payload.get("transport_provenance"),
             }
         ),
@@ -715,6 +718,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
             {
                 "selected_webspace_id": selected_webspace_id,
                 "selected_webspace": selected_webspace,
+                "transport_ownership": coerce_mapping(payload.get("transport")),
             }
         ),
         actions=_actions_from_yjs_overrides(coerce_mapping(payload.get("action_overrides")), webspace_id=selected_webspace_id),

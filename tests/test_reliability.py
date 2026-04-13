@@ -31,6 +31,8 @@ from adaos.services.reliability import (
     reliability_snapshot,
     reset_reliability_runtime_state,
     set_integration_readiness,
+    sidecar_runtime_snapshot,
+    yjs_sync_runtime_snapshot,
 )
 from adaos.services.runtime_lifecycle import reset_runtime_lifecycle
 
@@ -371,7 +373,27 @@ def test_hub_member_transport_evidence_counts_only_media_capable_members(monkeyp
         sys.modules,
         "adaos.services.yjs.gateway_ws",
         SimpleNamespace(
-            gateway_transport_snapshot=lambda: {"transports": {}},
+            gateway_transport_snapshot=lambda: {
+                "transports": {},
+                "ownership": {
+                    "ws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                    },
+                    "yws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                    },
+                },
+            },
             active_browser_session_snapshot=lambda: {
                 "peers": [
                     {"device_id": "browser-1", "connection_state": "connected"},
@@ -451,6 +473,107 @@ def test_hub_member_transport_evidence_counts_only_media_capable_members(monkeyp
     assert member_browser["candidate_member_total"] == 1
     assert member_browser["candidate_members"] == ["member-capable"]
     assert member_browser["preferred_member_id"] == "member-capable"
+    assert evidence["ws"]["owner"] == "runtime"
+    assert evidence["ws"]["planned_owner"] == "sidecar"
+    assert evidence["yws"]["lifecycle_manager"] == "supervisor"
+
+
+def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
+            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 42},
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+    )
+
+    assert snapshot["enabled"] is True
+    assert snapshot["transport_owner"] == "sidecar"
+    assert snapshot["lifecycle_manager"] == "supervisor"
+    assert snapshot["scope"]["current_boundaries"] == ["hub_root_transport"]
+    assert snapshot["scope"]["planned_next_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+
+
+def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        SimpleNamespace(
+            ystore_runtime_snapshot=lambda **kwargs: {
+                "webspace_total": 1,
+                "active_webspace_total": 1,
+                "webspaces": {
+                    "default": {
+                        "log_mode": "snapshot_plus_diff",
+                        "update_log_entries": 3,
+                        "max_update_log_entries": 128,
+                        "replay_window_entries": 2,
+                        "compact_total": 0,
+                    }
+                },
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway_ws",
+        SimpleNamespace(
+            gateway_transport_snapshot=lambda: {
+                "transports": {
+                    "yws": {
+                        "active_connections": 2,
+                        "recent_open_10s": 1,
+                        "recent_open_60s": 2,
+                        "storm_detected": False,
+                        "hot_clients": [],
+                    }
+                },
+                "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True}},
+                "ownership": {
+                    "yws": {
+                        "current_owner": "runtime",
+                        "lifecycle_manager": "supervisor",
+                        "planned_owner": "sidecar",
+                        "migration_phase": "phase_2_route_tunnel_ownership",
+                        "handoff_ready": False,
+                        "handoff_blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                    }
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_selected_webspace_snapshot",
+        lambda webspace_id: {"webspace_id": webspace_id or "default"},
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_recovery_policy",
+        lambda selected_entry, selected_webspace: ({}, {}, {}),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_webspace_guidance",
+        lambda selected_webspace, action_overrides: {},
+    )
+
+    snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
+    transport = snapshot["transport"]
+
+    assert snapshot["available"] is True
+    assert transport["owner"] == "runtime"
+    assert transport["planned_owner"] == "sidecar"
+    assert transport["lifecycle_manager"] == "supervisor"
+    assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
+    assert transport["handoff_ready"] is False
 
 
 def test_member_reliability_snapshot_uses_connected_to_hub_for_route_and_sync() -> None:
@@ -620,6 +743,75 @@ def test_node_reliability_cli_prints_runtime_summary(monkeypatch) -> None:
     assert "integration.telegram: ready" in result.output
     assert "diag.root_control: flapping score=62 recent_non_ready_5m=2" in result.output
     assert "root_routed_browser_proxy: blocked" in result.output
+
+
+def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+    monkeypatch.setattr(
+        node_cli,
+        "_control_get_json",
+        lambda **kwargs: (
+            200,
+            {
+                "node": {"node_id": "node-1", "role": "hub", "ready": True, "node_state": "ready"},
+                "runtime": {
+                    "readiness_tree": {},
+                    "sidecar_runtime": {
+                        "phase": "nats_transport_sidecar",
+                        "enabled": True,
+                        "status": "ready",
+                        "transport_owner": "sidecar",
+                        "lifecycle_manager": "supervisor",
+                        "local_listener_state": "ready",
+                        "remote_session_state": "ready",
+                        "control_ready": "ready",
+                        "route_ready": "not_owned",
+                        "transport_ready": True,
+                        "local_url": "nats://127.0.0.1:7422",
+                        "diag_age_s": 1.5,
+                        "transport_provenance": {
+                            "remote_connect_total": 2,
+                            "remote_connect_fail_total": 0,
+                            "superseded_total": 0,
+                        },
+                        "process": {"listener_pid": 12345},
+                        "scope": {
+                            "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
+                        },
+                    },
+                    "sync_runtime": {
+                        "assessment": {"state": "nominal"},
+                        "webspace_total": 1,
+                        "active_webspace_total": 1,
+                        "compacted_webspace_total": 0,
+                        "update_log_total": 3,
+                        "replay_window_total": 2,
+                        "webspaces": {
+                            "default": {
+                                "log_mode": "snapshot_plus_diff",
+                                "update_log_entries": 3,
+                                "max_update_log_entries": 128,
+                            }
+                        },
+                        "transport": {
+                            "active_yws_connections": 2,
+                            "owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "recent_open_10s": 1,
+                        },
+                    },
+                },
+            },
+        ),
+    )
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert "owner=sidecar manager=supervisor" in result.output
+    assert "next=browser_events_ws,browser_yjs_ws" in result.output
+    assert "owner=runtime->sidecar" in result.output
 
 
 def test_node_reliability_cli_reports_timeout_detail(monkeypatch) -> None:

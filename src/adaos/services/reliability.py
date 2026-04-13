@@ -2485,6 +2485,24 @@ def _new_hub_member_channel_state(spec: SemanticChannelSpec) -> dict[str, Any]:
     }
 
 
+def _sidecar_lifecycle_manager() -> str:
+    token = str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower()
+    return "supervisor" if token in {"1", "true", "yes", "on"} else "runtime"
+
+
+def _sidecar_scope_snapshot(*, enabled: bool) -> dict[str, Any]:
+    return {
+        "current_boundaries": ["hub_root_transport"] if enabled else [],
+        "runtime_fallback_boundaries": ["hub_root_transport"] if not enabled else [],
+        "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
+        "planned_later_boundaries": [
+            "webrtc_signaling",
+            "webrtc_media",
+            "yjs_session_authority",
+        ],
+    }
+
+
 def _hub_member_transport_evidence_snapshot(
     *,
     role: str,
@@ -2521,13 +2539,22 @@ def _hub_member_transport_evidence_snapshot(
         except Exception:
             gateway = {}
         transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+        ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
         ws_entry = transports.get("ws") if isinstance(transports.get("ws"), dict) else {}
         yws_entry = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+        ws_ownership = ownership.get("ws") if isinstance(ownership.get("ws"), dict) else {}
+        yws_ownership = ownership.get("yws") if isinstance(ownership.get("yws"), dict) else {}
         evidence["ws"].update(
             {
                 "available": int(ws_entry.get("active_connections") or 0) > 0,
                 "active_connections": int(ws_entry.get("active_connections") or 0),
                 "last_open_ago_s": ws_entry.get("last_open_ago_s"),
+                "owner": ws_ownership.get("current_owner") or "runtime",
+                "lifecycle_manager": ws_ownership.get("lifecycle_manager"),
+                "planned_owner": ws_ownership.get("planned_owner"),
+                "migration_phase": ws_ownership.get("migration_phase"),
+                "handoff_ready": bool(ws_ownership.get("handoff_ready")),
+                "handoff_blockers": list(ws_ownership.get("handoff_blockers") or []),
             }
         )
         evidence["yws"].update(
@@ -2537,6 +2564,12 @@ def _hub_member_transport_evidence_snapshot(
                 "last_open_ago_s": yws_entry.get("last_open_ago_s"),
                 "recent_open_10s": int(yws_entry.get("recent_open_10s") or 0),
                 "storm_detected": bool(yws_entry.get("storm_detected")),
+                "owner": yws_ownership.get("current_owner") or "runtime",
+                "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
+                "planned_owner": yws_ownership.get("planned_owner"),
+                "migration_phase": yws_ownership.get("migration_phase"),
+                "handoff_ready": bool(yws_ownership.get("handoff_ready")),
+                "handoff_blockers": list(yws_ownership.get("handoff_blockers") or []),
             }
         )
 
@@ -3723,6 +3756,8 @@ def sidecar_runtime_snapshot(
         "sync_transport": False,
         "media_transport": False,
     }
+    lifecycle_manager = _sidecar_lifecycle_manager()
+    scope = _sidecar_scope_snapshot(enabled=enabled)
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -3809,9 +3844,12 @@ def sidecar_runtime_snapshot(
         return {
             "enabled": enabled,
             "phase": "nats_transport_sidecar",
+            "transport_owner": "sidecar" if enabled else "runtime",
+            "lifecycle_manager": lifecycle_manager,
             "ownership_boundary": "transport_only",
             "ownership": ownership,
             "delegations": delegations,
+            "scope": scope,
             "status": status,
             "summary": summary,
             "local_url": realtime_sidecar_local_url(),
@@ -3832,9 +3870,12 @@ def sidecar_runtime_snapshot(
     return {
         "enabled": enabled,
         "phase": "nats_transport_sidecar",
+        "transport_owner": "sidecar" if enabled else "runtime",
+        "lifecycle_manager": lifecycle_manager,
         "ownership_boundary": "transport_only",
         "ownership": ownership,
         "delegations": delegations,
+        "scope": scope,
         "status": status,
         "summary": summary,
         "local_url": realtime_sidecar_local_url(),
@@ -3921,7 +3962,9 @@ def yjs_sync_runtime_snapshot(
     except Exception:
         gateway = {}
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
+    ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
+    yws_ownership = ownership.get("yws") if isinstance(ownership.get("yws"), dict) else {}
     servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
     yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
 
@@ -3992,6 +4035,12 @@ def yjs_sync_runtime_snapshot(
             "recent_open_60s": int(yws_transport.get("recent_open_60s") or 0),
             "storm_detected": bool(yws_transport.get("storm_detected")),
             "hot_clients": list(yws_transport.get("hot_clients") or []),
+            "owner": yws_ownership.get("current_owner") or "runtime",
+            "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
+            "planned_owner": yws_ownership.get("planned_owner"),
+            "migration_phase": yws_ownership.get("migration_phase"),
+            "handoff_ready": bool(yws_ownership.get("handoff_ready")),
+            "handoff_blockers": list(yws_ownership.get("handoff_blockers") or []),
             "server_requested": bool(yws_server.get("requested")),
             "server_started_event": bool(yws_server.get("started_event")),
             "server_task_running": bool(yws_server.get("task_running")),
