@@ -188,6 +188,15 @@ def _control_patch_json(
     return response.status_code, payload
 
 
+def _resolved_local_control_token(control: str, cfg: Any) -> str:
+    explicit = getattr(cfg, "token", None)
+    try:
+        return resolve_control_token(explicit=explicit, base_url=control)
+    except TypeError:
+        # Test doubles may still expose the older one-argument signature.
+        return resolve_control_token(explicit=explicit)
+
+
 def _print_reliability_summary(payload: dict[str, Any]) -> None:
     node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -890,7 +899,7 @@ def node_status(
         status_code, payload = _control_get_json(
             control=control0,
             path="/api/node/status",
-            token=resolve_control_token(explicit=cfg.token),
+            token=_resolved_local_control_token(control0, cfg),
         )
         if status_code == 200 and isinstance(payload, dict):
             result["ready"] = bool(payload.get("ready"))
@@ -908,7 +917,7 @@ def node_reliability(
 
     cfg = load_config()
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
-    token = resolve_control_token(explicit=cfg.token)
+    token = _resolved_local_control_token(control0, cfg)
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/reliability",
@@ -956,7 +965,7 @@ def node_members(
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/members",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
     )
     if status_code is None:
         typer.secho("[AdaOS] member probe failed: local control API is unreachable", fg=typer.colors.RED)
@@ -1030,7 +1039,7 @@ def node_yjs_status(
     status_code, payload = _control_get_json(
         control=control0,
         path=path,
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=5.0,
     )
     if status_code is None:
@@ -1060,7 +1069,7 @@ def node_yjs_backup(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/backup",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={},
         timeout=8.0,
     )
@@ -1099,7 +1108,7 @@ def _node_yjs_control_action(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/{action}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "scenario_id": scenario_id or None,
             **({"set_home": bool(set_home)} if set_home is not None else {}),
@@ -1143,7 +1152,7 @@ def _node_yjs_ensure_dev_action(
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/dev-webspaces/ensure",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "scenario_id": str(scenario_id or "").strip() or None,
             "requested_id": str(requested_id or "").strip() or None,
@@ -1189,7 +1198,7 @@ def _node_yjs_create_action(
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/webspaces",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "id": str(webspace or "").strip() or None,
             "title": str(title or "").strip() or None,
@@ -1236,7 +1245,7 @@ def _node_yjs_update_action(
     status_code, payload = _control_patch_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "title": str(title or "").strip() or None,
             "home_scenario": str(home_scenario or "").strip() or None,
@@ -1278,7 +1287,7 @@ def _node_yjs_describe_action(
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=8.0,
     )
     if status_code is None:
@@ -1322,7 +1331,7 @@ def _node_yjs_desktop_action(
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/desktop",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         timeout=8.0,
     )
     if status_code is None:
@@ -1552,7 +1561,7 @@ def node_member_refresh(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/snapshot/request",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={},
     )
     if status_code is None:
@@ -1593,7 +1602,7 @@ def node_member_update(
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/update",
-        token=resolve_control_token(explicit=cfg.token),
+        token=_resolved_local_control_token(control0, cfg),
         body={
             "action": action,
             "target_rev": target_rev,

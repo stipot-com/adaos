@@ -39,6 +39,14 @@ def _local_api_base() -> str:
     return resolve_control_base_url()
 
 
+def _local_control_token(base_url: str) -> str:
+    try:
+        return resolve_control_token(base_url=base_url)
+    except TypeError:
+        # Test doubles may still expose the older one-argument signature.
+        return resolve_control_token()
+
+
 def _root_verify_from_conf(conf: Any) -> str | bool | ssl.SSLContext:
     verify: str | bool | ssl.SSLContext = True
     try:
@@ -86,7 +94,7 @@ def hub_root_status(json_output: bool = typer.Option(False, "--json", help="JSON
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/reliability"
     headers = {"X-AdaOS-Token": token}
     r = requests.get(url, headers=headers, timeout=5.0)
@@ -275,7 +283,7 @@ def hub_root_watch(
     import requests, time as _time
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/reliability"
     headers = {"X-AdaOS-Token": token}
     while True:
@@ -443,7 +451,7 @@ def hub_root_reconnect(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/hub-root/reconnect"
     headers = {"X-AdaOS-Token": token}
     payload = {"transport": transport, "url_override": url_override}
@@ -595,7 +603,7 @@ def hub_root_sidecar_status(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/sidecar/status"
     headers = {"X-AdaOS-Token": token}
     r = requests.get(url, headers=headers, timeout=5.0)
@@ -669,7 +677,7 @@ def hub_root_sidecar_restart(
     import requests
 
     base = resolve_control_base_url()
-    token = resolve_control_token()
+    token = _local_control_token(base)
     url = base + "/api/node/sidecar/restart"
     headers = {"X-AdaOS-Token": token}
     payload = {"reconnect_hub_root": bool(reconnect_hub_root)}

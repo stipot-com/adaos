@@ -406,7 +406,7 @@ def _autostart_admin_base_url(token: Optional[str] = None) -> str:
         _push(f"http://{host}:{int(port)}")
     _push(resolve_control_base_url())
 
-    resolved_token = resolve_control_token(explicit=token)
+    resolved_token = str(token or _autostart_service_token() or resolve_control_token(explicit=token)).strip()
     for base in candidates:
         code, _payload = probe_control_api(base_url=base, token=resolved_token, timeout_s=0.75)
         if code is not None:
@@ -414,10 +414,33 @@ def _autostart_admin_base_url(token: Optional[str] = None) -> str:
     return candidates[0] if candidates else resolve_control_base_url()
 
 
+def _autostart_service_token() -> str:
+    try:
+        info = autostart_status(get_ctx())
+    except Exception:
+        info = None
+    if not isinstance(info, dict):
+        return ""
+    wrapper_env = info.get("wrapper_env") if isinstance(info.get("wrapper_env"), dict) else {}
+    for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+        raw = str(wrapper_env.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
 def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
     ctx = get_ctx()
     conf = getattr(ctx, "config", None)
-    resolved = str(token or getattr(conf, "token", None) or os.getenv("ADAOS_TOKEN") or "").strip()
+    resolved = str(
+        token
+        or _autostart_service_token()
+        or os.getenv("ADAOS_TOKEN")
+        or os.getenv("ADAOS_HUB_TOKEN")
+        or os.getenv("HUB_TOKEN")
+        or getattr(conf, "token", None)
+        or ""
+    ).strip()
     headers = {"Content-Type": "application/json"}
     if resolved:
         headers["X-AdaOS-Token"] = resolved

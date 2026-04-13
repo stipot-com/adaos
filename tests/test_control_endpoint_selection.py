@@ -122,6 +122,27 @@ def test_resolve_control_base_url_skips_candidate_ping_candidates(monkeypatch) -
     assert base == "http://127.0.0.1:8777"
 
 
+def test_resolve_control_token_prefers_candidate_that_authenticates_with_local_control(monkeypatch) -> None:
+    monkeypatch.setattr(
+        active_control,
+        "_control_token_candidates",
+        lambda explicit=None: ["stale-config-token", "wrapper-service-token"],
+    )
+
+    def _probe(*, base_url: str, token: str, timeout_s: float = 0.5):
+        assert base_url == "http://127.0.0.1:8777"
+        return 200 if token == "wrapper-service-token" else 401
+
+    monkeypatch.setattr(active_control, "_probe_control_token_status", _probe)
+
+    token = active_control.resolve_control_token(
+        explicit="stale-config-token",
+        base_url="http://127.0.0.1:8777",
+    )
+
+    assert token == "wrapper-service-token"
+
+
 def test_member_link_resolve_local_control_base_skips_candidate_ping(monkeypatch) -> None:
     monkeypatch.delenv("ADAOS_SUPERVISOR_URL", raising=False)
     monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
