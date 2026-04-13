@@ -150,6 +150,13 @@ def _min_update_period_sec() -> float:
         return 300.0
 
 
+def _live_media_guard_defer_sec() -> float:
+    try:
+        return max(30.0, float(str(os.getenv("ADAOS_SUPERVISOR_LIVE_MEDIA_DEFER_SEC") or "300").strip()))
+    except Exception:
+        return 300.0
+
+
 def _slot_runtime_ports(primary_port: int) -> dict[str, int]:
     fallback_a = int(primary_port)
     fallback_b = fallback_a + 1
@@ -686,12 +693,130 @@ class SupervisorManager:
             with contextlib.suppress(Exception):
                 session.close()
 
-    def _runtime_sidecar_runtime_payload(self) -> dict[str, Any]:
+    def _runtime_reliability_payload(self, *, timeout: float = 2.0) -> dict[str, Any]:
         try:
-            payload = self._runtime_request_json(path="/api/node/reliability", timeout=2.0)
-        except Exception:
+            payload = self._runtime_request_json(path="/api/node/reliability", timeout=timeout)
+        except Exception as exc:
+            _LOG.debug("supervisor reliability preflight unavailable: %s: %s", type(exc).__name__, exc)
             return {}
         runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        return dict(runtime) if isinstance(runtime, dict) else {}
+
+    def _transition_continuity_guard_snapshot(self, *, timeout: float = 2.0) -> dict[str, Any]:
+        runtime = self._runtime_reliability_payload(timeout=timeout)
+        sidecar_runtime = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
+        media_runtime = runtime.get("media_runtime") if isinstance(runtime.get("media_runtime"), dict) else {}
+        continuity_contract = (
+            sidecar_runtime.get("continuity_contract")
+            if isinstance(sidecar_runtime.get("continuity_contract"), dict)
+            else {}
+        )
+        update_guard = media_runtime.get("update_guard") if isinstance(media_runtime.get("update_guard"), dict) else {}
+        role = str(update_guard.get("role") or self._sidecar_role() or "").strip().lower() or None
+        return {
+            "role": role,
+            "continuity_contract": dict(continuity_contract) if isinstance(continuity_contract, dict) else {},
+            "update_guard": dict(update_guard) if isinstance(update_guard, dict) else {},
+        }
+
+    @staticmethod
+    def _transition_operation_label(operation: str) -> str:
+        op = str(operation or "").strip().lower()
+        if op == "restart":
+            return "runtime restart"
+        if op == "rollback":
+            return "core rollback"
+        return "core update"
+
+    def _transition_continuity_guard_decision(self, *, operation: str) -> dict[str, Any] | None:
+        snapshot = self._transition_continuity_guard_snapshot(timeout=2.0)
+        role = str(snapshot.get("role") or "").strip().lower()
+        continuity_contract = (
+            snapshot.get("continuity_contract")
+            if isinstance(snapshot.get("continuity_contract"), dict)
+            else {}
+        )
+        update_guard = snapshot.get("update_guard") if isinstance(snapshot.get("update_guard"), dict) else {}
+        if role not in {"hub", "member"}:
+            return None
+
+        member_policy = str(update_guard.get("member_runtime_update") or "allow").strip().lower() or "allow"
+        hub_policy = str(
+            continuity_contract.get("hub_runtime_update") or update_guard.get("hub_runtime_update") or "allow"
+        ).strip().lower() or "allow"
+        current_support = str(
+            continuity_contract.get("current_support") or update_guard.get("current_support") or "unknown"
+        ).strip().lower() or "unknown"
+        required = bool(
+            continuity_contract.get("required") or update_guard.get("hub_sidecar_continuity_required")
+        )
+        operation_label = self._transition_operation_label(operation)
+
+        if role == "member" and member_policy == "defer" and bool(update_guard.get("live_session_present")):
+            return {
+                "code": "member_live_media_defer",
+                "planned_reason": "live_media_guard",
+                "message": f"{operation_label} deferred while member owns an active browser media session",
+                "retry_after_sec": max(_live_media_guard_defer_sec(), _min_update_period_sec()),
+                "live_media_guard": update_guard,
+                "continuity_contract": continuity_contract,
+            }
+
+        if role == "hub" and required and hub_policy == "preserve_sidecar" and current_support != "ready":
+            return {
+                "code": "hub_sidecar_continuity_pending",
+                "planned_reason": "live_media_guard",
+                "message": (
+                    f"{operation_label} deferred until independent sidecar continuity is ready "
+                    "for the active live media path"
+                ),
+                "retry_after_sec": max(_live_media_guard_defer_sec(), _min_update_period_sec()),
+                "live_media_guard": update_guard,
+                "continuity_contract": continuity_contract,
+            }
+
+        return None
+
+    def _schedule_continuity_guarded_transition(
+        self,
+        request: dict[str, Any],
+        decision: dict[str, Any],
+        *,
+        current_status: dict[str, Any] | None = None,
+        current_attempt: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        retry_after_sec = max(30.0, float(decision.get("retry_after_sec") or _live_media_guard_defer_sec()))
+        existing_due_at = _epoch((current_attempt or {}).get("scheduled_for") or (current_status or {}).get("scheduled_for"))
+        scheduled_for = max(time.time() + retry_after_sec, existing_due_at)
+        extra_payload = {
+            "guard_code": str(decision.get("code") or "").strip() or None,
+            "live_media_guard": decision.get("live_media_guard"),
+            "continuity_contract": decision.get("continuity_contract"),
+        }
+        return self._schedule_planned_transition(
+            request=request,
+            scheduled_for=scheduled_for,
+            planned_reason=str(decision.get("planned_reason") or "live_media_guard"),
+            message=str(decision.get("message") or "transition deferred by live media guard"),
+            extra_status=extra_payload,
+            extra_attempt=extra_payload,
+        )
+
+    def _raise_restart_continuity_block(self, decision: dict[str, Any]) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(decision.get("message") or "runtime restart blocked by live media guard"),
+                "planned_reason": str(decision.get("planned_reason") or "live_media_guard"),
+                "guard_code": str(decision.get("code") or "").strip() or None,
+                "live_media_guard": decision.get("live_media_guard"),
+                "continuity_contract": decision.get("continuity_contract"),
+                "retry_after_sec": float(decision.get("retry_after_sec") or _live_media_guard_defer_sec()),
+            },
+        )
+
+    def _runtime_sidecar_runtime_payload(self) -> dict[str, Any]:
+        runtime = self._runtime_reliability_payload(timeout=2.0)
         return dict(runtime.get("sidecar_runtime")) if isinstance(runtime.get("sidecar_runtime"), dict) else {}
 
     @property
@@ -1207,6 +1332,9 @@ class SupervisorManager:
         self._persist_runtime_state()
 
     async def restart_runtime(self, *, reason: str = "supervisor.restart") -> dict[str, Any]:
+        decision = self._transition_continuity_guard_decision(operation="restart")
+        if decision is not None:
+            self._raise_restart_continuity_block(decision)
         async with self._lock:
             self._desired_running = True
             await self._terminate_proc_locked(graceful=True, reason=reason)
@@ -1699,25 +1827,28 @@ class SupervisorManager:
         scheduled_for: float,
         planned_reason: str,
         message: str,
+        extra_status: dict[str, Any] | None = None,
+        extra_attempt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         due_at = max(time.time(), float(scheduled_for))
-        status = write_core_update_status(
-            {
-                "state": "planned",
-                "phase": "scheduled",
-                "action": str(request.get("action") or "update"),
-                "target_rev": str(request.get("target_rev") or ""),
-                "target_version": str(request.get("target_version") or ""),
-                "reason": str(request.get("reason") or ""),
-                "countdown_sec": float(request.get("countdown_sec") or 0.0),
-                "drain_timeout_sec": float(request.get("drain_timeout_sec") or 10.0),
-                "signal_delay_sec": float(request.get("signal_delay_sec") or 0.25),
-                "min_update_period_sec": _min_update_period_sec(),
-                "planned_reason": planned_reason,
-                "scheduled_for": due_at,
-                "message": message,
-            }
-        )
+        status_payload = {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": str(request.get("action") or "update"),
+            "target_rev": str(request.get("target_rev") or ""),
+            "target_version": str(request.get("target_version") or ""),
+            "reason": str(request.get("reason") or ""),
+            "countdown_sec": float(request.get("countdown_sec") or 0.0),
+            "drain_timeout_sec": float(request.get("drain_timeout_sec") or 10.0),
+            "signal_delay_sec": float(request.get("signal_delay_sec") or 0.25),
+            "min_update_period_sec": _min_update_period_sec(),
+            "planned_reason": planned_reason,
+            "scheduled_for": due_at,
+            "message": message,
+        }
+        if isinstance(extra_status, dict):
+            status_payload.update(extra_status)
+        status = write_core_update_status(status_payload)
         payload = dict(request)
         payload.update(
             {
@@ -1730,6 +1861,8 @@ class SupervisorManager:
                 "updated_at": time.time(),
             }
         )
+        if isinstance(extra_attempt, dict):
+            payload.update(extra_attempt)
         _write_update_attempt(payload)
         return {"ok": True, "accepted": True, "planned": True, "status": status, "_served_by": "supervisor"}
 
@@ -1808,7 +1941,19 @@ class SupervisorManager:
         if attempt_state == "planned":
             scheduled_for = _epoch(attempt.get("scheduled_for") or status.get("scheduled_for"))
             if scheduled_for > 0.0 and scheduled_for <= now:
-                self._begin_countdown_transition(_request_from_attempt(attempt))
+                request = _request_from_attempt(attempt)
+                decision = self._transition_continuity_guard_decision(
+                    operation=str(request.get("action") or "update")
+                )
+                if decision is not None:
+                    self._schedule_continuity_guarded_transition(
+                        request,
+                        decision,
+                        current_status=status,
+                        current_attempt=attempt,
+                    )
+                else:
+                    self._begin_countdown_transition(request)
             return
 
         if attempt_state == "active" and str(status.get("state") or "").strip().lower() == "preparing":
@@ -2324,6 +2469,22 @@ class SupervisorManager:
         )
         current_status = read_core_update_status()
         current_attempt = _read_update_attempt()
+        if _is_transition_in_progress(current_status, current_attempt):
+            return self._queue_subsequent_transition(
+                request=request,
+                current_status=current_status,
+                current_attempt=current_attempt,
+            )
+
+        decision = self._transition_continuity_guard_decision(operation=action)
+        if decision is not None:
+            return self._schedule_continuity_guarded_transition(
+                request,
+                decision,
+                current_status=current_status,
+                current_attempt=current_attempt,
+            )
+
         if str((current_attempt or {}).get("state") or "").strip().lower() == "planned" and action == "update":
             scheduled_for = _epoch((current_attempt or {}).get("scheduled_for") or current_status.get("scheduled_for")) or time.time()
             return self._schedule_planned_transition(
@@ -2331,13 +2492,6 @@ class SupervisorManager:
                 scheduled_for=scheduled_for,
                 planned_reason=str((current_attempt or {}).get("planned_reason") or "minimum_update_period"),
                 message="planned core update refreshed while waiting for scheduled window",
-            )
-
-        if _is_transition_in_progress(current_status, current_attempt):
-            return self._queue_subsequent_transition(
-                request=request,
-                current_status=current_status,
-                current_attempt=current_attempt,
             )
 
         if action == "update" and not bypass_min_period:

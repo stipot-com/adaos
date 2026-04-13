@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 from adaos.apps import supervisor
@@ -745,6 +746,64 @@ def test_supervisor_start_update_schedules_planned_update_when_min_period_not_el
     asyncio.run(_exercise())
 
 
+def test_supervisor_start_update_defers_when_live_media_guard_blocks_transition(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(
+        manager,
+        "_runtime_request_json",
+        lambda **kwargs: {
+            "ok": True,
+            "runtime": {
+                "media_runtime": {
+                    "update_guard": {
+                        "role": "hub",
+                        "live_session_present": True,
+                        "observed_live_topology": "member_browser_direct",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "hub_sidecar_continuity_required": True,
+                        "current_support": "planned",
+                        "reason": "live media continuity requires independent sidecar ownership",
+                    }
+                },
+                "sidecar_runtime": {
+                    "continuity_contract": {
+                        "required": True,
+                        "enabled": False,
+                        "hub_runtime_update": "preserve_sidecar",
+                        "current_support": "planned",
+                        "reason": "live media continuity requires independent sidecar ownership",
+                    }
+                },
+            },
+        },
+    )
+
+    result = asyncio.run(
+        manager.start_update(
+            action="update",
+            target_rev="rev2026",
+            target_version="1.2.3",
+            reason="test.live_media",
+            countdown_sec=30.0,
+            drain_timeout_sec=10.0,
+            signal_delay_sec=0.25,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["planned"] is True
+    status = read_status()
+    assert status["state"] == "planned"
+    assert status["planned_reason"] == "live_media_guard"
+    assert status["scheduled_for"] == 800.0
+    assert status["guard_code"] == "hub_sidecar_continuity_pending"
+    assert status["continuity_contract"]["required"] is True
+    assert status["live_media_guard"]["observed_live_topology"] == "member_browser_direct"
+
+
 def test_supervisor_defer_update_reschedules_active_countdown(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     write_status(
@@ -848,6 +907,129 @@ def test_supervisor_monitor_resumes_due_planned_transition(monkeypatch, tmp_path
 
     assert calls
     assert calls[0]["request"]["target_rev"] == "rev2026"
+
+
+def test_supervisor_monitor_reschedules_due_planned_transition_when_live_media_guard_active(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.live_media",
+            "countdown_sec": 30.0,
+            "drain_timeout_sec": 10.0,
+            "signal_delay_sec": 0.25,
+            "scheduled_for": 499.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "planned",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+            "reason": "test.live_media",
+            "countdown_sec": 30.0,
+            "drain_timeout_sec": 10.0,
+            "signal_delay_sec": 0.25,
+            "scheduled_for": 499.0,
+            "updated_at": 490.0,
+        }
+    )
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        manager,
+        "_runtime_request_json",
+        lambda **kwargs: {
+            "ok": True,
+            "runtime": {
+                "media_runtime": {
+                    "update_guard": {
+                        "role": "hub",
+                        "live_session_present": True,
+                        "observed_live_topology": "hub_webrtc_loopback",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "hub_sidecar_continuity_required": True,
+                        "current_support": "planned",
+                        "reason": "hub participates in the active live media path",
+                    }
+                },
+                "sidecar_runtime": {
+                    "continuity_contract": {
+                        "required": True,
+                        "enabled": False,
+                        "hub_runtime_update": "preserve_sidecar",
+                        "current_support": "planned",
+                        "reason": "hub participates in the active live media path",
+                    }
+                },
+            },
+        },
+    )
+
+    def _capture(request: dict, *, countdown_sec: float | None = None) -> dict:
+        calls.append({"request": dict(request), "countdown_sec": countdown_sec})
+        return {"ok": True, "accepted": True}
+
+    monkeypatch.setattr(manager, "_begin_countdown_transition", _capture)
+
+    asyncio.run(manager._maybe_resume_or_continue_transition())
+
+    assert not calls
+    status = read_status()
+    assert status["state"] == "planned"
+    assert status["planned_reason"] == "live_media_guard"
+    assert status["scheduled_for"] == 800.0
+    assert status["guard_code"] == "hub_sidecar_continuity_pending"
+
+
+def test_supervisor_runtime_restart_blocks_when_live_media_continuity_is_not_ready(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(
+        manager,
+        "_runtime_request_json",
+        lambda **kwargs: {
+            "ok": True,
+            "runtime": {
+                "media_runtime": {
+                    "update_guard": {
+                        "role": "hub",
+                        "live_session_present": True,
+                        "observed_live_topology": "member_browser_direct",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "hub_sidecar_continuity_required": True,
+                        "current_support": "planned",
+                        "reason": "live media continuity requires independent sidecar ownership",
+                    }
+                },
+                "sidecar_runtime": {
+                    "continuity_contract": {
+                        "required": True,
+                        "enabled": False,
+                        "hub_runtime_update": "preserve_sidecar",
+                        "current_support": "planned",
+                        "reason": "live media continuity requires independent sidecar ownership",
+                    }
+                },
+            },
+        },
+    )
+
+    with pytest.raises(supervisor.HTTPException) as excinfo:
+        asyncio.run(manager.restart_runtime())
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["planned_reason"] == "live_media_guard"
+    assert excinfo.value.detail["guard_code"] == "hub_sidecar_continuity_pending"
+    assert excinfo.value.detail["continuity_contract"]["required"] is True
 
 
 def test_supervisor_countdown_worker_writes_plan_and_requests_shutdown(monkeypatch, tmp_path) -> None:

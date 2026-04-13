@@ -91,6 +91,40 @@ def test_realtime_sidecar_local_url_reads_env(monkeypatch: pytest.MonkeyPatch) -
     assert realtime_sidecar_local_url() == "nats://127.0.0.7:9234"
 
 
+def test_realtime_sidecar_route_tunnel_contract_reflects_enabled_supervisor_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+
+    contract = realtime_sidecar_mod.realtime_sidecar_route_tunnel_contract()
+
+    assert contract["current_support"] == "planned"
+    assert contract["lifecycle_manager"] == "supervisor"
+    assert contract["ownership_boundary"] == "transport_only"
+    assert contract["ws"]["current_owner"] == "runtime"
+    assert contract["ws"]["planned_owner"] == "sidecar"
+    assert contract["ws"]["delegation_mode"] == "not_implemented"
+    assert contract["yws"]["planned_owner"] == "sidecar"
+    assert contract["yws"]["handoff_ready"] is False
+
+
+def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setattr(realtime_sidecar_mod, "_find_realtime_listener_pid", lambda host, port: 7422)
+
+    snapshot = realtime_sidecar_mod.realtime_sidecar_listener_snapshot()
+
+    assert snapshot["listener_running"] is True
+    assert snapshot["listener_pid"] == 7422
+    assert snapshot["route_tunnel_contract"]["current_support"] == "planned"
+    assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
+    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"
+
+
 def test_realtime_sidecar_loop_defaults_to_proactor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_WIN_LOOP", raising=False)
 
@@ -139,7 +173,9 @@ async def test_probe_realtime_sidecar_ready_rejects_empty_listener() -> None:
 async def test_realtime_sidecar_probe_does_not_break_immediate_nats_connect(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    import nats
+    nats = pytest.importorskip("nats")
+    if not hasattr(nats, "aio"):
+        pytest.skip("nats-py aio client is not available in this environment")
     import websockets  # type: ignore
 
     async def _fake_connect(*args, **kwargs):

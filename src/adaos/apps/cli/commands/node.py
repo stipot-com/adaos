@@ -241,6 +241,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
         scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
         continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
+        route_tunnel = sidecar.get("route_tunnel_contract") if isinstance(sidecar.get("route_tunnel_contract"), dict) else {}
         planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
         typer.echo(
             "sidecar: "
@@ -262,6 +263,38 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"next={planned_next or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if route_tunnel:
+            ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+            yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+            typer.echo(
+                "sidecar.route_tunnel: "
+                f"support={route_tunnel.get('current_support') or '-'} "
+                f"boundary={route_tunnel.get('ownership_boundary') or '-'} "
+                f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+                f"{ws_contract.get('delegation_mode') or '-'} "
+                f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+                f"{yws_contract.get('delegation_mode') or '-'}"
+            )
+            ws_blocker = next(
+                (
+                    str(item).strip()
+                    for item in (ws_contract.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            yws_blocker = next(
+                (
+                    str(item).strip()
+                    for item in (yws_contract.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            if ws_blocker:
+                typer.echo(f"sidecar.route_tunnel.ws_blocker: {ws_blocker}")
+            if yws_blocker and yws_blocker != ws_blocker:
+                typer.echo(f"sidecar.route_tunnel.yws_blocker: {yws_blocker}")
     if sync_runtime:
         assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
         transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}

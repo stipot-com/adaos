@@ -220,6 +220,12 @@ But the supervisor must remain able to enforce locally visible continuity guards
 - refuse a hub restart path that would drop a sidecar continuity contract the system currently depends on
 - distinguish "runtime restart allowed with sidecar continuity" from "full local media teardown"
 
+The first conservative version of this policy is now implemented:
+
+- supervisor reads runtime continuity guard data from `GET /api/node/reliability`
+- update transitions are deferred into explicit `planned/live_media_guard` state when the continuity contract says restart would be unsafe
+- manual runtime restart is refused until sidecar continuity becomes a real ready capability rather than only a planned target
+
 ### Runtime
 
 The runtime remains the authority for:

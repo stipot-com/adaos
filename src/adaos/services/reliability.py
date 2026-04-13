@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import threading
@@ -3831,14 +3832,15 @@ def sidecar_runtime_snapshot(
     media_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        from adaos.services.realtime_sidecar import (
-            realtime_sidecar_diag_path,
-            realtime_sidecar_enabled,
-            realtime_sidecar_listener_snapshot,
-            realtime_sidecar_local_url,
-        )
+        _realtime_sidecar_mod = importlib.import_module("adaos.services.realtime_sidecar")
     except Exception:
         return {"enabled": False, "status": "unavailable", "summary": "sidecar runtime module is unavailable"}
+
+    realtime_sidecar_diag_path = _realtime_sidecar_mod.realtime_sidecar_diag_path
+    realtime_sidecar_enabled = _realtime_sidecar_mod.realtime_sidecar_enabled
+    realtime_sidecar_listener_snapshot = _realtime_sidecar_mod.realtime_sidecar_listener_snapshot
+    realtime_sidecar_local_url = _realtime_sidecar_mod.realtime_sidecar_local_url
+    route_tunnel_contract_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_route_tunnel_contract", None)
 
     enabled = bool(realtime_sidecar_enabled())
     diag_path = realtime_sidecar_diag_path()
@@ -3861,6 +3863,11 @@ def sidecar_runtime_snapshot(
     lifecycle_manager = _sidecar_lifecycle_manager()
     scope = _sidecar_scope_snapshot(enabled=enabled)
     continuity_contract = _sidecar_continuity_contract(enabled=enabled, media_runtime=media_runtime)
+    route_tunnel_contract = (
+        route_tunnel_contract_fn()
+        if callable(route_tunnel_contract_fn)
+        else {}
+    )
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -3881,6 +3888,10 @@ def sidecar_runtime_snapshot(
         "last_transport_event": transport_strategy.get("last_event"),
     }
     process_snapshot = realtime_sidecar_listener_snapshot()
+    if not route_tunnel_contract and isinstance(process_snapshot.get("route_tunnel_contract"), dict):
+        route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
+    if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
+        route_tunnel_contract = dict(record.get("route_tunnel_contract") or route_tunnel_contract or {})
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
@@ -3954,6 +3965,7 @@ def sidecar_runtime_snapshot(
             "delegations": delegations,
             "scope": scope,
             "continuity_contract": continuity_contract,
+            "route_tunnel_contract": route_tunnel_contract,
             "status": status,
             "summary": summary,
             "local_url": realtime_sidecar_local_url(),
@@ -3981,6 +3993,7 @@ def sidecar_runtime_snapshot(
         "delegations": delegations,
         "scope": scope,
         "continuity_contract": continuity_contract,
+        "route_tunnel_contract": route_tunnel_contract,
         "status": status,
         "summary": summary,
         "local_url": realtime_sidecar_local_url(),

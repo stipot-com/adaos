@@ -5,7 +5,9 @@ import sys
 from types import SimpleNamespace
 import types
 
-if "nats" not in sys.modules:
+try:
+    import nats  # noqa: F401
+except Exception:
     sys.modules["nats"] = types.ModuleType("nats")
 if "y_py" not in sys.modules:
     sys.modules["y_py"] = types.SimpleNamespace(YDoc=object)
@@ -489,6 +491,25 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
             realtime_sidecar_enabled=lambda: True,
             realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 42},
             realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {
+                "current_support": "planned",
+                "lifecycle_manager": "supervisor",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "handoff_ready": False,
+                    "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                },
+                "yws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "handoff_ready": False,
+                    "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                },
+            },
         ),
     )
 
@@ -516,6 +537,9 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     assert snapshot["continuity_contract"]["member_runtime_update"] == "defer"
     assert snapshot["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
     assert snapshot["continuity_contract"]["current_support"] == "planned"
+    assert snapshot["route_tunnel_contract"]["ownership_boundary"] == "transport_only"
+    assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
+    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"
 
 
 def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:
@@ -839,6 +863,22 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "current_support": "planned",
                             "hub_runtime_update": "preserve_sidecar",
                         },
+                        "route_tunnel_contract": {
+                            "current_support": "planned",
+                            "ownership_boundary": "transport_only",
+                            "ws": {
+                                "current_owner": "runtime",
+                                "planned_owner": "sidecar",
+                                "delegation_mode": "not_implemented",
+                                "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                            },
+                            "yws": {
+                                "current_owner": "runtime",
+                                "planned_owner": "sidecar",
+                                "delegation_mode": "not_implemented",
+                                "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                            },
+                        },
                     },
                     "sync_runtime": {
                         "assessment": {"state": "nominal"},
@@ -897,6 +937,11 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "owner=sidecar manager=supervisor" in result.output
     assert "continuity=planned:preserve_sidecar" in result.output
     assert "next=browser_events_ws,browser_yjs_ws" in result.output
+    assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
+    assert "ws=runtime->sidecar:not_implemented" in result.output
+    assert "yws=runtime->sidecar:not_implemented" in result.output
+    assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
+    assert "sidecar.route_tunnel.yws_blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
     assert "owner=runtime->sidecar" in result.output
     assert "media.update_guard: live=yes" in result.output
     assert "member=defer hub=preserve_sidecar" in result.output

@@ -88,6 +88,7 @@ Current status:
 
 - this is a target contract, not a completed capability
 - reliability/runtime diagnostics now expose this as planned continuity behavior rather than silently assuming restart safety
+- `adaos-supervisor` now also consumes that continuity guard and conservatively defers unsafe update/start paths instead of pretending hub restart continuity already exists
 - the current sidecar still owns only `hub_root` transport and does not yet preserve live WebRTC continuity during hub runtime restart
 
 ## Rollout

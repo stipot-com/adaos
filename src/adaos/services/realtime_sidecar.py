@@ -141,6 +141,63 @@ def realtime_sidecar_local_url() -> str:
     return f"nats://{realtime_sidecar_host()}:{realtime_sidecar_port()}"
 
 
+def _realtime_sidecar_lifecycle_manager() -> str:
+    return "supervisor" if _truthy(os.getenv("ADAOS_SUPERVISOR_ENABLED"), default=False) else "runtime"
+
+
+def realtime_sidecar_route_tunnel_contract() -> dict[str, Any]:
+    enabled = bool(realtime_sidecar_enabled())
+    lifecycle_manager = _realtime_sidecar_lifecycle_manager()
+    current_support = "planned" if enabled else "disabled"
+    common_blockers = [
+        "route tunnel browser websocket handoff is not implemented in adaos-realtime yet",
+    ]
+    if not enabled:
+        common_blockers = [
+            "realtime sidecar is disabled",
+            *common_blockers,
+        ]
+    return {
+        "current_support": current_support,
+        "lifecycle_manager": lifecycle_manager,
+        "ownership_boundary": "transport_only",
+        "ws": {
+            "current_owner": "runtime",
+            "planned_owner": "sidecar",
+            "migration_phase": "phase_2_route_tunnel_ownership",
+            "logical_channels": [
+                "hub_member.command",
+                "hub_member.event",
+                "hub_member.presence",
+            ],
+            "current_support": current_support,
+            "delegation_mode": "not_implemented",
+            "listener_ready": False,
+            "handoff_ready": False,
+            "blockers": [
+                "browser route websocket still terminates in the runtime FastAPI app",
+                *common_blockers,
+            ],
+        },
+        "yws": {
+            "current_owner": "runtime",
+            "planned_owner": "sidecar",
+            "migration_phase": "phase_2_route_tunnel_ownership",
+            "logical_channels": [
+                "hub_member.sync",
+            ],
+            "current_support": current_support,
+            "delegation_mode": "not_implemented",
+            "listener_ready": False,
+            "handoff_ready": False,
+            "blockers": [
+                "Yjs websocket/session ownership still lives in the runtime gateway",
+                *common_blockers,
+            ],
+        },
+    }
+
+
 def realtime_sidecar_log_path() -> Path:
     raw = str(os.getenv("ADAOS_REALTIME_LOG", ".adaos/diagnostics/realtime_sidecar.log") or "").strip()
     path = Path(raw)
@@ -628,6 +685,7 @@ def realtime_sidecar_listener_snapshot(proc: subprocess.Popen[Any] | None = None
         "listener_running": listener_running,
         "listener_matches_managed": listener_matches_managed,
         "adopted_listener": adopted_listener,
+        "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(),
     }
 
 
@@ -763,6 +821,8 @@ class RealtimeSidecarServer:
             "listen": f"{self._host}:{self._port}",
             "session_id": self._stats.session_id,
             "active_session": self._stats.active_session,
+            "ownership_boundary": "transport_only",
+            "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(),
             "remote_url": self._stats.remote_url,
             "ws_ping_interval_s": self._stats.ws_ping_interval_s,
             "sidecar_nats_ping_interval_s": self._stats.sidecar_nats_ping_interval_s,
