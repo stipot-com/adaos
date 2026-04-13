@@ -562,6 +562,20 @@ def _runtime_api_ready(base_url: str, *, token: str | None, timeout: float = 0.7
     return bool(isinstance(payload, dict) and payload.get("ok") is True)
 
 
+def _runtime_listener_restart_timeout_sec() -> float:
+    try:
+        return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_RUNTIME_LISTENER_TIMEOUT_SEC") or "45").strip()))
+    except Exception:
+        return 45.0
+
+
+def _runtime_api_restart_timeout_sec() -> float:
+    try:
+        return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_RUNTIME_API_TIMEOUT_SEC") or "60").strip()))
+    except Exception:
+        return 60.0
+
+
 def _runtime_shutdown_request_timeout(*, drain_timeout_sec: float, signal_delay_sec: float) -> float:
     return max(5.0, float(drain_timeout_sec) + float(signal_delay_sec) + 2.0)
 
@@ -627,6 +641,8 @@ class SupervisorManager:
         self._last_exit_at: float | None = None
         self._last_exit_code: int | None = None
         self._last_error: str | None = None
+        self._runtime_unhealthy_since: float | None = None
+        self._runtime_unhealthy_kind: str | None = None
         self._update_task: asyncio.Task[Any] | None = None
         self._update_task_cancel_mode: str | None = None
         self._managed_runtime_instance_id: str | None = None
@@ -1188,6 +1204,54 @@ class SupervisorManager:
         with contextlib.suppress(Exception):
             _write_json(_supervisor_runtime_state_path(), self._runtime_state_payload())
 
+    def _runtime_self_heal_decision(self, *, now: float | None = None) -> dict[str, Any] | None:
+        proc = self._proc
+        if proc is None or proc.poll() is not None or self._stopping or not self._desired_running:
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
+            return None
+        current_slot = str(active_slot() or "").strip().upper() or None
+        runtime_port = self.slot_runtime_port(current_slot)
+        runtime_url = self.slot_runtime_base_url(current_slot)
+        listener_running = _listener_running(self.runtime_host, runtime_port)
+        api_ready = bool(listener_running and _runtime_api_ready(runtime_url, token=self.token))
+        if listener_running and api_ready:
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
+            return None
+
+        unhealthy_kind = "api_unready" if listener_running else "listener_lost"
+        current_time = time.time() if now is None else float(now)
+        if self._runtime_unhealthy_kind != unhealthy_kind:
+            self._runtime_unhealthy_kind = unhealthy_kind
+            self._runtime_unhealthy_since = current_time
+            return None
+
+        unhealthy_since = float(self._runtime_unhealthy_since or current_time)
+        if self._last_start_at is not None:
+            unhealthy_since = max(unhealthy_since, float(self._last_start_at))
+        timeout_sec = (
+            _runtime_api_restart_timeout_sec()
+            if unhealthy_kind == "api_unready"
+            else _runtime_listener_restart_timeout_sec()
+        )
+        if (current_time - unhealthy_since) < timeout_sec:
+            return None
+
+        target = runtime_url if unhealthy_kind == "api_unready" else f"http://{self.runtime_host}:{runtime_port}"
+        return {
+            "reason": f"supervisor.runtime.{unhealthy_kind}",
+            "message": (
+                f"active runtime stayed {unhealthy_kind.replace('_', ' ')} for {timeout_sec:.0f}s"
+                f" at {target}; restarting"
+            ),
+            "runtime_port": runtime_port,
+            "runtime_url": runtime_url,
+            "listener_running": listener_running,
+            "runtime_api_ready": api_ready,
+            "timeout_sec": timeout_sec,
+        }
+
     def _local_supervisor_update_status_payload(self) -> dict[str, Any]:
         payload = _local_update_payload()
         payload["runtime"] = self.status()
@@ -1215,6 +1279,8 @@ class SupervisorManager:
         self._managed_runtime_cwd = str(cwd or os.getcwd())
         self._last_start_at = time.time()
         self._last_error = None
+        self._runtime_unhealthy_since = None
+        self._runtime_unhealthy_kind = None
         self._persist_runtime_state()
 
     async def _spawn_sidecar_locked(self) -> None:
@@ -1583,6 +1649,8 @@ class SupervisorManager:
                     self._persist_runtime_state()
             proc = self._proc
             if proc is None:
+                self._runtime_unhealthy_since = None
+                self._runtime_unhealthy_kind = None
                 if self._desired_running and not self._stopping:
                     async with self._lock:
                         if self._proc is None and self._desired_running and not self._stopping:
@@ -1590,6 +1658,19 @@ class SupervisorManager:
                 continue
             rc = proc.poll()
             if rc is None:
+                restart_decision = self._runtime_self_heal_decision()
+                if restart_decision is not None:
+                    self._last_error = str(restart_decision.get("message") or "active runtime became unhealthy")
+                    self._runtime_unhealthy_since = None
+                    self._runtime_unhealthy_kind = None
+                    self._persist_runtime_state()
+                    try:
+                        await self.restart_runtime(
+                            reason=str(restart_decision.get("reason") or "supervisor.runtime.unhealthy")
+                        )
+                    except Exception:
+                        _LOG.warning("failed to self-heal active runtime", exc_info=True)
+                    continue
                 continue
             self._last_exit_code = int(rc)
             self._last_exit_at = time.time()
@@ -1597,6 +1678,8 @@ class SupervisorManager:
             self._managed_runtime_instance_id = None
             self._managed_transition_role = None
             self._managed_runtime_cwd = None
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
             self._persist_runtime_state()
             if self._stopping or not self._desired_running:
                 continue
