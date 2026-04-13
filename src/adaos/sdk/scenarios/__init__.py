@@ -132,10 +132,10 @@ def describe_webspace_ui(webspace_id: str = "default") -> Dict[str, Any]:
     Return a scenario-only snapshot of the effective UI model for a given
     webspace, as seen by the core WebspaceScenarioRuntime.
 
-    It reads ui.current_scenario, data.scenarios[scenario_id].catalog,
-    registry.scenarios[scenario_id] and data.installed from the YDoc and
-    returns them as a structured mapping. This is primarily intended for
-    debugging and migration work.
+    The runtime resolves scenario content from loader-backed canonical sources
+    first and only falls back to legacy Yjs scenario materialization when
+    needed. The returned mapping is primarily intended for debugging and
+    migration work.
     """
     ctx = get_ctx()
     runtime = WebspaceScenarioRuntime(ctx)

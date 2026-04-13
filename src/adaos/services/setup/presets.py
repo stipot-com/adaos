@@ -15,13 +15,14 @@ DEFAULT_PRESET = InstallPreset(
     scenarios=(
         "web_desktop",
         "prompt_engineer_scenario",
+        "infrascope",
     ),
     skills=(
         "infrastate_skill",
         "weather_skill",
         "web_desktop_skill",
         "prompt_engineer_skill",
-        "profile_skill",
+        "adaos_connect"
     ),
 )
 

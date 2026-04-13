@@ -62,6 +62,77 @@ function Write-EnvVar {
   Set-Content -Path $EnvFile -Value $lines
 }
 
+function Show-BootstrapConfig {
+  Write-Host ""
+  Write-Host "Bootstrap config:"
+  Write-Host ("  repo_root:      {0}" -f $PWD.Path)
+  Write-Host ("  env_file:       {0}" -f (Join-Path $PWD ".env"))
+  Write-Host ("  env_type:       {0}" -f $env:ENV_TYPE)
+  Write-Host ("  adaos_base_dir: {0}" -f $env:ADAOS_BASE_DIR)
+  Write-Host ("  dev_mode:       {0}" -f $(if ($Dev) { "1" } else { "0" }))
+  Write-Host ""
+}
+
+function Wait-ForAutostartActivation {
+  param(
+    [int]$TimeoutSec = 45
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $as = Invoke-Adaos autostart status --json 2>$null | Out-String
+      if (-not [string]::IsNullOrWhiteSpace($as)) {
+        $asObj = $as | ConvertFrom-Json
+        $active = $asObj.active
+        $listening = $asObj.listening
+        if (($active -eq $true) -and ($listening -ne $false)) {
+          return $true
+        }
+      }
+    } catch { }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+function Show-AutostartDiagnostics {
+  Write-Host ""
+  Write-Host "Autostart diagnostics:"
+  $asObj = $null
+  try {
+    $as = Invoke-Adaos autostart status --json 2>$null | Out-String
+    if (-not [string]::IsNullOrWhiteSpace($as)) {
+      Write-Host $as.Trim()
+      $asObj = $as | ConvertFrom-Json
+    } else {
+      Write-Host "  autostart status json: unavailable"
+    }
+  } catch {
+    Write-Host "  autostart status json: unavailable"
+  }
+
+  if (Get-Command systemctl -ErrorAction SilentlyContinue) {
+    $systemctlArgs = @()
+    if ($asObj -and $asObj.scope -eq "user") {
+      $systemctlArgs = @("--user")
+    }
+    Write-Host ""
+    Write-Host ("systemctl {0} status adaos.service:" -f ($systemctlArgs -join " "))
+    try { & systemctl @systemctlArgs --no-pager -l status adaos.service 2>&1 | Out-Host } catch { }
+    if (Get-Command journalctl -ErrorAction SilentlyContinue) {
+      Write-Host ""
+      Write-Host ("journalctl {0} -u adaos.service (last 40 lines):" -f ($systemctlArgs -join " "))
+      try { & journalctl @systemctlArgs -u adaos.service -n 40 --no-pager 2>&1 | Out-Host } catch { }
+    }
+  }
+  elseif (Get-Command schtasks -ErrorAction SilentlyContinue) {
+    Write-Host ""
+    Write-Host "schtasks /Query /TN AdaOS /V /FO LIST:"
+    try { schtasks /Query /TN "AdaOS" /V /FO LIST 2>&1 | Out-Host } catch { }
+  }
+  Write-Host ""
+}
+
 function Resolve-EffectiveRootUrl {
   param(
     [string]$RootUrlValue,
@@ -184,8 +255,8 @@ if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
     }
   } catch { }
 }
-if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "dev" }
 if ($Dev) { $envType = "dev" }
+if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "prod" }
 $env:ENV_TYPE = $envType
 
 if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
@@ -196,6 +267,7 @@ if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
   }
 }
 New-Item -ItemType Directory -Force -Path $env:ADAOS_BASE_DIR | Out-Null
+Show-BootstrapConfig
 Write-Host "Detecting git availability (adaos git autodetect)..."
 try { Invoke-Adaos git autodetect | Out-Null } catch { }
 Write-Host "Installing default webspace content (adaos install)..."
@@ -375,31 +447,38 @@ if ($desiredRole -eq "hub") {
   } catch { Write-Warning "adaos dev root init failed: $($_.Exception.Message)" }
 }
 
+Write-Host ("Runtime state target: {0}" -f (Join-Path $env:ADAOS_BASE_DIR "node.yaml"))
 Write-Host ("Starting AdaOS API ({0}:{1}) ..." -f $ServeHost, $ServePort)
 $serviceInstalled = $false
 if ($InstallService -ne "never") {
   try {
-    Invoke-Adaos autostart enable --host $ServeHost --port $ServePort | Out-Null
+    $autostartEnableOutput = Invoke-Adaos autostart enable --host $ServeHost --port $ServePort 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0) {
       $serviceInstalled = $true
       Write-Host "Autostart installed (adaos autostart enable)."
     }
-  } catch { Write-Warning "autostart enable failed: $($_.Exception.Message)" }
+    else {
+      Write-Warning "autostart enable failed; will fallback to detached process."
+      if (-not [string]::IsNullOrWhiteSpace($autostartEnableOutput)) {
+        Write-Host $autostartEnableOutput.Trim()
+      }
+      Show-AutostartDiagnostics
+    }
+  } catch {
+    Write-Warning "autostart enable failed: $($_.Exception.Message)"
+    if (-not [string]::IsNullOrWhiteSpace($autostartEnableOutput)) {
+      Write-Host $autostartEnableOutput.Trim()
+    }
+    Show-AutostartDiagnostics
+  }
 }
 if ($serviceInstalled) {
   try { schtasks /Run /TN "AdaOS" | Out-Null } catch { }
-  try {
-    $as = Invoke-Adaos autostart status --json 2>$null | Out-String
-    if (-not [string]::IsNullOrWhiteSpace($as)) {
-      $asObj = $as | ConvertFrom-Json
-      $active = $asObj.active
-      $listening = $asObj.listening
-      if (($active -ne $true) -or ($listening -eq $false)) {
-        Write-Warning "Autostart is enabled but not active; falling back to detached process."
-        $serviceInstalled = $false
-      }
-    }
-  } catch { }
+  if (-not (Wait-ForAutostartActivation -TimeoutSec 45)) {
+    Write-Warning "Autostart did not become active within startup grace period; falling back to detached process."
+    Show-AutostartDiagnostics
+    $serviceInstalled = $false
+  }
 }
 if (-not $serviceInstalled -or $InstallService -eq "never") {
   try {

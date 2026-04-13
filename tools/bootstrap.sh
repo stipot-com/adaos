@@ -134,7 +134,7 @@ resolve_adaos_base_dir() {
   if [[ -z "${env_type:-}" ]]; then
     env_type="$(read_env_type_from_file ".env" || true)"
   fi
-  env_type="${env_type:-dev}"
+  env_type="${env_type:-prod}"
   if [[ "$env_type" == "dev" ]]; then
     printf '%s' "$PWD/.adaos"
     return 0
@@ -166,6 +166,102 @@ show_optional_modules_note() {
     echo "  Missing locally. Initialize only if you need them:"
     echo "    git submodule update --init --recursive ${missing[*]}"
   fi
+}
+
+print_bootstrap_config() {
+  echo
+  echo "Bootstrap config:"
+  echo "  repo_root:      $PWD"
+  echo "  env_file:       $PWD/.env"
+  echo "  env_type:       ${ENV_TYPE:-}"
+  echo "  adaos_base_dir: ${ADAOS_BASE_DIR:-}"
+  echo "  dev_mode:       ${DEV_MODE:-0}"
+  echo
+}
+
+wait_for_autostart_activation() {
+  local timeout_sec="${1:-45}"
+  local deadline=$(( $(date +%s) + timeout_sec ))
+  local as_json=""
+  local as_rc=0
+  local active=""
+  local listening=""
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    set +e
+    as_json="$(python -m adaos autostart status --json 2>/dev/null)"
+    as_rc=$?
+    set -e
+    if [[ $as_rc -eq 0 && -n "${as_json:-}" ]]; then
+      active="$(
+        python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("active"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true
+      )"
+      listening="$(
+        python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("listening"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true
+      )"
+      if [[ "${active:-}" == "true" && "${listening:-}" != "false" ]]; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+print_autostart_diagnostics() {
+  local as_json=""
+  local as_rc=0
+  local scope=""
+  local service_name="adaos.service"
+  local systemctl_args=()
+
+  echo
+  echo "Autostart diagnostics:"
+  set +e
+  as_json="$(python -m adaos autostart status --json 2>/dev/null)"
+  as_rc=$?
+  set -e
+  if [[ $as_rc -eq 0 && -n "${as_json:-}" ]]; then
+    echo "$as_json"
+    scope="$(
+      python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print((d.get("scope") or "").strip())' <<<"$as_json" 2>/dev/null || true
+    )"
+  else
+    echo "  autostart status json: unavailable"
+  fi
+
+  if have systemctl; then
+    if [[ "${scope:-}" == "user" ]]; then
+      systemctl_args=(--user)
+    else
+      systemctl_args=()
+    fi
+    echo
+    echo "systemctl ${systemctl_args[*]} status ${service_name}:"
+    set +e
+    systemctl "${systemctl_args[@]}" --no-pager -l status "${service_name}" 2>&1 || true
+    set -e
+    if have journalctl; then
+      echo
+      echo "journalctl ${systemctl_args[*]} -u ${service_name} (last 40 lines):"
+      set +e
+      journalctl "${systemctl_args[@]}" -u "${service_name}" -n 40 --no-pager 2>&1 || true
+      set -e
+    fi
+  elif have schtasks; then
+    echo
+    echo "schtasks /Query /TN AdaOS /V /FO LIST:"
+    set +e
+    schtasks /Query /TN "AdaOS" /V /FO LIST 2>&1 || true
+    set -e
+  elif have launchctl; then
+    echo
+    echo "launchctl print gui/$(id -u 2>/dev/null || echo '?')/com.adaos.autostart:"
+    set +e
+    launchctl print "gui/$(id -u 2>/dev/null || echo 0)/com.adaos.autostart" 2>&1 || true
+    set -e
+  fi
+  echo
 }
 
 print_next_steps() {
@@ -468,11 +564,13 @@ fi
 if [[ "${DEV_MODE:-0}" == "1" ]]; then
   ENV_TYPE="dev"
 fi
-export ENV_TYPE="${ENV_TYPE:-dev}"
+export ENV_TYPE="${ENV_TYPE:-prod}"
 
 ADAOS_BASE_DIR="$(resolve_adaos_base_dir)"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
+
+print_bootstrap_config
 
 log "Detecting git availability (adaos git autodetect)..."
 python -m adaos git autodetect >/dev/null 2>&1 || true
@@ -519,11 +617,16 @@ expected_node_id="$(
   python -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo ""
 )"
+log "Runtime state target: ${ADAOS_BASE_DIR}/node.yaml"
 
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0
 if [[ "$INSTALL_SERVICE" != "never" ]]; then
-  if python -m adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" >/dev/null 2>&1; then
+  set +e
+  autostart_enable_output="$(python -m adaos autostart enable --host "$SERVE_HOST" --port "$SERVE_PORT" 2>&1)"
+  autostart_enable_rc=$?
+  set -e
+  if [[ $autostart_enable_rc -eq 0 ]]; then
     service_installed=1
     ok "Autostart installed (adaos autostart enable)"
     # Best-effort start:
@@ -532,25 +635,17 @@ if [[ "$INSTALL_SERVICE" != "never" ]]; then
     if have schtasks; then
       schtasks /Run /TN "AdaOS" >/dev/null 2>&1 || true
     fi
-    # If autostart cannot report "active: true", fall back to background serve.
-    set +e
-    as_json="$(python -m adaos autostart status --json 2>/dev/null)"
-    as_rc=$?
-    set -e
-    if [[ $as_rc -eq 0 && -n "${as_json:-}" ]]; then
-      active="$(
-        python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("active"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true
-      )"
-      listening="$(
-        python -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); v=d.get("listening"); print("" if v is None else str(bool(v)).lower())' <<<"$as_json" 2>/dev/null || true
-      )"
-      if [[ "${active:-}" != "true" || "${listening:-}" == "false" ]]; then
-        warn "Autostart is enabled but not active; falling back to background run"
-        service_installed=0
-      fi
+    if ! wait_for_autostart_activation 45; then
+      warn "Autostart did not become active within startup grace period; falling back to background run"
+      print_autostart_diagnostics
+      service_installed=0
     fi
   else
     warn "autostart enable failed; will fallback to background run"
+    if [[ -n "${autostart_enable_output:-}" ]]; then
+      printf '%s\n' "$autostart_enable_output"
+    fi
+    print_autostart_diagnostics
   fi
 fi
 
