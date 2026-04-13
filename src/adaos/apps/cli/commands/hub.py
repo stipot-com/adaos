@@ -608,6 +608,7 @@ def hub_root_sidecar_status(
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
     scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
     route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
     planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
@@ -624,6 +625,15 @@ def hub_root_sidecar_status(
         f"managed_pid={process.get('managed_pid') or '-'} "
         f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
     )
+    if progress:
+        typer.echo(
+            f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+            f"target={progress.get('target') or '-'} "
+            f"state={progress.get('state') or '-'} "
+            f"current={progress.get('current_milestone') or '-'}"
+        )
+        if progress.get("next_blocker"):
+            typer.echo(f"progress_blocker={progress.get('next_blocker')}")
     if route_tunnel:
         ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
         yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
@@ -674,6 +684,7 @@ def hub_root_sidecar_restart(
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
     scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
     route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
     planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
@@ -688,6 +699,13 @@ def hub_root_sidecar_restart(
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'}"
     )
+    if progress:
+        typer.echo(
+            f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+            f"target={progress.get('target') or '-'} "
+            f"state={progress.get('state') or '-'} "
+            f"current={progress.get('current_milestone') or '-'}"
+        )
     if route_tunnel:
         ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
         yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}

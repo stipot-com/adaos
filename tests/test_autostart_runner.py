@@ -464,6 +464,52 @@ def test_validate_sidecar_runtime_payload_requires_listener_when_enabled() -> No
     assert details["listener_running"] is False
 
 
+def test_validate_sidecar_runtime_payload_requires_transport_when_enabled() -> None:
+    ok, error, details = autostart_runner._validate_sidecar_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "enabled": True,
+                "status": "degraded",
+                "local_listener_state": "ready",
+                "transport_ready": False,
+                "control_ready": "unknown",
+            },
+            "process": {
+                "listener_running": True,
+            },
+        }
+    )
+
+    assert ok is False
+    assert "hub-root transport is not ready" in str(error)
+    assert details["listener_running"] is True
+    assert details["transport_ready"] is False
+
+
+def test_validate_sidecar_runtime_payload_accepts_ready_transport_when_enabled() -> None:
+    ok, error, details = autostart_runner._validate_sidecar_runtime_payload(
+        {
+            "ok": True,
+            "runtime": {
+                "enabled": True,
+                "status": "ready",
+                "local_listener_state": "ready",
+                "transport_ready": True,
+                "control_ready": "ready",
+            },
+            "process": {
+                "listener_running": True,
+            },
+        }
+    )
+
+    assert ok is True
+    assert error is None
+    assert details["listener_running"] is True
+    assert details["transport_ready"] is True
+
+
 def test_validate_yjs_runtime_payload_requires_server_ready() -> None:
     ok, error, details = autostart_runner._validate_yjs_runtime_payload(
         {

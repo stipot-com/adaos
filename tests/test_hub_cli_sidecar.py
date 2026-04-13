@@ -24,6 +24,14 @@ def _sidecar_runtime_payload() -> dict:
                 "current_support": "planned",
                 "hub_runtime_update": "preserve_sidecar",
             },
+            "progress": {
+                "target": "first_browser_realtime_tunnel",
+                "state": "in_progress",
+                "completed_milestones": 2,
+                "milestone_total": 4,
+                "current_milestone": "browser_events_ws_handoff",
+                "next_blocker": "browser route websocket still terminates in the runtime FastAPI app",
+            },
             "route_tunnel_contract": {
                 "current_support": "planned",
                 "ws": {
@@ -68,6 +76,8 @@ def test_hub_root_sidecar_status_prints_route_tunnel_summary(monkeypatch) -> Non
     assert result.exit_code == 0
     assert "sidecar=ready" in result.output
     assert "continuity=planned:preserve_sidecar" in result.output
+    assert "progress=2/4 target=first_browser_realtime_tunnel state=in_progress current=browser_events_ws_handoff" in result.output
+    assert "progress_blocker=browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "route_tunnel=planned" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
     assert "yws=runtime->sidecar:not_implemented" in result.output
@@ -97,6 +107,7 @@ def test_hub_root_sidecar_restart_prints_route_tunnel_summary(monkeypatch) -> No
     assert result.exit_code == 0
     assert "accepted=True" in result.output
     assert "sidecar=ready/ready" in result.output
+    assert "progress=2/4 target=first_browser_realtime_tunnel state=in_progress current=browser_events_ws_handoff" in result.output
     assert "route_tunnel=planned" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
     assert "yws=runtime->sidecar:not_implemented" in result.output

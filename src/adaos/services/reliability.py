@@ -2709,6 +2709,90 @@ def _sidecar_continuity_contract(
     }
 
 
+def _sidecar_progress_snapshot(
+    *,
+    enabled: bool,
+    transport_ready: bool,
+    lifecycle_manager: str,
+    route_tunnel_contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+
+    def _step_blocker(entry: dict[str, Any]) -> str | None:
+        return next((str(item).strip() for item in (entry.get("blockers") or []) if str(item).strip()), None)
+
+    def _handoff_step(step_id: str, title: str, entry: dict[str, Any]) -> dict[str, Any]:
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        planned_owner = str(entry.get("planned_owner") or "").strip().lower()
+        handoff_ready = bool(entry.get("handoff_ready"))
+        listener_ready = bool(entry.get("listener_ready"))
+        blocker = _step_blocker(entry)
+        if current_owner == "sidecar" and handoff_ready:
+            status = "completed"
+        elif current_owner == "sidecar" or planned_owner == "sidecar":
+            status = "in_progress"
+        else:
+            status = "planned"
+        return {
+            "id": step_id,
+            "title": title,
+            "status": status,
+            "active_on_node": current_owner == "sidecar",
+            "ready_on_node": current_owner == "sidecar" and handoff_ready,
+            "listener_ready": listener_ready,
+            "blocker": blocker,
+            "delegation_mode": entry.get("delegation_mode"),
+            "summary": (
+                "handoff is complete"
+                if status == "completed"
+                else blocker or "ownership handoff is not complete yet"
+            ),
+        }
+
+    milestones = [
+        {
+            "id": "hub_root_transport_sidecar",
+            "title": "Hub-root transport sidecar",
+            "status": "completed",
+            "active_on_node": bool(enabled),
+            "ready_on_node": bool(transport_ready),
+            "summary": "sidecar owns the hub-root transport boundary",
+        },
+        {
+            "id": "supervisor_managed_sidecar",
+            "title": "Supervisor-managed sidecar lifecycle",
+            "status": "completed",
+            "active_on_node": str(lifecycle_manager or "").strip().lower() == "supervisor",
+            "ready_on_node": str(lifecycle_manager or "").strip().lower() == "supervisor",
+            "summary": "supervisor-managed sidecar lifecycle is implemented",
+        },
+        _handoff_step("browser_events_ws_handoff", "Browser /ws handoff", ws_entry),
+        _handoff_step("browser_yjs_ws_handoff", "Browser /yws handoff", yws_entry),
+    ]
+    completed = sum(1 for item in milestones if str(item.get("status") or "") == "completed")
+    total = len(milestones)
+    percent = int((completed * 100) / total) if total > 0 else 0
+    current = next((item for item in milestones if str(item.get("status") or "") != "completed"), None)
+    next_blocker = str(current.get("blocker") or "").strip() or None if isinstance(current, dict) else None
+    return {
+        "target": "first_browser_realtime_tunnel",
+        "state": "ready" if completed >= total and total > 0 else "in_progress",
+        "completed_milestones": completed,
+        "milestone_total": total,
+        "percent": percent,
+        "current_milestone": current.get("id") if isinstance(current, dict) else None,
+        "next_blocker": next_blocker,
+        "summary": f"{completed}/{total} milestones completed toward first browser realtime sidecar use case",
+        "milestones": milestones,
+        "future_targets": [
+            "live_media_continuity",
+            "webrtc_signaling",
+            "webrtc_media",
+        ],
+    }
+
+
 def _hub_member_transport_evidence_snapshot(
     *,
     role: str,
@@ -4004,6 +4088,12 @@ def sidecar_runtime_snapshot(
         media_runtime=media_runtime,
         route_tunnel_contract=route_tunnel_contract,
     )
+    progress = _sidecar_progress_snapshot(
+        enabled=enabled,
+        transport_ready=transport_ready,
+        lifecycle_manager=lifecycle_manager,
+        route_tunnel_contract=route_tunnel_contract,
+    )
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
@@ -4077,6 +4167,7 @@ def sidecar_runtime_snapshot(
             "delegations": delegations,
             "scope": scope,
             "continuity_contract": continuity_contract,
+            "progress": progress,
             "route_tunnel_contract": route_tunnel_contract,
             "status": status,
             "summary": summary,
@@ -4105,6 +4196,7 @@ def sidecar_runtime_snapshot(
         "delegations": delegations,
         "scope": scope,
         "continuity_contract": continuity_contract,
+        "progress": progress,
         "route_tunnel_contract": route_tunnel_contract,
         "status": status,
         "summary": summary,

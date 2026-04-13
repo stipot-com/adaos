@@ -241,6 +241,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
         scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
         continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
+        progress = sidecar.get("progress") if isinstance(sidecar.get("progress"), dict) else {}
         route_tunnel = sidecar.get("route_tunnel_contract") if isinstance(sidecar.get("route_tunnel_contract"), dict) else {}
         planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
         typer.echo(
@@ -263,6 +264,17 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"next={planned_next or '-'} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if progress:
+            typer.echo(
+                "sidecar.progress: "
+                f"target={progress.get('target') or '-'} "
+                f"state={progress.get('state') or '-'} "
+                f"done={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "
+                f"percent={progress.get('percent') if progress.get('percent') is not None else '-'} "
+                f"current={progress.get('current_milestone') or '-'}"
+            )
+            if progress.get("next_blocker"):
+                typer.echo(f"sidecar.progress.blocker: {progress.get('next_blocker')}")
         if route_tunnel:
             ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
             yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}

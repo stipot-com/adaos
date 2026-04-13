@@ -539,6 +539,10 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     assert snapshot["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
     assert snapshot["continuity_contract"]["current_support"] == "planned"
     assert snapshot["continuity_contract"]["pending_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["progress"]["target"] == "first_browser_realtime_tunnel"
+    assert snapshot["progress"]["completed_milestones"] == 2
+    assert snapshot["progress"]["milestone_total"] == 4
+    assert snapshot["progress"]["current_milestone"] == "browser_events_ws_handoff"
     assert snapshot["route_ready"] == "planned"
     assert snapshot["sync_ready"] == "planned"
     assert snapshot["delegations"]["route_tunnel_transport"] is False
@@ -615,6 +619,9 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
         "browser_yjs_ws",
     ]
     assert snapshot["continuity_contract"]["pending_boundaries"] == []
+    assert snapshot["progress"]["state"] == "ready"
+    assert snapshot["progress"]["completed_milestones"] == 4
+    assert snapshot["progress"]["current_milestone"] is None
 
 
 def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:
@@ -938,6 +945,15 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "current_support": "planned",
                             "hub_runtime_update": "preserve_sidecar",
                         },
+                        "progress": {
+                            "target": "first_browser_realtime_tunnel",
+                            "state": "in_progress",
+                            "completed_milestones": 2,
+                            "milestone_total": 4,
+                            "percent": 50,
+                            "current_milestone": "browser_events_ws_handoff",
+                            "next_blocker": "browser route websocket still terminates in the runtime FastAPI app",
+                        },
                         "route_tunnel_contract": {
                             "current_support": "planned",
                             "ownership_boundary": "transport_only",
@@ -1012,6 +1028,8 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "owner=sidecar manager=supervisor" in result.output
     assert "continuity=planned:preserve_sidecar" in result.output
     assert "next=browser_events_ws,browser_yjs_ws" in result.output
+    assert "sidecar.progress: target=first_browser_realtime_tunnel state=in_progress done=2/4 percent=50 current=browser_events_ws_handoff" in result.output
+    assert "sidecar.progress.blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
     assert "yws=runtime->sidecar:not_implemented" in result.output

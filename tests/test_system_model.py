@@ -495,6 +495,13 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                         "hub_runtime_update": "preserve_sidecar",
                         "current_support": "planned",
                     },
+                    "progress": {
+                        "target": "first_browser_realtime_tunnel",
+                        "state": "in_progress",
+                        "completed_milestones": 2,
+                        "milestone_total": 4,
+                        "current_milestone": "browser_events_ws_handoff",
+                    },
                     "route_tunnel_contract": {
                         "current_support": "planned",
                         "ownership_boundary": "transport_only",
@@ -581,6 +588,7 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["runtime:hub:hub-1/sidecar"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/sidecar"]["runtime"]["transport_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
+    assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["progress"]["target"] == "first_browser_realtime_tunnel"
     assert (
         objects["runtime:hub:hub-1/sidecar"]["actual_state"]["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
     )

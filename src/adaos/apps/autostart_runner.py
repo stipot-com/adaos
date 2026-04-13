@@ -190,18 +190,21 @@ def _validate_sidecar_runtime_payload(payload: dict[str, Any]) -> tuple[bool, st
     enabled = bool(runtime.get("enabled"))
     status = str(runtime.get("status") or "").strip().lower() or ("enabled" if enabled else "disabled")
     listener_running = bool(process.get("listener_running") or str(runtime.get("local_listener_state") or "").strip().lower() == "ready")
+    transport_ready = bool(runtime.get("transport_ready"))
     details = {
         "enabled": enabled,
         "status": status,
         "listener_running": listener_running,
-        "transport_ready": bool(runtime.get("transport_ready")),
+        "transport_ready": transport_ready,
         "control_ready": runtime.get("control_ready"),
     }
     if not enabled:
         return True, None, details
-    if listener_running:
-        return True, None, details
-    return False, "sidecar runtime is enabled but local listener is not running", details
+    if not listener_running:
+        return False, "sidecar runtime is enabled but local listener is not running", details
+    if not transport_ready:
+        return False, "sidecar runtime listener is up but hub-root transport is not ready", details
+    return True, None, details
 
 
 def _validate_yjs_runtime_payload(
