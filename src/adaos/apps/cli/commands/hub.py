@@ -608,6 +608,7 @@ def hub_root_sidecar_status(
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
     scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
     planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"sidecar={runtime.get('status') or 'unknown'} "
@@ -623,6 +624,28 @@ def hub_root_sidecar_status(
         f"managed_pid={process.get('managed_pid') or '-'} "
         f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
     )
+    if route_tunnel:
+        ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+        yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+        typer.echo(
+            f"route_tunnel={route_tunnel.get('current_support') or '-'} "
+            f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+            f"{ws_contract.get('delegation_mode') or '-'} "
+            f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+            f"{yws_contract.get('delegation_mode') or '-'}"
+        )
+        ws_blocker = next(
+            (str(item).strip() for item in (ws_contract.get("blockers") or []) if str(item).strip()),
+            "",
+        )
+        yws_blocker = next(
+            (str(item).strip() for item in (yws_contract.get("blockers") or []) if str(item).strip()),
+            "",
+        )
+        if ws_blocker:
+            typer.echo(f"ws_blocker={ws_blocker}")
+        if yws_blocker and yws_blocker != ws_blocker:
+            typer.echo(f"yws_blocker={yws_blocker}")
 
 
 @sidecar_app.command("restart")
@@ -651,6 +674,7 @@ def hub_root_sidecar_restart(
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
     scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
+    route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
     planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
     typer.echo(
         f"accepted={bool(restart.get('accepted'))} "
@@ -664,6 +688,16 @@ def hub_root_sidecar_restart(
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'}"
     )
+    if route_tunnel:
+        ws_contract = route_tunnel.get("ws") if isinstance(route_tunnel.get("ws"), dict) else {}
+        yws_contract = route_tunnel.get("yws") if isinstance(route_tunnel.get("yws"), dict) else {}
+        typer.echo(
+            f"route_tunnel={route_tunnel.get('current_support') or '-'} "
+            f"ws={ws_contract.get('current_owner') or '-'}->{ws_contract.get('planned_owner') or '-'}:"
+            f"{ws_contract.get('delegation_mode') or '-'} "
+            f"yws={yws_contract.get('current_owner') or '-'}->{yws_contract.get('planned_owner') or '-'}:"
+            f"{yws_contract.get('delegation_mode') or '-'}"
+        )
 
 
 @join_code_app.command("create")

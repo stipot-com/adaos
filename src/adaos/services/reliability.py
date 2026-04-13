@@ -2491,11 +2491,68 @@ def _sidecar_lifecycle_manager() -> str:
     return "supervisor" if token in {"1", "true", "yes", "on"} else "runtime"
 
 
-def _sidecar_scope_snapshot(*, enabled: bool) -> dict[str, Any]:
+def _sidecar_route_tunnel_entry(route_tunnel_contract: dict[str, Any] | None, key: str) -> dict[str, Any]:
+    payload = route_tunnel_contract if isinstance(route_tunnel_contract, dict) else {}
+    entry = payload.get(str(key or "").strip())
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def _sidecar_route_tunnel_state(*, enabled: bool, entry: dict[str, Any] | None) -> str:
+    payload = entry if isinstance(entry, dict) else {}
+    current_owner = str(payload.get("current_owner") or "").strip().lower()
+    planned_owner = str(payload.get("planned_owner") or "").strip().lower()
+    current_support = str(payload.get("current_support") or "").strip().lower()
+    listener_ready = bool(payload.get("listener_ready"))
+    handoff_ready = bool(payload.get("handoff_ready"))
+
+    if current_owner == "sidecar":
+        if handoff_ready:
+            return "ready"
+        if listener_ready:
+            return "starting"
+        return "degraded" if enabled else "disabled"
+    if planned_owner == "sidecar":
+        return "disabled" if not enabled or current_support == "disabled" else "planned"
+    if current_owner == "runtime":
+        return "not_owned"
+    return "unknown"
+
+
+def _sidecar_scope_snapshot(*, enabled: bool, route_tunnel_contract: dict[str, Any] | None = None) -> dict[str, Any]:
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    current_boundaries: list[str] = ["hub_root_transport"] if enabled else []
+    runtime_fallback_boundaries: list[str] = ["hub_root_transport"] if not enabled else []
+    planned_next_boundaries: list[str] = []
+
+    for boundary, entry in (
+        ("browser_events_ws", ws_entry),
+        ("browser_yjs_ws", yws_entry),
+    ):
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        planned_owner = str(entry.get("planned_owner") or "").strip().lower()
+        if current_owner == "sidecar":
+            current_boundaries.append(boundary)
+            continue
+        runtime_fallback_boundaries.append(boundary)
+        if planned_owner == "sidecar":
+            planned_next_boundaries.append(boundary)
+
+    def _uniq(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            key = str(item or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(key)
+        return result
+
     return {
-        "current_boundaries": ["hub_root_transport"] if enabled else [],
-        "runtime_fallback_boundaries": ["hub_root_transport"] if not enabled else [],
-        "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
+        "current_boundaries": _uniq(current_boundaries),
+        "runtime_fallback_boundaries": _uniq(runtime_fallback_boundaries),
+        "planned_next_boundaries": _uniq(planned_next_boundaries),
         "planned_later_boundaries": [
             "webrtc_signaling",
             "webrtc_media",
@@ -2577,13 +2634,56 @@ def _media_update_guard_snapshot(*, role: str, runtime: dict[str, Any] | None) -
     }
 
 
-def _sidecar_continuity_contract(*, enabled: bool, media_runtime: dict[str, Any] | None) -> dict[str, Any]:
+def _sidecar_continuity_contract(
+    *,
+    enabled: bool,
+    media_runtime: dict[str, Any] | None,
+    route_tunnel_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = media_runtime if isinstance(media_runtime, dict) else {}
     guard = payload.get("update_guard") if isinstance(payload.get("update_guard"), dict) else {}
     required = bool(guard.get("hub_sidecar_continuity_required"))
     member_policy = str(guard.get("member_runtime_update") or "allow")
     hub_policy = str(guard.get("hub_runtime_update") or "allow")
-    current_support = "planned" if required else "not_applicable"
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    required_boundaries = ["browser_events_ws", "browser_yjs_ws"] if required else []
+    ready_boundaries: list[str] = []
+    pending_boundaries: list[str] = []
+    blockers: list[str] = []
+
+    for boundary, entry in (
+        ("browser_events_ws", ws_entry),
+        ("browser_yjs_ws", yws_entry),
+    ):
+        current_owner = str(entry.get("current_owner") or "").strip().lower()
+        handoff_ready = bool(entry.get("handoff_ready"))
+        if current_owner == "sidecar" and handoff_ready:
+            ready_boundaries.append(boundary)
+            continue
+        if required:
+            pending_boundaries.append(boundary)
+            blocker = next(
+                (
+                    str(item).strip()
+                    for item in (entry.get("blockers") or [])
+                    if str(item).strip()
+                ),
+                "",
+            )
+            if blocker:
+                blockers.append(f"{boundary}: {blocker}")
+
+    if not required:
+        current_support = "not_applicable"
+    elif not enabled:
+        current_support = "disabled"
+    elif pending_boundaries and ready_boundaries:
+        current_support = "partial"
+    elif pending_boundaries:
+        current_support = "planned"
+    else:
+        current_support = "ready"
     reason = str(guard.get("reason") or "").strip() or (
         "no live media continuity requirement observed"
         if not required
@@ -2596,6 +2696,10 @@ def _sidecar_continuity_contract(*, enabled: bool, media_runtime: dict[str, Any]
         "hub_runtime_update": hub_policy,
         "observed_live_topology": guard.get("observed_live_topology"),
         "current_support": current_support,
+        "required_boundaries": required_boundaries,
+        "ready_boundaries": ready_boundaries,
+        "pending_boundaries": pending_boundaries,
+        "blockers": blockers,
         "target_behavior": (
             "keep sidecar alive while the hub runtime restarts during live media sessions"
             if required
@@ -3854,15 +3958,7 @@ def sidecar_runtime_snapshot(
         "owns": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("may_own") or []),
         "must_not_own": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("must_not_own") or []),
     }
-    delegations = {
-        "hub_root_transport": bool(enabled),
-        "route_tunnel_transport": False,
-        "sync_transport": False,
-        "media_transport": False,
-    }
     lifecycle_manager = _sidecar_lifecycle_manager()
-    scope = _sidecar_scope_snapshot(enabled=enabled)
-    continuity_contract = _sidecar_continuity_contract(enabled=enabled, media_runtime=media_runtime)
     route_tunnel_contract = (
         route_tunnel_contract_fn()
         if callable(route_tunnel_contract_fn)
@@ -3892,6 +3988,22 @@ def sidecar_runtime_snapshot(
         route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
     if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
         route_tunnel_contract = dict(record.get("route_tunnel_contract") or route_tunnel_contract or {})
+    ws_route_contract = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_route_contract = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    route_ready = _sidecar_route_tunnel_state(enabled=enabled, entry=ws_route_contract)
+    sync_ready = _sidecar_route_tunnel_state(enabled=enabled, entry=yws_route_contract)
+    delegations = {
+        "hub_root_transport": bool(enabled),
+        "route_tunnel_transport": str(ws_route_contract.get("current_owner") or "").strip().lower() == "sidecar",
+        "sync_transport": str(yws_route_contract.get("current_owner") or "").strip().lower() == "sidecar",
+        "media_transport": False,
+    }
+    scope = _sidecar_scope_snapshot(enabled=enabled, route_tunnel_contract=route_tunnel_contract)
+    continuity_contract = _sidecar_continuity_contract(
+        enabled=enabled,
+        media_runtime=media_runtime,
+        route_tunnel_contract=route_tunnel_contract,
+    )
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"

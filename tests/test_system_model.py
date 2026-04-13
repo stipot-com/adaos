@@ -495,6 +495,20 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                         "hub_runtime_update": "preserve_sidecar",
                         "current_support": "planned",
                     },
+                    "route_tunnel_contract": {
+                        "current_support": "planned",
+                        "ownership_boundary": "transport_only",
+                        "ws": {
+                            "current_owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "delegation_mode": "not_implemented",
+                        },
+                        "yws": {
+                            "current_owner": "runtime",
+                            "planned_owner": "sidecar",
+                            "delegation_mode": "not_implemented",
+                        },
+                    },
                     "transport_provenance": {"selected_server": "wss://api.inimatic.com/nats"},
                 },
                 "sync_runtime": {
@@ -567,6 +581,9 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["runtime:hub:hub-1/sidecar"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/sidecar"]["runtime"]["transport_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/sidecar"]["actual_state"]["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
+    assert (
+        objects["runtime:hub:hub-1/sidecar"]["actual_state"]["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
+    )
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2

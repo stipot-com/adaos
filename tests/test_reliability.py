@@ -532,14 +532,89 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     assert snapshot["transport_owner"] == "sidecar"
     assert snapshot["lifecycle_manager"] == "supervisor"
     assert snapshot["scope"]["current_boundaries"] == ["hub_root_transport"]
+    assert snapshot["scope"]["runtime_fallback_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
     assert snapshot["scope"]["planned_next_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
     assert snapshot["continuity_contract"]["required"] is True
     assert snapshot["continuity_contract"]["member_runtime_update"] == "defer"
     assert snapshot["continuity_contract"]["hub_runtime_update"] == "preserve_sidecar"
     assert snapshot["continuity_contract"]["current_support"] == "planned"
+    assert snapshot["continuity_contract"]["pending_boundaries"] == ["browser_events_ws", "browser_yjs_ws"]
+    assert snapshot["route_ready"] == "planned"
+    assert snapshot["sync_ready"] == "planned"
+    assert snapshot["delegations"]["route_tunnel_transport"] is False
+    assert snapshot["delegations"]["sync_transport"] is False
     assert snapshot["route_tunnel_contract"]["ownership_boundary"] == "transport_only"
     assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
     assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"
+
+
+def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and_continuity(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
+            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 77},
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {
+                "current_support": "planned",
+                "lifecycle_manager": "supervisor",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "local_ipc_proxy",
+                    "listener_ready": True,
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+                "yws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "local_ipc_proxy",
+                    "listener_ready": True,
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+            },
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+        media_runtime={
+            "update_guard": {
+                "hub_sidecar_continuity_required": True,
+                "member_runtime_update": "defer",
+                "hub_runtime_update": "preserve_sidecar",
+                "observed_live_topology": "member_browser_direct",
+                "reason": "member owns the active browser media path",
+            }
+        },
+    )
+
+    assert snapshot["route_ready"] == "ready"
+    assert snapshot["sync_ready"] == "ready"
+    assert snapshot["delegations"]["route_tunnel_transport"] is True
+    assert snapshot["delegations"]["sync_transport"] is True
+    assert snapshot["scope"]["current_boundaries"] == [
+        "hub_root_transport",
+        "browser_events_ws",
+        "browser_yjs_ws",
+    ]
+    assert snapshot["scope"]["planned_next_boundaries"] == []
+    assert snapshot["continuity_contract"]["current_support"] == "ready"
+    assert snapshot["continuity_contract"]["ready_boundaries"] == [
+        "browser_events_ws",
+        "browser_yjs_ws",
+    ]
+    assert snapshot["continuity_contract"]["pending_boundaries"] == []
 
 
 def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:

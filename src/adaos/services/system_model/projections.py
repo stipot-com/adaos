@@ -665,6 +665,7 @@ def _sidecar_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canoni
                 "diag_age_s": payload.get("diag_age_s"),
                 "scope": payload.get("scope"),
                 "continuity_contract": payload.get("continuity_contract"),
+                "route_tunnel_contract": payload.get("route_tunnel_contract"),
                 "transport_provenance": payload.get("transport_provenance"),
             }
         ),
