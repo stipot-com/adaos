@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 import subprocess
 import traceback
@@ -647,7 +648,8 @@ def _restart_autostart_service() -> dict[str, object]:
     if not isinstance(info, dict):
         raise RuntimeError("autostart status is unavailable; cannot restart service")
     scope = str(info.get("scope") or "").strip().lower()
-    service_name = str(info.get("service") or "adaos.service").strip() or "adaos.service"
+    service_ref = str(info.get("service") or "adaos.service").strip() or "adaos.service"
+    service_name = Path(service_ref).name or "adaos.service"
     if sys.platform.startswith("linux"):
         if scope == "system":
             cmd = ["systemctl", "restart", service_name]
@@ -662,7 +664,10 @@ def _restart_autostart_service() -> dict[str, object]:
                 f"stdout:\n{(completed.stdout or '')[-4000:]}\n"
                 f"stderr:\n{(completed.stderr or '')[-4000:]}"
             )
-        return {"ok": True, "scope": scope, "service": service_name, "command": cmd}
+        payload: dict[str, object] = {"ok": True, "scope": scope, "service": service_name, "command": cmd}
+        if service_ref != service_name:
+            payload["service_ref"] = service_ref
+        return payload
     raise RuntimeError("update-complete restart is currently supported only on Linux autostart deployments")
 
 

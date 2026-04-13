@@ -422,6 +422,36 @@ def test_autostart_update_complete_retries_restart_for_root_promoted_without_att
     assert "autostart service restart requested" in result.output
 
 
+def test_restart_autostart_service_uses_unit_name_on_linux(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(setup_cmd, "get_ctx", lambda: object())
+    monkeypatch.setattr(
+        setup_cmd,
+        "autostart_status",
+        lambda _ctx: {
+            "scope": "system",
+            "service": "/etc/systemd/system/adaos.service",
+        },
+    )
+    monkeypatch.setattr(setup_cmd.sys, "platform", "linux")
+
+    def _run(cmd, capture_output=None, text=None, timeout=None):
+        captured["cmd"] = cmd
+        captured["capture_output"] = capture_output
+        captured["text"] = text
+        captured["timeout"] = timeout
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_cmd.subprocess, "run", _run)
+
+    payload = setup_cmd._restart_autostart_service()
+
+    assert captured["cmd"] == ["systemctl", "restart", "adaos.service"]
+    assert payload["service"] == "adaos.service"
+    assert payload["service_ref"] == "/etc/systemd/system/adaos.service"
+
+
 def test_autostart_update_restore_root_restores_backup_and_optionally_restarts(monkeypatch) -> None:
     runner = CliRunner()
 
