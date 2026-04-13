@@ -93,6 +93,14 @@ def test_admin_update_status_includes_runtime_identity(monkeypatch) -> None:
     assert payload["runtime"]["admin_mutation_allowed"] is False
 
 
+def test_supervisor_manages_sidecar_helper(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    assert api_server._supervisor_manages_sidecar() is True
+
+    monkeypatch.delenv("ADAOS_SUPERVISOR_ENABLED", raising=False)
+    assert api_server._supervisor_manages_sidecar() is False
+
+
 def test_candidate_runtime_can_be_promoted_to_active(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_RUNTIME_TRANSITION_ROLE", "candidate")
     monkeypatch.setenv("ADAOS_RUNTIME_INSTANCE_ID", "rt-b-c-abcdef12")

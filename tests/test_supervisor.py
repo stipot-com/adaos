@@ -1210,6 +1210,84 @@ def test_runtime_state_payload_uses_supervisor_recorded_cwd_when_subprocess_hide
     assert payload["managed_matches_active_slot"] is True
 
 
+def test_runtime_state_payload_includes_sidecar_snapshot(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "validate_slot_structure",
+        lambda slot: {"slot": slot, "ok": True, "issues": [], "repo_dir": "/slots/A/repo", "venv_dir": "/slots/A/venv"},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "realtime_sidecar_listener_snapshot",
+        lambda proc=None: {"listener_running": True, "managed_pid": 45678, "port": 7422},
+    )
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: False)
+
+    payload = manager.status()
+
+    assert payload["sidecar"]["enabled"] is True
+    assert payload["sidecar"]["process"]["listener_running"] is True
+    assert payload["sidecar"]["process"]["port"] == 7422
+
+
+def test_supervisor_restart_sidecar_updates_process_and_optionally_reconnects_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._sidecar_proc = "old-proc"
+
+    async def _restart_sidecar(*, proc, role=None):
+        assert proc == "old-proc"
+        assert role == "hub"
+        return "new-proc", {"ok": True, "accepted": True, "reason": "restarted"}
+
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+    monkeypatch.setattr(supervisor, "restart_realtime_sidecar_subprocess", _restart_sidecar)
+    monkeypatch.setattr(manager, "_runtime_request_json", lambda **kwargs: {"ok": True, "accepted": True})
+    monkeypatch.setattr(manager, "_runtime_sidecar_runtime_payload", lambda: {"transport_owner": "sidecar"})
+    monkeypatch.setattr(
+        supervisor,
+        "realtime_sidecar_listener_snapshot",
+        lambda proc=None: {"listener_running": True, "managed_pid": 77777, "proc": proc},
+    )
+    persisted: list[bool] = []
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: persisted.append(True))
+
+    payload = asyncio.run(manager.restart_sidecar(reconnect_hub_root=True))
+
+    assert manager._sidecar_proc == "new-proc"
+    assert payload["restart"]["accepted"] is True
+    assert payload["reconnect"]["ok"] is True
+    assert payload["runtime"]["transport_owner"] == "sidecar"
+    assert payload["process"]["proc"] == "new-proc"
+    assert persisted
+
+
 def test_runtime_state_payload_surfaces_root_promotion_requirement(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

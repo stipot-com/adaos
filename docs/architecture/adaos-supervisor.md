@@ -443,7 +443,7 @@ Target deployment:
 
 - systemd manages `adaos-supervisor`
 - `adaos-supervisor` manages `adaos-runtime`
-- optional `adaos-realtime` may be managed directly by supervisor
+- `adaos-supervisor` also manages `adaos-realtime` when sidecar mode is enabled in managed topology
 
 This is preferred over systemd managing the main runtime process directly because systemd alone does not hold AdaOS-specific update semantics, slot state, or validation rules.
 
@@ -454,7 +454,9 @@ The supervisor and realtime sidecar solve different problems:
 - `adaos-supervisor`: process and update authority
 - `adaos-realtime`: transport isolation
 
-The supervisor may launch and monitor the sidecar, but the sidecar must remain transport-only.
+In the managed topology, the supervisor launches, monitors, and restarts the sidecar.
+Standalone runtime-owned sidecar startup remains only as compatibility fallback when supervisor is absent.
+The sidecar must remain transport-only.
 The sidecar must not become the hidden owner of update status, rollback state, or degraded-mode business policy.
 
 ## Migration plan
@@ -485,8 +487,8 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 
 ### Phase 5 - Sidecar alignment
 
-- allow supervisor to manage `adaos-realtime`
-- remove runtime-lifespan ownership of sidecar startup/shutdown
+- keep `adaos-realtime` lifecycle under supervisor in managed topology
+- keep runtime-owned startup/shutdown only as standalone fallback when supervisor is absent
 - keep sidecar contract transport-only
 
 ### Phase 6 - Operator UX

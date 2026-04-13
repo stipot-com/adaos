@@ -14,7 +14,7 @@ Read this together with:
 - [Transport Ownership](transport-ownership.md)
 - [AdaOS Supervisor](adaos-supervisor.md)
 
-For the first rollout, `adaos-realtime` owns the remote hub↔root WebSocket and exposes a local `nats://127.0.0.1:<port>` endpoint to the hub. The existing hub NATS bridge stays in place and connects to the local sidecar instead of the remote `wss://.../nats` endpoint.
+For the first rollout, `adaos-realtime` owns the remote hub<->root WebSocket and exposes a local `nats://127.0.0.1:<port>` endpoint to the hub. The existing hub NATS bridge stays in place and connects to the local sidecar instead of the remote `wss://.../nats` endpoint.
 
 This is intentionally minimal:
 
@@ -38,11 +38,12 @@ This is intentionally minimal:
   - transport provenance and ownership boundary
 - can be inspected and restarted independently through the local control API / CLI without restarting the hub process
 
-Hub main process:
+Supervisor / runtime boundary:
 
-- starts the sidecar on hub startup
-- connects its existing NATS client to local `nats://127.0.0.1:7422`
-- does not install the internal WebSocket NATS transport patch while sidecar mode is enabled
+- in managed topology, `adaos-supervisor` starts, restarts, and observes the sidecar
+- standalone runtime keeps a temporary fallback and may still start the sidecar itself when supervisor is absent
+- hub runtime connects its existing NATS client to local `nats://127.0.0.1:7422`
+- hub runtime does not install the internal WebSocket NATS transport patch while sidecar mode is enabled
 
 ## Why this split
 
@@ -68,7 +69,7 @@ In the target local architecture, those process/update responsibilities belong t
 
 ## Rollout
 
-### Phase 1 — NATS transport sidecar
+### Phase 1 - NATS transport sidecar
 
 Implemented now.
 
@@ -86,7 +87,7 @@ Success criteria:
 - operators can see that sidecar owns transport only, and can inspect `transport_ready`, `control_ready`, reconnect counters, and selected remote provenance
 - operators can restart sidecar transport runtime independently from hub business runtime
 
-### Phase 2 — Route tunnel ownership
+### Phase 2 - Route tunnel ownership
 
 Next step.
 
@@ -99,7 +100,7 @@ Success criteria:
 - browser realtime traffic no longer depends on hub main-process socket loop
 - route-proxy failures do not tear down control-plane logic
 
-### Phase 3 — Full realtime runtime
+### Phase 3 - Full realtime runtime
 
 Later.
 
@@ -114,7 +115,8 @@ Success criteria:
 
 ## Operational Notes
 
-- Sidecar mode is enabled for Windows hub role by default and can be forced with `ADAOS_REALTIME_ENABLE=1`.
+- Sidecar mode is disabled by default and is enabled explicitly with `ADAOS_REALTIME_ENABLE=1` or `HUB_REALTIME_ENABLE=1`.
 - Local endpoint defaults to `nats://127.0.0.1:7422`.
 - Remote candidate selection still uses existing node/root NATS configuration.
-- Future process topology should prefer `systemd -> adaos-supervisor -> {adaos-runtime, adaos-realtime}` over embedding sidecar lifecycle inside runtime lifespan.
+- Managed process topology prefers `systemd -> adaos-supervisor -> {adaos-runtime, adaos-realtime}`.
+- Standalone runtime-owned sidecar lifecycle remains transitional compatibility only and is not the target long-term architecture.

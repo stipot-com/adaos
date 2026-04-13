@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -48,10 +49,18 @@ from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
+from adaos.services.realtime_sidecar import (
+    realtime_sidecar_enabled,
+    realtime_sidecar_listener_snapshot,
+    restart_realtime_sidecar_subprocess,
+    start_realtime_sidecar_subprocess,
+    stop_realtime_sidecar_subprocess,
+)
 from adaos.services.runtime_paths import current_base_dir
 
 
 _SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
+_LOG = logging.getLogger("adaos.supervisor")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -604,6 +613,7 @@ class SupervisorManager:
         self.token = str(token or "").strip() or None
         self._proc: subprocess.Popen[Any] | None = None
         self._candidate_proc: subprocess.Popen[Any] | None = None
+        self._sidecar_proc: subprocess.Popen[Any] | None = None
         self._desired_running = True
         self._stopping = False
         self._lock = asyncio.Lock()
@@ -622,6 +632,70 @@ class SupervisorManager:
         self._candidate_runtime_instance_id: str | None = None
         self._candidate_transition_role: str | None = None
         self._candidate_runtime_cwd: str | None = None
+
+    def _sidecar_role(self) -> str | None:
+        try:
+            return str(get_ctx().config.role or "").strip().lower() or None
+        except Exception:
+            return None
+
+    def _sidecar_status_payload(self) -> dict[str, Any]:
+        role = self._sidecar_role()
+        return {
+            "enabled": bool(realtime_sidecar_enabled(role=role)),
+            "role": role,
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+        }
+
+    def _runtime_request_json(
+        self,
+        *,
+        path: str,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["X-AdaOS-Token"] = self.token
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        session = requests.Session()
+        try:
+            try:
+                session.trust_env = False
+            except Exception:
+                pass
+            response = session.request(
+                str(method or "GET").upper(),
+                self.runtime_base_url + str(path or ""),
+                headers=headers,
+                json=payload,
+                timeout=float(timeout),
+            )
+            if int(response.status_code or 0) >= 400:
+                try:
+                    detail: Any = response.json()
+                except Exception:
+                    detail = (response.text or f"runtime returned HTTP {response.status_code}").strip()[:500]
+                if isinstance(detail, dict) and set(detail.keys()) == {"detail"}:
+                    detail = detail["detail"]
+                raise HTTPException(status_code=int(response.status_code), detail=detail)
+            body = response.json()
+            if not isinstance(body, dict):
+                raise RuntimeError("runtime returned a non-object payload")
+            return body
+        finally:
+            with contextlib.suppress(Exception):
+                session.close()
+
+    def _runtime_sidecar_runtime_payload(self) -> dict[str, Any]:
+        try:
+            payload = self._runtime_request_json(path="/api/node/reliability", timeout=2.0)
+        except Exception:
+            return {}
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        return dict(runtime.get("sidecar_runtime")) if isinstance(runtime.get("sidecar_runtime"), dict) else {}
 
     @property
     def active_runtime_port(self) -> int:
@@ -934,6 +1008,7 @@ class SupervisorManager:
             "ok": True,
             "supervisor_pid": os.getpid(),
             "supervisor_url": _supervisor_base_url(),
+            "sidecar": self._sidecar_status_payload(),
             "runtime_url": active_runtime_url,
             "runtime_host": self.runtime_host,
             "runtime_port": active_runtime_port,
@@ -1020,6 +1095,13 @@ class SupervisorManager:
         self._last_error = None
         self._persist_runtime_state()
 
+    async def _spawn_sidecar_locked(self) -> None:
+        proc = self._sidecar_proc
+        if proc is not None and proc.poll() is None:
+            return
+        self._sidecar_proc = await start_realtime_sidecar_subprocess(role=self._sidecar_role())
+        self._persist_runtime_state()
+
     async def _spawn_candidate_runtime_locked(self, *, slot: str) -> None:
         resolved_slot = str(slot or "").strip().upper()
         if not resolved_slot:
@@ -1063,6 +1145,12 @@ class SupervisorManager:
             self._stopping = False
             self._desired_running = True
             await self._spawn_runtime_locked()
+
+    async def ensure_sidecar_started(self) -> dict[str, Any]:
+        async with self._lock:
+            await self._spawn_sidecar_locked()
+            self._persist_runtime_state()
+            return self._sidecar_status_payload()
 
     async def _terminate_proc_locked(
         self,
@@ -1137,6 +1225,48 @@ class SupervisorManager:
             await self._terminate_proc_locked(graceful=True, reason=reason)
             await self._terminate_candidate_proc_locked(graceful=True, reason=f"{reason}.candidate")
             self._persist_runtime_state()
+
+    async def stop_sidecar(self, *, reason: str = "supervisor.sidecar.stop") -> dict[str, Any]:
+        del reason
+        async with self._lock:
+            await stop_realtime_sidecar_subprocess(self._sidecar_proc)
+            self._sidecar_proc = None
+            self._persist_runtime_state()
+            return self._sidecar_status_payload()
+
+    def sidecar_status(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "runtime": self._runtime_sidecar_runtime_payload(),
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+        }
+
+    async def restart_sidecar(self, *, reconnect_hub_root: bool = False) -> dict[str, Any]:
+        async with self._lock:
+            new_proc, restart_result = await restart_realtime_sidecar_subprocess(
+                proc=self._sidecar_proc,
+                role=self._sidecar_role(),
+            )
+            self._sidecar_proc = new_proc
+            self._persist_runtime_state()
+        reconnect_result: dict[str, Any] | None = None
+        if reconnect_hub_root and str(self._sidecar_role() or "").strip().lower() == "hub":
+            try:
+                reconnect_result = self._runtime_request_json(
+                    path="/api/node/hub-root/reconnect",
+                    method="POST",
+                    payload={},
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                reconnect_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": True,
+            "restart": restart_result,
+            "reconnect": reconnect_result,
+            "runtime": self._runtime_sidecar_runtime_payload(),
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+        }
 
     async def start_candidate_runtime(self, *, slot: str | None = None) -> dict[str, Any]:
         resolved_slot = str(slot or choose_inactive_slot() or "").strip().upper()
@@ -1302,6 +1432,19 @@ class SupervisorManager:
     async def monitor_forever(self) -> None:
         while True:
             await asyncio.sleep(1.0)
+            sidecar_proc = self._sidecar_proc
+            if sidecar_proc is not None and sidecar_proc.poll() is not None:
+                self._sidecar_proc = None
+                self._persist_runtime_state()
+            if realtime_sidecar_enabled(role=self._sidecar_role()) and not self._stopping:
+                sidecar_snapshot = realtime_sidecar_listener_snapshot(self._sidecar_proc)
+                if self._sidecar_proc is None and not bool(sidecar_snapshot.get("listener_running")):
+                    try:
+                        async with self._lock:
+                            if self._sidecar_proc is None and not self._stopping:
+                                await self._spawn_sidecar_locked()
+                    except Exception:
+                        _LOG.warning("failed to restart adaos-realtime sidecar", exc_info=True)
             await self._maybe_resume_or_continue_transition()
             candidate_proc = self._candidate_proc
             if candidate_proc is not None:
@@ -1338,6 +1481,10 @@ class SupervisorManager:
                     await self._spawn_runtime_locked()
 
     async def start(self) -> None:
+        try:
+            await self.ensure_sidecar_started()
+        except Exception:
+            _LOG.warning("failed to start adaos-realtime sidecar", exc_info=True)
         await self.ensure_started()
         self._monitor_task = asyncio.create_task(self.monitor_forever(), name="adaos-supervisor-monitor")
 
@@ -1355,6 +1502,10 @@ class SupervisorManager:
         async with self._lock:
             await self._terminate_candidate_proc_locked(graceful=True, reason="supervisor.shutdown.candidate")
         await self.stop(reason="supervisor.shutdown")
+        try:
+            await self.stop_sidecar(reason="supervisor.shutdown.sidecar")
+        except Exception:
+            _LOG.warning("failed to stop adaos-realtime sidecar", exc_info=True)
 
     def status(self) -> dict[str, Any]:
         payload = self._runtime_state_payload()
@@ -2422,6 +2573,11 @@ async def supervisor_status() -> dict[str, Any]:
     return _manager().status()
 
 
+@app.get("/api/supervisor/sidecar/status", dependencies=[Depends(require_token)])
+async def supervisor_sidecar_status() -> dict[str, Any]:
+    return _manager().sidecar_status()
+
+
 @app.post("/api/supervisor/runtime/restart", dependencies=[Depends(require_token)])
 async def supervisor_runtime_restart() -> dict[str, Any]:
     status = await _manager().restart_runtime()
@@ -2440,6 +2596,11 @@ async def supervisor_runtime_candidate_stop(payload: dict[str, Any]) -> dict[str
         reason=str(payload.get("reason") or "supervisor.candidate.stop")
     )
     return {"ok": True, "runtime": status}
+
+
+@app.post("/api/supervisor/sidecar/restart", dependencies=[Depends(require_token)])
+async def supervisor_sidecar_restart(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _manager().restart_sidecar(reconnect_hub_root=bool(payload.get("reconnect_hub_root")))
 
 
 @app.get("/api/supervisor/update/status", dependencies=[Depends(require_token)])

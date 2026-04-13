@@ -15,7 +15,7 @@ Fix AdaOS reliability from the top down:
 This ordering is deliberate.
 The project must not start with sidecar or transport adapters as if they alone solved reliability.
 
-## Current status: 2026-03-21
+## Current status: 2026-04-13
 
 ### Done
 
@@ -37,8 +37,8 @@ The project must not start with sidecar or transport adapters as if they alone s
 - hub-root readiness is observable, but delivery guarantees are not yet enforced by an explicit Class A protocol layer
 - route and root-control incident classes still need clearer separation
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
-- sidecar ownership boundary is documented, but not yet the default hardened runtime path
-- local process/update supervision is still coupled to runtime lifecycle rather than a separate supervisor authority
+- sidecar owns the current `hub_root` transport boundary and is supervisor-managed in managed deployments, but `/ws`, `/yws`, Yjs, and media transport are still outside sidecar scope
+- local process/update supervision now has a separate supervisor authority in managed deployments, but browser-safe visibility and warm-switch recovery hardening are still in progress
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
 
@@ -166,7 +166,7 @@ Runtime now also exposes `hardening_coverage`, and for the current `hub_root.*` 
 
 Completed for current `hub_root` transport-ownership scope.
 The sidecar now exposes a protocol-facing runtime surface with explicit ownership boundary, transport readiness, control readiness, reconnect counters, quarantine/supersede history, and transport provenance.
-Sidecar lifecycle is also independently observable and restartable through the local control API and CLI, so transport isolation is no longer tied to a full hub restart.
+Sidecar lifecycle is also independently observable and restartable through the local control API and CLI, and managed deployments now place that lifecycle under `adaos-supervisor` instead of the runtime lifespan.
 This completion is intentionally transport-only: the sidecar owns the `hub_root` NATS transport lifecycle, but does not yet own route tunnel transport, Yjs sync transport, or media transport.
 
 ### Focus
@@ -225,7 +225,8 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - keep production runtime sourced from slot `A|B` even after supervisor/root updates
 - validate every candidate in an inactive slot before allowing any root/bootstrap promotion
 - detect bootstrap-managed file changes and surface `root_promotion_required` explicitly instead of silently mixing slot and root drift
-- align sidecar lifecycle under supervisor without turning sidecar into protocol or update authority
+- keep supervisor-owned sidecar lifecycle observable through both supervisor and runtime-compatible node-control surfaces
+- retain standalone runtime fallback only for non-supervised deployments, without turning sidecar into protocol or update authority
 - migrate installed skill runtimes as an explicit core-update subflow rather than assuming old interpreter dependencies remain valid
 - persist per-skill migration diagnostics (`prepare` / `test` / `activate` / `rollback` / `deactivate`) in core-update results
 - surface skill migration failures and selective post-commit deactivations in Infra State and Infrascope
@@ -255,7 +256,7 @@ The supervisor becomes the authority for local runtime lifecycle and update atte
 - `src/adaos/services/autostart.py`
 - `src/adaos/apps/cli/commands/setup.py`
 - `src/adaos/apps/cli/commands/node.py`
-- future `src/adaos/apps/supervisor.py`
+- `src/adaos/apps/supervisor.py`
 
 ### Exit criteria
 

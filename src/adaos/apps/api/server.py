@@ -216,6 +216,11 @@ def _runtime_identity_public_payload() -> dict[str, Any]:
     }
 
 
+def _supervisor_manages_sidecar() -> bool:
+    raw = str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _ensure_runtime_admin_mutation_allowed(action: str) -> None:
     info = _runtime_identity_public_payload()
     if str(info.get("transition_role") or "active").strip().lower() != "candidate":
@@ -485,7 +490,7 @@ async def lifespan(app: FastAPI):
     try:
         conf = get_ctx().config
         role = str(getattr(conf, "role", "") or "").strip().lower()
-        if realtime_sidecar_enabled(role=role):
+        if not _supervisor_manages_sidecar() and realtime_sidecar_enabled(role=role):
             app.state.realtime_sidecar_proc = await start_realtime_sidecar_subprocess(role=role)
     except Exception:
         logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
@@ -828,10 +833,11 @@ async def lifespan(app: FastAPI):
             pass
         except Exception:
             pass
-        try:
-            await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
-        except Exception:
-            logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
+        if not _supervisor_manages_sidecar():
+            try:
+                await stop_realtime_sidecar_subprocess(getattr(app.state, "realtime_sidecar_proc", None))
+            except Exception:
+                logging.getLogger("adaos.realtime").warning("failed to stop adaos-realtime sidecar", exc_info=True)
         await shutdown()
 
 

@@ -47,6 +47,123 @@ def test_node_control_plane_object_self_returns_canonical_payload(monkeypatch) -
     assert payload["object"]["status"] == "online"
 
 
+def test_node_sidecar_status_proxies_to_supervisor_when_enabled(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_URL", "http://127.0.0.1:8776")
+    monkeypatch.setenv("ADAOS_TOKEN", "dev-local-token")
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "ok": True,
+                "runtime": {"transport_owner": "sidecar"},
+                "process": {"listener_running": True},
+            }
+
+    class _FakeSession:
+        trust_env = False
+
+        def request(self, method: str, url: str, headers=None, json=None, timeout=None):
+            assert method == "GET"
+            assert url == "http://127.0.0.1:8776/api/supervisor/sidecar/status"
+            assert headers["X-AdaOS-Token"] == "dev-local-token"
+            assert json is None
+            return _FakeResponse()
+
+        def close(self):
+            return None
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+    monkeypatch.setattr(node_api.requests, "Session", _FakeSession)
+
+    client = TestClient(app)
+    resp = client.get("/api/node/sidecar/status")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["runtime"]["transport_owner"] == "sidecar"
+    assert payload["process"]["listener_running"] is True
+
+
+def test_node_sidecar_restart_proxies_to_supervisor_when_enabled(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_URL", "http://127.0.0.1:8776")
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "ok": True,
+                "restart": {"accepted": True},
+                "reconnect": {"ok": True},
+                "runtime": {},
+                "process": {"listener_running": True},
+            }
+
+    class _FakeSession:
+        trust_env = False
+
+        def request(self, method: str, url: str, headers=None, json=None, timeout=None):
+            assert method == "POST"
+            assert url == "http://127.0.0.1:8776/api/supervisor/sidecar/restart"
+            assert json == {"reconnect_hub_root": True}
+            return _FakeResponse()
+
+        def close(self):
+            return None
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+    monkeypatch.setattr(node_api.requests, "Session", _FakeSession)
+
+    client = TestClient(app)
+    resp = client.post("/api/node/sidecar/restart", json={"reconnect_hub_root": True})
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["restart"]["accepted"] is True
+    assert payload["reconnect"]["ok"] is True
+
+
 def test_node_control_plane_reliability_projection_returns_canonical_payload(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     fake_y_py = types.SimpleNamespace(
