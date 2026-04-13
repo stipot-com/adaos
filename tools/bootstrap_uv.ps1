@@ -62,6 +62,17 @@ function Write-EnvVar {
   Set-Content -Path $EnvFile -Value $lines
 }
 
+function Show-BootstrapConfig {
+  Write-Host ""
+  Write-Host "Bootstrap config:"
+  Write-Host ("  repo_root:      {0}" -f $PWD.Path)
+  Write-Host ("  env_file:       {0}" -f (Join-Path $PWD ".env"))
+  Write-Host ("  env_type:       {0}" -f $env:ENV_TYPE)
+  Write-Host ("  adaos_base_dir: {0}" -f $env:ADAOS_BASE_DIR)
+  Write-Host ("  dev_mode:       {0}" -f $(if ($Dev) { "1" } else { "0" }))
+  Write-Host ""
+}
+
 function Resolve-EffectiveRootUrl {
   param(
     [string]$RootUrlValue,
@@ -184,8 +195,8 @@ if ([string]::IsNullOrWhiteSpace($envType) -and (Test-Path ".env")) {
     }
   } catch { }
 }
-if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "dev" }
 if ($Dev) { $envType = "dev" }
+if ([string]::IsNullOrWhiteSpace($envType)) { $envType = "prod" }
 $env:ENV_TYPE = $envType
 
 if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
@@ -196,6 +207,7 @@ if ([string]::IsNullOrWhiteSpace($env:ADAOS_BASE_DIR)) {
   }
 }
 New-Item -ItemType Directory -Force -Path $env:ADAOS_BASE_DIR | Out-Null
+Show-BootstrapConfig
 Write-Host "Detecting git availability (adaos git autodetect)..."
 try { Invoke-Adaos git autodetect | Out-Null } catch { }
 Write-Host "Installing default webspace content (adaos install)..."
@@ -375,6 +387,7 @@ if ($desiredRole -eq "hub") {
   } catch { Write-Warning "adaos dev root init failed: $($_.Exception.Message)" }
 }
 
+Write-Host ("Runtime state target: {0}" -f (Join-Path $env:ADAOS_BASE_DIR "node.yaml"))
 Write-Host ("Starting AdaOS API ({0}:{1}) ..." -f $ServeHost, $ServePort)
 $serviceInstalled = $false
 if ($InstallService -ne "never") {

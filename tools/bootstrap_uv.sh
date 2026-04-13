@@ -152,6 +152,17 @@ show_optional_modules_note() {
   fi
 }
 
+print_bootstrap_config() {
+  echo
+  echo "Bootstrap config:"
+  echo "  repo_root:      $PWD"
+  echo "  env_file:       $PWD/.env"
+  echo "  env_type:       ${ENV_TYPE:-}"
+  echo "  adaos_base_dir: ${ADAOS_BASE_DIR:-}"
+  echo "  dev_mode:       ${DEV_MODE:-0}"
+  echo
+}
+
 print_next_steps() {
   local serve_host="$1"
   local serve_port="$2"
@@ -366,10 +377,12 @@ fi
 if [[ "${DEV_MODE:-0}" == "1" ]]; then
   ENV_TYPE="dev"
 fi
-export ENV_TYPE="${ENV_TYPE:-dev}"
+export ENV_TYPE="${ENV_TYPE:-prod}"
 ADAOS_BASE_DIR="$(resolve_adaos_base_dir)"
 mkdir -p "$ADAOS_BASE_DIR"
 export ADAOS_BASE_DIR
+
+print_bootstrap_config
 
 log "Detecting git availability (adaos git autodetect)..."
 "$ADAOS_PY" -m adaos git autodetect >/dev/null 2>&1 || true
@@ -416,6 +429,7 @@ expected_node_id="$(
   "$ADAOS_PY" -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo ""
 )"
+log "Runtime state target: ${ADAOS_BASE_DIR}/node.yaml"
 
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0
