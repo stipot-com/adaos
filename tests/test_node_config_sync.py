@@ -132,6 +132,22 @@ def test_save_config_stores_managed_key_paths_relative_to_base() -> None:
     assert hub.get("cert") == "keys/hub_cert.pem"
 
 
+def test_save_config_persists_bootstrap_subnet_id_for_canonical_identity() -> None:
+    ctx = get_ctx()
+    detached = _detached_config()
+    detached.subnet_id = "sn_bootstrap01"
+    detached.subnet_settings.id = detached.subnet_id
+    detached.subnet_settings.bootstrap_id = None
+
+    save_config(detached)
+
+    data = yaml.safe_load((Path(ctx.paths.base_dir()) / "node.yaml").read_text(encoding="utf-8")) or {}
+    subnet = data.get("subnet") or {}
+
+    assert subnet.get("id") == "sn_bootstrap01"
+    assert subnet.get("bootstrap_id") == "sn_bootstrap01"
+
+
 def test_load_config_migrates_legacy_key_paths_into_active_base_dir(tmp_path: Path) -> None:
     ctx = get_ctx()
     base_dir = Path(ctx.paths.base_dir())
@@ -252,6 +268,47 @@ def test_load_config_recovers_uuid_subnet_from_nats_user_when_certificate_missin
     assert fresh.subnet_settings.id == recovered_subnet
     saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
     assert saved.get("subnet_id") == recovered_subnet
+
+
+def test_load_config_prefers_bootstrap_subnet_id_over_nats_user_when_explicit_values_drift() -> None:
+    ctx = get_ctx()
+    base_dir = Path(ctx.paths.base_dir())
+    node_path = base_dir / "node.yaml"
+    cert_path = base_dir / "keys" / "hub_cert.pem"
+    if cert_path.exists():
+        cert_path.unlink()
+    uuid_subnet = "9d91f466-0349-475d-9887-2d2bb3c783ee"
+    bootstrap_subnet = "sn_boot1234"
+    nats_subnet = "sn_nats5678"
+
+    node_path.write_text(
+        yaml.safe_dump(
+            {
+                "node_id": "node_bootstrap",
+                "subnet_id": uuid_subnet,
+                "role": "hub",
+                "subnet": {
+                    "id": uuid_subnet,
+                    "bootstrap_id": bootstrap_subnet,
+                },
+                "nats": {"user": f"hub_{nats_subnet}"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+
+    assert fresh.subnet_id == bootstrap_subnet
+    assert fresh.subnet_settings.id == bootstrap_subnet
+    assert fresh.subnet_settings.bootstrap_id == bootstrap_subnet
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+    assert saved.get("subnet_id") == bootstrap_subnet
+    assert ((saved.get("subnet") or {}).get("id")) == bootstrap_subnet
+    assert ((saved.get("subnet") or {}).get("bootstrap_id")) == bootstrap_subnet
 
 
 def test_load_config_generates_sn_prefixed_subnet_id_for_empty_config() -> None:

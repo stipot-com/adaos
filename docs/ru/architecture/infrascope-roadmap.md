@@ -4,6 +4,14 @@
 
 Архитектура зафиксирована в [Infrascope](infrascope.md). Здесь описаны порядок, deliverables и критерии готовности.
 
+## Текущий статус
+
+- локальный draft `.adaos/workspace/scenarios/infrascope/*` подготовлен и провалидирован как реальный desktop scenario; публикация идёт через `adaos scenario push`, а не прямым git-коммитом
+- shell сценария уже закрывает `overview`, `inventory` и unified inspector поверх `data/infrascope/*`
+- `node_config` закрепляет canonical subnet identity в `subnet.bootstrap_id`; при восстановлении конфига сертификат остаётся главным repair-source, а `nats.user` используется только как аварийный fallback
+- `Infrascope` snapshot теперь сохраняет usable partial payload и одновременно явно помечает ошибки/partial state в проекции
+- topology/runtime/resource modes и дальнейшая полировка operator UX остаются отдельными инкрементами
+
 ## Принципы последовательности
 
 1. Сначала контракты, потом экраны.
@@ -51,6 +59,7 @@
 
 - SDK/API получили явный `subnet planning context` поверх canonical projections
 - `Infrascope` inspector начал публиковать `subnet_planning` как отдельный operator-facing payload
+- bootstrap-origin subnet identity теперь хранится отдельно от transport hints и не должен деградировать до следов из `nats.user`, пока есть canonical bootstrap source
 - полный cleanup ещё не завершён: в кодовой базе остаются legacy места, где используются raw bootstrap/runtime payloads вне canonical surface
 
 ## Опорные сценарии

@@ -487,6 +487,10 @@ def test_infrascope_snapshot_keeps_partial_yjs_payload_when_one_inspector_fails(
     assert snapshot["inventory"]["all"]
     assert snapshot["inspectors"]["member-1"]["warning"] == "FileNotFoundError: missing member artifact"
     assert snapshot["summary"]["object_id"] == "local"
+    assert snapshot["summary"]["warning"] == "inspector:member-1: FileNotFoundError: missing member artifact"
+    assert snapshot["errors"] == ["inspector:member-1: FileNotFoundError: missing member artifact"]
+    assert snapshot["meta"]["partial"] is True
+    assert snapshot["meta"]["error_total"] == 1
 
 
 def test_infrascope_snapshot_reuses_last_good_snapshot_when_refresh_fails(monkeypatch):

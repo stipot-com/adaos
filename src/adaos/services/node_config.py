@@ -151,6 +151,7 @@ class HubKeypair:
 @dataclass
 class SubnetSettings:
     id: str | None = None
+    bootstrap_id: str | None = None
     hub: HubKeypair = field(default_factory=HubKeypair)
 
 
@@ -222,11 +223,18 @@ class NodeConfig:
         if not self.subnet_id:
             self.subnet_id = generate_provisional_subnet_id()
             changed = True
+        bootstrap_id = str(self.subnet_settings.bootstrap_id or "").strip()
+        if not is_canonical_subnet_id(self.subnet_id) and is_canonical_subnet_id(bootstrap_id):
+            self.subnet_id = bootstrap_id
+            changed = True
         if not self.node_settings.id:
             self.node_settings.id = self.node_id
             changed = True
         if not self.subnet_settings.id:
             self.subnet_settings.id = self.subnet_id
+            changed = True
+        if is_canonical_subnet_id(self.subnet_id) and self.subnet_settings.bootstrap_id != self.subnet_id:
+            self.subnet_settings.bootstrap_id = self.subnet_id
             changed = True
         if not self.root_settings.base_url:
             self.root_settings.base_url = "https://api.inimatic.com"
@@ -251,11 +259,16 @@ class NodeConfig:
                 self.node_settings.id = self.node_id
         elif self.node_settings.id:
             self.node_id = self.node_settings.id
+        bootstrap_id = str(self.subnet_settings.bootstrap_id or "").strip()
+        if not is_canonical_subnet_id(self.subnet_id) and is_canonical_subnet_id(bootstrap_id):
+            self.subnet_id = bootstrap_id
         if self.subnet_id:
             if self.subnet_settings.id != self.subnet_id:
                 self.subnet_settings.id = self.subnet_id
         elif self.subnet_settings.id:
             self.subnet_id = self.subnet_settings.id
+        if is_canonical_subnet_id(self.subnet_id):
+            self.subnet_settings.bootstrap_id = self.subnet_id
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -434,6 +447,11 @@ def _settings_to_dict(settings: Any) -> dict[str, Any]:
         owner_id = owner.get("owner_id") if isinstance(owner, dict) else None
         data["owner"] = {"owner_id": owner_id} if owner_id else {}
     if isinstance(settings, SubnetSettings):
+        bootstrap_id = str(data.get("bootstrap_id") or "").strip()
+        if is_canonical_subnet_id(bootstrap_id):
+            data["bootstrap_id"] = bootstrap_id
+        else:
+            data.pop("bootstrap_id", None)
         hub = data.get("hub") or {}
         if isinstance(hub, dict):
             key_path = _config_stringify_path(hub.get("key"))
@@ -485,8 +503,10 @@ def _settings_from_dict(settings_cls: type, payload: Any):
         hub_raw = payload.get("hub") if isinstance(payload, dict) else None
         hub_key = hub_raw.get("key") if isinstance(hub_raw, dict) else None
         hub_cert = hub_raw.get("cert") if isinstance(hub_raw, dict) else None
+        bootstrap_id = payload.get("bootstrap_id") if isinstance(payload, dict) else None
         return SubnetSettings(
             id=payload.get("id") if isinstance(payload, dict) else None,
+            bootstrap_id=bootstrap_id if isinstance(bootstrap_id, str) and bootstrap_id.strip() else None,
             hub=HubKeypair(key=hub_key, cert=hub_cert),
         )
     if settings_cls is NodeSettings:
@@ -568,6 +588,11 @@ def _normalize_root_state(raw: Any) -> RootState | None:
     return state or None
 
 
+def _resolved_subnet_id_changed(selected: str, candidates: list[str]) -> bool:
+    token = str(selected or "").strip()
+    return any(str(candidate or "").strip() != token for candidate in candidates)
+
+
 def _resolve_loaded_subnet_id(data: dict[str, Any], subnet_settings: SubnetSettings) -> tuple[str, bool]:
     explicit_candidates = [
         str(data.get("subnet_id") or "").strip(),
@@ -575,24 +600,29 @@ def _resolve_loaded_subnet_id(data: dict[str, Any], subnet_settings: SubnetSetti
     ]
     for candidate in explicit_candidates:
         if is_canonical_subnet_id(candidate):
-            return candidate, candidate != explicit_candidates[0] or candidate != explicit_candidates[1]
-    for candidate in explicit_candidates:
-        if candidate and not _looks_like_uuid_token(candidate):
-            return candidate, candidate != explicit_candidates[0] or candidate != explicit_candidates[1]
+            return candidate, _resolved_subnet_id_changed(candidate, explicit_candidates)
 
     cert_path = _expand_path(subnet_settings.hub.cert, "keys/hub_cert.pem")
     cert_candidate = _extract_subnet_id_from_hub_certificate_path(cert_path)
     if cert_candidate:
-        return cert_candidate, cert_candidate != explicit_candidates[0] or cert_candidate != explicit_candidates[1]
+        return cert_candidate, _resolved_subnet_id_changed(cert_candidate, explicit_candidates)
+
+    bootstrap_candidate = str(subnet_settings.bootstrap_id or "").strip()
+    if is_canonical_subnet_id(bootstrap_candidate):
+        return bootstrap_candidate, _resolved_subnet_id_changed(bootstrap_candidate, explicit_candidates + [bootstrap_candidate])
+
+    for candidate in explicit_candidates:
+        if candidate and not _looks_like_uuid_token(candidate):
+            return candidate, _resolved_subnet_id_changed(candidate, explicit_candidates)
 
     raw_nats = data.get("nats")
     nats_user = raw_nats.get("user") if isinstance(raw_nats, dict) else None
     nats_candidate = _extract_subnet_id_from_nats_user(nats_user)
     if nats_candidate:
-        return nats_candidate, nats_candidate != explicit_candidates[0] or nats_candidate != explicit_candidates[1]
+        return nats_candidate, _resolved_subnet_id_changed(nats_candidate, explicit_candidates)
 
     generated = generate_provisional_subnet_id()
-    return generated, generated != explicit_candidates[0] or generated != explicit_candidates[1]
+    return generated, _resolved_subnet_id_changed(generated, explicit_candidates)
 
 
 def _migrate_managed_key_material(conf: NodeConfig) -> bool:
