@@ -6,9 +6,11 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -156,6 +158,29 @@ def _live_media_guard_defer_sec() -> float:
         return 300.0
 
 
+def _auto_update_complete_enabled() -> bool:
+    raw = os.getenv("ADAOS_SUPERVISOR_AUTO_UPDATE_COMPLETE")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _root_restart_delay_sec() -> float:
+    try:
+        return max(0.1, float(str(os.getenv("ADAOS_SUPERVISOR_ROOT_RESTART_DELAY_SEC") or "0.25").strip()))
+    except Exception:
+        return 0.25
+
+
+def _autostart_self_restart_supported() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    raw = os.getenv("ADAOS_AUTOSTART_MANAGED")
+    if raw is not None and str(raw).strip():
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return bool(str(os.getenv("INVOCATION_ID") or "").strip())
+
+
 def _slot_runtime_ports(primary_port: int) -> dict[str, int]:
     fallback_a = int(primary_port)
     fallback_b = fallback_a + 1
@@ -283,6 +308,22 @@ def _is_root_restart_completed_status(payload: dict[str, Any] | None) -> bool:
     state = str(payload.get("state") or "").strip().lower()
     phase = str(payload.get("phase") or "").strip().lower()
     return state == "succeeded" and phase == "validate" and float(payload.get("root_restart_completed_at") or 0.0) > 0.0
+
+
+def _is_root_promotion_pending_status(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    state = str(payload.get("state") or "").strip().lower()
+    phase = str(payload.get("phase") or "").strip().lower()
+    return state == "validated" and phase == "root_promotion_pending"
+
+
+def _is_root_restart_pending_status(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    state = str(payload.get("state") or "").strip().lower()
+    phase = str(payload.get("phase") or "").strip().lower()
+    return state == "succeeded" and phase == "root_promoted"
 
 
 def _is_transition_in_progress(status: dict[str, Any] | None, attempt: dict[str, Any] | None) -> bool:
@@ -495,6 +536,8 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "candidate_prewarm_state": str(status.get("candidate_prewarm_state") or "").strip() or None,
         "candidate_prewarm_message": str(status.get("candidate_prewarm_message") or "").strip() or None,
         "candidate_prewarm_ready_at": status.get("candidate_prewarm_ready_at"),
+        "restart_mode": str(status.get("restart_mode") or "").strip() or None,
+        "restart_requested_at": status.get("restart_requested_at"),
         "updated_at": status.get("updated_at"),
     }
     return {
@@ -510,6 +553,8 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
             "subsequent_transition_requested_at": attempt.get("subsequent_transition_requested_at"),
             "candidate_prewarm_state": str(attempt.get("candidate_prewarm_state") or "").strip() or None,
             "candidate_prewarm_message": str(attempt.get("candidate_prewarm_message") or "").strip() or None,
+            "restart_mode": str(attempt.get("restart_mode") or "").strip() or None,
+            "restart_requested_at": attempt.get("restart_requested_at"),
             "updated_at": attempt.get("updated_at"),
         },
         "runtime": {
@@ -651,6 +696,119 @@ class SupervisorManager:
         self._candidate_runtime_instance_id: str | None = None
         self._candidate_transition_role: str | None = None
         self._candidate_runtime_cwd: str | None = None
+        self._service_restart_pending = False
+        self._service_restart_thread: threading.Thread | None = None
+
+    def _schedule_service_restart(self, *, reason: str) -> dict[str, Any]:
+        delay_sec = _root_restart_delay_sec()
+        if not _autostart_self_restart_supported():
+            return {
+                "ok": True,
+                "requested": False,
+                "mode": "manual",
+                "delay_sec": None,
+                "reason": "autostart self-restart is unavailable for the current supervisor process",
+            }
+        if self._service_restart_pending:
+            return {
+                "ok": True,
+                "requested": True,
+                "mode": "self_exit",
+                "delay_sec": delay_sec,
+                "duplicate": True,
+            }
+        self._service_restart_pending = True
+        pid = os.getpid()
+        restart_reason = str(reason or "supervisor.update.complete")
+
+        def _worker() -> None:
+            try:
+                time.sleep(delay_sec)
+                _LOG.info(
+                    "requesting autostart service self-restart pid=%s delay_sec=%.3f reason=%s",
+                    pid,
+                    delay_sec,
+                    restart_reason,
+                )
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                self._service_restart_pending = False
+                _LOG.warning("failed to request autostart service self-restart", exc_info=True)
+
+        thread = threading.Thread(target=_worker, name="adaos-supervisor-self-restart", daemon=True)
+        self._service_restart_thread = thread
+        thread.start()
+        return {"ok": True, "requested": True, "mode": "self_exit", "delay_sec": delay_sec}
+
+    async def complete_update(self, *, reason: str, auto: bool = False) -> dict[str, Any]:
+        status = read_core_update_status()
+        attempt = _read_update_attempt() or {}
+        runtime = self.status()
+        promotion: dict[str, Any] | None = None
+        if _is_root_promotion_pending_status(status) or bool(runtime.get("root_promotion_required")):
+            promotion = await self.promote_root(reason=reason)
+            status = promotion.get("status") if isinstance(promotion.get("status"), dict) else read_core_update_status()
+            attempt = _read_update_attempt() or {}
+            runtime = self.status()
+        if not (_is_root_restart_pending_status(status) or _is_root_restart_pending_attempt(attempt)):
+            return {
+                "ok": True,
+                "accepted": False,
+                "noop": True,
+                "auto": bool(auto),
+                "restart_required": False,
+                "status": status,
+                "attempt": attempt,
+                "runtime": runtime,
+                "promotion": promotion,
+                "restart": {"ok": True, "requested": False, "mode": "none"},
+                "message": "root promotion is not required for the current update state",
+                "_served_by": "supervisor",
+            }
+
+        restart = self._schedule_service_restart(reason=reason)
+        now = time.time()
+        status_payload = dict(status)
+        status_payload["state"] = "succeeded"
+        status_payload["phase"] = "root_promoted"
+        status_payload["root_promotion_required"] = False
+        status_payload["restart_mode"] = str(restart.get("mode") or "manual")
+        status_payload["updated_at"] = now
+        if restart.get("requested"):
+            status_payload["message"] = "root promotion completed; restarting autostart service to activate updated supervisor"
+            status_payload["restart_requested_at"] = now
+        else:
+            status_payload["message"] = "root promotion completed; autostart service restart is still required"
+        status = write_core_update_status(status_payload)
+
+        attempt_payload = dict(attempt)
+        attempt_payload["state"] = "awaiting_root_restart"
+        attempt_payload["action"] = str(attempt_payload.get("action") or status.get("action") or "update")
+        attempt_payload["accepted"] = True
+        attempt_payload["awaiting_restart"] = True
+        attempt_payload["restart_required"] = True
+        attempt_payload["restart_mode"] = str(restart.get("mode") or "manual")
+        attempt_payload["requested_at"] = _epoch(attempt_payload.get("requested_at")) or now
+        attempt_payload["transitioned_at"] = _epoch(attempt_payload.get("transitioned_at")) or now
+        attempt_payload["updated_at"] = now
+        attempt_payload["completion_reason"] = ""
+        attempt_payload["last_status"] = status
+        if restart.get("requested"):
+            attempt_payload["restart_requested_at"] = now
+        attempt = _write_update_attempt(attempt_payload)
+        return {
+            "ok": True,
+            "accepted": True,
+            "auto": bool(auto),
+            "restart_required": True,
+            "status": status,
+            "attempt": attempt,
+            "runtime": runtime,
+            "promotion": promotion,
+            "restart": restart,
+            "message": str(status.get("message") or "").strip(),
+            "_served_by": "supervisor",
+        }
 
     def _sidecar_role(self) -> str | None:
         try:
@@ -2048,6 +2206,19 @@ class SupervisorManager:
             self._begin_countdown_transition(_request_from_attempt(attempt), countdown_sec=remaining)
             return
 
+        if (
+            _auto_update_complete_enabled()
+            and _autostart_self_restart_supported()
+            and not self._service_restart_pending
+            and (
+                _is_root_promotion_pending_status(status)
+                or _is_root_restart_pending_status(status)
+                or _is_root_restart_pending_attempt(attempt)
+            )
+        ):
+            await self.complete_update(reason="supervisor.auto_update_complete", auto=True)
+            return
+
         queued = _subsequent_transition_request(attempt)
         if queued and _is_terminal_update_status(status):
             await self._cleanup_candidate_runtime(reason="supervisor.candidate.before_subsequent_transition")
@@ -2888,6 +3059,11 @@ async def supervisor_update_rollback(payload: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/supervisor/update/promote-root", dependencies=[Depends(require_token)])
 async def supervisor_update_promote_root(payload: dict[str, Any]) -> dict[str, Any]:
     return await _manager().promote_root(reason=str(payload.get("reason") or "core.root_promotion"))
+
+
+@app.post("/api/supervisor/update/complete", dependencies=[Depends(require_token)])
+async def supervisor_update_complete(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _manager().complete_update(reason=str(payload.get("reason") or "core.update.complete"))
 
 
 def main() -> None:

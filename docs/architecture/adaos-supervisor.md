@@ -260,6 +260,7 @@ Always available while the node is booted:
 - `POST /api/supervisor/update/cancel`
 - `POST /api/supervisor/update/defer`
 - `POST /api/supervisor/update/rollback`
+- `POST /api/supervisor/update/complete`
 - `POST /api/supervisor/runtime/restart`
 - `POST /api/supervisor/runtime/candidate/start`
 - `POST /api/supervisor/runtime/candidate/stop`
@@ -361,7 +362,8 @@ Target flow:
 9. supervisor validates required runtime checks against that target-slot runtime
 10. on slot-validation success, supervisor commits the transition result
 11. if bootstrap-managed files changed, supervisor records `root_promotion_required` and promotes root from the same validated candidate
-12. on failure or deadline expiry, supervisor rolls back the slot and records failure
+12. on autostart-managed deployments, supervisor requests autostart-service restart so the root-based supervisor/bootstrap code actually switches over
+13. on failure or deadline expiry, supervisor rolls back the slot and records failure
 
 Important invariants:
 
@@ -385,8 +387,9 @@ Rules:
 - root promotion is allowed only after the candidate is proven in a slot
 - production runtime still restarts from the active slot after root promotion
 - root promotion should use the same validated candidate source, not a fresh mutable branch tip
-- current MVP implementation promotes bootstrap-managed files into the explicit validated root target recorded for that slot, writes a backup snapshot plus restore metadata, records an explicit supervisor attempt state while waiting for restart, and requires an explicit service restart to activate the new supervisor/bootstrap code
+- current implementation promotes bootstrap-managed files into the explicit validated root target recorded for that slot, writes a backup snapshot plus restore metadata, records an explicit supervisor attempt state while waiting for restart, and on autostart-managed Linux deployments requests the service restart automatically so the new supervisor/bootstrap code becomes active
 - if another transition request arrives before that restart completes, it is queued as `subsequent_transition` on the supervisor attempt instead of being dropped or run concurrently
+- manual `adaos autostart update-complete` remains the compatibility and retry path for older supervisors or environments where self-requested restart is unavailable
 
 This keeps root updates out of the fast rollback path while preserving the slot-runtime model.
 

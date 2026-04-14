@@ -119,6 +119,7 @@ def default_spec(
     env = {
         "ADAOS_BASE_DIR": str(base_dir),
         "ADAOS_PROFILE": str(profile),
+        "ADAOS_AUTOSTART_MANAGED": "1",
     }
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv:
@@ -1258,6 +1259,34 @@ def status(ctx: AgentContext) -> dict:
         return payload
 
     return {"platform": platform.platform(), "enabled": False}
+
+
+def restart_service(ctx: AgentContext) -> dict[str, object]:
+    info = status(ctx)
+    if not isinstance(info, dict):
+        raise RuntimeError("autostart status is unavailable; cannot restart service")
+    scope = str(info.get("scope") or "").strip().lower()
+    service_ref = str(info.get("service") or "adaos.service").strip() or "adaos.service"
+    service_name = Path(service_ref).name or "adaos.service"
+    if sys.platform.startswith("linux"):
+        if scope == "system":
+            cmd = ["systemctl", "restart", service_name]
+        elif scope == "user":
+            cmd = ["systemctl", "--user", "restart", service_name]
+        else:
+            raise RuntimeError(f"unsupported autostart scope for restart: {scope or 'unknown'}")
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"failed to restart {service_name}\n"
+                f"stdout:\n{(completed.stdout or '')[-4000:]}\n"
+                f"stderr:\n{(completed.stderr or '')[-4000:]}"
+            )
+        payload: dict[str, object] = {"ok": True, "scope": scope, "service": service_name, "command": cmd}
+        if service_ref != service_name:
+            payload["service_ref"] = service_ref
+        return payload
+    raise RuntimeError("autostart service restart is currently supported only on Linux autostart deployments")
 
 
 def shutil_which(cmd: str) -> str | None:

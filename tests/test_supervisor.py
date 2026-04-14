@@ -1899,6 +1899,134 @@ def test_supervisor_promote_root_allows_idle_status_when_root_promotion_is_still
     assert attempt["state"] == "awaiting_root_restart"
 
 
+def test_supervisor_schedule_service_restart_requests_self_exit(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "_autostart_self_restart_supported", lambda: True)
+    monkeypatch.setattr(supervisor, "_root_restart_delay_sec", lambda: 0.1)
+    monkeypatch.setattr(supervisor.os, "getpid", lambda: 4321)
+
+    sleeps: list[float] = []
+    kills: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(supervisor.time, "sleep", lambda sec: sleeps.append(sec))
+    monkeypatch.setattr(supervisor.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    payload = manager._schedule_service_restart(reason="test.root_restart")
+
+    thread = manager._service_restart_thread
+    assert thread is not None
+    thread.join(timeout=1.0)
+
+    assert payload["requested"] is True
+    assert payload["mode"] == "self_exit"
+    assert sleeps == [0.1]
+    assert kills == [(4321, supervisor.signal.SIGTERM)]
+
+
+def test_supervisor_complete_update_promotes_root_and_requests_self_restart(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "repo_dir": str(tmp_path / "slots" / "B" / "repo"),
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "resolved_root_promotion_requirement",
+        lambda manifest: (
+            True,
+            {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+                "effective_required": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "promote_root_from_slot",
+        lambda slot=None: {
+            "ok": True,
+            "slot": slot or "B",
+            "required": True,
+            "changed_paths": ["src/adaos/apps/supervisor.py"],
+            "backup_dir": str(tmp_path / "backup"),
+            "promoted_paths": ["src/adaos/apps/supervisor.py"],
+            "removed_paths": [],
+            "restart_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "status",
+        lambda: {
+            "root_promotion_required": str(read_status().get("phase") or "").strip().lower() == "root_promotion_pending",
+            "active_slot": "B",
+            "runtime_state": "ready",
+            "runtime_url": "http://127.0.0.1:8778",
+            "runtime_port": 8778,
+        },
+    )
+
+    restart_reasons: list[str] = []
+
+    def _schedule_service_restart(*, reason: str) -> dict[str, object]:
+        restart_reasons.append(reason)
+        return {"ok": True, "requested": True, "mode": "self_exit", "delay_sec": 0.25}
+
+    monkeypatch.setattr(manager, "_schedule_service_restart", _schedule_service_restart)
+
+    supervisor._write_update_attempt({"state": "active", "action": "update", "requested_at": 1.0, "updated_at": 1.0})
+    write_status({"state": "validated", "phase": "root_promotion_pending", "action": "update", "target_slot": "B"})
+
+    payload = asyncio.run(manager.complete_update(reason="test.complete"))
+
+    assert payload["accepted"] is True
+    assert payload["restart_required"] is True
+    assert payload["status"]["phase"] == "root_promoted"
+    assert payload["status"]["root_promotion_required"] is False
+    assert payload["status"]["restart_mode"] == "self_exit"
+    assert payload["restart"]["requested"] is True
+    assert payload["runtime"]["root_promotion_required"] is False
+    assert restart_reasons == ["test.complete"]
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "awaiting_root_restart"
+    assert attempt["restart_mode"] == "self_exit"
+    assert attempt["restart_requested_at"] > 0
+
+
+def test_supervisor_maybe_resume_auto_completes_root_promotion_pending(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "_autostart_self_restart_supported", lambda: True)
+    write_status({"state": "validated", "phase": "root_promotion_pending", "action": "update"})
+    supervisor._write_update_attempt({"state": "active", "action": "update", "updated_at": 1.0})
+
+    captured: dict[str, object] = {}
+
+    async def _complete_update(*, reason: str, auto: bool = False) -> dict[str, object]:
+        captured["reason"] = reason
+        captured["auto"] = auto
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "complete_update", _complete_update)
+
+    asyncio.run(manager._maybe_resume_or_continue_transition())
+
+    assert captured == {"reason": "supervisor.auto_update_complete", "auto": True}
+
+
 def test_public_update_status_payload_is_browser_safe() -> None:
     payload = supervisor._public_update_status_payload(
         {
@@ -1917,6 +2045,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "candidate_prewarm_state": "ready",
                 "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8778",
                 "candidate_prewarm_ready_at": 430.0,
+                "restart_mode": "self_exit",
+                "restart_requested_at": 431.0,
                 "updated_at": 123.0,
                 "error": "hidden",
             },
@@ -1956,6 +2086,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
                 "subsequent_transition_requested_at": 400.0,
                 "candidate_prewarm_state": "ready",
                 "candidate_prewarm_message": "passive candidate runtime is ready on http://127.0.0.1:8778",
+                "restart_mode": "self_exit",
+                "restart_requested_at": 431.0,
                 "updated_at": 222.0,
             },
             "_served_by": "supervisor_fallback",
@@ -1971,6 +2103,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["status"]["subsequent_transition"] is True
     assert payload["status"]["candidate_prewarm_state"] == "ready"
     assert payload["status"]["candidate_prewarm_ready_at"] == 430.0
+    assert payload["status"]["restart_mode"] == "self_exit"
+    assert payload["status"]["restart_requested_at"] == 431.0
     assert payload["attempt"]["state"] == "awaiting_root_restart"
     assert payload["attempt"]["action"] == "update"
     assert payload["attempt"]["awaiting_restart"] is True
@@ -1978,6 +2112,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["attempt"]["scheduled_for"] == 456.0
     assert payload["attempt"]["subsequent_transition"] is True
     assert payload["attempt"]["candidate_prewarm_state"] == "ready"
+    assert payload["attempt"]["restart_mode"] == "self_exit"
+    assert payload["attempt"]["restart_requested_at"] == 431.0
     assert payload["runtime"]["active_slot"] == "A"
     assert payload["runtime"]["runtime_instance_id"] == "rt-a-a1b2c3d4"
     assert payload["runtime"]["transition_role"] == "active"

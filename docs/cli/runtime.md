@@ -47,12 +47,11 @@ In service mode the authoritative update surface is the supervisor, not the tran
 - `update-status` should remain inspectable through supervisor-backed state even while `:8777` is restarting
 - root/bootstrap code may be promoted after a successful slot validation, but the restarted production runtime still comes from slot `A|B`
 
-Current MVP operator flow for bootstrap/self-update:
+Current autostart-managed flow for bootstrap/self-update:
 
 1. run `adaos autostart update-start`
-2. wait until `update-status` reports `phase: root_promotion_pending` when bootstrap-managed files changed
-3. run `adaos autostart update-complete`
-4. if bootstrap files were promoted, `update-status` may briefly show `supervisor attempt: awaiting_root_restart` while the restarted service is still converging under the new supervisor/bootstrap code
+2. wait for slot validation; if bootstrap-managed files changed, supervisor will automatically move through root promotion and request an autostart-service restart
+3. during that handoff `update-status` may briefly show `phase: root_promotion_pending`, then `phase: root_promoted` / `supervisor attempt: awaiting_root_restart`, before the restarted service converges under the updated root-based supervisor/bootstrap code
 
 If the supervisor enforces a minimum interval between updates, `update-start` may return a planned transition instead of an immediate countdown. In that case:
 
@@ -62,7 +61,13 @@ If the supervisor enforces a minimum interval between updates, `update-start` ma
 4. if a second signal arrives while a real transition is already active, supervisor records `subsequent transition: queued` and executes it once after the current transition finishes
 
 `update-promote-root` creates a backup snapshot of the replaced bootstrap-managed files before copying them from the validated active slot into the root checkout.
-`update-complete` is the higher-level Linux operator command: it performs that promotion and then runs `systemctl restart adaos.service` (or `systemctl --user restart ...` for user-scope installs). If root promotion already finished and only the supervisor/bootstrap restart is still pending, rerunning `update-complete` retries only the service restart and does not promote root again.
+`update-complete` is now primarily a retry/compatibility command:
+
+- on current autostart-managed Linux deployments, supervisor tries to complete root promotion and request the service restart automatically
+- `update-complete` first asks supervisor to finish that flow server-side
+- if the running supervisor is older or cannot self-request the restart, the CLI falls back to the legacy operator path and restarts the autostart service explicitly
+
+If root promotion already finished and only the supervisor/bootstrap restart is still pending, rerunning `update-complete` retries only the restart and does not promote root again.
 If a promoted supervisor/bootstrap revision fails to come back cleanly, `update-restore-root --backup-dir <PATH>` restores the root checkout from that backup snapshot without requiring a live supervisor process. Add `--restart` to request an immediate autostart service restart after the restore.
 
 ## Hub and member operations

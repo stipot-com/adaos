@@ -31,6 +31,7 @@ def test_default_autostart_spec_uses_runner(tmp_path: Path) -> None:
     assert "--port" in spec.argv
     assert spec.env["ADAOS_BASE_DIR"] == str(tmp_path)
     assert spec.env["ADAOS_PROFILE"] == "default"
+    assert spec.env["ADAOS_AUTOSTART_MANAGED"] == "1"
     assert spec.env["ADAOS_TOKEN"] == "t1"
 
 
@@ -114,6 +115,42 @@ def test_linux_status_without_user_bus_uses_service_file(monkeypatch, tmp_path: 
     assert payload["enabled"] is True
     assert payload["active"] is None
     assert calls == []
+
+
+def test_restart_service_uses_unit_name_on_linux(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    monkeypatch.setattr(autostart.sys, "platform", "linux")
+    monkeypatch.setattr(
+        autostart,
+        "status",
+        lambda ctx: {
+            "scope": "system",
+            "service": "/etc/systemd/system/adaos.service",
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _run(cmd, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        captured["capture_output"] = capture_output
+        captured["text"] = text
+        captured["timeout"] = timeout
+        return _Proc()
+
+    monkeypatch.setattr(autostart.subprocess, "run", _run)
+
+    payload = autostart.restart_service(_FakeCtx(tmp_path))
+
+    assert captured["cmd"] == ["systemctl", "restart", "adaos.service"]
+    assert payload["service"] == "adaos.service"
+    assert payload["service_ref"] == "/etc/systemd/system/adaos.service"
 
 
 def test_linux_enable_without_user_bus_raises_helpful_error(monkeypatch, tmp_path: Path) -> None:

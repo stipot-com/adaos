@@ -33,6 +33,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.autostart import default_spec as default_autostart_spec
 from adaos.services.autostart import disable as autostart_disable
 from adaos.services.autostart import enable as autostart_enable
+from adaos.services.autostart import restart_service as autostart_restart_service
 from adaos.services.autostart import status as autostart_status
 from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
@@ -644,31 +645,59 @@ def _autostart_update_post(path: str, *, body: dict | None = None, token: Option
 
 
 def _restart_autostart_service() -> dict[str, object]:
-    info = autostart_status(get_ctx())
-    if not isinstance(info, dict):
-        raise RuntimeError("autostart status is unavailable; cannot restart service")
-    scope = str(info.get("scope") or "").strip().lower()
-    service_ref = str(info.get("service") or "adaos.service").strip() or "adaos.service"
-    service_name = Path(service_ref).name or "adaos.service"
-    if sys.platform.startswith("linux"):
-        if scope == "system":
-            cmd = ["systemctl", "restart", service_name]
-        elif scope == "user":
-            cmd = ["systemctl", "--user", "restart", service_name]
-        else:
-            raise RuntimeError(f"unsupported autostart scope for restart: {scope or 'unknown'}")
-        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if completed.returncode != 0:
-            raise RuntimeError(
-                f"failed to restart {service_name}\n"
-                f"stdout:\n{(completed.stdout or '')[-4000:]}\n"
-                f"stderr:\n{(completed.stderr or '')[-4000:]}"
-            )
-        payload: dict[str, object] = {"ok": True, "scope": scope, "service": service_name, "command": cmd}
-        if service_ref != service_name:
-            payload["service_ref"] = service_ref
-        return payload
-    raise RuntimeError("update-complete restart is currently supported only on Linux autostart deployments")
+    return autostart_restart_service(get_ctx())
+
+
+def _autostart_update_complete_legacy(*, reason: str, token: Optional[str]) -> dict:
+    update_payload = _autostart_update_get(token=token)
+    status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
+    attempt_payload = update_payload.get("attempt") if isinstance(update_payload.get("attempt"), dict) else {}
+    runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
+    root_promotion_required = bool(runtime_payload.get("root_promotion_required"))
+    current_state = str(status_payload.get("state") or "").strip().lower()
+    current_phase = str(status_payload.get("phase") or "").strip().lower()
+    attempt_state = str(attempt_payload.get("state") or "").strip().lower()
+    needs_promotion = root_promotion_required or (
+        current_state == "validated" and current_phase == "root_promotion_pending"
+    )
+    root_restart_pending = (
+        attempt_state == "awaiting_root_restart"
+        or (current_state == "succeeded" and current_phase == "root_promoted")
+    )
+    if not needs_promotion and not root_restart_pending:
+        return {
+            "ok": True,
+            "noop": True,
+            "status": status_payload,
+            "attempt": attempt_payload,
+            "runtime": runtime_payload,
+            "message": "root promotion is not required for the current update state",
+            "_legacy": True,
+        }
+    if needs_promotion:
+        promotion = _autostart_supervisor_post(
+            "/api/supervisor/update/promote-root",
+            token=token,
+            body={"reason": reason},
+        )
+        message = "root promotion completed and autostart service restart requested"
+    else:
+        promotion = {
+            "ok": True,
+            "accepted": False,
+            "status": status_payload,
+            "attempt": attempt_payload,
+            "message": "root promotion already completed; retrying autostart service restart",
+        }
+        message = "root promotion already completed; autostart service restart requested"
+    restart = _restart_autostart_service()
+    return {
+        "ok": True,
+        "promotion": promotion,
+        "restart": restart,
+        "message": message,
+        "_legacy": True,
+    }
 
 
 def _autostart_bind_from_status(status: dict) -> tuple[str, int] | None:
@@ -1509,63 +1538,25 @@ def autostart_update_complete_cmd(
     json_output: bool = typer.Option(False, "--json", help=_("cli.option.json")),
 ):
     try:
-        update_payload = _autostart_update_get(token=token)
-        status_payload = update_payload.get("status") if isinstance(update_payload, dict) else {}
-        attempt_payload = update_payload.get("attempt") if isinstance(update_payload.get("attempt"), dict) else {}
-        runtime_payload = update_payload.get("runtime") if isinstance(update_payload, dict) else {}
-        root_promotion_required = bool(runtime_payload.get("root_promotion_required"))
-        current_state = str(status_payload.get("state") or "").strip().lower()
-        current_phase = str(status_payload.get("phase") or "").strip().lower()
-        attempt_state = str(attempt_payload.get("state") or "").strip().lower()
-        needs_promotion = root_promotion_required or (
-            current_state == "validated" and current_phase == "root_promotion_pending"
-        )
-        root_restart_pending = (
-            attempt_state == "awaiting_root_restart"
-            or (current_state == "succeeded" and current_phase == "root_promoted")
-        )
-
-        if not needs_promotion and not root_restart_pending:
-            payload = {
-                "ok": True,
-                "noop": True,
-                "status": status_payload,
-                "attempt": attempt_payload,
-                "runtime": runtime_payload,
-                "message": "root promotion is not required for the current update state",
-            }
-            if json_output:
-                typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-                return
-            typer.echo(json.dumps(payload, ensure_ascii=False))
-            return
-
-        if needs_promotion:
-            promotion = _autostart_supervisor_post(
-                "/api/supervisor/update/promote-root",
+        try:
+            payload = _autostart_supervisor_post(
+                "/api/supervisor/update/complete",
                 token=token,
                 body={"reason": reason},
             )
-            message = "root promotion completed and autostart service restart requested"
+        except RuntimeError:
+            payload = _autostart_update_complete_legacy(reason=reason, token=token)
         else:
-            promotion = {
-                "ok": True,
-                "accepted": False,
-                "status": status_payload,
-                "attempt": attempt_payload,
-                "message": "root promotion already completed; retrying autostart service restart",
-            }
-            message = "root promotion already completed; autostart service restart requested"
-        restart = _restart_autostart_service()
+            restart_payload = payload.get("restart") if isinstance(payload.get("restart"), dict) else {}
+            restart_required = bool(payload.get("restart_required"))
+            if restart_required and not bool(restart_payload.get("requested")):
+                payload = dict(payload)
+                payload["restart"] = _restart_autostart_service()
+                if not str(payload.get("message") or "").strip():
+                    payload["message"] = "root promotion completed; autostart service restart requested"
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1) from exc
-    payload = {
-        "ok": True,
-        "promotion": promotion,
-        "restart": restart,
-        "message": message,
-    }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
