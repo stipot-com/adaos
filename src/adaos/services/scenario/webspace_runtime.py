@@ -866,6 +866,9 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "resolver": dict(current.get("resolver") or {})
         if isinstance(current.get("resolver"), Mapping)
         else None,
+        "apply_summary": dict(current.get("apply_summary") or {})
+        if isinstance(current.get("apply_summary"), Mapping)
+        else None,
         "timings_ms": _copy_timing_map(current.get("timings_ms")),
         "switch_timings_ms": _copy_timing_map(current.get("switch_timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
@@ -899,6 +902,7 @@ class WebspaceScenarioRuntime:
         self._desktop_scenarios: Optional[List[Tuple[str, str]]] = None
         self._last_rebuild_timings_ms: Dict[str, float] | None = None
         self._last_resolver_debug: Dict[str, Any] | None = None
+        self._last_apply_summary: Dict[str, Any] | None = None
 
     # --- scenario helpers -------------------------------------------------
 
@@ -1422,25 +1426,53 @@ class WebspaceScenarioRuntime:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
         registry_map = ydoc.get_map("registry")
+        target_paths = (
+            "ui.application",
+            "data.catalog",
+            "data.installed",
+            "data.desktop",
+            "data.routing",
+            "registry.merged",
+        )
+        changed_paths: List[str] = []
+        failed_paths: List[str] = []
+        defaults_failed = False
+
+        def _apply_branch(path: str, y_map: Any, key: str, value: Any, *, ignore_errors: bool = False) -> None:
+            try:
+                changed = _set_map_value_if_changed(y_map, txn, key, value)
+            except Exception:
+                if not ignore_errors:
+                    raise
+                failed_paths.append(path)
+                return
+            if changed:
+                changed_paths.append(path)
 
         with ydoc.begin_transaction() as txn:
             try:
                 self._apply_ydoc_defaults_in_txn(ydoc, txn, resolved.skill_decls)
             except Exception:
+                defaults_failed = True
                 _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
 
-            _set_map_value_if_changed(ui_map, txn, "application", resolved.application)
-            _set_map_value_if_changed(data_map, txn, "catalog", resolved.catalog)
-            _set_map_value_if_changed(data_map, txn, "installed", resolved.installed)
-            try:
-                _set_map_value_if_changed(data_map, txn, "desktop", resolved.desktop)
-            except Exception:
-                pass
-            try:
-                _set_map_value_if_changed(data_map, txn, "routing", resolved.routing)
-            except Exception:
-                pass
-            _set_map_value_if_changed(registry_map, txn, "merged", resolved.registry)
+            _apply_branch("ui.application", ui_map, "application", resolved.application)
+            _apply_branch("data.catalog", data_map, "catalog", resolved.catalog)
+            _apply_branch("data.installed", data_map, "installed", resolved.installed)
+            _apply_branch("data.desktop", data_map, "desktop", resolved.desktop, ignore_errors=True)
+            _apply_branch("data.routing", data_map, "routing", resolved.routing, ignore_errors=True)
+            _apply_branch("registry.merged", registry_map, "merged", resolved.registry)
+
+        self._last_apply_summary = {
+            "branch_count": len(target_paths),
+            "changed_branches": len(changed_paths),
+            "unchanged_branches": len(target_paths) - len(changed_paths) - len(failed_paths),
+            "failed_branches": len(failed_paths),
+            "changed_paths": list(changed_paths),
+            "defaults_failed": defaults_failed,
+        }
+        if failed_paths:
+            self._last_apply_summary["failed_paths"] = list(failed_paths)
 
     def _resolve_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverOutputs:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
@@ -1449,6 +1481,7 @@ class WebspaceScenarioRuntime:
         rebuild_started = time.perf_counter()
         timings: Dict[str, float] = {}
         self._last_resolver_debug = None
+        self._last_apply_summary = None
 
         stage_started = time.perf_counter()
         inputs = self._collect_resolver_inputs_in_doc(ydoc, webspace_id)
@@ -1469,12 +1502,14 @@ class WebspaceScenarioRuntime:
 
         try:
             _log.debug(
-                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s cache_hit=%s apps=%d widgets=%d timings_ms=%s",
+                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s cache_hit=%s apply=%d/%d apps=%d widgets=%d timings_ms=%s",
                 webspace_id,
                 resolved.scenario_id,
                 str(inputs.scenario_source or ""),
                 bool(inputs.legacy_scenario_fallback),
                 bool((self._last_resolver_debug or {}).get("cache_hit")),
+                int((self._last_apply_summary or {}).get("changed_branches") or 0),
+                int((self._last_apply_summary or {}).get("branch_count") or 0),
                 len(entry.apps),
                 len(entry.widgets),
                 self._last_rebuild_timings_ms,
@@ -2197,6 +2232,7 @@ async def rebuild_webspace_from_sources(
         projection_refresh=None,
         registry_summary=None,
         resolver=None,
+        apply_summary=None,
         timings_ms=None,
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=None,
@@ -2269,6 +2305,7 @@ async def rebuild_webspace_from_sources(
         finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
         semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
         resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
+        apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
         phase_timings = _derive_phase_timings(
             switch_timings_ms=effective_switch_timings,
             rebuild_timings_ms=finalized_timings,
@@ -2284,6 +2321,7 @@ async def rebuild_webspace_from_sources(
             switch_mode=effective_switch_mode,
             projection_refresh=projection_refresh,
             resolver=resolver_debug or None,
+            apply_summary=apply_summary or None,
             timings_ms=finalized_timings,
             switch_timings_ms=effective_switch_timings,
             semantic_rebuild_timings_ms=semantic_timings,
@@ -2310,6 +2348,7 @@ async def rebuild_webspace_from_sources(
             "switch_mode": effective_switch_mode,
             "projection_refresh": projection_refresh,
             "resolver": resolver_debug or None,
+            "apply_summary": apply_summary or None,
             "timings_ms": finalized_timings,
             "switch_timings_ms": effective_switch_timings,
             "semantic_rebuild_timings_ms": semantic_timings,
@@ -2319,6 +2358,7 @@ async def rebuild_webspace_from_sources(
 
     semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
     resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
+    apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
 
     if not target_scenario:
         stage_started = time.perf_counter()
@@ -2389,6 +2429,7 @@ async def rebuild_webspace_from_sources(
             "widgets": len(getattr(entry, "widgets", []) or []),
         },
         "resolver": resolver_debug or None,
+        "apply_summary": apply_summary or None,
         "timings_ms": finalized_timings,
         "switch_timings_ms": effective_switch_timings,
         "semantic_rebuild_timings_ms": semantic_timings,
@@ -2406,6 +2447,7 @@ async def rebuild_webspace_from_sources(
         projection_refresh=projection_refresh,
         registry_summary=result.get("registry_summary"),
         resolver=resolver_debug or None,
+        apply_summary=apply_summary or None,
         timings_ms=finalized_timings,
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=semantic_timings,
@@ -2473,7 +2515,13 @@ def _schedule_scenario_switch_rebuild(
         started_at=None,
         finished_at=None,
         error=None,
+        projection_refresh=None,
+        registry_summary=None,
+        resolver=None,
+        apply_summary=None,
+        timings_ms=None,
         switch_timings_ms=_copy_timing_map(switch_timings_ms),
+        semantic_rebuild_timings_ms=None,
         phase_timings_ms=initial_phase_timings,
     )
     existing = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
@@ -2492,6 +2540,12 @@ def _schedule_scenario_switch_rebuild(
                 started_at=time.time(),
                 finished_at=None,
                 error=None,
+                projection_refresh=None,
+                registry_summary=None,
+                resolver=None,
+                apply_summary=None,
+                timings_ms=None,
+                semantic_rebuild_timings_ms=None,
             )
             result = await _complete_scenario_switch_rebuild(
                 webspace_id,
@@ -2513,6 +2567,7 @@ def _schedule_scenario_switch_rebuild(
                     switch_mode=str(switch_mode or "") or None,
                     projection_refresh=result.get("projection_refresh"),
                     resolver=result.get("resolver"),
+                    apply_summary=result.get("apply_summary"),
                     timings_ms=_copy_timing_map(result.get("timings_ms")),
                     switch_timings_ms=_copy_timing_map(result.get("switch_timings_ms") or switch_timings_ms),
                     semantic_rebuild_timings_ms=_copy_timing_map(result.get("semantic_rebuild_timings_ms")),
@@ -2677,6 +2732,9 @@ async def switch_webspace_scenario(
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     resolved_set_home = bool(set_home) if set_home is not None else bool(row.is_dev or row.effective_source_mode == "dev")
     _record_timing(timings_ms, "resolve_manifest_policy", stage_started)
+    stage_started = time.perf_counter()
+    rebuild_state_before = describe_webspace_rebuild_state(webspace_id)
+    _record_timing(timings_ms, "describe_rebuild_before", stage_started)
 
     _log.info(
         "desktop.scenario.set webspace=%s scenario=%s requested_set_home=%s resolved_set_home=%s",
@@ -2693,6 +2751,60 @@ async def switch_webspace_scenario(
     except Exception:
         loader_space = "workspace"
     switch_content: Dict[str, Any] | None = None
+    if (
+        str(state_before.current_scenario or "").strip() == scenario_id
+        and not bool(rebuild_state_before.get("pending"))
+        and str(rebuild_state_before.get("status") or "").strip().lower() == "ready"
+        and str(rebuild_state_before.get("scenario_id") or "").strip() == scenario_id
+    ):
+        if resolved_set_home and row.effective_home_scenario != scenario_id:
+            stage_started = time.perf_counter()
+            row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+            _record_timing(timings_ms, "persist_home_scenario", stage_started)
+
+            stage_started = time.perf_counter()
+            await _sync_webspace_listing()
+            _record_timing(timings_ms, "sync_listing", stage_started)
+
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        phase_timings = _derive_phase_timings(
+            switch_timings_ms=finalized_timings,
+            rebuild_timings_ms=None,
+            switch_mode="noop",
+        )
+        _log.info(
+            "desktop.scenario.set skipped webspace=%s scenario=%s mode=%s timings_ms=%s",
+            webspace_id,
+            scenario_id,
+            switch_mode,
+            finalized_timings,
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "kind": row.effective_kind,
+            "source_mode": row.effective_source_mode,
+            "current_scenario_before": state_before.current_scenario,
+            "home_scenario_before": state_before.effective_home_scenario,
+            "home_scenario": row.effective_home_scenario,
+            "set_home": resolved_set_home,
+            "background_rebuild": False,
+            "scenario_switch_mode": switch_mode,
+            "switch_skipped": True,
+            "skip_reason": "already_current_ready",
+            "timings_ms": finalized_timings,
+            "rebuild_timings_ms": _copy_timing_map(rebuild_state_before.get("timings_ms")),
+            "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_state_before.get("semantic_rebuild_timings_ms")),
+            "resolver": dict(rebuild_state_before.get("resolver") or {})
+            if isinstance(rebuild_state_before.get("resolver"), Mapping)
+            else None,
+            "apply_summary": dict(rebuild_state_before.get("apply_summary") or {})
+            if isinstance(rebuild_state_before.get("apply_summary"), Mapping)
+            else None,
+            "phase_timings_ms": phase_timings,
+        }
 
     if switch_mode == "pointer_first":
         stage_started = time.perf_counter()
@@ -2713,6 +2825,10 @@ async def switch_webspace_scenario(
                 requested_at=time.time(),
                 finished_at=time.time(),
                 error="scenario_not_found",
+                projection_refresh=None,
+                registry_summary=None,
+                resolver=None,
+                apply_summary=None,
                 timings_ms=finalized_timings,
                 phase_timings_ms=_derive_phase_timings(
                     switch_timings_ms=finalized_timings,
@@ -2752,6 +2868,10 @@ async def switch_webspace_scenario(
                 requested_at=time.time(),
                 finished_at=time.time(),
                 error="scenario_not_found",
+                projection_refresh=None,
+                registry_summary=None,
+                resolver=None,
+                apply_summary=None,
                 timings_ms=finalized_timings,
                 phase_timings_ms=_derive_phase_timings(
                     switch_timings_ms=finalized_timings,
@@ -2805,6 +2925,10 @@ async def switch_webspace_scenario(
             requested_at=time.time(),
             finished_at=time.time(),
             error="scenario_switch_failed",
+            projection_refresh=None,
+            registry_summary=None,
+            resolver=None,
+            apply_summary=None,
             timings_ms=finalized_timings,
             phase_timings_ms=_derive_phase_timings(
                 switch_timings_ms=finalized_timings,
@@ -2946,6 +3070,9 @@ async def switch_webspace_scenario(
         "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_result.get("semantic_rebuild_timings_ms")),
         "resolver": dict(rebuild_result.get("resolver") or {})
         if isinstance(rebuild_result.get("resolver"), Mapping)
+        else None,
+        "apply_summary": dict(rebuild_result.get("apply_summary") or {})
+        if isinstance(rebuild_result.get("apply_summary"), Mapping)
         else None,
         "phase_timings_ms": phase_timings,
     }

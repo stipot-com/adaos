@@ -710,10 +710,45 @@ def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> 
             f"legacy_fallback={'yes' if resolver.get('legacy_fallback') else 'no'} "
             f"cache_hit={'yes' if resolver.get('cache_hit') else 'no'}"
         )
+    _print_apply_summary(rebuild, indent="  ")
     _print_timings_summary(rebuild, key="timings_ms", label="rebuild_timings_ms")
     _print_timings_summary(rebuild, key="switch_timings_ms", label="switch_timings_ms")
     _print_timings_summary(rebuild, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
     _print_timings_summary(rebuild, key="phase_timings_ms", label="phase_timings_ms")
+
+
+def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary", indent: str = "") -> None:
+    apply = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not apply:
+        return
+    try:
+        branch_count = int(apply.get("branch_count") or 0)
+    except Exception:
+        branch_count = 0
+    try:
+        changed = int(apply.get("changed_branches") or 0)
+    except Exception:
+        changed = 0
+    try:
+        unchanged = int(apply.get("unchanged_branches") or 0)
+    except Exception:
+        unchanged = 0
+    try:
+        failed = int(apply.get("failed_branches") or 0)
+    except Exception:
+        failed = 0
+    changed_paths = [
+        str(raw_path or "").strip()
+        for raw_path in list(apply.get("changed_paths") or [])
+        if str(raw_path or "").strip()
+    ]
+    summary = (
+        f"{indent}apply: changed={changed}/{branch_count or max(changed + unchanged + failed, 1)} "
+        f"unchanged={unchanged} failed={failed}"
+    )
+    if changed_paths:
+        summary += f" paths={','.join(changed_paths)}"
+    typer.echo(summary)
 
 
 def _print_timings_summary(payload: dict[str, Any], *, key: str = "timings_ms", label: str | None = None) -> None:
@@ -1167,6 +1202,7 @@ def _node_yjs_control_action(
     _print_timings_summary(payload, key="rebuild_timings_ms")
     _print_timings_summary(payload, key="semantic_rebuild_timings_ms")
     _print_timings_summary(payload, key="phase_timings_ms")
+    _print_apply_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})

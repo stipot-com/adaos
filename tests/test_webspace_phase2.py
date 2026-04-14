@@ -194,6 +194,14 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
             "to_registry_entry": 0.5,
             "total": 6.5,
         }
+        self._last_apply_summary = {
+            "branch_count": 6,
+            "changed_branches": 3,
+            "unchanged_branches": 3,
+            "failed_branches": 0,
+            "changed_paths": ["ui.application", "data.catalog", "registry.merged"],
+            "defaults_failed": False,
+        }
         return SimpleNamespace(webspace_id=webspace_id)
 
     async def _fake_workflow_sync(self, scenario_id: str, webspace_id: str):
@@ -262,6 +270,7 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert "semantic_rebuild" in result["rebuild_timings_ms"]
     assert isinstance(result["semantic_rebuild_timings_ms"], dict)
     assert result["semantic_rebuild_timings_ms"]["resolve"] == 2.0
+    assert result["apply_summary"]["changed_branches"] == 3
     assert isinstance(result["phase_timings_ms"], dict)
     assert "time_to_full_hydration" in result["phase_timings_ms"]
 
@@ -488,6 +497,79 @@ def test_switch_webspace_scenario_pointer_first_avoids_eager_scenario_content_lo
     assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
     assert "validate_scenario" in result["timings_ms"]
     assert "load_scenario" not in result["timings_ms"]
+
+
+def test_switch_webspace_scenario_same_current_ready_skips_rebuild_and_only_persists_home(monkeypatch) -> None:
+    webspace_id = "phase2-same-current-noop"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Same Current",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    sync_listing_calls: list[bool] = []
+
+    async def _fake_sync_listing() -> None:
+        sync_listing_calls.append(True)
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_load_scenario_switch_content",
+        lambda scenario_id, *, space: (_ for _ in ()).throw(AssertionError("should not reload scenario content")),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module.WebspaceScenarioRuntime,
+        "rebuild_webspace_async",
+        lambda self, webspace_id: (_ for _ in ()).throw(AssertionError("should not rebuild current scenario")),
+    )
+    webspace_runtime_module._set_webspace_rebuild_status(
+        webspace_id,
+        status="ready",
+        pending=False,
+        scenario_id="prompt_engineer_scenario",
+        resolver={"source": "loader:workspace", "legacy_fallback": False, "cache_hit": True},
+        apply_summary={
+            "branch_count": 6,
+            "changed_branches": 0,
+            "unchanged_branches": 6,
+            "failed_branches": 0,
+            "changed_paths": [],
+            "defaults_failed": False,
+        },
+        timings_ms={"projection_refresh": 1.5, "semantic_rebuild": 2.5, "total": 4.0},
+        semantic_rebuild_timings_ms={"collect_inputs": 0.5, "resolve": 1.0, "apply": 1.5, "total": 3.0},
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            set_home=True,
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.home_scenario == "prompt_engineer_scenario"
+    assert sync_listing_calls == [True]
+    assert result["accepted"] is True
+    assert result["switch_skipped"] is True
+    assert result["skip_reason"] == "already_current_ready"
+    assert result["background_rebuild"] is False
+    assert result["apply_summary"]["unchanged_branches"] == 6
+    assert result["rebuild_timings_ms"]["total"] == 4.0
+    assert "load_scenario" not in result["timings_ms"]
+    assert "wait_rebuild" not in result["timings_ms"]
 
 
 def test_background_scenario_switch_rebuild_superseded_request_keeps_newer_status(monkeypatch) -> None:
@@ -1152,6 +1234,14 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
             "to_registry_entry": 0.5,
             "total": 8.0,
         }
+        self._last_apply_summary = {
+            "branch_count": 6,
+            "changed_branches": 2,
+            "unchanged_branches": 4,
+            "failed_branches": 0,
+            "changed_paths": ["ui.application", "registry.merged"],
+            "defaults_failed": False,
+        }
         return SimpleNamespace(scenario_id="web_desktop", apps=[], widgets=[])
 
     monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
@@ -1175,6 +1265,7 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
     assert "semantic_rebuild" in result["timings_ms"]
     assert isinstance(result["semantic_rebuild_timings_ms"], dict)
     assert result["semantic_rebuild_timings_ms"]["apply"] == 3.75
+    assert result["apply_summary"]["changed_branches"] == 2
 
 
 def test_phase4_projection_refresh_uses_dev_space_for_dev_webspace(monkeypatch) -> None:
@@ -1375,6 +1466,52 @@ def test_phase5_resolver_cache_reuses_same_inputs_without_leaking_mutations() ->
     assert second_debug["legacy_fallback"] is False
     assert set(second_debug["cache_keys"].keys()) >= {"scenario", "skills", "overlay"}
     assert [item["id"] for item in second.catalog["apps"]] == ["cached-app"]
+
+
+def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    fake_state = {
+        "ui": _CountingMap(),
+        "registry": _CountingMap(),
+        "data": _CountingMap(),
+    }
+    resolved = webspace_runtime_module.WebspaceResolverOutputs(
+        webspace_id="phase5-apply-summary",
+        scenario_id="prompt_engineer_scenario",
+        source_mode="workspace",
+        application={"desktop": {"pageSchema": {"id": "apply-page"}}},
+        catalog={"apps": [{"id": "apply-app", "title": "Apply App"}], "widgets": []},
+        registry={"modals": ["apply-modal"], "widgets": []},
+        installed={"apps": ["apply-app"], "widgets": []},
+        desktop={"installed": {"apps": ["apply-app"], "widgets": []}},
+        routing={"routes": {"home": "/apply"}},
+        skill_decls=[],
+    )
+    fake_doc = _FakeDoc(fake_state)
+
+    runtime._apply_resolved_state_in_doc(fake_doc, "phase5-apply-summary", resolved)
+    first_summary = dict(runtime._last_apply_summary or {})
+
+    runtime._apply_resolved_state_in_doc(fake_doc, "phase5-apply-summary", resolved)
+    second_summary = dict(runtime._last_apply_summary or {})
+
+    assert first_summary["changed_branches"] == 6
+    assert first_summary["unchanged_branches"] == 0
+    assert first_summary["changed_paths"] == [
+        "ui.application",
+        "data.catalog",
+        "data.installed",
+        "data.desktop",
+        "data.routing",
+        "registry.merged",
+    ]
+    assert second_summary["changed_branches"] == 0
+    assert second_summary["unchanged_branches"] == 6
+    assert second_summary["failed_branches"] == 0
+    assert second_summary["changed_paths"] == []
+    assert fake_state["ui"].set_count == 1
+    assert fake_state["data"].set_count == 4
+    assert fake_state["registry"].set_count == 1
 
 
 def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability() -> None:

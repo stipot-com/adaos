@@ -866,6 +866,13 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
                 "timings_ms": {"load_scenario": 1.25, "total": 4.5},
                 "rebuild_timings_ms": {"projection_refresh": 2.0, "total": 6.0},
                 "phase_timings_ms": {"time_to_accept": 4.5, "time_to_full_hydration": 10.5},
+                "apply_summary": {
+                    "branch_count": 6,
+                    "changed_branches": 2,
+                    "unchanged_branches": 4,
+                    "failed_branches": 0,
+                    "changed_paths": ["ui.application", "registry.merged"],
+                },
             },
         ),
     )
@@ -883,6 +890,7 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
     assert any("timings_ms: load_scenario=1.250 total=4.500" in line for line in echoed)
     assert any("rebuild_timings_ms: projection_refresh=2.000 total=6.000" in line for line in echoed)
     assert any("phase_timings_ms: time_to_accept=4.500 time_to_full_hydration=10.500" in line for line in echoed)
+    assert any("apply: changed=2/6 unchanged=4 failed=0 paths=ui.application,registry.merged" in line for line in echoed)
 
 
 def test_node_cli_rebuild_summary_prints_resolver_debug(monkeypatch) -> None:
@@ -902,11 +910,19 @@ def test_node_cli_rebuild_summary_prints_resolver_debug(monkeypatch) -> None:
                     "legacy_fallback": True,
                     "cache_hit": False,
                 },
+                "apply_summary": {
+                    "branch_count": 6,
+                    "changed_branches": 0,
+                    "unchanged_branches": 6,
+                    "failed_branches": 0,
+                    "changed_paths": [],
+                },
             }
         }
     )
 
     assert any("resolver: source=legacy_yjs legacy_fallback=yes cache_hit=no" in line for line in echoed)
+    assert any("apply: changed=0/6 unchanged=6 failed=0" in line for line in echoed)
 
 
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:

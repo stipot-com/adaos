@@ -264,6 +264,15 @@ inputs. Those fingerprints back an in-process resolved-output cache and are
 surfaced in rebuild diagnostics together with resolver source, cache-hit state,
 and whether the rebuild had to fall back to legacy Yjs scenario branches.
 
+Rebuild diagnostics now also expose an `apply_summary` for the top-level
+derived branches (`ui.application`, `data.catalog`, `data.installed`,
+`data.desktop`, `data.routing`, `registry.merged`) so we can distinguish
+"resolver cache hit" from "apply was effectively a no-op". In parallel,
+`switch_webspace_scenario()` now short-circuits repeat requests for the
+already-active scenario when the current rebuild state is already `ready` for
+that scenario, avoiding redundant payload loads and rebuild scheduling during
+control-surface retries.
+
 ### Phase E: Structure/data split and focus-aware hydration
 
 The rebuild contract becomes explicitly phased:
