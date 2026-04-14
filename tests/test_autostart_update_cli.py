@@ -638,6 +638,17 @@ def test_autostart_inspect_renders_service_and_supervisor_sections(monkeypatch) 
             "supervisor": {
                 "url": "http://127.0.0.1:8776",
                 "reachable": True,
+                "status": {
+                    "active_slot": "B",
+                    "runtime_state": "ready",
+                    "runtime_api_ready": True,
+                    "managed_start_reason": "supervisor.monitor.respawn_after_exit",
+                    "last_stop_reason": "test.restart",
+                    "candidate_slot": "A",
+                    "candidate_runtime_state": "warming",
+                    "candidate_runtime_api_ready": False,
+                    "candidate_start_reason": "supervisor.candidate.prewarm",
+                },
                 "process": {
                     "pid": 11939,
                     "kind": "supervisor",
@@ -672,7 +683,49 @@ def test_autostart_inspect_renders_service_and_supervisor_sections(monkeypatch) 
     assert result.exit_code == 0, result.output
     assert "service: pid=11939 kind=supervisor" in result.output
     assert "supervisor: url=http://127.0.0.1:8776 reachable=True" in result.output
+    assert (
+        "supervisor runtime: slot=B state=ready api_ready=True "
+        "start_reason=supervisor.monitor.respawn_after_exit last_stop_reason=test.restart"
+    ) in result.output
+    assert (
+        "supervisor candidate: slot=A state=warming api_ready=False start_reason=supervisor.candidate.prewarm"
+    ) in result.output
     assert "runtime: pid=11941 kind=autostart_runner" in result.output
+
+
+def test_autostart_inspect_surfaces_recent_candidate_stop_reason_without_active_candidate(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_collect_autostart_inspect",
+        lambda sample_sec=0.2, token=None: {
+            "autostart": {
+                "enabled": True,
+                "active": True,
+                "listening": True,
+                "url": "http://127.0.0.1:8778",
+            },
+            "bind": {"host": "127.0.0.1", "port": 8778},
+            "supervisor": {
+                "url": "http://127.0.0.1:8776",
+                "reachable": True,
+                "status": {
+                    "active_slot": "B",
+                    "runtime_state": "ready",
+                    "runtime_api_ready": True,
+                    "candidate_last_stop_reason": "supervisor.candidate.exited",
+                },
+            },
+            "services": [],
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["inspect"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "supervisor candidate: slot=- state=- api_ready=False last_stop_reason=supervisor.candidate.exited"
+    ) in result.output
 
 
 def test_probe_http_json_uses_default_autostart_headers(monkeypatch) -> None:

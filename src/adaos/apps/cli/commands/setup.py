@@ -1045,6 +1045,7 @@ def _print_autostart_inspect(payload: dict) -> None:
     service_process = payload.get("service_process") if isinstance(payload.get("service_process"), dict) else {}
     service_root = service_process.get("root") if isinstance(service_process.get("root"), dict) else {}
     supervisor = payload.get("supervisor") if isinstance(payload.get("supervisor"), dict) else {}
+    supervisor_status = supervisor.get("status") if isinstance(supervisor.get("status"), dict) else {}
     supervisor_process = supervisor.get("process") if isinstance(supervisor.get("process"), dict) else {}
     process = payload.get("runtime_process") if isinstance(payload.get("runtime_process"), dict) else {}
     if not process:
@@ -1078,6 +1079,36 @@ def _print_autostart_inspect(payload: dict) -> None:
         typer.echo(
             f"supervisor: url={supervisor.get('url') or '-'} reachable={supervisor.get('reachable')}"
         )
+        if supervisor_status:
+            runtime_state_parts = []
+            if supervisor_status.get("active_slot"):
+                runtime_state_parts.append(f"slot={supervisor_status.get('active_slot')}")
+            if supervisor_status.get("runtime_state"):
+                runtime_state_parts.append(f"state={supervisor_status.get('runtime_state')}")
+            runtime_state_parts.append(f"api_ready={bool(supervisor_status.get('runtime_api_ready'))}")
+            if supervisor_status.get("managed_start_reason"):
+                runtime_state_parts.append(f"start_reason={supervisor_status.get('managed_start_reason')}")
+            if supervisor_status.get("last_stop_reason"):
+                runtime_state_parts.append(f"last_stop_reason={supervisor_status.get('last_stop_reason')}")
+            typer.echo("supervisor runtime: " + " ".join(runtime_state_parts))
+            if (
+                supervisor_status.get("candidate_slot")
+                or supervisor_status.get("candidate_runtime_state")
+                or supervisor_status.get("candidate_start_reason")
+                or supervisor_status.get("candidate_last_stop_reason")
+            ):
+                candidate_parts = [
+                    f"slot={supervisor_status.get('candidate_slot') or '-'}",
+                    f"state={supervisor_status.get('candidate_runtime_state') or '-'}",
+                    f"api_ready={bool(supervisor_status.get('candidate_runtime_api_ready'))}",
+                ]
+                if supervisor_status.get("candidate_start_reason"):
+                    candidate_parts.append(f"start_reason={supervisor_status.get('candidate_start_reason')}")
+                if supervisor_status.get("candidate_last_stop_reason"):
+                    candidate_parts.append(
+                        f"last_stop_reason={supervisor_status.get('candidate_last_stop_reason')}"
+                    )
+                typer.echo("supervisor candidate: " + " ".join(candidate_parts))
         if supervisor_process:
             typer.echo(
                 "supervisor process: "

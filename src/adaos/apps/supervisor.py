@@ -692,10 +692,14 @@ class SupervisorManager:
         self._managed_runtime_instance_id: str | None = None
         self._managed_transition_role: str | None = None
         self._managed_runtime_cwd: str | None = None
+        self._managed_start_reason: str | None = None
+        self._last_stop_reason: str | None = None
         self._candidate_slot: str | None = None
         self._candidate_runtime_instance_id: str | None = None
         self._candidate_transition_role: str | None = None
         self._candidate_runtime_cwd: str | None = None
+        self._candidate_start_reason: str | None = None
+        self._candidate_last_stop_reason: str | None = None
         self._service_restart_pending = False
         self._service_restart_thread: threading.Thread | None = None
 
@@ -1321,6 +1325,7 @@ class SupervisorManager:
             "managed_cmdline": managed_cmdline,
             "managed_executable": managed_executable,
             "managed_cwd": managed_cwd,
+            "managed_start_reason": self._managed_start_reason,
             "expected_managed_executable": expected_executable,
             "expected_managed_cwd": expected_cwd,
             "managed_matches_active_slot": managed_matches_active_slot,
@@ -1342,6 +1347,7 @@ class SupervisorManager:
             "candidate_managed_cmdline": candidate_managed_cmdline,
             "candidate_managed_executable": candidate_managed_executable,
             "candidate_managed_cwd": candidate_managed_cwd,
+            "candidate_start_reason": self._candidate_start_reason,
             "candidate_expected_managed_executable": candidate_expected_executable,
             "candidate_expected_managed_cwd": candidate_expected_cwd,
             "candidate_matches_candidate_slot": candidate_matches_candidate_slot,
@@ -1351,6 +1357,8 @@ class SupervisorManager:
             "slot_structure": slot_structure,
             "restart_count": int(self._restart_count),
             "last_start_at": self._last_start_at,
+            "last_stop_reason": self._last_stop_reason,
+            "candidate_last_stop_reason": self._candidate_last_stop_reason,
             "last_exit_at": self._last_exit_at,
             "last_exit_code": self._last_exit_code,
             "last_error": self._last_error,
@@ -1415,7 +1423,7 @@ class SupervisorManager:
         payload["_served_by"] = "supervisor_fallback"
         return _reconcile_update_status(payload)
 
-    async def _spawn_runtime_locked(self) -> None:
+    async def _spawn_runtime_locked(self, *, reason: str = "supervisor.start") -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
         argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec()
@@ -1434,6 +1442,7 @@ class SupervisorManager:
         self._managed_runtime_instance_id = runtime_instance_id
         self._managed_transition_role = transition_role
         self._managed_runtime_cwd = str(cwd or os.getcwd())
+        self._managed_start_reason = str(reason or "supervisor.start")
         self._last_start_at = time.time()
         self._last_error = None
         self._runtime_unhealthy_since = None
@@ -1447,7 +1456,7 @@ class SupervisorManager:
         self._sidecar_proc = await start_realtime_sidecar_subprocess(role=self._sidecar_role())
         self._persist_runtime_state()
 
-    async def _spawn_candidate_runtime_locked(self, *, slot: str) -> None:
+    async def _spawn_candidate_runtime_locked(self, *, slot: str, reason: str = "supervisor.candidate.start") -> None:
         resolved_slot = str(slot or "").strip().upper()
         if not resolved_slot:
             raise RuntimeError("candidate slot is required")
@@ -1483,13 +1492,14 @@ class SupervisorManager:
         self._candidate_runtime_instance_id = runtime_instance_id
         self._candidate_transition_role = transition_role
         self._candidate_runtime_cwd = str(cwd or os.getcwd())
+        self._candidate_start_reason = str(reason or "supervisor.candidate.start")
         self._persist_runtime_state()
 
-    async def ensure_started(self) -> None:
+    async def ensure_started(self, *, reason: str = "supervisor.start") -> None:
         async with self._lock:
             self._stopping = False
             self._desired_running = True
-            await self._spawn_runtime_locked()
+            await self._spawn_runtime_locked(reason=reason)
 
     async def ensure_sidecar_started(self) -> dict[str, Any]:
         async with self._lock:
@@ -1547,6 +1557,7 @@ class SupervisorManager:
             graceful=graceful,
             reason=reason,
         )
+        self._candidate_last_stop_reason = str(reason or "supervisor.candidate.stop")
         self._candidate_proc = None
         self._candidate_slot = None
         self._candidate_runtime_instance_id = None
@@ -1561,7 +1572,8 @@ class SupervisorManager:
         async with self._lock:
             self._desired_running = True
             await self._terminate_proc_locked(graceful=True, reason=reason)
-            await self._spawn_runtime_locked()
+            self._last_stop_reason = str(reason or "supervisor.restart")
+            await self._spawn_runtime_locked(reason=reason)
             self._restart_count += 1
             self._persist_runtime_state()
             return self._runtime_state_payload()
@@ -1571,6 +1583,7 @@ class SupervisorManager:
             self._desired_running = False
             self._stopping = True
             await self._terminate_proc_locked(graceful=True, reason=reason)
+            self._last_stop_reason = str(reason or "supervisor.stop")
             await self._terminate_candidate_proc_locked(graceful=True, reason=f"{reason}.candidate")
             self._persist_runtime_state()
 
@@ -1616,7 +1629,12 @@ class SupervisorManager:
             "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
         }
 
-    async def start_candidate_runtime(self, *, slot: str | None = None) -> dict[str, Any]:
+    async def start_candidate_runtime(
+        self,
+        *,
+        slot: str | None = None,
+        reason: str = "supervisor.candidate.start",
+    ) -> dict[str, Any]:
         resolved_slot = str(slot or choose_inactive_slot() or "").strip().upper()
         if resolved_slot not in {"A", "B"}:
             raise HTTPException(status_code=409, detail="candidate slot is unavailable")
@@ -1629,7 +1647,7 @@ class SupervisorManager:
         if not bool(structure.get("ok")):
             raise HTTPException(status_code=409, detail=f"candidate slot {resolved_slot} is not launchable")
         async with self._lock:
-            await self._spawn_candidate_runtime_locked(slot=resolved_slot)
+            await self._spawn_candidate_runtime_locked(slot=resolved_slot, reason=reason)
             self._persist_runtime_state()
             return self._runtime_state_payload()
 
@@ -1661,7 +1679,7 @@ class SupervisorManager:
                 "runtime": runtime_snapshot,
             }
 
-        await self.start_candidate_runtime(slot=resolved_target)
+        await self.start_candidate_runtime(slot=resolved_target, reason="supervisor.candidate.prewarm")
         timeout_sec = _warm_switch_candidate_ready_timeout_sec()
         deadline = time.time() + timeout_sec
         snapshot = self.status()
@@ -1798,6 +1816,7 @@ class SupervisorManager:
             if candidate_proc is not None:
                 candidate_rc = candidate_proc.poll()
                 if candidate_rc is not None:
+                    self._candidate_last_stop_reason = self._candidate_last_stop_reason or "supervisor.candidate.exited"
                     self._candidate_proc = None
                     self._candidate_slot = None
                     self._candidate_runtime_instance_id = None
@@ -1811,7 +1830,7 @@ class SupervisorManager:
                 if self._desired_running and not self._stopping:
                     async with self._lock:
                         if self._proc is None and self._desired_running and not self._stopping:
-                            await self._spawn_runtime_locked()
+                            await self._spawn_runtime_locked(reason="supervisor.monitor.ensure_running")
                 continue
             rc = proc.poll()
             if rc is None:
@@ -1831,6 +1850,7 @@ class SupervisorManager:
                 continue
             self._last_exit_code = int(rc)
             self._last_exit_at = time.time()
+            self._last_stop_reason = self._last_stop_reason or "supervisor.runtime.exited"
             self._proc = None
             self._managed_runtime_instance_id = None
             self._managed_transition_role = None
@@ -1843,14 +1863,14 @@ class SupervisorManager:
             async with self._lock:
                 if self._proc is None and self._desired_running and not self._stopping:
                     await asyncio.sleep(1.0)
-                    await self._spawn_runtime_locked()
+                    await self._spawn_runtime_locked(reason="supervisor.monitor.respawn_after_exit")
 
     async def start(self) -> None:
         try:
             await self.ensure_sidecar_started()
         except Exception:
             _LOG.warning("failed to start adaos-realtime sidecar", exc_info=True)
-        await self.ensure_started()
+        await self.ensure_started(reason="supervisor.start")
         self._monitor_task = asyncio.create_task(self.monitor_forever(), name="adaos-supervisor-monitor")
 
     async def close(self) -> None:
@@ -2983,14 +3003,18 @@ async def supervisor_sidecar_status() -> dict[str, Any]:
 
 
 @app.post("/api/supervisor/runtime/restart", dependencies=[Depends(require_token)])
-async def supervisor_runtime_restart() -> dict[str, Any]:
-    status = await _manager().restart_runtime()
+async def supervisor_runtime_restart(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    status = await _manager().restart_runtime(reason=str(body.get("reason") or "supervisor.restart"))
     return {"ok": True, "runtime": status}
 
 
 @app.post("/api/supervisor/runtime/candidate/start", dependencies=[Depends(require_token)])
 async def supervisor_runtime_candidate_start(payload: dict[str, Any]) -> dict[str, Any]:
-    status = await _manager().start_candidate_runtime(slot=str(payload.get("slot") or "").strip().upper() or None)
+    status = await _manager().start_candidate_runtime(
+        slot=str(payload.get("slot") or "").strip().upper() or None,
+        reason=str(payload.get("reason") or "supervisor.candidate.start"),
+    )
     return {"ok": True, "runtime": status}
 
 

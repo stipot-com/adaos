@@ -2237,7 +2237,7 @@ def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path
     )
     monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
 
-    asyncio.run(manager._spawn_runtime_locked())
+    asyncio.run(manager._spawn_runtime_locked(reason="test.spawn"))
 
     assert captured["args"][0] == "/slot/python"
     assert captured["kwargs"]["cwd"] == "/slot/repo"
@@ -2246,6 +2246,7 @@ def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path
     assert captured["kwargs"]["env"]["ADAOS_RUNTIME_TRANSITION_ROLE"] == "active"
     assert captured["kwargs"]["env"]["ADAOS_RUNTIME_PORT"] == "8777"
     assert str(captured["kwargs"]["env"]["ADAOS_RUNTIME_INSTANCE_ID"]).startswith("rt-a-a-")
+    assert manager.status()["managed_start_reason"] == "test.spawn"
 
 
 def test_spawn_runtime_locked_uses_slot_specific_port_for_slot_b(monkeypatch, tmp_path) -> None:
@@ -2327,7 +2328,7 @@ def test_spawn_candidate_runtime_locked_uses_candidate_role_and_skips_pending_up
     )
     monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
 
-    asyncio.run(manager._spawn_candidate_runtime_locked(slot="B"))
+    asyncio.run(manager._spawn_candidate_runtime_locked(slot="B", reason="test.candidate"))
 
     assert captured["args"][-1] == "8778"
     assert captured["kwargs"]["cwd"] == "/slots/B/repo"
@@ -2336,6 +2337,105 @@ def test_spawn_candidate_runtime_locked_uses_candidate_role_and_skips_pending_up
     assert captured["kwargs"]["env"]["ADAOS_RUNTIME_PORT"] == "8778"
     assert captured["kwargs"]["env"]["ADAOS_SKIP_PENDING_CORE_UPDATE"] == "1"
     assert str(captured["kwargs"]["env"]["ADAOS_RUNTIME_INSTANCE_ID"]).startswith("rt-b-c-")
+    assert manager.status()["candidate_start_reason"] == "test.candidate"
+
+
+def test_restart_runtime_records_last_stop_and_start_reason(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _CurrentProc:
+        pid = 6060
+
+        @staticmethod
+        def poll():
+            return None
+
+    class _SpawnedProc:
+        pid = 6161
+
+        @staticmethod
+        def poll():
+            return None
+
+    async def _fake_terminate_proc_locked(*, proc=None, base_url=None, graceful: bool, reason: str) -> None:
+        captured["terminate"] = {
+            "proc": proc,
+            "base_url": base_url,
+            "graceful": graceful,
+            "reason": reason,
+        }
+        manager._proc = None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _SpawnedProc()
+
+    manager._proc = _CurrentProc()
+    monkeypatch.setattr(manager, "_transition_continuity_guard_decision", lambda operation: None)
+    monkeypatch.setattr(manager, "_terminate_proc_locked", _fake_terminate_proc_locked)
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["/slot/python", "-m", "adaos.apps.autostart_runner", "--host", "{host}", "--port", "{port}"],
+            "cwd": "/slot/repo",
+            "env": {"PYTHONPATH": "/slot/repo/src"},
+        },
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "core_slot_status",
+        lambda: {"slots": {"A": {"path": "/slots/A"}}},
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    payload = asyncio.run(manager.restart_runtime(reason="test.restart"))
+
+    assert captured["terminate"]["reason"] == "test.restart"
+    assert captured["args"][0] == "/slot/python"
+    assert payload["managed_start_reason"] == "test.restart"
+    assert payload["last_stop_reason"] == "test.restart"
+    assert payload["restart_count"] == 1
+
+
+def test_stop_candidate_runtime_persists_last_stop_reason_after_candidate_clears(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _CandidateProc:
+        pid = 7171
+
+        @staticmethod
+        def poll():
+            return None
+
+    async def _fake_terminate_proc_locked(*, proc=None, base_url=None, graceful: bool, reason: str) -> None:
+        captured["terminate"] = {
+            "proc": proc,
+            "base_url": base_url,
+            "graceful": graceful,
+            "reason": reason,
+        }
+
+    manager._candidate_proc = _CandidateProc()
+    manager._candidate_slot = "B"
+    manager._candidate_runtime_instance_id = "rt-b-c-test"
+    manager._candidate_transition_role = "candidate"
+    monkeypatch.setattr(manager, "_terminate_proc_locked", _fake_terminate_proc_locked)
+
+    payload = asyncio.run(manager.stop_candidate_runtime(reason="test.candidate.stop"))
+
+    assert captured["terminate"]["reason"] == "test.candidate.stop"
+    assert payload["candidate_slot"] is None
+    assert payload["candidate_last_stop_reason"] == "test.candidate.stop"
 
 
 def test_runtime_state_payload_surfaces_candidate_runtime_state(monkeypatch, tmp_path) -> None:

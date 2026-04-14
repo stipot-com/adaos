@@ -24,6 +24,8 @@ adaos autostart disable
 
 `autostart inspect` helps debug cases where the hub is "up" but the UI times out or a CPU core is pinned:
 it prints the autostart bind, the active PID, top CPU-consuming child processes, and currently running service-skills.
+When supervisor mode is active it also prints the managed runtime/candidate slot state and the last recorded start/stop reasons,
+which is useful when validating slot migration, candidate prewarm, and restart handoff behavior.
 
 ## Core-update controls
 
