@@ -8,6 +8,7 @@ from adaos.services.core_update import (
     execute_pending_update,
     finalize_runtime_boot_status,
     configured_update_command,
+    _run_command_with_bounded_output,
     prepare_pending_update,
     read_last_result,
     read_plan,
@@ -110,7 +111,7 @@ def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
 def test_execute_pending_update_activates_target_slot(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
 
-    def _fake_run(command: str, shell: bool, capture_output: bool, text: bool):
+    def _fake_run(command: str):
         write_slot_manifest(
             "B",
             {
@@ -120,7 +121,7 @@ def test_execute_pending_update_activates_target_slot(monkeypatch, tmp_path) -> 
         )
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("adaos.services.core_update.subprocess.run", _fake_run)
+    monkeypatch.setattr("adaos.services.core_update._run_command_with_bounded_output", _fake_run)
     result = execute_pending_update({"target_rev": "rev2026", "target_slot": "B"})
     assert result["state"] == "succeeded"
     assert active_slot() == "B"
@@ -150,7 +151,7 @@ def test_execute_pending_update_inherits_target_rev_from_active_slot(monkeypatch
 
     seen: dict[str, str] = {}
 
-    def _fake_run(command: str, shell: bool, capture_output: bool, text: bool):
+    def _fake_run(command: str):
         seen["command"] = command
         write_slot_manifest(
             "B",
@@ -161,10 +162,42 @@ def test_execute_pending_update_inherits_target_rev_from_active_slot(monkeypatch
         )
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("adaos.services.core_update.subprocess.run", _fake_run)
+    monkeypatch.setattr("adaos.services.core_update._run_command_with_bounded_output", _fake_run)
     result = execute_pending_update({"target_version": "0.1.0"})
     assert result["state"] == "succeeded"
     assert "rev2026" in seen["command"]
+
+
+def test_run_command_with_bounded_output_keeps_only_tail(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_CORE_UPDATE_OUTPUT_TAIL_CHARS", "8")
+
+    class _FakeStream:
+        def __init__(self, chunks: list[str]) -> None:
+            self._chunks = list(chunks)
+
+        def read(self, _size: int = -1) -> str:
+            if not self._chunks:
+                return ""
+            return self._chunks.pop(0)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = _FakeStream(["abcd", "efgh", "ijkl"])
+            self.stderr = _FakeStream(["1234", "5678", "90"])
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr("adaos.services.core_update.subprocess.Popen", lambda *args, **kwargs: _FakeProc())
+
+    completed = _run_command_with_bounded_output("echo test")
+
+    assert completed.returncode == 0
+    assert completed.stdout == "efghijkl"
+    assert completed.stderr == "34567890"
 
 
 def test_prepare_pending_update_defers_skill_runtime_migration(monkeypatch, tmp_path) -> None:
@@ -248,6 +281,44 @@ def test_finalize_runtime_boot_status_marks_root_promotion_pending(monkeypatch, 
     assert payload["root_promotion_required"] is True
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
     assert read_last_result()["phase"] == "root_promotion_pending"
+
+
+def test_finalize_runtime_boot_status_marks_root_restart_completed_after_root_promoted(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "bootstrap_update": {
+                "required": True,
+                "changed_paths": ["src/adaos/apps/supervisor.py"],
+            },
+        },
+    )
+    activate_slot("B")
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "root_promoted",
+            "target_slot": "B",
+            "candidate_prewarm_state": "starting",
+            "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            "candidate_prewarm_ready_at": 123.0,
+            "root_promotion_required": False,
+        }
+    )
+
+    payload = finalize_runtime_boot_status()
+
+    assert payload is not None
+    assert payload["state"] == "succeeded"
+    assert payload["phase"] == "validate"
+    assert payload["root_promotion_required"] is False
+    assert payload["root_restart_completed_at"] > 0
+    assert payload["candidate_prewarm_state"] is None
+    assert payload["candidate_prewarm_message"] is None
+    assert payload["candidate_prewarm_ready_at"] is None
 
 
 def test_promote_root_from_slot_copies_changed_bootstrap_files(monkeypatch, tmp_path) -> None:

@@ -1421,6 +1421,16 @@ class SupervisorManager:
             self._runtime_unhealthy_since = None
             self._runtime_unhealthy_kind = None
             return None
+        update_status = read_core_update_status()
+        update_state = str(update_status.get("state") or "").strip().lower()
+        update_phase = str(update_status.get("phase") or "").strip().lower()
+        if update_state == "applying" and update_phase == "apply":
+            # During core_update_apply the runner intentionally has no listener yet.
+            # Let supervisor timeout/recovery handle a stalled apply instead of
+            # repeatedly restarting the process mid-apply every listener timeout.
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
+            return None
         current_slot = str(active_slot() or "").strip().upper() or None
         runtime_port = self.slot_runtime_port(current_slot)
         runtime_url = self.slot_runtime_base_url(current_slot)

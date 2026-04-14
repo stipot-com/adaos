@@ -1662,6 +1662,34 @@ def test_runtime_self_heal_decision_restarts_after_api_timeout(monkeypatch, tmp_
     assert payload["runtime_port"] == 8777
 
 
+def test_runtime_self_heal_decision_skips_listener_restart_while_update_apply_runs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._desired_running = True
+    manager._last_start_at = 100.0
+    manager._runtime_unhealthy_since = 120.0
+    manager._runtime_unhealthy_kind = "listener_lost"
+
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "applying", "phase": "apply"})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: False)
+
+    payload = manager._runtime_self_heal_decision(now=200.0)
+
+    assert payload is None
+    assert manager._runtime_unhealthy_since is None
+    assert manager._runtime_unhealthy_kind is None
+
+
 def test_runtime_state_payload_surfaces_warm_switch_admission(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

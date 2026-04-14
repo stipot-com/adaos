@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
 from string import Formatter
 from typing import Any
@@ -58,6 +61,95 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _update_command_output_tail_chars() -> int:
+    try:
+        return max(1, int(str(os.getenv("ADAOS_CORE_UPDATE_OUTPUT_TAIL_CHARS") or "8000").strip() or "8000"))
+    except Exception:
+        return 8000
+
+
+class _OutputTailBuffer:
+    def __init__(self, max_chars: int) -> None:
+        self._max_chars = max(1, int(max_chars))
+        self._parts: deque[str] = deque()
+        self._total_chars = 0
+        self._lock = threading.Lock()
+
+    def append(self, chunk: str) -> None:
+        if not chunk:
+            return
+        with self._lock:
+            self._parts.append(chunk)
+            self._total_chars += len(chunk)
+            while self._total_chars > self._max_chars and self._parts:
+                overflow = self._total_chars - self._max_chars
+                head = self._parts[0]
+                if len(head) <= overflow:
+                    self._parts.popleft()
+                    self._total_chars -= len(head)
+                    continue
+                self._parts[0] = head[overflow:]
+                self._total_chars -= overflow
+                break
+
+    def text(self) -> str:
+        with self._lock:
+            return "".join(self._parts)
+
+
+def _stream_subprocess_output(
+    stream: Any | None,
+    *,
+    buffer: _OutputTailBuffer,
+) -> threading.Thread | None:
+    if stream is None:
+        return None
+
+    def _worker() -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                buffer.append(str(chunk))
+        finally:
+            with contextlib.suppress(Exception):
+                stream.close()
+
+    thread = threading.Thread(target=_worker, name="adaos-core-update-output", daemon=True)
+    thread.start()
+    return thread
+
+
+def _run_command_with_bounded_output(command: str) -> subprocess.CompletedProcess[str]:
+    max_chars = _update_command_output_tail_chars()
+    stdout_buffer = _OutputTailBuffer(max_chars=max_chars)
+    stderr_buffer = _OutputTailBuffer(max_chars=max_chars)
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    threads = [
+        _stream_subprocess_output(proc.stdout, buffer=stdout_buffer),
+        _stream_subprocess_output(proc.stderr, buffer=stderr_buffer),
+    ]
+    returncode = proc.wait()
+    for thread in threads:
+        if thread is not None:
+            thread.join(timeout=1.0)
+    return subprocess.CompletedProcess(
+        command,
+        int(returncode),
+        stdout=stdout_buffer.text(),
+        stderr=stderr_buffer.text(),
+    )
 
 
 def read_plan() -> dict[str, Any] | None:
@@ -344,8 +436,9 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
     phase = str(current.get("phase") or "").strip().lower()
     if state == "succeeded" and phase == "validate":
         return current
+    root_restart_pending = state == "succeeded" and phase == "root_promoted"
     if state not in {"restarting", "applying", "validated"} and not (
-        state == "succeeded" and phase in {"", "apply", "launch", "shutdown"}
+        state == "succeeded" and phase in {"", "apply", "launch", "shutdown", "root_promoted"}
     ):
         return None
 
@@ -358,6 +451,16 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
     payload["message"] = (
         f"runtime boot validated on slot {slot}" if slot else "runtime boot validated"
     )
+    if root_restart_pending:
+        payload["message"] = (
+            f"root promotion restart completed; runtime boot validated on slot {slot}"
+            if slot
+            else "root promotion restart completed; runtime boot validated"
+        )
+        payload["root_restart_completed_at"] = now
+        payload["candidate_prewarm_state"] = None
+        payload["candidate_prewarm_message"] = None
+        payload["candidate_prewarm_ready_at"] = None
     payload["validated_at"] = now
     payload["finished_at"] = float(payload.get("finished_at") or now)
     if slot:
@@ -365,7 +468,7 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
     if isinstance(manifest, dict) and manifest:
         payload["manifest"] = manifest
     root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
-    if root_promotion_required:
+    if not root_restart_pending and root_promotion_required:
         payload["state"] = "validated"
         payload["phase"] = "root_promotion_pending"
         payload["message"] = (
@@ -375,6 +478,8 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         )
         payload["root_promotion_required"] = True
         payload["bootstrap_update"] = bootstrap_update
+    elif root_restart_pending:
+        payload["root_promotion_required"] = False
     return write_status(payload)
 
 
@@ -742,7 +847,7 @@ def execute_pending_update(plan: dict[str, Any]) -> dict[str, Any]:
             "plan": slot_plan,
         }
     )
-    completed = subprocess.run(command, shell=True, capture_output=True, text=True)
+    completed = _run_command_with_bounded_output(command)
     target_slot = str(slot_plan.get("target_slot") or "")
     manifest = read_slot_manifest(target_slot) if target_slot else None
     manifest_ready = isinstance(manifest, dict) and (
