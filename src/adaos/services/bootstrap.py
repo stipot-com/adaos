@@ -76,7 +76,7 @@ from adaos.services.realtime_sidecar import (
     realtime_sidecar_port,
     resolve_realtime_remote_candidates,
 )
-from adaos.services.node_config import NodeConfig, load_config, set_role as cfg_set_role
+from adaos.services.node_config import NodeConfig, generate_provisional_subnet_id, load_config, set_role as cfg_set_role
 from adaos.services.hub_root_outbox_store import load_outbox_items, outbox_store_path, save_outbox_items
 from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
@@ -398,6 +398,33 @@ def _resolve_nats_log_server(
         if text:
             return text
     return None
+
+
+def _hub_id_from_nats_user(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.lower().startswith("hub_") and len(raw) > 4:
+        return raw[4:]
+    return None
+
+
+def _canonical_hub_nats_identity(
+    *,
+    local_hub_id: str | None,
+    nats_user: str | None,
+    response_hub_id: str | None = None,
+) -> tuple[str | None, str | None]:
+    resolved_hub_id = (
+        str(response_hub_id or "").strip()
+        or _hub_id_from_nats_user(nats_user)
+        or str(local_hub_id or "").strip()
+        or None
+    )
+    if resolved_hub_id:
+        return resolved_hub_id, f"hub_{resolved_hub_id}"
+    resolved_user = str(nats_user or "").strip() or None
+    return None, resolved_user
 
 
 class BootstrapService:
@@ -1149,6 +1176,7 @@ class BootstrapService:
                 last_token_fetch = 0.0
 
                 async def _fetch_nats_credentials() -> bool:
+                    nonlocal hub_id
                     nonlocal last_token_fetch
                     # rate-limit attempts to avoid spamming root
                     now = time.monotonic()
@@ -1277,6 +1305,7 @@ class BootstrapService:
                         return False
                     token = data.get("hub_nats_token")
                     nats_user = data.get("nats_user")
+                    response_hub_id = data.get("hub_id")
                     nats_ws_url = _normalize_hub_nats_ws_url(data.get("nats_ws_url"))
                     if not token or not nats_user or not nats_ws_url:
                         if debug:
@@ -1292,6 +1321,11 @@ class BootstrapService:
                         return False
 
                     try:
+                        resolved_hub_id, resolved_nats_user = _canonical_hub_nats_identity(
+                            local_hub_id=getattr(cfg, "subnet_id", None),
+                            nats_user=str(nats_user),
+                            response_hub_id=str(response_hub_id or "").strip() or None,
+                        )
                         y = _load_node()
                         n = y.get("nats") or {}
                         if not isinstance(n, dict):
@@ -1304,9 +1338,16 @@ class BootstrapService:
                             n["ws_url"] = str(_hub_public_tcp_candidates(None)[0])
                         else:
                             n["ws_url"] = str(nats_ws_url)
-                        n["user"] = str(nats_user)
+                        n["user"] = str(resolved_nats_user or nats_user)
                         n["pass"] = str(token)
                         y["nats"] = n
+                        if resolved_hub_id:
+                            y["subnet_id"] = str(resolved_hub_id)
+                            subnet_section = y.get("subnet")
+                            if not isinstance(subnet_section, dict):
+                                subnet_section = {}
+                            subnet_section["id"] = str(resolved_hub_id)
+                            y["subnet"] = subnet_section
                         # If node.yaml is missing/minimal, seed core identity fields so other subsystems
                         # (Settings, tooling) can discover subnet/node info.
                         try:
@@ -1324,6 +1365,8 @@ class BootstrapService:
                         except Exception:
                             pass
                         _save_node(y)
+                        if resolved_hub_id:
+                            hub_id = str(resolved_hub_id)
                         return True
                     except Exception:
                         return False
@@ -1335,6 +1378,7 @@ class BootstrapService:
                 last_ws_transport: str | None = None
 
                 async def _nats_bridge() -> None:
+                    nonlocal hub_id
                     nonlocal reported_down
                     nonlocal nats_last_ok_at
                     nonlocal nats_attempt_server
@@ -1456,6 +1500,13 @@ class BootstrapService:
                         return False
 
                     while True:
+                        try:
+                            cfg_now = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+                            current_hub_id = str(getattr(cfg_now, "subnet_id", "") or "").strip()
+                            if current_hub_id:
+                                hub_id = current_hub_id
+                        except Exception:
+                            pass
                         runtime_identity = runtime_identity_snapshot()
                         runtime_role = str(runtime_identity.get("transition_role") or "active")
                         runtime_instance = str(runtime_identity.get("runtime_instance_id") or "")
@@ -2373,8 +2424,14 @@ class BootstrapService:
                             except Exception:
                                 is_ws_candidates = False
                             if is_ws_candidates or realtime_enabled:
-                                # Always use canonical hub identifier for WS auth: "hub_<hub_id>"
-                                user = f"hub_{hub_id}"
+                                resolved_hub_id, resolved_nats_user = _canonical_hub_nats_identity(
+                                    local_hub_id=hub_id,
+                                    nats_user=nuser,
+                                )
+                                if resolved_hub_id:
+                                    hub_id = resolved_hub_id
+                                if resolved_nats_user:
+                                    user = resolved_nats_user
                             hub_id_str = hub_id if isinstance(hub_id, str) else str(hub_id)
                             user_str = user if (user is None or isinstance(user, str)) else str(user)
                             pw_str = pw if (pw is None or isinstance(pw, str)) else str(pw)
@@ -6972,7 +7029,7 @@ class BootstrapService:
                 await self.heartbeat.deregister(prev.hub_url, prev.token or "", node_id=prev.node_id)
             except Exception:
                 pass
-            subnet_id = subnet_id or str(uuid.uuid4())
+            subnet_id = subnet_id or generate_provisional_subnet_id()
         conf = cfg_set_role(role, hub_url=hub_url, subnet_id=subnet_id, ctx=self.ctx)
         await self.run_boot_sequence(app or self._app)
         return conf

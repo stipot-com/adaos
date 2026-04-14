@@ -158,6 +158,9 @@ def _reconcile_post_root_promotion_restart(current: dict[str, Any]) -> dict[str,
     payload = dict(current)
     payload["phase"] = "validate"
     payload["message"] = "root promotion restart completed; validated slot runtime booted under updated supervisor"
+    payload["candidate_prewarm_state"] = None
+    payload["candidate_prewarm_message"] = None
+    payload["candidate_prewarm_ready_at"] = None
     payload["root_restart_completed_at"] = time.time()
     payload["updated_at"] = time.time()
     return payload

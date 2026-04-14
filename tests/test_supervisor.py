@@ -118,6 +118,47 @@ def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeyp
     assert attempt["last_status"]["root_restart_completed_at"] == 499.0
 
 
+def test_reconcile_update_status_clears_stale_candidate_prewarm_fields_when_root_restart_completes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)
+    supervisor._write_update_attempt(
+        {
+            "state": "awaiting_root_restart",
+            "action": "update",
+            "awaiting_restart": True,
+            "restart_required": True,
+            "candidate_prewarm_state": "starting",
+            "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            "candidate_prewarm_ready_at": 430.0,
+            "requested_at": 450.0,
+            "transitioned_at": 460.0,
+            "updated_at": 460.0,
+        }
+    )
+
+    payload = supervisor._reconcile_update_status(
+        {
+            "ok": True,
+            "status": {
+                "state": "succeeded",
+                "phase": "validate",
+                "root_restart_completed_at": 499.0,
+                "updated_at": 499.0,
+            },
+            "_served_by": "runtime",
+        }
+    )
+
+    attempt = payload.get("attempt")
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "completed"
+    assert attempt["awaiting_restart"] is False
+    assert attempt["restart_required"] is False
+    assert attempt["candidate_prewarm_state"] is None
+    assert attempt["candidate_prewarm_message"] is None
+    assert attempt["candidate_prewarm_ready_at"] is None
+
+
 def test_last_update_completion_at_ignores_idle_status() -> None:
     assert supervisor._last_update_completion_at({"state": "idle", "updated_at": 123.0}, None) == 0.0
 
@@ -2582,3 +2623,57 @@ def test_runtime_state_payload_surfaces_candidate_runtime_state(monkeypatch, tmp
     assert payload["candidate_transition_role"] == "candidate"
     assert payload["candidate_runtime_state"] == "ready"
     assert payload["candidate_runtime_api_ready"] is True
+
+
+def test_runtime_state_payload_hides_candidate_after_root_restart_completion(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8778"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "validate",
+            "action": "update",
+            "target_slot": "B",
+            "root_restart_completed_at": 499.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "completed",
+            "action": "update",
+            "target_slot": "B",
+            "updated_at": 499.0,
+        }
+    )
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "choose_inactive_slot", lambda: "A")
+
+    payload = manager.status()
+
+    assert payload["candidate_slot"] is None
+    assert payload["candidate_runtime_url"] is None
+    assert payload["candidate_runtime_state"] is None
+    assert payload["candidate_transition_role"] is None

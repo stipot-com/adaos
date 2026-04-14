@@ -1,7 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from types import SimpleNamespace
+
+sys.modules.setdefault("nats", SimpleNamespace())
+if "y_py" not in sys.modules:
+    sys.modules["y_py"] = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        encode_state_vector=lambda *args, **kwargs: b"",
+        encode_state_as_update=lambda *args, **kwargs: b"",
+        apply_update=lambda *args, **kwargs: None,
+    )
+if "ypy_websocket.ystore" not in sys.modules:
+    ystore_module = types.ModuleType("ypy_websocket.ystore")
+    ystore_module.BaseYStore = type("BaseYStore", (), {})
+    ystore_module.YDocNotFound = type("YDocNotFound", (Exception,), {})
+    sys.modules["ypy_websocket.ystore"] = ystore_module
+if "ypy_websocket" not in sys.modules:
+    pkg = types.ModuleType("ypy_websocket")
+    pkg.ystore = sys.modules["ypy_websocket.ystore"]
+    sys.modules["ypy_websocket"] = pkg
 
 from adaos.services import bootstrap as bootstrap_mod
 
@@ -105,6 +125,34 @@ def test_hub_route_force_close_no_upstream_can_disable(monkeypatch) -> None:
     monkeypatch.setenv("HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S", "0")
 
     assert bootstrap_mod._hub_route_force_close_no_upstream_s() == 0.0
+
+
+def test_hub_id_from_nats_user_extracts_canonical_hub_id() -> None:
+    assert bootstrap_mod._hub_id_from_nats_user("hub_sn_92ffc943") == "sn_92ffc943"
+    assert bootstrap_mod._hub_id_from_nats_user("hub_9d91f466-0349-475d-9887-2d2bb3c783ee") == "9d91f466-0349-475d-9887-2d2bb3c783ee"
+    assert bootstrap_mod._hub_id_from_nats_user("alias_hub") is None
+
+
+def test_canonical_hub_nats_identity_prefers_response_hub_id() -> None:
+    hub_id, user = bootstrap_mod._canonical_hub_nats_identity(
+        local_hub_id="local-stale",
+        nats_user="hub_remote-live",
+        response_hub_id="sn_92ffc943",
+    )
+
+    assert hub_id == "sn_92ffc943"
+    assert user == "hub_sn_92ffc943"
+
+
+def test_canonical_hub_nats_identity_falls_back_to_canonical_nats_user() -> None:
+    hub_id, user = bootstrap_mod._canonical_hub_nats_identity(
+        local_hub_id="local-stale",
+        nats_user="hub_9d91f466-0349-475d-9887-2d2bb3c783ee",
+        response_hub_id=None,
+    )
+
+    assert hub_id == "9d91f466-0349-475d-9887-2d2bb3c783ee"
+    assert user == "hub_9d91f466-0349-475d-9887-2d2bb3c783ee"
 
 
 def test_build_hub_route_ws_bases_ignores_remote_hub_url(monkeypatch) -> None:

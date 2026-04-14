@@ -68,6 +68,24 @@ def test_autostart_runner_reconciles_root_promotion_restart_before_idle(monkeypa
     assert "root promotion restart completed" in captured[0]["message"]
 
 
+def test_reconcile_post_root_promotion_restart_clears_stale_candidate_prewarm_fields() -> None:
+    payload = autostart_runner._reconcile_post_root_promotion_restart(
+        {
+            "state": "succeeded",
+            "phase": "root_promoted",
+            "candidate_prewarm_state": "starting",
+            "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            "candidate_prewarm_ready_at": 123.0,
+        }
+    )
+
+    assert isinstance(payload, dict)
+    assert payload["phase"] == "validate"
+    assert payload["candidate_prewarm_state"] is None
+    assert payload["candidate_prewarm_message"] is None
+    assert payload["candidate_prewarm_ready_at"] is None
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(

@@ -446,6 +446,11 @@ def _complete_update_attempt(*, state: str, status: dict[str, Any] | None, reaso
     payload["state"] = str(state or "completed")
     payload["completed_at"] = now
     payload["updated_at"] = now
+    payload["awaiting_restart"] = False
+    payload["restart_required"] = False
+    payload["candidate_prewarm_state"] = None
+    payload["candidate_prewarm_message"] = None
+    payload["candidate_prewarm_ready_at"] = None
     if reason:
         payload["completion_reason"] = str(reason)
     if isinstance(status, dict):
@@ -1045,18 +1050,33 @@ class SupervisorManager:
         update_status: dict[str, Any] | None,
         update_attempt: dict[str, Any] | None,
     ) -> str | None:
-        for source in (update_status or {}, update_attempt or {}):
-            target_slot = str(source.get("target_slot") or "").strip().upper()
-            if target_slot in {"A", "B"}:
-                return target_slot
         state = str((update_status or {}).get("state") or "").strip().lower()
+        phase = str((update_status or {}).get("phase") or "").strip().lower()
         attempt_state = str((update_attempt or {}).get("state") or "").strip().lower()
-        transition_active = state in {"planned", "preparing", "countdown", "draining", "stopping", "restarting", "applying", "validated"} or attempt_state in {"planned", "active"}
+        current_slot_name = str(current_slot or "").strip().upper()
+        transition_active = state in {
+            "planned",
+            "preparing",
+            "countdown",
+            "draining",
+            "stopping",
+            "restarting",
+            "applying",
+            "validated",
+        } or attempt_state in {"planned", "active"}
         if not transition_active and attempt_state == "awaiting_root_restart":
             transition_active = _subsequent_transition_request(update_attempt) is not None
+        if not transition_active and state == "succeeded" and phase == "root_promoted":
+            transition_active = False
+        if not transition_active:
+            return None
+        for source in (update_status or {}, update_attempt or {}):
+            target_slot = str(source.get("target_slot") or "").strip().upper()
+            if target_slot in {"A", "B"} and target_slot != current_slot_name:
+                return target_slot
         if transition_active:
             target_slot = choose_inactive_slot()
-            if target_slot and target_slot != str(current_slot or "").strip().upper():
+            if target_slot and target_slot != current_slot_name:
                 return target_slot
         return None
 

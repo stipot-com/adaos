@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
+import adaos.services.node_config as node_config_mod
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import NodeConfig, load_config, save_config
 
@@ -23,6 +29,26 @@ def _detached_config() -> NodeConfig:
         node_settings=copy.deepcopy(current.node_settings),
         dev_settings=copy.deepcopy(current.dev_settings),
     )
+
+
+def _write_hub_cert(path: Path, *, common_name: str, organization_name: str | None = None) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
+    if organization_name:
+        subject_attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization_name))
+    subject = issuer = x509.Name(subject_attrs)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=30))
+        .sign(key, hashes.SHA256())
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
 
 def test_save_config_syncs_agent_context() -> None:
@@ -154,3 +180,92 @@ def test_load_config_migrates_legacy_key_paths_into_active_base_dir(tmp_path: Pa
     assert ((migrated.get("root") or {}).get("ca_cert")) == "keys/ca.cert"
     assert (((migrated.get("subnet") or {}).get("hub") or {}).get("key")) == "keys/hub_private.pem"
     assert (((migrated.get("subnet") or {}).get("hub") or {}).get("cert")) == "keys/hub_cert.pem"
+
+
+def test_load_config_recovers_uuid_subnet_from_hub_certificate() -> None:
+    ctx = get_ctx()
+    base_dir = Path(ctx.paths.base_dir())
+    node_path = base_dir / "node.yaml"
+    cert_path = base_dir / "keys" / "hub_cert.pem"
+    uuid_subnet = "9d91f466-0349-475d-9887-2d2bb3c783ee"
+    recovered_subnet = "sn_cert1234"
+
+    _write_hub_cert(cert_path, common_name=f"subnet:{recovered_subnet}", organization_name=f"subnet:{recovered_subnet}")
+    node_path.write_text(
+        yaml.safe_dump(
+            {
+                "node_id": "node_cert",
+                "subnet_id": uuid_subnet,
+                "role": "hub",
+                "subnet": {
+                    "id": uuid_subnet,
+                    "hub": {
+                        "cert": "keys/hub_cert.pem",
+                    },
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+
+    assert fresh.subnet_id == recovered_subnet
+    assert fresh.subnet_settings.id == recovered_subnet
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+    assert saved.get("subnet_id") == recovered_subnet
+    assert ((saved.get("subnet") or {}).get("id")) == recovered_subnet
+
+
+def test_load_config_recovers_uuid_subnet_from_nats_user_when_certificate_missing() -> None:
+    ctx = get_ctx()
+    base_dir = Path(ctx.paths.base_dir())
+    node_path = base_dir / "node.yaml"
+    cert_path = base_dir / "keys" / "hub_cert.pem"
+    if cert_path.exists():
+        cert_path.unlink()
+    uuid_subnet = "9d91f466-0349-475d-9887-2d2bb3c783ee"
+    recovered_subnet = "sn_nats1234"
+
+    node_path.write_text(
+        yaml.safe_dump(
+            {
+                "node_id": "node_nats",
+                "subnet_id": uuid_subnet,
+                "role": "hub",
+                "subnet": {"id": uuid_subnet},
+                "nats": {"user": f"hub_{recovered_subnet}"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+
+    assert fresh.subnet_id == recovered_subnet
+    assert fresh.subnet_settings.id == recovered_subnet
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+    assert saved.get("subnet_id") == recovered_subnet
+
+
+def test_load_config_generates_sn_prefixed_subnet_id_for_empty_config() -> None:
+    ctx = get_ctx()
+    base_dir = Path(ctx.paths.base_dir())
+    node_path = base_dir / "node.yaml"
+    cert_path = base_dir / "keys" / "hub_cert.pem"
+    if cert_path.exists():
+        cert_path.unlink()
+
+    node_path.write_text("{}", encoding="utf-8")
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+
+    assert fresh.subnet_id.startswith("sn_")
+    assert not node_config_mod._looks_like_uuid_token(fresh.subnet_id)

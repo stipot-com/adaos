@@ -14,6 +14,74 @@ from adaos.services.agent_context import get_ctx, AgentContext  # type: ignore
 _NODE_CONFIG_CACHE: dict[str, tuple[int | None, "NodeConfig"]] = {}
 
 
+def is_canonical_subnet_id(value: str | None) -> bool:
+    token = str(value or "").strip()
+    return token.startswith("sn_") and len(token) > 3
+
+
+def _looks_like_uuid_token(value: str | None) -> bool:
+    token = str(value or "").strip()
+    if not token:
+        return False
+    try:
+        parsed = uuid.UUID(token)
+    except Exception:
+        return False
+    return str(parsed) == token.lower()
+
+
+def generate_provisional_subnet_id() -> str:
+    return f"sn_{uuid.uuid4().hex[:8]}"
+
+
+def _extract_subnet_id_from_hub_certificate_path(cert_path: Path) -> str | None:
+    if not cert_path.exists():
+        return None
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+    except Exception:
+        return None
+    try:
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    except Exception:
+        return None
+
+    def _extract_subject_value(prefix: str, oid: Any) -> str | None:
+        try:
+            attrs = cert.subject.get_attributes_for_oid(oid)
+        except Exception:
+            return None
+        for attr in attrs or []:
+            raw = str(getattr(attr, "value", "") or "").strip()
+            if raw.startswith(prefix):
+                value = raw.split(":", 1)[1].strip()
+                if is_canonical_subnet_id(value):
+                    return value
+        return None
+
+    cn_value = _extract_subject_value("subnet:", NameOID.COMMON_NAME)
+    if cn_value:
+        return cn_value
+    cn_hub_value = _extract_subject_value("hub:", NameOID.COMMON_NAME)
+    if cn_hub_value:
+        return cn_hub_value
+    org_value = _extract_subject_value("subnet:", NameOID.ORGANIZATION_NAME)
+    if org_value:
+        return org_value
+    return None
+
+
+def _extract_subnet_id_from_nats_user(raw_user: Any) -> str | None:
+    user = str(raw_user or "").strip()
+    if not user.startswith("hub_"):
+        return None
+    candidate = user[4:].strip()
+    if is_canonical_subnet_id(candidate):
+        return candidate
+    return None
+
+
 def _base_dir(ctx: AgentContext | None = None) -> Path:
     return get_ctx().paths.base_dir()
 
@@ -152,7 +220,7 @@ class NodeConfig:
             self.node_id = str(uuid.uuid4())
             changed = True
         if not self.subnet_id:
-            self.subnet_id = str(uuid.uuid4())
+            self.subnet_id = generate_provisional_subnet_id()
             changed = True
         if not self.node_settings.id:
             self.node_settings.id = self.node_id
@@ -438,7 +506,7 @@ def _default_conf() -> NodeConfig:
     conf = NodeConfig(
         zone_id=(str(os.environ.get("ADAOS_ZONE_ID", "") or "").strip().lower() or None),
         node_id=str(uuid.uuid4()),
-        subnet_id=str(uuid.uuid4()),
+        subnet_id=generate_provisional_subnet_id(),
         role="hub",
         hub_url=None,
         token=os.environ.get("ADAOS_TOKEN", "dev-local-token"),
@@ -498,6 +566,33 @@ def _normalize_root_state(raw: Any) -> RootState | None:
     if isinstance(refresh_fallback, str) and refresh_fallback:
         state["refresh_token_fallback"] = refresh_fallback
     return state or None
+
+
+def _resolve_loaded_subnet_id(data: dict[str, Any], subnet_settings: SubnetSettings) -> tuple[str, bool]:
+    explicit_candidates = [
+        str(data.get("subnet_id") or "").strip(),
+        str(subnet_settings.id or "").strip(),
+    ]
+    for candidate in explicit_candidates:
+        if is_canonical_subnet_id(candidate):
+            return candidate, candidate != explicit_candidates[0] or candidate != explicit_candidates[1]
+    for candidate in explicit_candidates:
+        if candidate and not _looks_like_uuid_token(candidate):
+            return candidate, candidate != explicit_candidates[0] or candidate != explicit_candidates[1]
+
+    cert_path = _expand_path(subnet_settings.hub.cert, "keys/hub_cert.pem")
+    cert_candidate = _extract_subnet_id_from_hub_certificate_path(cert_path)
+    if cert_candidate:
+        return cert_candidate, cert_candidate != explicit_candidates[0] or cert_candidate != explicit_candidates[1]
+
+    raw_nats = data.get("nats")
+    nats_user = raw_nats.get("user") if isinstance(raw_nats, dict) else None
+    nats_candidate = _extract_subnet_id_from_nats_user(nats_user)
+    if nats_candidate:
+        return nats_candidate, nats_candidate != explicit_candidates[0] or nats_candidate != explicit_candidates[1]
+
+    generated = generate_provisional_subnet_id()
+    return generated, generated != explicit_candidates[0] or generated != explicit_candidates[1]
 
 
 def _migrate_managed_key_material(conf: NodeConfig) -> bool:
@@ -603,7 +698,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
 
     node_id = data.get("node_id") or node_settings.id or str(uuid.uuid4())
     node_settings.id = node_id
-    subnet_id = data.get("subnet_id") or subnet_settings.id or str(uuid.uuid4())
+    subnet_id, subnet_changed = _resolve_loaded_subnet_id(data, subnet_settings)
     subnet_settings.id = subnet_id
     role = (data.get("role") or "hub").strip().lower()
     hub_url = data.get("hub_url")
@@ -623,7 +718,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         node_settings=node_settings,
         dev_settings=dev_settings,
     )
-    changed = conf.ensure_defaults()
+    changed = subnet_changed or conf.ensure_defaults()
     conf.sync_sections()
     changed = _migrate_managed_key_material(conf) or changed
     if changed:
