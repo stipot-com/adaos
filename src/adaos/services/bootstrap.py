@@ -77,6 +77,7 @@ from adaos.services.realtime_sidecar import (
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, generate_provisional_subnet_id, load_config, set_role as cfg_set_role
+from adaos.services.node_runtime_state import load_nats_runtime_config, migrate_legacy_nats_runtime_config, save_nats_runtime_config
 from adaos.services.hub_root_outbox_store import load_outbox_items, outbox_store_path, save_outbox_items
 from adaos.services.root.control_lifecycle_sync import report_hub_control_lifecycle_state
 from adaos.services.root.core_update_sync import reconcile_hub_core_update
@@ -96,6 +97,7 @@ from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscri
 from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
+from adaos.services.subnet_alias import save_subnet_alias
 from adaos.integrations.telegram.sender import TelegramSender
 
 
@@ -1114,7 +1116,7 @@ class BootstrapService:
 
         # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
         try:
-            # Hot-reload friendly: read NATS config from node.yaml on every connect attempt.
+            # Hot-reload friendly: read persisted runtime NATS config on every connect attempt.
             hub_id = load_config(ctx=self.ctx).subnet_id
             if hub_id:
                 try:
@@ -1151,10 +1153,9 @@ class BootstrapService:
 
                 def _read_node_nats() -> tuple[str | None, str | None, str | None]:
                     try:
-                        from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
-
-                        nd = _load_node()
-                        node_nats = (nd or {}).get("nats") if isinstance(nd, dict) else None
+                        node_nats = load_nats_runtime_config()
+                        if not node_nats:
+                            node_nats = migrate_legacy_nats_runtime_config()
                         if not isinstance(node_nats, dict) or not node_nats:
                             return None, None, None
                         # Allow explicit override for experiments (e.g. switching from WS to TCP).
@@ -1166,9 +1167,7 @@ class BootstrapService:
                         nuser = str(node_nats.get("user") or "") or None
                         npass = str(node_nats.get("pass") or "") or None
                         if nurl and raw_nurl and nurl != raw_nurl:
-                            node_nats["ws_url"] = nurl
-                            nd["nats"] = node_nats
-                            _save_node(nd)
+                            save_nats_runtime_config(ws_url=nurl, user=nuser, password=npass)
                         return nurl, nuser, npass
                     except Exception:
                         return None, None, None
@@ -1186,7 +1185,6 @@ class BootstrapService:
                     debug = os.getenv("HUB_NATS_VERBOSE", "0") == "1"
                     try:
                         from adaos.services.root.client import RootHttpClient
-                        from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
                         from adaos.services.node_config import load_config
                         from adaos.services.node_config import _expand_path as _expand_path
                     except Exception:
@@ -1326,45 +1324,19 @@ class BootstrapService:
                             nats_user=str(nats_user),
                             response_hub_id=str(response_hub_id or "").strip() or None,
                         )
-                        y = _load_node()
-                        n = y.get("nats") or {}
-                        if not isinstance(n, dict):
-                            n = {}
                         # Experimental switch: allow running hub-root over native NATS TCP.
                         # WARNING: public `nats://` is not encrypted. Use only for controlled testing
                         # unless you have TLS-enabled NATS endpoints.
                         transport = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
                         if transport in {"tcp", "nats"}:
-                            n["ws_url"] = str(_hub_public_tcp_candidates(None)[0])
+                            selected_url = str(_hub_public_tcp_candidates(None)[0])
                         else:
-                            n["ws_url"] = str(nats_ws_url)
-                        n["user"] = str(resolved_nats_user or nats_user)
-                        n["pass"] = str(token)
-                        y["nats"] = n
-                        if resolved_hub_id:
-                            y["subnet_id"] = str(resolved_hub_id)
-                            subnet_section = y.get("subnet")
-                            if not isinstance(subnet_section, dict):
-                                subnet_section = {}
-                            subnet_section["id"] = str(resolved_hub_id)
-                            y["subnet"] = subnet_section
-                        # If node.yaml is missing/minimal, seed core identity fields so other subsystems
-                        # (Settings, tooling) can discover subnet/node info.
-                        try:
-                            if isinstance(cfg, object):
-                                zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
-                                canonical = canonical_zone_id(zone_id)
-                                if canonical and "zone_id" not in y:
-                                    y["zone_id"] = canonical
-                                if "node_id" not in y:
-                                    y["node_id"] = getattr(cfg, "node_id", None) or y.get("node_id")
-                                if "subnet_id" not in y:
-                                    y["subnet_id"] = getattr(cfg, "subnet_id", None) or y.get("subnet_id")
-                                if "role" not in y:
-                                    y["role"] = getattr(cfg, "role", None) or y.get("role")
-                        except Exception:
-                            pass
-                        _save_node(y)
+                            selected_url = str(nats_ws_url)
+                        save_nats_runtime_config(
+                            ws_url=selected_url,
+                            user=str(resolved_nats_user or nats_user),
+                            password=str(token),
+                        )
                         if resolved_hub_id:
                             hub_id = str(resolved_hub_id)
                         return True
@@ -1467,7 +1439,7 @@ class BootstrapService:
                             msg = str(err) or ""
                             low = msg.lower()
                             if isinstance(err, TypeError) and "argument of type 'int' is not iterable" in low:
-                                return "root nats authentication error: WS closed after CONNECT; " "verify node.yaml nats.user=hub_<subnet_id> and nats.pass=<hub_nats_token>"
+                                return "root nats authentication error: WS closed after CONNECT; verify persisted runtime NATS credentials"
                         except Exception:
                             pass
                         # fallback – include class and message
@@ -1517,12 +1489,12 @@ class BootstrapService:
                             if not nurl or not nuser or not npass:
                                 fetched = await _fetch_nats_credentials()
                                 if fetched:
-                                    # re-read node.yaml on next loop
+                                    # re-read persisted runtime NATS state on next loop
                                     await asyncio.sleep(0.1)
                                     continue
                                 # Wait for `adaos dev telegram` to provision credentials.
                                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1":
-                                    print("[hub-io] NATS disabled: missing nats.ws_url/user/pass in node.yaml")
+                                    print("[hub-io] NATS disabled: missing persisted runtime nats.ws_url/user/pass")
                                 await asyncio.sleep(2.0)
                                 continue
                             if nats_url_uses_websocket(nurl) or (
@@ -2418,7 +2390,7 @@ class BootstrapService:
                                     _emit_up()
 
                             # Coerce types to what nats-py expects
-                            # For WS proxy auth, always identify as the canonical hub id regardless of alias recorded in node.yaml
+                            # For WS proxy auth, always identify as the canonical hub id regardless of any human-friendly alias
                             try:
                                 is_ws_candidates = any(isinstance(s, str) and s.startswith("ws") for s in candidates)
                             except Exception:
@@ -3512,13 +3484,7 @@ class BootstrapService:
                                     alias = (data or {}).get("alias")
                                     if isinstance(alias, str) and alias:
                                         try:
-                                            from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
-
-                                            y = _load_node()
-                                            n = y.get("nats") or {}
-                                            n["alias"] = alias
-                                            y["nats"] = n
-                                            _save_node(y)
+                                            save_subnet_alias(alias, subnet_id=hub_id)
                                             try:
                                                 self.ctx.bus.publish(Event(type="subnet.alias.changed", payload={"alias": alias, "subnet_id": hub_id}, source="io.nats"))
                                             except Exception:

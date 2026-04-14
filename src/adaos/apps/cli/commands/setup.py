@@ -147,8 +147,8 @@ def install(
         except Exception as exc:
             installed["warnings"].append(f"skill {skill_id}: {exc}")
 
-    # Persist native IO availability (voice/TTS) into node.yaml capacity so the
-    # system can avoid offering non-working IO paths on servers.
+    # Persist native IO availability (voice/TTS) into the local capacity projection
+    # so the system can avoid offering non-working IO paths on servers.
     try:
         from adaos.services.capacity import refresh_native_io_capacity
 
@@ -270,7 +270,7 @@ def update(
                 should_prepare = True
 
             # If runtime is missing/unprepared, optionally rebuild it using the
-            # full prepare+activate flow (also refreshes node.yaml capacity).
+            # full prepare+activate flow (also refreshes local capacity projection).
             if migrate_runtime and should_prepare:
                 try:
                     skill_mgr.install(str(name), validate=False)

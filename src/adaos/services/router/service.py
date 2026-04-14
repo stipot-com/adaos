@@ -21,7 +21,7 @@ from .rules_loader import load_rules, watch_rules
 from .media_routes import resolve_media_route_intent
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.io_console import print_text
-from adaos.services.subnet_alias import display_subnet_alias
+from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias
 from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
@@ -189,14 +189,8 @@ class RouterService:
                 url = f"{api_base.rstrip('/')}/io/tg/send"
                 # Prefix message with subnet alias (or id) for clarity
                 try:
-                    from adaos.services.capacity import _load_node_yaml as _load_node
-
-                    node_yaml = _load_node()
-                except Exception:
-                    node_yaml = {}
-                try:
                     alias = display_subnet_alias(
-                        ((node_yaml.get("nats") or {}).get("alias")) or os.getenv("DEFAULT_HUB"),
+                        load_subnet_alias(subnet_id=conf.subnet_id) or os.getenv("DEFAULT_HUB"),
                         conf.subnet_id,
                     )
                 except Exception:

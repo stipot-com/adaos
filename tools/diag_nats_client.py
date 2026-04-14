@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 try:
@@ -26,13 +27,33 @@ def _load_node_yaml(path: str) -> dict[str, Any]:
     return data
 
 
-def _nats_config(node: dict[str, Any]) -> tuple[list[str], str, str]:
-    nats_cfg = node.get("nats") if isinstance(node.get("nats"), dict) else {}
-    explicit_url = normalize_nats_ws_url(str(nats_cfg.get("ws_url") or "").strip(), fallback=None)
-    user = str(nats_cfg.get("user") or "").strip()
-    password = str(nats_cfg.get("pass") or "").strip()
+def _load_runtime_nats(path: str) -> dict[str, Any]:
+    runtime_path = Path(path).expanduser().resolve().parent / "state" / "node_runtime.json"
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    nats = payload.get("nats")
+    return dict(nats) if isinstance(nats, dict) else {}
+
+
+def _nats_config(node: dict[str, Any], runtime_nats: dict[str, Any]) -> tuple[list[str], str, str]:
+    legacy_nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
+    subnet_id = str(
+        node.get("subnet_id")
+        or ((node.get("subnet") or {}).get("id") if isinstance(node.get("subnet"), dict) else "")
+        or ""
+    ).strip()
+    explicit_url = normalize_nats_ws_url(
+        str(runtime_nats.get("ws_url") or legacy_nats.get("ws_url") or "").strip(),
+        fallback=None,
+    )
+    user = str(runtime_nats.get("user") or legacy_nats.get("user") or (f"hub_{subnet_id}" if subnet_id else "")).strip()
+    password = str(runtime_nats.get("pass") or runtime_nats.get("token") or legacy_nats.get("pass") or legacy_nats.get("token") or "").strip()
     if not user or not password:
-        raise RuntimeError("node.yaml nats.user / nats.pass are required")
+        raise RuntimeError("runtime state nats.user / nats.pass are required (legacy node.yaml fallback is still supported)")
     candidates = order_nats_ws_candidates(
         [item for item in [explicit_url, "wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"] if item],
         explicit_url=explicit_url,
@@ -114,7 +135,8 @@ def _apply_loop_policy(mode: str) -> None:
 
 async def _run(args: argparse.Namespace) -> int:
     node = _load_node_yaml(args.node)
-    servers, user, password = _nats_config(node)
+    runtime_nats = _load_runtime_nats(args.node)
+    servers, user, password = _nats_config(node, runtime_nats)
     if args.server:
         servers = [str(args.server).strip()]
 
@@ -264,7 +286,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run a standalone NATS-over-WS client using AdaOS transport patches.")
-    ap.add_argument("--node", default=os.getenv("ADAOS_NODE_YAML", ".adaos/node.yaml"), help="Path to node.yaml")
+    ap.add_argument("--node", default=os.getenv("ADAOS_NODE_YAML", ".adaos/node.yaml"), help="Path to bootstrap node.yaml (runtime NATS is read from sibling state/node_runtime.json)")
     ap.add_argument("--server", default="", help="Override NATS WS URL")
     ap.add_argument("--duration", type=float, default=90.0, help="Run duration in seconds")
     ap.add_argument("--report-every", type=float, default=5.0, help="Diagnostics interval in seconds")

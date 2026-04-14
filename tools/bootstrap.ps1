@@ -495,11 +495,27 @@ function Get-AdaosNodeYamlField {
     catch { return $null }
 }
 
+function Get-AdaosRuntimeStateField {
+    param(
+        [Parameter(Mandatory = $true)][string]$FieldName
+    )
+    $runtimeJson = Join-Path $env:ADAOS_BASE_DIR "state/node_runtime.json"
+    if (!(Test-Path $runtimeJson)) { return $null }
+    try {
+        $py = ".\\.venv\\Scripts\\python.exe"
+        $val = & $py -c "import sys,json,pathlib; p=pathlib.Path(sys.argv[1]); d=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}; v=d.get(sys.argv[2]) if isinstance(d, dict) else None; print('' if v is None else v)" $runtimeJson $FieldName 2>$null
+        if ([string]::IsNullOrWhiteSpace($val)) { return $null }
+        return ($val.Trim())
+    }
+    catch { return $null }
+}
+
 function Wait-AdaosReady {
     param(
         [int]$TimeoutSec = 120
     )
-    $token = Get-AdaosNodeYamlField -FieldName "token"
+    $token = Get-AdaosRuntimeStateField -FieldName "token"
+    if (-not $token) { $token = Get-AdaosNodeYamlField -FieldName "token" }
     if (-not $token) { $token = "dev-local-token" }
     $expectedNodeId = Get-AdaosNodeYamlField -FieldName "node_id"
     $base = "http://$ServeHost`:$ControlPort"
@@ -563,11 +579,11 @@ if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
 
 try {
     $roleNow = Get-AdaosNodeYamlField -FieldName "role"
-    $hubNow = Get-AdaosNodeYamlField -FieldName "hub_url"
+    $hubNow = Get-AdaosRuntimeStateField -FieldName "hub_url"
     $subnetNow = Get-AdaosNodeYamlField -FieldName "subnet_id"
     $nodeNow = Get-AdaosNodeYamlField -FieldName "node_id"
     if ($roleNow -or $hubNow) {
-        Write-Host ("Local node.yaml: node_id={0} subnet_id={1} role={2} hub_url={3}" -f $nodeNow, $subnetNow, $roleNow, $hubNow)
+        Write-Host ("Local bootstrap/runtime state: node_id={0} subnet_id={1} role={2} hub_url={3}" -f $nodeNow, $subnetNow, $roleNow, $hubNow)
     }
 }
 catch { }
@@ -605,7 +621,7 @@ if ($desiredRole -eq "hub") {
     }
 }
 
-Write-Host ("Runtime state target: {0}" -f (Join-Path $env:ADAOS_BASE_DIR "node.yaml"))
+Write-Host ("Runtime state targets: {0} + {1}" -f (Join-Path $env:ADAOS_BASE_DIR "node.yaml"), (Join-Path $env:ADAOS_BASE_DIR "state/node_runtime.json"))
 Write-Host ("Starting AdaOS API ({0}:{1}) ..." -f $ServeHost, $ServePort)
 $serviceInstalled = $false
 if ($InstallService -ne "never") {

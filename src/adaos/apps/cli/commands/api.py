@@ -71,7 +71,7 @@ def _resolve_bind(conf, host: str, port: int) -> tuple[str, int]:
         return host, int(port)
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
         # Supervisor-managed runtimes already pass the slot-specific port explicitly.
-        # Do not override it from node.yaml `hub_url`, or slot A can get pulled onto slot B's port.
+        # Do not override it from persisted runtime `hub_url`, or slot A can get pulled onto slot B's port.
         return host, int(port)
     if host != "127.0.0.1" or int(port) != 8777:
         return host, int(port)
@@ -507,17 +507,17 @@ def serve(
 
 @app.command("stop")
 def stop():
-    """Stop the AdaOS local HTTP API resolved from node.yaml hub_url."""
+    """Stop the AdaOS local HTTP API resolved from persisted runtime hub_url."""
     try:
         conf = load_config()
     except Exception as exc:
-        typer.secho(f"[AdaOS] failed to load node.yaml: {exc}", fg=typer.colors.RED)
+        typer.secho(f"[AdaOS] failed to load local node runtime config: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] node.yaml does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
@@ -563,13 +563,13 @@ def restart():
     try:
         conf = load_config()
     except Exception as exc:
-        typer.secho(f"[AdaOS] failed to load node.yaml: {exc}", fg=typer.colors.RED)
+        typer.secho(f"[AdaOS] failed to load local node runtime config: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] node.yaml does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)

@@ -7,6 +7,7 @@ import string
 import time
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import aiohttp
@@ -31,6 +32,18 @@ def _load_node_yaml(path: str) -> dict[str, Any]:
     return data
 
 
+def _load_runtime_nats(path: str) -> dict[str, Any]:
+    runtime_path = Path(path).expanduser().resolve().parent / "state" / "node_runtime.json"
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    nats = payload.get("nats")
+    return dict(nats) if isinstance(nats, dict) else {}
+
+
 def _rand_id(n: int = 8) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
@@ -49,10 +62,10 @@ def _coerce_ws_url(base: str) -> str:
     return base
 
 
-def _extract_urls(node: dict[str, Any]) -> list[str]:
+def _extract_urls(node: dict[str, Any], runtime_nats: dict[str, Any]) -> list[str]:
     urls: list[str] = []
-    nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
-    base = nats.get("ws_url") or nats.get("ws") or nats.get("url") or ""
+    legacy_nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
+    base = runtime_nats.get("ws_url") or legacy_nats.get("ws_url") or legacy_nats.get("ws") or legacy_nats.get("url") or ""
     base = _coerce_ws_url(str(base or ""))
     if base:
         urls.append(base)
@@ -783,7 +796,7 @@ async def _run_one_websockets(
 
 async def _amain() -> int:
     ap = argparse.ArgumentParser(description="Diagnose NATS-over-WebSocket connection to Root (ping/pong + NATS INFO/PING).")
-    ap.add_argument("--node-yaml", default=".adaos/node.yaml", help="Path to node.yaml (default: .adaos/node.yaml)")
+    ap.add_argument("--node-yaml", default=".adaos/node.yaml", help="Path to bootstrap node.yaml (runtime NATS is read from sibling state/node_runtime.json)")
     ap.add_argument("--url", default="", help="Override WS URL (e.g. wss://api.inimatic.com/nats)")
     ap.add_argument(
         "--ws-lib",
@@ -807,19 +820,24 @@ async def _amain() -> int:
     args = ap.parse_args()
 
     node = _load_node_yaml(args.node_yaml)
-    subnet_id = str(node.get("subnet_id") or "")
+    runtime_nats = _load_runtime_nats(args.node_yaml)
+    subnet_id = str(
+        node.get("subnet_id")
+        or ((node.get("subnet") or {}).get("id") if isinstance(node.get("subnet"), dict) else "")
+        or ""
+    )
     if not subnet_id:
         raise RuntimeError("node.yaml missing subnet_id")
 
-    nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
-    password = str(nats.get("pass") or nats.get("token") or "")
+    legacy_nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
+    password = str(runtime_nats.get("pass") or runtime_nats.get("token") or legacy_nats.get("pass") or legacy_nats.get("token") or "")
     if not password:
-        raise RuntimeError("node.yaml missing nats.pass (hub token)")
+        raise RuntimeError("runtime state missing nats.pass (hub token)")
 
     # Hub uses canonical user for WS auth
-    user = f"hub_{subnet_id}"
+    user = str(runtime_nats.get("user") or legacy_nats.get("user") or f"hub_{subnet_id}")
 
-    urls = [args.url] if args.url else _extract_urls(node)
+    urls = [args.url] if args.url else _extract_urls(node, runtime_nats)
     results: list[RunResult] = []
     for u in urls:
         u = _coerce_ws_url(u)

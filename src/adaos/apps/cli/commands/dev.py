@@ -44,6 +44,8 @@ from adaos.services.root_mcp.codex_bridge import (
 )
 from adaos.services.root_mcp.client import RootMcpClient, RootMcpClientConfig
 from adaos.services.nats_config import normalize_nats_ws_url
+from adaos.services.node_runtime_state import save_nats_runtime_config
+from adaos.services.subnet_alias import load_subnet_alias, save_subnet_alias
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help="Developer utilities for Root and Forge workflows.")
@@ -768,7 +770,7 @@ def dev_login(
     if data.get("expires_at"):
         typer.echo(f"  expires_at: {data['expires_at']}")
 
-    # Save NATS WS credentials into node.yaml so hub can preconfigure WS
+    # Persist NATS WS credentials into runtime state so hub can preconfigure WS
     hub_id_resp = data.get("hub_id") or hub_id
     hub_token = data.get("hub_nats_token")
     # Always use local canonical hub id for WS user to avoid alias-based mismatches
@@ -790,30 +792,15 @@ def dev_login(
         nats_ws_url = normalize_nats_ws_url(None)
     if hub_id_resp and hub_token and nats_user:
         try:
-            from adaos.services.capacity import _load_node_yaml as _load_node, _save_node_yaml as _save_node
-
-            data_yaml = _load_node()
-            try:
-                if "cfg" in locals() and cfg:
-                    zone_id = str(os.getenv("ADAOS_ZONE_ID", "") or "").strip().lower()
-                    if zone_id and not data_yaml.get("zone_id"):
-                        data_yaml["zone_id"] = zone_id
-                    data_yaml.setdefault("node_id", cfg.node_id)
-                    data_yaml.setdefault("subnet_id", cfg.subnet_id)
-                    data_yaml.setdefault("role", cfg.role)
-            except Exception:
-                pass
-            nats_cfg = data_yaml.get("nats") or {}
-            nats_cfg["ws_url"] = nats_ws_url
-            nats_cfg["user"] = nats_user
-            nats_cfg["pass"] = hub_token
-            # Seed a human-friendly alias in node.yaml for UX (kept in sync by backend commands)
-            # Default to 'hub' for the first binding; can be changed later via /alias in Telegram
-            if not nats_cfg.get("alias"):
-                nats_cfg["alias"] = "hub"
-            data_yaml["nats"] = nats_cfg
-            _save_node(data_yaml)
-            typer.echo("Saved NATS credentials to node.yaml")
+            save_nats_runtime_config(
+                ws_url=nats_ws_url,
+                user=nats_user,
+                password=hub_token,
+            )
+            effective_hub_id = str(local_hub_id or hub_id_resp or "").strip() or None
+            if effective_hub_id and not load_subnet_alias(subnet_id=effective_hub_id):
+                save_subnet_alias("hub", subnet_id=effective_hub_id)
+            typer.echo("Saved NATS credentials to runtime state")
 
             # Ensure route rules exist so RouterService can route ui.notify to telegram.
             try:

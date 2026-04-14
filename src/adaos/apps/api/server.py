@@ -165,7 +165,7 @@ from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.agent_context import get_ctx as _get_ctx
 from adaos.services.io_console import print_text
-from adaos.services.capacity import install_io_in_capacity, get_local_capacity, _load_node_yaml as _load_node, _save_node_yaml as _save_node
+from adaos.services.capacity import install_io_in_capacity, get_local_capacity
 from adaos.services.core_update import clear_plan as clear_core_update_plan
 from adaos.services.core_update import finalize_runtime_boot_status as finalize_core_update_boot_status
 from adaos.services.core_update import read_last_result as read_core_update_last_result
@@ -182,7 +182,7 @@ from adaos.services.runtime_lifecycle import (
     reset_runtime_lifecycle,
     runtime_lifecycle_snapshot,
 )
-from adaos.services.subnet_alias import display_subnet_alias
+from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias, save_subnet_alias
 from adaos.domain import Event as DomainEvent
 
 init_ctx()
@@ -495,8 +495,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
     await run_boot_sequence(app)
-    # Keep node.yaml capacity in sync with optional native deps (vosk/pyttsx3),
-    # so other components can see IO availability without importing native libs.
+    # Keep the local capacity projection in sync with optional native deps
+    # (vosk/pyttsx3), so other components can see IO availability without importing native libs.
     try:
         from adaos.services.capacity import refresh_native_io_capacity
 
@@ -603,12 +603,8 @@ async def lifespan(app: FastAPI):
                     text = _t(startup_notice_key)
                 except Exception:
                     text = startup_notice_key
-                try:
-                    node_yaml = _load_node()
-                except Exception:
-                    node_yaml = {}
                 alias = display_subnet_alias(
-                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    load_subnet_alias(subnet_id=conf.subnet_id) or getattr(get_ctx().settings, "default_hub", None),
                     conf.subnet_id,
                 )
                 try:
@@ -768,12 +764,8 @@ async def lifespan(app: FastAPI):
                     text = "subnet.stopped"
                 import requests as _requests
 
-                try:
-                    node_yaml = _load_node()
-                except Exception:
-                    node_yaml = {}
                 alias = display_subnet_alias(
-                    ((node_yaml.get("nats") or {}).get("alias")) or getattr(get_ctx().settings, "default_hub", None),
+                    load_subnet_alias(subnet_id=conf.subnet_id) or getattr(get_ctx().settings, "default_hub", None),
                     conf.subnet_id,
                 )
                 prefixed_text = f"[{alias}]: {text}" if alias else text
@@ -940,13 +932,7 @@ class RuntimePromoteActiveRequest(BaseModel):
 async def set_alias(body: SetAliasRequest, token=Depends(require_token)):
     try:
         conf = get_ctx().config
-        # persist into node.yaml: nats.alias
-        data = _load_node()
-        nats = data.get("nats") or {}
-        nats["alias"] = body.alias
-        data["nats"] = nats
-        _save_node_yaml = _save_node  # alias import name
-        _save_node_yaml(data)
+        save_subnet_alias(body.alias, subnet_id=conf.subnet_id)
         # broadcast over local event bus
         try:
             from adaos.domain import Event as _Ev

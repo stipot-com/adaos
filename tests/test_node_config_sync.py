@@ -11,8 +11,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import adaos.services.node_config as node_config_mod
+from adaos.adapters.db.sqlite import durable_state_get
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import NodeConfig, load_config, save_config
+from adaos.services.node_runtime_state import load_nats_runtime_config, load_node_runtime_state
+from adaos.services.subnet_alias import load_subnet_alias
 
 
 def _detached_config() -> NodeConfig:
@@ -326,3 +329,78 @@ def test_load_config_generates_sn_prefixed_subnet_id_for_empty_config() -> None:
 
     assert fresh.subnet_id.startswith("sn_")
     assert not node_config_mod._looks_like_uuid_token(fresh.subnet_id)
+
+
+def test_save_config_moves_dynamic_runtime_state_out_of_node_yaml() -> None:
+    ctx = get_ctx()
+    node_path = Path(ctx.paths.base_dir()) / "node.yaml"
+    detached = _detached_config()
+    detached.hub_url = "http://127.0.0.1:8778"
+    detached.token = "runtime-token"
+    detached.root_state = {
+        "profile": {
+            "owner_id": "owner-1",
+            "subject": "owner@example.test",
+            "scopes": ["hub.manage"],
+            "access_expires_at": datetime.now(timezone.utc).isoformat(),
+            "hub_ids": [detached.subnet_id],
+        },
+        "access_token_cached": "access-1",
+        "refresh_token_fallback": "refresh-1",
+    }
+
+    save_config(detached)
+
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+    root = saved.get("root") or {}
+    runtime_state = load_node_runtime_state()
+    persisted_root = durable_state_get("node_config", "root_state") or {}
+
+    assert "hub_url" not in saved
+    assert "token" not in saved
+    assert "root_state" not in saved
+    assert "profile" not in root
+    assert "access_token_cached" not in root
+    assert "refresh_token_fallback" not in root
+    assert runtime_state.get("hub_url") == "http://127.0.0.1:8778"
+    assert runtime_state.get("token") == "runtime-token"
+    assert persisted_root["profile"]["owner_id"] == "owner-1"
+    assert persisted_root["access_token_cached"] == "access-1"
+    assert persisted_root["refresh_token_fallback"] == "refresh-1"
+
+
+def test_load_config_migrates_legacy_nats_runtime_state_and_alias() -> None:
+    ctx = get_ctx()
+    node_path = Path(ctx.paths.base_dir()) / "node.yaml"
+    node_path.write_text(
+        yaml.safe_dump(
+            {
+                "zone_id": "ru",
+                "node_id": "node-runtime",
+                "subnet_id": "sn_runtime01",
+                "role": "hub",
+                "subnet": {"id": "sn_runtime01"},
+                "nats": {
+                    "ws_url": "wss://ru.api.inimatic.com/nats",
+                    "user": "hub_sn_runtime01",
+                    "pass": "secret-1",
+                    "alias": "office",
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+    runtime_nats = load_nats_runtime_config()
+
+    assert fresh.subnet_id == "sn_runtime01"
+    assert runtime_nats["ws_url"] == "wss://ru.api.inimatic.com/nats"
+    assert runtime_nats["user"] == "hub_sn_runtime01"
+    assert runtime_nats["pass"] == "secret-1"
+    assert load_subnet_alias(subnet_id="sn_runtime01") == "office"
+    assert "nats" not in saved

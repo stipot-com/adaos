@@ -114,6 +114,15 @@ _SCHEMA = (
         PRIMARY KEY(platform, user_id, bot_id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS durable_state (
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY(namespace, key)
+    );
+    """,
 )
 
 

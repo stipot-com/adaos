@@ -4,6 +4,7 @@ import base64
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 
@@ -28,33 +29,51 @@ def _load_node_yaml(path: str) -> dict[str, Any]:
     return y
 
 
+def _load_runtime_nats(path: str) -> dict[str, Any]:
+    runtime_path = Path(path).expanduser().resolve().parent / "state" / "node_runtime.json"
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    nats = payload.get("nats")
+    return dict(nats) if isinstance(nats, dict) else {}
+
+
 async def _amain() -> int:
     ap = argparse.ArgumentParser(description="Minimal route.to_hub.* responder (debug tool).")
-    ap.add_argument("--node-yaml", default=".adaos/node.yaml", help="Path to node.yaml (default: .adaos/node.yaml)")
+    ap.add_argument("--node-yaml", default=".adaos/node.yaml", help="Path to bootstrap node.yaml (runtime NATS is read from sibling state/node_runtime.json)")
     ap.add_argument("--url", default="", help="Override NATS WS URL (e.g. wss://nats.inimatic.com/nats)")
-    ap.add_argument("--hub-id", default="", help="Hub ID/subnet_id (default: from node.yaml)")
-    ap.add_argument("--user", default="", help="NATS user (default: hub_<subnet_id>)")
-    ap.add_argument("--pass", dest="password", default="", help="NATS password/token (default: from node.yaml)")
+    ap.add_argument("--hub-id", default="", help="Hub ID/subnet_id (default: from node.yaml bootstrap identity)")
+    ap.add_argument("--user", default="", help="NATS user (default: from runtime state or hub_<subnet_id>)")
+    ap.add_argument("--pass", dest="password", default="", help="NATS password/token (default: from runtime state)")
     ap.add_argument("--duration", type=float, default=30.0, help="Run duration in seconds (default: 30)")
     ap.add_argument("--verbose", action="store_true", help="Verbose output (no secrets)")
     args = ap.parse_args()
 
     node = _load_node_yaml(args.node_yaml)
-    hub_id = str(args.hub_id or node.get("subnet_id") or "").strip()
+    runtime_nats = _load_runtime_nats(args.node_yaml)
+    hub_id = str(
+        args.hub_id
+        or node.get("subnet_id")
+        or ((node.get("subnet") or {}).get("id") if isinstance(node.get("subnet"), dict) else "")
+        or ""
+    ).strip()
     if not hub_id:
         print("[diag] missing hub_id: pass --hub-id or ensure node.yaml has subnet_id")
         return 2
 
-    nats_cfg = node.get("nats") if isinstance(node.get("nats"), dict) else {}
-    url = str(args.url or nats_cfg.get("ws_url") or "").strip()
+    legacy_nats = node.get("nats") if isinstance(node.get("nats"), dict) else {}
+    url = str(args.url or runtime_nats.get("ws_url") or legacy_nats.get("ws_url") or "").strip()
     if not url:
-        print("[diag] missing url: pass --url or ensure node.yaml has nats.ws_url")
+        print("[diag] missing url: pass --url or ensure state/node_runtime.json has nats.ws_url")
         return 2
 
-    user = str(args.user or nats_cfg.get("user") or f"hub_{hub_id}").strip()
-    password = str(args.password or nats_cfg.get("pass") or "").strip()
+    user = str(args.user or runtime_nats.get("user") or legacy_nats.get("user") or f"hub_{hub_id}").strip()
+    password = str(args.password or runtime_nats.get("pass") or legacy_nats.get("pass") or "").strip()
     if not password:
-        print("[diag] missing password: pass --pass or ensure node.yaml has nats.pass")
+        print("[diag] missing password: pass --pass or ensure state/node_runtime.json has nats.pass")
         return 2
 
     try:

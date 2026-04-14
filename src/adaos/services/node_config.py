@@ -9,9 +9,19 @@ import shutil
 import sys
 import uuid
 import yaml
+from adaos.adapters.db.sqlite import durable_state_delete, durable_state_get, durable_state_put
 from adaos.services.agent_context import get_ctx, AgentContext  # type: ignore
+from adaos.services.node_runtime_state import (
+    load_node_runtime_state,
+    load_nats_runtime_config,
+    migrate_legacy_nats_runtime_config,
+    runtime_state_mtime_ns,
+    save_node_runtime_state,
+)
 
-_NODE_CONFIG_CACHE: dict[str, tuple[int | None, "NodeConfig"]] = {}
+_NODE_CONFIG_CACHE: dict[str, tuple[tuple[int | None, int | None], "NodeConfig"]] = {}
+_ROOT_STATE_NAMESPACE = "node_config"
+_ROOT_STATE_KEY = "root_state"
 
 
 def is_canonical_subnet_id(value: str | None) -> bool:
@@ -276,9 +286,6 @@ class NodeConfig:
             "node_id": self.node_id,
             "subnet_id": self.subnet_id,
             "role": self.role,
-            "hub_url": self.hub_url,
-            "token": self.token,
-            "root_state": self.root_state,
             "root": _settings_to_dict(self.root_settings),
             "subnet": _settings_to_dict(self.subnet_settings),
             "node": _settings_to_dict(self.node_settings),
@@ -615,6 +622,12 @@ def _resolve_loaded_subnet_id(data: dict[str, Any], subnet_settings: SubnetSetti
         if candidate and not _looks_like_uuid_token(candidate):
             return candidate, _resolved_subnet_id_changed(candidate, explicit_candidates)
 
+    runtime_nats = load_nats_runtime_config()
+    nats_user = runtime_nats.get("user") if isinstance(runtime_nats, dict) else None
+    nats_candidate = _extract_subnet_id_from_nats_user(nats_user)
+    if nats_candidate:
+        return nats_candidate, _resolved_subnet_id_changed(nats_candidate, explicit_candidates)
+
     raw_nats = data.get("nats")
     nats_user = raw_nats.get("user") if isinstance(raw_nats, dict) else None
     nats_candidate = _extract_subnet_id_from_nats_user(nats_user)
@@ -694,6 +707,25 @@ def _migrate_managed_key_material(conf: NodeConfig) -> bool:
     return changed
 
 
+def _load_persisted_root_state() -> RootState | None:
+    try:
+        payload = durable_state_get(_ROOT_STATE_NAMESPACE, _ROOT_STATE_KEY)
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return None
+    payload = dict(payload)
+    payload.pop("_updated_at", None)
+    return _normalize_root_state(payload)
+
+
+def _save_persisted_root_state(root_state: RootState | None) -> None:
+    if root_state:
+        durable_state_put(_ROOT_STATE_NAMESPACE, _ROOT_STATE_KEY, dict(root_state))
+    else:
+        durable_state_delete(_ROOT_STATE_NAMESPACE, _ROOT_STATE_KEY)
+
+
 def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     path = _config_path()
     if not path.exists():
@@ -706,14 +738,20 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         mtime_ns = path.stat().st_mtime_ns
     except Exception:
         mtime_ns = None
+    runtime_mtime = runtime_state_mtime_ns()
     cached = _NODE_CONFIG_CACHE.get(cache_key)
     if cached is not None:
-        cached_mtime_ns, cached_conf = cached
-        if cached_mtime_ns == mtime_ns:
+        cached_versions, cached_conf = cached
+        if cached_versions == (mtime_ns, runtime_mtime):
             conf = deepcopy(cached_conf)
             _sync_ctx_config(conf, ctx)
             return conf
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(data.get("nats"), dict):
+        try:
+            migrate_legacy_nats_runtime_config(base_dir=path.parent)
+        except Exception:
+            pass
 
     raw_root_settings = data.get("root")
     raw_root_state = data.get("root_state")
@@ -731,9 +769,17 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     subnet_id, subnet_changed = _resolve_loaded_subnet_id(data, subnet_settings)
     subnet_settings.id = subnet_id
     role = (data.get("role") or "hub").strip().lower()
-    hub_url = data.get("hub_url")
-    token = data.get("token") or os.environ.get("ADAOS_TOKEN", "dev-local-token")
-    root_state = _normalize_root_state(raw_root_state)
+    runtime_state = load_node_runtime_state()
+    legacy_hub_url = data.get("hub_url")
+    legacy_token = data.get("token")
+    hub_url = runtime_state.get("hub_url") if isinstance(runtime_state.get("hub_url"), str) else legacy_hub_url
+    token = (
+        runtime_state.get("token")
+        if isinstance(runtime_state.get("token"), str) and str(runtime_state.get("token") or "").strip()
+        else legacy_token or os.environ.get("ADAOS_TOKEN", "dev-local-token")
+    )
+    persisted_root_state = _load_persisted_root_state()
+    root_state = persisted_root_state or _normalize_root_state(raw_root_state)
 
     conf = NodeConfig(
         zone_id=(str(data.get("zone_id") or "").strip().lower() or None),
@@ -749,12 +795,18 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         dev_settings=dev_settings,
     )
     changed = subnet_changed or conf.ensure_defaults()
+    if legacy_hub_url or legacy_token or raw_root_state is not None or _looks_like_root_state(raw_root_settings) or isinstance(data.get("nats"), dict):
+        changed = True
+    if persisted_root_state is None and root_state is not None:
+        changed = True
+    if runtime_state.get("hub_url") != hub_url or runtime_state.get("token") != token:
+        changed = True
     conf.sync_sections()
     changed = _migrate_managed_key_material(conf) or changed
     if changed:
         save_node(conf, ctx=ctx)
     else:
-        _NODE_CONFIG_CACHE[cache_key] = (mtime_ns, deepcopy(conf))
+        _NODE_CONFIG_CACHE[cache_key] = ((mtime_ns, runtime_mtime), deepcopy(conf))
     _sync_ctx_config(conf, ctx)
     return conf
 
@@ -782,18 +834,37 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
         existing_raw = {}
     if not isinstance(existing_raw, dict):
         existing_raw = {}
+    if isinstance(existing_raw.get("nats"), dict):
+        try:
+            migrate_legacy_nats_runtime_config(base_dir=path.parent)
+        except Exception:
+            pass
 
     # Preserve unknown top-level sections (e.g. capacity) when rewriting node.yaml.
     merged = _deep_merge(existing_raw, data)
+    for key in ("hub_url", "token", "root_state", "nats"):
+        merged.pop(key, None)
+    root_payload = merged.get("root")
+    if isinstance(root_payload, dict):
+        for key in ("profile", "access_token_cached", "refresh_token_fallback"):
+            root_payload.pop(key, None)
     path.write_text(
         yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
     try:
+        save_node_runtime_state(hub_url=conf.hub_url, token=conf.token)
+    except Exception:
+        pass
+    try:
+        _save_persisted_root_state(conf.root_state)
+    except Exception:
+        pass
+    try:
         mtime_ns = path.stat().st_mtime_ns
     except Exception:
         mtime_ns = None
-    _NODE_CONFIG_CACHE[str(path.resolve())] = (mtime_ns, deepcopy(conf))
+    _NODE_CONFIG_CACHE[str(path.resolve())] = ((mtime_ns, runtime_state_mtime_ns()), deepcopy(conf))
     _sync_ctx_config(conf, ctx)
 
 

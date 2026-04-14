@@ -133,11 +133,11 @@ Target-state note:
 
 - Each node reports its capacity via `register` and `heartbeat`:
   - `base_url`: derived from `ADAOS_SELF_BASE_URL` set by `adaos api serve`.
-  - `capacity.io`: from `.adaos/node.yaml` (with a default `stdout` entry if missing).
+  - `capacity.io`: from the local capacity projection (with a default `stdout` entry if missing).
   - `capacity.skills`: skills present on the node `{ name, version, active, dev }`.
   - `capacity.scenarios`: scenarios present on the node `{ name, version, active, dev }`.
 
-- When a skill or scenario is installed/activated/removed via the service layer, the node updates `.adaos/node.yaml` and the next heartbeat includes the updated capacity for the hub to persist. On the hub, capacity is also written to SQLite immediately for the hub node.
+- When a skill or scenario is installed/activated/removed via the service layer, the node updates its local capacity projection and the next heartbeat includes the updated capacity for the hub to persist. On the hub, capacity is also written to SQLite immediately for the hub node.
 
 ## Media routing target
 
@@ -179,7 +179,7 @@ Current foundation in code:
 ## Typical Flows
 
 1. Member starts → sends `register` with `base_url` and capacity → hub persists the node and marks it online.
-2. Skills install/activate on member → node updates `.adaos/node.yaml` → heartbeat propagates updated capacity → hub persists it.
+2. Skills install/activate on member → node updates the local capacity projection → heartbeat propagates updated capacity → hub persists it.
 3. Hub restarts → restores nodes from SQLite as offline → first heartbeats mark them online again.
 4. Hub receives `/api/tools/call` for a skill not present locally → proxies to an online member with that skill.
 - TTS (“say”): Router also listens to `ui.say` events with payload `{ text, voice? }` and routes them to the target node’s `/api/say`.

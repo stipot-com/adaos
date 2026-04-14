@@ -25,8 +25,8 @@ Threat model notes:
 In phase 1, the join exchange returns:
 
 - `subnet_id`
-- subnet API token (stored in `node.yaml` as `token`)
-- hub URL (stored in `node.yaml` as `hub_url`)
+- subnet API token (stored in `state/node_runtime.json` as `token`)
+- hub URL (stored in `state/node_runtime.json` as `hub_url`)
 
 This avoids passing the subnet token in the command line while still enabling existing WS/HTTP authentication.
 

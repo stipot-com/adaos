@@ -62,6 +62,26 @@
 - bootstrap-origin subnet identity теперь хранится отдельно от transport hints и не должен деградировать до следов из `nats.user`, пока есть canonical bootstrap source
 - полный cleanup ещё не завершён: в кодовой базе остаются legacy места, где используются raw bootstrap/runtime payloads вне canonical surface
 
+## Checkpoint: Node.yaml Transition
+
+Target architecture for the node bootstrap document and adjacent state layers:
+
+- [x] keep `node.yaml` as the minimal bootstrap/identity document for `zone_id`, `node_id`, `subnet_id`, `role`, `root.base_url`, and key/cert paths
+- [x] move runtime `hub_url` and node token out of `node.yaml` into `state/node_runtime.json`
+- [x] move NATS runtime credentials (`ws_url`, `user`, `pass`) out of `node.yaml` into `state/node_runtime.json`
+- [x] move subnet alias metadata out of `node.yaml` into SQLite durable state
+- [x] move durable root auth cache / `root_state` out of `node.yaml` into SQLite durable state
+- [x] move local capacity projection out of `node.yaml` into the SQLite-backed subnet directory read model
+- [x] prune legacy `node.yaml` `nats` / `capacity` payloads during migration once the new durable state is seeded
+- [x] migrate bootstrap and diagnostics tooling (`tools/bootstrap*`, `tools/diag_*`) to prefer runtime state with legacy `node.yaml` fallback
+- [ ] finish the remaining legacy readers/writers outside the Python core runtime (`external integrations`, examples, and user-facing docs that still describe `node.yaml` as the runtime source of truth)
+
+Operational split after this checkpoint:
+
+- `node.yaml`: bootstrap identity and static paths only
+- `state/*.json`: runtime snapshots such as supervisor/runtime/update state and dynamic local runtime connection data
+- SQLite durable state: structured long-lived state such as local capacity, root auth cache, and subnet alias metadata
+
 ## Опорные сценарии
 
 Каждая итерация должна улучшать хотя бы один из этих сквозных сценариев:

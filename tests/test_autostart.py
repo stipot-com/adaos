@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from adaos.apps.autostart_runner import _slot_launch_spec
 from adaos.services.autostart import default_spec, enable, status
@@ -33,6 +34,32 @@ def test_default_autostart_spec_uses_runner(tmp_path: Path) -> None:
     assert spec.env["ADAOS_PROFILE"] == "default"
     assert spec.env["ADAOS_AUTOSTART_MANAGED"] == "1"
     assert spec.env["ADAOS_TOKEN"] == "t1"
+
+
+def test_default_autostart_spec_falls_back_to_loaded_runtime_token(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    monkeypatch.delenv("ADAOS_TOKEN", raising=False)
+    monkeypatch.delenv("ADAOS_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+    monkeypatch.setattr(autostart, "load_config", lambda: SimpleNamespace(token="runtime-token"))
+
+    spec = default_spec(_FakeCtx(tmp_path), host="127.0.0.1", port=8779)
+
+    assert spec.env["ADAOS_TOKEN"] == "runtime-token"
+
+
+def test_default_autostart_spec_omits_token_when_no_runtime_or_env_token(monkeypatch, tmp_path: Path) -> None:
+    import adaos.services.autostart as autostart
+
+    monkeypatch.delenv("ADAOS_TOKEN", raising=False)
+    monkeypatch.delenv("ADAOS_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+    monkeypatch.setattr(autostart, "load_config", lambda: SimpleNamespace(token=""))
+
+    spec = default_spec(_FakeCtx(tmp_path), host="127.0.0.1", port=8779)
+
+    assert "ADAOS_TOKEN" not in spec.env
 
 
 def test_default_autostart_spec_keeps_context_base_dir_when_shared_dotenv_is_dev(monkeypatch, tmp_path: Path) -> None:

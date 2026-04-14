@@ -501,14 +501,41 @@ fi
 
 control_base="http://${SERVE_HOST}:${CONTROL_PORT}"
 token="$(
-  "$ADAOS_PY" -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("token") or "dev-local-token")' \
-    "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo "dev-local-token"
+  "$ADAOS_PY" - "${ADAOS_BASE_DIR}" <<'PY' 2>/dev/null || echo "dev-local-token"
+import json
+import pathlib
+import sys
+
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
+
+base = pathlib.Path(sys.argv[1])
+runtime_path = base / "state" / "node_runtime.json"
+node_path = base / "node.yaml"
+token = ""
+try:
+    payload = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
+    if isinstance(payload, dict):
+        token = str(payload.get("token") or "").strip()
+except Exception:
+    token = ""
+if not token and yaml is not None:
+    try:
+        raw = yaml.safe_load(node_path.read_text(encoding="utf-8")) if node_path.exists() else {}
+        if isinstance(raw, dict):
+            token = str(raw.get("token") or "").strip()
+    except Exception:
+        token = ""
+print(token or "dev-local-token")
+PY
 )"
 expected_node_id="$(
   "$ADAOS_PY" -c 'import sys,yaml,pathlib; p=pathlib.Path(sys.argv[1]); d=yaml.safe_load(p.read_text(encoding="utf-8")) or {}; print(d.get("node_id") or "")' \
     "${ADAOS_BASE_DIR}/node.yaml" 2>/dev/null || echo ""
 )"
-log "Runtime state target: ${ADAOS_BASE_DIR}/node.yaml"
+log "Runtime state targets: ${ADAOS_BASE_DIR}/node.yaml + ${ADAOS_BASE_DIR}/state/node_runtime.json"
 
 log "Starting AdaOS API (${SERVE_HOST}:${SERVE_PORT}) ..."
 service_installed=0

@@ -8,8 +8,10 @@ add_or_update_entity, update_skill_version, list_entities, set_installed_flag.
 """
 from __future__ import annotations
 import time
+import json
 from typing import Optional, Iterable, Literal, List, Dict, Any
 
+from adaos.adapters.db.sqlite_schema import ensure_schema
 from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
@@ -445,6 +447,66 @@ def binding_upsert(platform: str, user_id: str, bot_id: str, *, hub_id: str | No
         "created_at": now,
         "last_seen": now,
     }
+
+
+def durable_state_get(namespace: str, key: str) -> dict[str, Any] | None:
+    sql = get_ctx().sql
+    ensure_schema(sql)
+    with sql.connect() as con:
+        cur = con.execute(
+            "SELECT value_json, updated_at FROM durable_state WHERE namespace=? AND key=?",
+            (str(namespace or "").strip(), str(key or "").strip()),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return None
+    value = dict(payload)
+    value["_updated_at"] = float(row[1] or 0.0)
+    return value
+
+
+def durable_state_put(namespace: str, key: str, value: dict[str, Any]) -> None:
+    if not isinstance(value, dict):
+        raise TypeError("durable_state value must be a dict")
+    sql = get_ctx().sql
+    ensure_schema(sql)
+    updated_at = float(time.time())
+    payload = dict(value)
+    payload.pop("_updated_at", None)
+    with sql.connect() as con:
+        con.execute(
+            """
+            INSERT INTO durable_state(namespace, key, value_json, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(namespace, key) DO UPDATE SET
+              value_json=excluded.value_json,
+              updated_at=excluded.updated_at
+            """,
+            (
+                str(namespace or "").strip(),
+                str(key or "").strip(),
+                json.dumps(payload, ensure_ascii=False),
+                updated_at,
+            ),
+        )
+        con.commit()
+
+
+def durable_state_delete(namespace: str, key: str) -> None:
+    sql = get_ctx().sql
+    ensure_schema(sql)
+    with sql.connect() as con:
+        con.execute(
+            "DELETE FROM durable_state WHERE namespace=? AND key=?",
+            (str(namespace or "").strip(), str(key or "").strip()),
+        )
+        con.commit()
 
 
 def get_binding_by_user(platform: str, user_id: str, bot_id: str) -> dict | None:

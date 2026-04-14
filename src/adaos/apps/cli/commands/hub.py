@@ -474,7 +474,7 @@ def hub_root_reconnect(
             "base_url": base,
             "error": {"type": type(e).__name__, "message": str(e)},
             "hint": (
-                f"Resolved control base {base}. If this is stale, check node.yaml/autostart control URL "
+                f"Resolved control base {base}. If this is stale, check runtime state/autostart control URL "
                 "or set ADAOS_CONTROL_URL explicitly. If the control API is busy, retry with --timeout 30."
             ),
         }

@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -11,6 +13,26 @@ def _mask(s: str) -> str:
     if len(s) <= 6:
         return "***"
     return s[:3] + "***" + s[-2:]
+
+
+def _load_from_runtime_state(path: str) -> dict[str, str]:
+    runtime_path = Path(path).expanduser().resolve().parent / "state" / "node_runtime.json"
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    nats = payload.get("nats")
+    if not isinstance(nats, dict):
+        return {}
+
+    out: dict[str, str] = {}
+    for k_src, k_out in [("ws_url", "url"), ("user", "user"), ("pass", "password")]:
+        v = nats.get(k_src)
+        if isinstance(v, str) and v.strip():
+            out[k_out] = v.strip()
+    return out
 
 
 def _load_from_node_yaml(path: str) -> dict[str, str]:
@@ -237,7 +259,7 @@ async def _run(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Diagnose NATS-over-WebSocket using nats-py (hub-like).")
-    ap.add_argument("--node-yaml", default="", help="Load URL/user/pass from .adaos/node.yaml")
+    ap.add_argument("--node-yaml", default="", help="Load bootstrap identity from node.yaml and runtime NATS credentials from sibling state/node_runtime.json")
     ap.add_argument("--url", default=os.getenv("NATS_WS_URL", "wss://nats.inimatic.com/nats"), help="WS URL, e.g. wss://api.inimatic.com/nats")
     ap.add_argument("--user", default=os.getenv("NATS_USER", ""), help="NATS user (e.g. hub_<subnet_id>)")
     ap.add_argument("--pass", dest="password", default=os.getenv("NATS_PASS", ""), help="NATS password/token")
@@ -250,7 +272,9 @@ def main() -> int:
 
     if args.node_yaml and args.node_yaml.strip():
         try:
-            loaded = _load_from_node_yaml(args.node_yaml.strip())
+            loaded = _load_from_runtime_state(args.node_yaml.strip())
+            if not loaded:
+                loaded = _load_from_node_yaml(args.node_yaml.strip())
         except Exception as e:
             print(f"[diag] failed to load --node-yaml: {type(e).__name__}: {e}")
             return 2
@@ -262,7 +286,7 @@ def main() -> int:
             args.password = loaded["password"]
 
     if not args.user or not args.password:
-        print("[diag] missing credentials: provide --user/--pass or --node-yaml (.adaos/node.yaml)")
+        print("[diag] missing credentials: provide --user/--pass or --node-yaml (.adaos/node.yaml + sibling state/node_runtime.json)")
         return 2
 
     return asyncio.run(

@@ -8,7 +8,7 @@ import typer
 from adaos.services.agent_context import get_ctx
 from adaos.services.git.availability import autodetect_git, get_git_availability, set_git_disabled, set_git_enabled
 
-app = typer.Typer(help="Git availability and archive fallback (node.yaml capacity io:git).")
+app = typer.Typer(help="Git availability and archive fallback (local capacity projection io:git).")
 
 
 def _echo(av, *, json_output: bool) -> None:
@@ -62,7 +62,7 @@ def enable(json_output: bool = typer.Option(False, "--json", help="JSON output")
 
 @app.command("disable")
 def disable(
-    reason: str = typer.Option("disabled by operator", "--reason", help="Reason stored in node.yaml capacity"),
+    reason: str = typer.Option("disabled by operator", "--reason", help="Reason stored in local capacity projection"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     ctx = get_ctx()

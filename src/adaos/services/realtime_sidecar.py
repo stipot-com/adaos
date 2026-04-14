@@ -15,13 +15,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from adaos.services.capacity import _load_node_yaml as _load_node_yaml
 from adaos.services.nats_config import (
     normalize_nats_ws_url,
     nats_url_uses_websocket,
     order_nats_ws_candidates,
     public_nats_ws_api,
 )
+from adaos.services.node_runtime_state import load_nats_runtime_config, migrate_legacy_nats_runtime_config
 from adaos.services.nats_ws_transport import (
     _set_tcp_keepalive,
     _ws_heartbeat_s_from_env,
@@ -470,11 +470,9 @@ def apply_realtime_loop_policy() -> None:
 
 def resolve_realtime_remote_candidates() -> list[str]:
     explicit_url = str(os.getenv("ADAOS_REALTIME_REMOTE_WS_URL") or "").strip() or None
-    try:
-        node = _load_node_yaml() or {}
-    except Exception:
-        node = {}
-    nats_cfg = node.get("nats") if isinstance(node, dict) and isinstance(node.get("nats"), dict) else {}
+    nats_cfg = load_nats_runtime_config()
+    if not nats_cfg:
+        nats_cfg = migrate_legacy_nats_runtime_config()
     node_url_raw = str((nats_cfg or {}).get("ws_url") or "").strip() or None
     if explicit_url and nats_url_uses_websocket(explicit_url):
         base = normalize_nats_ws_url(explicit_url, fallback=None)

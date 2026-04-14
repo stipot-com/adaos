@@ -15,7 +15,7 @@ class GitAvailability:
     git_path: str | None = None
     reason: str | None = None
     mode: str | None = None  # e.g. "disabled", "auto"
-    source: str | None = None  # "node.yaml" | "which" | "env"
+    source: str | None = None  # "capacity" | "which" | "env"
 
 
 def _which_git() -> str | None:
@@ -40,8 +40,8 @@ def get_git_availability(*, base_dir: Path | None = None) -> GitAvailability:
                 mode = c.split(":", 1)[1].strip() or None
         enabled = is_io_available("git", base_dir=base_dir, default=True)
         if not enabled:
-            return GitAvailability(enabled=False, git_path=_which_git(), reason="disabled in node.yaml capacity", mode=(mode or "disabled"), source="node.yaml")
-        return GitAvailability(enabled=True, git_path=_which_git(), reason=None, mode=(mode or "available"), source="node.yaml")
+            return GitAvailability(enabled=False, git_path=_which_git(), reason="disabled in local capacity projection", mode=(mode or "disabled"), source="capacity")
+        return GitAvailability(enabled=True, git_path=_which_git(), reason=None, mode=(mode or "available"), source="capacity")
 
     git_path = _which_git()
     if not git_path:
@@ -51,7 +51,7 @@ def get_git_availability(*, base_dir: Path | None = None) -> GitAvailability:
 
 def autodetect_git(*, base_dir: Path | None = None, reason_hint: str | None = None) -> GitAvailability:
     """
-    Detect whether git can be used and persist the result into node.yaml capacity io:git.
+    Detect whether git can be used and persist the result into the local capacity projection io:git.
     """
     av = get_git_availability(base_dir=base_dir)
     # If env forced, still persist for observability.
@@ -92,5 +92,5 @@ def set_git_enabled(*, base_dir: Path | None = None) -> GitAvailability:
 
 def set_git_disabled(*, base_dir: Path | None = None, reason: str | None = None) -> GitAvailability:
     set_io_state("git", available=False, base_capabilities=["git"], reason=(reason or "disabled"), mode="disabled", priority=45, base_dir=base_dir)
-    return GitAvailability(enabled=False, git_path=_which_git(), reason=(reason or "disabled"), mode="disabled", source="node.yaml")
+    return GitAvailability(enabled=False, git_path=_which_git(), reason=(reason or "disabled"), mode="disabled", source="capacity")
 

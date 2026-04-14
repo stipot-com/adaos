@@ -709,7 +709,7 @@ def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
     Root/hub join endpoints can sit behind TLS-terminating proxies and occasionally return
     `http://...` rendezvous URLs even when the public entrypoint is `https://...`.
 
-    We persist the rendezvous into node.yaml; ensure scheme matches the public Root URL when safe.
+    We persist the rendezvous into runtime node state; ensure scheme matches the public Root URL when safe.
     """
     try:
         hub_u = urlparse(str(rendezvous_url or "").strip())
@@ -754,7 +754,7 @@ def node_join(
     """
     Join a subnet as member using a short one-time join-code.
 
-    This stores returned subnet token + hub URL into node.yaml under the active base_dir.
+    This stores the returned subnet token + hub URL in the local runtime state under the active base_dir.
     """
     cfg = load_config()
 
