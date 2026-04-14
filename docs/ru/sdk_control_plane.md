@@ -17,6 +17,7 @@
 - canonical skill/scenario object access через SDK-first helpers до расширения внешнего API
 - canonical reliability projection access для LLM и skills, включая runtime component objects и action metadata
 - canonical neighborhood projection access поверх subnet-directory peers, root connectivity и nearby capacity snapshots
+- subnet operational shared-state path поверх durable subnet SQLite read model, rich member runtime projection и canonical neighborhood/runtime overlays
 - canonical workspace, profile, browser-session, device, quota и local capacity objects через SDK-first helpers
 - canonical kind и relation registries в `adaos.services.system_model.model`, чтобы SDK, API и LLM projections использовали один и тот же словарь
 - shared governance и action-role defaults, чтобы SDK-facing objects последовательно несли owner, visibility и role hints

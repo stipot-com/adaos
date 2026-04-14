@@ -64,8 +64,8 @@ def test_autostart_runner_reconciles_root_promotion_restart_before_idle(monkeypa
 
     assert captured
     assert captured[0]["state"] == "succeeded"
-    assert captured[0]["phase"] == "validate"
-    assert "root promotion restart completed" in captured[0]["message"]
+    assert captured[0]["phase"] == "root_promoted"
+    assert "awaiting runtime boot validation" in captured[0]["message"]
 
 
 def test_reconcile_post_root_promotion_restart_clears_stale_candidate_prewarm_fields() -> None:
@@ -80,7 +80,7 @@ def test_reconcile_post_root_promotion_restart_clears_stale_candidate_prewarm_fi
     )
 
     assert isinstance(payload, dict)
-    assert payload["phase"] == "validate"
+    assert payload["phase"] == "root_promoted"
     assert payload["candidate_prewarm_state"] is None
     assert payload["candidate_prewarm_message"] is None
     assert payload["candidate_prewarm_ready_at"] is None

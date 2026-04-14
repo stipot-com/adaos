@@ -205,6 +205,12 @@ class HubLinkManager:
             )
         except Exception:
             pass
+        try:
+            from adaos.services.registry.subnet_directory import get_directory
+
+            get_directory().on_member_runtime_snapshot(node_id, snap)
+        except Exception:
+            pass
         return {"ok": True, **payload}
 
     async def set_member_node_names(self, node_id: str, *, node_names: list[str]) -> dict[str, Any]:

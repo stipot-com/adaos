@@ -221,6 +221,88 @@ Task-shaped пакет контекста для LLM или automation:
 
 Именно этот пакет должен быть основной LLM-точкой входа. Он позволяет не выгружать всю инфраструктуру целиком и не раскрывать лишние данные.
 
+## Модель shared state для подсети
+
+Для operational control plane у AdaOS должно быть два разных класса shared state, и их нельзя смешивать:
+
+1. `operational shared state`
+   Это состояние нод, runtime, rollout, доступности, capacity, control-результатов и связности подсети.
+2. `collaborative shared state`
+   Это Yjs/webspace-состояние сценариев, UI и совместной работы пользователей.
+
+Yjs хорошо подходит для collaborative state, но не должен быть primary source of truth для понимания здоровья подсети и локального planning.
+
+### Целевая цепочка данных
+
+Целевой operational shared-state контур для subnet должен быть таким:
+
+1. `runtime producers`
+   Member и hub публикуют живые сигналы: heartbeat, capacity, runtime snapshot, link events, update/control results.
+2. `hub semantic aggregation`
+   Hub принимает rich member snapshot по member link и нормализует его в общий semantic envelope.
+3. `durable subnet read model`
+   Hub пишет нормализованную subnet-проекцию в локальную SQLite как durable read model.
+4. `subnet replication`
+   Members получают уже нормализованный subnet snapshot от hub и поддерживают у себя локальную SQLite-копию этого read model.
+5. `canonical system model`
+   `system_model`, `reliability` и SDK control-plane helpers строят neighborhood, overview и task packets поверх SQLite read model и локальных runtime sources.
+6. `operator / LLM planning`
+   UI, skills и LLM используют projections и task packets, а не raw transport payloads, `node.yaml` или Yjs напрямую.
+
+### Роли источников истины
+
+- `node.yaml`:
+  bootstrap-конфиг и минимальная персистентная идентичность ноды, достаточная для старта.
+- `member link / runtime events`:
+  live transport layer и on-demand наблюдаемость.
+- `subnet SQLite directory`:
+  durable subnet read model для planning, routing, observability и degraded-mode reasoning.
+- `system_model`:
+  canonical object layer и единый vocabulary для UI, SDK и LLM.
+- `Yjs`:
+  collaborative state webspace/scenario/UI, но не operational topology state.
+
+### Что должно жить в durable subnet read model
+
+Минимально там должны быть:
+
+- identity и topology:
+  `node_id`, `subnet_id`, `roles`, `hostname`, `base_url`
+- liveness и routing:
+  `online`, `last_seen`, `node_state`, `route_mode`, `connected_to_hub`
+- runtime/build:
+  `ready`, `runtime_version`, `git_commit`, `git_short_commit`, `git_branch`, `git_subject`
+- rollout/update:
+  `update_state`, `update_phase`, `target_rev`, `target_version`, `target_slot`, `finished_at`
+- operator control:
+  last remote control request/result и timestamps
+- capacity:
+  `io`, `skills`, `scenarios`
+- rich snapshot payload:
+  best-effort raw snapshot для восстановления richer projections без потери semantic envelope
+
+### Почему это важно для локального planning
+
+Локальная нода должна понимать соседей не только пока websocket-link жив, но и после:
+
+- рестарта hub;
+- потери member link при живом heartbeat;
+- локального degraded mode;
+- повторного старта UI/LLM поверх уже известной подсети.
+
+Поэтому planning нельзя строить только на in-memory `HubLinkManager`, но и нельзя строить только на bootstrap-конфиге. Нужен durable subnet read model, который переживает transport churn и остаётся локально доступным.
+
+### Архитектурное правило
+
+Любой новый операторский или LLM-facing subnet insight должен по возможности:
+
+1. публиковаться runtime producer'ом один раз;
+2. попадать в durable subnet read model;
+3. подниматься в `system_model` как canonical projection;
+4. уже потом потребляться UI, router, reliability или automation.
+
+Иными словами, planning должен зависеть не от конкретного транспорта, а от устойчивой semantic projection слоя control plane.
+
 ## Связь с Root MCP Foundation
 
 `Infrascope` — это human-facing workspace control plane поверх canonical system model. `Root MCP Foundation` — его root-hosted agent-facing companion layer.

@@ -158,13 +158,11 @@ async def node_get(node_id: str):
     """
     Детали по конкретной ноде (hub-only).
     """
-    conf = load_config()
+    conf = get_ctx().config
     if conf.role != "hub":
         raise HTTPException(status_code=403, detail="only hub node has node details")
     directory = get_directory()
-    info = directory.repo.get_node(node_id)
-    if not info:
+    info = directory.get_node(node_id)
+    if not isinstance(info, dict):
         raise HTTPException(status_code=404, detail="node not found")
-    node = dict(info)
-    node["online"] = directory.is_online(node_id)
-    return {"ok": True, "node": node}
+    return {"ok": True, "node": dict(info)}

@@ -47,6 +47,42 @@ class SubnetDirectory:
         st["last_seen"] = ts
         self.live[node_id] = st
 
+    def on_member_runtime_snapshot(self, node_id: str, snapshot: Dict[str, Any]) -> None:
+        snap = dict(snapshot or {})
+        ts = time.time()
+        existing = self.repo.get_node(node_id) or {}
+        subnet_id = str(snap.get("subnet_id") or existing.get("subnet_id") or "").strip()
+        role = str(snap.get("role") or "").strip().lower()
+        roles = [
+            str(item or "").strip().lower()
+            for item in list(existing.get("roles") or [])
+            if str(item or "").strip()
+        ]
+        if role and role not in roles:
+            roles.append(role)
+        if subnet_id:
+            self.repo.upsert_node(
+                {
+                    "node_id": node_id,
+                    "subnet_id": subnet_id,
+                    "roles": roles,
+                    "hostname": existing.get("hostname"),
+                    "base_url": existing.get("base_url"),
+                    "node_state": str(snap.get("node_state") or existing.get("node_state") or "ready"),
+                    "last_seen": ts,
+                }
+            )
+        capacity = snap.get("capacity") if isinstance(snap.get("capacity"), dict) else {}
+        if capacity:
+            self.repo.replace_io_capacity(node_id, capacity.get("io") or [])
+            self.repo.replace_skill_capacity(node_id, capacity.get("skills") or [])
+            self.repo.replace_scenario_capacity(node_id, capacity.get("scenarios") or [])
+        self.repo.upsert_runtime_projection(node_id, snap)
+        st = self.live.get(node_id) or {}
+        st["online"] = True
+        st["last_seen"] = ts
+        self.live[node_id] = st
+
     # ------ queries ------
     def mark_stale_if_expired(self, ttl: float = 45.0) -> None:
         now = time.time()
@@ -80,6 +116,7 @@ class SubnetDirectory:
             "skills": self.repo.skills_for_node(node_id),
             "scenarios": self.repo.scenarios_for_node(node_id),
         }
+        item["runtime_projection"] = self.repo.runtime_projection_for_node(node_id)
         return item
 
     def list_known_nodes(self) -> List[Dict[str, Any]]:
@@ -92,6 +129,7 @@ class SubnetDirectory:
                 "skills": self.repo.skills_for_node(n["node_id"]),
                 "scenarios": self.repo.scenarios_for_node(n["node_id"]),
             }
+            node["runtime_projection"] = self.repo.runtime_projection_for_node(n["node_id"])
             items.append(node)
         return items
 
@@ -113,6 +151,10 @@ class SubnetDirectory:
             cap = (item.get("capacity") or {}) if isinstance(item, dict) else {}
             self.repo.replace_io_capacity(node["node_id"], cap.get("io") or [])
             self.repo.replace_skill_capacity(node["node_id"], cap.get("skills") or [])
+            self.repo.replace_scenario_capacity(node["node_id"], cap.get("scenarios") or [])
+            runtime_projection = item.get("runtime_projection") if isinstance(item.get("runtime_projection"), dict) else {}
+            if runtime_projection:
+                self.repo.upsert_runtime_projection(node["node_id"], runtime_projection)
             # update liveness flag from snapshot
             st = self.live.get(node["node_id"]) or {}
             st["online"] = bool(item.get("online", False))

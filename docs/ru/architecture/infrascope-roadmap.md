@@ -17,6 +17,36 @@
 5. Governance — часть объектной модели.
    Ownership, visibility и policy нельзя переносить на этап после сборки интерфейса.
 
+## Checkpoint: Subnet Shared State
+
+Ниже зафиксирован отдельный delivery track для subnet operational shared state. Он поддерживает и `Infrascope`, и SDK/LLM planning, и не должен расходиться с общим control-plane vocabulary.
+
+### Цель
+
+Сделать subnet SQLite durable read model для operational state нод, а не только каталогом heartbeat/capacity.
+
+### Checklist
+
+- [x] отделить collaborative Yjs state от operational subnet state на уровне архитектуры
+- [x] зафиксировать `subnet directory -> system model -> planning` как основной путь потребления
+- [ ] завести durable runtime projection member-ноды в subnet SQLite
+- [ ] реплицировать runtime projection с hub на members вместе с subnet snapshot
+- [ ] поднять runtime projection в canonical node/neighborhood projections
+- [ ] использовать persisted runtime projection в reliability для linkless/aging members
+- [ ] довести capacity-репликацию до симметрии по `io`, `skills` и `scenarios`
+- [ ] добавить task-packet friendly subnet planning projection поверх durable read model
+- [ ] убрать planning-зависимость от raw `node.yaml` и transport-specific payloads там, где есть canonical projection
+- [ ] формализовать freshness/staleness contract для persisted subnet runtime projection
+
+### Ближайшие инкременты
+
+1. `runtime projection persistence`
+   Сохранить rich member runtime snapshot в subnet SQLite и раздавать его как часть subnet snapshot.
+2. `planning integration`
+   Обогатить `system_model` и `reliability` persisted runtime projection, чтобы planning переживал потерю live member link.
+3. `projection hardening`
+   Нормализовать freshness, rollout, media/direct-path и control-result semantics поверх одного durable read model.
+
 ## Опорные сценарии
 
 Каждая итерация должна улучшать хотя бы один из этих сквозных сценариев:

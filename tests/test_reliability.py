@@ -24,6 +24,7 @@ from adaos.services.reliability import (
     ReadinessStatus,
     _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
+    hub_member_connection_state_snapshot,
     hub_member_semantic_channels_snapshot,
     media_plane_runtime_snapshot,
     observe_hub_root_route_runtime,
@@ -246,6 +247,67 @@ def test_hub_reliability_snapshot_exposes_route_reset_runtime_details() -> None:
     assert route_runtime["last_reset_notified_browser"] == 2
     assert route_runtime["reset_total"] == 4
     assert route_runtime["last_reset_ago_s"] is not None
+
+
+def test_hub_member_connection_state_uses_persisted_runtime_projection_for_linkless_members(monkeypatch) -> None:
+    class _FakeDirectory:
+        def list_known_nodes(self):
+            return [
+                {
+                    "node_id": "member-2",
+                    "subnet_id": "sn_1",
+                    "roles": ["member"],
+                    "hostname": "kitchen-member",
+                    "node_state": "ready",
+                    "last_seen": 1_700_000_050.0,
+                    "online": True,
+                    "capacity": {"io": [], "skills": [], "scenarios": []},
+                    "runtime_projection": {
+                        "captured_at": 1_700_000_040.0,
+                        "node_names": ["Kitchen East"],
+                        "primary_node_name": "Kitchen East",
+                        "ready": True,
+                        "node_state": "ready",
+                        "snapshot": {
+                            "captured_at": 1_700_000_040.0,
+                            "node_state": "ready",
+                            "build": {"runtime_version": "0.2.0", "runtime_git_short_commit": "abc1234"},
+                            "update_status": {"state": "succeeded", "phase": "validate"},
+                        },
+                    },
+                }
+            ]
+
+    monkeypatch.setattr(
+        "adaos.services.subnet.link_manager.hub_link_manager_snapshot",
+        lambda: {"members": [], "member_total": 0, "connected_total": 0, "updated_at": 1_700_000_060.0},
+    )
+    monkeypatch.setattr(
+        "adaos.services.registry.subnet_directory.get_directory",
+        lambda: _FakeDirectory(),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability.time.time",
+        lambda: 1_700_000_060.0,
+    )
+
+    snapshot = hub_member_connection_state_snapshot(
+        role="hub",
+        route_mode="hub",
+        connected_to_hub=None,
+        node_id="hub-1",
+        node_names=["Main Hub"],
+    )
+
+    assert snapshot["assessment"]["reason"] == "known_members_without_links"
+    assert snapshot["known_total"] == 1
+    member = snapshot["known_members"][0]
+    assert member["observed_via"] == "subnet_directory"
+    assert member["node_names"] == ["Kitchen East"]
+    assert member["snapshot_ready"] is True
+    assert member["snapshot_state"] == "fresh"
+    assert member["snapshot_update_state"] == "succeeded"
+    assert member["snapshot_runtime_version"] == "0.2.0"
 
 
 def test_assess_transport_diagnostics_marks_unstable_on_reader_termination_and_tag_change() -> None:

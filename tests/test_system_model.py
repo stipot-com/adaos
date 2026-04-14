@@ -310,13 +310,25 @@ def test_canonical_object_from_subnet_directory_node_maps_capacity_and_presence(
                 "skills": [{"name": "weather"}],
                 "scenarios": [{"name": "home"}],
             },
+            "runtime_projection": {
+                "primary_node_name": "Kitchen East",
+                "node_names": ["Kitchen East"],
+                "ready": True,
+                "route_mode": "ws",
+                "build": {"runtime_version": "0.2.0"},
+                "update_status": {"state": "succeeded"},
+            },
         }
     ).to_dict()
 
     assert obj["id"] == "member:member-2"
     assert obj["kind"] == "member"
+    assert obj["title"] == "Kitchen East"
     assert obj["resources"]["io_total"] == 1
     assert obj["runtime"]["hostname"] == "Kitchen Member"
+    assert obj["runtime"]["node_names"] == ["Kitchen East"]
+    assert obj["runtime"]["build"]["runtime_version"] == "0.2.0"
+    assert obj["health"]["route_mode"] == "ws"
     assert obj["health"]["connectivity"] == "reachable"
 
 

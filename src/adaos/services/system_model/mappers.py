@@ -528,9 +528,21 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
     subnet_id = str(data.get("subnet_id") or "").strip() or None
     hostname = str(data.get("hostname") or "").strip() or None
     base_url = str(data.get("base_url") or "").strip() or None
-    node_state = str(data.get("node_state") or "").strip() or None
+    runtime_projection = (
+        data.get("runtime_projection")
+        if isinstance(data.get("runtime_projection"), Mapping)
+        else {}
+    )
+    projection_node_state = str(runtime_projection.get("node_state") or "").strip() or None
+    node_state = str(data.get("node_state") or projection_node_state or "").strip() or None
     online = data.get("online")
     capacity = data.get("capacity") if isinstance(data.get("capacity"), Mapping) else {}
+    node_names = [
+        str(item or "").strip()
+        for item in list(runtime_projection.get("node_names") or [])
+        if str(item or "").strip()
+    ]
+    primary_node_name = str(runtime_projection.get("primary_node_name") or "").strip() or None
 
     status = normalize_operational_status(node_state)
     if online is True and status in {CanonicalStatus.UNKNOWN, CanonicalStatus.OFFLINE}:
@@ -541,7 +553,7 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
     io_items = [item for item in list(capacity.get("io") or []) if isinstance(item, Mapping)]
     skill_items = [item for item in list(capacity.get("skills") or []) if isinstance(item, Mapping)]
     scenario_items = [item for item in list(capacity.get("scenarios") or []) if isinstance(item, Mapping)]
-    title = hostname or node_id
+    title = primary_node_name or (node_names[0] if node_names else None) or hostname or node_id
     summary = f"{role} subnet node" + (f" in subnet {subnet_id}" if subnet_id else "")
     return CanonicalObject(
         id=canonical_ref(role, node_id) or f"{role}:{node_id}",
@@ -549,7 +561,12 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
         title=title,
         summary=summary,
         status=status,
-        health=compact_mapping({"connectivity": normalize_connectivity_status(online)}),
+        health=compact_mapping(
+            {
+                "connectivity": normalize_connectivity_status(online),
+                "route_mode": str(runtime_projection.get("route_mode") or "").strip() or None,
+            }
+        ),
         relations=compact_mapping(
             {
                 RelationKind.SUBNET.value: [f"subnet:{subnet_id}"] if subnet_id else [],
@@ -571,15 +588,44 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
                 "created_at": data.get("created_at"),
                 "updated_at": data.get("updated_at"),
                 "node_state": node_state,
+                "node_names": node_names,
+                "primary_node_name": primary_node_name,
+                "ready": runtime_projection.get("ready"),
+                "route_mode": runtime_projection.get("route_mode"),
+                "connected_to_hub": runtime_projection.get("connected_to_hub"),
+                "runtime_projection_captured_at": runtime_projection.get("captured_at"),
+                "build": runtime_projection.get("build") if isinstance(runtime_projection.get("build"), Mapping) else {},
+                "update_status": (
+                    runtime_projection.get("update_status")
+                    if isinstance(runtime_projection.get("update_status"), Mapping)
+                    else {}
+                ),
+                "last_result": (
+                    runtime_projection.get("last_result")
+                    if isinstance(runtime_projection.get("last_result"), Mapping)
+                    else {}
+                ),
             }
         ),
-        actual_state=compact_mapping({"online": online, "capacity": capacity}),
+        actual_state=compact_mapping(
+            {
+                "online": online,
+                "capacity": capacity,
+                "runtime_projection": runtime_projection,
+            }
+        ),
         representations=compact_mapping(
             {
                 "llm": {
                     "roles": roles,
                     "hostname": hostname,
                     "base_url": base_url,
+                    "node_names": node_names,
+                    "primary_node_name": primary_node_name,
+                    "node_state": node_state,
+                    "ready": runtime_projection.get("ready"),
+                    "build": runtime_projection.get("build"),
+                    "update_status": runtime_projection.get("update_status"),
                 }
             }
         ),

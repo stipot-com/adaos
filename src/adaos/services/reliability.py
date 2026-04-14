@@ -3342,14 +3342,26 @@ def hub_member_connection_state_snapshot(
             if not member_id:
                 continue
             connected_ids.add(member_id)
+            directory_item = directory_by_id.get(member_id) if isinstance(directory_by_id.get(member_id), dict) else {}
+            runtime_projection = (
+                directory_item.get("runtime_projection")
+                if isinstance(directory_item.get("runtime_projection"), dict)
+                else {}
+            )
+            persisted_snapshot = (
+                runtime_projection.get("snapshot")
+                if isinstance(runtime_projection.get("snapshot"), dict)
+                else {}
+            )
             node_snapshot = item.get("node_snapshot") if isinstance(item.get("node_snapshot"), dict) else {}
+            if not node_snapshot and persisted_snapshot:
+                node_snapshot = dict(persisted_snapshot)
             snapshot_names = node_snapshot.get("node_names") if isinstance(node_snapshot.get("node_names"), list) else []
             member_names = item.get("node_names") if isinstance(item.get("node_names"), list) else []
             member_names = member_names or snapshot_names
             build = node_snapshot.get("build") if isinstance(node_snapshot.get("build"), dict) else {}
             update_status = node_snapshot.get("update_status") if isinstance(node_snapshot.get("update_status"), dict) else {}
             connected = bool(item.get("connected", True))
-            directory_item = directory_by_id.get(member_id) if isinstance(directory_by_id.get(member_id), dict) else {}
             online = bool(directory_item.get("online")) if directory_item else connected
             last_seen = float(directory_item.get("last_seen") or 0.0) if directory_item else 0.0
             media_capability: dict[str, Any] = {}
@@ -3424,8 +3436,57 @@ def hub_member_connection_state_snapshot(
             if online:
                 linkless_online_total += 1
             last_seen = float(node.get("last_seen") or 0.0)
-            label = _node_label([], fallback=f"member {len(known_members) + 1}")
+            runtime_projection = (
+                node.get("runtime_projection")
+                if isinstance(node.get("runtime_projection"), dict)
+                else {}
+            )
+            node_snapshot = (
+                runtime_projection.get("snapshot")
+                if isinstance(runtime_projection.get("snapshot"), dict)
+                else {}
+            )
+            build = node_snapshot.get("build") if isinstance(node_snapshot.get("build"), dict) else {}
+            update_status = (
+                node_snapshot.get("update_status")
+                if isinstance(node_snapshot.get("update_status"), dict)
+                else {}
+            )
+            captured_at = runtime_projection.get("captured_at")
+            try:
+                captured_at_value = float(captured_at) if captured_at is not None else 0.0
+            except Exception:
+                captured_at_value = 0.0
+            if not online:
+                snapshot_state = "stale"
+            elif captured_at_value <= 0.0:
+                snapshot_state = "pending"
+            else:
+                snapshot_age = max(0.0, now - captured_at_value)
+                if snapshot_age >= 90.0:
+                    snapshot_state = "stale"
+                elif snapshot_age >= 30.0:
+                    snapshot_state = "aging"
+                else:
+                    snapshot_state = "fresh"
+            rollout_state = (
+                "stale"
+                if not online
+                else _member_rollout_state(
+                    str(update_status.get("state") or ""),
+                    snapshot_state=snapshot_state,
+                )
+            )
+            label = _node_label(
+                list(runtime_projection.get("node_names") or []),
+                fallback=f"member {len(known_members) + 1}",
+            )
             media_capability = {}
+            capacity_source = (
+                node_snapshot.get("capacity")
+                if isinstance(node_snapshot.get("capacity"), dict)
+                else node.get("capacity")
+            )
             try:
                 from adaos.services.media_capability import (
                     parse_webrtc_media_capacity_entry,
@@ -3433,7 +3494,7 @@ def hub_member_connection_state_snapshot(
                 )
 
                 capability_entry = select_member_browser_direct_capacity_entry(
-                    node.get("capacity") if isinstance(node.get("capacity"), dict) else {}
+                    capacity_source if isinstance(capacity_source, dict) else {}
                 )
                 media_capability = (
                     parse_webrtc_media_capacity_entry(capability_entry)
@@ -3447,8 +3508,8 @@ def hub_member_connection_state_snapshot(
                     "node_id": known_id,
                     "hostname": node.get("hostname"),
                     "roles": list(roles or []),
-                    "node_names": [],
-                    "node_snapshot": {},
+                    "node_names": list(runtime_projection.get("node_names") or []),
+                    "node_snapshot": dict(node_snapshot) if isinstance(node_snapshot, dict) else {},
                     "label": label,
                     "primary_name": label,
                     "role": "member",
@@ -3457,14 +3518,17 @@ def hub_member_connection_state_snapshot(
                     "online": online,
                     "observed_via": "subnet_directory",
                     "last_seen_ago_s": round(max(0.0, now - last_seen), 3) if last_seen > 0.0 else None,
-                    "snapshot_state": "pending" if online else "stale",
-                    "rollout_state": "pending" if online else "stale",
-                    "snapshot_ready": False,
-                    "snapshot_node_state": str(node.get("node_state") or ""),
-                    "snapshot_update_state": "",
-                    "snapshot_update_phase": "",
-                    "snapshot_runtime_git_short_commit": "",
-                    "snapshot_runtime_version": "",
+                    "snapshot_state": snapshot_state,
+                    "rollout_state": rollout_state,
+                    "snapshot_ready": bool(runtime_projection.get("ready")),
+                    "snapshot_node_state": (
+                        str(runtime_projection.get("node_state") or "")
+                        or str(node.get("node_state") or "")
+                    ),
+                    "snapshot_update_state": str(update_status.get("state") or ""),
+                    "snapshot_update_phase": str(update_status.get("phase") or ""),
+                    "snapshot_runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
+                    "snapshot_runtime_version": str(build.get("runtime_version") or build.get("version") or ""),
                     "media_capability": media_capability,
                     "media_capable": bool(media_capability.get("member_browser_direct")),
                 }
