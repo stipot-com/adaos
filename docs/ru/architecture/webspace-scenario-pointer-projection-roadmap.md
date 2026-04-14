@@ -345,15 +345,15 @@ rebuild latency на реальных сценариях.
 
 ### 5.5. ABI и renderer readiness contract
 
-- [ ] Расширить `src/adaos/abi/webui.v1.schema.json` intent-level readiness
+- [x] Расширить `src/adaos/abi/webui.v1.schema.json` intent-level readiness
   hints вместо протаскивания в ABI backend scheduler details.
-- [ ] Ввести coarse-grained load semantics для page/widget/modal/catalog
+- [x] Ввести coarse-grained load semantics для page/widget/modal/catalog
   сегментов: например eager, visible, interaction и deferred.
-- [ ] Держать granularity выше leaf-node уровня, чтобы runtime не превратился
+- [x] Держать granularity выше leaf-node уровня, чтобы runtime не превратился
   в micro-scheduler для каждого control.
-- [ ] Разделить hints жизненного цикла structure и data, чтобы staged
+- [x] Разделить hints жизненного цикла structure и data, чтобы staged
   rendering оставался управляемым.
-- [ ] Описать, как staged и многостраничные сценарии сообщают off-focus
+- [x] Описать, как staged и многостраничные сценарии сообщают off-focus
   readiness, не делая вид, что весь shell обязан быть заблокирован.
 
 ### 6. Очистка legacy

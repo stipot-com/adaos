@@ -1280,6 +1280,9 @@ def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     assert resolved.installed["apps"] == ["scenario-app", "scenario:other_scenario", "skill-app"]
     assert resolved.application["modals"]["scenario_modal"]["title"] == "Scenario"
     assert resolved.application["modals"]["skill_modal"]["title"] == "Skill Modal"
+    assert resolved.application["modals"]["apps_catalog"]["load"]["focus"] == "off_focus"
+    assert resolved.application["modals"]["apps_catalog"]["schema"]["load"]["data"] == "deferred"
+    assert resolved.application["modals"]["widgets_catalog"]["schema"]["widgets"][0]["load"]["offFocusReadyState"] == "hydrating"
     assert resolved.desktop["installed"]["apps"] == ["scenario-app", "scenario:other_scenario", "skill-app"]
     assert resolved.routing["routes"] == {}
 

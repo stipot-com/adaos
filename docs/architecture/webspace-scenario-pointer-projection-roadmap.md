@@ -339,15 +339,15 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 5.5. ABI and Renderer Readiness Contract
 
-- [ ] Extend `src/adaos/abi/webui.v1.schema.json` with intent-level readiness
+- [x] Extend `src/adaos/abi/webui.v1.schema.json` with intent-level readiness
   hints rather than scheduler-specific backend details.
-- [ ] Define coarse-grained load semantics for page/widget/modal/catalog
+- [x] Define coarse-grained load semantics for page/widget/modal/catalog
   segments such as eager, visible, interaction, and deferred.
-- [ ] Keep granularity above leaf-node level so the runtime does not become a
+- [x] Keep granularity above leaf-node level so the runtime does not become a
   micro-scheduler for every small control.
-- [ ] Separate structure-lifecycle hints from data-lifecycle hints so staged
+- [x] Separate structure-lifecycle hints from data-lifecycle hints so staged
   rendering remains tractable.
-- [ ] Document how staged and multi-page scenarios report off-focus readiness
+- [x] Document how staged and multi-page scenarios report off-focus readiness
   without pretending the entire shell is blocked.
 
 ### 6. Legacy Cleanup

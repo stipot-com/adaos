@@ -8,4 +8,4 @@ This folder contains JSON Schemas used by AdaOS for validation and by editors/LL
 - `nb.v1.schema.json` — notebook payload
 - `scenario.schema.json` — scenario manifest (`scenario.json`)
 - `skill.schema.json` — skill manifest (`skill.yaml`)
-- `webui.v1.schema.json` — skill WebUI contributions (`webui.json`)
+- `webui.v1.schema.json` — skill WebUI contributions (`webui.json`), including staged readiness hints for page/widget/modal/catalog surfaces

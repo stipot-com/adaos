@@ -30,6 +30,32 @@
       "minLength": 1,
       "description": "Identifier; may include ':' for synthetic ids (e.g. 'scenario:<id>')."
     },
+    "loadPhase": {
+      "type": "string",
+      "enum": ["eager", "visible", "interaction", "deferred"],
+      "description": "Coarse-grained load intent for a surface or data branch."
+    },
+    "focusPhase": {
+      "type": "string",
+      "enum": ["primary", "supporting", "off_focus", "background"],
+      "description": "Relative focus priority for staged or multi-surface interfaces."
+    },
+    "readinessState": {
+      "type": "string",
+      "enum": ["pending_structure", "first_paint", "interactive", "hydrating", "ready", "degraded"],
+      "description": "Expected readiness contract token surfaced while off-focus hydration is still in progress."
+    },
+    "loadHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Intent-level staged rendering hints. These are not scheduler commands.",
+      "properties": {
+        "structure": { "$ref": "#/$defs/loadPhase" },
+        "data": { "$ref": "#/$defs/loadPhase" },
+        "focus": { "$ref": "#/$defs/focusPhase" },
+        "offFocusReadyState": { "$ref": "#/$defs/readinessState" }
+      }
+    },
 
     "catalog": {
       "type": "object",
@@ -57,7 +83,8 @@
         "title": { "type": "string" },
         "icon": { "type": "string", "description": "Ionicon name (e.g. 'mic-outline')." },
         "launchModal": { "$ref": "#/$defs/id" },
-        "url": { "type": "string" }
+        "url": { "type": "string" },
+        "load": { "$ref": "#/$defs/loadHint" }
       }
     },
 
@@ -72,7 +99,8 @@
         "area": { "type": "string", "description": "Optional default area when pinned as a widget." },
         "dataSource": { "$ref": "#/$defs/dataSource" },
         "inputs": { "type": "object", "additionalProperties": true },
-        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+        "load": { "$ref": "#/$defs/loadHint" }
       }
     },
 
@@ -106,7 +134,8 @@
       "additionalProperties": true,
       "properties": {
         "title": { "type": "string" },
-        "schema": { "$ref": "#/$defs/pageSchema" }
+        "schema": { "$ref": "#/$defs/pageSchema" },
+        "load": { "$ref": "#/$defs/loadHint" }
       }
     },
 
@@ -122,7 +151,8 @@
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "layout": { "$ref": "#/$defs/layout" },
-        "widgets": { "type": "array", "items": { "$ref": "#/$defs/widgetConfig" } }
+        "widgets": { "type": "array", "items": { "$ref": "#/$defs/widgetConfig" } },
+        "load": { "$ref": "#/$defs/loadHint" }
       }
     },
     "layout": {
@@ -155,7 +185,8 @@
         "title": { "type": "string" },
         "dataSource": { "$ref": "#/$defs/dataSource" },
         "inputs": { "type": "object", "additionalProperties": true },
-        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+        "load": { "$ref": "#/$defs/loadHint" }
       }
     },
 

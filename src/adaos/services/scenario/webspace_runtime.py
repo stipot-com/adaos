@@ -32,6 +32,15 @@ _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 _WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
+_WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
+_WEBUI_LOAD_FOCUS = frozenset({"primary", "supporting", "off_focus", "background"})
+_WEBUI_READINESS_STATES = frozenset({"pending_structure", "first_paint", "interactive", "hydrating", "ready", "degraded"})
+_DEFERRED_OFF_FOCUS_LOAD = {
+    "structure": "interaction",
+    "data": "deferred",
+    "focus": "off_focus",
+    "offFocusReadyState": "hydrating",
+}
 
 
 @dataclass(slots=True)
@@ -255,6 +264,61 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def _normalize_webui_load_hint(value: Any) -> Dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    out: Dict[str, str] = {}
+    structure = str(value.get("structure") or "").strip()
+    if structure in _WEBUI_LOAD_PHASES:
+        out["structure"] = structure
+    data = str(value.get("data") or "").strip()
+    if data in _WEBUI_LOAD_PHASES:
+        out["data"] = data
+    focus = str(value.get("focus") or "").strip()
+    if focus in _WEBUI_LOAD_FOCUS:
+        out["focus"] = focus
+    off_focus_ready = str(value.get("offFocusReadyState") or "").strip()
+    if off_focus_ready in _WEBUI_READINESS_STATES:
+        out["offFocusReadyState"] = off_focus_ready
+    return out
+
+
+def _apply_webui_load_hint(node: Any) -> Dict[str, Any]:
+    item = _coerce_dict(node)
+    if not item:
+        return {}
+    load = _normalize_webui_load_hint(item.get("load"))
+    if load:
+        item["load"] = load
+    else:
+        item.pop("load", None)
+    return item
+
+
+def _normalize_webui_widget_config(node: Any) -> Dict[str, Any]:
+    return _apply_webui_load_hint(node)
+
+
+def _normalize_webui_page_schema(node: Any) -> Dict[str, Any]:
+    page = _apply_webui_load_hint(node)
+    if not page:
+        return {}
+    widgets = page.get("widgets")
+    if isinstance(widgets, list):
+        page["widgets"] = [_normalize_webui_widget_config(widget) for widget in widgets if isinstance(widget, Mapping)]
+    return page
+
+
+def _normalize_webui_modal_def(node: Any) -> Dict[str, Any]:
+    modal = _apply_webui_load_hint(node)
+    if not modal:
+        return {}
+    schema = modal.get("schema")
+    if isinstance(schema, Mapping):
+        modal["schema"] = _normalize_webui_page_schema(schema)
+    return modal
 
 
 def _clone_json_like(value: Any) -> Any:
@@ -806,6 +870,11 @@ class WebspaceScenarioRuntime:
             if stamp is not None:
                 _WEBUI_DECL_CACHE[cache_key] = (stamp, {})
             return {}
+        if not isinstance(raw, dict):
+            _log.warning("webui.json must be an object for %s", skill_name)
+            if stamp is not None:
+                _WEBUI_DECL_CACHE[cache_key] = (stamp, {})
+            return {}
 
         catalog = raw.get("catalog") or {}
         apps = raw.get("apps") or catalog.get("apps") or []
@@ -820,12 +889,18 @@ class WebspaceScenarioRuntime:
         payload = {
             "skill": skill_name,
             "space": space,
-            "apps": [it for it in apps if isinstance(it, dict)],
-            "widgets": [it for it in widgets if isinstance(it, dict)],
+            "apps": [_apply_webui_load_hint(it) for it in apps if isinstance(it, dict)],
+            "widgets": [_apply_webui_load_hint(it) for it in widgets if isinstance(it, dict)],
             "registry": {
-                "modals": ({str(k): v for k, v in reg_modals_raw.items()} if isinstance(reg_modals_raw, dict) else [str(x) for x in reg_modals_raw if isinstance(x, (str, int))]),
+                "modals": (
+                    {str(k): _normalize_webui_modal_def(v) for k, v in reg_modals_raw.items()}
+                    if isinstance(reg_modals_raw, dict)
+                    else [str(x) for x in reg_modals_raw if isinstance(x, (str, int))]
+                ),
                 "widgets": (
-                    {str(k): v for k, v in reg_widgets_raw.items()} if isinstance(reg_widgets_raw, dict) else [str(x) for x in reg_widgets_raw if isinstance(x, (str, int))]
+                    {str(k): _apply_webui_load_hint(v) for k, v in reg_widgets_raw.items()}
+                    if isinstance(reg_widgets_raw, dict)
+                    else [str(x) for x in reg_widgets_raw if isinstance(x, (str, int))]
                 ),
             },
             "ydoc_defaults": ydoc_defaults if isinstance(ydoc_defaults, dict) else {},
@@ -1099,8 +1174,10 @@ class WebspaceScenarioRuntime:
         if supports_catalog_controls and "apps_catalog" not in merged_modals_map:
             merged_modals_map["apps_catalog"] = {
                 "title": "Available Apps",
+                "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                 "schema": {
                     "id": "apps_catalog",
+                    "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                     "layout": {
                         "type": "single",
                         "areas": [{"id": "main", "role": "main"}],
@@ -1111,6 +1188,7 @@ class WebspaceScenarioRuntime:
                             "type": "collection.grid",
                             "area": "main",
                             "title": "Apps",
+                            "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                             "dataSource": {
                                 "kind": "y",
                                 "path": "data/catalog/apps",
@@ -1133,8 +1211,10 @@ class WebspaceScenarioRuntime:
         if supports_catalog_controls and "widgets_catalog" not in merged_modals_map:
             merged_modals_map["widgets_catalog"] = {
                 "title": "Available Widgets",
+                "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                 "schema": {
                     "id": "widgets_catalog",
+                    "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                     "layout": {
                         "type": "single",
                         "areas": [{"id": "main", "role": "main"}],
@@ -1145,6 +1225,7 @@ class WebspaceScenarioRuntime:
                             "type": "collection.grid",
                             "area": "main",
                             "title": "Widgets",
+                            "load": dict(_DEFERRED_OFF_FOCUS_LOAD),
                             "dataSource": {
                                 "kind": "y",
                                 "path": "data/catalog/widgets",

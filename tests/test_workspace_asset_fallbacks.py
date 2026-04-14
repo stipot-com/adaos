@@ -185,6 +185,72 @@ def test_webspace_runtime_load_webui_cache_refreshes_when_file_changes(tmp_path:
     assert "prompt_modal_b" in second_payload["registry"]["modals"]
 
 
+def test_webspace_runtime_load_webui_normalizes_staged_load_hints(tmp_path: Path) -> None:
+    runtime_base = tmp_path / "runtime"
+    repo_root = tmp_path / "repo"
+    repo_skill = repo_root / ".adaos" / "workspace" / "skills" / "prompt_engineer_skill"
+    repo_skill.mkdir(parents=True, exist_ok=True)
+    (repo_skill / "webui.json").write_text(
+        json.dumps(
+            {
+                "apps": [
+                    {
+                        "id": "prompt_ide",
+                        "title": "Prompt IDE",
+                        "load": {"structure": "visible", "data": "interaction", "focus": "primary"},
+                    }
+                ],
+                "widgets": [
+                    {
+                        "id": "chat_widget",
+                        "type": "ui.chat",
+                        "load": {"structure": "visible", "scheduler": "critical_path"},
+                    }
+                ],
+                "registry": {
+                    "modals": {
+                        "prompt_modal": {
+                            "title": "Prompt Modal",
+                            "load": {
+                                "structure": "interaction",
+                                "data": "deferred",
+                                "focus": "off_focus",
+                                "offFocusReadyState": "hydrating",
+                            },
+                            "schema": {
+                                "id": "prompt_modal",
+                                "load": {"structure": "interaction", "data": "deferred", "focus": "off_focus"},
+                                "layout": {"type": "single", "areas": [{"id": "main"}]},
+                                "widgets": [
+                                    {
+                                        "id": "prompt_list",
+                                        "type": "collection.grid",
+                                        "area": "main",
+                                        "load": {"structure": "visible", "data": "deferred", "focus": "off_focus"},
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_ctx = SimpleNamespace(paths=_PathsStub(base_dir=runtime_base, repo_root=repo_root))
+    runtime = WebspaceScenarioRuntime(fake_ctx)
+
+    payload = runtime._load_webui("prompt_engineer_skill", "default")
+
+    assert payload["apps"][0]["load"] == {"structure": "visible", "data": "interaction", "focus": "primary"}
+    assert payload["widgets"][0]["load"] == {"structure": "visible"}
+    modal = payload["registry"]["modals"]["prompt_modal"]
+    assert modal["load"]["offFocusReadyState"] == "hydrating"
+    assert modal["schema"]["load"]["focus"] == "off_focus"
+    assert modal["schema"]["widgets"][0]["load"]["data"] == "deferred"
+
+
 def test_webspace_runtime_switch_content_falls_back_to_builtin_web_desktop(monkeypatch) -> None:
     monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda _scenario_id, space="workspace": {})
 

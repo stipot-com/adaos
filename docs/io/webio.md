@@ -94,6 +94,31 @@ Recommended to add this to the top of every `webui.json`:
 }
 ```
 
+The schema now also supports coarse staged-readiness hints on page/widget/modal
+and catalog surfaces via a `load` object:
+
+```json
+{
+  "widgets": [
+    {
+      "id": "chat_widget",
+      "type": "ui.chat",
+      "load": {
+        "structure": "visible",
+        "data": "deferred",
+        "focus": "off_focus",
+        "offFocusReadyState": "hydrating"
+      }
+    }
+  ]
+}
+```
+
+These hints are intent-level only. They tell the backend/renderer which
+surfaces are first-paint critical versus off-focus or deferred, but they do
+not encode a low-level scheduler. Keep them at page/widget/modal/catalog
+granularity rather than annotating every leaf control.
+
 ## Simplifications & Limitations
 
 * Switching webspaces currently reloads the page to keep the Y.Doc tree simple. In future iterations the YDocService can swap docs without a refresh.
