@@ -29,23 +29,23 @@
 
 - [x] отделить collaborative Yjs state от operational subnet state на уровне архитектуры
 - [x] зафиксировать `subnet directory -> system model -> planning` как основной путь потребления
-- [ ] завести durable runtime projection member-ноды в subnet SQLite
-- [ ] реплицировать runtime projection с hub на members вместе с subnet snapshot
-- [ ] поднять runtime projection в canonical node/neighborhood projections
-- [ ] использовать persisted runtime projection в reliability для linkless/aging members
-- [ ] довести capacity-репликацию до симметрии по `io`, `skills` и `scenarios`
-- [ ] добавить task-packet friendly subnet planning projection поверх durable read model
+- [x] завести durable runtime projection member-ноды в subnet SQLite
+- [x] реплицировать runtime projection с hub на members вместе с subnet snapshot
+- [x] поднять runtime projection в canonical node/neighborhood projections
+- [x] использовать persisted runtime projection в reliability для linkless/aging members
+- [x] довести capacity-репликацию до симметрии по `io`, `skills` и `scenarios`
+- [x] добавить task-packet friendly subnet planning projection поверх durable read model
 - [ ] убрать planning-зависимость от raw `node.yaml` и transport-specific payloads там, где есть canonical projection
-- [ ] формализовать freshness/staleness contract для persisted subnet runtime projection
+- [x] формализовать freshness/staleness contract для persisted subnet runtime projection
 
 ### Ближайшие инкременты
 
-1. `runtime projection persistence`
-   Сохранить rich member runtime snapshot в subnet SQLite и раздавать его как часть subnet snapshot.
-2. `planning integration`
-   Обогатить `system_model` и `reliability` persisted runtime projection, чтобы planning переживал потерю live member link.
-3. `projection hardening`
-   Нормализовать freshness, rollout, media/direct-path и control-result semantics поверх одного durable read model.
+1. `planning dependency cleanup`
+   Убрать оставшиеся planning-зависимости от raw `node.yaml` и transport-specific payloads там, где уже есть canonical projection.
+2. `projection hardening`
+   Довести поверх одного durable read model rollout, media/direct-path и control-result semantics до общего, непротиворечивого контракта.
+3. `operator adoption`
+   Подтянуть UI и SDK consumers к новому subnet planning context без обходов через старые runtime payloads.
 
 ## Опорные сценарии
 

@@ -15,6 +15,9 @@ from urllib.parse import urlparse
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
+from adaos.services.registry.subnet_runtime_projection import (
+    subnet_runtime_projection_freshness,
+)
 from adaos.services.zone_hosts import canonical_zone_id
 
 
@@ -3452,23 +3455,12 @@ def hub_member_connection_state_snapshot(
                 if isinstance(node_snapshot.get("update_status"), dict)
                 else {}
             )
-            captured_at = runtime_projection.get("captured_at")
-            try:
-                captured_at_value = float(captured_at) if captured_at is not None else 0.0
-            except Exception:
-                captured_at_value = 0.0
-            if not online:
-                snapshot_state = "stale"
-            elif captured_at_value <= 0.0:
-                snapshot_state = "pending"
-            else:
-                snapshot_age = max(0.0, now - captured_at_value)
-                if snapshot_age >= 90.0:
-                    snapshot_state = "stale"
-                elif snapshot_age >= 30.0:
-                    snapshot_state = "aging"
-                else:
-                    snapshot_state = "fresh"
+            projection_freshness = subnet_runtime_projection_freshness(
+                runtime_projection,
+                online=online,
+                now=now,
+            )
+            snapshot_state = str(projection_freshness.get("state") or "pending")
             rollout_state = (
                 "stale"
                 if not online
@@ -3518,6 +3510,7 @@ def hub_member_connection_state_snapshot(
                     "online": online,
                     "observed_via": "subnet_directory",
                     "last_seen_ago_s": round(max(0.0, now - last_seen), 3) if last_seen > 0.0 else None,
+                    "runtime_projection_freshness": projection_freshness,
                     "snapshot_state": snapshot_state,
                     "rollout_state": rollout_state,
                     "snapshot_ready": bool(runtime_projection.get("ready")),

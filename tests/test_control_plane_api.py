@@ -393,6 +393,15 @@ def test_current_node_neighborhood_projection_includes_remote_io_capacity_object
                     "base_url": "http://member-2.local",
                     "node_state": "ready",
                     "online": True,
+                    "runtime_projection": {
+                        "captured_at": __import__("time").time() - 5.0,
+                        "node_names": ["Kitchen East"],
+                        "primary_node_name": "Kitchen East",
+                        "ready": True,
+                        "route_mode": "ws",
+                        "build": {"runtime_version": "0.2.0"},
+                        "update_status": {"state": "succeeded", "phase": "validate"},
+                    },
                     "capacity": {
                         "io": [
                             {
@@ -421,6 +430,7 @@ def test_current_node_neighborhood_projection_includes_remote_io_capacity_object
     assert "capacity:member-2" in objects
     assert "io:member-2:webrtc_media" in objects
     assert objects["io:member-2:webrtc_media"]["runtime"]["topology"] == "member_browser_direct"
+    assert projection["context"]["subnet_runtime_summary"]["freshness_totals"]["fresh"] == 1
 
 
 def test_node_control_plane_neighborhood_projection_returns_canonical_payload(monkeypatch) -> None:

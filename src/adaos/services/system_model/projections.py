@@ -121,6 +121,113 @@ def _incident_from_object(obj: CanonicalObject) -> dict[str, Any] | None:
     )
 
 
+def _node_like_object(obj: CanonicalObject) -> bool:
+    kind = str(obj.kind or "").strip()
+    return kind in {
+        CanonicalKind.NODE.value,
+        CanonicalKind.HUB.value,
+        CanonicalKind.MEMBER.value,
+    }
+
+
+def _subnet_planning_nodes(subject: CanonicalObject, objects: list[CanonicalObject]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for obj in [subject, *objects]:
+        if not _node_like_object(obj):
+            continue
+        obj_id = str(obj.id or "").strip()
+        if not obj_id or obj_id in seen:
+            continue
+        seen.add(obj_id)
+        runtime = coerce_mapping(getattr(obj, "runtime", {}))
+        health = coerce_mapping(getattr(obj, "health", {}))
+        actual_state = coerce_mapping(getattr(obj, "actual_state", {}))
+        build = coerce_mapping(runtime.get("build"))
+        update_status = coerce_mapping(runtime.get("update_status"))
+        freshness = coerce_mapping(runtime.get("runtime_projection_freshness"))
+        node_names = [
+            str(item or "").strip()
+            for item in list(runtime.get("node_names") or [])
+            if str(item or "").strip()
+        ]
+        items.append(
+            compact_mapping(
+                {
+                    "id": obj_id,
+                    "kind": obj.kind,
+                    "title": obj.title,
+                    "status": obj.status.value if hasattr(obj.status, "value") else str(obj.status),
+                    "online": actual_state.get("online"),
+                    "connectivity": health.get("connectivity"),
+                    "route_mode": runtime.get("route_mode") or health.get("route_mode"),
+                    "ready": runtime.get("ready"),
+                    "node_state": runtime.get("node_state"),
+                    "node_names": node_names,
+                    "freshness": freshness,
+                    "runtime_version": build.get("runtime_version") or build.get("version"),
+                    "runtime_git_short_commit": build.get("runtime_git_short_commit"),
+                    "update_state": update_status.get("state"),
+                    "update_phase": update_status.get("phase"),
+                    "connected_to_hub": runtime.get("connected_to_hub"),
+                }
+            )
+        )
+    return items
+
+
+def _subnet_planning_summary(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    if not nodes:
+        return {}
+    status_totals: dict[str, int] = {}
+    freshness_totals: dict[str, int] = {}
+    route_mode_totals: dict[str, int] = {}
+    update_state_totals: dict[str, int] = {}
+    online_total = 0
+    ready_total = 0
+    stale_node_ids: list[str] = []
+    pending_node_ids: list[str] = []
+    offline_node_ids: list[str] = []
+    for item in nodes:
+        status = str(item.get("status") or "").strip()
+        if status:
+            status_totals[status] = int(status_totals.get(status) or 0) + 1
+        route_mode = str(item.get("route_mode") or "").strip()
+        if route_mode:
+            route_mode_totals[route_mode] = int(route_mode_totals.get(route_mode) or 0) + 1
+        update_state = str(item.get("update_state") or "").strip()
+        if update_state:
+            update_state_totals[update_state] = int(update_state_totals.get(update_state) or 0) + 1
+        if item.get("online") is True:
+            online_total += 1
+        elif item.get("online") is False:
+            offline_node_ids.append(str(item.get("id") or ""))
+        if item.get("ready") is True:
+            ready_total += 1
+        freshness = coerce_mapping(item.get("freshness"))
+        freshness_state = str(freshness.get("state") or "").strip()
+        if freshness_state:
+            freshness_totals[freshness_state] = int(freshness_totals.get(freshness_state) or 0) + 1
+            if freshness_state == "stale":
+                stale_node_ids.append(str(item.get("id") or ""))
+            elif freshness_state == "pending":
+                pending_node_ids.append(str(item.get("id") or ""))
+    return compact_mapping(
+        {
+            "node_total": len(nodes),
+            "online_total": online_total,
+            "ready_total": ready_total,
+            "status_totals": status_totals,
+            "freshness_totals": freshness_totals,
+            "route_mode_totals": route_mode_totals,
+            "update_state_totals": update_state_totals,
+            "stale_node_ids": [item for item in stale_node_ids if item],
+            "pending_node_ids": [item for item in pending_node_ids if item],
+            "offline_node_ids": [item for item in offline_node_ids if item],
+        }
+    )
+
+
 def _flatten_relation_refs(relations: dict[str, Any] | None) -> list[str]:
     out: list[str] = []
     data = relations if isinstance(relations, dict) else {}
@@ -800,6 +907,8 @@ def canonical_neighborhood_projection(
     peer_node_ids: list[str] = []
     online_peer_total = 0
     incidents: list[dict[str, Any]] = []
+    subnet_planning_nodes = _subnet_planning_nodes(subject, objects)
+    subnet_runtime_summary = _subnet_planning_summary(subnet_planning_nodes)
     for obj in objects:
         kind = str(obj.kind or "unknown").strip() or "unknown"
         kind_totals[kind] = int(kind_totals.get(kind) or 0) + 1
@@ -821,6 +930,7 @@ def canonical_neighborhood_projection(
             "online_peer_total": online_peer_total,
             "incident_total": len(incidents),
             "peer_node_ids": peer_node_ids,
+            "subnet_runtime_summary": subnet_runtime_summary,
         }
     )
     return CanonicalProjection(
@@ -839,6 +949,7 @@ def canonical_neighborhood_projection(
                     "peer_node_ids": peer_node_ids,
                     "object_ids": [obj.id for obj in objects],
                     "incident_total": len(incidents),
+                    "subnet_runtime_summary": subnet_runtime_summary,
                 }
             }
         ),
@@ -1126,6 +1237,13 @@ def canonical_task_packet(
         }
     )
     gap = _state_gap(subject)
+    subnet_planning_nodes = _subnet_planning_nodes(subject, objects)
+    subnet_planning = compact_mapping(
+        {
+            "summary": _subnet_planning_summary(subnet_planning_nodes),
+            "nodes": subnet_planning_nodes,
+        }
+    )
     return CanonicalProjection(
         id=f"projection:{subject.id}/task-packet",
         kind="task_packet",
@@ -1148,6 +1266,7 @@ def canonical_task_packet(
                 "gap": gap,
                 "constraints": constraints,
                 "narrative": narrative,
+                "subnet_planning": subnet_planning,
             }
         ),
         representations=compact_mapping(
@@ -1158,6 +1277,7 @@ def canonical_task_packet(
                     "policy_context": policy_context,
                     "allowed_action_ids": [item.get("id") for item in actions],
                     "incident_total": len(incidents),
+                    "subnet_planning_summary": subnet_planning.get("summary"),
                 }
             }
         ),

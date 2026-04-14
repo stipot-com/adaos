@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any, Mapping
 
+from adaos.services.registry.subnet_runtime_projection import (
+    subnet_runtime_projection_freshness,
+)
 from adaos.services.system_model.model import (
     CanonicalActionDescriptor,
     CanonicalGovernance,
@@ -536,6 +539,10 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
     projection_node_state = str(runtime_projection.get("node_state") or "").strip() or None
     node_state = str(data.get("node_state") or projection_node_state or "").strip() or None
     online = data.get("online")
+    runtime_projection_freshness = subnet_runtime_projection_freshness(
+        runtime_projection,
+        online=online if isinstance(online, bool) else None,
+    )
     capacity = data.get("capacity") if isinstance(data.get("capacity"), Mapping) else {}
     node_names = [
         str(item or "").strip()
@@ -565,6 +572,7 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
             {
                 "connectivity": normalize_connectivity_status(online),
                 "route_mode": str(runtime_projection.get("route_mode") or "").strip() or None,
+                "runtime_freshness": str(runtime_projection_freshness.get("state") or "").strip() or None,
             }
         ),
         relations=compact_mapping(
@@ -594,6 +602,7 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
                 "route_mode": runtime_projection.get("route_mode"),
                 "connected_to_hub": runtime_projection.get("connected_to_hub"),
                 "runtime_projection_captured_at": runtime_projection.get("captured_at"),
+                "runtime_projection_freshness": runtime_projection_freshness,
                 "build": runtime_projection.get("build") if isinstance(runtime_projection.get("build"), Mapping) else {},
                 "update_status": (
                     runtime_projection.get("update_status")
@@ -612,6 +621,7 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
                 "online": online,
                 "capacity": capacity,
                 "runtime_projection": runtime_projection,
+                "runtime_projection_freshness": runtime_projection_freshness,
             }
         ),
         representations=compact_mapping(
@@ -624,6 +634,7 @@ def canonical_object_from_subnet_directory_node(payload: Any) -> CanonicalObject
                     "primary_node_name": primary_node_name,
                     "node_state": node_state,
                     "ready": runtime_projection.get("ready"),
+                    "runtime_projection_freshness": runtime_projection_freshness,
                     "build": runtime_projection.get("build"),
                     "update_status": runtime_projection.get("update_status"),
                 }

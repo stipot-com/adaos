@@ -306,6 +306,7 @@ def test_hub_member_connection_state_uses_persisted_runtime_projection_for_linkl
     assert member["node_names"] == ["Kitchen East"]
     assert member["snapshot_ready"] is True
     assert member["snapshot_state"] == "fresh"
+    assert member["runtime_projection_freshness"]["state"] == "fresh"
     assert member["snapshot_update_state"] == "succeeded"
     assert member["snapshot_runtime_version"] == "0.2.0"
 

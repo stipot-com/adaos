@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import sys
 from types import SimpleNamespace
 import types
@@ -296,6 +297,7 @@ def test_canonical_object_from_device_endpoint_merges_workspace_and_session_link
 
 
 def test_canonical_object_from_subnet_directory_node_maps_capacity_and_presence() -> None:
+    now = time.time()
     obj = canonical_object_from_subnet_directory_node(
         {
             "node_id": "member-2",
@@ -311,6 +313,7 @@ def test_canonical_object_from_subnet_directory_node_maps_capacity_and_presence(
                 "scenarios": [{"name": "home"}],
             },
             "runtime_projection": {
+                "captured_at": now - 5.0,
                 "primary_node_name": "Kitchen East",
                 "node_names": ["Kitchen East"],
                 "ready": True,
@@ -329,6 +332,8 @@ def test_canonical_object_from_subnet_directory_node_maps_capacity_and_presence(
     assert obj["runtime"]["node_names"] == ["Kitchen East"]
     assert obj["runtime"]["build"]["runtime_version"] == "0.2.0"
     assert obj["health"]["route_mode"] == "ws"
+    assert obj["health"]["runtime_freshness"] == "fresh"
+    assert obj["runtime"]["runtime_projection_freshness"]["state"] == "fresh"
     assert obj["health"]["connectivity"] == "reachable"
 
 
@@ -989,6 +994,59 @@ def test_canonical_object_topology_and_task_packet_projections_share_selected_ob
     assert task_packet["context"]["task_goal"] == "diagnose drift"
     assert task_packet["context"]["gap"]["version"]["desired"] == "2026.04.08"
     assert task_packet["context"]["allowed_actions"][0]["id"] == "restart"
+
+
+def test_canonical_neighborhood_and_task_packet_include_subnet_planning_context() -> None:
+    now = time.time()
+    subject = canonical_object_from_subnet_directory_node(
+        {
+            "node_id": "hub-1",
+            "subnet_id": "main",
+            "roles": ["hub"],
+            "hostname": "Hub Alpha",
+            "node_state": "ready",
+            "online": True,
+            "capacity": {"io": [], "skills": [], "scenarios": []},
+            "runtime_projection": {
+                "captured_at": now - 10.0,
+                "node_names": ["Hub Alpha"],
+                "primary_node_name": "Hub Alpha",
+                "ready": True,
+                "route_mode": "hub",
+                "build": {"runtime_version": "0.4.0"},
+                "update_status": {"state": "succeeded", "phase": "validate"},
+            },
+        }
+    )
+    member = canonical_object_from_subnet_directory_node(
+        {
+            "node_id": "member-2",
+            "subnet_id": "main",
+            "roles": ["member"],
+            "hostname": "Kitchen Member",
+            "node_state": "ready",
+            "online": True,
+            "capacity": {"io": [], "skills": [], "scenarios": []},
+            "runtime_projection": {
+                "captured_at": now - 20.0,
+                "node_names": ["Kitchen East"],
+                "primary_node_name": "Kitchen East",
+                "ready": True,
+                "route_mode": "ws",
+                "build": {"runtime_version": "0.2.0", "runtime_git_short_commit": "abc1234"},
+                "update_status": {"state": "succeeded", "phase": "validate"},
+            },
+        }
+    )
+
+    neighborhood = canonical_neighborhood_projection(subject, [member]).to_dict()
+    task_packet = canonical_task_packet(subject, [member], task_goal="plan subnet rollout").to_dict()
+
+    assert neighborhood["context"]["subnet_runtime_summary"]["node_total"] == 2
+    assert neighborhood["context"]["subnet_runtime_summary"]["freshness_totals"]["fresh"] == 2
+    assert task_packet["context"]["subnet_planning"]["summary"]["node_total"] == 2
+    assert task_packet["context"]["subnet_planning"]["summary"]["route_mode_totals"]["ws"] == 1
+    assert task_packet["context"]["subnet_planning"]["nodes"][1]["runtime_git_short_commit"] == "abc1234"
 
 
 def test_canonical_projection_from_reliability_snapshot_keeps_media_route_contract() -> None:

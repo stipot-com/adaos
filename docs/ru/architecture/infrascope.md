@@ -281,6 +281,21 @@ Yjs хорошо подходит для collaborative state, но не долж
 - rich snapshot payload:
   best-effort raw snapshot для восстановления richer projections без потери semantic envelope
 
+### Контракт freshness для runtime projection
+
+Persisted runtime projection должен иметь единый freshness/staleness contract, который одинаково понимают `reliability`, `system_model`, UI и LLM planning:
+
+- `fresh`:
+  snapshot захвачен недавно и пригоден как текущая operational truth.
+- `aging`:
+  snapshot ещё пригоден для reasoning, но уже требует осторожности и может отставать от live state.
+- `stale`:
+  snapshot устарел или сама нода offline, поэтому planning должен считать данные degraded authority.
+- `pending`:
+  persisted runtime projection для ноды ещё не накоплен.
+
+Минимальный normalized envelope этого контракта: `state`, `reason`, `captured_at`, `age_s`, `aging_after_s`, `stale_after_s`, `online`.
+
 ### Почему это важно для локального planning
 
 Локальная нода должна понимать соседей не только пока websocket-link жив, но и после:
