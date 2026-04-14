@@ -546,11 +546,27 @@ def _scenario_loader_space(source_mode: str) -> str:
     return "dev" if str(source_mode or "").strip().lower() == "dev" else "workspace"
 
 
-def _pointer_first_scenario_switch_enabled() -> bool:
-    raw = os.getenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH")
+def _env_flag_enabled(name: str) -> bool:
+    raw = os.getenv(name)
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pointer_first_scenario_switch_enabled() -> bool:
+    return _env_flag_enabled("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH")
+
+
+def _scenario_switch_compat_cache_writes_enabled() -> bool:
+    return _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
+
+
+def _scenario_switch_mode() -> str:
+    if _scenario_switch_compat_cache_writes_enabled():
+        return "materialize_and_copy"
+    if _pointer_first_scenario_switch_enabled():
+        return "pointer_first"
+    return "pointer_only"
 
 
 def _extract_scenario_sections_from_content(content: Mapping[str, Any] | None) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
@@ -2720,7 +2736,7 @@ async def switch_webspace_scenario(
         set_home,
         resolved_set_home,
     )
-    switch_mode = "pointer_first" if _pointer_first_scenario_switch_enabled() else "materialize_and_copy"
+    switch_mode = _scenario_switch_mode()
     loader_space = "workspace"
     try:
         if row:
@@ -2875,7 +2891,7 @@ async def switch_webspace_scenario(
             ),
         }
 
-    if switch_mode != "pointer_first":
+    if switch_mode == "materialize_and_copy":
         stage_started = time.perf_counter()
         switch_content = _load_scenario_switch_content(scenario_id, space=loader_space)
         _record_timing(timings_ms, "load_scenario", stage_started)
@@ -2923,7 +2939,7 @@ async def switch_webspace_scenario(
         stage_started = time.perf_counter()
         async with async_get_ydoc(webspace_id) as ydoc:
             _record_timing(timings_ms, "open_doc", stage_started)
-            if switch_mode == "pointer_first":
+            if switch_mode in {"pointer_first", "pointer_only"}:
                 ui_map = ydoc.get_map("ui")
                 stage_started = time.perf_counter()
                 with ydoc.begin_transaction() as txn:

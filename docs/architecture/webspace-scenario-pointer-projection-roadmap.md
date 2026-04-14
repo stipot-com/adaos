@@ -255,7 +255,7 @@ Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,
 `time_to_full_hydration`) derived from the still-mostly-monolithic runtime.
 These numbers are intentionally best-effort until fragmented reconcile lands,
-but they already make pointer-first acceptance and full rebuild latency easier
+but they already make pointer-based acceptance and full rebuild latency easier
 to compare in production.
 
 Scenario content/manifests and skill `webui.json` loads now also use
@@ -280,15 +280,35 @@ that scenario is already `scheduled` or `running`. Control responses now
 surface both skip metadata and the current rebuild status so retries can stay
 cheap without becoming opaque.
 
-The remaining materialize-and-copy path now also performs the same lightweight
-scenario existence preflight before loading `scenario.json`, so both switch
-modes reject missing targets before any heavy payload copy work begins.
-Legacy materialize mode now limits itself to compatibility cache writes plus
+Default scenario switch now uses a `pointer_only` contract: validate the
+target, update `ui.current_scenario`, and let semantic rebuild own effective
+branch hydration. The older feature flag
+`ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH=1` remains accepted as an explicit
+pointer-path compatibility alias, but pointer writes are now the normal path
+instead of the opt-in experiment.
+
+The remaining `materialize_and_copy` path now also performs the same
+lightweight scenario existence preflight before loading `scenario.json`, but it
+is rollback-only behind `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1`.
+When enabled, it limits itself to compatibility cache writes plus
 `ui.current_scenario`; active runtime branches are left to semantic rebuild, so
 normal scenario switch no longer duplicates effective writes before reconcile.
 Compatibility cache payloads are now also trimmed to the sections the current
 runtime still uses for fallback (`ui.application`, `registry`, `catalog`)
 instead of copying arbitrary scenario `data` into switch-time caches.
+
+Current rollback guidance if pointer-only switch regresses runtime behavior:
+
+- if `ui.current_scenario` flips quickly but the visible UI stays stale until a
+  late rebuild or never catches up, suspect a remaining consumer that still
+  depends on eagerly materialized `ui.scenarios`, `registry.scenarios`, or
+  `data.scenarios`
+- temporarily enable `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1` and restart
+  the hub to restore switch-time compatibility cache writes while comparing
+  `phase_timings_ms`, resolver diagnostics, and client behavior
+- if rollback fixes the regression, treat that as proof that the remaining
+  issue is frontend/client readiness or legacy-branch coupling, not scenario
+  existence validation or pointer write itself
 
 Reader/writer audit for migration planning:
 
@@ -334,10 +354,10 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 2. Switch Contract Simplification
 
-- [x] Introduce a feature-flagged pointer-first switch path.
+- [x] Introduce a fast pointer-based switch path.
 - [x] Make `switch_webspace_scenario()` validate existence without eager full
   payload copy.
-- [ ] Restrict switch writes to `ui.current_scenario` and minimal metadata.
+- [x] Restrict switch writes to `ui.current_scenario` and minimal metadata.
 - [x] Preserve `set_home` / dev-webspace policy behavior.
 - [x] Ensure rebuild status is observable during asynchronous switch reconcile.
 
@@ -358,8 +378,8 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Keep compatibility caches readable during migration.
 - [x] Add explicit debug signals when legacy fallback branches are used.
 - [ ] Define the removal criteria for legacy scenario materialization.
-- [ ] Confirm current frontend contracts still work with pointer-first switch.
-- [ ] Document failure modes and rollback path if the new switch contract
+- [ ] Confirm current frontend contracts still work with pointer-only switch.
+- [x] Document failure modes and rollback path if the new switch contract
   regresses runtime behavior.
 - [ ] Define a compatibility contract for partially ready UI so the renderer
   can distinguish degraded state from intentional deferred hydration.
