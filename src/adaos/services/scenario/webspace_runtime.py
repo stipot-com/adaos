@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from collections import OrderedDict
 from collections.abc import Iterable
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +34,8 @@ _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 _WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
+_RESOLVED_WEBSPACE_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_RESOLVED_WEBSPACE_CACHE_LIMIT = 64
 _WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
 _WEBUI_LOAD_FOCUS = frozenset({"primary", "supporting", "off_focus", "background"})
 _WEBUI_READINESS_STATES = frozenset({"pending_structure", "first_paint", "interactive", "hydrating", "ready", "degraded"})
@@ -342,6 +346,106 @@ def _clone_json_like(value: Any) -> Any:
             except Exception:
                 return value
         return value
+
+
+def _fingerprint_json_like(value: Any) -> str:
+    try:
+        normalized = json.dumps(
+            _clone_json_like(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+    except Exception:
+        normalized = repr(value)
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+def _resolver_cache_keys(inputs: WebspaceResolverInputs) -> Dict[str, str]:
+    scenario_snapshot = {
+        "scenario_id": inputs.scenario_id,
+        "source_mode": inputs.source_mode,
+        "scenario_source": inputs.scenario_source,
+        "legacy_scenario_fallback": inputs.legacy_scenario_fallback,
+        "scenario_application": inputs.scenario_application,
+        "scenario_catalog": inputs.scenario_catalog,
+        "scenario_registry": inputs.scenario_registry,
+    }
+    return {
+        "scenario": _fingerprint_json_like(scenario_snapshot),
+        "skills": _fingerprint_json_like(inputs.skill_decls),
+        "overlay": _fingerprint_json_like(inputs.overlay_snapshot),
+        "live": _fingerprint_json_like(inputs.live_state),
+        "desktop_scenarios": _fingerprint_json_like(inputs.desktop_scenarios),
+    }
+
+
+def _resolver_input_fingerprint(inputs: WebspaceResolverInputs, *, cache_keys: Mapping[str, Any]) -> str:
+    snapshot = {
+        "webspace_id": inputs.webspace_id,
+        "scenario_id": inputs.scenario_id,
+        "source_mode": inputs.source_mode,
+        "scenario_source": inputs.scenario_source,
+        "legacy_scenario_fallback": inputs.legacy_scenario_fallback,
+        "metadata": inputs.metadata,
+        "cache_keys": dict(cache_keys),
+    }
+    return _fingerprint_json_like(snapshot)
+
+
+def _resolved_outputs_to_cache_payload(resolved: WebspaceResolverOutputs) -> Dict[str, Any]:
+    return {
+        "webspace_id": str(resolved.webspace_id or ""),
+        "scenario_id": str(resolved.scenario_id or ""),
+        "source_mode": str(resolved.source_mode or ""),
+        "application": _clone_json_like(resolved.application),
+        "catalog": _clone_json_like(resolved.catalog),
+        "registry": _clone_json_like(resolved.registry),
+        "installed": _clone_json_like(resolved.installed),
+        "desktop": _clone_json_like(resolved.desktop),
+        "routing": _clone_json_like(resolved.routing),
+        "skill_decls": _clone_json_like(resolved.skill_decls),
+    }
+
+
+def _resolved_outputs_from_cache_payload(payload: Mapping[str, Any]) -> WebspaceResolverOutputs:
+    return WebspaceResolverOutputs(
+        webspace_id=str(payload.get("webspace_id") or ""),
+        scenario_id=str(payload.get("scenario_id") or ""),
+        source_mode=str(payload.get("source_mode") or ""),
+        application=_coerce_dict(payload.get("application") or {}),
+        catalog=_coerce_dict(payload.get("catalog") or {}),
+        registry=_coerce_dict(payload.get("registry") or {}),
+        installed=_coerce_dict(payload.get("installed") or {}),
+        desktop=_coerce_dict(payload.get("desktop") or {}),
+        routing=_coerce_dict(payload.get("routing") or {}),
+        skill_decls=[
+            dict(item)
+            for item in (payload.get("skill_decls") or [])
+            if isinstance(item, Mapping)
+        ],
+    )
+
+
+def _get_cached_resolved_outputs(fingerprint: str) -> WebspaceResolverOutputs | None:
+    token = str(fingerprint or "").strip()
+    if not token:
+        return None
+    cached = _RESOLVED_WEBSPACE_CACHE.get(token)
+    if not isinstance(cached, Mapping):
+        return None
+    _RESOLVED_WEBSPACE_CACHE.move_to_end(token)
+    return _resolved_outputs_from_cache_payload(cached)
+
+
+def _remember_resolved_outputs(fingerprint: str, resolved: WebspaceResolverOutputs) -> None:
+    token = str(fingerprint or "").strip()
+    if not token:
+        return
+    _RESOLVED_WEBSPACE_CACHE[token] = _resolved_outputs_to_cache_payload(resolved)
+    _RESOLVED_WEBSPACE_CACHE.move_to_end(token)
+    while len(_RESOLVED_WEBSPACE_CACHE) > _RESOLVED_WEBSPACE_CACHE_LIMIT:
+        _RESOLVED_WEBSPACE_CACHE.popitem(last=False)
 
 
 def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> bool:
@@ -759,6 +863,9 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "registry_summary": dict(current.get("registry_summary") or {})
         if isinstance(current.get("registry_summary"), Mapping)
         else None,
+        "resolver": dict(current.get("resolver") or {})
+        if isinstance(current.get("resolver"), Mapping)
+        else None,
         "timings_ms": _copy_timing_map(current.get("timings_ms")),
         "switch_timings_ms": _copy_timing_map(current.get("switch_timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
@@ -791,6 +898,7 @@ class WebspaceScenarioRuntime:
         # Cached snapshot of desktop scenarios discovered on disk.
         self._desktop_scenarios: Optional[List[Tuple[str, str]]] = None
         self._last_rebuild_timings_ms: Dict[str, float] | None = None
+        self._last_resolver_debug: Dict[str, Any] | None = None
 
     # --- scenario helpers -------------------------------------------------
 
@@ -1055,6 +1163,21 @@ class WebspaceScenarioRuntime:
         )
 
     def resolve_webspace(self, inputs: WebspaceResolverInputs) -> WebspaceResolverOutputs:
+        cache_keys = _resolver_cache_keys(inputs)
+        resolver_fingerprint = _resolver_input_fingerprint(inputs, cache_keys=cache_keys)
+        resolver_debug = {
+            "source": str(inputs.scenario_source or ""),
+            "legacy_fallback": bool(inputs.legacy_scenario_fallback),
+            "cache_keys": dict(cache_keys),
+            "input_fingerprint": resolver_fingerprint,
+            "cache_hit": False,
+        }
+        cached = _get_cached_resolved_outputs(resolver_fingerprint)
+        if cached is not None:
+            resolver_debug["cache_hit"] = True
+            self._last_resolver_debug = resolver_debug
+            return cached
+
         scenario_id = str(inputs.scenario_id or "").strip() or "web_desktop"
         source_mode = str(inputs.source_mode or "").strip() or "mixed"
         scenario_application = _coerce_dict(inputs.scenario_application or {})
@@ -1270,7 +1393,7 @@ class WebspaceScenarioRuntime:
         routes = routing_dict.get("routes")
         routing_dict = {**routing_dict, "routes": _coerce_dict(routes)}
 
-        return WebspaceResolverOutputs(
+        resolved = WebspaceResolverOutputs(
             webspace_id=inputs.webspace_id,
             scenario_id=scenario_id,
             source_mode=source_mode,
@@ -1291,6 +1414,9 @@ class WebspaceScenarioRuntime:
             routing=routing_dict,
             skill_decls=skill_decls,
         )
+        _remember_resolved_outputs(resolver_fingerprint, resolved)
+        self._last_resolver_debug = resolver_debug
+        return resolved
 
     def _apply_resolved_state_in_doc(self, ydoc: Y.YDoc, webspace_id: str, resolved: WebspaceResolverOutputs) -> None:
         ui_map = ydoc.get_map("ui")
@@ -1322,6 +1448,7 @@ class WebspaceScenarioRuntime:
     def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
         rebuild_started = time.perf_counter()
         timings: Dict[str, float] = {}
+        self._last_resolver_debug = None
 
         stage_started = time.perf_counter()
         inputs = self._collect_resolver_inputs_in_doc(ydoc, webspace_id)
@@ -1342,11 +1469,12 @@ class WebspaceScenarioRuntime:
 
         try:
             _log.debug(
-                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s apps=%d widgets=%d timings_ms=%s",
+                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s cache_hit=%s apps=%d widgets=%d timings_ms=%s",
                 webspace_id,
                 resolved.scenario_id,
                 str(inputs.scenario_source or ""),
                 bool(inputs.legacy_scenario_fallback),
+                bool((self._last_resolver_debug or {}).get("cache_hit")),
                 len(entry.apps),
                 len(entry.widgets),
                 self._last_rebuild_timings_ms,
@@ -2068,6 +2196,7 @@ async def rebuild_webspace_from_sources(
         error=None,
         projection_refresh=None,
         registry_summary=None,
+        resolver=None,
         timings_ms=None,
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=None,
@@ -2139,6 +2268,7 @@ async def rebuild_webspace_from_sources(
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
         semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+        resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
         phase_timings = _derive_phase_timings(
             switch_timings_ms=effective_switch_timings,
             rebuild_timings_ms=finalized_timings,
@@ -2153,6 +2283,7 @@ async def rebuild_webspace_from_sources(
             error="webspace_rebuild_failed",
             switch_mode=effective_switch_mode,
             projection_refresh=projection_refresh,
+            resolver=resolver_debug or None,
             timings_ms=finalized_timings,
             switch_timings_ms=effective_switch_timings,
             semantic_rebuild_timings_ms=semantic_timings,
@@ -2178,6 +2309,7 @@ async def rebuild_webspace_from_sources(
             "request_id": request_id,
             "switch_mode": effective_switch_mode,
             "projection_refresh": projection_refresh,
+            "resolver": resolver_debug or None,
             "timings_ms": finalized_timings,
             "switch_timings_ms": effective_switch_timings,
             "semantic_rebuild_timings_ms": semantic_timings,
@@ -2186,6 +2318,7 @@ async def rebuild_webspace_from_sources(
         }
 
     semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+    resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
 
     if not target_scenario:
         stage_started = time.perf_counter()
@@ -2255,6 +2388,7 @@ async def rebuild_webspace_from_sources(
             "apps": len(getattr(entry, "apps", []) or []),
             "widgets": len(getattr(entry, "widgets", []) or []),
         },
+        "resolver": resolver_debug or None,
         "timings_ms": finalized_timings,
         "switch_timings_ms": effective_switch_timings,
         "semantic_rebuild_timings_ms": semantic_timings,
@@ -2271,6 +2405,7 @@ async def rebuild_webspace_from_sources(
         scenario_id=target_scenario,
         projection_refresh=projection_refresh,
         registry_summary=result.get("registry_summary"),
+        resolver=resolver_debug or None,
         timings_ms=finalized_timings,
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=semantic_timings,
@@ -2377,6 +2512,7 @@ def _schedule_scenario_switch_rebuild(
                     error=str(result.get("error") or "scenario_switch_rebuild_failed"),
                     switch_mode=str(switch_mode or "") or None,
                     projection_refresh=result.get("projection_refresh"),
+                    resolver=result.get("resolver"),
                     timings_ms=_copy_timing_map(result.get("timings_ms")),
                     switch_timings_ms=_copy_timing_map(result.get("switch_timings_ms") or switch_timings_ms),
                     semantic_rebuild_timings_ms=_copy_timing_map(result.get("semantic_rebuild_timings_ms")),
@@ -2808,6 +2944,9 @@ async def switch_webspace_scenario(
         "timings_ms": finalized_timings,
         "rebuild_timings_ms": _copy_timing_map(rebuild_result.get("timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_result.get("semantic_rebuild_timings_ms")),
+        "resolver": dict(rebuild_result.get("resolver") or {})
+        if isinstance(rebuild_result.get("resolver"), Mapping)
+        else None,
         "phase_timings_ms": phase_timings,
     }
 

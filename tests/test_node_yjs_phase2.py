@@ -885,6 +885,30 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
     assert any("phase_timings_ms: time_to_accept=4.500 time_to_full_hydration=10.500" in line for line in echoed)
 
 
+def test_node_cli_rebuild_summary_prints_resolver_debug(monkeypatch) -> None:
+    echoed: list[str] = []
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._print_rebuild_summary(
+        {
+            "rebuild": {
+                "status": "ready",
+                "pending": False,
+                "background": True,
+                "action": "scenario_switch_rebuild",
+                "scenario_id": "prompt_engineer_scenario",
+                "resolver": {
+                    "source": "legacy_yjs",
+                    "legacy_fallback": True,
+                    "cache_hit": False,
+                },
+            }
+        }
+    )
+
+    assert any("resolver: source=legacy_yjs legacy_fallback=yes cache_hit=no" in line for line in echoed)
+
+
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []

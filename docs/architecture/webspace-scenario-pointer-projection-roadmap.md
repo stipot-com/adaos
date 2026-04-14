@@ -258,6 +258,12 @@ file-stamp-aware in-process caches, reducing repeated parse cost during
 frequent rebuilds while still picking up on-disk updates without a process
 restart.
 
+Resolved projection rebuilds now also derive stable resolver fingerprints from
+scenario payload, skill UI contributions, overlay snapshot, and live runtime
+inputs. Those fingerprints back an in-process resolved-output cache and are
+surfaced in rebuild diagnostics together with resolver source, cache-hit state,
+and whether the rebuild had to fall back to legacy Yjs scenario branches.
+
 ### Phase E: Structure/data split and focus-aware hydration
 
 The rebuild contract becomes explicitly phased:
@@ -287,7 +293,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Refactor resolver input collection so loader-backed scenario content is
   the primary source.
 - [ ] Keep materialized Yjs scenario branches as fallback only.
-- [ ] Add tests that prove rebuild succeeds without pre-materialized scenario
+- [x] Add tests that prove rebuild succeeds without pre-materialized scenario
   payload in Yjs.
 
 ### 2. Switch Contract Simplification
@@ -314,7 +320,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 ### 4. Compatibility and Migration Safety
 
 - [ ] Keep compatibility caches readable during migration.
-- [ ] Add explicit debug signals when legacy fallback branches are used.
+- [x] Add explicit debug signals when legacy fallback branches are used.
 - [ ] Define the removal criteria for legacy scenario materialization.
 - [ ] Confirm current frontend contracts still work with pointer-first switch.
 - [ ] Document failure modes and rollback path if the new switch contract
@@ -327,7 +333,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [x] Add per-stage timing around switch, scenario load, projection refresh,
   resolve, and apply.
 - [x] Add `skip-if-unchanged` checks for large derived writes.
-- [ ] Add cache keys for scenario content, skill UI contributions, and overlay
+- [x] Add cache keys for scenario content, skill UI contributions, and overlay
   snapshots where helpful.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.

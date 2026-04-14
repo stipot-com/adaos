@@ -702,6 +702,14 @@ def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> 
     error = str(rebuild.get("error") or "").strip()
     if error:
         typer.echo(f"  warn: {error}")
+    resolver = rebuild.get("resolver") if isinstance(rebuild.get("resolver"), dict) else {}
+    if resolver:
+        typer.echo(
+            "  resolver: "
+            f"source={resolver.get('source') or '-'} "
+            f"legacy_fallback={'yes' if resolver.get('legacy_fallback') else 'no'} "
+            f"cache_hit={'yes' if resolver.get('cache_hit') else 'no'}"
+        )
     _print_timings_summary(rebuild, key="timings_ms", label="rebuild_timings_ms")
     _print_timings_summary(rebuild, key="switch_timings_ms", label="switch_timings_ms")
     _print_timings_summary(rebuild, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")

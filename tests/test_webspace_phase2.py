@@ -1214,6 +1214,63 @@ def test_phase4_projection_refresh_uses_dev_space_for_dev_webspace(monkeypatch) 
     assert result["rules_loaded"] == 2
 
 
+def test_phase4_rebuild_from_sources_succeeds_without_materialized_yjs_scenario_payload(monkeypatch) -> None:
+    webspace_runtime_module._RESOLVED_WEBSPACE_CACHE.clear()
+    webspace_id = "phase4-loader-rebuild"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Loader Rebuild",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+
+    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
+        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 0}
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_collect_skill_decls", lambda self, mode="mixed": [])
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_list_desktop_scenarios", lambda self, space: [])
+    monkeypatch.setattr(
+        webspace_runtime_module.scenarios_loader,
+        "read_content",
+        lambda scenario_id, *, space="workspace": {
+            "id": scenario_id,
+            "ui": {"application": {"desktop": {"pageSchema": {"id": "loader-page"}}}},
+            "registry": {"modals": ["loader-modal"], "widgets": []},
+            "catalog": {"apps": [{"id": "loader-app", "title": "Loader App"}], "widgets": []},
+            "data": {"routing": {"routes": {"home": "/loader"}}},
+        }
+        if scenario_id == "prompt_engineer_scenario" and space == "workspace"
+        else {},
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.rebuild_webspace_from_sources(
+            webspace_id,
+            action="rebuild",
+            source_of_truth="scenario_projection",
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["resolver"]["source"] == "loader:workspace"
+    assert result["resolver"]["legacy_fallback"] is False
+    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "loader-page"
+    assert fake_state["data"]["catalog"]["apps"][0]["id"] == "loader-app"
+    assert "scenarios" not in fake_state["ui"]
+    assert "scenarios" not in fake_state["data"]
+    assert "scenarios" not in fake_state["registry"]
+
+
 def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     resolved = runtime.resolve_webspace(
@@ -1287,6 +1344,39 @@ def test_phase3_resolver_outputs_are_explicit_and_reusable() -> None:
     assert resolved.routing["routes"] == {}
 
 
+def test_phase5_resolver_cache_reuses_same_inputs_without_leaking_mutations() -> None:
+    webspace_runtime_module._RESOLVED_WEBSPACE_CACHE.clear()
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    inputs = webspace_runtime_module.WebspaceResolverInputs(
+        webspace_id="phase5-resolver-cache",
+        scenario_id="prompt_engineer_scenario",
+        source_mode="workspace",
+        scenario_application={"desktop": {"pageSchema": {"id": "cached-page"}}},
+        scenario_catalog={"apps": [{"id": "cached-app", "title": "Cached App"}], "widgets": []},
+        scenario_registry={"modals": [], "widgets": []},
+        overlay_snapshot={"installed": {"apps": [], "widgets": []}},
+        live_state={"desktop": {"installed": {}}, "routing": {}},
+        skill_decls=[],
+        desktop_scenarios=[],
+        scenario_source="loader:workspace",
+        legacy_scenario_fallback=False,
+    )
+
+    first = runtime.resolve_webspace(inputs)
+    first_debug = dict(runtime._last_resolver_debug or {})
+    first.catalog["apps"].append({"id": "mutated-app"})
+
+    second = runtime.resolve_webspace(inputs)
+    second_debug = dict(runtime._last_resolver_debug or {})
+
+    assert first_debug["cache_hit"] is False
+    assert second_debug["cache_hit"] is True
+    assert second_debug["source"] == "loader:workspace"
+    assert second_debug["legacy_fallback"] is False
+    assert set(second_debug["cache_keys"].keys()) >= {"scenario", "skills", "overlay"}
+    assert [item["id"] for item in second.catalog["apps"]] == ["cached-app"]
+
+
 def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability() -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
     resolved = runtime.resolve_webspace(
@@ -1307,6 +1397,72 @@ def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability
     assert resolved.registry["modals"] == ["scenario_modal", "scenario_switcher"]
     assert "apps_catalog" not in (resolved.application.get("modals") or {})
     assert "widgets_catalog" not in (resolved.application.get("modals") or {})
+
+
+def test_phase4_rebuild_status_exposes_legacy_resolver_fallback(monkeypatch) -> None:
+    webspace_runtime_module._RESOLVED_WEBSPACE_CACHE.clear()
+    webspace_id = "phase4-legacy-fallback"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Legacy Fallback",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="prompt_engineer_scenario",
+    )
+
+    fake_state = {
+        "ui": _FakeMap(
+            {
+                "current_scenario": "prompt_engineer_scenario",
+                "scenarios": {
+                    "prompt_engineer_scenario": {"application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}}
+                },
+            }
+        ),
+        "registry": _FakeMap(
+            {
+                "scenarios": {
+                    "prompt_engineer_scenario": {"modals": ["legacy-modal"], "widgets": []}
+                }
+            }
+        ),
+        "data": _FakeMap(
+            {
+                "scenarios": {
+                    "prompt_engineer_scenario": {"catalog": {"apps": [{"id": "legacy-app"}], "widgets": []}}
+                }
+            }
+        ),
+    }
+
+    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
+        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 0}
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_collect_skill_decls", lambda self, mode="mixed": [])
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_list_desktop_scenarios", lambda self, space: [])
+    monkeypatch.setattr(
+        webspace_runtime_module.scenarios_loader,
+        "read_content",
+        lambda scenario_id, *, space="workspace": {},
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.rebuild_webspace_from_sources(
+            webspace_id,
+            action="rebuild",
+            source_of_truth="scenario_projection",
+        )
+    )
+    status = webspace_runtime_module.describe_webspace_rebuild_state(webspace_id)
+
+    assert result["accepted"] is True
+    assert result["resolver"]["source"] == "legacy_yjs"
+    assert result["resolver"]["legacy_fallback"] is True
+    assert status["resolver"]["source"] == "legacy_yjs"
+    assert status["resolver"]["legacy_fallback"] is True
 
 
 def test_restore_webspace_from_snapshot_reconciles_runtime(monkeypatch) -> None:
