@@ -24,6 +24,7 @@ async def _awaitable(value):
 
 def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
+    published: list[tuple[str, str, str | None, bool, str | None]] = []
 
     async def _fake_switch(
         webspace_id: str,
@@ -38,6 +39,25 @@ def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> Non
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
     monkeypatch.setattr(node_api_module, "switch_webspace_scenario", _fake_switch)
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"role": kwargs.get("role"), "webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "scheduled",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "prompt_engineer_scenario",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "_publish_yjs_control_event",
+        lambda action, webspace_id, result, scenario_id=None: published.append(
+            (action, webspace_id, scenario_id, bool(result.get("switch_skipped")), str(result.get("skip_reason") or "").strip() or None)
+        ),
+    )
 
     result = asyncio.run(
         node_api_module.node_yjs_switch_scenario(
@@ -49,6 +69,8 @@ def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> Non
     assert captured == [("phase2-node", "prompt_engineer_scenario", True, False)]
     assert result["ok"] is True
     assert result["runtime"]["webspace_id"] == "phase2-node"
+    assert result["rebuild"]["status"] == "scheduled"
+    assert published == [("scenario", "phase2-node", "prompt_engineer_scenario", False, None)]
 
 
 def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypatch) -> None:
@@ -80,6 +102,77 @@ def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypat
     assert result["set_home"] is None
 
 
+def test_node_yjs_switch_scenario_endpoint_propagates_skip_metadata(monkeypatch) -> None:
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool | None = None,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "set_home": set_home,
+            "background_rebuild": True,
+            "switch_skipped": True,
+            "skip_reason": "already_pending_rebuild",
+        }
+
+    published: list[dict[str, object]] = []
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "switch_webspace_scenario", _fake_switch)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "running",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "prompt_engineer_scenario",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "_publish_yjs_control_event",
+        lambda action, webspace_id, result, scenario_id=None: published.append(
+            {
+                "action": action,
+                "webspace_id": webspace_id,
+                "scenario_id": scenario_id,
+                "switch_skipped": bool(result.get("switch_skipped")),
+                "skip_reason": result.get("skip_reason"),
+            }
+        ),
+    )
+
+    result = asyncio.run(
+        node_api_module.node_yjs_switch_scenario(
+            "phase2-node",
+            node_api_module.WebspaceYjsActionRequest(scenario_id="prompt_engineer_scenario"),
+        )
+    )
+
+    assert result["switch_skipped"] is True
+    assert result["skip_reason"] == "already_pending_rebuild"
+    assert result["rebuild"]["status"] == "running"
+    assert published == [
+        {
+            "action": "scenario",
+            "webspace_id": "phase2-node",
+            "scenario_id": "prompt_engineer_scenario",
+            "switch_skipped": True,
+            "skip_reason": "already_pending_rebuild",
+        }
+    ]
+
+
 def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     captured: list[str] = []
     published: list[tuple[str, str, str | None]] = []
@@ -93,6 +186,18 @@ def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
     monkeypatch.setattr(
         node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "scheduled",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "prompt_engineer_scenario",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
         "_publish_yjs_control_event",
         lambda action, webspace_id, result, scenario_id=None: published.append((action, webspace_id, scenario_id)),
     )
@@ -102,6 +207,7 @@ def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     assert captured == [("phase2-home", False)]
     assert result["scenario_id"] == "prompt_engineer_scenario"
     assert result["runtime"]["webspace_id"] == "phase2-home"
+    assert result["rebuild"]["status"] == "scheduled"
     assert published == [("go_home", "phase2-home", "prompt_engineer_scenario")]
 
 
@@ -863,6 +969,10 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
                 "accepted": True,
                 "webspace_id": "phase2-home",
                 "scenario_id": "prompt_engineer_scenario",
+                "scenario_switch_mode": "pointer_first",
+                "switch_skipped": True,
+                "skip_reason": "already_pending_rebuild",
+                "background_rebuild": True,
                 "timings_ms": {"load_scenario": 1.25, "total": 4.5},
                 "rebuild_timings_ms": {"projection_refresh": 2.0, "total": 6.0},
                 "phase_timings_ms": {"time_to_accept": 4.5, "time_to_full_hydration": 10.5},
@@ -872,6 +982,25 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
                     "unchanged_branches": 4,
                     "failed_branches": 0,
                     "changed_paths": ["ui.application", "registry.merged"],
+                },
+                "rebuild": {
+                    "status": "running",
+                    "pending": True,
+                    "background": True,
+                    "action": "scenario_switch_rebuild",
+                    "scenario_id": "prompt_engineer_scenario",
+                    "resolver": {
+                        "source": "loader:workspace",
+                        "legacy_fallback": False,
+                        "cache_hit": True,
+                    },
+                    "apply_summary": {
+                        "branch_count": 6,
+                        "changed_branches": 1,
+                        "unchanged_branches": 5,
+                        "failed_branches": 0,
+                        "changed_paths": ["ui.application"],
+                    },
                 },
             },
         ),
@@ -887,6 +1016,8 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
         json_output=False,
     )
 
+    assert any("switch: mode=pointer_first skipped=yes background=yes reason=already_pending_rebuild" in line for line in echoed)
+    assert any("rebuild: status=running pending=yes background=yes action=scenario_switch_rebuild scenario=prompt_engineer_scenario" in line for line in echoed)
     assert any("timings_ms: load_scenario=1.250 total=4.500" in line for line in echoed)
     assert any("rebuild_timings_ms: projection_refresh=2.000 total=6.000" in line for line in echoed)
     assert any("phase_timings_ms: time_to_accept=4.500 time_to_full_hydration=10.500" in line for line in echoed)

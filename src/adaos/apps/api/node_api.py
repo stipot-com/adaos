@@ -167,6 +167,9 @@ def _publish_yjs_control_event(
         "accepted": bool(result.get("accepted")),
         "source_of_truth": str(result.get("source_of_truth") or "").strip() or None,
         "home_scenario": str(result.get("home_scenario") or "").strip() or None,
+        "background_rebuild": bool(result.get("background_rebuild")),
+        "switch_skipped": bool(result.get("switch_skipped")),
+        "skip_reason": str(result.get("skip_reason") or "").strip() or None,
         "error": str(result.get("error") or "").strip() or None,
     }
     event_type = "node.yjs.control.completed" if payload["ok"] and payload["accepted"] else "node.yjs.control.failed"
@@ -181,6 +184,23 @@ def _publish_yjs_control_event(
         )
     except Exception:
         _log.debug("failed to publish %s for action=%s webspace=%s", event_type, action, webspace_id, exc_info=True)
+
+
+def _attach_runtime_and_rebuild(
+    result: dict[str, Any],
+    *,
+    role: str,
+    webspace_id: str,
+    include_rebuild: bool = False,
+) -> dict[str, Any]:
+    target_webspace_id = str(result.get("webspace_id") or webspace_id or "default").strip() or "default"
+    result["runtime"] = yjs_sync_runtime_snapshot(
+        role=role,
+        webspace_id=target_webspace_id,
+    )
+    if include_rebuild:
+        result["rebuild"] = describe_webspace_rebuild_state(target_webspace_id)
+    return result
 
 
 async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
@@ -1176,14 +1196,17 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
         set_home=payload.set_home,
         wait_for_rebuild=False,
     )
-    result["runtime"] = yjs_sync_runtime_snapshot(
+    result = _attach_runtime_and_rebuild(
+        result,
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+        include_rebuild=True,
     )
     _publish_yjs_control_event(
-        action="go_home",
+        action="scenario",
         webspace_id=str(webspace_id or "default") or "default",
         result=result,
+        scenario_id=scenario_id,
     )
     return result
 
@@ -1202,9 +1225,11 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
         str(webspace_id or "default") or "default",
         wait_for_rebuild=False,
     )
-    result["runtime"] = yjs_sync_runtime_snapshot(
+    result = _attach_runtime_and_rebuild(
+        result,
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+        include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="go_home",
@@ -1337,9 +1362,11 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) ->
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reset",
     )
-    result["runtime"] = yjs_sync_runtime_snapshot(
+    result = _attach_runtime_and_rebuild(
+        result,
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+        include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="reset",
@@ -1361,9 +1388,11 @@ async def node_yjs_restore(webspace_id: str) -> dict[str, Any]:
             "error": "hub_role_required",
         }
     result = await restore_webspace_from_snapshot(str(webspace_id or "default") or "default")
-    result["runtime"] = yjs_sync_runtime_snapshot(
+    result = _attach_runtime_and_rebuild(
+        result,
         role=conf.role,
         webspace_id=str(webspace_id or "default") or "default",
+        include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="restore",

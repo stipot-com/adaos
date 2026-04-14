@@ -499,6 +499,58 @@ def test_switch_webspace_scenario_pointer_first_avoids_eager_scenario_content_lo
     assert "load_scenario" not in result["timings_ms"]
 
 
+def test_switch_webspace_scenario_pointer_first_preserves_dev_auto_home_policy(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH", "1")
+
+    webspace_id = "phase-pointer-dev-auto-home"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="DEV: Pointer Home",
+        kind="dev",
+        source_mode="dev",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "web_desktop"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    sync_listing_calls: list[bool] = []
+    scheduled: list[tuple[str, str]] = []
+
+    async def _fake_sync_listing() -> None:
+        sync_listing_calls.append(True)
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_scenario_switch_rebuild",
+        lambda webspace_id, *, scenario_id, **kwargs: scheduled.append((webspace_id, scenario_id)),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.home_scenario == "prompt_engineer_scenario"
+    assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert sync_listing_calls == [True]
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario")]
+    assert result["set_home"] is True
+    assert result["home_scenario"] == "prompt_engineer_scenario"
+    assert result["scenario_switch_mode"] == "pointer_first"
+
+
 def test_switch_webspace_scenario_same_current_ready_skips_rebuild_and_only_persists_home(monkeypatch) -> None:
     webspace_id = "phase2-same-current-noop"
     ensure_workspace(webspace_id)
@@ -568,6 +620,81 @@ def test_switch_webspace_scenario_same_current_ready_skips_rebuild_and_only_pers
     assert result["background_rebuild"] is False
     assert result["apply_summary"]["unchanged_branches"] == 6
     assert result["rebuild_timings_ms"]["total"] == 4.0
+    assert "load_scenario" not in result["timings_ms"]
+    assert "wait_rebuild" not in result["timings_ms"]
+
+
+def test_switch_webspace_scenario_same_current_pending_rebuild_is_deduplicated(monkeypatch) -> None:
+    webspace_id = "phase2-same-current-pending"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Same Current Pending",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    sync_listing_calls: list[bool] = []
+
+    async def _fake_sync_listing() -> None:
+        sync_listing_calls.append(True)
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_load_scenario_switch_content",
+        lambda scenario_id, *, space: (_ for _ in ()).throw(AssertionError("should not reload scenario content")),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module.WebspaceScenarioRuntime,
+        "rebuild_webspace_async",
+        lambda self, webspace_id: (_ for _ in ()).throw(AssertionError("should not rebuild while pending")),
+    )
+    webspace_runtime_module._set_webspace_rebuild_status(
+        webspace_id,
+        status="running",
+        pending=True,
+        background=True,
+        scenario_id="prompt_engineer_scenario",
+        action="scenario_switch_rebuild",
+        resolver={"source": "loader:workspace", "legacy_fallback": False, "cache_hit": False},
+        apply_summary={
+            "branch_count": 6,
+            "changed_branches": 1,
+            "unchanged_branches": 5,
+            "failed_branches": 0,
+            "changed_paths": ["ui.application"],
+            "defaults_failed": False,
+        },
+        phase_timings_ms={"time_to_accept": 3.0, "time_to_full_hydration": 12.0},
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            set_home=True,
+            wait_for_rebuild=False,
+        )
+    )
+
+    row = get_workspace(webspace_id)
+    assert row is not None
+    assert row.home_scenario == "prompt_engineer_scenario"
+    assert sync_listing_calls == [True]
+    assert result["accepted"] is True
+    assert result["switch_skipped"] is True
+    assert result["skip_reason"] == "already_pending_rebuild"
+    assert result["background_rebuild"] is True
+    assert result["apply_summary"]["changed_branches"] == 1
+    assert result["phase_timings_ms"]["time_to_full_hydration"] == 12.0
     assert "load_scenario" not in result["timings_ms"]
     assert "wait_rebuild" not in result["timings_ms"]
 

@@ -751,6 +751,22 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
     typer.echo(summary)
 
 
+def _print_switch_summary(payload: dict[str, Any]) -> None:
+    mode = str(payload.get("scenario_switch_mode") or "").strip()
+    skipped = bool(payload.get("switch_skipped"))
+    reason = str(payload.get("skip_reason") or "").strip()
+    background = bool(payload.get("background_rebuild"))
+    if not mode and not skipped and not reason:
+        return
+    typer.echo(
+        "switch: "
+        f"mode={mode or '-'} "
+        f"skipped={'yes' if skipped else 'no'} "
+        f"background={'yes' if background else 'no'} "
+        f"reason={reason or '-'}"
+    )
+
+
 def _print_timings_summary(payload: dict[str, Any], *, key: str = "timings_ms", label: str | None = None) -> None:
     timings = payload.get(key) if isinstance(payload.get(key), dict) else {}
     if not timings:
@@ -1196,7 +1212,9 @@ def _node_yjs_control_action(
         f"webspace={payload.get('webspace_id') or webspace} "
         f"scenario={payload.get('scenario_id') or '-'}"
     )
+    _print_switch_summary(payload)
     _print_projection_refresh_summary(payload)
+    _print_rebuild_summary(payload)
     _print_timings_summary(payload)
     _print_timings_summary(payload, key="switch_timings_ms")
     _print_timings_summary(payload, key="rebuild_timings_ms")

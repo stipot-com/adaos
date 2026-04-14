@@ -270,8 +270,10 @@ derived branches (`ui.application`, `data.catalog`, `data.installed`,
 "resolver cache hit" from "apply was effectively a no-op". In parallel,
 `switch_webspace_scenario()` now short-circuits repeat requests for the
 already-active scenario when the current rebuild state is already `ready` for
-that scenario, avoiding redundant payload loads and rebuild scheduling during
-control-surface retries.
+that scenario, and also deduplicates same-target retries while a rebuild for
+that scenario is already `scheduled` or `running`. Control responses now
+surface both skip metadata and the current rebuild status so retries can stay
+cheap without becoming opaque.
 
 ### Phase E: Structure/data split and focus-aware hydration
 
@@ -311,8 +313,8 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Make `switch_webspace_scenario()` validate existence without eager full
   payload copy.
 - [ ] Restrict switch writes to `ui.current_scenario` and minimal metadata.
-- [ ] Preserve `set_home` / dev-webspace policy behavior.
-- [ ] Ensure rebuild status is observable during asynchronous switch reconcile.
+- [x] Preserve `set_home` / dev-webspace policy behavior.
+- [x] Ensure rebuild status is observable during asynchronous switch reconcile.
 
 ### 3. Semantic Rebuild Ownership
 

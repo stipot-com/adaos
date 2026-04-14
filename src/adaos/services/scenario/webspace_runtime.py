@@ -2751,6 +2751,42 @@ async def switch_webspace_scenario(
     except Exception:
         loader_space = "workspace"
     switch_content: Dict[str, Any] | None = None
+
+    def _build_switch_skip_result(*, skip_reason: str, rebuild_state: Mapping[str, Any], background_rebuild: bool) -> dict[str, Any]:
+        phase_timings = _copy_timing_map(rebuild_state.get("phase_timings_ms"))
+        if not phase_timings:
+            phase_timings = _derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                rebuild_timings_ms=_copy_timing_map(rebuild_state.get("timings_ms")),
+                switch_mode="noop",
+            )
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "kind": row.effective_kind,
+            "source_mode": row.effective_source_mode,
+            "current_scenario_before": state_before.current_scenario,
+            "home_scenario_before": state_before.effective_home_scenario,
+            "home_scenario": row.effective_home_scenario,
+            "set_home": resolved_set_home,
+            "background_rebuild": background_rebuild,
+            "scenario_switch_mode": switch_mode,
+            "switch_skipped": True,
+            "skip_reason": skip_reason,
+            "timings_ms": finalized_timings,
+            "rebuild_timings_ms": _copy_timing_map(rebuild_state.get("timings_ms")),
+            "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_state.get("semantic_rebuild_timings_ms")),
+            "resolver": dict(rebuild_state.get("resolver") or {})
+            if isinstance(rebuild_state.get("resolver"), Mapping)
+            else None,
+            "apply_summary": dict(rebuild_state.get("apply_summary") or {})
+            if isinstance(rebuild_state.get("apply_summary"), Mapping)
+            else None,
+            "phase_timings_ms": phase_timings,
+        }
+
     if (
         str(state_before.current_scenario or "").strip() == scenario_id
         and not bool(rebuild_state_before.get("pending"))
@@ -2767,11 +2803,6 @@ async def switch_webspace_scenario(
             _record_timing(timings_ms, "sync_listing", stage_started)
 
         finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
-        phase_timings = _derive_phase_timings(
-            switch_timings_ms=finalized_timings,
-            rebuild_timings_ms=None,
-            switch_mode="noop",
-        )
         _log.info(
             "desktop.scenario.set skipped webspace=%s scenario=%s mode=%s timings_ms=%s",
             webspace_id,
@@ -2779,32 +2810,51 @@ async def switch_webspace_scenario(
             switch_mode,
             finalized_timings,
         )
-        return {
-            "ok": True,
-            "accepted": True,
-            "webspace_id": webspace_id,
-            "scenario_id": scenario_id,
-            "kind": row.effective_kind,
-            "source_mode": row.effective_source_mode,
-            "current_scenario_before": state_before.current_scenario,
-            "home_scenario_before": state_before.effective_home_scenario,
-            "home_scenario": row.effective_home_scenario,
-            "set_home": resolved_set_home,
-            "background_rebuild": False,
-            "scenario_switch_mode": switch_mode,
-            "switch_skipped": True,
-            "skip_reason": "already_current_ready",
-            "timings_ms": finalized_timings,
-            "rebuild_timings_ms": _copy_timing_map(rebuild_state_before.get("timings_ms")),
-            "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_state_before.get("semantic_rebuild_timings_ms")),
-            "resolver": dict(rebuild_state_before.get("resolver") or {})
-            if isinstance(rebuild_state_before.get("resolver"), Mapping)
-            else None,
-            "apply_summary": dict(rebuild_state_before.get("apply_summary") or {})
-            if isinstance(rebuild_state_before.get("apply_summary"), Mapping)
-            else None,
-            "phase_timings_ms": phase_timings,
-        }
+        return _build_switch_skip_result(
+            skip_reason="already_current_ready",
+            rebuild_state=rebuild_state_before,
+            background_rebuild=False,
+        )
+
+    if (
+        str(state_before.current_scenario or "").strip() == scenario_id
+        and bool(rebuild_state_before.get("pending"))
+        and str(rebuild_state_before.get("scenario_id") or "").strip() == scenario_id
+    ):
+        if resolved_set_home and row.effective_home_scenario != scenario_id:
+            stage_started = time.perf_counter()
+            row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+            _record_timing(timings_ms, "persist_home_scenario", stage_started)
+
+            stage_started = time.perf_counter()
+            await _sync_webspace_listing()
+            _record_timing(timings_ms, "sync_listing", stage_started)
+
+        if wait_for_rebuild:
+            existing_task = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
+            if existing_task and not existing_task.done():
+                stage_started = time.perf_counter()
+                try:
+                    await asyncio.shield(existing_task)
+                except Exception:
+                    pass
+                _record_timing(timings_ms, "wait_existing_rebuild", stage_started)
+                rebuild_state_before = describe_webspace_rebuild_state(webspace_id)
+
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        _log.info(
+            "desktop.scenario.set deduplicated webspace=%s scenario=%s mode=%s pending=%s timings_ms=%s",
+            webspace_id,
+            scenario_id,
+            switch_mode,
+            bool(rebuild_state_before.get("pending")),
+            finalized_timings,
+        )
+        return _build_switch_skip_result(
+            skip_reason="already_pending_rebuild",
+            rebuild_state=rebuild_state_before,
+            background_rebuild=bool(rebuild_state_before.get("pending") or (not wait_for_rebuild and rebuild_state_before.get("background"))),
+        )
 
     if switch_mode == "pointer_first":
         stage_started = time.perf_counter()
