@@ -14,6 +14,39 @@ from .projection_registry import ProjectionRegistry, ProjectionTarget
 _log = logging.getLogger("adaos.scenario.projection")
 
 
+def _clone_json_like(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value))
+    except Exception:
+        if isinstance(value, dict):
+            return {str(k): _clone_json_like(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_clone_json_like(v) for v in value]
+        items = getattr(value, "items", None)
+        if callable(items):
+            try:
+                return {str(k): _clone_json_like(v) for k, v in items()}
+            except Exception:
+                return value
+        return value
+
+
+def _merge_nested_path(existing: Any, segments: List[str], payload: Any) -> Any:
+    if not segments:
+        return _clone_json_like(payload)
+
+    key = str(segments[0] or "")
+    if not key:
+        return _clone_json_like(existing)
+
+    base = _clone_json_like(existing)
+    if not isinstance(base, dict):
+        base = {}
+    merged = dict(base)
+    merged[key] = _merge_nested_path(merged.get(key), segments[1:], payload)
+    return merged
+
+
 @dataclass(slots=True)
 class ProjectionService:
     """
@@ -84,26 +117,25 @@ class ProjectionService:
 
         def _mutator(doc, txn) -> None:
             root = doc.get_map(root_name)
-            try:
-                payload = json.loads(json.dumps(value))
-            except Exception:
-                payload = value
+            payload = _clone_json_like(value)
 
             # For simple two-segment paths like ``data/weather`` keep the
             # legacy flat ``data["weather"]`` behaviour so existing widgets
             # continue to work. For longer paths such as ``data/infra/status``
-            # build a nested JSON object under the first key so that
-            # YDocService.getPath can resolve it reliably.
+            # merge into the existing top-level subtree so sibling branches
+            # like other user ids are preserved.
             if len(segments) == 2:
                 key = segments[1]
+                if root.get(key) == payload:
+                    return
                 root.set(txn, key, payload)
                 return
 
             top_key = segments[1]
-            nested: Any = payload
-            for seg in reversed(segments[2:]):
-                nested = {seg: nested}
-            root.set(txn, top_key, nested)
+            merged = _merge_nested_path(root.get(top_key), segments[2:], payload)
+            if root.get(top_key) == merged:
+                return
+            root.set(txn, top_key, merged)
 
         if not mutate_live_room(ws_id, _mutator):
             try:

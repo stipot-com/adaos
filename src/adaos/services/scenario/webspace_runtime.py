@@ -256,6 +256,41 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _clone_json_like(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value))
+    except Exception:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return {str(k): _clone_json_like(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_clone_json_like(v) for v in value]
+        if isinstance(value, tuple):
+            return [_clone_json_like(v) for v in value]
+        if isinstance(value, Mapping):
+            return {str(k): _clone_json_like(v) for k, v in value.items()}
+        items = getattr(value, "items", None)
+        if callable(items):
+            try:
+                return {str(k): _clone_json_like(v) for k, v in items()}
+            except Exception:
+                return value
+        return value
+
+
+def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> bool:
+    next_value = _clone_json_like(value)
+    try:
+        current = y_map.get(key)
+    except Exception:
+        current = None
+    if _clone_json_like(current) == next_value:
+        return False
+    y_map.set(txn, key, next_value)
+    return True
+
+
 def _merge_installed_with_auto(installed: Dict[str, Any], *, auto_apps: set[str], auto_widgets: set[str]) -> Dict[str, List[str]]:
     """
     Merge existing installed apps/widgets with auto-installed ids while
@@ -425,15 +460,15 @@ def _materialize_scenario_switch_content_in_doc(
         scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
         updated_ui = dict(scenarios_ui)
         updated_ui[scenario_id] = {"application": ui_section}
-        ui_map.set(txn, "scenarios", updated_ui)
-        ui_map.set(txn, "current_scenario", scenario_id)
-        ui_map.set(txn, "application", ui_section)
+        _set_map_value_if_changed(ui_map, txn, "scenarios", updated_ui)
+        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+        _set_map_value_if_changed(ui_map, txn, "application", ui_section)
 
         reg_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
         reg_updated = dict(reg_scenarios)
         reg_updated[scenario_id] = registry_section
-        registry_map.set(txn, "scenarios", reg_updated)
-        registry_map.set(txn, "merged", registry_section)
+        _set_map_value_if_changed(registry_map, txn, "scenarios", reg_updated)
+        _set_map_value_if_changed(registry_map, txn, "merged", registry_section)
 
         data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
         data_updated = dict(data_scenarios)
@@ -441,17 +476,13 @@ def _materialize_scenario_switch_content_in_doc(
         entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
         entry["catalog"] = catalog_section
         data_updated[scenario_id] = entry
-        data_map.set(txn, "scenarios", data_updated)
-        data_map.set(txn, "catalog", catalog_section)
+        _set_map_value_if_changed(data_map, txn, "scenarios", data_updated)
+        _set_map_value_if_changed(data_map, txn, "catalog", catalog_section)
 
         for key, value in data_section.items():
             if not isinstance(key, str) or key == "installed":
                 continue
-            try:
-                payload_value = json.loads(json.dumps(value))
-            except Exception:
-                payload_value = value
-            data_map.set(txn, key, payload_value)
+            _set_map_value_if_changed(data_map, txn, key, value)
 
 
 def _scenario_supports_catalog_controls(
@@ -1036,18 +1067,18 @@ class WebspaceScenarioRuntime:
             except Exception:
                 _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
 
-            ui_map.set(txn, "application", resolved.application)
-            data_map.set(txn, "catalog", resolved.catalog)
-            data_map.set(txn, "installed", resolved.installed)
+            _set_map_value_if_changed(ui_map, txn, "application", resolved.application)
+            _set_map_value_if_changed(data_map, txn, "catalog", resolved.catalog)
+            _set_map_value_if_changed(data_map, txn, "installed", resolved.installed)
             try:
-                data_map.set(txn, "desktop", resolved.desktop)
+                _set_map_value_if_changed(data_map, txn, "desktop", resolved.desktop)
             except Exception:
                 pass
             try:
-                data_map.set(txn, "routing", resolved.routing)
+                _set_map_value_if_changed(data_map, txn, "routing", resolved.routing)
             except Exception:
                 pass
-            registry_map.set(txn, "merged", resolved.registry)
+            _set_map_value_if_changed(registry_map, txn, "merged", resolved.registry)
 
     def _resolve_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverOutputs:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
@@ -1388,12 +1419,13 @@ async def _resolve_reload_scenario_target(
 
 async def _sync_webspace_listing() -> None:
     listing = _webspace_listing()
+    payload = {"items": listing}
     rows = workspace_index.list_workspaces()
     for row in rows:
         async with async_get_ydoc(row.workspace_id) as ydoc:
             data_map = ydoc.get_map("data")
             with ydoc.begin_transaction() as txn:
-                data_map.set(txn, "webspaces", {"items": listing})
+                _set_map_value_if_changed(data_map, txn, "webspaces", payload)
 
 
 class WebspaceService:

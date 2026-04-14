@@ -39,6 +39,16 @@ class _FakeMap(dict):
         self[key] = value
 
 
+class _CountingMap(_FakeMap):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.set_count = 0
+
+    def set(self, txn, key: str, value: object) -> None:  # noqa: ARG002
+        self.set_count += 1
+        super().set(txn, key, value)
+
+
 class _FakeDoc:
     def __init__(self, state: dict[str, _FakeMap]) -> None:
         self._state = state
@@ -435,6 +445,35 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     assert result["action"] == "go_home"
     assert result["source_of_truth"] == "manifest_home_scenario"
     assert result["scenario_resolution"] == "manifest_home"
+
+
+def test_sync_webspace_listing_skips_unchanged_payload(monkeypatch) -> None:
+    webspace_id = "phase2-listing-noop"
+    ensure_workspace(webspace_id)
+
+    listing = [{"id": webspace_id, "title": "Phase 2 Listing"}]
+    data_map = _CountingMap({"webspaces": {"items": listing}})
+    fake_state = {
+        "ui": _FakeMap(),
+        "registry": _FakeMap(),
+        "data": data_map,
+    }
+
+    monkeypatch.setattr(
+        webspace_runtime_module.workspace_index,
+        "list_workspaces",
+        lambda: [SimpleNamespace(workspace_id=webspace_id)],
+    )
+    monkeypatch.setattr(webspace_runtime_module, "_webspace_listing", lambda: listing)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "async_get_ydoc",
+        lambda _webspace_id: _FakeAsyncDoc(fake_state),
+    )
+
+    asyncio.run(webspace_runtime_module._sync_webspace_listing())
+
+    assert data_map.set_count == 0
 
 
 def test_webspace_service_set_home_scenario_updates_manifest(monkeypatch) -> None:

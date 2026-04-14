@@ -9,7 +9,8 @@ runtime recovery flows, or operational control surfaces.
 
 ## Status
 
-- Current implementation: `materialize-and-copy`
+- Current implementation: `materialize-and-copy` by default, with an opt-in
+  feature-flagged `pointer-first` switch path available for migration testing
 - Target implementation: `pointer + resolved projection`
 - Migration mode: phased, compatibility-first
 
@@ -194,7 +195,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 2. Switch Contract Simplification
 
-- [ ] Introduce a feature-flagged pointer-first switch path.
+- [x] Introduce a feature-flagged pointer-first switch path.
 - [ ] Make `switch_webspace_scenario()` validate existence without eager full
   payload copy.
 - [ ] Restrict switch writes to `ui.current_scenario` and minimal metadata.
@@ -224,7 +225,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 - [ ] Add per-stage timing around switch, scenario load, projection refresh,
   resolve, and apply.
-- [ ] Add `skip-if-unchanged` checks for large derived writes.
+- [x] Add `skip-if-unchanged` checks for large derived writes.
 - [ ] Add cache keys for scenario content, skill UI contributions, and overlay
   snapshots where helpful.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
