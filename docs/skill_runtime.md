@@ -142,7 +142,7 @@ adaos secrets import dump.json --skill weather_skill
 Every install/test/activate/run operation logs under `slots/<slot>/logs/`. `adaos skill status --json` surfaces runtime state (active version/slot/readiness/tests). For progress checks:
 
 - Workspace: `adaos skill status <NAME> --fetch --diff` compares `skills/<NAME>` against the workspace registry remote (`adaos-registry.git` main).
-- Dev: `adaos skill status --space dev <NAME> --fetch --diff` compares the dev folder against the hub draft state via Root API (requires hub mTLS keys in `node.yaml`).
+- Dev: `adaos skill status --space dev <NAME> --fetch --diff` compares the dev folder against the hub draft state via Root API (requires hub mTLS keys from the bootstrap `node.yaml`).
 
 ## Weather skill reference
 

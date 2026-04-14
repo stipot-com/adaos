@@ -116,7 +116,12 @@ Expected (example):
 
 ## Where config is stored
 
-- Node configuration: `$ADAOS_BASE_DIR/node.yaml` (default in bootstraps: `<repo>/.adaos/node.yaml`)
+- Bootstrap identity: `$ADAOS_BASE_DIR/node.yaml` (default in bootstraps: `<repo>/.adaos/node.yaml`).
+  This file is intentionally minimal and keeps only bootstrap/static identity such as `zone_id`, `node_id`, `subnet_id`, `role`, `root.base_url`, and key/cert paths.
+- Runtime connection state: `$ADAOS_BASE_DIR/state/node_runtime.json`.
+  Dynamic fields such as the current `hub_url`, local control token, and runtime NATS credentials are stored here, not in `node.yaml`.
+- Durable structured state: local SQLite durable state.
+  Long-lived structured data such as root auth cache, subnet alias metadata, and capacity projections are persisted there instead of `node.yaml`.
 - Join-code store: Root server (Root mode) or `$ADAOS_BASE_DIR/join_codes.json` (hub local mode)
 
 ## Idempotency

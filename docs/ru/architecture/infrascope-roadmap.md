@@ -74,13 +74,19 @@ Target architecture for the node bootstrap document and adjacent state layers:
 - [x] move local capacity projection out of `node.yaml` into the SQLite-backed subnet directory read model
 - [x] prune legacy `node.yaml` `nats` / `capacity` payloads during migration once the new durable state is seeded
 - [x] migrate bootstrap and diagnostics tooling (`tools/bootstrap*`, `tools/diag_*`) to prefer runtime state with legacy `node.yaml` fallback
-- [ ] finish the remaining legacy readers/writers outside the Python core runtime (`external integrations`, examples, and user-facing docs that still describe `node.yaml` as the runtime source of truth)
+- [x] finish the remaining legacy readers/writers outside the Python core runtime (`external integrations`, examples, and user-facing docs now treat `node.yaml` as bootstrap/static config only)
 
 Operational split after this checkpoint:
 
 - `node.yaml`: bootstrap identity and static paths only
 - `state/*.json`: runtime snapshots such as supervisor/runtime/update state and dynamic local runtime connection data
 - SQLite durable state: structured long-lived state such as local capacity, root auth cache, and subnet alias metadata
+
+Checkpoint status:
+
+- [x] functional transition is complete for the Python runtime, bootstrap scripts, diagnostics, and user-facing docs
+- [x] external integrations that still look at `node.yaml` do so only for bootstrap/static config, not for runtime transport credentials or mutable projections
+- [ ] optional follow-up cleanup may still remove compatibility fallbacks from scripts/tools once legacy environments no longer rely on them
 
 ## Опорные сценарии
 

@@ -25,7 +25,7 @@ def _load_node_yaml(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
     if not isinstance(y, dict):
-        raise RuntimeError(f"unexpected node.yaml type: {type(y).__name__}")
+        raise RuntimeError(f"unexpected bootstrap node.yaml type: {type(y).__name__}")
     return y
 
 
@@ -143,9 +143,21 @@ async def _run(*, root_base: str, hub_id: str, session_jwt: str | None, ws_kind:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Diagnose browser->hub connectivity through Root (/hubs/<hubId>/...).")
-    ap.add_argument("--node", default=os.getenv("ADAOS_NODE_YAML", ".adaos/node.yaml"), help="Path to node.yaml")
-    ap.add_argument("--root", default="", help="Root base URL (default: from node.yaml root.base_url or https://api.inimatic.com)")
-    ap.add_argument("--hub-id", default="", help="Hub id (default: from node.yaml subnet_id)")
+    ap.add_argument(
+        "--node",
+        default=os.getenv("ADAOS_NODE_YAML", ".adaos/node.yaml"),
+        help="Path to bootstrap node.yaml",
+    )
+    ap.add_argument(
+        "--root",
+        default="",
+        help="Root base URL (default: from bootstrap node.yaml root.base_url or https://api.inimatic.com)",
+    )
+    ap.add_argument(
+        "--hub-id",
+        default="",
+        help="Hub id/subnet_id (default: from bootstrap node.yaml subnet_id)",
+    )
     ap.add_argument(
         "--session-jwt",
         default=os.getenv("ADAOS_SESSION_JWT", ""),
@@ -160,7 +172,7 @@ def main() -> int:
         if args.node:
             node = _load_node_yaml(str(args.node))
     except Exception as e:
-        print(f"[diag] warning: cannot read node.yaml: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"[diag] warning: cannot read bootstrap node.yaml: {type(e).__name__}: {e}", file=sys.stderr)
         node = {}
 
     root_base = str(args.root or "").strip() or _pick_root_base(node)
