@@ -962,6 +962,7 @@ def test_canonical_object_inspector_collects_actions_topology_and_task_packet() 
     assert projection["context"]["actions"][0]["id"] == "restart"
     assert projection["context"]["topology"]["edges"][0]["source"] == "hub:alpha"
     assert projection["context"]["task_packet"]["context"]["task_goal"] == "diagnose drift"
+    assert projection["context"]["inspector"]["subnet_planning"]["summary"]["node_total"] == 1
 
 
 def test_canonical_object_topology_and_task_packet_projections_share_selected_object_context() -> None:

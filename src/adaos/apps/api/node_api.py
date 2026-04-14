@@ -57,6 +57,7 @@ from adaos.services.system_model.service import (
     current_overview_projection,
     current_reliability_payload,
     current_reliability_projection,
+    current_subnet_planning_context,
     current_task_packet,
     current_topology_projection,
     route_info,
@@ -508,6 +509,23 @@ async def node_control_plane_task_packet(object_id: str, task_goal: str | None =
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
     return {"ok": True, "projection": projection.to_dict()}
+
+
+@router.get("/control-plane/contexts/subnet-planning", dependencies=[Depends(require_token)])
+async def node_control_plane_subnet_planning_context(
+    object_id: str | None = None,
+    task_goal: str | None = None,
+    webspace_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        context = current_subnet_planning_context(
+            object_id=object_id,
+            task_goal=task_goal,
+            webspace_id=webspace_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown control-plane object: {exc.args[0]}") from exc
+    return {"ok": True, "context": context}
 
 
 @router.get("/reliability", dependencies=[Depends(require_token)])

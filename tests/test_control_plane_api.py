@@ -433,6 +433,63 @@ def test_current_node_neighborhood_projection_includes_remote_io_capacity_object
     assert projection["context"]["subnet_runtime_summary"]["freshness_totals"]["fresh"] == 1
 
 
+def test_current_subnet_planning_context_extracts_summary_nodes_and_constraints(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    sys.modules.setdefault("y_py", types.SimpleNamespace(YDoc=type("YDoc", (), {}), apply_update=lambda *args, **kwargs: None))
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.services.system_model import service as mod
+
+    subject = CanonicalObject(id="hub:alpha", kind="hub", title="Hub Alpha", status="online")
+    monkeypatch.setattr(mod, "current_node_object", lambda: subject)
+    monkeypatch.setattr(
+        mod,
+        "current_neighborhood_projection",
+        lambda object_id=None, webspace_id=None: CanonicalProjection(
+            id="projection:hub:alpha/neighborhood",
+            kind="neighborhood",
+            title="Neighborhood",
+            subject=subject,
+            context={"subnet_runtime_summary": {"node_total": 2, "freshness_totals": {"fresh": 2}}},
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "current_task_packet",
+        lambda object_id, task_goal=None, webspace_id=None: CanonicalProjection(
+            id="projection:hub:alpha/task-packet",
+            kind="task_packet",
+            title="Task packet",
+            subject=subject,
+            context={
+                "task_goal": task_goal,
+                "subnet_planning": {
+                    "summary": {"node_total": 2, "freshness_totals": {"fresh": 2}},
+                    "nodes": [{"id": "hub:alpha"}, {"id": "member:beta"}],
+                },
+                "constraints": {"roles_allowed": ["role:infra-operator"]},
+                "allowed_actions": [{"id": "restart"}],
+                "relevant_incidents": [{"id": "incident:1"}],
+                "gap": {"ready": {"desired": True, "actual": True}},
+            },
+        ),
+    )
+
+    context = mod.current_subnet_planning_context(task_goal="plan rollout")
+
+    assert context["object_id"] == "hub:alpha"
+    assert context["task_goal"] == "plan rollout"
+    assert context["summary"]["node_total"] == 2
+    assert context["nodes"][1]["id"] == "member:beta"
+    assert context["constraints"]["roles_allowed"] == ["role:infra-operator"]
+    assert context["source_projection_ids"]["task_packet"] == "projection:hub:alpha/task-packet"
+
+
 def test_node_control_plane_neighborhood_projection_returns_canonical_payload(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     fake_y_py = types.SimpleNamespace(
@@ -540,6 +597,16 @@ def test_node_control_plane_object_topology_and_task_packet_projections_return_p
             context={"task_goal": task_goal},
         ),
     )
+    monkeypatch.setattr(
+        node_api,
+        "current_subnet_planning_context",
+        lambda object_id=None, task_goal=None, webspace_id=None: {
+            "object_id": object_id or "local",
+            "task_goal": task_goal,
+            "summary": {"node_total": 2, "freshness_totals": {"fresh": 2}},
+            "nodes": [{"id": "hub:alpha"}, {"id": "member:beta"}],
+        },
+    )
 
     client = TestClient(app)
     object_resp = client.get("/api/node/control-plane/projections/object", params={"object_id": "skill:weather"})
@@ -552,6 +619,10 @@ def test_node_control_plane_object_topology_and_task_packet_projections_return_p
         "/api/node/control-plane/projections/task-packet",
         params={"object_id": "skill:weather", "task_goal": "diagnose weather"},
     )
+    subnet_planning_resp = client.get(
+        "/api/node/control-plane/contexts/subnet-planning",
+        params={"object_id": "skill:weather", "task_goal": "diagnose weather"},
+    )
 
     assert object_resp.status_code == 200
     assert object_resp.json()["projection"]["id"] == "projection:skill:weather/object"
@@ -562,6 +633,9 @@ def test_node_control_plane_object_topology_and_task_packet_projections_return_p
     assert topology_resp.json()["projection"]["kind"] == "topology"
     assert task_resp.status_code == 200
     assert task_resp.json()["projection"]["context"]["task_goal"] == "diagnose weather"
+    assert subnet_planning_resp.status_code == 200
+    assert subnet_planning_resp.json()["context"]["summary"]["node_total"] == 2
+    assert subnet_planning_resp.json()["context"]["task_goal"] == "diagnose weather"
 
 
 def test_sdk_control_plane_get_self_object(monkeypatch) -> None:
@@ -675,6 +749,16 @@ def test_sdk_control_plane_object_topology_and_task_packet_helpers(monkeypatch) 
             context={"task_goal": task_goal},
         ),
     )
+    monkeypatch.setattr(
+        control_plane,
+        "get_subnet_planning_context",
+        lambda object_id=None, task_goal=None, webspace_id=None: {
+            "object_id": object_id or "local",
+            "task_goal": task_goal,
+            "summary": {"node_total": 2},
+            "nodes": [{"id": "hub:alpha"}, {"id": "member:beta"}],
+        },
+    )
 
     overview = control_plane.get_overview_projection(webspace_id="desk")
     object_projection = control_plane.get_object_projection("skill:weather", webspace_id="desk")
@@ -685,6 +769,11 @@ def test_sdk_control_plane_object_topology_and_task_packet_helpers(monkeypatch) 
     )
     topology_projection = control_plane.get_topology_projection("skill:weather", webspace_id="desk")
     task_packet = control_plane.get_task_packet("skill:weather", task_goal="diagnose weather", webspace_id="desk")
+    subnet_planning = control_plane.get_subnet_planning_context(
+        "skill:weather",
+        task_goal="diagnose weather",
+        webspace_id="desk",
+    )
 
     assert overview["id"] == "projection:hub:alpha/overview"
     assert object_projection["id"] == "projection:skill:weather/object"
@@ -692,6 +781,8 @@ def test_sdk_control_plane_object_topology_and_task_packet_helpers(monkeypatch) 
     assert inspector_projection["context"]["task_goal"] == "inspect weather"
     assert topology_projection["kind"] == "topology"
     assert task_packet["context"]["task_goal"] == "diagnose weather"
+    assert subnet_planning["summary"]["node_total"] == 2
+    assert subnet_planning["task_goal"] == "diagnose weather"
 
 
 def test_sdk_control_plane_root_runtime_and_connection_helpers(monkeypatch) -> None:

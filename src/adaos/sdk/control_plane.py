@@ -160,6 +160,19 @@ def get_task_packet(object_id: str, *, task_goal: str | None = None, webspace_id
     return get_task_packet_model(object_id, task_goal=task_goal, webspace_id=webspace_id).to_dict()
 
 
+def get_subnet_planning_context(
+    object_id: str | None = None,
+    *,
+    task_goal: str | None = None,
+    webspace_id: str | None = None,
+) -> Mapping[str, Any]:
+    return _data_control_plane.get_subnet_planning_context(
+        object_id=object_id,
+        task_goal=task_goal,
+        webspace_id=webspace_id,
+    )
+
+
 def get_root_model(*, webspace_id: str | None = None):
     return _data_control_plane.get_root_model(webspace_id=webspace_id)
 
@@ -254,6 +267,7 @@ __all__ = [
     "get_topology_projection",
     "get_task_packet_model",
     "get_task_packet",
+    "get_subnet_planning_context",
     "get_root_model",
     "get_root_object",
     "list_runtime_models",

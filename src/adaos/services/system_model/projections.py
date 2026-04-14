@@ -1124,6 +1124,8 @@ def canonical_object_inspector(
     edges = _topology_edges(subject, objects)
     recent_changes = _recent_change_items(subject, objects, limit=8)
     task_packet = canonical_task_packet(subject, objects, task_goal=task_goal).to_dict()
+    task_packet_context = coerce_mapping(task_packet.get("context"))
+    subnet_planning = coerce_mapping(task_packet_context.get("subnet_planning"))
     inspector_payload = compact_mapping(
         {
             "label": subject.kind,
@@ -1136,6 +1138,7 @@ def canonical_object_inspector(
             "recent_changes": recent_changes,
             "topology": {"edges": edges},
             "task_packet": task_packet,
+            "subnet_planning": subnet_planning,
         }
     )
     effective_title = title or f"{subject.title} inspector"
@@ -1155,6 +1158,7 @@ def canonical_object_inspector(
                 "recent_changes": recent_changes,
                 "topology": {"edges": edges},
                 "task_packet": task_packet,
+                "subnet_planning": subnet_planning,
                 "inspector": inspector_payload,
             }
         ),

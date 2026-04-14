@@ -47,6 +47,12 @@
 3. `operator adoption`
    Подтянуть UI и SDK consumers к новому subnet planning context без обходов через старые runtime payloads.
 
+Текущий статус этого трека:
+
+- SDK/API получили явный `subnet planning context` поверх canonical projections
+- `Infrascope` inspector начал публиковать `subnet_planning` как отдельный operator-facing payload
+- полный cleanup ещё не завершён: в кодовой базе остаются legacy места, где используются raw bootstrap/runtime payloads вне canonical surface
+
 ## Опорные сценарии
 
 Каждая итерация должна улучшать хотя бы один из этих сквозных сценариев:

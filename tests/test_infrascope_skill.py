@@ -164,6 +164,7 @@ def test_infrascope_skill_inventory_and_inspector_shape(monkeypatch):
             "recent_changes": [{"id": "change:1", "title": "Config updated"}],
             "topology": {"edges": [{"from": "hub-1", "to": "member-1"}]},
             "task_packet": {"task_goal": "assist operator"},
+            "subnet_planning": {"summary": {"node_total": 2}},
         },
         incidents=[{"id": "incident:hub-1", "summary": "packet loss"}],
         summary="Hub 1 is degraded",
@@ -182,6 +183,7 @@ def test_infrascope_skill_inventory_and_inspector_shape(monkeypatch):
     assert inspector["object"]["kind"] == "hub"
     assert inspector["actions"] == [{"id": "restart", "title": "Restart"}]
     assert inspector["task_packet"] == {"task_goal": "assist operator"}
+    assert inspector["subnet_planning"] == {"summary": {"node_total": 2}}
     assert inspector["topology"] == {"edges": [{"from": "hub-1", "to": "member-1"}]}
 
 
@@ -199,6 +201,7 @@ def test_infrascope_skill_returns_safe_fallback_for_unknown_object(monkeypatch):
     assert payload["warning"] == "Object not found: missing-object"
     assert payload["topology"] == {"edges": []}
     assert payload["task_packet"] == {}
+    assert payload["subnet_planning"] == {}
 
 
 def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatch):
@@ -245,6 +248,7 @@ def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatc
                 "recent_changes": [],
                 "topology": {"edges": []},
                 "task_packet": {"task_goal": task_goal or "assist operator"},
+                "subnet_planning": {"summary": {"node_total": 1}},
             },
             incidents=[],
             summary=f"{subject.title} summary",
@@ -269,6 +273,7 @@ def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatc
     assert snapshot["inventory"]["browsers"][0]["object_id"] == "browser:dev-1"
     assert snapshot["inspectors"]["local"]["object_id"] == "hub:local"
     assert snapshot["inspectors"]["browser:dev-1"]["object"]["kind"] == "browser_session"
+    assert snapshot["inspectors"]["local"]["subnet_planning"] == {"summary": {"node_total": 1}}
     assert first["projected"] == 1
     assert second["projected"] == 0
     assert writes == [("infrascope.snapshot", "ws-1", "warning")]

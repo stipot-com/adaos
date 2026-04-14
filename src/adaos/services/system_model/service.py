@@ -23,13 +23,14 @@ from adaos.services.system_model.catalog import (
     workspace_objects,
 )
 from adaos.services.system_model.governance import apply_governance_defaults, apply_projection_governance
-from adaos.services.system_model.model import CanonicalKind, canonical_ref
+from adaos.services.system_model.model import CanonicalKind, canonical_ref, compact_mapping
 from adaos.services.system_model.mappers import (
     canonical_object_from_capacity_snapshot,
     canonical_object_from_io_capacity_entry,
     canonical_object_from_node_status,
     canonical_object_from_supervisor_runtime,
     canonical_object_from_subnet_directory_node,
+    coerce_mapping,
 )
 from adaos.services.system_model.projections import (
     canonical_object_inspector,
@@ -371,6 +372,48 @@ def current_task_packet(object_id: str, *, task_goal: str | None = None, webspac
     )
 
 
+def current_subnet_planning_context(
+    object_id: str | None = None,
+    *,
+    task_goal: str | None = None,
+    webspace_id: str | None = None,
+) -> dict[str, Any]:
+    token = str(object_id or "").strip()
+    current_id = current_node_object().id
+    effective_object_id = current_id if not token or token in {"self", "current", "local", current_id} else token
+    neighborhood = current_neighborhood_projection(object_id=effective_object_id, webspace_id=webspace_id)
+    task_packet = current_task_packet(effective_object_id, task_goal=task_goal, webspace_id=webspace_id)
+    neighborhood_context = coerce_mapping(getattr(neighborhood, "context", {}))
+    task_context = coerce_mapping(getattr(task_packet, "context", {}))
+    subnet_planning = coerce_mapping(task_context.get("subnet_planning"))
+    planning_summary = coerce_mapping(subnet_planning.get("summary"))
+    neighborhood_summary = coerce_mapping(neighborhood_context.get("subnet_runtime_summary"))
+    planning_nodes = [
+        item
+        for item in list(subnet_planning.get("nodes") or [])
+        if isinstance(item, dict)
+    ]
+    return compact_mapping(
+        {
+            "object_id": str(getattr(task_packet.subject, "id", "") or "").strip(),
+            "object_title": str(getattr(task_packet.subject, "title", "") or "").strip(),
+            "task_goal": str(task_context.get("task_goal") or "").strip() or None,
+            "summary": planning_summary or neighborhood_summary,
+            "nodes": planning_nodes,
+            "constraints": coerce_mapping(task_context.get("constraints")),
+            "allowed_actions": list(task_context.get("allowed_actions") or []),
+            "relevant_incidents": list(task_context.get("relevant_incidents") or []),
+            "desired_state": coerce_mapping(task_context.get("desired_state")),
+            "actual_state": coerce_mapping(task_context.get("actual_state")),
+            "gap": coerce_mapping(task_context.get("gap")),
+            "source_projection_ids": {
+                "neighborhood": str(getattr(neighborhood, "id", "") or "").strip() or None,
+                "task_packet": str(getattr(task_packet, "id", "") or "").strip() or None,
+            },
+        }
+    )
+
+
 def current_neighborhood_projection(object_id: str | None = None, *, webspace_id: str | None = None):
     token = str(object_id or "").strip()
     current_id = current_node_object().id
@@ -426,6 +469,7 @@ __all__ = [
     "current_overview_projection",
     "current_reliability_payload",
     "current_reliability_projection",
+    "current_subnet_planning_context",
     "current_task_packet",
     "current_topology_projection",
     "route_info",
