@@ -90,6 +90,7 @@ plugins:
             LLM DevOps Preparation: Этапы LLM DevOps - подготовка
             Root MCP Foundation: Root MCP Foundation
             NLU: Интерпретация намерений
+            NLU Target Architecture: Целевая архитектура NLU
             NLU Teacher: NLU Teacher
             Device Initialization: Инициализация устройства
             Event Management: Управление событиями
@@ -174,6 +175,7 @@ nav:
       - LLM DevOps Stages: concepts/dev_stages.md
       - LLM DevOps Preparation: concepts/dev_stage_prepare.md
       - NLU: concepts/nlu.md
+      - NLU Target Architecture: concepts/nlu-target-architecture.md
       - NLU Teacher: concepts/nlu-teacher-llm.md
       - Device Initialization: concepts/init_device.md
       - Event Management: concepts/event_mgmnt.md
