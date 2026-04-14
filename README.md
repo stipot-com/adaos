@@ -122,9 +122,6 @@ adaos autostart smoke-update --countdown-sec 5 --json
 adaos node reliability
 adaos node status
 adaos node status --probe
-adaos hub root watch
-adaos hub root reconnect
-adaos hub root reconnect --transport ws|tcp
 
 adaos autostart inspect
 adaos autostart inspect --json
@@ -137,7 +134,7 @@ runtime_pid = runtime_process.pid
 /root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install 'websockets>=13,<16'
 /root/adaos/.adaos/state/core_slots/slots/A/venv/bin/py-spy dump --pid <runtime_pid>
 
-# Boot debug 
+# Web client debug 
 # https://myinimatic.web.app/?boot_debug=1
 
 ```
