@@ -2856,49 +2856,49 @@ async def switch_webspace_scenario(
             background_rebuild=bool(rebuild_state_before.get("pending") or (not wait_for_rebuild and rebuild_state_before.get("background"))),
         )
 
-    if switch_mode == "pointer_first":
-        stage_started = time.perf_counter()
-        scenario_exists = _scenario_exists_for_switch(scenario_id, space=loader_space)
-        _record_timing(timings_ms, "validate_scenario", stage_started)
-        if not scenario_exists:
-            finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
-            _set_webspace_rebuild_status(
-                webspace_id,
-                status="failed",
-                pending=False,
-                background=not wait_for_rebuild,
-                action="scenario_switch_rebuild",
-                source_of_truth="scenario_switch",
-                scenario_id=scenario_id,
-                scenario_resolution="explicit",
+    stage_started = time.perf_counter()
+    scenario_exists = _scenario_exists_for_switch(scenario_id, space=loader_space)
+    _record_timing(timings_ms, "validate_scenario", stage_started)
+    if not scenario_exists:
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        _set_webspace_rebuild_status(
+            webspace_id,
+            status="failed",
+            pending=False,
+            background=not wait_for_rebuild,
+            action="scenario_switch_rebuild",
+            source_of_truth="scenario_switch",
+            scenario_id=scenario_id,
+            scenario_resolution="explicit",
+            switch_mode=switch_mode,
+            requested_at=time.time(),
+            finished_at=time.time(),
+            error="scenario_not_found",
+            projection_refresh=None,
+            registry_summary=None,
+            resolver=None,
+            apply_summary=None,
+            timings_ms=finalized_timings,
+            phase_timings_ms=_derive_phase_timings(
+                switch_timings_ms=finalized_timings,
                 switch_mode=switch_mode,
-                requested_at=time.time(),
-                finished_at=time.time(),
-                error="scenario_not_found",
-                projection_refresh=None,
-                registry_summary=None,
-                resolver=None,
-                apply_summary=None,
-                timings_ms=finalized_timings,
-                phase_timings_ms=_derive_phase_timings(
-                    switch_timings_ms=finalized_timings,
-                    switch_mode=switch_mode,
-                ),
-            )
-            return {
-                "ok": False,
-                "accepted": False,
-                "error": "scenario_not_found",
-                "webspace_id": webspace_id,
-                "scenario_id": scenario_id,
-                "scenario_switch_mode": switch_mode,
-                "timings_ms": finalized_timings,
-                "phase_timings_ms": _derive_phase_timings(
-                    switch_timings_ms=finalized_timings,
-                    switch_mode=switch_mode,
-                ),
-            }
-    else:
+            ),
+        )
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "scenario_not_found",
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "scenario_switch_mode": switch_mode,
+            "timings_ms": finalized_timings,
+            "phase_timings_ms": _derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                switch_mode=switch_mode,
+            ),
+        }
+
+    if switch_mode != "pointer_first":
         stage_started = time.perf_counter()
         switch_content = _load_scenario_switch_content(scenario_id, space=loader_space)
         _record_timing(timings_ms, "load_scenario", stage_started)

@@ -275,6 +275,10 @@ that scenario is already `scheduled` or `running`. Control responses now
 surface both skip metadata and the current rebuild status so retries can stay
 cheap without becoming opaque.
 
+The remaining materialize-and-copy path now also performs the same lightweight
+scenario existence preflight before loading `scenario.json`, so both switch
+modes reject missing targets before any heavy payload copy work begins.
+
 ### Phase E: Structure/data split and focus-aware hydration
 
 The rebuild contract becomes explicitly phased:
@@ -310,7 +314,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 ### 2. Switch Contract Simplification
 
 - [x] Introduce a feature-flagged pointer-first switch path.
-- [ ] Make `switch_webspace_scenario()` validate existence without eager full
+- [x] Make `switch_webspace_scenario()` validate existence without eager full
   payload copy.
 - [ ] Restrict switch writes to `ui.current_scenario` and minimal metadata.
 - [x] Preserve `set_home` / dev-webspace policy behavior.

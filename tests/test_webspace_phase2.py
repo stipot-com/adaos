@@ -212,6 +212,7 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
         sync_listing_calls.append(True)
 
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
     monkeypatch.setattr(
         webspace_runtime_module,
         "_load_scenario_switch_content",
@@ -263,6 +264,7 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert result["set_home"] is True
     assert result["home_scenario"] == "prompt_engineer_scenario"
     assert isinstance(result["timings_ms"], dict)
+    assert "validate_scenario" in result["timings_ms"]
     assert "load_scenario" in result["timings_ms"]
     assert "wait_rebuild" in result["timings_ms"]
     assert isinstance(result["rebuild_timings_ms"], dict)
@@ -369,6 +371,7 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert fake_state["registry"]["merged"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
     assert isinstance(result["timings_ms"], dict)
+    assert "validate_scenario" in result["timings_ms"]
     assert "materialize_switch_payload" in result["timings_ms"]
     assert "schedule_background_rebuild" in result["timings_ms"]
     assert isinstance(result["phase_timings_ms"], dict)
@@ -549,6 +552,105 @@ def test_switch_webspace_scenario_pointer_first_preserves_dev_auto_home_policy(m
     assert result["set_home"] is True
     assert result["home_scenario"] == "prompt_engineer_scenario"
     assert result["scenario_switch_mode"] == "pointer_first"
+
+
+def test_switch_webspace_scenario_materialize_validates_before_loading_content(monkeypatch) -> None:
+    webspace_id = "phase2-materialize-validate-order"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Materialize Validate",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "web_desktop"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    calls: list[str] = []
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_scenario_exists_for_switch",
+        lambda scenario_id, *, space: (calls.append(f"validate:{space}:{scenario_id}") or True),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_load_scenario_switch_content",
+        lambda scenario_id, *, space: (
+            calls.append(f"load:{space}:{scenario_id}") or {
+                "id": scenario_id,
+                "ui": {"application": {"desktop": {"pageSchema": {"id": f"page-{scenario_id}"}}}},
+                "registry": {"modals": [f"modal:{scenario_id}"]},
+                "catalog": {"apps": [{"id": f"app:{scenario_id}"}]},
+                "data": {"status": {"scenario": scenario_id}},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_scenario_switch_rebuild",
+        lambda webspace_id, **kwargs: None,
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert calls == [
+        "validate:workspace:prompt_engineer_scenario",
+        "load:workspace:prompt_engineer_scenario",
+    ]
+    assert "validate_scenario" in result["timings_ms"]
+    assert "load_scenario" in result["timings_ms"]
+
+
+def test_switch_webspace_scenario_materialize_missing_scenario_fails_without_loading_content(monkeypatch) -> None:
+    webspace_id = "phase2-materialize-missing"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Materialize Missing",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "web_desktop"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: False)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_load_scenario_switch_content",
+        lambda scenario_id, *, space: (_ for _ in ()).throw(AssertionError("should not load missing scenario content")),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "missing_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["accepted"] is False
+    assert result["error"] == "scenario_not_found"
+    assert "validate_scenario" in result["timings_ms"]
+    assert "load_scenario" not in result["timings_ms"]
 
 
 def test_switch_webspace_scenario_same_current_ready_skips_rebuild_and_only_persists_home(monkeypatch) -> None:
