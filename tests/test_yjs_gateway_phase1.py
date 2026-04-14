@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -92,6 +93,22 @@ class _FakeYStore:
 
     async def apply_updates(self, ydoc) -> None:  # noqa: ARG002
         self.apply_updates_calls += 1
+
+
+class _FakeBus:
+    def __init__(self) -> None:
+        self.subscriptions: list[tuple[str, object]] = []
+
+    def subscribe(self, prefix: str, handler: object) -> None:
+        self.subscriptions.append((prefix, handler))
+
+
+class _FakeEventWebSocket:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    async def send_text(self, payload: str) -> None:
+        self.messages.append(json.loads(payload))
 
 
 def test_ensure_webspace_ready_uses_manifest_defaults(monkeypatch) -> None:
@@ -404,3 +421,89 @@ def test_active_browser_session_snapshot_tracks_yws_clients() -> None:
 
     gateway_module._untrack_yws_connection("ops", ws)
     assert gateway_module.active_browser_session_snapshot(now_ts=123.0)["peers"] == []
+
+
+def test_register_ws_event_subscriptions_installs_forwarder_once(monkeypatch) -> None:
+    bus = _FakeBus()
+    websocket = _FakeEventWebSocket()
+
+    gateway_module._WS_EVENT_SUBSCRIBERS.clear()
+    gateway_module._WS_EVENT_FORWARDER_INSTALLED = False
+    monkeypatch.setattr(
+        gateway_module,
+        "get_agent_ctx",
+        lambda: SimpleNamespace(bus=bus),
+    )
+
+    loop = asyncio.new_event_loop()
+    try:
+        added = gateway_module._register_ws_event_subscriptions(
+            websocket,
+            loop,
+            ["core.update.status", "core.update.status"],
+        )
+        second = gateway_module._register_ws_event_subscriptions(
+            websocket,
+            loop,
+            ["core.update.status"],
+        )
+    finally:
+        loop.close()
+        gateway_module._unregister_ws_event_subscriptions(websocket)
+        gateway_module._WS_EVENT_SUBSCRIBERS.clear()
+        gateway_module._WS_EVENT_FORWARDER_INSTALLED = False
+
+    assert added == {"core.update.status"}
+    assert second == set()
+    assert [(prefix, getattr(handler, "__name__", "")) for prefix, handler in bus.subscriptions] == [
+        ("*", "_forward_ws_bus_event")
+    ]
+
+
+def test_forward_ws_bus_event_delivers_core_update_status(monkeypatch) -> None:
+    websocket = _FakeEventWebSocket()
+
+    gateway_module._WS_EVENT_SUBSCRIBERS.clear()
+    gateway_module._WS_EVENT_FORWARDER_INSTALLED = False
+
+    loop = asyncio.new_event_loop()
+    try:
+        gateway_module._WS_EVENT_SUBSCRIBERS[id(websocket)] = {
+            "websocket": websocket,
+            "loop": loop,
+            "topics": {"core.update.status"},
+        }
+
+        def _run_coro_threadsafe(coro, target_loop):  # noqa: ANN001
+            assert target_loop is loop
+            asyncio.run(coro)
+            return SimpleNamespace()
+
+        monkeypatch.setattr(
+            gateway_module.asyncio,
+            "run_coroutine_threadsafe",
+            _run_coro_threadsafe,
+        )
+
+        gateway_module._forward_ws_bus_event(
+            SimpleNamespace(
+                type="core.update.status",
+                payload={"state": "countdown"},
+                source="supervisor",
+                ts=321.0,
+            )
+        )
+    finally:
+        loop.close()
+        gateway_module._WS_EVENT_SUBSCRIBERS.clear()
+
+    assert websocket.messages == [
+        {
+            "ch": "events",
+            "t": "evt",
+            "kind": "core.update.status",
+            "payload": {"state": "countdown"},
+            "source": "supervisor",
+            "ts": 321.0,
+        }
+    ]

@@ -292,7 +292,7 @@ That surface is intended only for restart/update visibility such as:
 
 It must not expose mutating control operations or become a substitute for the authenticated operator API.
 
-Current MVP browser behavior may preserve and display the last known transition state during reconnect windows, and routed hub sessions can now poll a live browser-safe supervisor view at `/hubs/<id>/api/supervisor/public/update-status`.
+Current MVP browser behavior may preserve and display the last known transition state during reconnect windows, and routed hub sessions can now consume that browser-safe transition state primarily as pushed `core.update.status` events over the control `/ws` channel, with `/hubs/<id>/api/supervisor/public/update-status` retained as a fallback when the control channel is unavailable.
 The target end state is stronger: every supported browser entry topology should be able to poll that read-only supervisor transition surface directly, so the shell can keep moving from `hub restarting` to `rollback in progress` or `root promotion pending` from supervisor truth rather than only from the last runtime-visible snapshot.
 Operator-facing surfaces are also expected to consume that same supervisor truth through the canonical control-plane model, so Infrascope and related overview projections can show core-runtime transition state in `active_runtimes`, health strips, and recent changes instead of presenting a restart only as generic hub instability.
 That browser-safe surface now also includes candidate runtime diagnostics needed for warm-switch work:

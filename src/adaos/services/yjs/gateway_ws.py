@@ -61,6 +61,9 @@ _ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
 _ACTIVE_YWS_CLIENTS: dict[str, dict[str, int]] = {}
 _YWS_OPEN_HISTORY: deque[float] = deque(maxlen=512)
 _YWS_CLIENT_OPEN_HISTORY: dict[str, deque[float]] = {}
+_WS_EVENT_SUBSCRIPTIONS_LOCK = threading.RLock()
+_WS_EVENT_SUBSCRIBERS: dict[int, dict[str, Any]] = {}
+_WS_EVENT_FORWARDER_INSTALLED = False
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -139,6 +142,151 @@ def _publish_runtime_event(topic: str, payload: dict[str, Any] | None = None, *,
         ctx.bus.publish(DomainEvent(type=topic, payload=dict(payload or {}), source=source, ts=time.time()))
     except Exception:
         _log.debug("failed to publish runtime event topic=%s", topic, exc_info=True)
+
+
+def _normalize_ws_event_topics(raw_topics: Any) -> set[str]:
+    if not isinstance(raw_topics, list):
+        return set()
+    return {
+        topic
+        for topic in (str(raw or "").strip() for raw in raw_topics)
+        if topic
+    }
+
+
+def _ws_event_topic_matches(subscription: str, event_type: str) -> bool:
+    topic = str(subscription or "").strip()
+    event = str(event_type or "").strip()
+    if not topic or not event:
+        return False
+    if topic in {"*", ""}:
+        return True
+    if topic.endswith("*"):
+        return event.startswith(topic[:-1])
+    return event == topic
+
+
+def _build_ws_event_message(
+    event_type: str,
+    payload: Any,
+    *,
+    source: str = "events_ws",
+    ts: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "ch": "events",
+        "t": "evt",
+        "kind": str(event_type or "").strip(),
+        "payload": payload if isinstance(payload, dict) else {"value": payload},
+        "source": str(source or "events_ws").strip() or "events_ws",
+        "ts": float(ts or time.time()),
+    }
+
+
+async def _send_ws_event_message(websocket: WebSocket, message: dict[str, Any]) -> None:
+    try:
+        await websocket.send_text(json.dumps(message))
+    except (WebSocketDisconnect, RuntimeError):
+        _unregister_ws_event_subscriptions(websocket)
+        raise
+
+
+def _iter_initial_ws_event_messages(topics: set[str]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if any(_ws_event_topic_matches(topic, "core.update.status") for topic in topics):
+        try:
+            from adaos.services.core_update import read_status as _read_core_update_status
+
+            messages.append(
+                _build_ws_event_message(
+                    "core.update.status",
+                    _read_core_update_status() or {},
+                    source="core.update.status",
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to snapshot core.update.status for ws subscriber", exc_info=True)
+    return messages
+
+
+async def _send_initial_ws_event_messages(websocket: WebSocket, topics: set[str]) -> None:
+    for message in _iter_initial_ws_event_messages(topics):
+        try:
+            await _send_ws_event_message(websocket, message)
+        except (WebSocketDisconnect, RuntimeError):
+            return
+
+
+def _ensure_ws_event_forwarder() -> None:
+    global _WS_EVENT_FORWARDER_INSTALLED
+    with _WS_EVENT_SUBSCRIPTIONS_LOCK:
+        if _WS_EVENT_FORWARDER_INSTALLED:
+            return
+        ctx = get_agent_ctx()
+        ctx.bus.subscribe("*", _forward_ws_bus_event)
+        _WS_EVENT_FORWARDER_INSTALLED = True
+
+
+def _register_ws_event_subscriptions(
+    websocket: WebSocket,
+    loop: asyncio.AbstractEventLoop,
+    raw_topics: Any,
+) -> set[str]:
+    topics = _normalize_ws_event_topics(raw_topics)
+    if not topics:
+        return set()
+    _ensure_ws_event_forwarder()
+    with _WS_EVENT_SUBSCRIPTIONS_LOCK:
+        entry = _WS_EVENT_SUBSCRIBERS.setdefault(
+            id(websocket),
+            {
+                "websocket": websocket,
+                "loop": loop,
+                "topics": set(),
+            },
+        )
+        entry["loop"] = loop
+        tracked = entry.setdefault("topics", set())
+        added = set(topics) - set(tracked)
+        tracked.update(topics)
+    return added
+
+
+def _unregister_ws_event_subscriptions(websocket: WebSocket) -> None:
+    with _WS_EVENT_SUBSCRIPTIONS_LOCK:
+        _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+
+
+def _forward_ws_bus_event(ev: DomainEvent) -> None:
+    event_type = str(getattr(ev, "type", "") or "").strip()
+    if not event_type:
+        return
+    with _WS_EVENT_SUBSCRIPTIONS_LOCK:
+        subscribers = [
+            dict(entry)
+            for entry in _WS_EVENT_SUBSCRIBERS.values()
+            if any(_ws_event_topic_matches(topic, event_type) for topic in entry.get("topics", set()))
+        ]
+    if not subscribers:
+        return
+    message = _build_ws_event_message(
+        event_type,
+        getattr(ev, "payload", {}) or {},
+        source=str(getattr(ev, "source", "") or "events_ws"),
+        ts=float(getattr(ev, "ts", 0.0) or time.time()),
+    )
+    for entry in subscribers:
+        websocket = entry.get("websocket")
+        loop = entry.get("loop")
+        if websocket is None or not isinstance(loop, asyncio.AbstractEventLoop):
+            continue
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _send_ws_event_message(websocket, message),
+                loop,
+            )
+        except Exception:
+            _unregister_ws_event_subscriptions(websocket)
 
 
 def _track_yws_connection(webspace_id: str, websocket: WebSocket, *, device_id: str | None = None) -> None:
@@ -1143,6 +1291,7 @@ async def events_ws(websocket: WebSocket):
 
     device_id: str | None = None
     webspace_id = "default"
+    ws_loop = asyncio.get_running_loop()
 
     async def _ws_send(msg: dict[str, Any]) -> None:
         try:
@@ -1161,6 +1310,16 @@ async def events_ws(websocket: WebSocket):
             try:
                 msg = json.loads(raw)
             except Exception:
+                continue
+
+            if msg.get("type") == "subscribe":
+                added = _register_ws_event_subscriptions(
+                    websocket,
+                    ws_loop,
+                    msg.get("topics"),
+                )
+                if added:
+                    await _send_initial_ws_event_messages(websocket, added)
                 continue
 
             ch = msg.get("ch")
@@ -1233,6 +1392,7 @@ async def events_ws(websocket: WebSocket):
                 device_id = payload.get("device_id") or "dev-unknown"
     finally:
         _transport_mark_close("ws")
+        _unregister_ws_event_subscriptions(websocket)
         _ = device_id
         if _ws_trace_enabled():
             try:
