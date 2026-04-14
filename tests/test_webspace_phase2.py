@@ -344,7 +344,33 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
         home_scenario="web_desktop",
     )
 
-    fake_state = _patch_switch_dependencies(monkeypatch)
+    fake_state = _patch_switch_dependencies(
+        monkeypatch,
+        state={
+            "ui": _FakeMap(
+                {
+                    "current_scenario": "web_desktop",
+                    "application": {"desktop": {"pageSchema": {"id": "old-page"}}},
+                    "scenarios": {
+                        "web_desktop": {"application": {"desktop": {"pageSchema": {"id": "old-cache"}}}}
+                    },
+                }
+            ),
+            "registry": _FakeMap(
+                {
+                    "merged": {"modals": ["old-modal"]},
+                    "scenarios": {"web_desktop": {"modals": ["old-cache-modal"]}},
+                }
+            ),
+            "data": _FakeMap(
+                {
+                    "catalog": {"apps": [{"id": "old-app"}]},
+                    "status": {"scenario": "web_desktop"},
+                    "scenarios": {"web_desktop": {"catalog": {"apps": [{"id": "old-cache-app"}]}}},
+                }
+            ),
+        },
+    )
     scheduled: list[tuple[str, str, str | None]] = []
 
     monkeypatch.setattr(
@@ -367,15 +393,21 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert result["background_rebuild"] is True
     assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit", "materialize_and_copy", True)]
     assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
-    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
-    assert fake_state["registry"]["merged"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
-    assert fake_state["data"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
+    assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "old-page"
+    assert fake_state["registry"]["merged"]["modals"] == ["old-modal"]
+    assert fake_state["data"]["catalog"]["apps"] == [{"id": "old-app"}]
+    assert fake_state["data"]["status"] == {"scenario": "web_desktop"}
+    assert fake_state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
+    assert fake_state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
+    assert fake_state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
+    assert fake_state["data"]["scenarios"]["prompt_engineer_scenario"]["data"]["status"]["scenario"] == "prompt_engineer_scenario"
     assert isinstance(result["timings_ms"], dict)
     assert "validate_scenario" in result["timings_ms"]
     assert "materialize_switch_payload" in result["timings_ms"]
     assert "schedule_background_rebuild" in result["timings_ms"]
     assert isinstance(result["phase_timings_ms"], dict)
     assert "time_to_accept" in result["phase_timings_ms"]
+    assert "time_to_full_hydration" not in result["phase_timings_ms"]
 
 
 def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:

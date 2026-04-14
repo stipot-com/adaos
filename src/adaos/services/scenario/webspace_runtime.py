@@ -640,27 +640,21 @@ def _materialize_scenario_switch_content_in_doc(
         updated_ui[scenario_id] = {"application": ui_section}
         _set_map_value_if_changed(ui_map, txn, "scenarios", updated_ui)
         _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
-        _set_map_value_if_changed(ui_map, txn, "application", ui_section)
 
         reg_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
         reg_updated = dict(reg_scenarios)
         reg_updated[scenario_id] = registry_section
         _set_map_value_if_changed(registry_map, txn, "scenarios", reg_updated)
-        _set_map_value_if_changed(registry_map, txn, "merged", registry_section)
 
         data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
         data_updated = dict(data_scenarios)
         entry_raw = data_updated.get(scenario_id) or {}
         entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
         entry["catalog"] = catalog_section
+        if data_section:
+            entry["data"] = data_section
         data_updated[scenario_id] = entry
         _set_map_value_if_changed(data_map, txn, "scenarios", data_updated)
-        _set_map_value_if_changed(data_map, txn, "catalog", catalog_section)
-
-        for key, value in data_section.items():
-            if not isinstance(key, str) or key == "installed":
-                continue
-            _set_map_value_if_changed(data_map, txn, key, value)
 
 
 def _scenario_supports_catalog_controls(
@@ -784,19 +778,6 @@ def _derive_phase_timings(
     if pointer_update is not None:
         phase["time_to_pointer_update"] = pointer_update
 
-    if str(switch_mode or "").strip() == "materialize_and_copy":
-        first_structure = _sum_timing_values(
-            switch_timings_ms,
-            "describe_state_before",
-            "resolve_manifest_policy",
-            "load_scenario",
-            "open_doc",
-            "materialize_switch_payload",
-        )
-        if first_structure is not None:
-            phase["time_to_first_structure"] = first_structure
-            phase["time_to_interactive_focus"] = first_structure
-
     if "time_to_first_structure" not in phase and switch_total is not None and rebuild_total is not None:
         full_ready = round(switch_total + rebuild_total, 3)
         phase["time_to_first_structure"] = full_ready
@@ -806,8 +787,6 @@ def _derive_phase_timings(
         phase["time_to_full_hydration"] = round(switch_total + rebuild_total, 3)
     elif rebuild_total is not None:
         phase["time_to_full_hydration"] = round(rebuild_total, 3)
-    elif switch_total is not None and str(switch_mode or "").strip() == "materialize_and_copy":
-        phase["time_to_full_hydration"] = round(switch_total, 3)
 
     return phase or None
 

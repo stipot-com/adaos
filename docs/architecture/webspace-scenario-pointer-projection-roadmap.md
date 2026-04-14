@@ -14,33 +14,38 @@ phase-aware materialization.
 
 ## Status
 
-- Current implementation: `materialize-and-copy` by default, with an opt-in
-  feature-flagged `pointer-first` switch path available for migration testing
+- Current implementation: legacy `materialize-and-copy` compatibility caches
+  by default, with an opt-in feature-flagged `pointer-first` switch path
+  available for migration testing; effective runtime branches are now left to
+  semantic rebuild in both modes
 - Target implementation: `pointer + resolved projection`
 - Migration mode: phased, compatibility-first
 
 ## Problem Statement
 
-Today `switch_webspace_scenario()` behaves as both:
+Today `switch_webspace_scenario()` still spans both:
 
 - a runtime selection operation
-- a scenario payload materialization operation
+- a migration-era compatibility cache materialization operation
 
-In practice that means a single scenario switch currently:
+In practice that means a single legacy scenario switch currently:
 
+- validates the target scenario
 - loads the target `scenario.json`
 - writes scenario payload into Yjs compatibility branches such as
   `ui.scenarios`, `registry.scenarios`, and `data.scenarios`
-- writes active runtime branches such as `ui.application`,
-  `registry.merged`, and `data.catalog`
-- schedules a rebuild that computes and writes those effective branches again
+- updates `ui.current_scenario`
+- schedules a rebuild that computes and writes effective branches such as
+  `ui.application`, `registry.merged`, and `data.catalog`
 
 This has several costs:
 
-- switch latency grows with scenario payload size
-- Yjs churn is higher than necessary
-- the same state is written twice on a normal switch path
-- ownership boundaries between canonical, derived, and live state stay blurry
+- switch latency still grows with scenario payload size when pointer-first is
+  disabled
+- Yjs churn is still higher than necessary because compatibility caches are
+  materialized on switch
+- ownership boundaries are better than before, but compatibility materialization
+  still keeps switch broader than the target contract
 - rebuild logic remains coupled to legacy materialized scenario caches
 
 ## Target Architecture
@@ -278,6 +283,9 @@ cheap without becoming opaque.
 The remaining materialize-and-copy path now also performs the same lightweight
 scenario existence preflight before loading `scenario.json`, so both switch
 modes reject missing targets before any heavy payload copy work begins.
+Legacy materialize mode now limits itself to compatibility cache writes plus
+`ui.current_scenario`; active runtime branches are left to semantic rebuild, so
+normal scenario switch no longer duplicates effective writes before reconcile.
 
 ### Phase E: Structure/data split and focus-aware hydration
 
@@ -325,7 +333,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Ensure semantic rebuild is the only owner of effective writes to
   `ui.application`, `data.catalog`, `data.installed`, `data.desktop`, and
   `registry.merged`.
-- [ ] Remove duplicated writes between switch and rebuild paths.
+- [x] Remove duplicated writes between switch and rebuild paths.
 - [ ] Keep workflow/runtime sync aligned with the rebuilt active scenario.
 - [ ] Verify reload/reset/restore/switch all use the same source resolution
   rules.
