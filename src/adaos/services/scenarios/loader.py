@@ -3,14 +3,45 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import yaml
 
 from adaos.services.agent_context import get_ctx
 
 _log = logging.getLogger("adaos.scenarios.loader")
-_CONTENT_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_CONTENT_CACHE: Dict[Tuple[str, str], Tuple[Tuple[str, int, int], Dict[str, Any]]] = {}
+_MANIFEST_CACHE: Dict[Tuple[str, str], Tuple[Tuple[str, int, int], Dict[str, Any]]] = {}
+
+
+def _file_stamp(path: Path) -> Tuple[str, int, int]:
+    stat = path.stat()
+    return (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _read_cached_mapping_file(
+    *,
+    cache: Dict[Tuple[str, str], Tuple[Tuple[str, int, int], Dict[str, Any]]],
+    key: Tuple[str, str],
+    path: Path,
+    reader: Callable[[str], Any],
+    encoding: str,
+) -> Dict[str, Any]:
+    stamp = _file_stamp(path)
+    cached = cache.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    try:
+        raw = path.read_text(encoding=encoding)
+        data = reader(raw) or {}
+    except Exception:
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+    cache[key] = (stamp, data)
+    return data
 
 
 def _scenario_root_for_space(scenario_id: str, space: str) -> Path:
@@ -75,14 +106,22 @@ def read_manifest(scenario_id: str, *, space: str = "workspace") -> Dict[str, An
 
     When ``space="dev"`` the loader looks under ``dev_scenarios_dir``.
     """
+    key = (str(scenario_id), str(space))
     for root in _candidate_roots(scenario_id, space):
         path = root / "scenario.yaml"
         if not path.exists():
             continue
-        raw = path.read_text(encoding="utf-8")
-        data = yaml.safe_load(raw) or {}
-        if isinstance(data, dict):
+        data = _read_cached_mapping_file(
+            cache=_MANIFEST_CACHE,
+            key=key,
+            path=path,
+            reader=yaml.safe_load,
+            encoding="utf-8",
+        )
+        if data:
             return data
+        return {}
+    _MANIFEST_CACHE.pop(key, None)
     return {}
 
 
@@ -93,29 +132,20 @@ def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any
     When ``space="dev"`` the loader looks under ``dev_scenarios_dir``.
     """
     key = (str(scenario_id), str(space))
-    cached = _CONTENT_CACHE.get(key)
-    if cached is not None:
-        return cached
-
     for root in _candidate_roots(scenario_id, space):
         path = root / "scenario.json"
         if not path.exists():
             continue
         _log.debug("reading scenario '%s' content from %s", scenario_id, path)
-        try:
-            # Accept UTF-8 with BOM produced by some Windows/PowerShell editors.
-            raw = path.read_text(encoding="utf-8-sig")
-            data = json.loads(raw)
-        except Exception:
-            _CONTENT_CACHE[key] = {}
-            return {}
-        if not isinstance(data, dict):
-            _CONTENT_CACHE[key] = {}
-            return {}
-        _CONTENT_CACHE[key] = data
-        return data
+        return _read_cached_mapping_file(
+            cache=_CONTENT_CACHE,
+            key=key,
+            path=path,
+            reader=json.loads,
+            encoding="utf-8-sig",
+        )
     _log.debug("scenario '%s' has no scenario.json in any candidate roots", scenario_id)
-    _CONTENT_CACHE[key] = {}
+    _CONTENT_CACHE.pop(key, None)
     return {}
 
 
@@ -146,6 +176,14 @@ def invalidate_cache(*, scenario_id: str | None = None, space: str | None = None
         if space is not None and sp != str(space):
             continue
         _CONTENT_CACHE.pop(key, None)
+    keys = list(_MANIFEST_CACHE.keys())
+    for key in keys:
+        sid, sp = key
+        if scenario_id is not None and sid != str(scenario_id):
+            continue
+        if space is not None and sp != str(space):
+            continue
+        _MANIFEST_CACHE.pop(key, None)
 
 
 __all__ = ["scenario_root", "read_manifest", "read_content", "scenario_exists", "invalidate_cache"]

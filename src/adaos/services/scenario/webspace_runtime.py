@@ -31,6 +31,7 @@ _log = logging.getLogger("adaos.scenario.webspace_runtime")
 _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
+_WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
 
 
 @dataclass(slots=True)
@@ -784,13 +785,26 @@ class WebspaceScenarioRuntime:
             except Exception:
                 pass
         if not path.exists():
+            _WEBUI_DECL_CACHE.pop(str(path), None)
             _log.debug("webui.json missing for %s (%s)", skill_name, space)
             return {}
+        cache_key = str(path.resolve())
+        try:
+            stat = path.stat()
+            stamp = (cache_key, int(stat.st_mtime_ns), int(stat.st_size))
+        except Exception:
+            stamp = None
+        if stamp is not None:
+            cached = _WEBUI_DECL_CACHE.get(cache_key)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
         try:
             # Accept UTF-8 with BOM produced by some Windows/PowerShell editors.
             raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             _log.warning("failed to read webui.json for %s: %s", skill_name, exc)
+            if stamp is not None:
+                _WEBUI_DECL_CACHE[cache_key] = (stamp, {})
             return {}
 
         catalog = raw.get("catalog") or {}
@@ -803,7 +817,7 @@ class WebspaceScenarioRuntime:
         raw_contrib = raw.get("contributions") or []
         contributions = [c for c in raw_contrib if isinstance(c, dict)]
 
-        return {
+        payload = {
             "skill": skill_name,
             "space": space,
             "apps": [it for it in apps if isinstance(it, dict)],
@@ -817,6 +831,9 @@ class WebspaceScenarioRuntime:
             "ydoc_defaults": ydoc_defaults if isinstance(ydoc_defaults, dict) else {},
             "contributions": contributions,
         }
+        if stamp is not None:
+            _WEBUI_DECL_CACHE[cache_key] = (stamp, payload)
+        return payload
 
     def _collect_skill_decls(self, mode: str = "mixed") -> List[Dict[str, Any]]:
         try:

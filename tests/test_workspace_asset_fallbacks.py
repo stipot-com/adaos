@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 import types
@@ -72,6 +73,48 @@ def test_scenario_loader_falls_back_to_repo_workspace(monkeypatch, tmp_path: Pat
     assert content["ui"]["application"]["desktop"]["pageSchema"]["id"] == "prompt"
 
 
+def test_scenario_loader_cache_refreshes_when_repo_workspace_files_change(monkeypatch, tmp_path: Path) -> None:
+    runtime_base = tmp_path / "runtime"
+    repo_root = tmp_path / "repo"
+    repo_scenario = repo_root / ".adaos" / "workspace" / "scenarios" / "prompt_engineer_scenario"
+    repo_scenario.mkdir(parents=True, exist_ok=True)
+    manifest_path = repo_scenario / "scenario.yaml"
+    content_path = repo_scenario / "scenario.json"
+    manifest_path.write_text(
+        'id: prompt_engineer_scenario\nversion: "0.1.0"\ntype: desktop\ntitle: Prompt IDE A\n',
+        encoding="utf-8",
+    )
+    content_path.write_text(
+        json.dumps({"id": "prompt_engineer_scenario", "ui": {"application": {"desktop": {"pageSchema": {"id": "prompt-a"}}}}}),
+        encoding="utf-8",
+    )
+
+    fake_ctx = SimpleNamespace(paths=_PathsStub(base_dir=runtime_base, repo_root=repo_root))
+    monkeypatch.setattr(scenarios_loader, "get_ctx", lambda: fake_ctx)
+    scenarios_loader.invalidate_cache(scenario_id="prompt_engineer_scenario", space="workspace")
+
+    first_manifest = scenarios_loader.read_manifest("prompt_engineer_scenario")
+    first_content = scenarios_loader.read_content("prompt_engineer_scenario")
+
+    time.sleep(0.01)
+    manifest_path.write_text(
+        'id: prompt_engineer_scenario\nversion: "0.1.0"\ntype: desktop\ntitle: Prompt IDE B\n',
+        encoding="utf-8",
+    )
+    content_path.write_text(
+        json.dumps({"id": "prompt_engineer_scenario", "ui": {"application": {"desktop": {"pageSchema": {"id": "prompt-b"}}}}}),
+        encoding="utf-8",
+    )
+
+    second_manifest = scenarios_loader.read_manifest("prompt_engineer_scenario")
+    second_content = scenarios_loader.read_content("prompt_engineer_scenario")
+
+    assert first_manifest["title"] == "Prompt IDE A"
+    assert first_content["ui"]["application"]["desktop"]["pageSchema"]["id"] == "prompt-a"
+    assert second_manifest["title"] == "Prompt IDE B"
+    assert second_content["ui"]["application"]["desktop"]["pageSchema"]["id"] == "prompt-b"
+
+
 def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path) -> None:
     runtime_base = tmp_path / "runtime"
     repo_root = tmp_path / "repo"
@@ -100,6 +143,46 @@ def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path
 
     assert payload["apps"][0]["scenario_id"] == "prompt_engineer_scenario"
     assert "prompt_ide_modal" in payload["registry"]["modals"]
+
+
+def test_webspace_runtime_load_webui_cache_refreshes_when_file_changes(tmp_path: Path) -> None:
+    runtime_base = tmp_path / "runtime"
+    repo_root = tmp_path / "repo"
+    repo_skill = repo_root / ".adaos" / "workspace" / "skills" / "prompt_engineer_skill"
+    repo_skill.mkdir(parents=True, exist_ok=True)
+    webui_path = repo_skill / "webui.json"
+    webui_path.write_text(
+        json.dumps(
+            {
+                "apps": [{"id": "scenario:prompt_a", "title": "Prompt A", "scenario_id": "prompt_a"}],
+                "registry": {"modals": {"prompt_modal_a": {"title": "Prompt A"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_ctx = SimpleNamespace(paths=_PathsStub(base_dir=runtime_base, repo_root=repo_root))
+    runtime = WebspaceScenarioRuntime(fake_ctx)
+
+    first_payload = runtime._load_webui("prompt_engineer_skill", "default")
+
+    time.sleep(0.01)
+    webui_path.write_text(
+        json.dumps(
+            {
+                "apps": [{"id": "scenario:prompt_b", "title": "Prompt B", "scenario_id": "prompt_b"}],
+                "registry": {"modals": {"prompt_modal_b": {"title": "Prompt B"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    second_payload = runtime._load_webui("prompt_engineer_skill", "default")
+
+    assert first_payload["apps"][0]["scenario_id"] == "prompt_a"
+    assert "prompt_modal_a" in first_payload["registry"]["modals"]
+    assert second_payload["apps"][0]["scenario_id"] == "prompt_b"
+    assert "prompt_modal_b" in second_payload["registry"]["modals"]
 
 
 def test_webspace_runtime_switch_content_falls_back_to_builtin_web_desktop(monkeypatch) -> None:

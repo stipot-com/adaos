@@ -248,6 +248,11 @@ Control surface теперь также публикуют provisional `phase_ti
 best-effort, но уже позволяют сравнивать pointer-first acceptance и полный
 rebuild latency на реальных сценариях.
 
+Загрузка scenario content/manifest и skill `webui.json` теперь также опирается
+на file-stamp-aware in-process cache, что уменьшает повторную стоимость
+парсинга при частых rebuild, но при этом позволяет подхватывать изменения на
+диске без перезапуска процесса.
+
 ### Phase E: Structure/data split и focus-aware hydration
 
 Контракт rebuild становится явно фазовым:

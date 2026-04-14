@@ -247,6 +247,11 @@ These numbers are intentionally best-effort until fragmented reconcile lands,
 but they already make pointer-first acceptance and full rebuild latency easier
 to compare in production.
 
+Scenario content/manifests and skill `webui.json` loads now also use
+file-stamp-aware in-process caches, reducing repeated parse cost during
+frequent rebuilds while still picking up on-disk updates without a process
+restart.
+
 ### Phase E: Structure/data split and focus-aware hydration
 
 The rebuild contract becomes explicitly phased:
