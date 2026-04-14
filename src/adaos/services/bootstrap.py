@@ -340,8 +340,12 @@ def _hub_route_force_close_no_upstream_s() -> float:
     return value
 
 
-def _hub_root_candidate_passive_mode() -> bool:
+def _runtime_candidate_mode() -> bool:
     return runtime_transition_role() == "candidate"
+
+
+def _hub_root_candidate_passive_mode() -> bool:
+    return _runtime_candidate_mode()
 
 
 def _nats_url_needs_public_ws_refresh(value: str | None) -> bool:
@@ -808,10 +812,13 @@ class BootstrapService:
         await bus.emit("sys.boot.start", {"role": conf.role, "node_id": conf.node_id, "subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
         await self.skills_loader.import_all_handlers(self.ctx.paths.skills_dir())
         # Start service-type skills (external processes).
-        try:
-            await get_service_supervisor().start_all()
-        except Exception:
-            self._log.warning("failed to start service skills", exc_info=True)
+        if _runtime_candidate_mode():
+            self._log.info("skipping service skill startup for candidate runtime prewarm")
+        else:
+            try:
+                await get_service_supervisor().start_all()
+            except Exception:
+                self._log.warning("failed to start service skills", exc_info=True)
         await register_subscriptions()
         if str(getattr(conf, "role", "") or "").strip().lower() == "hub":
             try:

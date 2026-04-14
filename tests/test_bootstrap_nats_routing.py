@@ -202,3 +202,11 @@ def test_bootstrap_shutdown_stops_scheduler(monkeypatch) -> None:
     assert "scheduler" in calls
     assert calls[0] == "sys.stopping"
     assert calls[-1] == "sys.stopped"
+
+
+def test_runtime_candidate_mode_follows_transition_role(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap_mod, "runtime_transition_role", lambda: "candidate")
+    assert bootstrap_mod._runtime_candidate_mode() is True
+
+    monkeypatch.setattr(bootstrap_mod, "runtime_transition_role", lambda: "active")
+    assert bootstrap_mod._runtime_candidate_mode() is False

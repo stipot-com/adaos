@@ -108,11 +108,18 @@ def test_candidate_runtime_can_be_promoted_to_active(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8778")
 
     reconnect_calls: list[tuple[str | None, str | None]] = []
+    call_order: list[str] = []
+
+    class _ServiceSupervisor:
+        async def start_all(self) -> None:
+            call_order.append("services")
 
     async def _reconnect(*, transport: str | None = None, url_override: str | None = None):
+        call_order.append("reconnect")
         reconnect_calls.append((transport, url_override))
         return {"ok": True, "accepted": True}
 
+    monkeypatch.setattr(api_server, "get_service_supervisor", lambda: _ServiceSupervisor())
     monkeypatch.setattr(api_server, "request_hub_root_reconnect", _reconnect)
 
     payload = asyncio.run(
@@ -128,6 +135,7 @@ def test_candidate_runtime_can_be_promoted_to_active(monkeypatch) -> None:
     assert payload["runtime"]["admin_mutation_allowed"] is True
     assert payload["reconnect"]["ok"] is True
     assert reconnect_calls == [(None, None)]
+    assert call_order == ["services", "reconnect"]
 
 
 def test_promote_active_is_idempotent_for_active_runtime(monkeypatch) -> None:

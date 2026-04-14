@@ -660,6 +660,30 @@ def _proc_details(proc: subprocess.Popen[Any] | None, *, cwd_hint: str | None = 
     }
 
 
+def _process_family_rss_bytes(pid: int | None) -> tuple[int | None, int | None]:
+    if not pid or psutil is None:
+        return None, None
+    try:
+        root = psutil.Process(int(pid))
+    except Exception:
+        return None, None
+    try:
+        root_rss = int(root.memory_info().rss)
+    except Exception:
+        root_rss = None
+    family_rss = int(root_rss or 0)
+    try:
+        children = list(root.children(recursive=True))
+    except Exception:
+        children = []
+    for child in children:
+        try:
+            family_rss += int(child.memory_info().rss)
+        except Exception:
+            continue
+    return root_rss, family_rss if family_rss > 0 else root_rss
+
+
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
     fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
     payload = dict(values)
@@ -1060,6 +1084,7 @@ class SupervisorManager:
         estimated_candidate_bytes = None
         reserve_bytes = _warm_switch_min_available_bytes()
         current_rss_bytes = None
+        current_family_rss_bytes = None
         if not candidate_slot:
             reason = "no transition candidate slot"
         elif not supported:
@@ -1075,11 +1100,10 @@ class SupervisorManager:
             except Exception:
                 available_bytes = None
             if managed_pid:
-                with contextlib.suppress(Exception):
-                    current_rss_bytes = int(psutil.Process(int(managed_pid)).memory_info().rss)
+                current_rss_bytes, current_family_rss_bytes = _process_family_rss_bytes(managed_pid)
             estimated_candidate_bytes = max(
                 _warm_switch_min_candidate_bytes(),
-                int(float(current_rss_bytes or 0) * _warm_switch_rss_multiplier()),
+                int(float(current_family_rss_bytes or current_rss_bytes or 0) * _warm_switch_rss_multiplier()),
             )
             if available_bytes is None or available_bytes <= 0:
                 reason = "available memory is unknown"
@@ -1103,7 +1127,9 @@ class SupervisorManager:
             "warm_switch_reason": reason if candidate_slot else None,
             "warm_switch_memory": {
                 "available_bytes": available_bytes,
-                "current_rss_bytes": current_rss_bytes,
+                "current_rss_bytes": current_family_rss_bytes or current_rss_bytes,
+                "current_process_rss_bytes": current_rss_bytes,
+                "current_family_rss_bytes": current_family_rss_bytes,
                 "estimated_candidate_bytes": estimated_candidate_bytes,
                 "reserve_bytes": reserve_bytes,
             },

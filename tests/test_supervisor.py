@@ -1744,6 +1744,84 @@ def test_runtime_state_payload_falls_back_to_stop_and_switch_when_memory_is_low(
     assert "insufficient memory" in str(payload["warm_switch_reason"] or "")
 
 
+def test_runtime_state_payload_uses_process_family_rss_for_warm_switch_gate(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner", "--host", "127.0.0.1", "--port", "8777"]
+        cwd = str(tmp_path)
+
+        @staticmethod
+        def poll():
+            return None
+
+    class _PsChild:
+        def __init__(self, pid: int, rss: int) -> None:
+            self.pid = pid
+            self._rss = rss
+
+        def memory_info(self):
+            return type("Mem", (), {"rss": self._rss})()
+
+    class _Psutil:
+        class Process:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def memory_info(self):
+                if self.pid == 32123:
+                    return type("Mem", (), {"rss": 128 * 1024 * 1024})()
+                raise AssertionError(f"unexpected pid {self.pid}")
+
+            def children(self, recursive: bool = False):
+                assert recursive is True
+                return [
+                    _PsChild(40001, 256 * 1024 * 1024),
+                    _PsChild(40002, 256 * 1024 * 1024),
+                ]
+
+        @staticmethod
+        def virtual_memory():
+            return type("VM", (), {"available": 900 * 1024 * 1024})()
+
+    manager._proc = _Proc()
+    write_status(
+        {
+            "state": "planned",
+            "phase": "scheduled",
+            "action": "update",
+            "target_rev": "rev2026",
+            "target_version": "1.2.3",
+        }
+    )
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "A",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "cwd": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(supervisor, "validate_slot_structure", lambda slot: {"slot": slot, "ok": True, "issues": []})
+    monkeypatch.setattr(supervisor, "_listener_running", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "_runtime_api_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(supervisor, "choose_inactive_slot", lambda: "B")
+    monkeypatch.setattr(supervisor, "psutil", _Psutil)
+
+    payload = manager.status()
+
+    assert payload["candidate_slot"] == "B"
+    assert payload["warm_switch_allowed"] is False
+    assert payload["transition_mode"] == "stop_and_switch"
+    assert payload["warm_switch_memory"]["current_process_rss_bytes"] == 128 * 1024 * 1024
+    assert payload["warm_switch_memory"]["current_family_rss_bytes"] == 640 * 1024 * 1024
+    assert payload["warm_switch_memory"]["current_rss_bytes"] == 640 * 1024 * 1024
+
+
 def test_supervisor_promote_root_marks_update_succeeded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

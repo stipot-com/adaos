@@ -511,6 +511,7 @@ The sidecar must not become the hidden owner of update status, rollback state, o
 - keep `adaos-realtime` lifecycle under supervisor in managed topology
 - keep runtime-owned startup/shutdown only as standalone fallback when supervisor is absent
 - keep sidecar contract transport-only
+- keep warm candidates memory-bounded: warm-switch admission should account for runtime process-family RSS, and candidate prewarm should defer external service-skill startup until cutover
 
 ### Phase 6 - Operator UX
 

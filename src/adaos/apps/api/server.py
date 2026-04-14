@@ -1149,6 +1149,13 @@ async def admin_runtime_promote_active(body: RuntimePromoteActiveRequest):
         }
 
     os.environ["ADAOS_RUNTIME_TRANSITION_ROLE"] = "active"
+    try:
+        await get_service_supervisor().start_all()
+    except Exception:
+        logging.getLogger("adaos.runtime").warning(
+            "failed to start service skills after candidate promotion",
+            exc_info=True,
+        )
     reconnect_result: dict[str, Any] | None = None
     if bool(body.reconnect_hub_root):
         try:
