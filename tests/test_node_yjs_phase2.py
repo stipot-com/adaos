@@ -841,6 +841,48 @@ def test_node_cli_scenario_command_omits_set_home_when_flag_is_absent(monkeypatc
     ]
 
 
+def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
+    echoed: list[str] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            200,
+            {
+                "ok": True,
+                "accepted": True,
+                "webspace_id": "phase2-home",
+                "scenario_id": "prompt_engineer_scenario",
+                "timings_ms": {"load_scenario": 1.25, "total": 4.5},
+                "rebuild_timings_ms": {"projection_refresh": 2.0, "total": 6.0},
+            },
+        ),
+    )
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._node_yjs_control_action(
+        action="scenario",
+        webspace="phase2-home",
+        scenario_id="prompt_engineer_scenario",
+        set_home=None,
+        control="http://127.0.0.1:8080",
+        json_output=False,
+    )
+
+    assert any("timings_ms: load_scenario=1.250 total=4.500" in line for line in echoed)
+    assert any("rebuild_timings_ms: projection_refresh=2.000 total=6.000" in line for line in echoed)
+
+
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []

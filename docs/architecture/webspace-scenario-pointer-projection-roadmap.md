@@ -171,6 +171,10 @@ Resolved projection writes become more selective:
 - add top-level diff application where cheap and reliable
 - cache resolver inputs and/or outputs by stable version key
 
+Current operator-facing diagnostics now also expose temporary timing snapshots
+through switch/rebuild results and rebuild status surfaces, so heavy scenarios
+can be compared before larger cache/diff changes land.
+
 ## Roadmap Checklist
 
 Use this checklist as the authoritative progress tracker for the migration.
@@ -223,7 +227,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 5. Performance Hardening
 
-- [ ] Add per-stage timing around switch, scenario load, projection refresh,
+- [x] Add per-stage timing around switch, scenario load, projection refresh,
   resolve, and apply.
 - [x] Add `skip-if-unchanged` checks for large derived writes.
 - [ ] Add cache keys for scenario content, skill UI contributions, and overlay

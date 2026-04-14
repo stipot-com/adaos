@@ -531,6 +531,37 @@ def _set_webspace_rebuild_status(webspace_id: str, **fields: Any) -> dict[str, A
     return dict(current)
 
 
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000.0, 3)
+
+
+def _record_timing(timings: Dict[str, float], key: str, started_at: float) -> float:
+    value = _elapsed_ms(started_at)
+    timings[str(key or "").strip() or "unknown"] = value
+    return value
+
+
+def _copy_timing_map(value: Any) -> Dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    out: Dict[str, float] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            out[key] = round(float(raw_value), 3)
+        except Exception:
+            continue
+    return out or None
+
+
+def _finalize_timing_map(timings: Dict[str, float], *, started_at: float) -> Dict[str, float]:
+    finalized = dict(timings)
+    finalized["total"] = _elapsed_ms(started_at)
+    return finalized
+
+
 def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
     target = str(webspace_id or "").strip()
     current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
@@ -561,6 +592,8 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "registry_summary": dict(current.get("registry_summary") or {})
         if isinstance(current.get("registry_summary"), Mapping)
         else None,
+        "timings_ms": _copy_timing_map(current.get("timings_ms")),
+        "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
         "error": str(current.get("error") or "") or None,
     }
 
@@ -588,6 +621,7 @@ class WebspaceScenarioRuntime:
         self.ctx: AgentContext = ctx or get_ctx()
         # Cached snapshot of desktop scenarios discovered on disk.
         self._desktop_scenarios: Optional[List[Tuple[str, str]]] = None
+        self._last_rebuild_timings_ms: Dict[str, float] | None = None
 
     # --- scenario helpers -------------------------------------------------
 
@@ -1084,20 +1118,36 @@ class WebspaceScenarioRuntime:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
 
     def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
+        rebuild_started = time.perf_counter()
+        timings: Dict[str, float] = {}
+
+        stage_started = time.perf_counter()
         inputs = self._collect_resolver_inputs_in_doc(ydoc, webspace_id)
+        _record_timing(timings, "collect_inputs", stage_started)
+
+        stage_started = time.perf_counter()
         resolved = self.resolve_webspace(inputs)
+        _record_timing(timings, "resolve", stage_started)
+
+        stage_started = time.perf_counter()
         self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved)
+        _record_timing(timings, "apply", stage_started)
+
+        stage_started = time.perf_counter()
         entry = resolved.to_registry_entry()
+        _record_timing(timings, "to_registry_entry", stage_started)
+        self._last_rebuild_timings_ms = _finalize_timing_map(timings, started_at=rebuild_started)
 
         try:
             _log.debug(
-                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s apps=%d widgets=%d",
+                "rebuilt webspace=%s scenario=%s source=%s legacy_fallback=%s apps=%d widgets=%d timings_ms=%s",
                 webspace_id,
                 resolved.scenario_id,
                 str(inputs.scenario_source or ""),
                 bool(inputs.legacy_scenario_fallback),
                 len(entry.apps),
                 len(entry.widgets),
+                self._last_rebuild_timings_ms,
             )
         except Exception:
             pass
@@ -1788,6 +1838,8 @@ async def rebuild_webspace_from_sources(
     if not webspace_id:
         raise ValueError("webspace_id is required")
 
+    rebuild_started = time.perf_counter()
+    timings_ms: Dict[str, float] = {}
     requested_action = str(action or "").strip().lower() or "rebuild"
     target_scenario = str(scenario_id or "").strip() or None
     status_started_at = time.time()
@@ -1807,11 +1859,14 @@ async def rebuild_webspace_from_sources(
         error=None,
         projection_refresh=None,
         registry_summary=None,
+        timings_ms=None,
+        semantic_rebuild_timings_ms=None,
     )
 
     if reseed_from_scenario:
         if not target_scenario:
             raise ValueError("scenario_id is required when reseed_from_scenario is enabled")
+        stage_started = time.perf_counter()
         try:
             async with async_get_ydoc(webspace_id) as ydoc:
                 ui_map = ydoc.get_map("ui")
@@ -1819,12 +1874,17 @@ async def rebuild_webspace_from_sources(
                     ui_map.set(txn, "current_scenario", target_scenario)
         except Exception:
             pass
+        _record_timing(timings_ms, "reseed_pointer", stage_started)
 
+        stage_started = time.perf_counter()
         try:
             scenarios_loader.invalidate_cache(scenario_id=target_scenario, space="workspace")
             scenarios_loader.invalidate_cache(scenario_id=target_scenario, space="dev")
         except Exception:
             pass
+        _record_timing(timings_ms, "invalidate_loader_cache", stage_started)
+
+        stage_started = time.perf_counter()
         try:
             from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
             from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
@@ -1842,20 +1902,32 @@ async def rebuild_webspace_from_sources(
                 pass
         except Exception:
             _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
+        _record_timing(timings_ms, "reset_runtime_state", stage_started)
 
+        stage_started = time.perf_counter()
         await _seed_webspace_from_scenario(webspace_id, target_scenario)
+        _record_timing(timings_ms, "seed_from_scenario", stage_started)
+
+        stage_started = time.perf_counter()
         await _sync_webspace_listing()
+        _record_timing(timings_ms, "sync_listing", stage_started)
 
     ctx = get_ctx()
+    stage_started = time.perf_counter()
     projection_refresh = await _refresh_projection_rules_for_rebuild(
         ctx,
         webspace_id,
         scenario_id=target_scenario,
     )
+    _record_timing(timings_ms, "projection_refresh", stage_started)
     runtime = WebspaceScenarioRuntime(ctx)
     try:
+        stage_started = time.perf_counter()
         entry = await runtime.rebuild_webspace_async(webspace_id)
+        _record_timing(timings_ms, "semantic_rebuild", stage_started)
     except Exception:
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
+        semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
         _set_webspace_rebuild_status(
             webspace_id,
             status="failed",
@@ -1863,12 +1935,16 @@ async def rebuild_webspace_from_sources(
             finished_at=time.time(),
             error="webspace_rebuild_failed",
             projection_refresh=projection_refresh,
+            timings_ms=finalized_timings,
+            semantic_rebuild_timings_ms=semantic_timings,
         )
         _log.warning(
-            "failed to rebuild webspace from sources webspace=%s action=%s scenario=%s",
+            "failed to rebuild webspace from sources webspace=%s action=%s scenario=%s timings_ms=%s semantic_timings_ms=%s",
             webspace_id,
             requested_action,
             target_scenario,
+            finalized_timings,
+            semantic_timings,
             exc_info=True,
         )
         return {
@@ -1880,18 +1956,25 @@ async def rebuild_webspace_from_sources(
             "scenario_id": target_scenario,
             "scenario_resolution": scenario_resolution,
             "projection_refresh": projection_refresh,
+            "timings_ms": finalized_timings,
+            "semantic_rebuild_timings_ms": semantic_timings,
             "error": "webspace_rebuild_failed",
         }
 
+    semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+
     if not target_scenario:
+        stage_started = time.perf_counter()
         try:
             state_after = await describe_webspace_operational_state(webspace_id)
             target_scenario = state_after.current_scenario or state_after.effective_home_scenario
         except Exception:
             target_scenario = None
+        _record_timing(timings_ms, "resolve_active_scenario", stage_started)
 
     should_sync_workflow = requested_action in {"scenario_switch_rebuild", "restore"}
     if target_scenario and should_sync_workflow:
+        stage_started = time.perf_counter()
         try:
             wf = ScenarioWorkflowRuntime(ctx)
             await wf.sync_workflow_for_webspace(target_scenario, webspace_id)
@@ -1903,6 +1986,7 @@ async def rebuild_webspace_from_sources(
                 requested_action,
                 exc_info=True,
             )
+        _record_timing(timings_ms, "workflow_sync", stage_started)
 
     event_topic = None
     if requested_action in {"reload", "reset"}:
@@ -1910,6 +1994,7 @@ async def rebuild_webspace_from_sources(
     elif requested_action == "restore":
         event_topic = "desktop.webspace.restored"
     if event_topic:
+        stage_started = time.perf_counter()
         try:
             payload: dict[str, Any] = {
                 "webspace_id": webspace_id,
@@ -1922,7 +2007,9 @@ async def rebuild_webspace_from_sources(
             emit(ctx.bus, event_topic, payload, "scenario.webspace_runtime")
         except Exception:
             _log.debug("failed to emit %s for webspace=%s", event_topic, webspace_id, exc_info=True)
+        _record_timing(timings_ms, "event_emit", stage_started)
 
+    finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
     result = {
         "ok": True,
         "accepted": True,
@@ -1937,6 +2024,8 @@ async def rebuild_webspace_from_sources(
             "apps": len(getattr(entry, "apps", []) or []),
             "widgets": len(getattr(entry, "widgets", []) or []),
         },
+        "timings_ms": finalized_timings,
+        "semantic_rebuild_timings_ms": semantic_timings,
     }
     _set_webspace_rebuild_status(
         webspace_id,
@@ -1947,6 +2036,16 @@ async def rebuild_webspace_from_sources(
         scenario_id=target_scenario,
         projection_refresh=projection_refresh,
         registry_summary=result.get("registry_summary"),
+        timings_ms=finalized_timings,
+        semantic_rebuild_timings_ms=semantic_timings,
+    )
+    _log.info(
+        "semantic rebuild completed webspace=%s action=%s scenario=%s timings_ms=%s semantic_timings_ms=%s",
+        webspace_id,
+        requested_action,
+        target_scenario,
+        finalized_timings,
+        semantic_timings,
     )
     return result
 
@@ -2016,6 +2115,8 @@ def _schedule_scenario_switch_rebuild(
                     finished_at=time.time(),
                     error=str(result.get("error") or "scenario_switch_rebuild_failed"),
                     projection_refresh=result.get("projection_refresh"),
+                    timings_ms=_copy_timing_map(result.get("timings_ms")),
+                    semantic_rebuild_timings_ms=_copy_timing_map(result.get("semantic_rebuild_timings_ms")),
                 )
                 _log.warning(
                     "background scenario switch rebuild rejected webspace=%s scenario=%s error=%s",
@@ -2164,9 +2265,16 @@ async def switch_webspace_scenario(
     if not scenario_id:
         raise ValueError("scenario_id is required")
 
+    switch_started = time.perf_counter()
+    timings_ms: Dict[str, float] = {}
+    stage_started = time.perf_counter()
     state_before = await describe_webspace_operational_state(webspace_id)
+    _record_timing(timings_ms, "describe_state_before", stage_started)
+
+    stage_started = time.perf_counter()
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
     resolved_set_home = bool(set_home) if set_home is not None else bool(row.is_dev or row.effective_source_mode == "dev")
+    _record_timing(timings_ms, "resolve_manifest_policy", stage_started)
 
     _log.info(
         "desktop.scenario.set webspace=%s scenario=%s requested_set_home=%s resolved_set_home=%s",
@@ -2178,7 +2286,9 @@ async def switch_webspace_scenario(
     switch_mode = "pointer_first" if _pointer_first_scenario_switch_enabled() else "materialize_and_copy"
 
     try:
+        stage_started = time.perf_counter()
         async with async_get_ydoc(webspace_id) as ydoc:
+            _record_timing(timings_ms, "open_doc", stage_started)
             space = "workspace"
             try:
                 if row:
@@ -2186,9 +2296,12 @@ async def switch_webspace_scenario(
             except Exception:
                 space = "workspace"
 
+            stage_started = time.perf_counter()
             content = _load_scenario_switch_content(scenario_id, space=space)
+            _record_timing(timings_ms, "load_scenario", stage_started)
             if not isinstance(content, dict) or not content:
                 _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
+                finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
                 _set_webspace_rebuild_status(
                     webspace_id,
                     status="failed",
@@ -2201,19 +2314,32 @@ async def switch_webspace_scenario(
                     requested_at=time.time(),
                     finished_at=time.time(),
                     error="scenario_not_found",
+                    timings_ms=finalized_timings,
                 )
-                return {"ok": False, "accepted": False, "error": "scenario_not_found", "webspace_id": webspace_id, "scenario_id": scenario_id}
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "error": "scenario_not_found",
+                    "webspace_id": webspace_id,
+                    "scenario_id": scenario_id,
+                    "timings_ms": finalized_timings,
+                }
             if switch_mode == "pointer_first":
                 ui_map = ydoc.get_map("ui")
+                stage_started = time.perf_counter()
                 with ydoc.begin_transaction() as txn:
-                    ui_map.set(txn, "current_scenario", scenario_id)
+                    _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+                _record_timing(timings_ms, "write_switch_pointer", stage_started)
             else:
+                stage_started = time.perf_counter()
                 _materialize_scenario_switch_content_in_doc(
                     ydoc,
                     scenario_id=scenario_id,
                     content=content,
                 )
+                _record_timing(timings_ms, "materialize_switch_payload", stage_started)
     except Exception:
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
         _set_webspace_rebuild_status(
             webspace_id,
             status="failed",
@@ -2226,20 +2352,52 @@ async def switch_webspace_scenario(
             requested_at=time.time(),
             finished_at=time.time(),
             error="scenario_switch_failed",
+            timings_ms=finalized_timings,
         )
-        _log.warning("failed to switch scenario for webspace=%s scenario=%s", webspace_id, scenario_id, exc_info=True)
-        return {"ok": False, "accepted": False, "error": "scenario_switch_failed", "webspace_id": webspace_id, "scenario_id": scenario_id}
+        _log.warning(
+            "failed to switch scenario for webspace=%s scenario=%s timings_ms=%s",
+            webspace_id,
+            scenario_id,
+            finalized_timings,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "accepted": False,
+            "error": "scenario_switch_failed",
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "timings_ms": finalized_timings,
+        }
 
+    stage_started = time.perf_counter()
     row = workspace_index.get_workspace(webspace_id) or workspace_index.ensure_workspace(webspace_id)
+    _record_timing(timings_ms, "refresh_manifest_row", stage_started)
     if resolved_set_home:
+        stage_started = time.perf_counter()
         row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+        _record_timing(timings_ms, "persist_home_scenario", stage_started)
+
+        stage_started = time.perf_counter()
         await _sync_webspace_listing()
+        _record_timing(timings_ms, "sync_listing", stage_started)
 
     if not wait_for_rebuild:
+        stage_started = time.perf_counter()
         _schedule_scenario_switch_rebuild(
             webspace_id,
             scenario_id=scenario_id,
             scenario_resolution="explicit",
+        )
+        _record_timing(timings_ms, "schedule_background_rebuild", stage_started)
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        _log.info(
+            "desktop.scenario.set accepted webspace=%s scenario=%s mode=%s background=%s timings_ms=%s",
+            webspace_id,
+            scenario_id,
+            switch_mode,
+            True,
+            finalized_timings,
         )
         return {
             "ok": True,
@@ -2254,16 +2412,30 @@ async def switch_webspace_scenario(
             "set_home": resolved_set_home,
             "background_rebuild": True,
             "scenario_switch_mode": switch_mode,
+            "timings_ms": finalized_timings,
         }
 
+    stage_started = time.perf_counter()
     rebuild_result = await _complete_scenario_switch_rebuild(
         webspace_id,
         scenario_id=scenario_id,
         scenario_resolution="explicit",
     )
+    _record_timing(timings_ms, "wait_rebuild", stage_started)
     if not bool(rebuild_result.get("accepted")):
+        rebuild_result["switch_timings_ms"] = _finalize_timing_map(timings_ms, started_at=switch_started)
         return rebuild_result
 
+    finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+    _log.info(
+        "desktop.scenario.set completed webspace=%s scenario=%s mode=%s background=%s timings_ms=%s rebuild_timings_ms=%s",
+        webspace_id,
+        scenario_id,
+        switch_mode,
+        False,
+        finalized_timings,
+        rebuild_result.get("timings_ms"),
+    )
     return {
         "ok": True,
         "accepted": True,
@@ -2277,6 +2449,9 @@ async def switch_webspace_scenario(
         "set_home": resolved_set_home,
         "background_rebuild": False,
         "scenario_switch_mode": switch_mode,
+        "timings_ms": finalized_timings,
+        "rebuild_timings_ms": _copy_timing_map(rebuild_result.get("timings_ms")),
+        "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_result.get("semantic_rebuild_timings_ms")),
     }
 
 

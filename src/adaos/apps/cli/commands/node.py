@@ -702,6 +702,26 @@ def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> 
     error = str(rebuild.get("error") or "").strip()
     if error:
         typer.echo(f"  warn: {error}")
+    _print_timings_summary(rebuild, key="timings_ms", label="rebuild_timings_ms")
+    _print_timings_summary(rebuild, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
+
+
+def _print_timings_summary(payload: dict[str, Any], *, key: str = "timings_ms", label: str | None = None) -> None:
+    timings = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not timings:
+        return
+    parts: list[str] = []
+    for raw_name, raw_value in timings.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        try:
+            parts.append(f"{name}={float(raw_value):.3f}")
+        except Exception:
+            continue
+    if not parts:
+        return
+    typer.echo(f"{label or key}: {' '.join(parts)}")
 
 
 def _normalize_rendezvous_url(*, rendezvous_url: str, root_base: str) -> str:
@@ -1132,6 +1152,10 @@ def _node_yjs_control_action(
         f"scenario={payload.get('scenario_id') or '-'}"
     )
     _print_projection_refresh_summary(payload)
+    _print_timings_summary(payload)
+    _print_timings_summary(payload, key="switch_timings_ms")
+    _print_timings_summary(payload, key="rebuild_timings_ms")
+    _print_timings_summary(payload, key="semantic_rebuild_timings_ms")
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})

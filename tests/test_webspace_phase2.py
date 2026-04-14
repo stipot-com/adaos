@@ -186,6 +186,13 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
 
     async def _fake_rebuild(self, webspace_id: str):
         rebuilds.append(webspace_id)
+        self._last_rebuild_timings_ms = {
+            "collect_inputs": 1.0,
+            "resolve": 2.0,
+            "apply": 3.0,
+            "to_registry_entry": 0.5,
+            "total": 6.5,
+        }
         return SimpleNamespace(webspace_id=webspace_id)
 
     async def _fake_workflow_sync(self, scenario_id: str, webspace_id: str):
@@ -246,6 +253,14 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert result["ok"] is True
     assert result["set_home"] is True
     assert result["home_scenario"] == "prompt_engineer_scenario"
+    assert isinstance(result["timings_ms"], dict)
+    assert "load_scenario" in result["timings_ms"]
+    assert "wait_rebuild" in result["timings_ms"]
+    assert isinstance(result["rebuild_timings_ms"], dict)
+    assert "projection_refresh" in result["rebuild_timings_ms"]
+    assert "semantic_rebuild" in result["rebuild_timings_ms"]
+    assert isinstance(result["semantic_rebuild_timings_ms"], dict)
+    assert result["semantic_rebuild_timings_ms"]["resolve"] == 2.0
 
 
 def test_switch_webspace_scenario_auto_persists_home_for_dev_webspace(monkeypatch) -> None:
@@ -341,6 +356,9 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
     assert fake_state["registry"]["merged"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
+    assert isinstance(result["timings_ms"], dict)
+    assert "materialize_switch_payload" in result["timings_ms"]
+    assert "schedule_background_rebuild" in result["timings_ms"]
 
 
 def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:
@@ -411,6 +429,9 @@ def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_ma
     assert "prompt_engineer_scenario" not in fake_state["registry"]["scenarios"]
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "old-app"}]
     assert "prompt_engineer_scenario" not in fake_state["data"]["scenarios"]
+    assert isinstance(result["timings_ms"], dict)
+    assert "write_switch_pointer" in result["timings_ms"]
+    assert "materialize_switch_payload" not in result["timings_ms"]
 
 
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
@@ -985,6 +1006,13 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
 
     async def _fake_rebuild(self, webspace_id: str):
         order.append("rebuild")
+        self._last_rebuild_timings_ms = {
+            "collect_inputs": 1.25,
+            "resolve": 2.5,
+            "apply": 3.75,
+            "to_registry_entry": 0.5,
+            "total": 8.0,
+        }
         return SimpleNamespace(scenario_id="web_desktop", apps=[], widgets=[])
 
     monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
@@ -1003,6 +1031,11 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
     assert order == ["refresh", "rebuild"]
     assert result["accepted"] is True
     assert result["projection_refresh"]["rules_loaded"] == 1
+    assert isinstance(result["timings_ms"], dict)
+    assert "projection_refresh" in result["timings_ms"]
+    assert "semantic_rebuild" in result["timings_ms"]
+    assert isinstance(result["semantic_rebuild_timings_ms"], dict)
+    assert result["semantic_rebuild_timings_ms"]["apply"] == 3.75
 
 
 def test_phase4_projection_refresh_uses_dev_space_for_dev_webspace(monkeypatch) -> None:
