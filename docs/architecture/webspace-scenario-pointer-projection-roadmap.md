@@ -240,6 +240,13 @@ Current operator-facing diagnostics now also expose temporary timing snapshots
 through switch/rebuild results and rebuild status surfaces, so heavy scenarios
 can be compared before larger cache/diff changes land.
 
+Current control surfaces also expose provisional `phase_timings_ms`
+(`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,
+`time_to_full_hydration`) derived from the still-mostly-monolithic runtime.
+These numbers are intentionally best-effort until fragmented reconcile lands,
+but they already make pointer-first acceptance and full rebuild latency easier
+to compare in production.
+
 ### Phase E: Structure/data split and focus-aware hydration
 
 The rebuild contract becomes explicitly phased:
@@ -314,9 +321,9 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [ ] Measure heavy scenarios such as `infrascope` before and after each slice.
-- [ ] Add focused metrics for `time_to_first_structure`,
+- [x] Add focused metrics for `time_to_first_structure`,
   `time_to_interactive_focus`, and `time_to_full_hydration`.
-- [ ] Coalesce stale background hydration work when a newer scenario switch
+- [x] Coalesce stale background hydration work when a newer scenario switch
   supersedes it.
 
 ### 5.5. ABI and Renderer Readiness Contract

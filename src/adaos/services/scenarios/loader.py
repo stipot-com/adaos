@@ -119,6 +119,19 @@ def read_content(scenario_id: str, *, space: str = "workspace") -> Dict[str, Any
     return {}
 
 
+def scenario_exists(scenario_id: str, *, space: str = "workspace") -> bool:
+    """
+    Cheap existence probe used by pointer-first scenario switching.
+
+    This avoids loading/parsing full ``scenario.json`` when the caller only
+    needs to confirm that a scenario is present in the requested source space.
+    """
+    for root in _candidate_roots(scenario_id, space):
+        if (root / "scenario.json").exists() or (root / "scenario.yaml").exists():
+            return True
+    return False
+
+
 def invalidate_cache(*, scenario_id: str | None = None, space: str | None = None) -> None:
     """
     Invalidate in-memory scenario.json cache. This is required for workflows
@@ -135,4 +148,4 @@ def invalidate_cache(*, scenario_id: str | None = None, space: str | None = None
         _CONTENT_CACHE.pop(key, None)
 
 
-__all__ = ["scenario_root", "read_manifest", "read_content", "invalidate_cache"]
+__all__ = ["scenario_root", "read_manifest", "read_content", "scenario_exists", "invalidate_cache"]

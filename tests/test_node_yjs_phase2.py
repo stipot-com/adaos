@@ -865,6 +865,7 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
                 "scenario_id": "prompt_engineer_scenario",
                 "timings_ms": {"load_scenario": 1.25, "total": 4.5},
                 "rebuild_timings_ms": {"projection_refresh": 2.0, "total": 6.0},
+                "phase_timings_ms": {"time_to_accept": 4.5, "time_to_full_hydration": 10.5},
             },
         ),
     )
@@ -881,6 +882,7 @@ def test_node_cli_control_action_prints_timings(monkeypatch) -> None:
 
     assert any("timings_ms: load_scenario=1.250 total=4.500" in line for line in echoed)
     assert any("rebuild_timings_ms: projection_refresh=2.000 total=6.000" in line for line in echoed)
+    assert any("phase_timings_ms: time_to_accept=4.500 time_to_full_hydration=10.500" in line for line in echoed)
 
 
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:

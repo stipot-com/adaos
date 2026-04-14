@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import types
 from types import SimpleNamespace
 
@@ -261,6 +262,8 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert "semantic_rebuild" in result["rebuild_timings_ms"]
     assert isinstance(result["semantic_rebuild_timings_ms"], dict)
     assert result["semantic_rebuild_timings_ms"]["resolve"] == 2.0
+    assert isinstance(result["phase_timings_ms"], dict)
+    assert "time_to_full_hydration" in result["phase_timings_ms"]
 
 
 def test_switch_webspace_scenario_auto_persists_home_for_dev_webspace(monkeypatch) -> None:
@@ -336,8 +339,8 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     monkeypatch.setattr(
         webspace_runtime_module,
         "_schedule_scenario_switch_rebuild",
-        lambda webspace_id, *, scenario_id, scenario_resolution: scheduled.append(
-            (webspace_id, scenario_id, scenario_resolution)
+        lambda webspace_id, *, scenario_id, scenario_resolution, switch_mode=None, switch_timings_ms=None: scheduled.append(
+            (webspace_id, scenario_id, scenario_resolution, switch_mode, isinstance(switch_timings_ms, dict))
         ),
     )
 
@@ -351,7 +354,7 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
 
     assert result["ok"] is True
     assert result["background_rebuild"] is True
-    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit")]
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit", "materialize_and_copy", True)]
     assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
     assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
     assert fake_state["registry"]["merged"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
@@ -359,6 +362,8 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert isinstance(result["timings_ms"], dict)
     assert "materialize_switch_payload" in result["timings_ms"]
     assert "schedule_background_rebuild" in result["timings_ms"]
+    assert isinstance(result["phase_timings_ms"], dict)
+    assert "time_to_accept" in result["phase_timings_ms"]
 
 
 def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:
@@ -401,12 +406,13 @@ def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_ma
         },
     )
     scheduled: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
 
     monkeypatch.setattr(
         webspace_runtime_module,
         "_schedule_scenario_switch_rebuild",
-        lambda webspace_id, *, scenario_id, scenario_resolution: scheduled.append(
-            (webspace_id, scenario_id, scenario_resolution)
+        lambda webspace_id, *, scenario_id, scenario_resolution, switch_mode=None, switch_timings_ms=None: scheduled.append(
+            (webspace_id, scenario_id, scenario_resolution, switch_mode, isinstance(switch_timings_ms, dict))
         ),
     )
 
@@ -421,7 +427,7 @@ def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_ma
     assert result["ok"] is True
     assert result["background_rebuild"] is True
     assert result["scenario_switch_mode"] == "pointer_first"
-    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit")]
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit", "pointer_first", True)]
     assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
     assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "old-page"
     assert "prompt_engineer_scenario" not in fake_state["ui"]["scenarios"]
@@ -430,8 +436,141 @@ def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_ma
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "old-app"}]
     assert "prompt_engineer_scenario" not in fake_state["data"]["scenarios"]
     assert isinstance(result["timings_ms"], dict)
+    assert "validate_scenario" in result["timings_ms"]
     assert "write_switch_pointer" in result["timings_ms"]
+    assert "load_scenario" not in result["timings_ms"]
     assert "materialize_switch_payload" not in result["timings_ms"]
+    assert isinstance(result["phase_timings_ms"], dict)
+    assert "time_to_pointer_update" in result["phase_timings_ms"]
+
+
+def test_switch_webspace_scenario_pointer_first_avoids_eager_scenario_content_load(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH", "1")
+
+    webspace_id = "phase-pointer-no-content-load"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Pointer Switch",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "web_desktop"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_load_scenario_switch_content",
+        lambda scenario_id, *, space: (_ for _ in ()).throw(AssertionError("should not load scenario content")),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_scenario_switch_rebuild",
+        lambda webspace_id, **kwargs: None,
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            webspace_id,
+            "prompt_engineer_scenario",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["accepted"] is True
+    assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert "validate_scenario" in result["timings_ms"]
+    assert "load_scenario" not in result["timings_ms"]
+
+
+def test_background_scenario_switch_rebuild_superseded_request_keeps_newer_status(monkeypatch) -> None:
+    webspace_id = "phase2-background-supersede"
+    events: dict[str, asyncio.Event] = {}
+
+    async def _fake_complete(
+        webspace_id: str,
+        *,
+        scenario_id: str,
+        scenario_resolution: str | None,
+        request_id: str | None = None,
+        switch_mode: str | None = None,
+        switch_timings_ms=None,
+    ) -> dict[str, object]:
+        gate = events.setdefault(scenario_id, asyncio.Event())
+        await gate.wait()
+        webspace_runtime_module._set_webspace_rebuild_status_if_current(
+            webspace_id,
+            request_id,
+            status="ready",
+            pending=False,
+            background=True,
+            scenario_id=scenario_id,
+            switch_mode=switch_mode,
+            finished_at=time.time(),
+            phase_timings_ms={"time_to_full_hydration": 5.0},
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "request_id": request_id,
+            "switch_mode": switch_mode,
+            "timings_ms": {"projection_refresh": 1.0, "semantic_rebuild": 2.0, "total": 3.0},
+            "switch_timings_ms": switch_timings_ms,
+            "semantic_rebuild_timings_ms": {"collect_inputs": 0.5, "resolve": 1.0, "apply": 1.5, "total": 3.5},
+            "phase_timings_ms": {"time_to_full_hydration": 5.0},
+        }
+
+    monkeypatch.setattr(webspace_runtime_module, "_complete_scenario_switch_rebuild", _fake_complete)
+    webspace_runtime_module._SCENARIO_SWITCH_REBUILD_TASKS.clear()
+    webspace_runtime_module._WEBSPACE_REBUILD_STATUS.clear()
+
+    async def _run() -> dict[str, object]:
+        webspace_runtime_module._schedule_scenario_switch_rebuild(
+            webspace_id,
+            scenario_id="scenario_a",
+            scenario_resolution="explicit",
+            switch_mode="pointer_first",
+            switch_timings_ms={"total": 1.0},
+        )
+        await asyncio.sleep(0)
+        first = webspace_runtime_module.describe_webspace_rebuild_state(webspace_id)
+        assert first["scenario_id"] == "scenario_a"
+        first_request_id = first["request_id"]
+
+        webspace_runtime_module._schedule_scenario_switch_rebuild(
+            webspace_id,
+            scenario_id="scenario_b",
+            scenario_resolution="explicit",
+            switch_mode="pointer_first",
+            switch_timings_ms={"total": 2.0},
+        )
+        await asyncio.sleep(0)
+        second = webspace_runtime_module.describe_webspace_rebuild_state(webspace_id)
+        assert second["scenario_id"] == "scenario_b"
+        assert second["request_id"] != first_request_id
+
+        events["scenario_b"].set()
+        task = webspace_runtime_module._SCENARIO_SWITCH_REBUILD_TASKS[webspace_id]
+        await task
+        return webspace_runtime_module.describe_webspace_rebuild_state(webspace_id)
+
+    final = asyncio.run(_run())
+
+    assert final["status"] == "ready"
+    assert final["scenario_id"] == "scenario_b"
+    assert final["switch_mode"] == "pointer_first"
+    assert isinstance(final["phase_timings_ms"], dict)
+    assert "time_to_full_hydration" in final["phase_timings_ms"]
 
 
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:

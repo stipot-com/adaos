@@ -364,6 +364,15 @@ def _load_scenario_switch_content(scenario_id: str, *, space: str) -> Dict[str, 
     return {}
 
 
+def _scenario_exists_for_switch(scenario_id: str, *, space: str) -> bool:
+    if _built_in_scenario_content(scenario_id):
+        return True
+    try:
+        return bool(scenarios_loader.scenario_exists(scenario_id, space=space))
+    except Exception:
+        return False
+
+
 def _scenario_loader_space(source_mode: str) -> str:
     return "dev" if str(source_mode or "").strip().lower() == "dev" else "workspace"
 
@@ -556,10 +565,101 @@ def _copy_timing_map(value: Any) -> Dict[str, float] | None:
     return out or None
 
 
+def _sum_timing_values(timings: Mapping[str, Any] | None, *keys: str) -> float | None:
+    if not isinstance(timings, Mapping):
+        return None
+    total = 0.0
+    seen = False
+    for key in keys:
+        try:
+            value = timings.get(key)
+        except Exception:
+            value = None
+        if value is None:
+            continue
+        try:
+            total += float(value)
+            seen = True
+        except Exception:
+            continue
+    if not seen:
+        return None
+    return round(total, 3)
+
+
+def _derive_phase_timings(
+    *,
+    switch_timings_ms: Mapping[str, Any] | None = None,
+    rebuild_timings_ms: Mapping[str, Any] | None = None,
+    switch_mode: str | None = None,
+) -> Dict[str, float] | None:
+    phase: Dict[str, float] = {}
+
+    switch_total = None
+    if isinstance(switch_timings_ms, Mapping):
+        try:
+            switch_total = float(switch_timings_ms.get("total")) if switch_timings_ms.get("total") is not None else None
+        except Exception:
+            switch_total = None
+    rebuild_total = None
+    if isinstance(rebuild_timings_ms, Mapping):
+        try:
+            rebuild_total = float(rebuild_timings_ms.get("total")) if rebuild_timings_ms.get("total") is not None else None
+        except Exception:
+            rebuild_total = None
+
+    if switch_total is not None:
+        phase["time_to_accept"] = round(switch_total, 3)
+
+    pointer_update = _sum_timing_values(switch_timings_ms, "describe_state_before", "resolve_manifest_policy", "validate_scenario", "write_switch_pointer")
+    if pointer_update is not None:
+        phase["time_to_pointer_update"] = pointer_update
+
+    if str(switch_mode or "").strip() == "materialize_and_copy":
+        first_structure = _sum_timing_values(
+            switch_timings_ms,
+            "describe_state_before",
+            "resolve_manifest_policy",
+            "load_scenario",
+            "open_doc",
+            "materialize_switch_payload",
+        )
+        if first_structure is not None:
+            phase["time_to_first_structure"] = first_structure
+            phase["time_to_interactive_focus"] = first_structure
+
+    if "time_to_first_structure" not in phase and switch_total is not None and rebuild_total is not None:
+        full_ready = round(switch_total + rebuild_total, 3)
+        phase["time_to_first_structure"] = full_ready
+        phase["time_to_interactive_focus"] = full_ready
+
+    if switch_total is not None and rebuild_total is not None:
+        phase["time_to_full_hydration"] = round(switch_total + rebuild_total, 3)
+    elif rebuild_total is not None:
+        phase["time_to_full_hydration"] = round(rebuild_total, 3)
+    elif switch_total is not None and str(switch_mode or "").strip() == "materialize_and_copy":
+        phase["time_to_full_hydration"] = round(switch_total, 3)
+
+    return phase or None
+
+
 def _finalize_timing_map(timings: Dict[str, float], *, started_at: float) -> Dict[str, float]:
     finalized = dict(timings)
     finalized["total"] = _elapsed_ms(started_at)
     return finalized
+
+
+def _set_webspace_rebuild_status_if_current(webspace_id: str, request_id: str | None, **fields: Any) -> dict[str, Any]:
+    target = str(webspace_id or "").strip()
+    request_token = str(request_id or "").strip()
+    if request_token:
+        current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
+        current_request = str(current.get("request_id") or "").strip()
+        if current_request and current_request != request_token:
+            return current
+    if request_token and "request_id" not in fields:
+        fields["request_id"] = request_token
+    return _set_webspace_rebuild_status(target, **fields)
 
 
 def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
@@ -579,9 +679,11 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "pending": bool(current.get("pending")),
         "background": bool(current.get("background")),
         "action": str(current.get("action") or "") or None,
+        "request_id": str(current.get("request_id") or "") or None,
         "source_of_truth": str(current.get("source_of_truth") or "") or None,
         "scenario_id": str(current.get("scenario_id") or "") or None,
         "scenario_resolution": str(current.get("scenario_resolution") or "") or None,
+        "switch_mode": str(current.get("switch_mode") or "") or None,
         "requested_at": current.get("requested_at"),
         "started_at": current.get("started_at"),
         "finished_at": current.get("finished_at"),
@@ -593,7 +695,9 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         if isinstance(current.get("registry_summary"), Mapping)
         else None,
         "timings_ms": _copy_timing_map(current.get("timings_ms")),
+        "switch_timings_ms": _copy_timing_map(current.get("switch_timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
+        "phase_timings_ms": _copy_timing_map(current.get("phase_timings_ms")),
         "error": str(current.get("error") or "") or None,
     }
 
@@ -1826,6 +1930,9 @@ async def rebuild_webspace_from_sources(
     source_of_truth: str = "current_runtime",
     reseed_from_scenario: bool = False,
     event_payload: dict[str, Any] | None = None,
+    request_id: str | None = None,
+    switch_mode: str | None = None,
+    switch_timings_ms: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Single semantic rebuild primitive for the current runtime.
@@ -1844,15 +1951,19 @@ async def rebuild_webspace_from_sources(
     target_scenario = str(scenario_id or "").strip() or None
     status_started_at = time.time()
     previous_status = describe_webspace_rebuild_state(webspace_id)
+    effective_switch_timings = _copy_timing_map(switch_timings_ms) or _copy_timing_map(previous_status.get("switch_timings_ms"))
+    effective_switch_mode = str(switch_mode or previous_status.get("switch_mode") or "").strip() or None
     _set_webspace_rebuild_status(
         webspace_id,
         status="running",
         pending=True,
         background=bool(previous_status.get("background")),
+        request_id=request_id,
         action=requested_action,
         source_of_truth=source_of_truth,
         scenario_id=target_scenario,
         scenario_resolution=scenario_resolution,
+        switch_mode=effective_switch_mode,
         requested_at=previous_status.get("requested_at") or status_started_at,
         started_at=status_started_at,
         finished_at=None,
@@ -1860,7 +1971,9 @@ async def rebuild_webspace_from_sources(
         projection_refresh=None,
         registry_summary=None,
         timings_ms=None,
+        switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=None,
+        phase_timings_ms=None,
     )
 
     if reseed_from_scenario:
@@ -1928,15 +2041,24 @@ async def rebuild_webspace_from_sources(
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
         semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
-        _set_webspace_rebuild_status(
+        phase_timings = _derive_phase_timings(
+            switch_timings_ms=effective_switch_timings,
+            rebuild_timings_ms=finalized_timings,
+            switch_mode=effective_switch_mode,
+        )
+        _set_webspace_rebuild_status_if_current(
             webspace_id,
+            request_id,
             status="failed",
             pending=False,
             finished_at=time.time(),
             error="webspace_rebuild_failed",
+            switch_mode=effective_switch_mode,
             projection_refresh=projection_refresh,
             timings_ms=finalized_timings,
+            switch_timings_ms=effective_switch_timings,
             semantic_rebuild_timings_ms=semantic_timings,
+            phase_timings_ms=phase_timings,
         )
         _log.warning(
             "failed to rebuild webspace from sources webspace=%s action=%s scenario=%s timings_ms=%s semantic_timings_ms=%s",
@@ -1955,9 +2077,13 @@ async def rebuild_webspace_from_sources(
             "webspace_id": webspace_id,
             "scenario_id": target_scenario,
             "scenario_resolution": scenario_resolution,
+            "request_id": request_id,
+            "switch_mode": effective_switch_mode,
             "projection_refresh": projection_refresh,
             "timings_ms": finalized_timings,
+            "switch_timings_ms": effective_switch_timings,
             "semantic_rebuild_timings_ms": semantic_timings,
+            "phase_timings_ms": phase_timings,
             "error": "webspace_rebuild_failed",
         }
 
@@ -2010,6 +2136,11 @@ async def rebuild_webspace_from_sources(
         _record_timing(timings_ms, "event_emit", stage_started)
 
     finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
+    phase_timings = _derive_phase_timings(
+        switch_timings_ms=effective_switch_timings,
+        rebuild_timings_ms=finalized_timings,
+        switch_mode=effective_switch_mode,
+    )
     result = {
         "ok": True,
         "accepted": True,
@@ -2018,6 +2149,8 @@ async def rebuild_webspace_from_sources(
         "webspace_id": webspace_id,
         "scenario_id": target_scenario,
         "scenario_resolution": scenario_resolution,
+        "request_id": request_id,
+        "switch_mode": effective_switch_mode,
         "projection_refresh": projection_refresh,
         "registry_summary": {
             "scenario_id": str(getattr(entry, "scenario_id", target_scenario) or ""),
@@ -2025,19 +2158,25 @@ async def rebuild_webspace_from_sources(
             "widgets": len(getattr(entry, "widgets", []) or []),
         },
         "timings_ms": finalized_timings,
+        "switch_timings_ms": effective_switch_timings,
         "semantic_rebuild_timings_ms": semantic_timings,
+        "phase_timings_ms": phase_timings,
     }
-    _set_webspace_rebuild_status(
+    _set_webspace_rebuild_status_if_current(
         webspace_id,
+        request_id,
         status="ready",
         pending=False,
         finished_at=time.time(),
         error=None,
+        switch_mode=effective_switch_mode,
         scenario_id=target_scenario,
         projection_refresh=projection_refresh,
         registry_summary=result.get("registry_summary"),
         timings_ms=finalized_timings,
+        switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=semantic_timings,
+        phase_timings_ms=phase_timings,
     )
     _log.info(
         "semantic rebuild completed webspace=%s action=%s scenario=%s timings_ms=%s semantic_timings_ms=%s",
@@ -2055,6 +2194,9 @@ async def _complete_scenario_switch_rebuild(
     *,
     scenario_id: str,
     scenario_resolution: str | None,
+    request_id: str | None = None,
+    switch_mode: str | None = None,
+    switch_timings_ms: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return await rebuild_webspace_from_sources(
         webspace_id,
@@ -2063,6 +2205,9 @@ async def _complete_scenario_switch_rebuild(
         scenario_resolution=scenario_resolution,
         source_of_truth="scenario_switch",
         reseed_from_scenario=False,
+        request_id=request_id,
+        switch_mode=switch_mode,
+        switch_timings_ms=switch_timings_ms,
     )
 
 
@@ -2071,20 +2216,32 @@ def _schedule_scenario_switch_rebuild(
     *,
     scenario_id: str,
     scenario_resolution: str | None,
+    switch_mode: str | None = None,
+    switch_timings_ms: Mapping[str, Any] | None = None,
 ) -> None:
+    request_id = secrets.token_hex(8)
+    initial_phase_timings = _derive_phase_timings(
+        switch_timings_ms=switch_timings_ms,
+        rebuild_timings_ms=None,
+        switch_mode=switch_mode,
+    )
     _set_webspace_rebuild_status(
         webspace_id,
         status="scheduled",
         pending=True,
         background=True,
+        request_id=request_id,
         action="scenario_switch_rebuild",
         source_of_truth="scenario_switch",
         scenario_id=scenario_id,
         scenario_resolution=scenario_resolution,
+        switch_mode=str(switch_mode or "") or None,
         requested_at=time.time(),
         started_at=None,
         finished_at=None,
         error=None,
+        switch_timings_ms=_copy_timing_map(switch_timings_ms),
+        phase_timings_ms=initial_phase_timings,
     )
     existing = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
     if existing and not existing.done():
@@ -2092,11 +2249,13 @@ def _schedule_scenario_switch_rebuild(
 
     async def _runner() -> None:
         try:
-            _set_webspace_rebuild_status(
+            _set_webspace_rebuild_status_if_current(
                 webspace_id,
+                request_id,
                 status="running",
                 pending=True,
                 background=True,
+                switch_mode=str(switch_mode or "") or None,
                 started_at=time.time(),
                 finished_at=None,
                 error=None,
@@ -2105,18 +2264,25 @@ def _schedule_scenario_switch_rebuild(
                 webspace_id,
                 scenario_id=scenario_id,
                 scenario_resolution=scenario_resolution,
+                request_id=request_id,
+                switch_mode=switch_mode,
+                switch_timings_ms=None,
             )
             if not bool(result.get("accepted")):
-                _set_webspace_rebuild_status(
+                _set_webspace_rebuild_status_if_current(
                     webspace_id,
+                    request_id,
                     status="failed",
                     pending=False,
                     background=True,
                     finished_at=time.time(),
                     error=str(result.get("error") or "scenario_switch_rebuild_failed"),
+                    switch_mode=str(switch_mode or "") or None,
                     projection_refresh=result.get("projection_refresh"),
                     timings_ms=_copy_timing_map(result.get("timings_ms")),
+                    switch_timings_ms=_copy_timing_map(result.get("switch_timings_ms") or switch_timings_ms),
                     semantic_rebuild_timings_ms=_copy_timing_map(result.get("semantic_rebuild_timings_ms")),
+                    phase_timings_ms=_copy_timing_map(result.get("phase_timings_ms")),
                 )
                 _log.warning(
                     "background scenario switch rebuild rejected webspace=%s scenario=%s error=%s",
@@ -2125,8 +2291,9 @@ def _schedule_scenario_switch_rebuild(
                     result.get("error"),
                 )
         except asyncio.CancelledError:
-            _set_webspace_rebuild_status(
+            _set_webspace_rebuild_status_if_current(
                 webspace_id,
+                request_id,
                 status="cancelled",
                 pending=False,
                 background=True,
@@ -2135,8 +2302,9 @@ def _schedule_scenario_switch_rebuild(
             )
             raise
         except Exception:
-            _set_webspace_rebuild_status(
+            _set_webspace_rebuild_status_if_current(
                 webspace_id,
+                request_id,
                 status="failed",
                 pending=False,
                 background=True,
@@ -2284,46 +2452,96 @@ async def switch_webspace_scenario(
         resolved_set_home,
     )
     switch_mode = "pointer_first" if _pointer_first_scenario_switch_enabled() else "materialize_and_copy"
+    loader_space = "workspace"
+    try:
+        if row:
+            loader_space = row.effective_source_mode
+    except Exception:
+        loader_space = "workspace"
+    switch_content: Dict[str, Any] | None = None
+
+    if switch_mode == "pointer_first":
+        stage_started = time.perf_counter()
+        scenario_exists = _scenario_exists_for_switch(scenario_id, space=loader_space)
+        _record_timing(timings_ms, "validate_scenario", stage_started)
+        if not scenario_exists:
+            finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+            _set_webspace_rebuild_status(
+                webspace_id,
+                status="failed",
+                pending=False,
+                background=not wait_for_rebuild,
+                action="scenario_switch_rebuild",
+                source_of_truth="scenario_switch",
+                scenario_id=scenario_id,
+                scenario_resolution="explicit",
+                switch_mode=switch_mode,
+                requested_at=time.time(),
+                finished_at=time.time(),
+                error="scenario_not_found",
+                timings_ms=finalized_timings,
+                phase_timings_ms=_derive_phase_timings(
+                    switch_timings_ms=finalized_timings,
+                    switch_mode=switch_mode,
+                ),
+            )
+            return {
+                "ok": False,
+                "accepted": False,
+                "error": "scenario_not_found",
+                "webspace_id": webspace_id,
+                "scenario_id": scenario_id,
+                "scenario_switch_mode": switch_mode,
+                "timings_ms": finalized_timings,
+                "phase_timings_ms": _derive_phase_timings(
+                    switch_timings_ms=finalized_timings,
+                    switch_mode=switch_mode,
+                ),
+            }
+    else:
+        stage_started = time.perf_counter()
+        switch_content = _load_scenario_switch_content(scenario_id, space=loader_space)
+        _record_timing(timings_ms, "load_scenario", stage_started)
+        if not isinstance(switch_content, dict) or not switch_content:
+            _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
+            finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+            _set_webspace_rebuild_status(
+                webspace_id,
+                status="failed",
+                pending=False,
+                background=not wait_for_rebuild,
+                action="scenario_switch_rebuild",
+                source_of_truth="scenario_switch",
+                scenario_id=scenario_id,
+                scenario_resolution="explicit",
+                switch_mode=switch_mode,
+                requested_at=time.time(),
+                finished_at=time.time(),
+                error="scenario_not_found",
+                timings_ms=finalized_timings,
+                phase_timings_ms=_derive_phase_timings(
+                    switch_timings_ms=finalized_timings,
+                    switch_mode=switch_mode,
+                ),
+            )
+            return {
+                "ok": False,
+                "accepted": False,
+                "error": "scenario_not_found",
+                "webspace_id": webspace_id,
+                "scenario_id": scenario_id,
+                "scenario_switch_mode": switch_mode,
+                "timings_ms": finalized_timings,
+                "phase_timings_ms": _derive_phase_timings(
+                    switch_timings_ms=finalized_timings,
+                    switch_mode=switch_mode,
+                ),
+            }
 
     try:
         stage_started = time.perf_counter()
         async with async_get_ydoc(webspace_id) as ydoc:
             _record_timing(timings_ms, "open_doc", stage_started)
-            space = "workspace"
-            try:
-                if row:
-                    space = row.effective_source_mode
-            except Exception:
-                space = "workspace"
-
-            stage_started = time.perf_counter()
-            content = _load_scenario_switch_content(scenario_id, space=space)
-            _record_timing(timings_ms, "load_scenario", stage_started)
-            if not isinstance(content, dict) or not content:
-                _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
-                finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
-                _set_webspace_rebuild_status(
-                    webspace_id,
-                    status="failed",
-                    pending=False,
-                    background=not wait_for_rebuild,
-                    action="scenario_switch_rebuild",
-                    source_of_truth="scenario_switch",
-                    scenario_id=scenario_id,
-                    scenario_resolution="explicit",
-                    requested_at=time.time(),
-                    finished_at=time.time(),
-                    error="scenario_not_found",
-                    timings_ms=finalized_timings,
-                )
-                return {
-                    "ok": False,
-                    "accepted": False,
-                    "error": "scenario_not_found",
-                    "webspace_id": webspace_id,
-                    "scenario_id": scenario_id,
-                    "timings_ms": finalized_timings,
-                }
             if switch_mode == "pointer_first":
                 ui_map = ydoc.get_map("ui")
                 stage_started = time.perf_counter()
@@ -2335,7 +2553,7 @@ async def switch_webspace_scenario(
                 _materialize_scenario_switch_content_in_doc(
                     ydoc,
                     scenario_id=scenario_id,
-                    content=content,
+                    content=switch_content or {},
                 )
                 _record_timing(timings_ms, "materialize_switch_payload", stage_started)
     except Exception:
@@ -2349,10 +2567,15 @@ async def switch_webspace_scenario(
             source_of_truth="scenario_switch",
             scenario_id=scenario_id,
             scenario_resolution="explicit",
+            switch_mode=switch_mode,
             requested_at=time.time(),
             finished_at=time.time(),
             error="scenario_switch_failed",
             timings_ms=finalized_timings,
+            phase_timings_ms=_derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                switch_mode=switch_mode,
+            ),
         )
         _log.warning(
             "failed to switch scenario for webspace=%s scenario=%s timings_ms=%s",
@@ -2367,7 +2590,12 @@ async def switch_webspace_scenario(
             "error": "scenario_switch_failed",
             "webspace_id": webspace_id,
             "scenario_id": scenario_id,
+            "scenario_switch_mode": switch_mode,
             "timings_ms": finalized_timings,
+            "phase_timings_ms": _derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                switch_mode=switch_mode,
+            ),
         }
 
     stage_started = time.perf_counter()
@@ -2383,14 +2611,27 @@ async def switch_webspace_scenario(
         _record_timing(timings_ms, "sync_listing", stage_started)
 
     if not wait_for_rebuild:
+        scheduled_switch_timings = _finalize_timing_map(dict(timings_ms), started_at=switch_started)
         stage_started = time.perf_counter()
         _schedule_scenario_switch_rebuild(
             webspace_id,
             scenario_id=scenario_id,
             scenario_resolution="explicit",
+            switch_mode=switch_mode,
+            switch_timings_ms=scheduled_switch_timings,
         )
         _record_timing(timings_ms, "schedule_background_rebuild", stage_started)
         finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        current_status = describe_webspace_rebuild_state(webspace_id)
+        _set_webspace_rebuild_status_if_current(
+            webspace_id,
+            str(current_status.get("request_id") or "").strip() or None,
+            switch_timings_ms=finalized_timings,
+            phase_timings_ms=_derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                switch_mode=switch_mode,
+            ),
+        )
         _log.info(
             "desktop.scenario.set accepted webspace=%s scenario=%s mode=%s background=%s timings_ms=%s",
             webspace_id,
@@ -2413,6 +2654,10 @@ async def switch_webspace_scenario(
             "background_rebuild": True,
             "scenario_switch_mode": switch_mode,
             "timings_ms": finalized_timings,
+            "phase_timings_ms": _derive_phase_timings(
+                switch_timings_ms=finalized_timings,
+                switch_mode=switch_mode,
+            ),
         }
 
     stage_started = time.perf_counter()
@@ -2420,13 +2665,26 @@ async def switch_webspace_scenario(
         webspace_id,
         scenario_id=scenario_id,
         scenario_resolution="explicit",
+        switch_mode=switch_mode,
+        switch_timings_ms=_finalize_timing_map(dict(timings_ms), started_at=switch_started),
     )
     _record_timing(timings_ms, "wait_rebuild", stage_started)
     if not bool(rebuild_result.get("accepted")):
-        rebuild_result["switch_timings_ms"] = _finalize_timing_map(timings_ms, started_at=switch_started)
+        final_switch_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+        rebuild_result["switch_timings_ms"] = final_switch_timings
+        rebuild_result["phase_timings_ms"] = _derive_phase_timings(
+            switch_timings_ms=final_switch_timings,
+            rebuild_timings_ms=rebuild_result.get("timings_ms"),
+            switch_mode=switch_mode,
+        )
         return rebuild_result
 
     finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
+    phase_timings = _derive_phase_timings(
+        switch_timings_ms=finalized_timings,
+        rebuild_timings_ms=rebuild_result.get("timings_ms"),
+        switch_mode=switch_mode,
+    )
     _log.info(
         "desktop.scenario.set completed webspace=%s scenario=%s mode=%s background=%s timings_ms=%s rebuild_timings_ms=%s",
         webspace_id,
@@ -2452,6 +2710,7 @@ async def switch_webspace_scenario(
         "timings_ms": finalized_timings,
         "rebuild_timings_ms": _copy_timing_map(rebuild_result.get("timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(rebuild_result.get("semantic_rebuild_timings_ms")),
+        "phase_timings_ms": phase_timings,
     }
 
 

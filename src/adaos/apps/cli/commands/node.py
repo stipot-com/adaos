@@ -703,7 +703,9 @@ def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> 
     if error:
         typer.echo(f"  warn: {error}")
     _print_timings_summary(rebuild, key="timings_ms", label="rebuild_timings_ms")
+    _print_timings_summary(rebuild, key="switch_timings_ms", label="switch_timings_ms")
     _print_timings_summary(rebuild, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
+    _print_timings_summary(rebuild, key="phase_timings_ms", label="phase_timings_ms")
 
 
 def _print_timings_summary(payload: dict[str, Any], *, key: str = "timings_ms", label: str | None = None) -> None:
@@ -1156,6 +1158,7 @@ def _node_yjs_control_action(
     _print_timings_summary(payload, key="switch_timings_ms")
     _print_timings_summary(payload, key="rebuild_timings_ms")
     _print_timings_summary(payload, key="semantic_rebuild_timings_ms")
+    _print_timings_summary(payload, key="phase_timings_ms")
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})

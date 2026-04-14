@@ -241,6 +241,13 @@ Legacy-ветки materialization сценария становятся опци
 в switch/rebuild results и rebuild status surfaces, чтобы тяжёлые сценарии
 можно было сравнивать до более глубоких cache/diff изменений.
 
+Control surface теперь также публикуют provisional `phase_timings_ms`
+(`time_to_accept`, `time_to_first_structure`,
+`time_to_interactive_focus`, `time_to_full_hydration`), вычисленные на основе
+пока ещё в основном монолитного runtime-контракта. Эти числа пока намеренно
+best-effort, но уже позволяют сравнивать pointer-first acceptance и полный
+rebuild latency на реальных сценариях.
+
 ### Phase E: Structure/data split и focus-aware hydration
 
 Контракт rebuild становится явно фазовым:
@@ -319,9 +326,9 @@ Legacy-ветки materialization сценария становятся опци
 - [ ] Добавить diff-apply для top-level resolved branches там, где реализация
   остаётся простой и безопасной.
 - [ ] Мерить тяжёлые сценарии вроде `infrascope` до и после каждого среза.
-- [ ] Добавить метрики `time_to_first_structure`,
+- [x] Добавить метрики `time_to_first_structure`,
   `time_to_interactive_focus` и `time_to_full_hydration`.
-- [ ] Коалесить stale background hydration work, если его уже supersede'нул
+- [x] Коалесить stale background hydration work, если его уже supersede'нул
   новый scenario switch.
 
 ### 5.5. ABI и renderer readiness contract
