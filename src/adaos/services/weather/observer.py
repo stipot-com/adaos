@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import y_py as Y
 
@@ -15,7 +15,7 @@ from adaos.services.eventbus import emit as bus_emit
 
 _log = logging.getLogger("adaos.weather.observer")
 
-_YDOC_OBSERVERS: Dict[str, int] = {}
+_YDOC_OBSERVERS: Dict[str, Tuple[int, int]] = {}
 _LAST_CITY_IN_DOC: Dict[str, Optional[str]] = {}
 _LAST_DOC_CHECK_AT: Dict[str, float] = {}
 
@@ -63,7 +63,9 @@ def _current_city_from_doc(ydoc) -> Optional[str]:
 
 
 def _ensure_city_observer(webspace_id: str, ydoc) -> None:
-    if webspace_id in _YDOC_OBSERVERS:
+    ydoc_id = id(ydoc)
+    attached = _YDOC_OBSERVERS.get(webspace_id)
+    if attached is not None and attached[0] == ydoc_id:
         return
 
     def _emit_event(city: str) -> None:
@@ -119,7 +121,7 @@ def _ensure_city_observer(webspace_id: str, ydoc) -> None:
             loop.call_soon(_run_safe)
 
     sub_id = ydoc.observe_after_transaction(_maybe_emit)
-    _YDOC_OBSERVERS[webspace_id] = sub_id
+    _YDOC_OBSERVERS[webspace_id] = (ydoc_id, sub_id)
     _emit_current()
 
 

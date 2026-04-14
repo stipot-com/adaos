@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, List, Tuple
+from typing import Callable, Dict, List, Set, Tuple
 
 import y_py as Y
 
@@ -10,6 +10,15 @@ _log = logging.getLogger("adaos.yjs.observers")
 RoomObserver = Callable[[str, Y.YDoc], None]
 
 _OBSERVERS: List[RoomObserver] = []
+_ATTACHED_OBSERVERS: Dict[Tuple[str, int], Set[RoomObserver]] = {}
+_ACTIVE_YDOC_IDS: Dict[str, int] = {}
+
+
+def _observer_name(observer: RoomObserver) -> str:
+    try:
+        return getattr(observer, "__name__", repr(observer))
+    except Exception:  # pragma: no cover - defensive logging only
+        return repr(observer)
 
 
 def register_room_observer(observer: RoomObserver) -> None:
@@ -23,10 +32,7 @@ def register_room_observer(observer: RoomObserver) -> None:
     if observer in _OBSERVERS:
         return
     _OBSERVERS.append(observer)
-    try:
-        name = getattr(observer, "__name__", repr(observer))
-    except Exception:  # pragma: no cover - defensive logging only
-        name = repr(observer)
+    name = _observer_name(observer)
     _log.debug("room observer registered observer=%s total=%d", name, len(_OBSERVERS))
 
 
@@ -43,11 +49,21 @@ def attach_room_observers(webspace_id: str, ydoc: Y.YDoc) -> None:
 
     This is called by the Y gateway when a YRoom is created or reused.
     """
+    ydoc_id = id(ydoc)
+    previous_ydoc_id = _ACTIVE_YDOC_IDS.get(webspace_id)
+    if previous_ydoc_id is not None and previous_ydoc_id != ydoc_id:
+        _ATTACHED_OBSERVERS.pop((webspace_id, previous_ydoc_id), None)
+    _ACTIVE_YDOC_IDS[webspace_id] = ydoc_id
+
+    attached = _ATTACHED_OBSERVERS.setdefault((webspace_id, ydoc_id), set())
     for observer in list_room_observers():
+        if observer in attached:
+            continue
         try:
             observer(webspace_id, ydoc)
+            attached.add(observer)
         except Exception:  # pragma: no cover - defensive logging only
-            name = getattr(observer, "__name__", repr(observer))
+            name = _observer_name(observer)
             _log.warning(
                 "room observer failed observer=%s webspace=%s",
                 name,

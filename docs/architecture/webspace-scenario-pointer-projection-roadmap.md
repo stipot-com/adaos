@@ -184,6 +184,12 @@ pipeline than to a single monolithic rebuild call:
 An internal queue may still be used for coalescing, cancellation, and stale
 work suppression, but it is not the architectural center of gravity.
 
+Transport recovery and semantic recovery should also stay distinct here:
+
+- websocket/provider autoreconnect remains a transport concern
+- frontend recovery controls may request semantic reload, but should debounce
+  transient disconnects instead of recreating sync providers aggressively
+
 ## Focus and Staging Model
 
 The target switch/rebuild path should support staged and multi-page interface

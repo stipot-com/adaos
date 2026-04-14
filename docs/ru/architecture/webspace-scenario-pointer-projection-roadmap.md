@@ -184,6 +184,13 @@ runtime state.
 Внутренняя очередь может использоваться для coalescing, cancellation и
 подавления stale work, но она не должна становиться архитектурным центром.
 
+Transport recovery и semantic recovery здесь тоже должны оставаться разными
+контурами:
+
+- autoreconnect websocket/provider остаётся transport-ответственностью
+- frontend recovery controls могут запрашивать semantic reload, но не должны
+  агрессивно пересоздавать sync provider при каждом кратком disconnect
+
 ## Модель фокуса и стадий
 
 Целевой switch/rebuild path должен поддерживать staged и многостраничные

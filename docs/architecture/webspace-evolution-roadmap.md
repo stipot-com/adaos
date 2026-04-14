@@ -829,6 +829,8 @@ This slice should also make the frontend contract explicit:
 
 - `YJS Resync` means reconnect transport only
 - `YJS Reload` means invoke semantic rebuild and then optionally resync
+- transient provider disconnects should first rely on transport autoreconnect,
+  not immediately escalate into semantic reload/provider recreation
 
 That will remove the current ambiguity where several recovery buttons appear to
 do similar things while actually touching different layers of the system.
