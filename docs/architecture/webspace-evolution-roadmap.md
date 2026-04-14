@@ -8,6 +8,15 @@ The governing rule is:
 
 > Formalize and extract, not redesign and replace.
 
+An additional guiding rule for the next performance-oriented phase is:
+
+> Separate structure from data, then make readiness phased and focus-aware.
+
+This still preserves one important boundary:
+
+> Keep semantic rebuild, but shrink its blocking surface and make it
+> fragmented.
+
 This roadmap does not propose:
 
 - a full rewrite of `WebspaceScenarioRuntime`
@@ -204,6 +213,42 @@ The roadmap must distinguish:
 Without that split, the current Yjs materializations are too easy to mistake
 for canonical storage.
 
+### Structure and data do not share the same lifecycle
+
+The current compatibility model tends to materialize UI as if shell structure,
+interactive affordances, and data payloads all become ready at the same time.
+
+That assumption is becoming a bottleneck for scenario switching and for richer
+multi-page interfaces.
+
+The target model should distinguish:
+
+- structural UI state:
+  shell, pages, sections, widget placement, modal registration, navigation
+- interactive essentials:
+  enough runtime state for the focused surface to become usable
+- deferred data/enrichment state:
+  content payloads, secondary collections, off-focus pages, unopened modals,
+  and other non-critical results
+
+This split should first be treated as an architectural boundary and only later
+become a stricter schema/runtime contract.
+
+### Focus-aware readiness must become explicit
+
+AdaOS is moving toward staged and potentially multi-page scenario interfaces.
+In that world, "ready" can no longer mean "every possible surface has been
+fully hydrated".
+
+The architecture should instead support:
+
+- focused surfaces that participate in first paint and first interaction
+- off-focus surfaces that can trail behind without being treated as failures
+- explicit readiness states so deferred hydration is visible and intentional
+
+This is especially important for Prompt IDE-like shells where secondary panes,
+tabs, or tools may be present in the scenario but not immediately visible.
+
 ### `home_scenario` needs an explicit semantic contract
 
 `home_scenario` should mean:
@@ -311,18 +356,23 @@ Its steps should be:
    clean rebuild.
 4. Project base scenario data into Yjs.
 5. Refresh projection registry/loading for the active scenario and skills.
-6. Materialize effective UI through `WebspaceScenarioRuntime`:
-   `ui.application`, `data.catalog`, `registry.merged`, compatibility mirrors.
+6. Materialize effective UI through `WebspaceScenarioRuntime` in phases:
+   - structure-first compatibility state
+   - focused interactive essentials
+   - deferred/off-focus hydration
 7. Re-sync workflow/runtime state that depends on the active scenario.
 8. Refresh derived compatibility data such as `data.webspaces`.
-9. Emit a rebuild-complete event only after the semantic rebuild is actually
-   complete.
+9. Emit readiness/status updates for partial and final completion, not only a
+   single all-or-nothing completion signal.
+10. Emit a rebuild-complete event only after the semantic rebuild is actually
+    complete.
 
 The browser-facing rule should be explicit:
 
 - client Yjs resync is transport recovery only
 - semantic rebuild is a backend operation
 - frontend resync may follow rebuild, but must not substitute for it
+- partial readiness is a valid state, not automatically a degraded failure
 
 ## Current Gaps Relative To That Contract
 
@@ -379,11 +429,12 @@ Those responsibilities should remain separate:
 | `scenario.yaml` / `skill.yaml` `data_projections` | Canonical | Git / workspace / dev workspace | Separate projection-routing spec |
 | Overlay record for install/pin customizations | Canonical later, deferred now | Persistent storage | Start as a thin adapter later; do not force a full engine yet |
 | `ui.scenarios`, `registry.scenarios`, `data.scenarios` | Derived | Yjs | Scenario projection cache for runtime compatibility |
-| `ui.application`, `data.catalog`, `registry.merged` | Derived | Yjs | Materialized effective UI for current renderer |
+| `ui.application`, `data.catalog`, `registry.merged` | Derived | Yjs | Materialized effective UI for current renderer; should evolve toward phased structure/data readiness |
 | `data.webspaces` | Derived | Yjs | Compatibility listing, not canonical metadata |
 | `ui.current_scenario` | Live state | Yjs | Runtime selection, not base composition identity |
 | Workflow runtime state | Live state | Yjs | Collaborative / runtime state |
 | Device presence / awareness | Live state | Yjs | Ephemeral collaboration state |
+| Focus and staged hydration readiness | Live state / derived boundary | Yjs first, later typed contract | Needed so visible surfaces do not wait on off-focus materialization |
 | Full profile-aware overlay precedence | Deferred | Future persistent storage model | Do not block it, do not implement it now |
 | Full SQL projection backend | Deferred | SQL | Keep contract, delay implementation |
 
@@ -557,6 +608,10 @@ Additions:
   - effective application projection
   - effective catalog projection
   - effective registry projection
+- explicit phased outputs:
+  - structure-first projection slice
+  - focused interactive slice
+  - deferred hydration slice
 - extracted runtime DTOs:
   - `WebspaceResolverInputs`
   - `WebspaceResolverOutputs`
@@ -585,6 +640,8 @@ Key risks:
 Expected result:
 
 - materialized effective UI becomes an explicit architectural layer
+- the runtime can evolve toward partial readiness without a hard renderer
+  rewrite
 
 ### Phase 4. Split Projection Lifecycle From UI Resolve
 
@@ -674,6 +731,59 @@ Expected result:
 - customization state starts leaving the "everything lives in Yjs" trap
   while the current frontend still consumes compatibility projections
 
+### Phase 6. Introduce Phase-Aware UI Readiness and Focused Hydration
+
+Goal:
+
+- make staged readiness a first-class architectural concept
+- optimize scenario switch for first visible usefulness, not only final
+  completion
+
+Touched components:
+
+- semantic rebuild pipeline
+- frontend materialization/readiness checks
+- `webui` ABI hints
+- operator diagnostics and timings
+
+Additions:
+
+- readiness ladder for:
+  - `pending_structure`
+  - `first_paint`
+  - `interactive`
+  - `hydrating`
+  - `ready`
+  - `degraded`
+- coarse-grained intent hints in `webui.v1.schema.json` for:
+  - structure versus data lifecycle
+  - eager versus deferred hydration
+  - visible/focused versus off-focus activation
+- background hydration policy for inactive pages, hidden panes, unopened
+  modals, and other non-blocking surfaces
+- timing diagnostics for:
+  - time to first structure
+  - time to focused interaction
+  - time to full hydration
+
+Intentionally untouched scope:
+
+- per-control micro-scheduling
+- a mandatory schema annotation on every leaf node
+- a separate durable queueing system unless in-process orchestration proves
+  insufficient
+
+Key risks:
+
+- frontend contracts may over-assume monolithic readiness
+- ambiguous ABI hints could accidentally leak scheduler details into content
+  manifests
+
+Expected result:
+
+- staged and multi-page scenarios become practical without pretending that
+  every surface must be initialized before anything useful can render
+
 Current status:
 
 - webspace metadata now stores a canonical desktop-scoped overlay payload
@@ -722,6 +832,17 @@ This slice should also make the frontend contract explicit:
 
 That will remove the current ambiguity where several recovery buttons appear to
 do similar things while actually touching different layers of the system.
+
+The next performance-oriented extension after that should be to reshape this
+primitive into a phase-aware reconcile pipeline with:
+
+- pointer update
+- structure-first apply
+- focused interaction readiness
+- deferred off-focus hydration
+
+This should remain backend-owned. The frontend may observe the phases, but it
+should not become the primary scheduler for semantic rebuild.
 
 Current status:
 
@@ -792,6 +913,8 @@ Avoid:
 - moving identity into Yjs
 - letting skill `webui.json` own shell composition or `home_scenario`
 - coupling projection refresh to UI rebuild as a hidden side effect
+- forcing full hydration of off-focus surfaces before first useful render
+- pushing low-level scheduling mechanics directly into content manifests
 - introducing heavy persistence models before semantics are stable
 
 This roadmap should be treated as the fixed trajectory for the next

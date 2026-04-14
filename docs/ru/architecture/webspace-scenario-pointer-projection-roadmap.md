@@ -7,6 +7,11 @@
 `pointer + resolved projection`, не ломая текущий renderer, recovery-потоки и
 операторские control surface.
 
+Цель этого перехода не в том, чтобы убрать rebuild как класс операции.
+Цель — сохранить semantic rebuild как backend-owned reconcile primitive,
+убрать его из latency-critical части полного копирования payload и эволюционно
+довести его до fragmented, phase-aware materialization.
+
 ## Статус
 
 - Текущая реализация: `materialize-and-copy`
@@ -42,6 +47,9 @@
 
 Целевая модель разделяет pointer state и resolved runtime state.
 
+Она также перестаёт считать видимый интерфейс единым all-or-nothing объектом
+materialization и вводит фазовую готовность runtime state.
+
 ### Canonical и live inputs
 
 Авторитетными входами semantic rebuild для webspace должны быть:
@@ -59,10 +67,20 @@
 Следующие ветки являются runtime projection, а не primary storage:
 
 - `ui.application`
+- `ui.application.structure`
+- `ui.application.data`
 - `data.catalog`
 - `data.installed`
 - `data.desktop`
 - `registry.merged`
+
+Это пока концептуальное разделение, а не требование к немедленному жёсткому
+schema break. Важны сами границы:
+
+- shell/structure могут становиться ready раньше
+- data-heavy и enrichment-heavy части могут приходить позже
+- off-focus страницы, вкладки, панели и модалки могут гидратироваться
+  отложенно
 
 ### Compatibility caches
 
@@ -87,6 +105,12 @@
    должен в них нуждаться.
 5. Yjs остаётся live collaborative medium; этот план меняет ownership и
    rebuild semantics, но не transport layer.
+6. Переключение сценария должно оптимизироваться не только по
+   `time_to_fully_materialized_state`, но и по `time_to_first_structure`.
+7. Renderer contract должен допускать phased readiness для staged и
+   многостраничных сценариев, где часть поверхностей не находится в фокусе.
+8. Целевое состояние для scenario switch — это fragmented rebuild:
+   один semantic owner, но с раздельным применением focused и deferred slices.
 
 ## Таксономия источников
 
@@ -106,6 +130,8 @@
 ### Derived
 
 - `ui.application`
+- structure-first compatibility projections
+- deferred data/enrichment projections
 - `data.catalog`
 - `data.installed`
 - `data.desktop`
@@ -138,9 +164,49 @@ runtime state.
 3. Загрузить содержимое сценария напрямую из loader-backed canonical source.
 4. Загрузить skill UI contributions и overlay state.
 5. Обновить projection rules как явный ordered step.
-6. Вычислить resolved effective runtime state.
-7. Записать resolved runtime state в compatibility Yjs branches.
-8. Опубликовать rebuild status и completion signals.
+6. Вычислить phased resolved runtime state с явным разделением на
+   structure-first и deferred hydration slices.
+7. Применить first-paint structure и critical interaction state в
+   compatibility Yjs branches.
+8. Применять deferred data, enrichments и off-focus surfaces тогда, когда они
+   становятся eligible.
+9. Публиковать rebuild status и completion signals вместе с phase-aware
+   metadata.
+
+Целевая backend-операция здесь ближе к cancellable reconcile pipeline, чем к
+одному монолитному rebuild-вызову:
+
+1. pointer update / scenario selection
+2. structure-first projection
+3. interactive essentials
+4. deferred hydration для background и off-focus surfaces
+
+Внутренняя очередь может использоваться для coalescing, cancellation и
+подавления stale work, но она не должна становиться архитектурным центром.
+
+## Модель фокуса и стадий
+
+Целевой switch/rebuild path должен поддерживать staged и многостраничные
+интерфейсы в духе Prompt IDE:
+
+- только текущая страница, pane или активный shell segment должны блокировать
+  first-paint readiness
+- неактивные tabs, background pages, secondary panels и unopened modals могут
+  materialize позже
+- сценарий может быть частично ready, и это должно быть явно отражено в
+  readiness contract
+
+Предпочтительная лестница readiness:
+
+- `pending_structure`
+- `first_paint`
+- `interactive`
+- `hydrating`
+- `ready`
+- `degraded`
+
+Это пока contract-level модель. Точные имена полей могут уточняться вместе с
+эволюцией renderer и ABI.
 
 ## Стратегия миграции
 
@@ -171,6 +237,20 @@ Legacy-ветки materialization сценария становятся опци
 - делать top-level diff application там, где это дёшево и надёжно
 - кешировать resolver inputs и/или outputs по стабильному version key
 
+Временные operator-facing diagnostics уже начали публиковать timing snapshots
+в switch/rebuild results и rebuild status surfaces, чтобы тяжёлые сценарии
+можно было сравнивать до более глубоких cache/diff изменений.
+
+### Phase E: Structure/data split и focus-aware hydration
+
+Контракт rebuild становится явно фазовым:
+
+- определить structure-first и deferred branches
+- формализовать readiness signals для partially available UI
+- разрешить off-focus page/panel/modal materialization отставать от first
+  render
+- сохранить compatibility paths на время миграции frontend-контрактов
+
 ## Дорожная карта
 
 Используй этот checklist как основной трекер прогресса миграции.
@@ -196,7 +276,7 @@ Legacy-ветки materialization сценария становятся опци
 
 ### 2. Упрощение контракта switch
 
-- [ ] Ввести pointer-first switch path под feature flag.
+- [x] Ввести pointer-first switch path под feature flag.
 - [ ] Сделать так, чтобы `switch_webspace_scenario()` проверял существование
   сценария без eager full payload copy.
 - [ ] Ограничить writes в switch до `ui.current_scenario` и minimal metadata.
@@ -214,6 +294,8 @@ Legacy-ветки materialization сценария становятся опци
   scenario.
 - [ ] Проверить, что reload/reset/restore/switch используют одинаковые source
   resolution rules.
+- [ ] Переформатировать rebuild в phase-aware reconcile steps вместо одного
+  монолитного предположения "all ready at once".
 
 ### 4. Совместимость и безопасность миграции
 
@@ -224,17 +306,36 @@ Legacy-ветки materialization сценария становятся опци
   pointer-first switch.
 - [ ] Описать failure modes и rollback path, если новый switch contract даст
   регрессию.
+- [ ] Определить compatibility contract для partially ready UI, чтобы
+  renderer отличал degraded state от intentional deferred hydration.
 
 ### 5. Производительность и hardening
 
-- [ ] Добавить per-stage timing вокруг switch, scenario load, projection
+- [x] Добавить per-stage timing вокруг switch, scenario load, projection
   refresh, resolve и apply.
-- [ ] Добавить `skip-if-unchanged` для больших derived writes.
+- [x] Добавить `skip-if-unchanged` для больших derived writes.
 - [ ] Добавить cache keys для scenario content, skill UI contributions и
   overlay snapshot там, где это полезно.
 - [ ] Добавить diff-apply для top-level resolved branches там, где реализация
   остаётся простой и безопасной.
 - [ ] Мерить тяжёлые сценарии вроде `infrascope` до и после каждого среза.
+- [ ] Добавить метрики `time_to_first_structure`,
+  `time_to_interactive_focus` и `time_to_full_hydration`.
+- [ ] Коалесить stale background hydration work, если его уже supersede'нул
+  новый scenario switch.
+
+### 5.5. ABI и renderer readiness contract
+
+- [ ] Расширить `src/adaos/abi/webui.v1.schema.json` intent-level readiness
+  hints вместо протаскивания в ABI backend scheduler details.
+- [ ] Ввести coarse-grained load semantics для page/widget/modal/catalog
+  сегментов: например eager, visible, interaction и deferred.
+- [ ] Держать granularity выше leaf-node уровня, чтобы runtime не превратился
+  в micro-scheduler для каждого control.
+- [ ] Разделить hints жизненного цикла structure и data, чтобы staged
+  rendering оставался управляемым.
+- [ ] Описать, как staged и многостраничные сценарии сообщают off-focus
+  readiness, не делая вид, что весь shell обязан быть заблокирован.
 
 ### 6. Очистка legacy
 
@@ -251,12 +352,16 @@ Legacy-ветки materialization сценария становятся опци
 
 - latency переключения сценария больше не зависит линейно от полной
   materialization payload
+- `time_to_first_structure` улучшается независимо от
+  `time_to_full_hydration`
 - rebuild работает от canonical loader-backed source даже если Yjs scenario
   cache отсутствует
 - effective runtime state записывается одним semantic rebuild owner
 - control surface по-прежнему позволяют диагностировать asynchronous rebuild
 - текущее frontend/runtime поведение остаётся совместимым или имеет явный
   migration path
+- staged и многостраничные сценарии могут рендерить focused surface до того,
+  как off-focus surfaces закончат hydration
 
 ## Что не входит в этот план
 
@@ -264,6 +369,9 @@ Legacy-ветки materialization сценария становятся опци
 
 - замену Yjs как live collaborative runtime medium
 - редизайн `scenario.json` или skill `webui.json`
+- обязательное описание fine-grained scheduler details в каждом UI
+  contribution
+- отказ от semantic rebuild как operator/recovery primitive
 - одномоментную замену current renderer contract
 - single-shot rewrite `WebspaceScenarioRuntime`
 
