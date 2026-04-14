@@ -400,7 +400,7 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert fake_state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
     assert fake_state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
     assert fake_state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
-    assert fake_state["data"]["scenarios"]["prompt_engineer_scenario"]["data"]["status"]["scenario"] == "prompt_engineer_scenario"
+    assert "data" not in fake_state["data"]["scenarios"]["prompt_engineer_scenario"]
     assert isinstance(result["timings_ms"], dict)
     assert "validate_scenario" in result["timings_ms"]
     assert "materialize_switch_payload" in result["timings_ms"]
@@ -408,6 +408,39 @@ def test_switch_webspace_scenario_can_schedule_background_rebuild(monkeypatch) -
     assert isinstance(result["phase_timings_ms"], dict)
     assert "time_to_accept" in result["phase_timings_ms"]
     assert "time_to_full_hydration" not in result["phase_timings_ms"]
+
+
+def test_materialize_switch_content_compat_cache_drops_stale_data_payload() -> None:
+    fake_state = {
+        "ui": _FakeMap(),
+        "registry": _FakeMap(),
+        "data": _FakeMap(
+            {
+                "scenarios": {
+                    "prompt_engineer_scenario": {
+                        "catalog": {"apps": [{"id": "old-app"}]},
+                        "data": {"status": {"scenario": "stale"}},
+                    }
+                }
+            }
+        ),
+    }
+    fake_doc = _FakeDoc(fake_state)
+
+    webspace_runtime_module._materialize_scenario_switch_content_in_doc(
+        fake_doc,
+        scenario_id="prompt_engineer_scenario",
+        content={
+            "ui": {"application": {"desktop": {"pageSchema": {"id": "new-page"}}}},
+            "registry": {"modals": ["new-modal"]},
+            "catalog": {"apps": [{"id": "new-app"}]},
+            "data": {"status": {"scenario": "new"}},
+        },
+    )
+
+    entry = fake_state["data"]["scenarios"]["prompt_engineer_scenario"]
+    assert entry["catalog"]["apps"] == [{"id": "new-app"}]
+    assert "data" not in entry
 
 
 def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:

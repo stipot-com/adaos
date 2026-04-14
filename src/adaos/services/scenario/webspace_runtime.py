@@ -628,7 +628,6 @@ def _materialize_scenario_switch_content_in_doc(
     content: Mapping[str, Any],
 ) -> None:
     ui_section, catalog_section, registry_section = _extract_scenario_sections_from_content(content)
-    data_section = _coerce_dict(_coerce_dict(content).get("data") or {})
 
     ui_map = ydoc.get_map("ui")
     registry_map = ydoc.get_map("registry")
@@ -651,8 +650,7 @@ def _materialize_scenario_switch_content_in_doc(
         entry_raw = data_updated.get(scenario_id) or {}
         entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
         entry["catalog"] = catalog_section
-        if data_section:
-            entry["data"] = data_section
+        entry.pop("data", None)
         data_updated[scenario_id] = entry
         _set_map_value_if_changed(data_map, txn, "scenarios", data_updated)
 

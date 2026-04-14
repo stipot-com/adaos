@@ -286,6 +286,19 @@ modes reject missing targets before any heavy payload copy work begins.
 Legacy materialize mode now limits itself to compatibility cache writes plus
 `ui.current_scenario`; active runtime branches are left to semantic rebuild, so
 normal scenario switch no longer duplicates effective writes before reconcile.
+Compatibility cache payloads are now also trimmed to the sections the current
+runtime still uses for fallback (`ui.application`, `registry`, `catalog`)
+instead of copying arbitrary scenario `data` into switch-time caches.
+
+Reader/writer audit for migration planning:
+
+- reader of legacy materialized scenario branches:
+  `WebspaceScenarioRuntime._read_legacy_materialized_scenario_sections()`
+- writers of legacy materialized scenario branches:
+  `ScenarioManager._project_to_doc()` for seed/sync flows and
+  `_materialize_scenario_switch_content_in_doc()` for legacy switch
+- no active runtime resolver path requires materialized Yjs scenario payload
+  when loader-backed content is available; legacy branches are now fallback-only
 
 ### Phase E: Structure/data split and focus-aware hydration
 
@@ -309,13 +322,13 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 1. Resolver Decoupling
 
-- [ ] Audit all readers of `ui.scenarios`, `registry.scenarios`, and
+- [x] Audit all readers of `ui.scenarios`, `registry.scenarios`, and
   `data.scenarios`.
-- [ ] Identify consumers that require canonical loader-backed reads instead of
+- [x] Identify consumers that require canonical loader-backed reads instead of
   Yjs materialized payload.
-- [ ] Refactor resolver input collection so loader-backed scenario content is
+- [x] Refactor resolver input collection so loader-backed scenario content is
   the primary source.
-- [ ] Keep materialized Yjs scenario branches as fallback only.
+- [x] Keep materialized Yjs scenario branches as fallback only.
 - [x] Add tests that prove rebuild succeeds without pre-materialized scenario
   payload in Yjs.
 
