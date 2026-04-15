@@ -661,7 +661,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     monkeypatch.setattr(
         node_api_module,
         "_describe_yjs_materialization",
-        lambda webspace_id: _awaitable(
+        lambda webspace_id, rebuild_state=None: _awaitable(
             {
                 "ready": True,
                 "webspace_id": webspace_id,
@@ -670,6 +670,16 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
                 "has_catalog_apps": True,
                 "has_catalog_widgets": True,
                 "catalog_counts": {"apps": 3, "widgets": 2},
+                "compatibility_caches": {
+                    "client_fallback_readable": True,
+                    "present_count": 3,
+                    "required_count": 3,
+                    "complete": True,
+                    "switch_writes_enabled": False,
+                    "legacy_fallback_active": False,
+                    "runtime_removal_ready": True,
+                    "runtime_removal_blockers": [],
+                },
             }
         ),
     )
@@ -725,6 +735,24 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
                         "widgets_catalog": {"title": "Widgets"},
                     },
                 },
+                "scenarios": {
+                    "prompt_engineer_scenario": {
+                        "application": {
+                            "desktop": {
+                                "pageSchema": {"id": "legacy-desktop"},
+                            },
+                        },
+                    }
+                },
+            }
+        ),
+        "registry": _FakeMap(
+            {
+                "scenarios": {
+                    "prompt_engineer_scenario": {
+                        "modals": ["legacy-modal"],
+                    }
+                }
             }
         ),
         "data": _FakeMap(
@@ -732,7 +760,14 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
                 "catalog": {
                     "apps": [{"id": "prompt_ide"}],
                     "widgets": [{"id": "weather"}],
-                }
+                },
+                "scenarios": {
+                    "prompt_engineer_scenario": {
+                        "catalog": {
+                            "apps": [{"id": "legacy-app"}],
+                        }
+                    }
+                },
             }
         ),
     }
@@ -744,6 +779,9 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
     assert result["ready"] is True
     assert result["readiness_state"] == "ready"
     assert result["missing_branches"] == []
+    assert result["compatibility_caches"]["complete"] is True
+    assert result["compatibility_caches"]["client_fallback_readable"] is True
+    assert result["compatibility_caches"]["runtime_removal_ready"] is True
 
 
 def test_describe_yjs_materialization_reports_hydrating_readiness_and_missing_branches(monkeypatch) -> None:
@@ -775,6 +813,51 @@ def test_describe_yjs_materialization_reports_hydrating_readiness_and_missing_br
     assert result["readiness_state"] == "hydrating"
     assert "data.catalog.apps" in result["missing_branches"]
     assert "ui.application.modals.apps_catalog" in result["missing_branches"]
+    assert result["compatibility_caches"]["runtime_removal_ready"] is False
+    assert "effective_materialization_not_ready" in result["compatibility_caches"]["runtime_removal_blockers"]
+
+
+def test_describe_compatibility_caches_reports_runtime_removal_ready_when_runtime_is_clean(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", raising=False)
+
+    result = node_api_module._describe_compatibility_caches(
+        current_scenario="prompt_engineer_scenario",
+        has_scenario_ui_application=True,
+        has_scenario_registry_entry=True,
+        has_scenario_catalog=True,
+        effective_ready=True,
+        rebuild_state={"resolver": {"legacy_fallback": False}},
+    )
+
+    assert result["present_count"] == 3
+    assert result["required_count"] == 3
+    assert result["complete"] is True
+    assert result["client_fallback_readable"] is True
+    assert result["runtime_removal_ready"] is True
+    assert result["runtime_removal_blockers"] == []
+
+
+def test_describe_compatibility_caches_reports_runtime_removal_blockers(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", "1")
+
+    result = node_api_module._describe_compatibility_caches(
+        current_scenario="prompt_engineer_scenario",
+        has_scenario_ui_application=False,
+        has_scenario_registry_entry=True,
+        has_scenario_catalog=False,
+        effective_ready=False,
+        rebuild_state={"resolver": {"legacy_fallback": True}},
+    )
+
+    assert result["client_fallback_readable"] is False
+    assert result["switch_writes_enabled"] is True
+    assert result["legacy_fallback_active"] is True
+    assert result["runtime_removal_ready"] is False
+    assert set(result["runtime_removal_blockers"]) == {
+        "effective_materialization_not_ready",
+        "switch_compat_cache_writes_enabled",
+        "resolver_legacy_fallback_active",
+    }
 
 
 def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
@@ -814,7 +897,7 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
     monkeypatch.setattr(
         node_api_module,
         "_describe_yjs_materialization",
-        lambda webspace_id: _awaitable(
+        lambda webspace_id, rebuild_state=None: _awaitable(
             {
                 "ready": False,
                 "webspace_id": webspace_id,
@@ -823,6 +906,16 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
                 "has_catalog_apps": False,
                 "has_catalog_widgets": True,
                 "catalog_counts": {"apps": 0, "widgets": 2},
+                "compatibility_caches": {
+                    "client_fallback_readable": False,
+                    "present_count": 1,
+                    "required_count": 3,
+                    "complete": False,
+                    "switch_writes_enabled": False,
+                    "legacy_fallback_active": False,
+                    "runtime_removal_ready": False,
+                    "runtime_removal_blockers": ["effective_materialization_not_ready"],
+                },
             }
         ),
     )
@@ -854,6 +947,7 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
     assert result["items"][0]["installed"] is True
     assert result["items"][0]["pinned"] is True
     assert result["materialization"]["ready"] is False
+    assert result["rebuild"]["webspace_id"] == "default"
     assert result["runtime"]["webspace_id"] == "default"
 
 

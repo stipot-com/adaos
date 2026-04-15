@@ -59,6 +59,30 @@ class _FakeGit:
         self.push_calls.append(root)
 
 
+class _FakeTxn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class _FakeMap(dict):
+    def set(self, txn, key: str, value: object) -> None:  # noqa: ARG002
+        self[key] = value
+
+
+class _FakeDoc:
+    def __init__(self, state: dict[str, _FakeMap]) -> None:
+        self._state = state
+
+    def begin_transaction(self) -> _FakeTxn:
+        return _FakeTxn()
+
+    def get_map(self, name: str) -> _FakeMap:
+        return self._state.setdefault(name, _FakeMap())
+
+
 def _workspace_ctx(workspace: Path, git: _FakeGit) -> SimpleNamespace:
     return SimpleNamespace(
         git=git,
@@ -140,3 +164,56 @@ def test_scenario_push_updates_registry_and_commits_it(monkeypatch, tmp_path: Pa
     assert [item["id"] for item in registry["scenarios"]] == ["welcome_scene"]
     assert git.commit_calls[0]["subpath"] == ["scenarios/welcome_scene", "registry.json"]
     assert git.push_calls == [str(workspace)]
+
+
+def test_scenario_project_to_doc_keeps_runtime_owned_effective_data_under_rebuild_ownership() -> None:
+    manager = object.__new__(ScenarioManager)
+    manager.caps = _FakeCaps()
+
+    state = {
+        "ui": _FakeMap(
+            {
+                "application": {
+                    "desktop": {
+                        "pageSchema": {"id": "live-page"},
+                    }
+                }
+            }
+        ),
+        "registry": _FakeMap({"merged": {"modals": ["live-modal"]}}),
+        "data": _FakeMap(
+            {
+                "catalog": {"apps": [{"id": "live-app"}]},
+                "installed": {"apps": ["scenario:web_desktop"], "widgets": []},
+                "desktop": {"pageSchema": {"id": "live-desktop"}},
+                "routing": {"routes": {"home": "/"}},
+            }
+        ),
+    }
+
+    manager._project_to_doc(
+        _FakeDoc(state),
+        "prompt_engineer_scenario",
+        ui_section={"desktop": {"pageSchema": {"id": "legacy-page"}}},
+        registry_section={"modals": ["legacy-modal"]},
+        catalog_section={"apps": [{"id": "legacy-app"}]},
+        data_section={
+            "catalog": {"apps": [{"id": "should-not-overwrite"}]},
+            "installed": {"apps": ["should-not-overwrite"]},
+            "desktop": {"pageSchema": {"id": "should-not-overwrite"}},
+            "routing": {"routes": {"home": "/should-not-overwrite"}},
+            "weather": {"city": "Moscow"},
+        },
+    )
+
+    assert state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "live-page"
+    assert state["registry"]["merged"]["modals"] == ["live-modal"]
+    assert state["data"]["catalog"]["apps"] == [{"id": "live-app"}]
+    assert state["data"]["installed"]["apps"] == ["scenario:web_desktop"]
+    assert state["data"]["desktop"]["pageSchema"]["id"] == "live-desktop"
+    assert state["data"]["routing"]["routes"]["home"] == "/"
+    assert state["ui"]["current_scenario"] == "prompt_engineer_scenario"
+    assert state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "legacy-page"
+    assert state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["legacy-modal"]
+    assert state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "legacy-app"}]
+    assert state["data"]["weather"] == {"city": "Moscow"}

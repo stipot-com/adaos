@@ -671,6 +671,48 @@ def _print_desktop_summary(payload: dict[str, Any], *, key: str = "desktop") -> 
     )
 
 
+def _print_materialization_summary(payload: dict[str, Any], *, key: str = "materialization") -> None:
+    materialization = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not materialization:
+        return
+    missing_branches = [
+        str(raw_branch or "").strip()
+        for raw_branch in list(materialization.get("missing_branches") or [])
+        if str(raw_branch or "").strip()
+    ]
+    catalog_counts = materialization.get("catalog_counts") if isinstance(materialization.get("catalog_counts"), dict) else {}
+    typer.echo(
+        "materialization: "
+        f"ready={'yes' if materialization.get('ready') else 'no'} "
+        f"state={materialization.get('readiness_state') or '-'} "
+        f"apps={int(catalog_counts.get('apps') or 0)} "
+        f"widgets={int(catalog_counts.get('widgets') or 0)} "
+        f"topbar={int(materialization.get('topbar_count') or 0)} "
+        f"page_widgets={int(materialization.get('page_widget_count') or 0)} "
+        f"missing={len(missing_branches)}"
+    )
+    if missing_branches:
+        typer.echo(f"  missing: {','.join(missing_branches)}")
+    compatibility = materialization.get("compatibility_caches") if isinstance(materialization.get("compatibility_caches"), dict) else {}
+    if compatibility:
+        blockers = [
+            str(raw_blocker or "").strip()
+            for raw_blocker in list(compatibility.get("runtime_removal_blockers") or [])
+            if str(raw_blocker or "").strip()
+        ]
+        typer.echo(
+            "compatibility: "
+            f"client_fallback={'yes' if compatibility.get('client_fallback_readable') else 'no'} "
+            f"present={int(compatibility.get('present_count') or 0)}/{int(compatibility.get('required_count') or 0)} "
+            f"complete={'yes' if compatibility.get('complete') else 'no'} "
+            f"writes={'on' if compatibility.get('switch_writes_enabled') else 'off'} "
+            f"legacy_fallback={'yes' if compatibility.get('legacy_fallback_active') else 'no'} "
+            f"runtime_removal_ready={'yes' if compatibility.get('runtime_removal_ready') else 'no'}"
+        )
+        if blockers:
+            typer.echo(f"  blockers: {','.join(blockers)}")
+
+
 def _print_projection_refresh_summary(payload: dict[str, Any]) -> None:
     refresh = payload.get("projection_refresh") if isinstance(payload.get("projection_refresh"), dict) else {}
     if not refresh:
@@ -1578,6 +1620,7 @@ def _node_yjs_describe_action(
     _print_desktop_summary(payload)
     _print_projection_summary(payload)
     _print_rebuild_summary(payload)
+    _print_materialization_summary(payload)
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if runtime:
         _print_yjs_runtime_summary({"runtime": runtime})

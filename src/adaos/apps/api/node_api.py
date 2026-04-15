@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import anyio
 import requests
@@ -75,6 +75,13 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 
 def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+def _env_flag_enabled(name: str) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _supervisor_enabled() -> bool:
@@ -258,12 +265,78 @@ def _derive_materialization_readiness_state(
     return "degraded"
 
 
-async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
+def _collect_compatibility_cache_required_branches(current_scenario: str | None) -> list[str]:
+    scenario_id = str(current_scenario or "").strip()
+    if not scenario_id:
+        return []
+    return [
+        f"ui.scenarios.{scenario_id}.application",
+        f"registry.scenarios.{scenario_id}",
+        f"data.scenarios.{scenario_id}.catalog",
+    ]
+
+
+def _describe_compatibility_caches(
+    *,
+    current_scenario: str | None,
+    has_scenario_ui_application: bool,
+    has_scenario_registry_entry: bool,
+    has_scenario_catalog: bool,
+    effective_ready: bool,
+    rebuild_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    required_branches = _collect_compatibility_cache_required_branches(current_scenario)
+    present_flags = (
+        has_scenario_ui_application,
+        has_scenario_registry_entry,
+        has_scenario_catalog,
+    )
+    present_branches = [path for path, present in zip(required_branches, present_flags) if present]
+    missing_branches = [path for path, present in zip(required_branches, present_flags) if not present]
+    resolver = (
+        rebuild_state.get("resolver")
+        if isinstance(rebuild_state, Mapping) and isinstance(rebuild_state.get("resolver"), Mapping)
+        else {}
+    )
+    legacy_fallback_active = bool(resolver.get("legacy_fallback"))
+    switch_writes_enabled = _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
+    runtime_removal_blockers: list[str] = []
+    if not str(current_scenario or "").strip():
+        runtime_removal_blockers.append("current_scenario_missing")
+    if not effective_ready:
+        runtime_removal_blockers.append("effective_materialization_not_ready")
+    if switch_writes_enabled:
+        runtime_removal_blockers.append("switch_compat_cache_writes_enabled")
+    if legacy_fallback_active:
+        runtime_removal_blockers.append("resolver_legacy_fallback_active")
+    return {
+        "current_scenario": str(current_scenario or "").strip() or None,
+        "required_branches": required_branches,
+        "present_branches": present_branches,
+        "missing_branches": missing_branches,
+        "present_count": len(present_branches),
+        "required_count": len(required_branches),
+        "present": bool(present_branches),
+        "complete": bool(required_branches) and not missing_branches,
+        "client_fallback_readable": bool(str(current_scenario or "").strip() and has_scenario_ui_application),
+        "switch_writes_enabled": switch_writes_enabled,
+        "legacy_fallback_active": legacy_fallback_active,
+        "runtime_removal_ready": not runtime_removal_blockers,
+        "runtime_removal_blockers": runtime_removal_blockers,
+    }
+
+
+async def _describe_yjs_materialization(
+    webspace_id: str,
+    *,
+    rebuild_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
     try:
         async with async_get_ydoc(target_webspace_id) as ydoc:
             ui_map = ydoc.get_map("ui")
             data_map = ydoc.get_map("data")
+            registry_map = ydoc.get_map("registry")
             application = _coerce_dict(ui_map.get("application") or {})
             desktop = _coerce_dict(application.get("desktop") or {})
             modals = _coerce_dict(application.get("modals") or {})
@@ -274,6 +347,14 @@ async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
             page_widgets = _coerce_list(page_schema.get("widgets"))
             topbar = _coerce_list(desktop.get("topbar"))
             current_scenario = str(ui_map.get("current_scenario") or "").strip() or None
+            scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
+            scenario_ui_entry = _coerce_dict(scenarios_ui.get(current_scenario) or {}) if current_scenario else {}
+            scenario_ui_application = _coerce_dict(scenario_ui_entry.get("application") or {})
+            scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
+            scenario_registry_entry = _coerce_dict(scenario_registry_map.get(current_scenario) or {}) if current_scenario else {}
+            scenario_data_map = _coerce_dict(data_map.get("scenarios") or {})
+            scenario_data_entry = _coerce_dict(scenario_data_map.get(current_scenario) or {}) if current_scenario else {}
+            scenario_catalog = _coerce_dict(scenario_data_entry.get("catalog") or {})
 
             has_ui_application = bool(application)
             has_desktop_config = bool(desktop)
@@ -303,11 +384,20 @@ async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
                 has_catalog_apps=has_catalog_apps,
                 has_catalog_widgets=has_catalog_widgets,
             )
+            compatibility_caches = _describe_compatibility_caches(
+                current_scenario=current_scenario,
+                has_scenario_ui_application=bool(scenario_ui_application),
+                has_scenario_registry_entry=bool(scenario_registry_entry),
+                has_scenario_catalog=bool(scenario_catalog),
+                effective_ready=ready,
+                rebuild_state=rebuild_state,
+            )
 
             return {
                 "ready": ready,
                 "readiness_state": readiness_state,
                 "missing_branches": missing_branches,
+                "compatibility_caches": compatibility_caches,
                 "webspace_id": target_webspace_id,
                 "current_scenario": current_scenario,
                 "has_ui_application": has_ui_application,
@@ -334,10 +424,19 @@ async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
             has_catalog_apps=False,
             has_catalog_widgets=False,
         )
+        compatibility_caches = _describe_compatibility_caches(
+            current_scenario=None,
+            has_scenario_ui_application=False,
+            has_scenario_registry_entry=False,
+            has_scenario_catalog=False,
+            effective_ready=False,
+            rebuild_state=rebuild_state,
+        )
         return {
             "ready": False,
             "readiness_state": "degraded",
             "missing_branches": missing_branches,
+            "compatibility_caches": compatibility_caches,
             "webspace_id": target_webspace_id,
             "current_scenario": None,
             "has_ui_application": False,
@@ -992,7 +1091,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     projection = await describe_webspace_projection_state(target_webspace_id)
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
     desktop = (await WebDesktopService().get_snapshot_async(target_webspace_id)).to_dict()
-    materialization = await _describe_yjs_materialization(target_webspace_id)
+    materialization = await _describe_yjs_materialization(target_webspace_id, rebuild_state=rebuild)
     return {
         "ok": True,
         "accepted": True,
@@ -1159,7 +1258,8 @@ async def node_yjs_catalog_state(webspace_id: str, kind: str) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "").strip() or "default"
     normalized_kind = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
-    materialization = await _describe_yjs_materialization(target_webspace_id)
+    rebuild = describe_webspace_rebuild_state(target_webspace_id)
+    materialization = await _describe_yjs_materialization(target_webspace_id, rebuild_state=rebuild)
     items = await _materialize_catalog_items(target_webspace_id, normalized_kind)
     return {
         "ok": True,
@@ -1168,6 +1268,7 @@ async def node_yjs_catalog_state(webspace_id: str, kind: str) -> dict[str, Any]:
         "kind": normalized_kind,
         "items": items,
         "materialization": materialization,
+        "rebuild": rebuild,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
             webspace_id=target_webspace_id,

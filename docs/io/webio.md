@@ -164,6 +164,7 @@ shared materialization diagnostic contract:
 * `ready`
 * `readiness_state`
 * `missing_branches`
+* `compatibility_caches`
 
 Rebuild/control surfaces also expose phase-oriented timing and apply detail so
 pointer-only scenario switch can be evaluated against real runtime slices:
@@ -194,6 +195,22 @@ such as `infrascope` can be compared across optimization slices.
 The important distinction is that `hydrating` is an expected staged state,
 while `degraded` means the runtime could not account for required desktop
 branches and the client should surface a stronger recovery hint.
+
+`compatibility_caches` exposes the migration-era legacy cache surface for
+operators:
+
+* `client_fallback_readable` reports whether current frontend fallback still
+  has `ui.scenarios/<current>.application`
+* `present_count` / `required_count` and `missing_branches` show how much of
+  the active scenario's legacy cache surface still exists
+* `switch_writes_enabled` reports whether switch-time compatibility cache
+  materialization is still enabled via
+  `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES`
+* `legacy_fallback_active` reports whether semantic rebuild had to read legacy
+  scenario branches instead of canonical loader-backed content
+* `runtime_removal_ready` becomes `true` only when effective runtime branches
+  are ready, switch-time compat writes are disabled, and resolver fallback is
+  no longer using legacy caches
 
 ## `webui.json` schema
 

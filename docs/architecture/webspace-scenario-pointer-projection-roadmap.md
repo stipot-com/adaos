@@ -346,6 +346,11 @@ Frontend migration coverage is now also explicit in tests and diagnostics:
 - `/api/node/yjs/webspaces/<id>` now reports `materialization.readiness_state`
   and `materialization.missing_branches`, so the renderer can distinguish
   deferred hydration from truly degraded materialization
+- the same snapshot now also reports
+  `materialization.compatibility_caches`, including whether current client
+  fallback is readable, whether switch-time compat writes are still enabled,
+  whether resolver had to use legacy branches, and whether runtime-side
+  removal blockers remain
 
 Semantic rebuild itself now also applies effective branches in two ordered
 phases:
@@ -367,6 +372,9 @@ Reader/writer audit for migration planning:
   `_materialize_scenario_switch_content_in_doc()` for legacy switch
 - no active runtime resolver path requires materialized Yjs scenario payload
   when loader-backed content is available; legacy branches are now fallback-only
+- `ScenarioManager._project_to_doc()` now skips runtime-owned top-level data
+  keys (`catalog`, `installed`, `desktop`, `routing`) so scenario sync no
+  longer overwrites effective semantic-rebuild branches through `data.*`
 
 ### Phase E: Structure/data split and focus-aware hydration
 
@@ -423,9 +431,9 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 4. Compatibility and Migration Safety
 
-- [ ] Keep compatibility caches readable during migration.
+- [x] Keep compatibility caches readable during migration.
 - [x] Add explicit debug signals when legacy fallback branches are used.
-- [ ] Define the removal criteria for legacy scenario materialization.
+- [x] Define the removal criteria for legacy scenario materialization.
 - [x] Confirm current frontend contracts still work with pointer-only switch.
 - [x] Document failure modes and rollback path if the new switch contract
   regresses runtime behavior.

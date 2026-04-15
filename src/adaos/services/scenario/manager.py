@@ -32,6 +32,7 @@ from adaos.services.workspace_registry import upsert_workspace_registry_entry
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.scenario.manager")
+_RUNTIME_OWNED_DATA_KEYS = {"catalog", "installed", "desktop", "routing"}
 
 
 @dataclass(slots=True)
@@ -247,16 +248,27 @@ class ScenarioManager:
             # top-level keys are projected into the webspace data map.
             # This is used for initial data seeding (e.g. data.weather)
             # and for YJS reload; only explicitly defined keys are
-            # overwritten.
+            # overwritten. Runtime-owned effective branches stay under
+            # semantic rebuild ownership and are skipped here.
             if isinstance(data_section, dict):
+                skipped_runtime_owned: list[str] = []
                 for key, value in data_section.items():
                     if not isinstance(key, str):
+                        continue
+                    if key in _RUNTIME_OWNED_DATA_KEYS:
+                        skipped_runtime_owned.append(key)
                         continue
                     try:
                         payload = json.loads(json.dumps(value))
                     except Exception:
                         payload = value
                     data_map.set(txn, key, payload)
+                if skipped_runtime_owned:
+                    _log.debug(
+                        "scenario '%s' skipped runtime-owned data keys during Yjs projection: %s",
+                        scenario_id,
+                        ",".join(sorted(set(skipped_runtime_owned))),
+                    )
 
     def sync_to_yjs(self, scenario_id: str, webspace_id: str | None = None, *, space: str = "workspace") -> None:
         """
