@@ -56,6 +56,32 @@ def _resolve_live_room(webspace_id: str):
     return y_server.rooms.get(webspace_id)
 
 
+def _live_room_pipeline_ready(room: Any) -> bool:
+    """
+    Return True when backend mutations on this room will be broadcast and persisted.
+
+    Live-room fast paths are only safe while the room task group is running.
+    Otherwise we could mutate an in-memory doc and accidentally skip the normal
+    YStore writeback path.
+    """
+    if room is None or getattr(room, "ydoc", None) is None:
+        return False
+    if getattr(room, "_task_group", None) is None:
+        return False
+    if getattr(room, "ystore", None) is None:
+        return False
+    started = getattr(room, "started", None)
+    if started is None:
+        return True
+    is_set = getattr(started, "is_set", None)
+    if not callable(is_set):
+        return True
+    try:
+        return bool(is_set())
+    except Exception:
+        return False
+
+
 def _can_access_live_room_directly(room: Any) -> bool:
     """
     Return True when the caller already runs on the room owner thread/loop.
@@ -65,7 +91,7 @@ def _can_access_live_room_directly(room: Any) -> bool:
     context that owns the room. Other callers fall back to the isolated
     store-backed YDoc session.
     """
-    if room is None:
+    if not _live_room_pipeline_ready(room):
         return False
     owner_thread = getattr(room, "_thread_id", None)
     current_thread = threading.get_ident()
@@ -300,22 +326,26 @@ async def async_get_ydoc(
         yield ydoc
         if not read_only:
             if _state_changed(ydoc, before, timings, prefix=timing_prefix):
-                stage_started = time.perf_counter()
-                update = _encode_diff(ydoc, before)
-                _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
-                try:
-                    stage_started = time.perf_counter()
-                    if update:
-                        await ystore.write_update(update, update_kind="diff")
-                    else:
-                        await ystore.write_update(b"", update_kind="diff")
-                    _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
-                except Exception as exc:
-                    _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
-                    _log.warning("async_get_ydoc write_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
                 if use_live_room:
+                    # Active YRoom instances already fan backend mutations into
+                    # websocket broadcast and YStore persistence.
+                    _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
+                    _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)
                     _set_doc_timing(timings, "room_update", 0.0, prefix=timing_prefix)
                 else:
+                    stage_started = time.perf_counter()
+                    update = _encode_diff(ydoc, before)
+                    _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                    try:
+                        stage_started = time.perf_counter()
+                        if update:
+                            await ystore.write_update(update, update_kind="diff")
+                        else:
+                            await ystore.write_update(b"", update_kind="diff")
+                        _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                    except Exception as exc:
+                        _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                        _log.warning("async_get_ydoc write_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
                     stage_started = time.perf_counter()
                     _schedule_room_update(webspace_id, update)
                     _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
@@ -359,7 +389,7 @@ def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -
     Returns False if the webspace is not currently hosted in-process.
     """
     room = _resolve_live_room(webspace_id)
-    if not room:
+    if not _live_room_pipeline_ready(room):
         return False
 
     def _apply() -> None:
@@ -380,7 +410,7 @@ def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
     if not update:
         return False
     room = _resolve_live_room(webspace_id)
-    if not room:
+    if not _live_room_pipeline_ready(room):
         return False
 
     def _apply() -> None:

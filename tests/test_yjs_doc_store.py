@@ -133,6 +133,8 @@ async def test_async_get_ydoc_prefers_live_room_when_requested(monkeypatch) -> N
         (),
         {
             "ydoc": room_doc,
+            "ystore": fake_store,
+            "_task_group": object(),
             "_thread_id": threading.get_ident(),
             "_loop": asyncio.get_running_loop(),
         },
@@ -149,7 +151,7 @@ async def test_async_get_ydoc_prefers_live_room_when_requested(monkeypatch) -> N
     assert fake_store.start_calls == 0
     assert fake_store.stop_calls == 0
     assert fake_store.apply_updates_calls == 0
-    assert len(fake_store.write_updates) == 1
+    assert len(fake_store.write_updates) == 0
     assert room_doc.get_map("ui").get("current_scenario") == "infrascope"
 
 
@@ -172,6 +174,8 @@ async def test_async_read_ydoc_prefers_live_room_without_store_replay(monkeypatc
         (),
         {
             "ydoc": room_doc,
+            "ystore": object(),
+            "_task_group": object(),
             "_thread_id": threading.get_ident(),
             "_loop": asyncio.get_running_loop(),
         },

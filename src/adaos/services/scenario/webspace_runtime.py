@@ -2449,39 +2449,6 @@ def _try_read_live_current_scenario(webspace_id: str) -> str | None:
     return _normalize_optional_token(raw_current)
 
 
-async def _persist_live_pointer_switch(webspace_id: str, scenario_id: str) -> None:
-    expected_scenario = _normalize_optional_token(scenario_id)
-    if not expected_scenario:
-        return
-    live_current = _try_read_live_current_scenario(webspace_id)
-    if live_current is not None and live_current != expected_scenario:
-        return
-    try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            ui_map = ydoc.get_map("ui")
-            with ydoc.begin_transaction() as txn:
-                _set_map_value_if_changed(ui_map, txn, "current_scenario", expected_scenario)
-    except Exception:
-        _log.debug(
-            "failed to persist live pointer switch webspace=%s scenario=%s",
-            webspace_id,
-            expected_scenario,
-            exc_info=True,
-        )
-
-
-def _schedule_live_pointer_switch_persist(webspace_id: str, scenario_id: str) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(_persist_live_pointer_switch(webspace_id, scenario_id))
-        return
-    loop.create_task(
-        _persist_live_pointer_switch(webspace_id, scenario_id),
-        name=f"webspace-pointer-persist-{webspace_id}",
-    )
-
-
 async def _sync_webspace_listing() -> None:
     listing = _webspace_listing()
     payload = {"items": listing}
@@ -3799,7 +3766,6 @@ async def switch_webspace_scenario(
             live_applied = mutate_live_room(webspace_id, _mutator)
             if live_applied:
                 _record_timing(timings_ms, "write_switch_pointer", stage_started)
-                _schedule_live_pointer_switch_persist(webspace_id, scenario_id)
             else:
                 stage_started = time.perf_counter()
                 async with async_get_ydoc(webspace_id) as ydoc:

@@ -1054,7 +1054,6 @@ def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) 
         is_dev=False,
     )
     scheduled: list[dict[str, object]] = []
-    persisted: list[tuple[str, str]] = []
     live_mutations: list[str] = []
     describe_calls = {"count": 0}
 
@@ -1088,11 +1087,6 @@ def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) 
     )
     monkeypatch.setattr(
         webspace_runtime_module,
-        "_schedule_live_pointer_switch_persist",
-        lambda webspace_id, scenario_id: persisted.append((webspace_id, scenario_id)),
-    )
-    monkeypatch.setattr(
-        webspace_runtime_module,
         "async_get_ydoc",
         lambda _webspace_id: (_ for _ in ()).throw(AssertionError("async_get_ydoc should not run on live-room pointer fast path")),
     )
@@ -1113,7 +1107,6 @@ def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) 
     assert result["background_rebuild"] is True
     assert result["scenario_switch_mode"] == "pointer_only"
     assert live_mutations == ["default"]
-    assert persisted == [("default", "infrascope")]
     assert len(scheduled) == 1
     assert scheduled[0]["scenario_id"] == "infrascope"
     assert scheduled[0]["scenario_resolution"] == "explicit"
