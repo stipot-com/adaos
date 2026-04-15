@@ -203,6 +203,61 @@ def _attach_runtime_and_rebuild(
     return result
 
 
+def _collect_materialization_missing_branches(
+    *,
+    has_ui_application: bool,
+    has_desktop_config: bool,
+    has_desktop_page_schema: bool,
+    has_apps_catalog_modal: bool,
+    has_widgets_catalog_modal: bool,
+    has_catalog_apps: bool,
+    has_catalog_widgets: bool,
+) -> list[str]:
+    missing: list[str] = []
+    if not has_ui_application:
+        missing.append("ui.application")
+    if not has_desktop_config:
+        missing.append("ui.application.desktop")
+    if not has_desktop_page_schema:
+        missing.append("ui.application.desktop.pageSchema")
+    if not has_apps_catalog_modal:
+        missing.append("ui.application.modals.apps_catalog")
+    if not has_widgets_catalog_modal:
+        missing.append("ui.application.modals.widgets_catalog")
+    if not has_catalog_apps:
+        missing.append("data.catalog.apps")
+    if not has_catalog_widgets:
+        missing.append("data.catalog.widgets")
+    return missing
+
+
+def _derive_materialization_readiness_state(
+    *,
+    ready: bool,
+    current_scenario: str | None,
+    has_ui_application: bool,
+    has_desktop_config: bool,
+    has_desktop_page_schema: bool,
+    has_apps_catalog_modal: bool,
+    has_widgets_catalog_modal: bool,
+    has_catalog_apps: bool,
+    has_catalog_widgets: bool,
+) -> str:
+    if ready:
+        return "ready"
+    if has_desktop_page_schema and has_catalog_apps and has_catalog_widgets:
+        return "interactive"
+    if has_desktop_page_schema and (
+        has_catalog_apps or has_catalog_widgets or has_apps_catalog_modal or has_widgets_catalog_modal
+    ):
+        return "hydrating"
+    if has_desktop_page_schema:
+        return "first_paint"
+    if current_scenario or has_ui_application or has_desktop_config:
+        return "pending_structure"
+    return "degraded"
+
+
 async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
     try:
@@ -227,18 +282,32 @@ async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
             has_widgets_catalog_modal = "widgets_catalog" in modals
             has_catalog_apps = isinstance(catalog.get("apps"), list)
             has_catalog_widgets = isinstance(catalog.get("widgets"), list)
-            ready = (
-                has_ui_application
-                and has_desktop_config
-                and has_desktop_page_schema
-                and has_apps_catalog_modal
-                and has_widgets_catalog_modal
-                and has_catalog_apps
-                and has_catalog_widgets
+            missing_branches = _collect_materialization_missing_branches(
+                has_ui_application=has_ui_application,
+                has_desktop_config=has_desktop_config,
+                has_desktop_page_schema=has_desktop_page_schema,
+                has_apps_catalog_modal=has_apps_catalog_modal,
+                has_widgets_catalog_modal=has_widgets_catalog_modal,
+                has_catalog_apps=has_catalog_apps,
+                has_catalog_widgets=has_catalog_widgets,
+            )
+            ready = not missing_branches
+            readiness_state = _derive_materialization_readiness_state(
+                ready=ready,
+                current_scenario=current_scenario,
+                has_ui_application=has_ui_application,
+                has_desktop_config=has_desktop_config,
+                has_desktop_page_schema=has_desktop_page_schema,
+                has_apps_catalog_modal=has_apps_catalog_modal,
+                has_widgets_catalog_modal=has_widgets_catalog_modal,
+                has_catalog_apps=has_catalog_apps,
+                has_catalog_widgets=has_catalog_widgets,
             )
 
             return {
                 "ready": ready,
+                "readiness_state": readiness_state,
+                "missing_branches": missing_branches,
                 "webspace_id": target_webspace_id,
                 "current_scenario": current_scenario,
                 "has_ui_application": has_ui_application,
@@ -256,8 +325,19 @@ async def _describe_yjs_materialization(webspace_id: str) -> dict[str, Any]:
                 "page_widget_count": len(page_widgets),
             }
     except Exception as exc:
+        missing_branches = _collect_materialization_missing_branches(
+            has_ui_application=False,
+            has_desktop_config=False,
+            has_desktop_page_schema=False,
+            has_apps_catalog_modal=False,
+            has_widgets_catalog_modal=False,
+            has_catalog_apps=False,
+            has_catalog_widgets=False,
+        )
         return {
             "ready": False,
+            "readiness_state": "degraded",
+            "missing_branches": missing_branches,
             "webspace_id": target_webspace_id,
             "current_scenario": None,
             "has_ui_application": False,

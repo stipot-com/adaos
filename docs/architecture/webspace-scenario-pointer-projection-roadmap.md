@@ -14,12 +14,13 @@ phase-aware materialization.
 
 ## Status
 
-- Current implementation: legacy `materialize-and-copy` compatibility caches
-  by default, with an opt-in feature-flagged `pointer-first` switch path
-  available for migration testing; effective runtime branches are now left to
-  semantic rebuild in both modes
+- Current implementation: `pointer_only` switch by default; semantic rebuild
+  owns effective runtime branches, while legacy compatibility cache writes
+  remain available only as rollback mode via
+  `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1`
 - Target implementation: `pointer + resolved projection`
-- Migration mode: phased, compatibility-first
+- Migration mode: phased, compatibility-first, with explicit readiness
+  diagnostics for partially hydrated UI
 
 ## Problem Statement
 
@@ -216,8 +217,10 @@ The preferred readiness ladder is:
 - `ready`
 - `degraded`
 
-This is intentionally a contract-level model first. The exact field names may
-evolve when the renderer and ABI are updated.
+Current control surfaces already expose this as `readiness_state`, together
+with `missing_branches`, in both hub-side Yjs diagnostics and the client-side
+materialization snapshot. Non-ready states before `degraded` are expected to
+mean "still hydrating" rather than "hard failure".
 
 ## Migration Strategy
 
@@ -329,6 +332,16 @@ Workflow synchronization is now also aligned with semantic rebuild for
 the workflow layer no longer lags behind the rebuilt active scenario after
 recovery operations.
 
+Frontend migration coverage is now also explicit in tests and diagnostics:
+
+- client readers prefer merged runtime branches such as
+  `ui.application.desktop.pageSchema` and `ui.application.modals.*`
+- migration-era fallback reads from `ui.scenarios/<current>` remain supported
+  for desktop schema and modal definitions while legacy caches still exist
+- `/api/node/yjs/webspaces/<id>` now reports `materialization.readiness_state`
+  and `materialization.missing_branches`, so the renderer can distinguish
+  deferred hydration from truly degraded materialization
+
 Reader/writer audit for migration planning:
 
 - reader of legacy materialized scenario branches:
@@ -397,10 +410,10 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Keep compatibility caches readable during migration.
 - [x] Add explicit debug signals when legacy fallback branches are used.
 - [ ] Define the removal criteria for legacy scenario materialization.
-- [ ] Confirm current frontend contracts still work with pointer-only switch.
+- [x] Confirm current frontend contracts still work with pointer-only switch.
 - [x] Document failure modes and rollback path if the new switch contract
   regresses runtime behavior.
-- [ ] Define a compatibility contract for partially ready UI so the renderer
+- [x] Define a compatibility contract for partially ready UI so the renderer
   can distinguish degraded state from intentional deferred hydration.
 
 ### 5. Performance Hardening

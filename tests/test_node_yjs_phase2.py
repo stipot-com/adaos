@@ -22,6 +22,29 @@ async def _awaitable(value):
     return value
 
 
+class _FakeMap(dict):
+    pass
+
+
+class _FakeDoc:
+    def __init__(self, state: dict[str, _FakeMap]) -> None:
+        self._state = state
+
+    def get_map(self, name: str) -> _FakeMap:
+        return self._state.setdefault(name, _FakeMap())
+
+
+class _FakeAsyncDoc:
+    def __init__(self, state: dict[str, _FakeMap]) -> None:
+        self._state = state
+
+    async def __aenter__(self) -> _FakeDoc:
+        return _FakeDoc(self._state)
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
 def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
     published: list[tuple[str, str, str | None, bool, str | None]] = []
@@ -685,6 +708,73 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["materialization"]["ready"] is True
     assert result["materialization"]["catalog_counts"]["apps"] == 3
     assert result["runtime"]["webspace_id"] == "dev_prompt"
+
+
+def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_branches(monkeypatch) -> None:
+    fake_state = {
+        "ui": _FakeMap(
+            {
+                "current_scenario": "prompt_engineer_scenario",
+                "application": {
+                    "desktop": {
+                        "pageSchema": {"id": "desktop", "widgets": [{"id": "main-widget"}]},
+                        "topbar": [{"id": "home"}],
+                    },
+                    "modals": {
+                        "apps_catalog": {"title": "Apps"},
+                        "widgets_catalog": {"title": "Widgets"},
+                    },
+                },
+            }
+        ),
+        "data": _FakeMap(
+            {
+                "catalog": {
+                    "apps": [{"id": "prompt_ide"}],
+                    "widgets": [{"id": "weather"}],
+                }
+            }
+        ),
+    }
+
+    monkeypatch.setattr(node_api_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    result = asyncio.run(node_api_module._describe_yjs_materialization("default"))
+
+    assert result["ready"] is True
+    assert result["readiness_state"] == "ready"
+    assert result["missing_branches"] == []
+
+
+def test_describe_yjs_materialization_reports_hydrating_readiness_and_missing_branches(monkeypatch) -> None:
+    fake_state = {
+        "ui": _FakeMap(
+            {
+                "current_scenario": "prompt_engineer_scenario",
+                "application": {
+                    "desktop": {
+                        "pageSchema": {"id": "desktop", "widgets": [{"id": "main-widget"}]},
+                    },
+                },
+            }
+        ),
+        "data": _FakeMap(
+            {
+                "catalog": {
+                    "widgets": [{"id": "weather"}],
+                }
+            }
+        ),
+    }
+
+    monkeypatch.setattr(node_api_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    result = asyncio.run(node_api_module._describe_yjs_materialization("default"))
+
+    assert result["ready"] is False
+    assert result["readiness_state"] == "hydrating"
+    assert "data.catalog.apps" in result["missing_branches"]
+    assert "ui.application.modals.apps_catalog" in result["missing_branches"]
 
 
 def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
