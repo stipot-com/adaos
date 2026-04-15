@@ -21,6 +21,26 @@ phase-aware materialization.
 - Migration mode: phased, compatibility-first, with explicit readiness
   diagnostics for partially hydrated UI
 
+## Implementation Anchors
+
+- Runtime resolver + semantic rebuild owner:
+  `src/adaos/services/scenario/webspace_runtime.py`
+- Scenario projection into compatibility caches:
+  `src/adaos/services/scenario/manager.py`
+- Bootstrap seed + rebuild nudge path:
+  `src/adaos/services/yjs/bootstrap.py`
+- Operator diagnostics + benchmark/reporting:
+  `src/adaos/apps/api/node_api.py`,
+  `src/adaos/apps/cli/commands/node.py`
+- Regression coverage:
+  `tests/test_webspace_phase2.py`,
+  `tests/test_node_yjs_phase2.py`,
+  `tests/test_push_registry_sync.py`,
+  `tests/test_yjs_bootstrap.py`
+
+Future PRs that move checklist items in sections 3, 5, or 6 should link back
+to this roadmap and mention the affected checklist bullets explicitly.
+
 ## Problem Statement
 
 The migration started from a `switch_webspace_scenario()` implementation that
@@ -349,6 +369,13 @@ The only switch-time state mutation is the scenario pointer plus minimal
 manifest/home bookkeeping; semantic rebuild remains the sole owner of
 effective runtime branches after reconcile.
 
+Bootstrap fallback now follows the same ownership model. When canonical
+scenario projection is unavailable during startup, bootstrap seeds only the
+legacy compatibility cache branches plus `ui.current_scenario` and nudges a
+normal semantic rebuild. Emergency startup no longer writes `ui.application`,
+`data.catalog`, `data.installed`, `data.desktop`, or `registry.merged`
+directly.
+
 When an active live room is already attached, pointer-only switch can now also
 update `ui.current_scenario` in-memory first and persist that pointer
 stale-safely in the background. This removes one avoidable store-backed YDoc
@@ -513,7 +540,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 ### 0. Architecture Baseline
 
 - [x] Fix the target architecture and migration rules in a dedicated document.
-- [ ] Link all relevant implementation notes and future PRs back to this
+- [x] Link all relevant implementation notes and future PRs back to this
   roadmap.
 
 ### 1. Resolver Decoupling
@@ -539,7 +566,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 3. Semantic Rebuild Ownership
 
-- [ ] Ensure semantic rebuild is the only owner of effective writes to
+- [x] Ensure semantic rebuild is the only owner of effective writes to
   `ui.application`, `data.catalog`, `data.installed`, `data.desktop`, and
   `registry.merged`.
 - [x] Remove duplicated writes between switch and rebuild paths.

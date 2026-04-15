@@ -20,6 +20,26 @@
 - Целевая реализация: `pointer + resolved projection`
 - Режим миграции: поэтапный, с совместимостью по умолчанию
 
+## Implementation Anchors
+
+- Runtime resolver + semantic rebuild owner:
+  `src/adaos/services/scenario/webspace_runtime.py`
+- Проекция сценария в compatibility cache:
+  `src/adaos/services/scenario/manager.py`
+- Bootstrap seed + rebuild nudge:
+  `src/adaos/services/yjs/bootstrap.py`
+- Диагностика и benchmark:
+  `src/adaos/apps/api/node_api.py`,
+  `src/adaos/apps/cli/commands/node.py`
+- Регрессионное покрытие:
+  `tests/test_webspace_phase2.py`,
+  `tests/test_node_yjs_phase2.py`,
+  `tests/test_push_registry_sync.py`,
+  `tests/test_yjs_bootstrap.py`
+
+Следующие PR по разделам 3, 5 и 6 должны ссылаться на эту roadmap и явно
+указывать, какие checklist-пункты они двигают.
+
 ## Формулировка проблемы
 
 Сейчас `switch_webspace_scenario()` совмещает две разные ответственности:
@@ -280,7 +300,7 @@ rebuild latency на реальных сценариях.
 
 - [x] Зафиксировать целевую архитектуру и правила миграции в отдельном
   документе.
-- [ ] Привязать все связанные implementation notes и будущие PR к этой
+- [x] Привязать все связанные implementation notes и будущие PR к этой
   дорожной карте.
 
 ### 1. Развязка resolver
@@ -307,7 +327,7 @@ rebuild latency на реальных сценариях.
 
 ### 3. Единый владелец semantic rebuild
 
-- [ ] Сделать semantic rebuild единственным владельцем effective writes в
+- [x] Сделать semantic rebuild единственным владельцем effective writes в
   `ui.application`, `data.catalog`, `data.installed`, `data.desktop`,
   `registry.merged`.
 - [ ] Убрать duplicated writes между switch и rebuild paths.
