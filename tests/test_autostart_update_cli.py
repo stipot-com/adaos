@@ -95,7 +95,6 @@ def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypat
     assert "active slot: B | 0.1.0 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
-
 def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr(

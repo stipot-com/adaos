@@ -25,6 +25,22 @@ adaos autostart disable
 `autostart inspect` помогает отладить ситуации, когда hub "жив", но UI таймаутится или одно ядро CPU забито:
 команда печатает bind автозапуска, активный PID, самые "горячие" дочерние процессы и запущенные service-skills.
 
+Если нужно временно переключить текущий shell на runtime активного core slot, не трогая корневой `.venv`, используйте source-able script из `tools/`:
+
+```bash
+source tools/slot-shell.sh
+source tools/slot-shell.sh --cd
+```
+
+Для PowerShell:
+
+```powershell
+. .\tools\slot-shell.ps1
+. .\tools\slot-shell.ps1 -Cd
+```
+
+Скрипты читают активный slot из `$ADAOS_BASE_DIR/state/core_slots`, подхватывают `manifest.json` активного слота и переводят текущий shell на соответствующее runtime-окружение.
+
 ## Управление обновлением ядра
 
 ```bash
