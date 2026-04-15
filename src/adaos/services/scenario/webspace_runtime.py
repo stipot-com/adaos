@@ -136,6 +136,7 @@ class WebspaceResolverInputs:
     scenario_registry: Dict[str, Any] = field(default_factory=dict)
     overlay_snapshot: Dict[str, Any] = field(default_factory=dict)
     live_state: Dict[str, Any] = field(default_factory=dict)
+    compatibility_cache_presence: Dict[str, bool] = field(default_factory=dict)
     skill_decls: List[Dict[str, Any]] = field(default_factory=list)
     desktop_scenarios: List[Tuple[str, str]] = field(default_factory=list)
     scenario_source: str = "legacy_yjs"
@@ -707,6 +708,243 @@ def _scenario_supports_catalog_controls(
     return False
 
 
+def _collect_materialization_missing_branches(
+    *,
+    has_ui_application: bool,
+    has_desktop_config: bool,
+    has_desktop_page_schema: bool,
+    has_apps_catalog_modal: bool,
+    has_widgets_catalog_modal: bool,
+    has_catalog_apps: bool,
+    has_catalog_widgets: bool,
+) -> list[str]:
+    missing: list[str] = []
+    if not has_ui_application:
+        missing.append("ui.application")
+    if not has_desktop_config:
+        missing.append("ui.application.desktop")
+    if not has_desktop_page_schema:
+        missing.append("ui.application.desktop.pageSchema")
+    if not has_apps_catalog_modal:
+        missing.append("ui.application.modals.apps_catalog")
+    if not has_widgets_catalog_modal:
+        missing.append("ui.application.modals.widgets_catalog")
+    if not has_catalog_apps:
+        missing.append("data.catalog.apps")
+    if not has_catalog_widgets:
+        missing.append("data.catalog.widgets")
+    return missing
+
+
+def _derive_materialization_readiness_state(
+    *,
+    ready: bool,
+    current_scenario: str | None,
+    has_ui_application: bool,
+    has_desktop_config: bool,
+    has_desktop_page_schema: bool,
+    has_apps_catalog_modal: bool,
+    has_widgets_catalog_modal: bool,
+    has_catalog_apps: bool,
+    has_catalog_widgets: bool,
+) -> str:
+    if ready:
+        return "ready"
+    if has_desktop_page_schema and has_catalog_apps and has_catalog_widgets:
+        return "interactive"
+    if has_desktop_page_schema and (
+        has_catalog_apps or has_catalog_widgets or has_apps_catalog_modal or has_widgets_catalog_modal
+    ):
+        return "hydrating"
+    if has_desktop_page_schema:
+        return "first_paint"
+    if current_scenario or has_ui_application or has_desktop_config:
+        return "pending_structure"
+    return "degraded"
+
+
+def _collect_compatibility_cache_required_branches(current_scenario: str | None) -> list[str]:
+    scenario_id = str(current_scenario or "").strip()
+    if not scenario_id:
+        return []
+    return [
+        f"ui.scenarios.{scenario_id}.application",
+        f"registry.scenarios.{scenario_id}",
+        f"data.scenarios.{scenario_id}.catalog",
+    ]
+
+
+def _describe_compatibility_caches(
+    *,
+    current_scenario: str | None,
+    has_scenario_ui_application: bool,
+    has_scenario_registry_entry: bool,
+    has_scenario_catalog: bool,
+    effective_ready: bool,
+    rebuild_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    required_branches = _collect_compatibility_cache_required_branches(current_scenario)
+    present_flags = (
+        has_scenario_ui_application,
+        has_scenario_registry_entry,
+        has_scenario_catalog,
+    )
+    present_branches = [path for path, present in zip(required_branches, present_flags) if present]
+    missing_branches = [path for path, present in zip(required_branches, present_flags) if not present]
+    resolver = (
+        rebuild_state.get("resolver")
+        if isinstance(rebuild_state, Mapping) and isinstance(rebuild_state.get("resolver"), Mapping)
+        else {}
+    )
+    legacy_fallback_active = bool(resolver.get("legacy_fallback"))
+    switch_writes_enabled = _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
+    runtime_removal_blockers: list[str] = []
+    if not str(current_scenario or "").strip():
+        runtime_removal_blockers.append("current_scenario_missing")
+    if not effective_ready:
+        runtime_removal_blockers.append("effective_materialization_not_ready")
+    if switch_writes_enabled:
+        runtime_removal_blockers.append("switch_compat_cache_writes_enabled")
+    if legacy_fallback_active:
+        runtime_removal_blockers.append("resolver_legacy_fallback_active")
+    return {
+        "current_scenario": str(current_scenario or "").strip() or None,
+        "required_branches": required_branches,
+        "present_branches": present_branches,
+        "missing_branches": missing_branches,
+        "present_count": len(present_branches),
+        "required_count": len(required_branches),
+        "present": bool(present_branches),
+        "complete": bool(required_branches) and not missing_branches,
+        "client_fallback_readable": bool(str(current_scenario or "").strip() and has_scenario_ui_application),
+        "switch_writes_enabled": switch_writes_enabled,
+        "legacy_fallback_active": legacy_fallback_active,
+        "runtime_removal_ready": not runtime_removal_blockers,
+        "runtime_removal_blockers": runtime_removal_blockers,
+    }
+
+
+def _copy_materialization_snapshot(value: Any) -> Dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return json.loads(json.dumps(dict(value)))
+    except Exception:
+        return dict(value)
+
+
+def _build_materialization_snapshot(
+    *,
+    webspace_id: str,
+    current_scenario: str | None,
+    has_ui_application: bool,
+    has_desktop_config: bool,
+    has_desktop_page_schema: bool,
+    has_apps_catalog_modal: bool,
+    has_widgets_catalog_modal: bool,
+    has_catalog_apps: bool,
+    has_catalog_widgets: bool,
+    has_scenario_ui_application: bool,
+    has_scenario_registry_entry: bool,
+    has_scenario_catalog: bool,
+    catalog_apps_count: int,
+    catalog_widgets_count: int,
+    topbar_count: int,
+    page_widget_count: int,
+    rebuild_state: Mapping[str, Any] | None = None,
+    snapshot_source: str,
+    stale: bool = False,
+    error: str | None = None,
+) -> dict[str, Any]:
+    missing_branches = _collect_materialization_missing_branches(
+        has_ui_application=has_ui_application,
+        has_desktop_config=has_desktop_config,
+        has_desktop_page_schema=has_desktop_page_schema,
+        has_apps_catalog_modal=has_apps_catalog_modal,
+        has_widgets_catalog_modal=has_widgets_catalog_modal,
+        has_catalog_apps=has_catalog_apps,
+        has_catalog_widgets=has_catalog_widgets,
+    )
+    ready = not missing_branches
+    readiness_state = _derive_materialization_readiness_state(
+        ready=ready,
+        current_scenario=current_scenario,
+        has_ui_application=has_ui_application,
+        has_desktop_config=has_desktop_config,
+        has_desktop_page_schema=has_desktop_page_schema,
+        has_apps_catalog_modal=has_apps_catalog_modal,
+        has_widgets_catalog_modal=has_widgets_catalog_modal,
+        has_catalog_apps=has_catalog_apps,
+        has_catalog_widgets=has_catalog_widgets,
+    )
+    compatibility_caches = _describe_compatibility_caches(
+        current_scenario=current_scenario,
+        has_scenario_ui_application=has_scenario_ui_application,
+        has_scenario_registry_entry=has_scenario_registry_entry,
+        has_scenario_catalog=has_scenario_catalog,
+        effective_ready=ready,
+        rebuild_state=rebuild_state,
+    )
+    snapshot = {
+        "ready": ready,
+        "readiness_state": readiness_state,
+        "missing_branches": missing_branches,
+        "compatibility_caches": compatibility_caches,
+        "webspace_id": str(webspace_id or "").strip() or "default",
+        "current_scenario": str(current_scenario or "").strip() or None,
+        "has_ui_application": bool(has_ui_application),
+        "has_desktop_config": bool(has_desktop_config),
+        "has_desktop_page_schema": bool(has_desktop_page_schema),
+        "has_apps_catalog_modal": bool(has_apps_catalog_modal),
+        "has_widgets_catalog_modal": bool(has_widgets_catalog_modal),
+        "has_catalog_apps": bool(has_catalog_apps),
+        "has_catalog_widgets": bool(has_catalog_widgets),
+        "catalog_counts": {
+            "apps": int(catalog_apps_count or 0),
+            "widgets": int(catalog_widgets_count or 0),
+        },
+        "topbar_count": int(topbar_count or 0),
+        "page_widget_count": int(page_widget_count or 0),
+        "snapshot_source": str(snapshot_source or "").strip() or "unknown",
+        "observed_at": time.time(),
+        "stale": bool(stale),
+    }
+    error_text = str(error or "").strip()
+    if error_text:
+        snapshot["error"] = error_text
+    return snapshot
+
+
+def _pending_materialization_snapshot(
+    webspace_id: str,
+    *,
+    scenario_id: str | None,
+    snapshot_source: str,
+    rebuild_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _build_materialization_snapshot(
+        webspace_id=webspace_id,
+        current_scenario=scenario_id,
+        has_ui_application=False,
+        has_desktop_config=False,
+        has_desktop_page_schema=False,
+        has_apps_catalog_modal=False,
+        has_widgets_catalog_modal=False,
+        has_catalog_apps=False,
+        has_catalog_widgets=False,
+        has_scenario_ui_application=False,
+        has_scenario_registry_entry=False,
+        has_scenario_catalog=False,
+        catalog_apps_count=0,
+        catalog_widgets_count=0,
+        topbar_count=0,
+        page_widget_count=0,
+        rebuild_state=rebuild_state,
+        snapshot_source=snapshot_source,
+        stale=True,
+    )
+
+
 def _set_webspace_rebuild_status(webspace_id: str, **fields: Any) -> dict[str, Any]:
     target = str(webspace_id or "").strip()
     current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
@@ -910,6 +1148,7 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "switch_timings_ms": _copy_timing_map(current.get("switch_timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
         "phase_timings_ms": _copy_timing_map(current.get("phase_timings_ms")),
+        "materialization": _copy_materialization_snapshot(current.get("materialization")),
         "error": str(current.get("error") or "") or None,
     }
 
@@ -1143,8 +1382,17 @@ class WebspaceScenarioRuntime:
     def _collect_resolver_inputs_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverInputs:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
+        registry_map = ydoc.get_map("registry")
 
         scenario_id = str(ui_map.get("current_scenario") or "web_desktop").strip() or "web_desktop"
+        scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
+        scenario_ui_entry = _coerce_dict(scenarios_ui.get(scenario_id) or {})
+        scenario_ui_application = _coerce_dict(scenario_ui_entry.get("application") or {})
+        scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
+        scenario_registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
+        scenario_data_map = _coerce_dict(data_map.get("scenarios") or {})
+        scenario_data_entry = _coerce_dict(scenario_data_map.get(scenario_id) or {})
+        scenario_catalog = _coerce_dict(scenario_data_entry.get("catalog") or {})
 
         mode = "mixed"
         metadata: Dict[str, Any] = {}
@@ -1197,6 +1445,11 @@ class WebspaceScenarioRuntime:
             live_state={
                 "desktop": _coerce_dict(data_map.get("desktop") or {}),
                 "routing": _coerce_dict(data_map.get("routing") or {}),
+            },
+            compatibility_cache_presence={
+                "scenario_ui_application": bool(scenario_ui_application),
+                "scenario_registry_entry": bool(scenario_registry_entry),
+                "scenario_catalog": bool(scenario_catalog),
             },
             skill_decls=self._collect_skill_decls(mode=mode),
             desktop_scenarios=self._list_desktop_scenarios(space=mode),
@@ -1460,7 +1713,14 @@ class WebspaceScenarioRuntime:
         self._last_resolver_debug = resolver_debug
         return resolved
 
-    def _apply_resolved_state_in_doc(self, ydoc: Y.YDoc, webspace_id: str, resolved: WebspaceResolverOutputs) -> None:
+    def _apply_resolved_state_in_doc(
+        self,
+        ydoc: Y.YDoc,
+        webspace_id: str,
+        resolved: WebspaceResolverOutputs,
+        *,
+        inputs: WebspaceResolverInputs,
+    ) -> None:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
         registry_map = ydoc.get_map("registry")
@@ -1477,6 +1737,43 @@ class WebspaceScenarioRuntime:
         defaults_failed = False
         phase_summaries: Dict[str, Dict[str, Any]] = {}
         phase_timings_ms: Dict[str, float] = {}
+        compatibility_presence = dict(inputs.compatibility_cache_presence or {})
+
+        def _update_materialization_snapshot(phase_name: str) -> None:
+            application = _coerce_dict(resolved.application or {})
+            desktop = _coerce_dict(application.get("desktop") or {})
+            modals = _coerce_dict(application.get("modals") or {})
+            page_schema = _coerce_dict(desktop.get("pageSchema") or {})
+            topbar = desktop.get("topbar") if isinstance(desktop.get("topbar"), list) else []
+            page_widgets = page_schema.get("widgets") if isinstance(page_schema.get("widgets"), list) else []
+            include_catalog = phase_name != "structure"
+            snapshot = _build_materialization_snapshot(
+                webspace_id=webspace_id,
+                current_scenario=resolved.scenario_id,
+                has_ui_application=bool(application),
+                has_desktop_config=bool(desktop),
+                has_desktop_page_schema=bool(page_schema),
+                has_apps_catalog_modal="apps_catalog" in modals,
+                has_widgets_catalog_modal="widgets_catalog" in modals,
+                has_catalog_apps=include_catalog and isinstance(resolved.catalog.get("apps"), list),
+                has_catalog_widgets=include_catalog and isinstance(resolved.catalog.get("widgets"), list),
+                has_scenario_ui_application=bool(compatibility_presence.get("scenario_ui_application")),
+                has_scenario_registry_entry=bool(compatibility_presence.get("scenario_registry_entry")),
+                has_scenario_catalog=bool(compatibility_presence.get("scenario_catalog")),
+                catalog_apps_count=len(resolved.catalog.get("apps") or []) if include_catalog else 0,
+                catalog_widgets_count=len(resolved.catalog.get("widgets") or []) if include_catalog else 0,
+                topbar_count=len(topbar),
+                page_widget_count=len(page_widgets),
+                rebuild_state=describe_webspace_rebuild_state(webspace_id),
+                snapshot_source=f"semantic_rebuild:{phase_name}",
+                stale=False,
+            )
+            current_request_id = str(describe_webspace_rebuild_state(webspace_id).get("request_id") or "").strip() or None
+            _set_webspace_rebuild_status_if_current(
+                webspace_id,
+                current_request_id,
+                materialization=snapshot,
+            )
 
         def _apply_branch(txn: Any, path: str, y_map: Any, key: str, value: Any, *, ignore_errors: bool = False) -> None:
             try:
@@ -1529,6 +1826,7 @@ class WebspaceScenarioRuntime:
                 phase_summary["defaults_failed"] = True
             phase_summaries[name] = phase_summary
             phase_timings_ms[f"apply_{name}"] = _elapsed_ms(phase_started)
+            _update_materialization_snapshot(name)
 
         _apply_phase(
             "structure",
@@ -1580,7 +1878,7 @@ class WebspaceScenarioRuntime:
         _record_timing(timings, "resolve", stage_started)
 
         stage_started = time.perf_counter()
-        self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved)
+        self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved, inputs=inputs)
         _record_timing(timings, "apply", stage_started)
         apply_phase_timings = _copy_timing_map(self._last_apply_phase_timings_ms) or {}
         timings.update(apply_phase_timings)
@@ -2352,6 +2650,12 @@ async def rebuild_webspace_from_sources(
     previous_status = describe_webspace_rebuild_state(webspace_id)
     effective_switch_timings = _copy_timing_map(switch_timings_ms) or _copy_timing_map(previous_status.get("switch_timings_ms"))
     effective_switch_mode = str(switch_mode or previous_status.get("switch_mode") or "").strip() or None
+    running_materialization = _pending_materialization_snapshot(
+        webspace_id,
+        scenario_id=target_scenario,
+        snapshot_source="rebuild:running",
+        rebuild_state=previous_status,
+    )
     _set_webspace_rebuild_status(
         webspace_id,
         status="running",
@@ -2375,6 +2679,7 @@ async def rebuild_webspace_from_sources(
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=None,
         phase_timings_ms=None,
+        materialization=running_materialization,
     )
 
     if reseed_from_scenario:
@@ -2651,6 +2956,11 @@ def _schedule_scenario_switch_rebuild(
         rebuild_timings_ms=None,
         switch_mode=switch_mode,
     )
+    initial_materialization = _pending_materialization_snapshot(
+        webspace_id,
+        scenario_id=scenario_id,
+        snapshot_source="rebuild:scheduled",
+    )
     _set_webspace_rebuild_status(
         webspace_id,
         status="scheduled",
@@ -2674,6 +2984,7 @@ def _schedule_scenario_switch_rebuild(
         switch_timings_ms=_copy_timing_map(switch_timings_ms),
         semantic_rebuild_timings_ms=None,
         phase_timings_ms=initial_phase_timings,
+        materialization=initial_materialization,
     )
     existing = _SCENARIO_SWITCH_REBUILD_TASKS.get(webspace_id)
     if existing and not existing.done():
@@ -2697,6 +3008,11 @@ def _schedule_scenario_switch_rebuild(
                 apply_summary=None,
                 timings_ms=None,
                 semantic_rebuild_timings_ms=None,
+                materialization=_pending_materialization_snapshot(
+                    webspace_id,
+                    scenario_id=scenario_id,
+                    snapshot_source="rebuild:running",
+                ),
             )
             result = await _complete_scenario_switch_rebuild(
                 webspace_id,

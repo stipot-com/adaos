@@ -326,12 +326,37 @@ def _describe_compatibility_caches(
     }
 
 
+def _cached_materialization_from_rebuild(
+    rebuild_state: Mapping[str, Any] | None,
+    *,
+    max_age_sec: float = 1.0,
+) -> dict[str, Any] | None:
+    state = rebuild_state if isinstance(rebuild_state, Mapping) else {}
+    cached = state.get("materialization") if isinstance(state.get("materialization"), Mapping) else {}
+    if not cached:
+        return None
+    pending = bool(state.get("pending"))
+    observed_at = cached.get("observed_at")
+    try:
+        age_sec = max(0.0, time.time() - float(observed_at)) if observed_at is not None else None
+    except Exception:
+        age_sec = None
+    if pending:
+        return dict(cached)
+    if age_sec is not None and age_sec <= max(float(max_age_sec or 0.0), 0.0):
+        return dict(cached)
+    return None
+
+
 async def _describe_yjs_materialization(
     webspace_id: str,
     *,
     rebuild_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
+    cached = _cached_materialization_from_rebuild(rebuild_state)
+    if cached:
+        return cached
     try:
         async with async_get_ydoc(target_webspace_id) as ydoc:
             ui_map = ydoc.get_map("ui")
@@ -413,6 +438,9 @@ async def _describe_yjs_materialization(
                 },
                 "topbar_count": len(topbar),
                 "page_widget_count": len(page_widgets),
+                "snapshot_source": "live_ydoc",
+                "observed_at": time.time(),
+                "stale": False,
             }
     except Exception as exc:
         missing_branches = _collect_materialization_missing_branches(
@@ -449,6 +477,9 @@ async def _describe_yjs_materialization(
             "catalog_counts": {"apps": 0, "widgets": 0},
             "topbar_count": 0,
             "page_widget_count": 0,
+            "snapshot_source": "live_ydoc_error",
+            "observed_at": time.time(),
+            "stale": True,
             "error": f"{exc.__class__.__name__}: {exc}",
         }
 

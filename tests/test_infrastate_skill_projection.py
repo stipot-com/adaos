@@ -273,9 +273,9 @@ def test_infrastate_highlight_changed_summary_text_marks_only_changed_segments()
     )
 
     assert "countdown completed" in rendered
-    assert "**pending_acks=2**" in rendered
+    assert "𝐩𝐞𝐧𝐝𝐢𝐧𝐠_𝐚𝐜𝐤𝐬=𝟐" in rendered
     assert "protocol=degraded" in rendered
-    assert "**action: cancel_update**" in rendered
+    assert "𝐚𝐜𝐭𝐢𝐨𝐧: 𝐜𝐚𝐧𝐜𝐞𝐥_𝐮𝐩𝐝𝐚𝐭𝐞" in rendered
 
 
 def test_infrastate_summary_highlights_against_previous_render(monkeypatch):
@@ -318,10 +318,10 @@ def test_infrastate_summary_highlights_against_previous_render(monkeypatch):
         **common_kwargs,
     )
 
-    assert "**" not in first["value"]
-    assert second["value"] == "**restarting**"
+    assert first["value"] == "countdown"
+    assert second["value"] == "𝐫𝐞𝐬𝐭𝐚𝐫𝐭𝐢𝐧𝐠"
     assert "countdown completed" in second["description"]
-    assert "**pending_acks=2**" in second["description"]
+    assert "𝐩𝐞𝐧𝐝𝐢𝐧𝐠_𝐚𝐜𝐤𝐬=𝟐" in second["description"]
 
 
 def test_infrastate_summary_buttons_offer_defer_during_countdown():

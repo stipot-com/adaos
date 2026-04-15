@@ -272,6 +272,14 @@ The benchmark now also reports rebuild/materialization poll counts per run and
 stops materialization polling once `ready` has been observed, so the
 measurement tool itself adds less load during repeated switch loops.
 
+Rebuild status now also carries a cached `materialization` snapshot that is
+updated from semantic rebuild phases (`structure`, then `interactive/ready`).
+That lets hot-path operator polling reuse last-known readiness metadata without
+reopening the YDoc on every request while a switch rebuild is in flight.
+During pending rebuilds, the lightweight materialization endpoint may now serve
+that cached snapshot directly; recent ready snapshots are also reused briefly
+so benchmark loops can read the final readiness state from the same fast path.
+
 Browser fallback diagnostics now also prefer those lightweight materialization
 surfaces for reload/catalog recovery paths instead of fetching the full
 `/api/node/yjs/webspaces/<id>` snapshot when only readiness metadata is needed.

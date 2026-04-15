@@ -690,7 +690,9 @@ def _print_materialization_summary(payload: dict[str, Any], *, key: str = "mater
         f"widgets={int(catalog_counts.get('widgets') or 0)} "
         f"topbar={int(materialization.get('topbar_count') or 0)} "
         f"page_widgets={int(materialization.get('page_widget_count') or 0)} "
-        f"missing={len(missing_branches)}"
+        f"missing={len(missing_branches)} "
+        f"source={materialization.get('snapshot_source') or '-'} "
+        f"stale={'yes' if materialization.get('stale') else 'no'}"
     )
     if missing_branches:
         typer.echo(f"  missing: {','.join(missing_branches)}")
@@ -1045,10 +1047,14 @@ def _wait_for_benchmark_rebuild(
     rebuild_state = dict(initial_rebuild or {})
     request_id = str(rebuild_state.get("request_id") or "").strip() or None
     observed_timings: dict[str, float] = {}
-    materialization_state: dict[str, Any] | None = None
+    materialization_state = (
+        dict(rebuild_state.get("materialization") or {})
+        if isinstance(rebuild_state.get("materialization"), dict)
+        else None
+    )
     materialization_supported = True
     poll_counts = _benchmark_poll_counts()
-    materialization_complete = False
+    materialization_complete = bool(materialization_state and materialization_state.get("ready"))
     if _benchmark_rebuild_is_terminal(rebuild_state, request_id=request_id, scenario_id=scenario_id):
         if materialization_supported and not materialization_complete:
             current_materialization, materialization_supported = _best_effort_benchmark_materialization_poll(
@@ -1112,6 +1118,14 @@ def _wait_for_benchmark_rebuild(
             current_request_id = str(rebuild_state.get("request_id") or "").strip() or None
             if current_request_id:
                 request_id = current_request_id
+            embedded_materialization = (
+                dict(rebuild_state.get("materialization") or {})
+                if isinstance(rebuild_state.get("materialization"), dict)
+                else None
+            )
+            if embedded_materialization:
+                materialization_state = embedded_materialization
+                materialization_complete = bool(materialization_state.get("ready"))
         if materialization_supported and not materialization_complete:
             current_materialization, materialization_supported = _best_effort_benchmark_materialization_poll(
                 control=control,

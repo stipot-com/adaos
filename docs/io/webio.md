@@ -178,6 +178,14 @@ Both lightweight endpoints keep the expensive `runtime` snapshot optional via
 `?include_runtime=1`. Normal benchmark polling should stay on the default
 lightweight shape without `runtime`.
 
+`rebuild` now also carries the last-known `materialization` snapshot when one
+is available. Semantic rebuild refreshes that snapshot across its
+`structure`/`interactive` phases, so hot switch loops can often observe
+readiness progression from the rebuild surface alone. The dedicated
+`materialization` endpoint may also return that cached snapshot while a rebuild
+is still pending, or briefly after a fresh ready transition, instead of
+reopening the YDoc immediately.
+
 Rebuild/control surfaces also expose phase-oriented timing and apply detail so
 pointer-only scenario switch can be evaluated against real runtime slices:
 
@@ -203,6 +211,11 @@ operator measurements usable even when the runtime is under pressure. `--detail`
 additionally prints switch/rebuild/semantic timing breakdowns plus observed
 materialization milestones (`time_to_first_paint`, `time_to_interactive`,
 `time_to_ready`) for each run and in the aggregate.
+
+When `rebuild.materialization` is present, benchmark polling now reuses that
+embedded snapshot before falling back to the separate `materialization`
+endpoint, which further reduces polling pressure on the hub during repeated
+scenario switch measurements.
 
 `readiness_state` follows a coarse ladder:
 
