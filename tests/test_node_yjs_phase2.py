@@ -1916,12 +1916,12 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     ]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 lag=0.000 first=30.000 interactive=40.000 full=60.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
     assert any(
-        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 fp_skip=0 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 fp_skip=0 accept=12.000 ready=66.000 lag=12.000 first=24.000 interactive=36.000 full=54.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -1932,6 +1932,8 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.observed.time_to_first_paint: avg=52.000 min=50.000 max=54.000" in line for line in echoed)
     assert any("summary.observed.time_to_interactive: avg=52.000 min=50.000 max=54.000" in line for line in echoed)
     assert any("summary.observed.time_to_ready: avg=63.000 min=60.000 max=66.000" in line for line in echoed)
+    assert any("summary.ready_server: avg=57.000 min=54.000 max=60.000" in line for line in echoed)
+    assert any("summary.ready_observation_lag: avg=6.000 min=0.000 max=12.000" in line for line in echoed)
     assert any("summary.rebuild_status: ready=2" in line for line in echoed)
     assert any("summary.polls.rebuild: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
     assert any("summary.polls.materialization: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
@@ -1940,6 +1942,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.rebuild_timings_ms:" in line for line in echoed)
     assert any("summary.semantic_rebuild_timings_ms:" in line for line in echoed)
     assert any("summary.ydoc_timings_ms:" in line for line in echoed)
+    assert any("summary.ready_alignment_ms:" in line for line in echoed)
     assert any("  ydoc_timings_ms:" in line for line in echoed)
 
 
@@ -2088,7 +2091,7 @@ def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(mo
         "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 first=33.000 interactive=45.000 full=70.000 polls=rebuild:2/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 lag=0.000 first=33.000 interactive=45.000 full=70.000 polls=rebuild:2/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -2240,7 +2243,7 @@ def test_node_cli_benchmark_scenario_falls_back_from_lightweight_poll_endpoints(
         "/api/node/yjs/webspaces/default",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=8.000 ready=32.000 first=26.000 interactive=36.000 full=55.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=8.000 ready=32.000 lag=0.000 first=26.000 interactive=36.000 full=55.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -2380,10 +2383,35 @@ def test_node_cli_benchmark_scenario_uses_embedded_rebuild_materialization(monke
         "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=6.000 ready=20.000 first=11.000 interactive=16.000 full=26.000 polls=rebuild:1/materialization:0 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=6.000 ready=20.000 lag=0.000 first=11.000 interactive=16.000 full=26.000 polls=rebuild:1/materialization:0 status=ready"
         in line
         for line in echoed
     )
+
+
+def test_benchmark_ready_alignment_falls_back_to_server_timestamps() -> None:
+    metrics, source = node_cli_module._benchmark_ready_alignment(
+        {
+            "rebuild": {
+                "status": "ready",
+                "finished_at": 100.025,
+            },
+            "materialization": {
+                "ready": True,
+                "observed_at": 100.030,
+            },
+            "observed_timings_ms": {
+                "time_to_ready": 40.0,
+            },
+        },
+        request_started_at=100.0,
+    )
+
+    assert metrics == {
+        "server_ready": 25.0,
+        "observation_lag": 15.0,
+    }
+    assert source == "rebuild_finished_at"
 
 
 def test_node_cli_benchmark_scenario_falls_back_to_active_runtime_from_supervisor(monkeypatch) -> None:
@@ -2538,7 +2566,7 @@ def test_node_cli_benchmark_scenario_falls_back_to_active_runtime_from_superviso
         for line in echoed
     )
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=2 accept=6.000 ready=24.000 first=10.000 interactive=14.000 full=24.000 polls=rebuild:1/materialization:0 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=2 accept=6.000 ready=24.000 lag=0.000 first=10.000 interactive=14.000 full=24.000 polls=rebuild:1/materialization:0 status=ready"
         in line
         for line in echoed
     )

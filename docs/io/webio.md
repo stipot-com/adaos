@@ -215,9 +215,13 @@ re-fetching the full webspace snapshot on every readiness loop, which keeps
 operator measurements usable even when the runtime is under pressure. `--detail`
 additionally prints switch/rebuild/semantic timing breakdowns plus observed
 materialization milestones (`time_to_first_paint`, `time_to_interactive`,
-`time_to_ready`) for each run and in the aggregate. It now also prints
-`ydoc_timings_ms`, which separates YDoc/YStore session overhead from the
-inner semantic rebuild timings.
+`time_to_ready`) for each run and in the aggregate. It now also derives a
+server-side ready estimate from `phase_timings_ms.time_to_full_hydration`
+(falling back to rebuild/materialization timestamps when that phase timing is
+missing) and reports the remaining observation gap as
+`summary.ready_observation_lag`. It now also prints `ydoc_timings_ms`, which
+separates YDoc/YStore session overhead from the inner semantic rebuild
+timings.
 
 Normal read-write YDoc sessions now persist the incremental diff they just
 produced and reuse that same diff for room rebroadcast, instead of re-encoding
@@ -232,7 +236,9 @@ prefer the already-attached `room.ydoc` when they are running on the room
 owner loop. In benchmark output this should collapse
 `ydoc_timings_ms.ystore_apply_updates` toward zero for hot attached runs, so
 the remaining YStore work becomes easier to isolate as a cold-room
-reconnect/reload problem rather than a steady-state switch problem.
+reconnect/reload problem rather than a steady-state switch problem. When that
+happens, a large `ready` value in benchmark output is now more likely to be a
+control-path observation lag than a true semantic rebuild cost.
 
 YStore runtime diagnostics now also expose extra pressure indicators such as:
 

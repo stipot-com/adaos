@@ -261,7 +261,10 @@ background rebuild state by default, and aggregates `time_to_accept`,
 `time_to_full_hydration` across multiple runs. `--detail` additionally exposes
 aggregated switch/rebuild/semantic timing breakdowns and observed end-to-end
 materialization milestones (`time_to_first_paint`, `time_to_interactive`,
-`time_to_ready`).
+`time_to_ready`). The benchmark now also derives a server-side ready estimate
+from `phase_timings_ms.time_to_full_hydration` (falling back to rebuild /
+materialization timestamps when needed) and reports the remaining control-path
+observation lag as `summary.ready_observation_lag`.
 
 To keep those measurements cheap under pressure, operator polling now also has
 lightweight `/api/node/yjs/webspaces/<id>/rebuild` and
@@ -412,63 +415,41 @@ This does not yet defer off-focus payload to a separate background slice, but
 it does remove the earlier "all ready at once" assumption from runtime timing
 and apply summaries.
 
-Recent `benchmark-scenario --detail` runs also changed the immediate
-optimization priority. Current heavy-scenario measurements show that inner
-`semantic_rebuild_timings_ms.total` is already low compared with:
+Recent `benchmark-scenario --detail` runs have now moved the immediate
+optimization priority again. On the attached live-room path, current heavy
+scenario measurements show:
 
-- `describe_state_before`
-- `open_doc`
-- the wider YDoc/YStore session envelope now surfaced as `ydoc_timings_ms`
+- `time_to_accept` is already around `2 ms`
+- `time_to_first_structure` is already around `25-35 ms`
+- `semantic_rebuild_timings_ms.total` is already around `25-35 ms`
+- `ydoc_timings_ms.ystore_apply_updates` has collapsed to `0` on the steady
+  hot path, so `ydoc_timings_ms.total` is now close to the in-doc rebuild cost
+- compatibility fallback is no longer required in the measured pointer-first
+  path (`client_fallback=no`, `runtime_removal_ready=yes`)
 
-That means the next short-term performance slices should focus on:
+That means the remaining long tail seen in some operator runs is no longer the
+steady-state semantic rebuild itself. It is now more often one of:
 
-- live-room fast paths for current-scenario reads and pointer writes
-- reducing YStore open/load/flush cost
-- only then pushing deeper fragmented apply/diff work
+- control-path observation lag between server-ready and the next successful
+  readiness poll
+- cold-room / reload / reconnect paths that still reopen or rebuild whole-room
+  state under pressure
+- memory churn during repeated room reloads or scenario oscillation
 
-Current benchmark evidence is now explicit enough to treat YStore as the next
-critical-path target:
+The next short-term performance slices should therefore focus on:
 
-- `switch_timings_ms.total` is already in the low single-digit millisecond
-  range for pointer-first switch
-- `time_to_first_structure` is already in the tens-of-milliseconds range
-- the dominant cost now sits in the YDoc envelope:
-  `ydoc_timings_ms.ystore_apply_updates` and
-  `ydoc_timings_ms.ystore_encode_state_as_update`
+- separating server-ready from observation lag in operator tooling so
+  regressions are attributable
+- reducing whole-room reload/reconnect churn and memory spikes
+- continuing YStore replay/open work for detached recovery paths rather than
+  for the already-hot attached switch loop
 
-Recent `benchmark-scenario --detail` runs on the current pointer-first path
-make that split even clearer:
-
-- `time_to_accept` is already around `2-3 ms`
-- `time_to_first_structure` is already around `20-90 ms`
-- observed `time_to_ready` is still dominated by cold-room YDoc reopen cost
-- the heaviest envelope term is now typically `ydoc_timings_ms.ystore_apply_updates`,
-  while writeback has moved down toward `ydoc_timings_ms.ystore_write_update`
-  after diff-based flush landed
-
-That means the next optimization slice should prioritize:
-
-- reducing full replay cost on YDoc open
-- reducing full snapshot re-encode cost on YDoc flush
-- introducing a cheaper persistence/writeback strategy before attempting
-  deeper resolver/apply micro-optimizations
-
-That cheaper writeback path has now started landing: normal YDoc session flush
-persists the incremental diff update and reuses that same diff for live-room
-rebroadcast, instead of appending a fresh full
-`Y.encode_state_as_update(ydoc)` snapshot on every mutation. Remaining store
-work is therefore expected to shift even more clearly toward replay/open cost
-(`apply_updates`) and toward whole-room reopen/reload behavior under pressure.
-
-The next hot-path reduction has also started landing: when a webspace already
-has an attached live room, read-only control/status reads and semantic rebuild
-now prefer that in-memory `room.ydoc` instead of reopening a temporary YDoc and
-replaying the full store snapshot again. This means:
-
-- attached pointer-first switch + rebuild should no longer pay the previous
-  `ydoc_timings_ms.ystore_apply_updates` tax on every run
-- materialization/control reads can observe the live room directly instead of
-  forcing another store replay
+The cheaper writeback path and live-room reuse are still important because they
+made this shift visible: normal YDoc session flush now persists the incremental
+diff it just produced, and attached read/control/rebuild flows can reuse the
+in-memory live room instead of replaying the store again. The remaining store
+work is therefore increasingly concentrated in cold reopen and recovery cases,
+not in the main pointer-first switch benchmark.
 - the remaining replay bottleneck becomes more clearly a cold-room /
   reconnect / reload path problem
 

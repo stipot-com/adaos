@@ -1048,6 +1048,59 @@ def _benchmark_materialization_milestones(materialization: dict[str, Any] | None
     return milestones
 
 
+def _benchmark_ready_alignment(
+    payload: dict[str, Any],
+    *,
+    request_started_at: float | None = None,
+) -> tuple[dict[str, float] | None, str | None]:
+    rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+    materialization = payload.get("materialization") if isinstance(payload.get("materialization"), dict) else {}
+    phase_timings = payload.get("phase_timings_ms") if isinstance(payload.get("phase_timings_ms"), dict) else {}
+    observed_timings = payload.get("observed_timings_ms") if isinstance(payload.get("observed_timings_ms"), dict) else {}
+
+    server_ready_ms: float | None = None
+    source: str | None = None
+
+    raw_phase_ready = phase_timings.get("time_to_full_hydration")
+    if raw_phase_ready is not None:
+        try:
+            server_ready_ms = round(max(float(raw_phase_ready), 0.0), 3)
+            source = "phase_timings"
+        except Exception:
+            server_ready_ms = None
+
+    if server_ready_ms is None and request_started_at is not None:
+        raw_finished_at = rebuild.get("finished_at")
+        if raw_finished_at is not None:
+            try:
+                server_ready_ms = round(max((float(raw_finished_at) - float(request_started_at)) * 1000.0, 0.0), 3)
+                source = "rebuild_finished_at"
+            except Exception:
+                server_ready_ms = None
+
+    if server_ready_ms is None and request_started_at is not None and bool(materialization.get("ready")):
+        raw_observed_at = materialization.get("observed_at")
+        if raw_observed_at is not None:
+            try:
+                server_ready_ms = round(max((float(raw_observed_at) - float(request_started_at)) * 1000.0, 0.0), 3)
+                source = "materialization_observed_at"
+            except Exception:
+                server_ready_ms = None
+
+    if server_ready_ms is None:
+        return None, None
+
+    metrics: dict[str, float] = {"server_ready": server_ready_ms}
+    raw_observed_ready = observed_timings.get("time_to_ready")
+    if raw_observed_ready is not None:
+        try:
+            observed_ready_ms = float(raw_observed_ready)
+            metrics["observation_lag"] = round(max(observed_ready_ms - server_ready_ms, 0.0), 3)
+        except Exception:
+            pass
+    return metrics, source
+
+
 def _best_effort_benchmark_materialization_poll(
     *,
     control: str,
@@ -1315,6 +1368,10 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         "observed_timings_ms": dict(payload.get("observed_timings_ms") or {})
         if isinstance(payload.get("observed_timings_ms"), dict)
         else {},
+        "ready_alignment_ms": dict(payload.get("ready_alignment_ms") or {})
+        if isinstance(payload.get("ready_alignment_ms"), dict)
+        else {},
+        "ready_alignment_source": str(payload.get("ready_alignment_source") or "").strip() or None,
         "materialization": dict(materialization),
         "timings_ms": switch_timings,
         "rebuild_timings_ms": (
@@ -1359,6 +1416,7 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     semantic_summary = _aggregate_benchmark_timing_maps(runs, key="semantic_rebuild_timings_ms")
     ydoc_summary = _aggregate_benchmark_timing_maps(runs, key="ydoc_timings_ms")
     poll_summary = _aggregate_benchmark_timing_maps(runs, key="poll_counts")
+    ready_alignment_summary = _aggregate_benchmark_timing_maps(runs, key="ready_alignment_ms")
 
     changed_values = [
         float(run.get("changed_branches") or 0)
@@ -1402,6 +1460,8 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
         summary["ydoc_timings_ms"] = ydoc_summary
     if poll_summary:
         summary["poll_counts"] = poll_summary
+    if ready_alignment_summary:
+        summary["ready_alignment_ms"] = ready_alignment_summary
     changed_aggregate = _aggregate_benchmark_values(changed_values)
     if changed_aggregate:
         summary["changed_branches"] = changed_aggregate
@@ -1444,6 +1504,19 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
             f"avg={float(item.get('avg')):.3f} "
             f"min={float(item.get('min')):.3f} "
             f"max={float(item.get('max')):.3f}"
+        )
+    ready_alignment = summary.get("ready_alignment_ms") if isinstance(summary.get("ready_alignment_ms"), dict) else {}
+    server_ready = ready_alignment.get("server_ready") if isinstance(ready_alignment.get("server_ready"), dict) else {}
+    if server_ready:
+        typer.echo(
+            f"summary.ready_server: avg={float(server_ready.get('avg')):.3f} "
+            f"min={float(server_ready.get('min')):.3f} max={float(server_ready.get('max')):.3f}"
+        )
+    observation_lag = ready_alignment.get("observation_lag") if isinstance(ready_alignment.get("observation_lag"), dict) else {}
+    if observation_lag:
+        typer.echo(
+            f"summary.ready_observation_lag: avg={float(observation_lag.get('avg')):.3f} "
+            f"min={float(observation_lag.get('min')):.3f} max={float(observation_lag.get('max')):.3f}"
         )
     changed = summary.get("changed_branches") if isinstance(summary.get("changed_branches"), dict) else {}
     if changed:
@@ -2299,6 +2372,7 @@ def _node_yjs_benchmark_scenario_action(
         resolved_baseline = ""
 
     def _switch_or_exit(target_scenario: str) -> dict[str, Any]:
+        request_started_at = time.time()
         request_started = time.perf_counter()
         code, payload = _control_post_json(
             control=selected_control,
@@ -2361,6 +2435,14 @@ def _node_yjs_benchmark_scenario_action(
                 observed_timings.setdefault("time_to_ready", round(observed_accept_ms + float(wait_elapsed_ms), 3))
             merged_payload["observed_timings_ms"] = observed_timings
             merged_payload["poll_counts"] = dict(poll_counts or {})
+        ready_alignment, ready_alignment_source = _benchmark_ready_alignment(
+            merged_payload,
+            request_started_at=request_started_at,
+        )
+        if ready_alignment:
+            merged_payload["ready_alignment_ms"] = ready_alignment
+        if ready_alignment_source:
+            merged_payload["ready_alignment_source"] = ready_alignment_source
         merged_payload["control"] = selected_control
         merged_payload["control_selection"] = control_selection
         return merged_payload
@@ -2403,6 +2485,7 @@ def _node_yjs_benchmark_scenario_action(
         phase = run.get("phase_timings_ms") if isinstance(run.get("phase_timings_ms"), dict) else {}
         observed = run.get("observed_timings_ms") if isinstance(run.get("observed_timings_ms"), dict) else {}
         poll_counts = run.get("poll_counts") if isinstance(run.get("poll_counts"), dict) else {}
+        ready_alignment = run.get("ready_alignment_ms") if isinstance(run.get("ready_alignment_ms"), dict) else {}
         typer.echo(
             f"run={int(run.get('iteration') or 0)} "
             f"mode={run.get('scenario_switch_mode') or '-'} "
@@ -2412,6 +2495,7 @@ def _node_yjs_benchmark_scenario_action(
             f"fp_skip={int(run.get('fingerprint_unchanged_branches') or 0)} "
             f"accept={float(phase.get('time_to_accept') or 0.0):.3f} "
             f"ready={float(observed.get('time_to_ready') or 0.0):.3f} "
+            f"lag={float(ready_alignment.get('observation_lag') or 0.0):.3f} "
             f"first={float(phase.get('time_to_first_structure') or 0.0):.3f} "
             f"interactive={float(phase.get('time_to_interactive_focus') or 0.0):.3f} "
             f"full={float(phase.get('time_to_full_hydration') or 0.0):.3f} "
@@ -2421,6 +2505,10 @@ def _node_yjs_benchmark_scenario_action(
         if detail:
             _print_timings_summary(run, key="poll_counts", label="  poll_counts")
             _print_timings_summary(run, key="observed_timings_ms", label="  observed_timings_ms")
+            _print_timings_summary(run, key="ready_alignment_ms", label="  ready_alignment_ms")
+            ready_alignment_source = str(run.get("ready_alignment_source") or "").strip()
+            if ready_alignment_source:
+                typer.echo(f"  ready_alignment_source: {ready_alignment_source}")
             _print_timings_summary(run, key="timings_ms", label="  switch_timings_ms")
             _print_timings_summary(run, key="rebuild_timings_ms", label="  rebuild_timings_ms")
             _print_timings_summary(run, key="semantic_rebuild_timings_ms", label="  semantic_rebuild_timings_ms")
@@ -2432,6 +2520,7 @@ def _node_yjs_benchmark_scenario_action(
         _print_benchmark_timing_group(summary, key="rebuild_timings_ms", label="rebuild_timings_ms")
         _print_benchmark_timing_group(summary, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
         _print_benchmark_timing_group(summary, key="ydoc_timings_ms", label="ydoc_timings_ms")
+        _print_benchmark_timing_group(summary, key="ready_alignment_ms", label="ready_alignment_ms")
 
 
 @yjs_app.command("create")

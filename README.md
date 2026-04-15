@@ -94,6 +94,12 @@ source tools/slot-shell.sh --cd
 . .\tools\slot-shell.ps1 -Cd
 ```
 
+Benchmark
+
+```
+adaos node yjs benchmark-scenario --webspace default --scenario-id infrascope --baseline-scenario web_desktop --iterations 5 --detail
+```
+
 ## AdaOS Service management
 
 ```bash
