@@ -268,6 +268,13 @@ lightweight `/api/node/yjs/webspaces/<id>/rebuild` and
 `/api/node/yjs/webspaces/<id>/materialization` surfaces, plus a matching
 `adaos node yjs materialization` CLI entrypoint, so the benchmark loop no
 longer needs to re-fetch the full webspace snapshot on every readiness check.
+The benchmark now also reports rebuild/materialization poll counts per run and
+stops materialization polling once `ready` has been observed, so the
+measurement tool itself adds less load during repeated switch loops.
+
+Browser fallback diagnostics now also prefer those lightweight materialization
+surfaces for reload/catalog recovery paths instead of fetching the full
+`/api/node/yjs/webspaces/<id>` snapshot when only readiness metadata is needed.
 
 Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,

@@ -1693,12 +1693,12 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     ]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
     assert any(
-        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 status=ready"
+        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -1710,6 +1710,8 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.observed.time_to_interactive: avg=52.000 min=50.000 max=54.000" in line for line in echoed)
     assert any("summary.observed.time_to_ready: avg=63.000 min=60.000 max=66.000" in line for line in echoed)
     assert any("summary.rebuild_status: ready=2" in line for line in echoed)
+    assert any("summary.polls.rebuild: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
+    assert any("summary.polls.materialization: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
     assert any("summary.flags: skipped=0/2 cache_hits=1/2 ready_timeouts=0/2" in line for line in echoed)
     assert any("summary.switch_timings_ms:" in line for line in echoed)
     assert any("summary.rebuild_timings_ms:" in line for line in echoed)
