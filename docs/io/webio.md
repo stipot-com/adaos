@@ -241,6 +241,8 @@ YStore runtime diagnostics now also expose extra pressure indicators such as:
 * `replay_window_byte_limit`
 * `base_snapshot_present`
 * `last_compact_reason`
+* `auto_backup_total`
+* `last_auto_backup_reason`
 * `diff_write_total`
 * `snapshot_write_total`
 * `apply_total`
@@ -255,6 +257,15 @@ operator knob `ADAOS_YSTORE_MAX_REPLAY_BYTES` sets the byte budget for the
 bounded replay tail, and compaction reason reporting makes it explicit whether
 the store compacted because of the update-count cap or because replay bytes
 grew too large.
+
+When replay pressure does trigger compaction, YStore can now also schedule a
+debounced auto-backup to disk and attempt to collapse the in-memory log to a
+single base snapshot. This is intended to shorten later cold-room replay
+paths, not to change the semantic source of truth. The related knobs are:
+
+* `ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT`
+* `ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC`
+* `ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC`
 
 When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`

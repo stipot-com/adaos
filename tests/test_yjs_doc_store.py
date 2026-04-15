@@ -109,6 +109,76 @@ async def test_ystore_runtime_snapshot_reports_replay_byte_budget(monkeypatch) -
         assert snapshot["replay_window_bytes"] >= 0
         assert "base_snapshot_present" in snapshot
         assert "last_compact_reason" in snapshot
+        assert "auto_backup_total" in snapshot
+        assert "last_auto_backup_reason" in snapshot
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_ystore_backup_to_disk_compacts_runtime_log(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", "0")
+    webspace_id = _webspace_id("backup-compact")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        for idx in range(3):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"item_{idx}", idx)
+
+        before = store.runtime_snapshot()
+        assert before["update_log_entries"] == 3
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+
+        after = store.runtime_snapshot()
+        assert after["snapshot_file_exists"] is True
+        assert after["backup_total"] >= 1
+        assert after["update_log_entries"] == 1
+        assert after["base_snapshot_present"] is True
+        assert after["last_compact_reason"] == "backup_compaction"
+
+        async with async_read_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            for idx in range(3):
+                assert data_map.get(f"item_{idx}") == idx
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_ystore_auto_backup_after_pressure_compaction(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_MAX_UPDATES", "128")
+    monkeypatch.setenv("ADAOS_YSTORE_REPLAY_WINDOW", "32")
+    monkeypatch.setenv("ADAOS_YSTORE_MAX_REPLAY_BYTES", "700")
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", "1")
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC", "0.05")
+    webspace_id = _webspace_id("auto-backup")
+    store = get_ystore_for_webspace(webspace_id)
+    value = "y" * 256
+    try:
+        for idx in range(6):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"key_{idx}", value)
+
+        for _ in range(20):
+            snapshot = store.runtime_snapshot()
+            if int(snapshot.get("auto_backup_total") or 0) >= 1:
+                break
+            await asyncio.sleep(0.05)
+
+        snapshot = store.runtime_snapshot()
+        assert snapshot["auto_backup_total"] >= 1
+        assert snapshot["last_auto_backup_reason"] == "byte_limit"
+        assert snapshot["snapshot_file_exists"] is True
+        assert snapshot["base_snapshot_present"] is True
+        assert snapshot["update_log_entries"] == 1
+        assert snapshot["last_compact_reason"] == "backup_compaction"
+
+        async with async_read_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            for idx in range(6):
+                assert data_map.get(f"key_{idx}") == value
     finally:
         reset_ystore_for_webspace(webspace_id)
 

@@ -480,10 +480,22 @@ byte-size tail grows too large. Runtime diagnostics now surface:
 - `replay_window_byte_limit`
 - `base_snapshot_present`
 - `last_compact_reason`
+- `auto_backup_total`
+- `last_auto_backup_reason`
 
 The byte budget is controlled by `ADAOS_YSTORE_MAX_REPLAY_BYTES` and should
 help repeated switch/rebuild loops converge toward smaller cold-room replay
 windows over time, even when many small diff updates accumulate.
+
+To reduce repeated cold-open cost after replay pressure, YStore can now also
+schedule a debounced auto-backup after pressure compaction. That backup writes
+an up-to-date snapshot file and, when no newer writes raced ahead, collapses
+the in-memory log to a single base snapshot (`backup_compaction`). The knobs
+are:
+
+- `ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT`
+- `ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC`
+- `ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC`
 
 Operator recovery paths were also tightened so performance work is not masked
 by recovery fan-out:
@@ -591,8 +603,11 @@ Use this checklist as the authoritative progress tracker for the migration.
   Current slice: diff-writeback replaced the full-state flush on normal YDoc
   exit, attached live-room rebuild/read paths now bypass repeated replay, and
   bounded replay now also compacts by byte budget (`ADAOS_YSTORE_MAX_REPLAY_BYTES`).
-  The remaining gap is cold-room replay/open cost (`apply_updates`) plus
-  reload/reconnect memory pressure under repeated room rebuilds.
+  Backup flows now also collapse the in-memory log to a single base snapshot,
+  and pressure compaction can trigger a debounced auto-backup so later
+  cold-room opens have a shorter replay path. The remaining gap is still the
+  cold-room replay/open cost (`apply_updates`) plus reload/reconnect memory
+  pressure under repeated room rebuilds.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.

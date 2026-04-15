@@ -5,6 +5,7 @@ import os
 import time
 import contextlib
 import contextvars
+import asyncio
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Tuple
 
@@ -29,6 +30,21 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     except Exception:
         value = int(default)
     return max(int(minimum), value)
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        value = float(default)
+    return max(float(minimum), value)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def add_ystore_write_listener(cb: Callable[[str, bytes], Any]) -> Callable[[], None]:
@@ -88,11 +104,26 @@ def _notify_write_listeners(webspace_id: str, update: bytes) -> None:
             continue
 
 
-def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> int:
+def _encode_snapshot_update(updates: List[Tuple[bytes, bytes, float]]) -> bytes:
     """
-    Heavy snapshot encoding/writing performed in a worker thread.
+    Heavy snapshot encoding performed in a worker thread.
     """
     if not updates:
+        return b""
+    if len(updates) == 1:
+        return bytes(updates[0][0] or b"")
+
+    ydoc = Y.YDoc()
+    for update, _meta, _ts in updates:
+        Y.apply_update(ydoc, update)  # type: ignore[arg-type]
+    return Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
+
+
+def _persist_snapshot(path: Path, snapshot: bytes) -> int:
+    """
+    Heavy snapshot writing performed in a worker thread.
+    """
+    if not snapshot:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -100,12 +131,6 @@ def _persist_snapshot(path: Path, updates: List[Tuple[bytes, bytes, float]]) -> 
         except Exception as exc:
             _log.warning("failed to remove stale YStore snapshot %s: %s", path, exc, exc_info=True)
         return 0
-
-    ydoc = Y.YDoc()
-    for update, _meta, _ts in updates:
-        Y.apply_update(ydoc, update)  # type: ignore[arg-type]
-    snapshot = Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
-
     tmp = Path(str(path) + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +197,9 @@ class AdaosMemoryYStore(BaseYStore):
             _env_int("ADAOS_YSTORE_REPLAY_WINDOW", 32, minimum=0),
         )
         self.max_replay_bytes = _env_int("ADAOS_YSTORE_MAX_REPLAY_BYTES", 512 * 1024, minimum=0)
+        self.auto_backup_after_compact = _env_flag("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", True)
+        self.auto_backup_cooldown_sec = _env_float("ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC", 30.0, minimum=0.0)
+        self.auto_backup_debounce_sec = _env_float("ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC", 0.5, minimum=0.0)
         self._lock: Lock = Lock()
         self._updates: List[Tuple[bytes, bytes, float]] = []
         self._base_snapshot_present = False
@@ -183,6 +211,7 @@ class AdaosMemoryYStore(BaseYStore):
         self._write_total = 0
         self._compact_total = 0
         self._backup_total = 0
+        self._auto_backup_total = 0
         self._diff_write_total = 0
         self._snapshot_write_total = 0
         self._write_skipped_total = 0
@@ -193,12 +222,16 @@ class AdaosMemoryYStore(BaseYStore):
         self._last_compact_at = 0.0
         self._last_compact_reason = ""
         self._last_backup_at = 0.0
+        self._last_auto_backup_at = 0.0
+        self._last_auto_backup_reason = ""
         self._last_apply_at = 0.0
         self._last_loaded_from_disk_at = 0.0
         self._last_update_bytes = 0
         self._last_snapshot_bytes = 0
         self._last_apply_update_total = 0
         self._last_apply_bytes = 0
+        self._auto_backup_inflight = False
+        self._generation = 0
 
     async def start(self, *, task_status: TaskStatus[None] = TASK_STATUS_IGNORED):
         """
@@ -235,6 +268,7 @@ class AdaosMemoryYStore(BaseYStore):
             return False
 
         metadata = await self.get_metadata()
+        auto_backup_reason: str | None = None
         async with self._lock:
             self._write_total += 1
             if update_kind == "diff":
@@ -256,11 +290,21 @@ class AdaosMemoryYStore(BaseYStore):
             compact_reason = self._replay_compaction_reason_locked()
             if compact_reason:
                 self._compact_updates_locked(now=now, keep_tail=self.replay_window, reason=compact_reason)
+                if (
+                    self.auto_backup_after_compact
+                    and not self._auto_backup_inflight
+                    and (self._last_auto_backup_at <= 0.0 or now - self._last_auto_backup_at >= self.auto_backup_cooldown_sec)
+                ):
+                    self._auto_backup_inflight = True
+                    auto_backup_reason = compact_reason
+            self._generation += 1
         if notify:
             try:
                 _notify_write_listeners(self.path, payload)
             except Exception:
                 pass
+        if auto_backup_reason:
+            self._schedule_auto_backup(reason=auto_backup_reason)
         return True
 
     async def encode_state_as_update(self, ydoc: Y.YDoc) -> None:  # type: ignore[override]
@@ -376,6 +420,30 @@ class AdaosMemoryYStore(BaseYStore):
                 self._last_snapshot_bytes = len(data)
         self._loaded_from_disk = True
 
+    def _schedule_auto_backup(self, *, reason: str) -> None:
+        async def _runner() -> None:
+            try:
+                if self.auto_backup_debounce_sec > 0:
+                    await asyncio.sleep(self.auto_backup_debounce_sec)
+                await self.backup_to_disk(compact_runtime=True, backup_kind=f"auto_after_compact:{reason}")
+            except Exception as exc:
+                _log.warning(
+                    "auto YStore backup failed for webspace=%s reason=%s: %s",
+                    self.path,
+                    reason,
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                async with self._lock:
+                    self._auto_backup_inflight = False
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(_runner())
+
     async def read(self) -> AsyncIterator[tuple[bytes, bytes]]:  # type: ignore[override]
         """
         Async iterator over stored updates (update, metadata).
@@ -389,20 +457,57 @@ class AdaosMemoryYStore(BaseYStore):
         for update, metadata, _ts in snapshot:
             yield update, metadata
 
-    async def backup_to_disk(self) -> None:
+    async def backup_to_disk(
+        self,
+        *,
+        compact_runtime: bool = True,
+        backup_kind: str = "manual",
+    ) -> None:
         """
         Persist the current YDoc state as a single update snapshot.
         """
         async with self._lock:
             updates = list(self._updates)
+            generation = int(self._generation)
+            metadata = updates[-1][1] if updates else b""
+
+        snapshot = await anyio.to_thread.run_sync(_encode_snapshot_update, updates)
 
         path = ystore_path_for_webspace(self.path)
-        written_bytes = await anyio.to_thread.run_sync(_persist_snapshot, path, updates)
+        written_bytes = await anyio.to_thread.run_sync(_persist_snapshot, path, snapshot)
+        now = time.time()
         async with self._lock:
             self._backup_total += 1
-            self._last_backup_at = time.time()
+            self._last_backup_at = now
             if written_bytes:
                 self._last_snapshot_bytes = int(written_bytes)
+            if backup_kind.startswith("auto_after_compact:"):
+                self._auto_backup_total += 1
+                self._last_auto_backup_at = now
+                self._last_auto_backup_reason = str(backup_kind.partition(":")[2] or "").strip()
+            compacted_runtime = False
+            if (
+                compact_runtime
+                and written_bytes
+                and snapshot
+                and self._generation == generation
+                and (
+                    len(self._updates) != 1
+                    or not self._base_snapshot_present
+                    or bytes(self._updates[0][0] or b"") != bytes(snapshot)
+                )
+            ):
+                self._updates = [(bytes(snapshot), metadata, now)]
+                self._base_snapshot_present = True
+                self._compact_total += 1
+                self._last_compact_at = now
+                self._last_compact_reason = "backup_compaction"
+                self._generation += 1
+                compacted_runtime = True
+            if backup_kind.startswith("auto_after_compact:") and not compacted_runtime and self._last_auto_backup_reason:
+                # Keep the last auto-backup reason observable even when concurrent
+                # writes made runtime-side collapse unsafe for this round.
+                self._last_auto_backup_reason = self._last_auto_backup_reason
 
     def runtime_snapshot(self, *, now_ts: float | None = None) -> dict[str, Any]:
         now = time.time() if now_ts is None else float(now_ts)
@@ -440,12 +545,17 @@ class AdaosMemoryYStore(BaseYStore):
             "write_total": int(self._write_total),
             "compact_total": int(self._compact_total),
             "backup_total": int(self._backup_total),
+            "auto_backup_total": int(self._auto_backup_total),
             "diff_write_total": int(self._diff_write_total),
             "snapshot_write_total": int(self._snapshot_write_total),
             "write_skipped_total": int(self._write_skipped_total),
             "apply_total": int(self._apply_total),
             "applied_update_total": int(self._applied_update_total),
             "applied_update_bytes": int(self._applied_update_bytes),
+            "auto_backup_after_compact": bool(self.auto_backup_after_compact),
+            "auto_backup_cooldown_sec": float(self.auto_backup_cooldown_sec),
+            "auto_backup_debounce_sec": float(self.auto_backup_debounce_sec),
+            "auto_backup_inflight": bool(self._auto_backup_inflight),
             "snapshot_file_exists": bool(snapshot_exists),
             "snapshot_file_size": int(snapshot_size),
             "last_update_bytes": int(self._last_update_bytes),
@@ -459,6 +569,11 @@ class AdaosMemoryYStore(BaseYStore):
             "last_compact_ago_s": round(max(0.0, now - self._last_compact_at), 3) if self._last_compact_at else None,
             "last_backup_at": self._last_backup_at or None,
             "last_backup_ago_s": round(max(0.0, now - self._last_backup_at), 3) if self._last_backup_at else None,
+            "last_auto_backup_at": self._last_auto_backup_at or None,
+            "last_auto_backup_reason": self._last_auto_backup_reason or None,
+            "last_auto_backup_ago_s": round(max(0.0, now - self._last_auto_backup_at), 3)
+            if self._last_auto_backup_at
+            else None,
             "last_apply_at": self._last_apply_at or None,
             "last_apply_ago_s": round(max(0.0, now - self._last_apply_at), 3) if self._last_apply_at else None,
             "last_loaded_from_disk_at": self._last_loaded_from_disk_at or None,
