@@ -1177,6 +1177,26 @@ def _set_webspace_rebuild_status_if_current(webspace_id: str, request_id: str | 
     return _set_webspace_rebuild_status(target, **fields)
 
 
+class _StaleRebuildRequestError(RuntimeError):
+    def __init__(self, webspace_id: str, expected_request_id: str, current_request_id: str | None) -> None:
+        self.webspace_id = str(webspace_id or "").strip()
+        self.expected_request_id = str(expected_request_id or "").strip()
+        self.current_request_id = str(current_request_id or "").strip() or None
+        super().__init__(
+            f"stale rebuild request superseded for webspace={self.webspace_id}: "
+            f"expected={self.expected_request_id} current={self.current_request_id or '-'}"
+        )
+
+
+def _raise_if_rebuild_request_superseded(webspace_id: str, request_id: str | None) -> None:
+    request_token = str(request_id or "").strip()
+    if not request_token:
+        return
+    current_request = str(describe_webspace_rebuild_state(webspace_id).get("request_id") or "").strip()
+    if current_request and current_request != request_token:
+        raise _StaleRebuildRequestError(webspace_id, request_token, current_request)
+
+
 def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
     target = str(webspace_id or "").strip()
     current = dict(_WEBSPACE_REBUILD_STATUS.get(target) or {})
@@ -1792,8 +1812,15 @@ class WebspaceScenarioRuntime:
         webspace_id: str,
         resolved: WebspaceResolverOutputs,
         *,
-        inputs: WebspaceResolverInputs,
+        inputs: WebspaceResolverInputs | None = None,
+        expected_request_id: str | None = None,
     ) -> None:
+        _raise_if_rebuild_request_superseded(webspace_id, expected_request_id)
+        effective_inputs = inputs or WebspaceResolverInputs(
+            webspace_id=webspace_id,
+            scenario_id=str(resolved.scenario_id or ""),
+            source_mode=str(resolved.source_mode or ""),
+        )
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
         registry_map = ydoc.get_map("registry")
@@ -1804,7 +1831,7 @@ class WebspaceScenarioRuntime:
         defaults_failed = False
         phase_summaries: Dict[str, Dict[str, Any]] = {}
         phase_timings_ms: Dict[str, float] = {}
-        compatibility_presence = dict(inputs.compatibility_cache_presence or {})
+        compatibility_presence = dict(effective_inputs.compatibility_cache_presence or {})
         resolved_branch_fingerprints = _resolved_output_branch_fingerprints(resolved)
         effective_branch_fingerprints = _read_effective_branch_fingerprints(registry_map)
 
@@ -1879,6 +1906,7 @@ class WebspaceScenarioRuntime:
             apply_defaults: bool = False,
         ) -> None:
             nonlocal defaults_failed
+            _raise_if_rebuild_request_superseded(webspace_id, expected_request_id)
             phase_started = time.perf_counter()
             phase_changed_before = len(changed_paths)
             phase_failed_before = len(failed_paths)
@@ -1971,7 +1999,13 @@ class WebspaceScenarioRuntime:
     def _resolve_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverOutputs:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
 
-    def _rebuild_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebUIRegistryEntry:
+    def _rebuild_in_doc(
+        self,
+        ydoc: Y.YDoc,
+        webspace_id: str,
+        *,
+        expected_request_id: str | None = None,
+    ) -> WebUIRegistryEntry:
         rebuild_started = time.perf_counter()
         timings: Dict[str, float] = {}
         self._last_resolver_debug = None
@@ -1986,8 +2020,15 @@ class WebspaceScenarioRuntime:
         resolved = self.resolve_webspace(inputs)
         _record_timing(timings, "resolve", stage_started)
 
+        _raise_if_rebuild_request_superseded(webspace_id, expected_request_id)
         stage_started = time.perf_counter()
-        self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved, inputs=inputs)
+        self._apply_resolved_state_in_doc(
+            ydoc,
+            webspace_id,
+            resolved,
+            inputs=inputs,
+            expected_request_id=expected_request_id,
+        )
         _record_timing(timings, "apply", stage_started)
         apply_phase_timings = _copy_timing_map(self._last_apply_phase_timings_ms) or {}
         timings.update(apply_phase_timings)
@@ -2018,7 +2059,12 @@ class WebspaceScenarioRuntime:
 
     # --- public API ------------------------------------------------------
 
-    def compute_registry_for_webspace(self, webspace_id: str) -> WebUIRegistryEntry:
+    def compute_registry_for_webspace(
+        self,
+        webspace_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> WebUIRegistryEntry:
         """
         Compute and apply the effective UI model for the given webspace.
 
@@ -2027,9 +2073,14 @@ class WebspaceScenarioRuntime:
         and returns the resulting registry snapshot.
         """
         with get_ydoc(webspace_id) as ydoc:
-            return self._rebuild_in_doc(ydoc, webspace_id)
+            return self._rebuild_in_doc(ydoc, webspace_id, expected_request_id=request_id)
 
-    async def rebuild_webspace_async(self, webspace_id: str) -> WebUIRegistryEntry:
+    async def rebuild_webspace_async(
+        self,
+        webspace_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> WebUIRegistryEntry:
         """
         Async counterpart of :meth:`compute_registry_for_webspace` for use
         inside running event loops.
@@ -2040,7 +2091,11 @@ class WebspaceScenarioRuntime:
         try:
             async with async_get_ydoc(webspace_id, timings=ydoc_timings) as ydoc:
                 stage_started = time.perf_counter()
-                entry = self._rebuild_in_doc(ydoc, webspace_id)
+                entry = self._rebuild_in_doc(
+                    ydoc,
+                    webspace_id,
+                    expected_request_id=request_id,
+                )
                 _record_timing(ydoc_timings, "in_doc_rebuild", stage_started)
                 return entry
         finally:
@@ -2994,8 +3049,68 @@ async def rebuild_webspace_from_sources(
     runtime = WebspaceScenarioRuntime(ctx)
     try:
         stage_started = time.perf_counter()
-        entry = await runtime.rebuild_webspace_async(webspace_id)
+        if str(request_id or "").strip():
+            entry = await runtime.rebuild_webspace_async(webspace_id, request_id=request_id)
+        else:
+            entry = await runtime.rebuild_webspace_async(webspace_id)
         _record_timing(timings_ms, "semantic_rebuild", stage_started)
+    except _StaleRebuildRequestError:
+        finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
+        semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+        ydoc_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_ydoc_timings_ms", None))
+        resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
+        apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
+        phase_timings = _derive_phase_timings(
+            switch_timings_ms=effective_switch_timings,
+            rebuild_timings_ms=finalized_timings,
+            semantic_rebuild_timings_ms=semantic_timings,
+            switch_mode=effective_switch_mode,
+        )
+        _set_webspace_rebuild_status_if_current(
+            webspace_id,
+            request_id,
+            status="cancelled",
+            pending=False,
+            finished_at=time.time(),
+            error="stale_rebuild_superseded",
+            switch_mode=effective_switch_mode,
+            scenario_resolution=resolved_scenario_resolution,
+            projection_refresh=projection_refresh,
+            resolver=resolver_debug or None,
+            apply_summary=apply_summary or None,
+            timings_ms=finalized_timings,
+            switch_timings_ms=effective_switch_timings,
+            semantic_rebuild_timings_ms=semantic_timings,
+            ydoc_timings_ms=ydoc_timings,
+            phase_timings_ms=phase_timings,
+        )
+        _log.info(
+            "stale semantic rebuild skipped apply webspace=%s action=%s scenario=%s request_id=%s",
+            webspace_id,
+            requested_action,
+            target_scenario,
+            request_id,
+        )
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": requested_action,
+            "source_of_truth": source_of_truth,
+            "webspace_id": webspace_id,
+            "scenario_id": target_scenario,
+            "scenario_resolution": resolved_scenario_resolution,
+            "request_id": request_id,
+            "switch_mode": effective_switch_mode,
+            "projection_refresh": projection_refresh,
+            "resolver": resolver_debug or None,
+            "apply_summary": apply_summary or None,
+            "timings_ms": finalized_timings,
+            "switch_timings_ms": effective_switch_timings,
+            "semantic_rebuild_timings_ms": semantic_timings,
+            "ydoc_timings_ms": ydoc_timings,
+            "phase_timings_ms": phase_timings,
+            "error": "stale_rebuild_superseded",
+        }
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
         semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
@@ -3280,6 +3395,8 @@ def _schedule_scenario_switch_rebuild(
                 switch_timings_ms=None,
             )
             if not bool(result.get("accepted")):
+                if str(result.get("error") or "").strip() == "stale_rebuild_superseded":
+                    return
                 _set_webspace_rebuild_status_if_current(
                     webspace_id,
                     request_id,

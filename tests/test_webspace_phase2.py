@@ -6,6 +6,8 @@ import time
 import types
 from types import SimpleNamespace
 
+import pytest
+
 from adaos.services.agent_context import get_ctx
 
 if "y_py" not in sys.modules:
@@ -185,7 +187,7 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
     workflows: list[tuple[str, str]] = []
     sync_listing_calls: list[bool] = []
 
-    async def _fake_rebuild(self, webspace_id: str):
+    async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG002
         rebuilds.append(webspace_id)
         self._last_rebuild_timings_ms = {
             "collect_inputs": 1.0,
@@ -1064,6 +1066,66 @@ def test_background_scenario_switch_rebuild_superseded_request_keeps_newer_statu
     assert "time_to_full_hydration" in final["phase_timings_ms"]
 
 
+def test_phase3_stale_rebuild_request_does_not_apply_effective_branches() -> None:
+    webspace_id = "phase3-stale-apply-guard"
+    webspace_runtime_module._WEBSPACE_REBUILD_STATUS.clear()
+    webspace_runtime_module._set_webspace_rebuild_status(
+        webspace_id,
+        status="running",
+        pending=True,
+        background=True,
+        request_id="req-new",
+        action="scenario_switch_rebuild",
+        scenario_id="web_desktop",
+    )
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(SimpleNamespace())
+    fake_state = {
+        "ui": _CountingMap(),
+        "registry": _CountingMap(),
+        "data": _CountingMap(),
+    }
+    fake_doc = _FakeDoc(fake_state)
+    resolved = webspace_runtime_module.WebspaceResolverOutputs(
+        webspace_id=webspace_id,
+        scenario_id="prompt_engineer_scenario",
+        source_mode="workspace",
+        application={"desktop": {"pageSchema": {"id": "prompt"}}},
+        catalog={"apps": [{"id": "prompt"}], "widgets": []},
+        registry={"modals": [], "widgets": []},
+        installed={"apps": ["prompt"], "widgets": []},
+        desktop={"installed": {"apps": ["prompt"], "widgets": []}, "pageSchema": {"id": "prompt"}},
+        routing={"routes": {}},
+        skill_decls=[],
+    )
+    inputs = webspace_runtime_module.WebspaceResolverInputs(
+        webspace_id=webspace_id,
+        scenario_id="prompt_engineer_scenario",
+        source_mode="workspace",
+        compatibility_cache_presence={
+            "scenario_ui_application": False,
+            "scenario_registry_entry": False,
+            "scenario_catalog": False,
+        },
+    )
+
+    with pytest.raises(webspace_runtime_module._StaleRebuildRequestError):
+        runtime._apply_resolved_state_in_doc(
+            fake_doc,
+            webspace_id,
+            resolved,
+            inputs=inputs,
+            expected_request_id="req-old",
+        )
+
+    assert fake_state["ui"] == {}
+    assert fake_state["data"] == {}
+    assert fake_state["registry"] == {}
+    assert fake_state["ui"].set_count == 0
+    assert fake_state["data"].set_count == 0
+    assert fake_state["registry"].set_count == 0
+
+
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "phase2-go-home"
     ensure_workspace(webspace_id)
@@ -1700,7 +1762,7 @@ def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebui
             "rules_loaded": 1,
         }
 
-    async def _fake_rebuild(self, webspace_id: str):
+    async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG002
         order.append("rebuild")
         self._last_rebuild_timings_ms = {
             "collect_inputs": 1.25,
@@ -2166,7 +2228,7 @@ def test_restore_webspace_from_snapshot_reconciles_runtime(monkeypatch) -> None:
 
     fake_ctx = SimpleNamespace(bus=_Bus())
 
-    async def _fake_rebuild(self, webspace_id: str):
+    async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG002
         rebuilds.append(webspace_id)
         return SimpleNamespace(scenario_id="restored_prompt_scenario", apps=[{"id": "app-1"}], widgets=[])
 
@@ -2240,7 +2302,7 @@ def test_phase3_reload_and_reset_rebuild_sync_workflow_for_target_scenario(monke
         emitted: list[tuple[str, dict[str, object], str]] = []
         fake_ctx = SimpleNamespace(bus=_Bus())
 
-        async def _fake_rebuild(self, webspace_id: str):
+        async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG002
             rebuilds.append(webspace_id)
             self._last_rebuild_timings_ms = {
                 "collect_inputs": 1.0,
@@ -2359,7 +2421,7 @@ def test_phase3_reload_reuses_live_runtime_without_reset(monkeypatch) -> None:
             "rules_loaded": 1,
         }
 
-    async def _fake_rebuild(self, webspace_id: str):
+    async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG002
         rebuilds.append(webspace_id)
         self._last_rebuild_timings_ms = {"total": 1.0}
         self._last_apply_summary = {"changed_branches": 1, "unchanged_branches": 0}
@@ -2458,7 +2520,7 @@ def test_phase3_reset_keeps_hard_runtime_reset(monkeypatch) -> None:
             "rules_loaded": 1,
         }
 
-    async def _fake_rebuild(self, webspace_id: str):  # noqa: ARG001
+    async def _fake_rebuild(self, webspace_id: str, **kwargs):  # noqa: ARG001, ARG002
         self._last_rebuild_timings_ms = {"total": 1.0}
         self._last_apply_summary = {"changed_branches": 1, "unchanged_branches": 0}
         return SimpleNamespace(scenario_id="prompt_engineer_scenario", apps=[], widgets=[])
