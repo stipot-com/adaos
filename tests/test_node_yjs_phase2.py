@@ -756,7 +756,6 @@ def test_node_yjs_webspace_rebuild_state_endpoint_returns_lightweight_snapshot(m
             "scenario_id": "infrascope",
             "request_id": "req-bench-1",
         },
-        "runtime": {"role": "hub", "webspace_id": "default"},
     }
 
 
@@ -816,7 +815,6 @@ def test_node_yjs_webspace_materialization_state_endpoint_returns_lightweight_sn
             "scenario_id": "infrascope",
             "request_id": "req-bench-1",
         },
-        "runtime": {"role": "hub", "webspace_id": "default"},
     }
 
 
@@ -1633,9 +1631,9 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
                     },
                 )
             raise AssertionError(f"unexpected describe poll: {path}")
-        if path == "/api/node/yjs/webspaces/default/rebuild":
+        if path == "/api/node/yjs/webspaces/default/rebuild?include_runtime=0":
             return 200, rebuild_payloads.pop(0)
-        if path == "/api/node/yjs/webspaces/default/materialization":
+        if path == "/api/node/yjs/webspaces/default/materialization?include_runtime=0":
             return 200, materialization_payloads.pop(0)
         raise AssertionError(f"unexpected poll path: {path}")
 
@@ -1684,14 +1682,14 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert posted == ["infrascope", "web_desktop", "infrascope", "web_desktop"]
     assert polled_paths[0] == "/api/node/yjs/webspaces/default"
     assert polled_paths[1:] == [
-        "/api/node/yjs/webspaces/default/rebuild",
-        "/api/node/yjs/webspaces/default/materialization",
-        "/api/node/yjs/webspaces/default/rebuild",
-        "/api/node/yjs/webspaces/default/materialization",
-        "/api/node/yjs/webspaces/default/rebuild",
-        "/api/node/yjs/webspaces/default/materialization",
-        "/api/node/yjs/webspaces/default/rebuild",
-        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
     ]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
@@ -2010,7 +2008,7 @@ def test_node_cli_materialization_reads_lightweight_state(monkeypatch) -> None:
         json_output=True,
     )
 
-    assert captured == ["/api/node/yjs/webspaces/default/materialization"]
+    assert captured == ["/api/node/yjs/webspaces/default/materialization?include_runtime=1"]
     assert rendered[-1][1] is True
 
 
@@ -2063,7 +2061,7 @@ def test_node_cli_materialization_falls_back_to_full_describe_on_404(monkeypatch
     )
 
     assert captured == [
-        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=1",
         "/api/node/yjs/webspaces/default",
     ]
     assert rendered[-1][1] is True

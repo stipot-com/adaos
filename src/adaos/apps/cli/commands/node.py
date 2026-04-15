@@ -907,7 +907,7 @@ def _best_effort_benchmark_materialization_poll(
     timeout_sec: float,
 ) -> tuple[dict[str, Any] | None, bool]:
     for path in (
-        f"/api/node/yjs/webspaces/{webspace}/materialization",
+        f"/api/node/yjs/webspaces/{webspace}/materialization?include_runtime=0",
         f"/api/node/yjs/webspaces/{webspace}",
     ):
         code, payload = _control_get_json(
@@ -1029,14 +1029,14 @@ def _wait_for_benchmark_rebuild(
         code = None
         current_rebuild: dict[str, Any] = {}
         for path in (
-            f"/api/node/yjs/webspaces/{webspace}/rebuild",
+            f"/api/node/yjs/webspaces/{webspace}/rebuild?include_runtime=0",
             f"/api/node/yjs/webspaces/{webspace}",
         ):
             code, payload = _control_get_json(
                 control=control,
                 path=path,
                 token=token,
-                timeout=max(3.0, interval + 1.0),
+                timeout=max(5.0, interval + 1.0),
             )
             if code == 404 and path.endswith("/rebuild"):
                 continue
@@ -1940,7 +1940,7 @@ def _node_yjs_materialization_action(
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
     status_code, payload = _control_get_json(
         control=control0,
-        path=f"/api/node/yjs/webspaces/{webspace}/materialization",
+        path=f"/api/node/yjs/webspaces/{webspace}/materialization?include_runtime=1",
         token=_resolved_local_control_token(control0, cfg),
         timeout=5.0,
     )

@@ -171,6 +171,10 @@ For lighter operator polling, the same state is also split across:
 * `/api/node/yjs/webspaces/<id>/rebuild`
 * `/api/node/yjs/webspaces/<id>/materialization`
 
+Both lightweight endpoints keep the expensive `runtime` snapshot optional via
+`?include_runtime=1`. Normal benchmark polling should stay on the default
+lightweight shape without `runtime`.
+
 Rebuild/control surfaces also expose phase-oriented timing and apply detail so
 pointer-only scenario switch can be evaluated against real runtime slices:
 
