@@ -426,6 +426,23 @@ That means the next short-term performance slices should focus on:
 - reducing YStore open/load/flush cost
 - only then pushing deeper fragmented apply/diff work
 
+Current benchmark evidence is now explicit enough to treat YStore as the next
+critical-path target:
+
+- `switch_timings_ms.total` is already in the low single-digit millisecond
+  range for pointer-first switch
+- `time_to_first_structure` is already in the tens-of-milliseconds range
+- the dominant cost now sits in the YDoc envelope:
+  `ydoc_timings_ms.ystore_apply_updates` and
+  `ydoc_timings_ms.ystore_encode_state_as_update`
+
+That means the next optimization slice should prioritize:
+
+- reducing full replay cost on YDoc open
+- reducing full snapshot re-encode cost on YDoc flush
+- introducing a cheaper persistence/writeback strategy before attempting
+  deeper resolver/apply micro-optimizations
+
 Operator recovery paths were also tightened so performance work is not masked
 by recovery fan-out:
 
@@ -527,6 +544,8 @@ Use this checklist as the authoritative progress tracker for the migration.
   active room is already attached.
 - [x] Split operator `reload` from destructive `reset` so reload stays on the
   live room and does not fan out into duplicate semantic rebuilds.
+- [ ] Reduce `YStore.apply_updates` / `encode_state_as_update` envelope cost
+  now that pointer-switch latency is no longer the dominant bottleneck.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.
