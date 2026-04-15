@@ -190,6 +190,8 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
         self._last_rebuild_timings_ms = {
             "collect_inputs": 1.0,
             "resolve": 2.0,
+            "apply_structure": 1.25,
+            "apply_interactive": 1.5,
             "apply": 3.0,
             "to_registry_entry": 0.5,
             "total": 6.5,
@@ -201,6 +203,22 @@ def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None
             "failed_branches": 0,
             "changed_paths": ["ui.application", "data.catalog", "registry.merged"],
             "defaults_failed": False,
+            "phases": {
+                "structure": {
+                    "branch_count": 2,
+                    "changed_branches": 2,
+                    "unchanged_branches": 0,
+                    "failed_branches": 0,
+                    "changed_paths": ["ui.application", "registry.merged"],
+                },
+                "interactive": {
+                    "branch_count": 4,
+                    "changed_branches": 1,
+                    "unchanged_branches": 3,
+                    "failed_branches": 0,
+                    "changed_paths": ["data.catalog"],
+                },
+            },
         }
         return SimpleNamespace(webspace_id=webspace_id)
 
@@ -277,7 +295,11 @@ def test_switch_webspace_scenario_can_persist_home_scenario(monkeypatch) -> None
     assert result["apply_summary"]["changed_branches"] == 3
     assert isinstance(result["phase_timings_ms"], dict)
     assert "time_to_pointer_update" in result["phase_timings_ms"]
+    assert "time_to_first_structure" in result["phase_timings_ms"]
+    assert "time_to_interactive_focus" in result["phase_timings_ms"]
     assert "time_to_full_hydration" in result["phase_timings_ms"]
+    assert result["phase_timings_ms"]["time_to_first_structure"] < result["phase_timings_ms"]["time_to_full_hydration"]
+    assert result["phase_timings_ms"]["time_to_interactive_focus"] < result["phase_timings_ms"]["time_to_full_hydration"]
 
 
 def test_switch_webspace_scenario_auto_persists_home_for_dev_webspace(monkeypatch) -> None:
@@ -1964,19 +1986,68 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
     assert first_summary["unchanged_branches"] == 0
     assert first_summary["changed_paths"] == [
         "ui.application",
+        "registry.merged",
         "data.catalog",
         "data.installed",
         "data.desktop",
         "data.routing",
+    ]
+    assert first_summary["phases"]["structure"]["changed_paths"] == [
+        "ui.application",
         "registry.merged",
+    ]
+    assert first_summary["phases"]["interactive"]["changed_paths"] == [
+        "data.catalog",
+        "data.installed",
+        "data.desktop",
+        "data.routing",
     ]
     assert second_summary["changed_branches"] == 0
     assert second_summary["unchanged_branches"] == 6
     assert second_summary["failed_branches"] == 0
     assert second_summary["changed_paths"] == []
+    assert second_summary["phases"]["structure"]["unchanged_branches"] == 2
+    assert second_summary["phases"]["interactive"]["unchanged_branches"] == 4
+    assert runtime._last_apply_phase_timings_ms is not None
+    assert "apply_structure" in runtime._last_apply_phase_timings_ms
+    assert "apply_interactive" in runtime._last_apply_phase_timings_ms
     assert fake_state["ui"].set_count == 1
     assert fake_state["data"].set_count == 4
     assert fake_state["registry"].set_count == 1
+
+
+def test_phase5_derive_phase_timings_uses_semantic_phase_breakdown() -> None:
+    phase_timings = webspace_runtime_module._derive_phase_timings(
+        switch_timings_ms={
+            "describe_state_before": 0.5,
+            "resolve_manifest_policy": 0.5,
+            "validate_scenario": 1.0,
+            "write_switch_pointer": 1.5,
+            "total": 4.0,
+        },
+        rebuild_timings_ms={
+            "projection_refresh": 2.0,
+            "workflow_sync": 1.0,
+            "event_emit": 1.0,
+            "total": 10.0,
+        },
+        semantic_rebuild_timings_ms={
+            "collect_inputs": 1.0,
+            "resolve": 1.0,
+            "apply_structure": 1.0,
+            "apply_interactive": 2.0,
+            "apply": 3.0,
+            "to_registry_entry": 0.5,
+            "total": 6.0,
+        },
+        switch_mode="pointer_only",
+    )
+
+    assert phase_timings is not None
+    assert phase_timings["time_to_pointer_update"] == 3.5
+    assert phase_timings["time_to_first_structure"] == 9.0
+    assert phase_timings["time_to_interactive_focus"] == 11.0
+    assert phase_timings["time_to_full_hydration"] == 12.0
 
 
 def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability() -> None:

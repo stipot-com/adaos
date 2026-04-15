@@ -256,10 +256,10 @@ can be compared before larger cache/diff changes land.
 
 Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,
-`time_to_full_hydration`) derived from the still-mostly-monolithic runtime.
-These numbers are intentionally best-effort until fragmented reconcile lands,
-but they already make pointer-based acceptance and full rebuild latency easier
-to compare in production.
+`time_to_full_hydration`). They are now derived from measured
+`structure -> interactive` semantic rebuild slices rather than from one
+synthetic "full ready" number, although deferred/off-focus hydration is still
+reported best-effort until later fragmented slices land.
 
 Scenario content/manifests and skill `webui.json` loads now also use
 file-stamp-aware in-process caches, reducing repeated parse cost during
@@ -342,6 +342,17 @@ Frontend migration coverage is now also explicit in tests and diagnostics:
   and `materialization.missing_branches`, so the renderer can distinguish
   deferred hydration from truly degraded materialization
 
+Semantic rebuild itself now also applies effective branches in two ordered
+phases:
+
+- `structure`: `ui.application` and `registry.merged`
+- `interactive`: `data.catalog`, `data.installed`, `data.desktop`,
+  and `data.routing`
+
+This does not yet defer off-focus payload to a separate background slice, but
+it does remove the earlier "all ready at once" assumption from runtime timing
+and apply summaries.
+
 Reader/writer audit for migration planning:
 
 - reader of legacy materialized scenario branches:
@@ -402,7 +413,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [x] Keep workflow/runtime sync aligned with the rebuilt active scenario.
 - [x] Verify reload/reset/restore/switch all use the same source resolution
   rules.
-- [ ] Reshape rebuild around phase-aware reconcile steps instead of a single
+- [x] Reshape rebuild around phase-aware reconcile steps instead of a single
   monolithic "all ready at once" materialization assumption.
 
 ### 4. Compatibility and Migration Safety

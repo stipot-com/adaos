@@ -165,6 +165,15 @@ shared materialization diagnostic contract:
 * `readiness_state`
 * `missing_branches`
 
+Rebuild/control surfaces also expose phase-oriented timing and apply detail so
+pointer-only scenario switch can be evaluated against real runtime slices:
+
+* `phase_timings_ms.time_to_first_structure`
+* `phase_timings_ms.time_to_interactive_focus`
+* `phase_timings_ms.time_to_full_hydration`
+* `apply_summary.phases.structure`
+* `apply_summary.phases.interactive`
+
 `readiness_state` follows a coarse ladder:
 
 * `pending_structure`

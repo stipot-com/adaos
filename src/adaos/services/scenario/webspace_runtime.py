@@ -768,6 +768,7 @@ def _derive_phase_timings(
     *,
     switch_timings_ms: Mapping[str, Any] | None = None,
     rebuild_timings_ms: Mapping[str, Any] | None = None,
+    semantic_rebuild_timings_ms: Mapping[str, Any] | None = None,
     switch_mode: str | None = None,
 ) -> Dict[str, float] | None:
     phase: Dict[str, float] = {}
@@ -792,12 +793,55 @@ def _derive_phase_timings(
     if pointer_update is not None:
         phase["time_to_pointer_update"] = pointer_update
 
+    rebuild_before_semantic = _sum_timing_values(
+        rebuild_timings_ms,
+        "resolve_rebuild_target",
+        "reseed_pointer",
+        "invalidate_loader_cache",
+        "reset_runtime_state",
+        "seed_from_scenario",
+        "sync_listing",
+        "projection_refresh",
+    )
+    semantic_time_to_first_structure = _sum_timing_values(
+        semantic_rebuild_timings_ms,
+        "collect_inputs",
+        "resolve",
+        "apply_structure",
+    )
+    semantic_time_to_interactive = _sum_timing_values(
+        semantic_rebuild_timings_ms,
+        "collect_inputs",
+        "resolve",
+        "apply_structure",
+        "apply_interactive",
+    )
+    semantic_total = None
+    if isinstance(semantic_rebuild_timings_ms, Mapping):
+        try:
+            raw_semantic_total = semantic_rebuild_timings_ms.get("total")
+            semantic_total = round(float(raw_semantic_total), 3) if raw_semantic_total is not None else None
+        except Exception:
+            semantic_total = None
+
+    baseline = 0.0
+    if switch_total is not None:
+        baseline += switch_total
+    if rebuild_before_semantic is not None:
+        baseline += rebuild_before_semantic
+
+    if semantic_time_to_first_structure is not None:
+        phase["time_to_first_structure"] = round(baseline + semantic_time_to_first_structure, 3)
+    if semantic_time_to_interactive is not None:
+        phase["time_to_interactive_focus"] = round(baseline + semantic_time_to_interactive, 3)
     if "time_to_first_structure" not in phase and switch_total is not None and rebuild_total is not None:
         full_ready = round(switch_total + rebuild_total, 3)
         phase["time_to_first_structure"] = full_ready
         phase["time_to_interactive_focus"] = full_ready
 
-    if switch_total is not None and rebuild_total is not None:
+    if semantic_total is not None:
+        phase["time_to_full_hydration"] = round(baseline + semantic_total, 3)
+    elif switch_total is not None and rebuild_total is not None:
         phase["time_to_full_hydration"] = round(switch_total + rebuild_total, 3)
     elif rebuild_total is not None:
         phase["time_to_full_hydration"] = round(rebuild_total, 3)
@@ -896,6 +940,7 @@ class WebspaceScenarioRuntime:
         self._last_rebuild_timings_ms: Dict[str, float] | None = None
         self._last_resolver_debug: Dict[str, Any] | None = None
         self._last_apply_summary: Dict[str, Any] | None = None
+        self._last_apply_phase_timings_ms: Dict[str, float] | None = None
 
     # --- scenario helpers -------------------------------------------------
 
@@ -1430,8 +1475,10 @@ class WebspaceScenarioRuntime:
         changed_paths: List[str] = []
         failed_paths: List[str] = []
         defaults_failed = False
+        phase_summaries: Dict[str, Dict[str, Any]] = {}
+        phase_timings_ms: Dict[str, float] = {}
 
-        def _apply_branch(path: str, y_map: Any, key: str, value: Any, *, ignore_errors: bool = False) -> None:
+        def _apply_branch(txn: Any, path: str, y_map: Any, key: str, value: Any, *, ignore_errors: bool = False) -> None:
             try:
                 changed = _set_map_value_if_changed(y_map, txn, key, value)
             except Exception:
@@ -1442,19 +1489,64 @@ class WebspaceScenarioRuntime:
             if changed:
                 changed_paths.append(path)
 
-        with ydoc.begin_transaction() as txn:
-            try:
-                self._apply_ydoc_defaults_in_txn(ydoc, txn, resolved.skill_decls)
-            except Exception:
-                defaults_failed = True
-                _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
+        def _apply_phase(
+            name: str,
+            branch_specs: tuple[tuple[str, Any, str, Any, bool], ...],
+            *,
+            apply_defaults: bool = False,
+        ) -> None:
+            nonlocal defaults_failed
+            phase_started = time.perf_counter()
+            phase_changed_before = len(changed_paths)
+            phase_failed_before = len(failed_paths)
+            phase_defaults_failed = False
 
-            _apply_branch("ui.application", ui_map, "application", resolved.application)
-            _apply_branch("data.catalog", data_map, "catalog", resolved.catalog)
-            _apply_branch("data.installed", data_map, "installed", resolved.installed)
-            _apply_branch("data.desktop", data_map, "desktop", resolved.desktop, ignore_errors=True)
-            _apply_branch("data.routing", data_map, "routing", resolved.routing, ignore_errors=True)
-            _apply_branch("registry.merged", registry_map, "merged", resolved.registry)
+            with ydoc.begin_transaction() as txn:
+                if apply_defaults:
+                    try:
+                        self._apply_ydoc_defaults_in_txn(ydoc, txn, resolved.skill_decls)
+                    except Exception:
+                        defaults_failed = True
+                        phase_defaults_failed = True
+                        _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
+
+                for path, y_map, key, value, ignore_errors in branch_specs:
+                    _apply_branch(txn, path, y_map, key, value, ignore_errors=ignore_errors)
+
+            phase_changed_paths = list(changed_paths[phase_changed_before:])
+            phase_failed_paths = list(failed_paths[phase_failed_before:])
+            branch_count = len(branch_specs)
+            phase_summary: Dict[str, Any] = {
+                "branch_count": branch_count,
+                "changed_branches": len(phase_changed_paths),
+                "unchanged_branches": branch_count - len(phase_changed_paths) - len(phase_failed_paths),
+                "failed_branches": len(phase_failed_paths),
+                "changed_paths": phase_changed_paths,
+            }
+            if phase_failed_paths:
+                phase_summary["failed_paths"] = phase_failed_paths
+            if phase_defaults_failed:
+                phase_summary["defaults_failed"] = True
+            phase_summaries[name] = phase_summary
+            phase_timings_ms[f"apply_{name}"] = _elapsed_ms(phase_started)
+
+        _apply_phase(
+            "structure",
+            (
+                ("ui.application", ui_map, "application", resolved.application, False),
+                ("registry.merged", registry_map, "merged", resolved.registry, False),
+            ),
+            apply_defaults=True,
+        )
+        _apply_phase(
+            "interactive",
+            (
+                ("data.catalog", data_map, "catalog", resolved.catalog, False),
+                ("data.installed", data_map, "installed", resolved.installed, False),
+                ("data.desktop", data_map, "desktop", resolved.desktop, True),
+                ("data.routing", data_map, "routing", resolved.routing, True),
+            ),
+        )
 
         self._last_apply_summary = {
             "branch_count": len(target_paths),
@@ -1463,9 +1555,11 @@ class WebspaceScenarioRuntime:
             "failed_branches": len(failed_paths),
             "changed_paths": list(changed_paths),
             "defaults_failed": defaults_failed,
+            "phases": phase_summaries,
         }
         if failed_paths:
             self._last_apply_summary["failed_paths"] = list(failed_paths)
+        self._last_apply_phase_timings_ms = phase_timings_ms or None
 
     def _resolve_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverOutputs:
         return self.resolve_webspace(self._collect_resolver_inputs_in_doc(ydoc, webspace_id))
@@ -1475,6 +1569,7 @@ class WebspaceScenarioRuntime:
         timings: Dict[str, float] = {}
         self._last_resolver_debug = None
         self._last_apply_summary = None
+        self._last_apply_phase_timings_ms = None
 
         stage_started = time.perf_counter()
         inputs = self._collect_resolver_inputs_in_doc(ydoc, webspace_id)
@@ -1487,6 +1582,8 @@ class WebspaceScenarioRuntime:
         stage_started = time.perf_counter()
         self._apply_resolved_state_in_doc(ydoc, webspace_id, resolved)
         _record_timing(timings, "apply", stage_started)
+        apply_phase_timings = _copy_timing_map(self._last_apply_phase_timings_ms) or {}
+        timings.update(apply_phase_timings)
 
         stage_started = time.perf_counter()
         entry = resolved.to_registry_entry()
@@ -2351,6 +2448,7 @@ async def rebuild_webspace_from_sources(
         phase_timings = _derive_phase_timings(
             switch_timings_ms=effective_switch_timings,
             rebuild_timings_ms=finalized_timings,
+            semantic_rebuild_timings_ms=semantic_timings,
             switch_mode=effective_switch_mode,
         )
         _set_webspace_rebuild_status_if_current(
@@ -2461,6 +2559,7 @@ async def rebuild_webspace_from_sources(
     phase_timings = _derive_phase_timings(
         switch_timings_ms=effective_switch_timings,
         rebuild_timings_ms=finalized_timings,
+        semantic_rebuild_timings_ms=semantic_timings,
         switch_mode=effective_switch_mode,
     )
     result = {
@@ -2810,6 +2909,7 @@ async def switch_webspace_scenario(
             phase_timings = _derive_phase_timings(
                 switch_timings_ms=finalized_timings,
                 rebuild_timings_ms=_copy_timing_map(rebuild_state.get("timings_ms")),
+                semantic_rebuild_timings_ms=_copy_timing_map(rebuild_state.get("semantic_rebuild_timings_ms")),
                 switch_mode="noop",
             )
         return {
@@ -3135,6 +3235,7 @@ async def switch_webspace_scenario(
         rebuild_result["phase_timings_ms"] = _derive_phase_timings(
             switch_timings_ms=final_switch_timings,
             rebuild_timings_ms=rebuild_result.get("timings_ms"),
+            semantic_rebuild_timings_ms=rebuild_result.get("semantic_rebuild_timings_ms"),
             switch_mode=switch_mode,
         )
         return rebuild_result
@@ -3143,6 +3244,7 @@ async def switch_webspace_scenario(
     phase_timings = _derive_phase_timings(
         switch_timings_ms=finalized_timings,
         rebuild_timings_ms=rebuild_result.get("timings_ms"),
+        semantic_rebuild_timings_ms=rebuild_result.get("semantic_rebuild_timings_ms"),
         switch_mode=switch_mode,
     )
     _log.info(
