@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from contextlib import contextmanager, asynccontextmanager
 from typing import Iterator, AsyncIterator, Awaitable, Optional, TypeVar, Callable, Any
 
@@ -12,6 +13,15 @@ from adaos.services.yjs.store import get_ystore_for_webspace
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
+
+
+def _record_doc_timing(timings: dict[str, float] | None, key: str, started_at: float, *, prefix: str = "") -> float:
+    value = round((time.perf_counter() - started_at) * 1000.0, 3)
+    if timings is not None:
+        token = f"{prefix}{str(key or '').strip()}" if prefix else str(key or "").strip()
+        if token:
+            timings[token] = value
+    return value
 
 
 def _run_blocking(coro: Awaitable[T]) -> T:
@@ -36,6 +46,27 @@ def _resolve_live_room(webspace_id: str):
     except Exception:
         return None
     return y_server.rooms.get(webspace_id)
+
+
+def try_read_live_map_value(webspace_id: str, map_name: str, key: str) -> tuple[bool, Any]:
+    """
+    Best-effort fast path for reading a value from the in-memory live room.
+
+    The helper only reads directly when the current thread already owns the
+    room, so it stays non-blocking and safe for hot-path diagnostics.
+    """
+    room = _resolve_live_room(webspace_id)
+    if not room:
+        return False, None
+    owner_thread = getattr(room, "_thread_id", None)
+    current = threading.get_ident()
+    if owner_thread is not None and owner_thread != current:
+        return False, None
+    try:
+        y_map = room.ydoc.get_map(str(map_name or ""))
+        return True, y_map.get(str(key or ""))
+    except Exception:
+        return True, None
 
 
 def _schedule_room_update(webspace_id: str, update: Optional[bytes]) -> None:
@@ -91,25 +122,43 @@ def _encode_diff(ydoc: Y.YDoc, before: bytes | None) -> bytes | None:
 
 
 @contextmanager
-def get_ydoc(webspace_id: str) -> Iterator[Y.YDoc]:
+def get_ydoc(
+    webspace_id: str,
+    *,
+    read_only: bool = False,
+    timings: dict[str, float] | None = None,
+    timing_prefix: str = "",
+) -> Iterator[Y.YDoc]:
     """
     Synchronously load a webspace-backed YDoc, applying persisted updates on
     entry and writing the resulting state back on exit.
     """
     _log.debug("get_ydoc enter webspace=%s", webspace_id)
+    session_started = time.perf_counter()
     ystore = get_ystore_for_webspace(webspace_id)
     ydoc = Y.YDoc()
 
     async def _load() -> bytes | None:
+        stage_started = time.perf_counter()
         await ystore.start()
+        _record_doc_timing(timings, "ystore_start", stage_started, prefix=timing_prefix)
         try:
+            stage_started = time.perf_counter()
             await ystore.apply_updates(ydoc)
+            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
         except BaseException:
             # Treat corrupted updates as "no state"; start from empty doc.
+            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
             pass
+        if read_only:
+            return None
         try:
-            return Y.encode_state_vector(ydoc)
+            stage_started = time.perf_counter()
+            before = Y.encode_state_vector(ydoc)
+            _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
+            return before
         except Exception:
+            _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
             return None
 
     before = _run_blocking(_load())
@@ -117,56 +166,112 @@ def get_ydoc(webspace_id: str) -> Iterator[Y.YDoc]:
         yield ydoc
     finally:
         async def _flush() -> bytes | None:
-            try:
-                await ystore.encode_state_as_update(ydoc)
-            except Exception:
-                pass
-            finally:
+            update: bytes | None = None
+            if not read_only:
                 try:
-                    await ystore.stop()
+                    stage_started = time.perf_counter()
+                    await ystore.encode_state_as_update(ydoc)
+                    _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
                 except Exception:
+                    _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
                     pass
-            return _encode_diff(ydoc, before)
+                stage_started = time.perf_counter()
+                update = _encode_diff(ydoc, before)
+                _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                stage_started = time.perf_counter()
+                _schedule_room_update(webspace_id, update)
+                _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+            return update
 
         try:
-            update = _run_blocking(_flush())
+            _run_blocking(_flush())
         except Exception as exc:
             _log.warning("get_ydoc flush failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-            update = None
-        _schedule_room_update(webspace_id, update)
+        finally:
+            try:
+                stage_started = time.perf_counter()
+                _run_blocking(ystore.stop())
+                _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+            except Exception:
+                _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+            _record_doc_timing(timings, "total", session_started, prefix=timing_prefix)
 
 
 @asynccontextmanager
-async def async_get_ydoc(webspace_id: str) -> AsyncIterator[Y.YDoc]:
+async def async_get_ydoc(
+    webspace_id: str,
+    *,
+    read_only: bool = False,
+    timings: dict[str, float] | None = None,
+    timing_prefix: str = "",
+) -> AsyncIterator[Y.YDoc]:
     """
     Async counterpart of :func:`get_ydoc` for use inside running event loops.
     """
     # Debug log omitted to reduce noise in dev logs.
+    session_started = time.perf_counter()
     ystore = get_ystore_for_webspace(webspace_id)
     ydoc = Y.YDoc()
+    stage_started = time.perf_counter()
     await ystore.start()
+    _record_doc_timing(timings, "ystore_start", stage_started, prefix=timing_prefix)
     try:
         try:
+            stage_started = time.perf_counter()
             await ystore.apply_updates(ydoc)
+            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
         except BaseException:
             # Treat corrupted updates as "no state"; start from empty doc.
+            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
             pass
-        try:
-            before = Y.encode_state_vector(ydoc)
-        except Exception:
-            before = None
+        before = None
+        if not read_only:
+            try:
+                stage_started = time.perf_counter()
+                before = Y.encode_state_vector(ydoc)
+                _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
+            except Exception:
+                _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
+                before = None
         yield ydoc
-        try:
-            await ystore.encode_state_as_update(ydoc)
-        except Exception as exc:
-            _log.warning("async_get_ydoc encode_state_as_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-        update = _encode_diff(ydoc, before)
-        _schedule_room_update(webspace_id, update)
+        if not read_only:
+            try:
+                stage_started = time.perf_counter()
+                await ystore.encode_state_as_update(ydoc)
+                _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
+            except Exception as exc:
+                _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
+                _log.warning("async_get_ydoc encode_state_as_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
+            stage_started = time.perf_counter()
+            update = _encode_diff(ydoc, before)
+            _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+            stage_started = time.perf_counter()
+            _schedule_room_update(webspace_id, update)
+            _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
     finally:
         try:
+            stage_started = time.perf_counter()
             await ystore.stop()
+            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
         except Exception:
-            pass
+            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+        _record_doc_timing(timings, "total", session_started, prefix=timing_prefix)
+
+
+@asynccontextmanager
+async def async_read_ydoc(
+    webspace_id: str,
+    *,
+    timings: dict[str, float] | None = None,
+    timing_prefix: str = "",
+) -> AsyncIterator[Y.YDoc]:
+    async with async_get_ydoc(
+        webspace_id,
+        read_only=True,
+        timings=timings,
+        timing_prefix=timing_prefix,
+    ) as ydoc:
+        yield ydoc
 
 
 def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -> bool:
@@ -208,4 +313,11 @@ def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
     return _run_on_room_thread(room, _apply)
 
 
-__all__ = ["get_ydoc", "async_get_ydoc", "mutate_live_room", "apply_update_to_live_room"]
+__all__ = [
+    "get_ydoc",
+    "async_get_ydoc",
+    "async_read_ydoc",
+    "try_read_live_map_value",
+    "mutate_live_room",
+    "apply_update_to_live_room",
+]

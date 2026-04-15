@@ -186,6 +186,10 @@ readiness progression from the rebuild surface alone. The dedicated
 is still pending, or briefly after a fresh ready transition, instead of
 reopening the YDoc immediately.
 
+When those endpoints do need to inspect the document directly, they now prefer
+read-only YDoc sessions so diagnostics/catalog reads avoid unnecessary flush
+and room rebroadcast work on exit.
+
 Rebuild/control surfaces also expose phase-oriented timing and apply detail so
 pointer-only scenario switch can be evaluated against real runtime slices:
 
@@ -211,12 +215,20 @@ re-fetching the full webspace snapshot on every readiness loop, which keeps
 operator measurements usable even when the runtime is under pressure. `--detail`
 additionally prints switch/rebuild/semantic timing breakdowns plus observed
 materialization milestones (`time_to_first_paint`, `time_to_interactive`,
-`time_to_ready`) for each run and in the aggregate.
+`time_to_ready`) for each run and in the aggregate. It now also prints
+`ydoc_timings_ms`, which separates YDoc/YStore session overhead from the
+inner semantic rebuild timings.
 
 When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`
 endpoint, which further reduces polling pressure on the hub during repeated
 scenario switch measurements.
+
+Pointer-first scenario switch now also prefers a live-room fast path when the
+target webspace is already attached in memory: `ui.current_scenario` is
+updated on the active room first, then persisted stale-safely in the
+background. This reduces hot-path store reopen cost and improves time to first
+visible switch reaction for attached clients.
 
 If the requested local control endpoint becomes stale during supervisor
 prewarm/candidate activity, the benchmark CLI can now consult supervisor

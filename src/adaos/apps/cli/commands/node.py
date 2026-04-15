@@ -861,6 +861,7 @@ def _print_rebuild_summary(payload: dict[str, Any], *, key: str = "rebuild") -> 
     _print_timings_summary(rebuild, key="timings_ms", label="rebuild_timings_ms")
     _print_timings_summary(rebuild, key="switch_timings_ms", label="switch_timings_ms")
     _print_timings_summary(rebuild, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
+    _print_timings_summary(rebuild, key="ydoc_timings_ms", label="ydoc_timings_ms")
     _print_timings_summary(rebuild, key="phase_timings_ms", label="phase_timings_ms")
 
 
@@ -1123,6 +1124,9 @@ def _merge_benchmark_rebuild_payload(payload: dict[str, Any], rebuild: dict[str,
     )
     if semantic_timings:
         merged["semantic_rebuild_timings_ms"] = dict(semantic_timings)
+    ydoc_timings = rebuild_state.get("ydoc_timings_ms") if isinstance(rebuild_state.get("ydoc_timings_ms"), dict) else {}
+    if ydoc_timings:
+        merged["ydoc_timings_ms"] = dict(ydoc_timings)
     return merged
 
 
@@ -1325,6 +1329,11 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         else dict(rebuild.get("semantic_rebuild_timings_ms") or {})
         if isinstance(rebuild.get("semantic_rebuild_timings_ms"), dict)
         else {},
+        "ydoc_timings_ms": dict(payload.get("ydoc_timings_ms") or {})
+        if isinstance(payload.get("ydoc_timings_ms"), dict)
+        else dict(rebuild.get("ydoc_timings_ms") or {})
+        if isinstance(rebuild.get("ydoc_timings_ms"), dict)
+        else {},
     }
 
 
@@ -1348,6 +1357,7 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     switch_summary = _aggregate_benchmark_timing_maps(runs, key="timings_ms")
     rebuild_summary = _aggregate_benchmark_timing_maps(runs, key="rebuild_timings_ms")
     semantic_summary = _aggregate_benchmark_timing_maps(runs, key="semantic_rebuild_timings_ms")
+    ydoc_summary = _aggregate_benchmark_timing_maps(runs, key="ydoc_timings_ms")
     poll_summary = _aggregate_benchmark_timing_maps(runs, key="poll_counts")
 
     changed_values = [
@@ -1388,6 +1398,8 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
         summary["rebuild_timings_ms"] = rebuild_summary
     if semantic_summary:
         summary["semantic_rebuild_timings_ms"] = semantic_summary
+    if ydoc_summary:
+        summary["ydoc_timings_ms"] = ydoc_summary
     if poll_summary:
         summary["poll_counts"] = poll_summary
     changed_aggregate = _aggregate_benchmark_values(changed_values)
@@ -2412,12 +2424,14 @@ def _node_yjs_benchmark_scenario_action(
             _print_timings_summary(run, key="timings_ms", label="  switch_timings_ms")
             _print_timings_summary(run, key="rebuild_timings_ms", label="  rebuild_timings_ms")
             _print_timings_summary(run, key="semantic_rebuild_timings_ms", label="  semantic_rebuild_timings_ms")
+            _print_timings_summary(run, key="ydoc_timings_ms", label="  ydoc_timings_ms")
             _print_materialization_summary(run)
     _print_benchmark_summary(summary)
     if detail:
         _print_benchmark_timing_group(summary, key="timings_ms", label="switch_timings_ms")
         _print_benchmark_timing_group(summary, key="rebuild_timings_ms", label="rebuild_timings_ms")
         _print_benchmark_timing_group(summary, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
+        _print_benchmark_timing_group(summary, key="ydoc_timings_ms", label="ydoc_timings_ms")
 
 
 @yjs_app.command("create")

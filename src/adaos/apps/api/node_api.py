@@ -62,7 +62,7 @@ from adaos.services.system_model.service import (
     current_topology_projection,
     route_info,
 )
-from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.doc import async_read_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace
 
 router = APIRouter()
@@ -358,7 +358,7 @@ async def _describe_yjs_materialization(
     if cached:
         return cached
     try:
-        async with async_get_ydoc(target_webspace_id) as ydoc:
+        async with async_read_ydoc(target_webspace_id) as ydoc:
             ui_map = ydoc.get_map("ui")
             data_map = ydoc.get_map("data")
             registry_map = ydoc.get_map("registry")
@@ -488,7 +488,7 @@ async def _read_live_catalog_items(webspace_id: str, kind: str) -> list[dict[str
     target_webspace_id = str(webspace_id or "").strip() or "default"
     bucket = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
     try:
-        async with async_get_ydoc(target_webspace_id) as ydoc:
+        async with async_read_ydoc(target_webspace_id) as ydoc:
             data_map = ydoc.get_map("data")
             catalog = _coerce_dict(data_map.get("catalog") or {})
             items = catalog.get(bucket)

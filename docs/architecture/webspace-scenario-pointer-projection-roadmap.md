@@ -280,6 +280,11 @@ During pending rebuilds, the lightweight materialization endpoint may now serve
 that cached snapshot directly; recent ready snapshots are also reused briefly
 so benchmark loops can read the final readiness state from the same fast path.
 
+Control and diagnostic reads that only inspect current state now also have a
+read-only YDoc path, so materialization/catalog/operational probes can skip
+flush/rebroadcast work on exit instead of paying the full read-write YDoc
+session envelope on every poll.
+
 Browser fallback diagnostics now also prefer those lightweight materialization
 surfaces for reload/catalog recovery paths instead of fetching the full
 `/api/node/yjs/webspaces/<id>` snapshot when only readiness metadata is needed.
@@ -344,6 +349,11 @@ Compatibility cache payloads are now also trimmed to the sections the current
 runtime still uses for fallback (`ui.application`, `registry`, `catalog`)
 instead of copying arbitrary scenario `data` into switch-time caches.
 
+When an active live room is already attached, pointer-only switch can now also
+update `ui.current_scenario` in-memory first and persist that pointer
+stale-safely in the background. This removes one avoidable store-backed YDoc
+open from the hot path while keeping persistence convergence explicit.
+
 Current rollback guidance if pointer-only switch regresses runtime behavior:
 
 - if `ui.current_scenario` flips quickly but the visible UI stays stale until a
@@ -401,6 +411,20 @@ phases:
 This does not yet defer off-focus payload to a separate background slice, but
 it does remove the earlier "all ready at once" assumption from runtime timing
 and apply summaries.
+
+Recent `benchmark-scenario --detail` runs also changed the immediate
+optimization priority. Current heavy-scenario measurements show that inner
+`semantic_rebuild_timings_ms.total` is already low compared with:
+
+- `describe_state_before`
+- `open_doc`
+- the wider YDoc/YStore session envelope now surfaced as `ydoc_timings_ms`
+
+That means the next short-term performance slices should focus on:
+
+- live-room fast paths for current-scenario reads and pointer writes
+- reducing YStore open/load/flush cost
+- only then pushing deeper fragmented apply/diff work
 
 Reader/writer audit for migration planning:
 
@@ -483,9 +507,15 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 - [x] Add per-stage timing around switch, scenario load, projection refresh,
   resolve, and apply.
+- [x] Add read-only YDoc access paths for diagnostic/control reads that do not
+  need writeback.
+- [x] Expose YDoc session-envelope timings in rebuild and benchmark detail
+  output.
 - [x] Add `skip-if-unchanged` checks for large derived writes.
 - [x] Add cache keys for scenario content, skill UI contributions, and overlay
   snapshots where helpful.
+- [x] Use live-room fast paths for `ui.current_scenario` reads/writes when an
+  active room is already attached.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.

@@ -851,11 +851,6 @@ def test_node_yjs_webspace_rebuild_state_endpoint_includes_cached_materializatio
 
 
 def test_describe_yjs_materialization_prefers_cached_rebuild_snapshot_while_pending(monkeypatch) -> None:
-    async def _boom(_webspace_id: str):
-        raise AssertionError("live YDoc should not be opened while pending cached materialization exists")
-
-    monkeypatch.setattr(node_api_module, "async_get_ydoc", _boom)
-
     result = asyncio.run(
         node_api_module._describe_yjs_materialization(
             "default",
@@ -933,7 +928,7 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
         ),
     }
 
-    monkeypatch.setattr(node_api_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(node_api_module, "async_read_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
 
     result = asyncio.run(node_api_module._describe_yjs_materialization("default"))
 
@@ -966,7 +961,7 @@ def test_describe_yjs_materialization_reports_hydrating_readiness_and_missing_br
         ),
     }
 
-    monkeypatch.setattr(node_api_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(node_api_module, "async_read_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
 
     result = asyncio.run(node_api_module._describe_yjs_materialization("default"))
 
@@ -1019,6 +1014,113 @@ def test_describe_compatibility_caches_reports_runtime_removal_blockers(monkeypa
         "switch_compat_cache_writes_enabled",
         "resolver_legacy_fallback_active",
     }
+
+
+def test_describe_webspace_operational_state_prefers_live_room_fast_path(monkeypatch) -> None:
+    row = SimpleNamespace(
+        title="Desktop",
+        effective_kind="workspace",
+        effective_source_mode="workspace",
+        is_dev=False,
+        home_scenario="web_desktop",
+        effective_home_scenario="web_desktop",
+    )
+
+    monkeypatch.setattr(webspace_runtime_module.workspace_index, "get_workspace", lambda webspace_id: row)
+    monkeypatch.setattr(webspace_runtime_module.workspace_index, "ensure_workspace", lambda webspace_id: row)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "try_read_live_map_value",
+        lambda webspace_id, map_name, key: (True, "infrascope"),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "async_read_ydoc",
+        lambda _webspace_id: (_ for _ in ()).throw(AssertionError("async_read_ydoc should not run when live room is readable")),
+    )
+
+    result = asyncio.run(webspace_runtime_module.describe_webspace_operational_state("default"))
+
+    assert result.webspace_id == "default"
+    assert result.current_scenario == "infrascope"
+    assert result.effective_home_scenario == "web_desktop"
+
+
+def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) -> None:
+    row = SimpleNamespace(
+        effective_kind="workspace",
+        effective_source_mode="workspace",
+        effective_home_scenario="web_desktop",
+        is_dev=False,
+    )
+    scheduled: list[dict[str, object]] = []
+    persisted: list[tuple[str, str]] = []
+    live_mutations: list[str] = []
+    describe_calls = {"count": 0}
+
+    async def _fake_operational_state(_webspace_id: str):
+        return SimpleNamespace(
+            current_scenario="web_desktop",
+            effective_home_scenario="web_desktop",
+        )
+
+    def _fake_describe_rebuild(_webspace_id: str) -> dict[str, object]:
+        describe_calls["count"] += 1
+        if describe_calls["count"] == 1:
+            return {"status": "idle", "pending": False, "scenario_id": "web_desktop"}
+        return {
+            "request_id": "req-live-1",
+            "status": "scheduled",
+            "pending": True,
+            "background": True,
+            "scenario_id": "infrascope",
+        }
+
+    monkeypatch.setattr(webspace_runtime_module, "describe_webspace_operational_state", _fake_operational_state)
+    monkeypatch.setattr(webspace_runtime_module.workspace_index, "get_workspace", lambda webspace_id: row)
+    monkeypatch.setattr(webspace_runtime_module.workspace_index, "ensure_workspace", lambda webspace_id: row)
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_switch_mode", lambda: "pointer_only")
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, space="workspace": True)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "mutate_live_room",
+        lambda webspace_id, mutator: (live_mutations.append(str(webspace_id)), True)[1],
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_schedule_live_pointer_switch_persist",
+        lambda webspace_id, scenario_id: persisted.append((webspace_id, scenario_id)),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "async_get_ydoc",
+        lambda _webspace_id: (_ for _ in ()).throw(AssertionError("async_get_ydoc should not run on live-room pointer fast path")),
+    )
+    monkeypatch.setattr(webspace_runtime_module, "_schedule_scenario_switch_rebuild", lambda *args, **kwargs: scheduled.append(dict(kwargs)))
+    monkeypatch.setattr(webspace_runtime_module, "describe_webspace_rebuild_state", _fake_describe_rebuild)
+    monkeypatch.setattr(webspace_runtime_module, "_set_webspace_rebuild_status_if_current", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        webspace_runtime_module.switch_webspace_scenario(
+            "default",
+            "infrascope",
+            wait_for_rebuild=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["background_rebuild"] is True
+    assert result["scenario_switch_mode"] == "pointer_only"
+    assert live_mutations == ["default"]
+    assert persisted == [("default", "infrascope")]
+    assert len(scheduled) == 1
+    assert scheduled[0]["scenario_id"] == "infrascope"
+    assert scheduled[0]["scenario_resolution"] == "explicit"
+    assert scheduled[0]["switch_mode"] == "pointer_only"
+    assert isinstance(scheduled[0]["switch_timings_ms"], dict)
+    assert "write_switch_pointer" in result["timings_ms"]
+    assert "open_doc" not in result["timings_ms"]
 
 
 def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
@@ -1555,6 +1657,13 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
                     "apply_interactive": 10.0,
                     "total": 50.0,
                 },
+                "ydoc_timings_ms": {
+                    "ystore_start": 3.0,
+                    "ystore_apply_updates": 7.0,
+                    "in_doc_rebuild": 50.0,
+                    "ystore_stop": 1.0,
+                    "total": 61.0,
+                },
                 "phase_timings_ms": {
                     "time_to_accept": 10.0,
                     "time_to_pointer_update": 4.0,
@@ -1581,6 +1690,13 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
                 "switch_timings_ms": {"write_switch_pointer": 3.0, "total": 8.0},
                 "timings_ms": {"resolve_rebuild_target": 4.0, "semantic_rebuild": 16.0, "total": 20.0},
                 "semantic_rebuild_timings_ms": {"collect_inputs": 2.0, "resolve": 5.0, "apply_structure": 4.0, "total": 16.0},
+                "ydoc_timings_ms": {
+                    "ystore_start": 2.0,
+                    "ystore_apply_updates": 4.0,
+                    "in_doc_rebuild": 16.0,
+                    "ystore_stop": 1.0,
+                    "total": 23.0,
+                },
                 "phase_timings_ms": {
                     "time_to_accept": 8.0,
                     "time_to_pointer_update": 3.0,
@@ -1615,6 +1731,13 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
                     "apply_interactive": 12.0,
                     "total": 42.0,
                 },
+                "ydoc_timings_ms": {
+                    "ystore_start": 4.0,
+                    "ystore_apply_updates": 6.0,
+                    "in_doc_rebuild": 42.0,
+                    "ystore_stop": 1.0,
+                    "total": 53.0,
+                },
                 "phase_timings_ms": {
                     "time_to_accept": 12.0,
                     "time_to_pointer_update": 5.0,
@@ -1641,6 +1764,13 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
                 "switch_timings_ms": {"write_switch_pointer": 2.0, "total": 7.0},
                 "timings_ms": {"resolve_rebuild_target": 3.0, "semantic_rebuild": 15.0, "total": 18.0},
                 "semantic_rebuild_timings_ms": {"collect_inputs": 2.0, "resolve": 4.0, "apply_structure": 4.0, "total": 15.0},
+                "ydoc_timings_ms": {
+                    "ystore_start": 1.0,
+                    "ystore_apply_updates": 3.0,
+                    "in_doc_rebuild": 15.0,
+                    "ystore_stop": 1.0,
+                    "total": 20.0,
+                },
                 "phase_timings_ms": {
                     "time_to_accept": 7.0,
                     "time_to_pointer_update": 2.0,
@@ -1816,6 +1946,8 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.switch_timings_ms:" in line for line in echoed)
     assert any("summary.rebuild_timings_ms:" in line for line in echoed)
     assert any("summary.semantic_rebuild_timings_ms:" in line for line in echoed)
+    assert any("summary.ydoc_timings_ms:" in line for line in echoed)
+    assert any("  ydoc_timings_ms:" in line for line in echoed)
 
 
 def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(monkeypatch) -> None:

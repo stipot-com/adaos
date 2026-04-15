@@ -18,7 +18,13 @@ import y_py as Y
 
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.capacity import get_local_capacity
-from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
+from adaos.services.yjs.doc import (
+    get_ydoc,
+    async_get_ydoc,
+    async_read_ydoc,
+    mutate_live_room,
+    try_read_live_map_value,
+)
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
@@ -54,6 +60,13 @@ _DEFERRED_OFF_FOCUS_LOAD = {
     "focus": "off_focus",
     "offFocusReadyState": "hydrating",
 }
+
+
+def _normalize_optional_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip()
+    return token or None
 
 
 @dataclass(slots=True)
@@ -1205,6 +1218,7 @@ def describe_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
         "timings_ms": _copy_timing_map(current.get("timings_ms")),
         "switch_timings_ms": _copy_timing_map(current.get("switch_timings_ms")),
         "semantic_rebuild_timings_ms": _copy_timing_map(current.get("semantic_rebuild_timings_ms")),
+        "ydoc_timings_ms": _copy_timing_map(current.get("ydoc_timings_ms")),
         "phase_timings_ms": _copy_timing_map(current.get("phase_timings_ms")),
         "materialization": _copy_materialization_snapshot(current.get("materialization")),
         "error": str(current.get("error") or "") or None,
@@ -1235,6 +1249,7 @@ class WebspaceScenarioRuntime:
         # Cached snapshot of desktop scenarios discovered on disk.
         self._desktop_scenarios: Optional[List[Tuple[str, str]]] = None
         self._last_rebuild_timings_ms: Dict[str, float] | None = None
+        self._last_rebuild_ydoc_timings_ms: Dict[str, float] | None = None
         self._last_resolver_debug: Dict[str, Any] | None = None
         self._last_apply_summary: Dict[str, Any] | None = None
         self._last_apply_phase_timings_ms: Dict[str, float] | None = None
@@ -2019,8 +2034,17 @@ class WebspaceScenarioRuntime:
         Async counterpart of :meth:`compute_registry_for_webspace` for use
         inside running event loops.
         """
-        async with async_get_ydoc(webspace_id) as ydoc:
-            return self._rebuild_in_doc(ydoc, webspace_id)
+        rebuild_started = time.perf_counter()
+        ydoc_timings: Dict[str, float] = {}
+        self._last_rebuild_ydoc_timings_ms = None
+        try:
+            async with async_get_ydoc(webspace_id, timings=ydoc_timings) as ydoc:
+                stage_started = time.perf_counter()
+                entry = self._rebuild_in_doc(ydoc, webspace_id)
+                _record_timing(ydoc_timings, "in_doc_rebuild", stage_started)
+                return entry
+        finally:
+            self._last_rebuild_ydoc_timings_ms = _finalize_timing_map(ydoc_timings, started_at=rebuild_started)
 
 
 # --- webspace helpers ---------------------------------------------------
@@ -2239,14 +2263,25 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     target_webspace_id = str(webspace_id or "").strip() or default_webspace_id()
     row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
 
-    current_scenario: str | None = None
+    current_scenario: str | None = _try_read_live_current_scenario(target_webspace_id)
+    if current_scenario is not None:
+        return WebspaceOperationalState(
+            webspace_id=target_webspace_id,
+            title=row.title,
+            kind=row.effective_kind,
+            source_mode=row.effective_source_mode,
+            is_dev=row.is_dev,
+            stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+            effective_home_scenario=row.effective_home_scenario,
+            current_scenario=current_scenario,
+        )
+
     try:
-        async with async_get_ydoc(target_webspace_id) as ydoc:
+        async with async_read_ydoc(target_webspace_id) as ydoc:
             ui_map = ydoc.get_map("ui")
             raw_current = ui_map.get("current_scenario")
             if raw_current is not None:
-                token = str(raw_current).strip()
-                current_scenario = token or None
+                current_scenario = _normalize_optional_token(raw_current)
     except Exception:
         current_scenario = None
 
@@ -2345,6 +2380,46 @@ async def _resolve_reload_scenario_target(
         webspace_id,
         requested_scenario_id,
         prefer_manifest_home_before_current=True,
+    )
+
+
+def _try_read_live_current_scenario(webspace_id: str) -> str | None:
+    live_hit, raw_current = try_read_live_map_value(webspace_id, "ui", "current_scenario")
+    if not live_hit:
+        return None
+    return _normalize_optional_token(raw_current)
+
+
+async def _persist_live_pointer_switch(webspace_id: str, scenario_id: str) -> None:
+    expected_scenario = _normalize_optional_token(scenario_id)
+    if not expected_scenario:
+        return
+    live_current = _try_read_live_current_scenario(webspace_id)
+    if live_current is not None and live_current != expected_scenario:
+        return
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            ui_map = ydoc.get_map("ui")
+            with ydoc.begin_transaction() as txn:
+                _set_map_value_if_changed(ui_map, txn, "current_scenario", expected_scenario)
+    except Exception:
+        _log.debug(
+            "failed to persist live pointer switch webspace=%s scenario=%s",
+            webspace_id,
+            expected_scenario,
+            exc_info=True,
+        )
+
+
+def _schedule_live_pointer_switch_persist(webspace_id: str, scenario_id: str) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_persist_live_pointer_switch(webspace_id, scenario_id))
+        return
+    loop.create_task(
+        _persist_live_pointer_switch(webspace_id, scenario_id),
+        name=f"webspace-pointer-persist-{webspace_id}",
     )
 
 
@@ -2842,6 +2917,7 @@ async def rebuild_webspace_from_sources(
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=rebuild_started)
         semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+        ydoc_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_ydoc_timings_ms", None))
         resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
         apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
         phase_timings = _derive_phase_timings(
@@ -2865,6 +2941,7 @@ async def rebuild_webspace_from_sources(
             timings_ms=finalized_timings,
             switch_timings_ms=effective_switch_timings,
             semantic_rebuild_timings_ms=semantic_timings,
+            ydoc_timings_ms=ydoc_timings,
             phase_timings_ms=phase_timings,
         )
         _log.warning(
@@ -2892,11 +2969,13 @@ async def rebuild_webspace_from_sources(
             "timings_ms": finalized_timings,
             "switch_timings_ms": effective_switch_timings,
             "semantic_rebuild_timings_ms": semantic_timings,
+            "ydoc_timings_ms": ydoc_timings,
             "phase_timings_ms": phase_timings,
             "error": "webspace_rebuild_failed",
         }
 
     semantic_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_timings_ms", None))
+    ydoc_timings = _copy_timing_map(getattr(runtime, "_last_rebuild_ydoc_timings_ms", None))
     resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
     apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
 
@@ -2982,6 +3061,7 @@ async def rebuild_webspace_from_sources(
         "timings_ms": finalized_timings,
         "switch_timings_ms": effective_switch_timings,
         "semantic_rebuild_timings_ms": semantic_timings,
+        "ydoc_timings_ms": ydoc_timings,
         "phase_timings_ms": phase_timings,
     }
     _set_webspace_rebuild_status_if_current(
@@ -3001,6 +3081,7 @@ async def rebuild_webspace_from_sources(
         timings_ms=finalized_timings,
         switch_timings_ms=effective_switch_timings,
         semantic_rebuild_timings_ms=semantic_timings,
+        ydoc_timings_ms=ydoc_timings,
         phase_timings_ms=phase_timings,
     )
     _log.info(
@@ -3505,16 +3586,30 @@ async def switch_webspace_scenario(
             }
 
     try:
-        stage_started = time.perf_counter()
-        async with async_get_ydoc(webspace_id) as ydoc:
-            _record_timing(timings_ms, "open_doc", stage_started)
-            if switch_mode in {"pointer_first", "pointer_only"}:
-                ui_map = ydoc.get_map("ui")
-                stage_started = time.perf_counter()
-                with ydoc.begin_transaction() as txn:
-                    _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+        if switch_mode in {"pointer_first", "pointer_only"}:
+            stage_started = time.perf_counter()
+
+            def _mutator(doc: Any, txn: Any) -> None:
+                ui_map = doc.get_map("ui")
+                _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+
+            live_applied = mutate_live_room(webspace_id, _mutator)
+            if live_applied:
                 _record_timing(timings_ms, "write_switch_pointer", stage_started)
+                _schedule_live_pointer_switch_persist(webspace_id, scenario_id)
             else:
+                stage_started = time.perf_counter()
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    _record_timing(timings_ms, "open_doc", stage_started)
+                    ui_map = ydoc.get_map("ui")
+                    stage_started = time.perf_counter()
+                    with ydoc.begin_transaction() as txn:
+                        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+                    _record_timing(timings_ms, "write_switch_pointer", stage_started)
+        else:
+            stage_started = time.perf_counter()
+            async with async_get_ydoc(webspace_id) as ydoc:
+                _record_timing(timings_ms, "open_doc", stage_started)
                 stage_started = time.perf_counter()
                 _materialize_scenario_switch_content_in_doc(
                     ydoc,
