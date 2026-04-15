@@ -885,6 +885,48 @@ def _aggregate_benchmark_timing_maps(
     return out
 
 
+def _benchmark_materialization_milestones(materialization: dict[str, Any] | None, *, elapsed_ms: float) -> dict[str, float]:
+    state = materialization if isinstance(materialization, dict) else {}
+    ready = bool(state.get("ready"))
+    readiness_state = str(state.get("readiness_state") or "").strip().lower()
+    milestones: dict[str, float] = {}
+    if ready or readiness_state in {"first_paint", "interactive", "hydrating", "ready"}:
+        milestones["time_to_first_paint"] = round(float(elapsed_ms), 3)
+    if ready or readiness_state in {"interactive", "hydrating", "ready"}:
+        milestones["time_to_interactive"] = round(float(elapsed_ms), 3)
+    if ready or readiness_state == "ready":
+        milestones["time_to_ready"] = round(float(elapsed_ms), 3)
+    return milestones
+
+
+def _best_effort_benchmark_materialization_poll(
+    *,
+    control: str,
+    token: str,
+    webspace: str,
+    timeout_sec: float,
+) -> tuple[dict[str, Any] | None, bool]:
+    for path in (
+        f"/api/node/yjs/webspaces/{webspace}/materialization",
+        f"/api/node/yjs/webspaces/{webspace}",
+    ):
+        code, payload = _control_get_json(
+            control=control,
+            path=path,
+            token=token,
+            timeout=timeout_sec,
+        )
+        if code == 404 and path.endswith("/materialization"):
+            continue
+        if code != 200 or not isinstance(payload, dict):
+            return None, False
+        materialization = payload.get("materialization") if isinstance(payload.get("materialization"), dict) else {}
+        if materialization:
+            return dict(materialization), True
+        return None, True
+    return None, False
+
+
 def _merge_benchmark_rebuild_payload(payload: dict[str, Any], rebuild: dict[str, Any] | None) -> dict[str, Any]:
     merged = dict(payload)
     rebuild_state = dict(rebuild or {})
@@ -959,11 +1001,24 @@ def _wait_for_benchmark_rebuild(
     initial_rebuild: dict[str, Any] | None,
     timeout_sec: float,
     poll_interval_sec: float,
-) -> tuple[dict[str, Any] | None, float | None, bool]:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, float], float | None, bool]:
     rebuild_state = dict(initial_rebuild or {})
     request_id = str(rebuild_state.get("request_id") or "").strip() or None
+    observed_timings: dict[str, float] = {}
+    materialization_state: dict[str, Any] | None = None
+    materialization_supported = True
     if _benchmark_rebuild_is_terminal(rebuild_state, request_id=request_id, scenario_id=scenario_id):
-        return rebuild_state, 0.0, False
+        if materialization_supported:
+            current_materialization, materialization_supported = _best_effort_benchmark_materialization_poll(
+                control=control,
+                token=token,
+                webspace=webspace,
+                timeout_sec=max(2.0, max(float(poll_interval_sec or 0.0), 0.05) + 1.0),
+            )
+            if current_materialization:
+                materialization_state = current_materialization
+                observed_timings.update(_benchmark_materialization_milestones(materialization_state, elapsed_ms=0.0))
+        return rebuild_state, materialization_state, observed_timings, 0.0, False
 
     wait_started = time.perf_counter()
     deadline = wait_started + max(float(timeout_sec or 0.0), 0.0)
@@ -1000,17 +1055,29 @@ def _wait_for_benchmark_rebuild(
             current_request_id = str(rebuild_state.get("request_id") or "").strip() or None
             if current_request_id:
                 request_id = current_request_id
+        loop_now = time.perf_counter()
+        elapsed_ms = round((loop_now - wait_started) * 1000.0, 3)
+        if materialization_supported:
+            current_materialization, materialization_supported = _best_effort_benchmark_materialization_poll(
+                control=control,
+                token=token,
+                webspace=webspace,
+                timeout_sec=max(2.0, interval + 1.0),
+            )
+            if current_materialization:
+                materialization_state = current_materialization
+                for name, value in _benchmark_materialization_milestones(materialization_state, elapsed_ms=elapsed_ms).items():
+                    observed_timings.setdefault(name, value)
         if _benchmark_rebuild_is_terminal(rebuild_state, request_id=request_id, scenario_id=scenario_id):
-            elapsed_ms = round((time.perf_counter() - wait_started) * 1000.0, 3)
-            return rebuild_state, elapsed_ms, False
-        if time.perf_counter() >= deadline:
-            elapsed_ms = round((time.perf_counter() - wait_started) * 1000.0, 3)
-            return rebuild_state if rebuild_state else None, elapsed_ms, True
+            return rebuild_state, materialization_state, observed_timings, elapsed_ms, False
+        if loop_now >= deadline:
+            return rebuild_state if rebuild_state else None, materialization_state, observed_timings, elapsed_ms, True
         time.sleep(interval)
 
 
 def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
     rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+    materialization = payload.get("materialization") if isinstance(payload.get("materialization"), dict) else {}
     phase_timings = dict(payload.get("phase_timings_ms") or {}) if isinstance(payload.get("phase_timings_ms"), dict) else {}
     rebuild_phase_timings = rebuild.get("phase_timings_ms") if isinstance(rebuild.get("phase_timings_ms"), dict) else {}
     if rebuild_phase_timings:
@@ -1044,11 +1111,13 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         "changed_branches": changed_branches,
         "unchanged_branches": unchanged_branches,
         "rebuild_status": str(rebuild.get("status") or "").strip() or None,
+        "materialization_state": str(materialization.get("readiness_state") or "").strip() or None,
         "rebuild_wait_timeout": bool(payload.get("rebuild_wait_timeout")),
         "phase_timings_ms": dict(phase_timings),
         "observed_timings_ms": dict(payload.get("observed_timings_ms") or {})
         if isinstance(payload.get("observed_timings_ms"), dict)
         else {},
+        "materialization": dict(materialization),
         "timings_ms": switch_timings,
         "rebuild_timings_ms": (
             dict(payload.get("rebuild_timings_ms") or {})
@@ -1080,7 +1149,7 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     observed_summary = _aggregate_benchmark_timing_maps(
         runs,
         key="observed_timings_ms",
-        names=("time_to_accept", "time_to_ready"),
+        names=("time_to_accept", "time_to_first_paint", "time_to_interactive", "time_to_ready"),
     )
     switch_summary = _aggregate_benchmark_timing_maps(runs, key="timings_ms")
     rebuild_summary = _aggregate_benchmark_timing_maps(runs, key="rebuild_timings_ms")
@@ -1149,7 +1218,7 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
             f"max={float(item.get('max')):.3f}"
         )
     observed_summary = summary.get("observed_timings_ms") if isinstance(summary.get("observed_timings_ms"), dict) else {}
-    for metric_name in ("time_to_accept", "time_to_ready"):
+    for metric_name in ("time_to_accept", "time_to_first_paint", "time_to_interactive", "time_to_ready"):
         item = observed_summary.get(metric_name) if isinstance(observed_summary.get(metric_name), dict) else {}
         if not item:
             continue
@@ -1859,6 +1928,48 @@ def _node_yjs_describe_action(
         _print_yjs_runtime_summary({"runtime": runtime})
 
 
+def _node_yjs_materialization_action(
+    *,
+    webspace: str,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    status_code, payload = _control_get_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}/materialization",
+        token=_resolved_local_control_token(control0, cfg),
+        timeout=5.0,
+    )
+    if status_code == 404:
+        status_code, payload = _control_get_json(
+            control=control0,
+            path=f"/api/node/yjs/webspaces/{webspace}",
+            token=_resolved_local_control_token(control0, cfg),
+            timeout=8.0,
+        )
+    if status_code is None:
+        typer.secho("[AdaOS] yjs materialization failed: local control API is unreachable", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(payload, dict):
+        typer.secho(f"[AdaOS] yjs materialization failed: HTTP {status_code}", fg=typer.colors.RED)
+        if payload:
+            typer.echo(payload)
+        raise typer.Exit(code=1)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    typer.echo(f"materialization: webspace={payload.get('webspace_id') or webspace}")
+    _print_rebuild_summary(payload)
+    _print_materialization_summary(payload)
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        _print_yjs_runtime_summary({"runtime": runtime})
+
+
 def _node_yjs_desktop_action(
     *,
     webspace: str,
@@ -1968,7 +2079,13 @@ def _node_yjs_benchmark_scenario_action(
         merged_payload["observed_timings_ms"] = {"time_to_accept": observed_accept_ms}
         if wait_ready:
             rebuild_state = merged_payload.get("rebuild") if isinstance(merged_payload.get("rebuild"), dict) else {}
-            final_rebuild, wait_elapsed_ms, timed_out = _wait_for_benchmark_rebuild(
+            (
+                final_rebuild,
+                final_materialization,
+                materialization_observed_timings,
+                wait_elapsed_ms,
+                timed_out,
+            ) = _wait_for_benchmark_rebuild(
                 control=control0,
                 token=token,
                 webspace=webspace,
@@ -1979,15 +2096,24 @@ def _node_yjs_benchmark_scenario_action(
             )
             if final_rebuild:
                 merged_payload = _merge_benchmark_rebuild_payload(merged_payload, final_rebuild)
+            if final_materialization:
+                merged_payload["materialization"] = dict(final_materialization)
             merged_payload["rebuild_wait_timeout"] = bool(timed_out)
+            observed_timings = (
+                dict(merged_payload.get("observed_timings_ms") or {})
+                if isinstance(merged_payload.get("observed_timings_ms"), dict)
+                else {}
+            )
+            observed_timings.update(
+                {
+                    key: value
+                    for key, value in materialization_observed_timings.items()
+                    if key and value is not None
+                }
+            )
             if wait_elapsed_ms is not None:
-                observed_timings = (
-                    dict(merged_payload.get("observed_timings_ms") or {})
-                    if isinstance(merged_payload.get("observed_timings_ms"), dict)
-                    else {}
-                )
-                observed_timings["time_to_ready"] = round(observed_accept_ms + float(wait_elapsed_ms), 3)
-                merged_payload["observed_timings_ms"] = observed_timings
+                observed_timings.setdefault("time_to_ready", round(observed_accept_ms + float(wait_elapsed_ms), 3))
+            merged_payload["observed_timings_ms"] = observed_timings
         return merged_payload
 
     runs: list[dict[str, Any]] = []
@@ -2039,6 +2165,7 @@ def _node_yjs_benchmark_scenario_action(
             _print_timings_summary(run, key="timings_ms", label="  switch_timings_ms")
             _print_timings_summary(run, key="rebuild_timings_ms", label="  rebuild_timings_ms")
             _print_timings_summary(run, key="semantic_rebuild_timings_ms", label="  semantic_rebuild_timings_ms")
+            _print_materialization_summary(run)
     _print_benchmark_summary(summary)
     if detail:
         _print_benchmark_timing_group(summary, key="timings_ms", label="switch_timings_ms")
@@ -2089,6 +2216,19 @@ def node_yjs_describe(
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     _node_yjs_describe_action(
+        webspace=webspace,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("materialization")
+def node_yjs_materialization(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to inspect materialization state for"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_materialization_action(
         webspace=webspace,
         control=control,
         json_output=json_output,

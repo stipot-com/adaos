@@ -260,7 +260,14 @@ background rebuild state by default, and aggregates `time_to_accept`,
 `time_to_first_structure`, `time_to_interactive_focus`, and
 `time_to_full_hydration` across multiple runs. `--detail` additionally exposes
 aggregated switch/rebuild/semantic timing breakdowns and observed end-to-end
-ready timings.
+materialization milestones (`time_to_first_paint`, `time_to_interactive`,
+`time_to_ready`).
+
+To keep those measurements cheap under pressure, operator polling now also has
+lightweight `/api/node/yjs/webspaces/<id>/rebuild` and
+`/api/node/yjs/webspaces/<id>/materialization` surfaces, plus a matching
+`adaos node yjs materialization` CLI entrypoint, so the benchmark loop no
+longer needs to re-fetch the full webspace snapshot on every readiness check.
 
 Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,

@@ -1125,6 +1125,25 @@ async def node_yjs_webspace_rebuild_state(webspace_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/yjs/webspaces/{webspace_id}/materialization", dependencies=[Depends(require_token)])
+async def node_yjs_webspace_materialization_state(webspace_id: str) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    rebuild = describe_webspace_rebuild_state(target_webspace_id)
+    materialization = await _describe_yjs_materialization(target_webspace_id, rebuild_state=rebuild)
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "materialization": materialization,
+        "rebuild": rebuild,
+        "runtime": yjs_sync_runtime_snapshot(
+            role=conf.role,
+            webspace_id=target_webspace_id,
+        ),
+    }
+
+
 @router.patch("/yjs/webspaces/{webspace_id}", dependencies=[Depends(require_token)])
 async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequest) -> dict[str, Any]:
     conf = load_config()

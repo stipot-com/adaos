@@ -760,6 +760,66 @@ def test_node_yjs_webspace_rebuild_state_endpoint_returns_lightweight_snapshot(m
     }
 
 
+def test_node_yjs_webspace_materialization_state_endpoint_returns_lightweight_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "running",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "infrascope",
+            "request_id": "req-bench-1",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "_describe_yjs_materialization",
+        lambda webspace_id, rebuild_state=None: _awaitable(
+            {
+                "ready": False,
+                "webspace_id": webspace_id,
+                "current_scenario": "infrascope",
+                "readiness_state": "interactive",
+                "missing_branches": ["data.desktop"],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "yjs_sync_runtime_snapshot",
+        lambda **kwargs: {"role": kwargs.get("role"), "webspace_id": kwargs.get("webspace_id")},
+    )
+
+    result = asyncio.run(node_api_module.node_yjs_webspace_materialization_state("default"))
+
+    assert result == {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": "default",
+        "materialization": {
+            "ready": False,
+            "webspace_id": "default",
+            "current_scenario": "infrascope",
+            "readiness_state": "interactive",
+            "missing_branches": ["data.desktop"],
+        },
+        "rebuild": {
+            "webspace_id": "default",
+            "status": "running",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "infrascope",
+            "request_id": "req-bench-1",
+        },
+        "runtime": {"role": "hub", "webspace_id": "default"},
+    }
+
+
 def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_branches(monkeypatch) -> None:
     fake_state = {
         "ui": _FakeMap(
@@ -1371,7 +1431,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             "rebuild": {"request_id": "req-target-2", "status": "scheduled", "pending": True, "scenario_id": "infrascope"},
         },
     ]
-    poll_payloads = [
+    rebuild_payloads = [
         {
             "ok": True,
             "accepted": True,
@@ -1493,7 +1553,57 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             },
         },
     ]
-    get_call_count = {"value": 0}
+    materialization_payloads = [
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "materialization": {
+                "ready": False,
+                "webspace_id": "default",
+                "current_scenario": "infrascope",
+                "readiness_state": "interactive",
+                "missing_branches": ["data.desktop"],
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "materialization": {
+                "ready": True,
+                "webspace_id": "default",
+                "current_scenario": "web_desktop",
+                "readiness_state": "ready",
+                "missing_branches": [],
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "materialization": {
+                "ready": False,
+                "webspace_id": "default",
+                "current_scenario": "infrascope",
+                "readiness_state": "hydrating",
+                "missing_branches": ["data.routing"],
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "materialization": {
+                "ready": True,
+                "webspace_id": "default",
+                "current_scenario": "web_desktop",
+                "readiness_state": "ready",
+                "missing_branches": [],
+            },
+        },
+    ]
+    describe_calls = {"value": 0}
 
     monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
     monkeypatch.setitem(
@@ -1505,22 +1615,29 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         ),
     )
     def _fake_get_json(**kwargs):
-        polled_paths.append(str(kwargs.get("path") or ""))
-        get_call_count["value"] += 1
-        if get_call_count["value"] == 1:
-            return (
-                200,
-                {
-                    "ok": True,
-                    "accepted": True,
-                    "webspace": {
-                        "webspace_id": "default",
-                        "home_scenario": "web_desktop",
-                        "current_scenario": "web_desktop",
+        path = str(kwargs.get("path") or "")
+        polled_paths.append(path)
+        if path == "/api/node/yjs/webspaces/default":
+            describe_calls["value"] += 1
+            if describe_calls["value"] == 1:
+                return (
+                    200,
+                    {
+                        "ok": True,
+                        "accepted": True,
+                        "webspace": {
+                            "webspace_id": "default",
+                            "home_scenario": "web_desktop",
+                            "current_scenario": "web_desktop",
+                        },
                     },
-                },
-            )
-        return 200, poll_payloads.pop(0)
+                )
+            raise AssertionError(f"unexpected describe poll: {path}")
+        if path == "/api/node/yjs/webspaces/default/rebuild":
+            return 200, rebuild_payloads.pop(0)
+        if path == "/api/node/yjs/webspaces/default/materialization":
+            return 200, materialization_payloads.pop(0)
+        raise AssertionError(f"unexpected poll path: {path}")
 
     monkeypatch.setattr(node_cli_module, "_control_get_json", _fake_get_json)
 
@@ -1566,7 +1683,16 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
 
     assert posted == ["infrascope", "web_desktop", "infrascope", "web_desktop"]
     assert polled_paths[0] == "/api/node/yjs/webspaces/default"
-    assert all(path == "/api/node/yjs/webspaces/default/rebuild" for path in polled_paths[1:])
+    assert polled_paths[1:] == [
+        "/api/node/yjs/webspaces/default/rebuild",
+        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default/rebuild",
+        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default/rebuild",
+        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default/rebuild",
+        "/api/node/yjs/webspaces/default/materialization",
+    ]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
         "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 status=ready"
@@ -1582,6 +1708,8 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.time_to_pointer_update: avg=4.500 min=4.000 max=5.000" in line for line in echoed)
     assert any("summary.time_to_full_hydration: avg=57.000 min=54.000 max=60.000" in line for line in echoed)
     assert any("summary.observed.time_to_accept: avg=11.000 min=10.000 max=12.000" in line for line in echoed)
+    assert any("summary.observed.time_to_first_paint: avg=52.000 min=50.000 max=54.000" in line for line in echoed)
+    assert any("summary.observed.time_to_interactive: avg=52.000 min=50.000 max=54.000" in line for line in echoed)
     assert any("summary.observed.time_to_ready: avg=63.000 min=60.000 max=66.000" in line for line in echoed)
     assert any("summary.rebuild_status: ready=2" in line for line in echoed)
     assert any("summary.flags: skipped=0/2 cache_hits=1/2 ready_timeouts=0/2" in line for line in echoed)
@@ -1836,4 +1964,106 @@ def test_node_cli_desktop_reads_desktop_state(monkeypatch) -> None:
     )
 
     assert captured == ["/api/node/yjs/webspaces/default/desktop"]
+    assert rendered[-1][1] is True
+
+
+def test_node_cli_materialization_reads_lightweight_state(monkeypatch) -> None:
+    captured: list[str] = []
+    rendered: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_get_json",
+        lambda **kwargs: (
+            captured.append(kwargs.get("path"))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "rebuild": {"status": "running", "pending": True},
+                    "materialization": {
+                        "ready": False,
+                        "readiness_state": "interactive",
+                        "missing_branches": ["data.desktop"],
+                    },
+                    "runtime": {"assessment": {"state": "nominal"}},
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_materialization_action(
+        webspace="default",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == ["/api/node/yjs/webspaces/default/materialization"]
+    assert rendered[-1][1] is True
+
+
+def test_node_cli_materialization_falls_back_to_full_describe_on_404(monkeypatch) -> None:
+    captured: list[str] = []
+    rendered: list[tuple[object, bool]] = []
+    responses = iter(
+        [
+            (404, {"detail": "not found"}),
+            (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace": {
+                        "webspace_id": "default",
+                    },
+                    "rebuild": {"status": "ready", "pending": False},
+                    "materialization": {
+                        "ready": True,
+                        "readiness_state": "ready",
+                        "missing_branches": [],
+                    },
+                    "runtime": {"assessment": {"state": "nominal"}},
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_get_json",
+        lambda **kwargs: captured.append(kwargs.get("path")) or next(responses),
+    )
+    monkeypatch.setattr(node_cli_module, "_print", lambda data, *, json_output: rendered.append((data, json_output)))
+
+    node_cli_module._node_yjs_materialization_action(
+        webspace="default",
+        control="http://127.0.0.1:8080",
+        json_output=True,
+    )
+
+    assert captured == [
+        "/api/node/yjs/webspaces/default/materialization",
+        "/api/node/yjs/webspaces/default",
+    ]
     assert rendered[-1][1] is True

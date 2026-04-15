@@ -166,6 +166,11 @@ shared materialization diagnostic contract:
 * `missing_branches`
 * `compatibility_caches`
 
+For lighter operator polling, the same state is also split across:
+
+* `/api/node/yjs/webspaces/<id>/rebuild`
+* `/api/node/yjs/webspaces/<id>/materialization`
+
 Rebuild/control surfaces also expose phase-oriented timing and apply detail so
 pointer-only scenario switch can be evaluated against real runtime slices:
 
@@ -179,12 +184,18 @@ For repeated operator measurements, use:
 
 * `adaos node yjs benchmark-scenario --webspace <id> --scenario-id <target> --baseline-scenario <baseline>`
 * `adaos node yjs benchmark-scenario --webspace <id> --scenario-id <target> --detail`
+* `adaos node yjs materialization --webspace <id>`
 
 The command runs measured target switches, restores the baseline scenario
 between iterations, can wait for terminal background rebuild completion, and
 prints aggregated phase timing stats so heavy scenarios such as `infrascope`
-can be compared across optimization slices. `--detail` additionally prints
-switch/rebuild/semantic timing breakdowns for each run and in the aggregate.
+can be compared across optimization slices. The benchmark path now polls the
+lightweight `rebuild` and `materialization` control surfaces instead of
+re-fetching the full webspace snapshot on every readiness loop, which keeps
+operator measurements usable even when the runtime is under pressure. `--detail`
+additionally prints switch/rebuild/semantic timing breakdowns plus observed
+materialization milestones (`time_to_first_paint`, `time_to_interactive`,
+`time_to_ready`) for each run and in the aggregate.
 
 `readiness_state` follows a coarse ladder:
 
