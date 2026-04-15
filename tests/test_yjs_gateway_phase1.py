@@ -224,6 +224,7 @@ def test_get_room_uses_manifest_defaults_for_room_seed(monkeypatch) -> None:
     monkeypatch.setattr(gateway_module, "attach_room_observers", lambda _webspace_id, _ydoc: None)
 
     server = gateway_module.WorkspaceWebsocketServer(auto_clean_rooms=False)
+    monkeypatch.setattr(server, "start_room", lambda _room: asyncio.sleep(0))
     room = asyncio.run(server.get_room(webspace_id))
 
     assert room is server.rooms[webspace_id]

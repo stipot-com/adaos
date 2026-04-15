@@ -24,6 +24,14 @@ def _record_doc_timing(timings: dict[str, float] | None, key: str, started_at: f
     return value
 
 
+def _set_doc_timing(timings: dict[str, float] | None, key: str, value: float, *, prefix: str = "") -> float:
+    if timings is not None:
+        token = f"{prefix}{str(key or '').strip()}" if prefix else str(key or "").strip()
+        if token:
+            timings[token] = round(float(value), 3)
+    return round(float(value), 3)
+
+
 def _run_blocking(coro: Awaitable[T]) -> T:
     """
     Execute an async SQLiteYStore operation from synchronous code.
@@ -121,6 +129,25 @@ def _encode_diff(ydoc: Y.YDoc, before: bytes | None) -> bytes | None:
         return None
 
 
+def _state_changed(
+    ydoc: Y.YDoc,
+    before: bytes | None,
+    timings: dict[str, float] | None,
+    *,
+    prefix: str = "",
+) -> bool:
+    if before is None:
+        return True
+    stage_started = time.perf_counter()
+    try:
+        after = Y.encode_state_vector(ydoc)
+        _record_doc_timing(timings, "encode_state_vector_after", stage_started, prefix=prefix)
+        return after != before
+    except Exception:
+        _record_doc_timing(timings, "encode_state_vector_after", stage_started, prefix=prefix)
+        return True
+
+
 @contextmanager
 def get_ydoc(
     webspace_id: str,
@@ -168,19 +195,27 @@ def get_ydoc(
         async def _flush() -> bytes | None:
             update: bytes | None = None
             if not read_only:
-                try:
+                if _state_changed(ydoc, before, timings, prefix=timing_prefix):
                     stage_started = time.perf_counter()
-                    await ystore.encode_state_as_update(ydoc)
-                    _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
-                except Exception:
-                    _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
-                    pass
-                stage_started = time.perf_counter()
-                update = _encode_diff(ydoc, before)
-                _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
-                stage_started = time.perf_counter()
-                _schedule_room_update(webspace_id, update)
-                _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                    update = _encode_diff(ydoc, before)
+                    _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                    try:
+                        stage_started = time.perf_counter()
+                        if update:
+                            await ystore.write_update(update, update_kind="diff")
+                        else:
+                            await ystore.write_update(b"", update_kind="diff")
+                        _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                    except Exception:
+                        _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                        pass
+                    stage_started = time.perf_counter()
+                    _schedule_room_update(webspace_id, update)
+                    _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                else:
+                    _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
+                    _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)
+                    _set_doc_timing(timings, "room_update", 0.0, prefix=timing_prefix)
             return update
 
         try:
@@ -188,12 +223,12 @@ def get_ydoc(
         except Exception as exc:
             _log.warning("get_ydoc flush failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
         finally:
+            stage_started = time.perf_counter()
             try:
-                stage_started = time.perf_counter()
-                _run_blocking(ystore.stop())
-                _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+                ystore.stop()
             except Exception:
-                _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+                pass
+            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
             _record_doc_timing(timings, "total", session_started, prefix=timing_prefix)
 
 
@@ -235,26 +270,34 @@ async def async_get_ydoc(
                 before = None
         yield ydoc
         if not read_only:
-            try:
+            if _state_changed(ydoc, before, timings, prefix=timing_prefix):
                 stage_started = time.perf_counter()
-                await ystore.encode_state_as_update(ydoc)
-                _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
-            except Exception as exc:
-                _record_doc_timing(timings, "ystore_encode_state_as_update", stage_started, prefix=timing_prefix)
-                _log.warning("async_get_ydoc encode_state_as_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-            stage_started = time.perf_counter()
-            update = _encode_diff(ydoc, before)
-            _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
-            stage_started = time.perf_counter()
-            _schedule_room_update(webspace_id, update)
-            _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                update = _encode_diff(ydoc, before)
+                _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                try:
+                    stage_started = time.perf_counter()
+                    if update:
+                        await ystore.write_update(update, update_kind="diff")
+                    else:
+                        await ystore.write_update(b"", update_kind="diff")
+                    _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                except Exception as exc:
+                    _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
+                    _log.warning("async_get_ydoc write_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
+                stage_started = time.perf_counter()
+                _schedule_room_update(webspace_id, update)
+                _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+            else:
+                _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
+                _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)
+                _set_doc_timing(timings, "room_update", 0.0, prefix=timing_prefix)
     finally:
+        stage_started = time.perf_counter()
         try:
-            stage_started = time.perf_counter()
-            await ystore.stop()
-            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+            ystore.stop()
         except Exception:
-            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+            pass
+        _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
         _record_doc_timing(timings, "total", session_started, prefix=timing_prefix)
 
 

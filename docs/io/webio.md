@@ -219,6 +219,25 @@ materialization milestones (`time_to_first_paint`, `time_to_interactive`,
 `ydoc_timings_ms`, which separates YDoc/YStore session overhead from the
 inner semantic rebuild timings.
 
+Normal read-write YDoc sessions now persist the incremental diff they just
+produced and reuse that same diff for room rebroadcast, instead of re-encoding
+the full document state on every flush. Recent benchmark runs should therefore
+show `ydoc_timings_ms.ystore_write_update` on the writeback side, while the
+remaining dominant costs move toward `ystore_apply_updates` and other
+replay/open-path timings.
+
+YStore runtime diagnostics now also expose extra pressure indicators such as:
+
+* `update_log_bytes`
+* `diff_write_total`
+* `snapshot_write_total`
+* `apply_total`
+* `applied_update_total`
+* `applied_update_bytes`
+
+Those counters help distinguish "slow because we keep replaying a large log"
+from "slow because we are still writing whole snapshots too often".
+
 When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`
 endpoint, which further reduces polling pressure on the hub during repeated

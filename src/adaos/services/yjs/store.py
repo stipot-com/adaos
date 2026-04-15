@@ -157,6 +157,8 @@ class AdaosMemoryYStore(BaseYStore):
       snapshot from disk (if present).
     - `backup_to_disk()` compresses the current log into a single
       `Y.encode_state_as_update(ydoc)` blob and writes it atomically.
+    - Hot-path callers may append incremental diff updates directly via
+      `write_update()` instead of re-encoding the full document on every flush.
     """
 
     def __init__(self, path: str, *, document_ttl: float | None = None):
@@ -179,12 +181,21 @@ class AdaosMemoryYStore(BaseYStore):
         self._write_total = 0
         self._compact_total = 0
         self._backup_total = 0
+        self._diff_write_total = 0
+        self._snapshot_write_total = 0
+        self._write_skipped_total = 0
+        self._apply_total = 0
+        self._applied_update_total = 0
+        self._applied_update_bytes = 0
         self._last_write_at = 0.0
         self._last_compact_at = 0.0
         self._last_backup_at = 0.0
+        self._last_apply_at = 0.0
         self._last_loaded_from_disk_at = 0.0
         self._last_update_bytes = 0
         self._last_snapshot_bytes = 0
+        self._last_apply_update_total = 0
+        self._last_apply_bytes = 0
 
     async def start(self, *, task_status: TaskStatus[None] = TASK_STATUS_IGNORED):
         """
@@ -204,12 +215,31 @@ class AdaosMemoryYStore(BaseYStore):
         """
         Append an update to the in-memory log, with optional TTL-based squashing.
         """
-        metadata = await self.get_metadata()
+        await self.write_update(data)
+
+    async def write_update(self, data: bytes, *, update_kind: str = "raw", notify: bool = True) -> bool:
+        """
+        Append one already-encoded Yjs update to the in-memory log.
+
+        `update_kind` is diagnostic only and lets runtime snapshots distinguish
+        full-state writes from incremental diff writes.
+        """
+        payload = bytes(data or b"")
         now = time.time()
+        if not payload:
+            async with self._lock:
+                self._write_skipped_total += 1
+            return False
+
+        metadata = await self.get_metadata()
         async with self._lock:
             self._write_total += 1
+            if update_kind == "diff":
+                self._diff_write_total += 1
+            elif update_kind == "snapshot":
+                self._snapshot_write_total += 1
             self._last_write_at = now
-            self._last_update_bytes = len(data)
+            self._last_update_bytes = len(payload)
             if self.document_ttl is not None and self._updates:
                 last_ts = self._updates[-1][2]
                 if now - last_ts > self.document_ttl:
@@ -217,13 +247,43 @@ class AdaosMemoryYStore(BaseYStore):
                     # fresh append-only window.
                     self._compact_updates_locked(now=now, keep_tail=0)
 
-            self._updates.append((data, metadata, now))
+            self._updates.append((payload, metadata, now))
             if len(self._updates) > self.max_updates:
                 self._compact_updates_locked(now=now, keep_tail=self.replay_window)
+        if notify:
+            try:
+                _notify_write_listeners(self.path, payload)
+            except Exception:
+                pass
+        return True
+
+    async def encode_state_as_update(self, ydoc: Y.YDoc) -> None:  # type: ignore[override]
+        update = Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
+        await self.write_update(update, update_kind="snapshot")
+
+    async def apply_updates(self, ydoc: Y.YDoc) -> None:  # type: ignore[override]
+        await self._load_from_disk_if_needed()
+        async with self._lock:
+            if not self._updates:
+                raise YDocNotFound
+            updates = list(self._updates)
+
+        now = time.time()
+        applied_total = 0
+        applied_bytes = 0
         try:
-            _notify_write_listeners(self.path, data)
-        except Exception:
-            pass
+            for update, _metadata, _ts in updates:
+                Y.apply_update(ydoc, update)  # type: ignore[arg-type]
+                applied_total += 1
+                applied_bytes += len(update)
+        finally:
+            async with self._lock:
+                self._apply_total += 1
+                self._applied_update_total += applied_total
+                self._applied_update_bytes += applied_bytes
+                self._last_apply_at = now
+                self._last_apply_update_total = applied_total
+                self._last_apply_bytes = applied_bytes
 
     def _compact_updates_locked(self, *, now: float, keep_tail: int | None = None) -> None:
         updates = list(self._updates)
@@ -307,6 +367,7 @@ class AdaosMemoryYStore(BaseYStore):
             snapshot_size = 0
         updates = list(self._updates)
         update_log_entries = len(updates)
+        update_log_bytes = sum(len(update) for update, _meta, _ts in updates)
         base_snapshot_present = bool(updates) and bool(self._loaded_from_disk or self._compact_total > 0)
         replay_window_entries = max(0, update_log_entries - (1 if base_snapshot_present else 0))
         if update_log_entries <= 0:
@@ -319,6 +380,7 @@ class AdaosMemoryYStore(BaseYStore):
             "webspace_id": self.path,
             "log_mode": log_mode,
             "update_log_entries": update_log_entries,
+            "update_log_bytes": int(update_log_bytes),
             "replay_window_entries": replay_window_entries,
             "replay_window_limit": int(self.replay_window),
             "max_update_log_entries": int(self.max_updates),
@@ -327,16 +389,26 @@ class AdaosMemoryYStore(BaseYStore):
             "write_total": int(self._write_total),
             "compact_total": int(self._compact_total),
             "backup_total": int(self._backup_total),
+            "diff_write_total": int(self._diff_write_total),
+            "snapshot_write_total": int(self._snapshot_write_total),
+            "write_skipped_total": int(self._write_skipped_total),
+            "apply_total": int(self._apply_total),
+            "applied_update_total": int(self._applied_update_total),
+            "applied_update_bytes": int(self._applied_update_bytes),
             "snapshot_file_exists": bool(snapshot_exists),
             "snapshot_file_size": int(snapshot_size),
             "last_update_bytes": int(self._last_update_bytes),
             "last_snapshot_bytes": int(self._last_snapshot_bytes),
+            "last_apply_update_total": int(self._last_apply_update_total),
+            "last_apply_bytes": int(self._last_apply_bytes),
             "last_write_at": self._last_write_at or None,
             "last_write_ago_s": round(max(0.0, now - self._last_write_at), 3) if self._last_write_at else None,
             "last_compact_at": self._last_compact_at or None,
             "last_compact_ago_s": round(max(0.0, now - self._last_compact_at), 3) if self._last_compact_at else None,
             "last_backup_at": self._last_backup_at or None,
             "last_backup_ago_s": round(max(0.0, now - self._last_backup_at), 3) if self._last_backup_at else None,
+            "last_apply_at": self._last_apply_at or None,
+            "last_apply_ago_s": round(max(0.0, now - self._last_apply_at), 3) if self._last_apply_at else None,
             "last_loaded_from_disk_at": self._last_loaded_from_disk_at or None,
             "last_loaded_from_disk_ago_s": round(max(0.0, now - self._last_loaded_from_disk_at), 3)
             if self._last_loaded_from_disk_at

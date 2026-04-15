@@ -76,6 +76,18 @@ def _is_websocket_accept_race(exc: BaseException) -> bool:
     ) or "close message has been sent" in text
 
 
+async def _stop_ystore_maybe_async(ystore: Any) -> None:
+    try:
+        result = ystore.stop()
+    except Exception:
+        return
+    if inspect.isawaitable(result):
+        try:
+            await result
+        except Exception:
+            return
+
+
 async def _accept_websocket(websocket: WebSocket, *, channel: str) -> bool:
     try:
         await websocket.accept()
@@ -797,7 +809,7 @@ async def ensure_webspace_ready(webspace_id: str, scenario_id: str | None = None
         )
     finally:
         try:
-            await ystore.stop()
+            await _stop_ystore_maybe_async(ystore)
         except Exception:
             pass
 
