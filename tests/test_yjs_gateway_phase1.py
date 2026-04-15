@@ -239,6 +239,53 @@ def test_get_room_uses_manifest_defaults_for_room_seed(monkeypatch) -> None:
     ]
 
 
+def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypatch) -> None:
+    class _FakeRoom:
+        def __init__(self) -> None:
+            self.ydoc = object()
+            self.ystore = _FakeYStore()
+            self._loop = object()
+            self._thread_id = 123
+            self.ready = object()
+            self.log = object()
+            self.stop_calls = 0
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    async def _fake_close(_webspace_id: str, *, code: int = 1012, reason: str = "webspace_reload") -> int:  # noqa: ARG001
+        return 0
+
+    room = _FakeRoom()
+    compaction_reasons: list[str] = []
+
+    async def _fake_request_runtime_compaction(*, reason: str = "manual") -> bool:
+        compaction_reasons.append(reason)
+        return True
+
+    room.ystore.request_runtime_compaction = _fake_request_runtime_compaction  # type: ignore[attr-defined]
+    gateway_module.y_server.rooms["gateway-room-reset"] = room
+    gateway_module._room_locks["gateway-room-reset"] = asyncio.Lock()
+
+    monkeypatch.setattr(gateway_module, "close_webspace_yws_connections", _fake_close)
+    monkeypatch.setattr(gateway_module.gc, "collect", lambda: 7)
+
+    result = asyncio.run(gateway_module.reset_live_webspace_room("gateway-room-reset"))
+
+    assert gateway_module.y_server.rooms.get("gateway-room-reset") is None
+    assert gateway_module._room_locks.get("gateway-room-reset") is None
+    assert room.stop_calls == 1
+    assert room.ystore is None
+    assert room.ydoc is None
+    assert result["room_dropped"] is True
+    assert result["room_stopped"] is True
+    assert result["ystore_stopped"] is True
+    assert result["runtime_compaction_requested"] is True
+    assert result["room_refs_released"] is True
+    assert result["gc_collected"] == 7
+    assert compaction_reasons == ["room_reset"]
+
+
 def test_process_events_command_publishes_go_home(monkeypatch) -> None:
     published: list[tuple[str, dict[str, object] | None]] = []
     responses: list[dict[str, object]] = []

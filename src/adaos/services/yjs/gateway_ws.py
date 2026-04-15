@@ -6,6 +6,7 @@ Yjs websocket gateway implementation (service layer).
 
 import asyncio
 from collections import deque
+import gc
 import inspect
 import json
 import time
@@ -86,6 +87,19 @@ async def _stop_ystore_maybe_async(ystore: Any) -> None:
             await result
         except Exception:
             return
+
+
+def _release_room_refs(room: Any) -> bool:
+    released = False
+    for attr in ("ydoc", "ystore", "_loop", "_thread_id", "ready", "log"):
+        if not hasattr(room, attr):
+            continue
+        try:
+            setattr(room, attr, None)
+            released = True
+        except Exception:
+            continue
+    return released
 
 
 async def _accept_websocket(websocket: WebSocket, *, channel: str) -> bool:
@@ -481,6 +495,9 @@ async def reset_live_webspace_room(
     _room_locks.pop(key, None)
     room_stopped = False
     ystore_stopped = False
+    runtime_compaction_requested = False
+    room_refs_released = False
+    gc_collected = 0
 
     if room is not None:
         stop_room = getattr(room, "stop", None)
@@ -493,15 +510,25 @@ async def reset_live_webspace_room(
             except Exception:
                 room_stopped = False
         ystore = getattr(room, "ystore", None)
-        stop_ystore = getattr(ystore, "stop", None)
-        if callable(stop_ystore):
+        if ystore is not None:
             try:
-                result = stop_ystore()
-                if inspect.isawaitable(result):
-                    await result
+                await _stop_ystore_maybe_async(ystore)
                 ystore_stopped = True
             except Exception:
                 ystore_stopped = False
+            request_compaction = getattr(ystore, "request_runtime_compaction", None)
+            if callable(request_compaction):
+                try:
+                    result = request_compaction(reason="room_reset")
+                    runtime_compaction_requested = bool(await result) if inspect.isawaitable(result) else bool(result)
+                except Exception:
+                    runtime_compaction_requested = False
+        room_refs_released = _release_room_refs(room)
+        if room_refs_released:
+            try:
+                gc_collected = int(gc.collect() or 0)
+            except Exception:
+                gc_collected = 0
 
     return {
         "webspace_id": key,
@@ -509,6 +536,9 @@ async def reset_live_webspace_room(
         "room_dropped": room is not None,
         "room_stopped": room_stopped,
         "ystore_stopped": ystore_stopped,
+        "runtime_compaction_requested": runtime_compaction_requested,
+        "room_refs_released": room_refs_released,
+        "gc_collected": gc_collected,
     }
 
 

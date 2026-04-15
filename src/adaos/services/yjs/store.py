@@ -420,7 +420,7 @@ class AdaosMemoryYStore(BaseYStore):
                 self._last_snapshot_bytes = len(data)
         self._loaded_from_disk = True
 
-    def _schedule_auto_backup(self, *, reason: str) -> None:
+    def _schedule_auto_backup(self, *, reason: str) -> bool:
         async def _runner() -> None:
             try:
                 if self.auto_backup_debounce_sec > 0:
@@ -441,8 +441,22 @@ class AdaosMemoryYStore(BaseYStore):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return
+            return False
         loop.create_task(_runner())
+        return True
+
+    async def request_runtime_compaction(self, *, reason: str = "manual") -> bool:
+        token = str(reason or "").strip().lower().replace(" ", "_") or "manual"
+        async with self._lock:
+            has_replay_tail = len(self._updates) > 1 or self._replay_window_bytes_locked() > 0
+            if not has_replay_tail or self._auto_backup_inflight:
+                return False
+            self._auto_backup_inflight = True
+        if self._schedule_auto_backup(reason=f"idle_{token}"):
+            return True
+        async with self._lock:
+            self._auto_backup_inflight = False
+        return False
 
     async def read(self) -> AsyncIterator[tuple[bytes, bytes]]:  # type: ignore[override]
         """
@@ -523,6 +537,7 @@ class AdaosMemoryYStore(BaseYStore):
         base_snapshot_present = bool(updates) and bool(self._base_snapshot_present)
         replay_window_entries = max(0, update_log_entries - (1 if base_snapshot_present else 0))
         replay_window_bytes = self._replay_window_bytes_locked(updates)
+        runtime_compaction_eligible = bool(update_log_entries > 1 or replay_window_bytes > 0)
         if update_log_entries <= 0:
             log_mode = "empty"
         elif base_snapshot_present:
@@ -539,6 +554,7 @@ class AdaosMemoryYStore(BaseYStore):
             "replay_window_limit": int(self.replay_window),
             "replay_window_bytes": int(replay_window_bytes),
             "replay_window_byte_limit": int(self.max_replay_bytes),
+            "runtime_compaction_eligible": runtime_compaction_eligible,
             "max_update_log_entries": int(self.max_updates),
             "loaded_from_disk": bool(self._loaded_from_disk),
             "running": bool(self._running),
@@ -634,6 +650,10 @@ def reset_ystore_for_webspace(webspace_id: str) -> None:
     """
     store = _YSTORE_CACHE.pop(webspace_id, None)
     if store is not None:
+        try:
+            store.stop()
+        except Exception:
+            pass
         try:
             store._updates.clear()  # type: ignore[attr-defined]
         except Exception:

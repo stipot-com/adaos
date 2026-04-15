@@ -183,6 +183,41 @@ async def test_ystore_auto_backup_after_pressure_compaction(monkeypatch) -> None
         reset_ystore_for_webspace(webspace_id)
 
 
+async def test_ystore_request_runtime_compaction_collapses_runtime_log(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", "1")
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC", "0.05")
+    webspace_id = _webspace_id("idle-compaction")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        for idx in range(3):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"item_{idx}", idx)
+
+        before = store.runtime_snapshot()
+        assert before["runtime_compaction_eligible"] is True
+        assert before["update_log_entries"] == 3
+
+        scheduled = await store.request_runtime_compaction(reason="room_reset")
+        assert scheduled is True
+
+        for _ in range(20):
+            snapshot = store.runtime_snapshot()
+            if int(snapshot.get("auto_backup_total") or 0) >= 1 and int(snapshot.get("update_log_entries") or 0) == 1:
+                break
+            await asyncio.sleep(0.05)
+
+        after = store.runtime_snapshot()
+        assert after["auto_backup_total"] >= 1
+        assert after["last_auto_backup_reason"] == "idle_room_reset"
+        assert after["update_log_entries"] == 1
+        assert after["base_snapshot_present"] is True
+        assert after["runtime_compaction_eligible"] is False
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
 async def test_ystore_encode_state_as_update_keeps_snapshot_path_for_seed_flows() -> None:
     webspace_id = _webspace_id("snapshot-write")
     store = get_ystore_for_webspace(webspace_id)

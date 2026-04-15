@@ -114,6 +114,40 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
         data_map.set(txn, "scenarios", updated_data)
 
 
+def _encode_bootstrap_diff(ydoc: Y.YDoc, before_state_vector: bytes | None) -> bytes | None:
+    try:
+        if before_state_vector is not None:
+            return Y.encode_state_as_update(ydoc, before_state_vector)  # type: ignore[arg-type]
+        return Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+async def _persist_bootstrap_seed_update(
+    ystore: AdaosMemoryYStore,
+    ydoc: Y.YDoc,
+    *,
+    before_state_vector: bytes | None,
+) -> str:
+    writer = getattr(ystore, "write_update", None)
+    update = _encode_bootstrap_diff(ydoc, before_state_vector)
+    if callable(writer) and update:
+        try:
+            await writer(update, update_kind="diff", notify=False)
+            return "diff"
+        except TypeError:
+            try:
+                await writer(update, update_kind="diff")
+                return "diff"
+            except Exception as exc:
+                _log.warning("bootstrap diff write failed for webspace=%s: %s", getattr(ystore, "path", "?"), exc, exc_info=True)
+        except Exception as exc:
+            _log.warning("bootstrap diff write failed for webspace=%s: %s", getattr(ystore, "path", "?"), exc, exc_info=True)
+
+    await ystore.encode_state_as_update(ydoc)
+    return "snapshot"
+
+
 async def ensure_webspace_seeded_from_scenario(
     ystore: AdaosMemoryYStore,
     webspace_id: str,
@@ -146,6 +180,10 @@ async def ensure_webspace_seeded_from_scenario(
             type(exc).__name__,
             exc_info=True,
         )
+    try:
+        before_state_vector = Y.encode_state_vector(ydoc)
+    except Exception:
+        before_state_vector = None
 
     ui_map = ydoc.get_map("ui")
     data_map = ydoc.get_map("data")
@@ -215,19 +253,25 @@ async def ensure_webspace_seeded_from_scenario(
     _project_seed_payload_to_compat_branches(ydoc, scenario_id=fallback_scenario_id)
 
     try:
-        await ystore.encode_state_as_update(ydoc)
+        persisted_via = await _persist_bootstrap_seed_update(
+            ystore,
+            ydoc,
+            before_state_vector=before_state_vector,
+        )
         if emit_event:
             _emit_bootstrap_rebuild_nudge(webspace_id, fallback_scenario_id)
         _log.info(
-            "webspace %s seeded via compatibility fallback for scenario %s (ui keys=%s, data keys=%s)",
+            "webspace %s seeded via compatibility fallback for scenario %s (persisted=%s, ui keys=%s, data keys=%s)",
             webspace_id,
             fallback_scenario_id,
+            persisted_via,
             list(ui_map.keys()),
             list(data_map.keys()),
         )
     except Exception as exc:
-        _log.warning("encode_state_as_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
+        _log.warning("bootstrap seed persistence failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
 
 
 async def bootstrap_seed_if_empty(ystore: AdaosMemoryYStore) -> None:
-    await ensure_webspace_seeded_from_scenario(get_ystore_for_webspace("default"), webspace_id="default")
+    default_id = default_webspace_id()
+    await ensure_webspace_seeded_from_scenario(get_ystore_for_webspace(default_id), webspace_id=default_id)

@@ -35,6 +35,7 @@ phase-aware materialization.
 - Regression coverage:
   `tests/test_webspace_phase2.py`,
   `tests/test_node_yjs_phase2.py`,
+  `tests/test_yjs_doc_store.py`,
   `tests/test_push_registry_sync.py`,
   `tests/test_yjs_bootstrap.py`
 
@@ -344,6 +345,11 @@ runtime can skip reopening that heavy branch for deep equality checks. This is
 an intermediate fast-path before full top-level diff-apply, and benchmark/apply
 diagnostics now surface those `fingerprint_unchanged_branches` counts.
 
+Bootstrap compatibility fallback now also stays on the incremental YStore path
+when possible: if the default webspace has to seed legacy compatibility caches,
+bootstrap writes a diff update over the already-open document and only falls
+back to a full snapshot write if incremental persistence is unavailable.
+
 Rebuild diagnostics now also expose an `apply_summary` for the top-level
 derived branches (`ui.application`, `data.catalog`, `data.installed`,
 `data.desktop`, `data.routing`, `registry.merged`) so we can distinguish
@@ -608,12 +614,20 @@ Use this checklist as the authoritative progress tracker for the migration.
   exit, attached live-room rebuild/read paths now bypass repeated replay, and
   bounded replay now also compacts by byte budget (`ADAOS_YSTORE_MAX_REPLAY_BYTES`).
   Backup flows now also collapse the in-memory log to a single base snapshot,
-  and pressure compaction can trigger a debounced auto-backup so later
-  cold-room opens have a shorter replay path. The remaining gap is still the
-  cold-room replay/open cost (`apply_updates`) plus reload/reconnect memory
-  pressure under repeated room rebuilds.
+  pressure compaction can trigger a debounced auto-backup so later cold-room
+  opens have a shorter replay path, and bootstrap compatibility fallback now
+  prefers incremental diff writes over snapshot rewrites. Room reset/reload now
+  also releases dropped YRoom references aggressively and can request an idle
+  runtime compaction pass so the old replay tail is collapsed after the room is
+  torn down. The remaining gap is still the cold-room replay/open cost
+  (`apply_updates`) plus deeper reload/reconnect memory pressure inside the
+  live room itself under repeated room rebuilds.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
+  Current blocker: `y_py` currently materializes nested branch payloads as
+  plain `dict` / `list` values on read, so a real safe diff-apply slice needs
+  a storage-shape change (or explicit nested Y types) rather than a cosmetic
+  per-key wrapper around the existing branch replace path.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.
 - [x] Add focused metrics for `time_to_first_structure`,
   `time_to_interactive_focus`, and `time_to_full_hydration`.

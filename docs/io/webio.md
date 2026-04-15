@@ -273,6 +273,12 @@ paths, not to change the semantic source of truth. The related knobs are:
 * `ADAOS_YSTORE_AUTOBACKUP_COOLDOWN_SEC`
 * `ADAOS_YSTORE_AUTOBACKUP_DEBOUNCE_SEC`
 
+Operator-triggered room reset/reload now also uses that same storage path more
+deliberately: after a live YRoom is dropped, the runtime releases the old room
+references aggressively and may request an idle YStore compaction pass so the
+replay tail is collapsed in the background instead of staying attached to the
+next cold open.
+
 When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`
 endpoint, which further reduces polling pressure on the hub during repeated

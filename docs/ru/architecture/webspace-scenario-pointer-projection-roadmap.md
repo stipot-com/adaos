@@ -34,6 +34,7 @@
 - Регрессионное покрытие:
   `tests/test_webspace_phase2.py`,
   `tests/test_node_yjs_phase2.py`,
+  `tests/test_yjs_doc_store.py`,
   `tests/test_push_registry_sync.py`,
   `tests/test_yjs_bootstrap.py`
 
@@ -359,11 +360,21 @@ rebuild latency на реальных сценариях.
   overlay snapshot там, где это полезно.
 - [ ] Добавить diff-apply для top-level resolved branches там, где реализация
   остаётся простой и безопасной.
+  Текущий блокер: `y_py` при чтении materialize'ит вложенные ветки как обычные
+  `dict` / `list`, поэтому честный safe diff-apply потребует смены формы
+  хранения (или явных nested Y types), а не косметической обёртки вокруг
+  текущего branch-replace path.
 - [ ] Мерить тяжёлые сценарии вроде `infrascope` до и после каждого среза.
 - [x] Добавить метрики `time_to_first_structure`,
   `time_to_interactive_focus` и `time_to_full_hydration`.
 - [x] Коалесить stale background hydration work, если его уже supersede'нул
   новый scenario switch.
+
+Текущий storage/lifecycle slice: bootstrap compatibility fallback теперь
+предпочитает incremental diff write вместо snapshot rewrite, а room
+reset/reload агрессивнее освобождает ссылки на сброшенную YRoom и может
+запросить idle runtime compaction, чтобы схлопнуть replay tail уже после
+остановки комнаты.
 
 ### 5.5. ABI и renderer readiness contract
 
