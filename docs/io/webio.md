@@ -226,6 +226,14 @@ show `ydoc_timings_ms.ystore_write_update` on the writeback side, while the
 remaining dominant costs move toward `ystore_apply_updates` and other
 replay/open-path timings.
 
+Attached live-room flows now also avoid reopening a throwaway YDoc when they
+do not need to: read-only control/status reads and semantic rebuild hot paths
+prefer the already-attached `room.ydoc` when they are running on the room
+owner loop. In benchmark output this should collapse
+`ydoc_timings_ms.ystore_apply_updates` toward zero for hot attached runs, so
+the remaining YStore work becomes easier to isolate as a cold-room
+reconnect/reload problem rather than a steady-state switch problem.
+
 YStore runtime diagnostics now also expose extra pressure indicators such as:
 
 * `update_log_bytes`

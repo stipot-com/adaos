@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from uuid import uuid4
 
 import pytest
 import y_py as Y
 
-from adaos.services.yjs.doc import async_get_ydoc, get_ydoc
+from adaos.services.yjs import doc as ydoc_module
+from adaos.services.yjs.doc import async_get_ydoc, async_read_ydoc, get_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace, reset_ystore_for_webspace
 
 pytestmark = pytest.mark.anyio
@@ -100,3 +103,83 @@ def test_get_ydoc_stops_store_after_context() -> None:
         assert snapshot["update_log_entries"] == 1
     finally:
         reset_ystore_for_webspace(webspace_id)
+
+
+async def test_async_get_ydoc_prefers_live_room_when_requested(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.apply_updates_calls = 0
+            self.write_updates: list[bytes] = []
+
+        async def start(self) -> None:
+            self.start_calls += 1
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+        async def apply_updates(self, ydoc) -> None:  # noqa: ARG002
+            self.apply_updates_calls += 1
+
+        async def write_update(self, update: bytes, *, update_kind: str = "raw") -> bool:  # noqa: ARG002
+            self.write_updates.append(bytes(update or b""))
+            return True
+
+    room_doc = Y.YDoc()
+    fake_store = _FakeStore()
+    room = type(
+        "Room",
+        (),
+        {
+            "ydoc": room_doc,
+            "_thread_id": threading.get_ident(),
+            "_loop": asyncio.get_running_loop(),
+        },
+    )()
+
+    monkeypatch.setattr(ydoc_module, "get_ystore_for_webspace", lambda _webspace_id: fake_store)
+    monkeypatch.setattr(ydoc_module, "_resolve_live_room", lambda _webspace_id: room)
+
+    async with async_get_ydoc("live-room-fast-path", prefer_live_room=True) as ydoc:
+        assert ydoc is room_doc
+        with ydoc.begin_transaction() as txn:
+            ydoc.get_map("ui").set(txn, "current_scenario", "infrascope")
+
+    assert fake_store.start_calls == 0
+    assert fake_store.stop_calls == 0
+    assert fake_store.apply_updates_calls == 0
+    assert len(fake_store.write_updates) == 1
+    assert room_doc.get_map("ui").get("current_scenario") == "infrascope"
+
+
+async def test_async_read_ydoc_prefers_live_room_without_store_replay(monkeypatch) -> None:
+    class _FakeStore:
+        async def start(self) -> None:
+            raise AssertionError("ystore.start should not run on async_read_ydoc live-room path")
+
+        def stop(self) -> None:
+            raise AssertionError("ystore.stop should not run on async_read_ydoc live-room path")
+
+        async def apply_updates(self, ydoc) -> None:  # noqa: ARG002
+            raise AssertionError("ystore.apply_updates should not run on async_read_ydoc live-room path")
+
+    room_doc = Y.YDoc()
+    with room_doc.begin_transaction() as txn:
+        room_doc.get_map("data").set(txn, "flag", True)
+    room = type(
+        "Room",
+        (),
+        {
+            "ydoc": room_doc,
+            "_thread_id": threading.get_ident(),
+            "_loop": asyncio.get_running_loop(),
+        },
+    )()
+
+    monkeypatch.setattr(ydoc_module, "get_ystore_for_webspace", lambda _webspace_id: _FakeStore())
+    monkeypatch.setattr(ydoc_module, "_resolve_live_room", lambda _webspace_id: room)
+
+    async with async_read_ydoc("live-room-read-only") as ydoc:
+        assert ydoc is room_doc
+        assert ydoc.get_map("data").get("flag") is True

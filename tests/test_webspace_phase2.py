@@ -1126,6 +1126,61 @@ def test_phase3_stale_rebuild_request_does_not_apply_effective_branches() -> Non
     assert fake_state["registry"].set_count == 0
 
 
+def test_rebuild_webspace_async_prefers_live_room_ydoc_session(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    fake_state = {
+        "ui": _FakeMap(),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+
+    class _CapturedAsyncDoc:
+        async def __aenter__(self) -> _FakeDoc:
+            return _FakeDoc(fake_state)
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def _fake_async_get_ydoc(
+        webspace_id: str,
+        *,
+        read_only: bool = False,
+        prefer_live_room: bool = False,
+        timings=None,
+        timing_prefix: str = "",
+    ):
+        captured["webspace_id"] = webspace_id
+        captured["read_only"] = read_only
+        captured["prefer_live_room"] = prefer_live_room
+        captured["timings_is_dict"] = isinstance(timings, dict)
+        captured["timing_prefix"] = timing_prefix
+        return _CapturedAsyncDoc()
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", _fake_async_get_ydoc)
+    monkeypatch.setattr(
+        webspace_runtime_module.WebspaceScenarioRuntime,
+        "_rebuild_in_doc",
+        lambda self, ydoc, webspace_id, expected_request_id=None: {
+            "webspace_id": webspace_id,
+            "expected_request_id": expected_request_id,
+            "doc": ydoc,
+        },
+    )
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(ctx=SimpleNamespace())
+    result = asyncio.run(runtime.rebuild_webspace_async("default", request_id="req-live-room"))
+
+    assert result["webspace_id"] == "default"
+    assert result["expected_request_id"] == "req-live-room"
+    assert captured == {
+        "webspace_id": "default",
+        "read_only": False,
+        "prefer_live_room": True,
+        "timings_is_dict": True,
+        "timing_prefix": "",
+    }
+
+
 def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     webspace_id = "phase2-go-home"
     ensure_workspace(webspace_id)

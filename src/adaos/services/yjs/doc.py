@@ -56,6 +56,31 @@ def _resolve_live_room(webspace_id: str):
     return y_server.rooms.get(webspace_id)
 
 
+def _can_access_live_room_directly(room: Any) -> bool:
+    """
+    Return True when the caller already runs on the room owner thread/loop.
+
+    Direct room reuse is intentionally conservative: we only touch the live
+    YDoc in-place when we know we are already executing in the same runtime
+    context that owns the room. Other callers fall back to the isolated
+    store-backed YDoc session.
+    """
+    if room is None:
+        return False
+    owner_thread = getattr(room, "_thread_id", None)
+    current_thread = threading.get_ident()
+    if owner_thread is not None and owner_thread != current_thread:
+        return False
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    room_loop = getattr(room, "_loop", None)
+    if room_loop is not None and current_loop is not None and room_loop is not current_loop:
+        return False
+    return True
+
+
 def try_read_live_map_value(webspace_id: str, map_name: str, key: str) -> tuple[bool, Any]:
     """
     Best-effort fast path for reading a value from the in-memory live room.
@@ -64,11 +89,7 @@ def try_read_live_map_value(webspace_id: str, map_name: str, key: str) -> tuple[
     room, so it stays non-blocking and safe for hot-path diagnostics.
     """
     room = _resolve_live_room(webspace_id)
-    if not room:
-        return False, None
-    owner_thread = getattr(room, "_thread_id", None)
-    current = threading.get_ident()
-    if owner_thread is not None and owner_thread != current:
+    if not _can_access_live_room_directly(room):
         return False, None
     try:
         y_map = room.ydoc.get_map(str(map_name or ""))
@@ -237,6 +258,7 @@ async def async_get_ydoc(
     webspace_id: str,
     *,
     read_only: bool = False,
+    prefer_live_room: bool = False,
     timings: dict[str, float] | None = None,
     timing_prefix: str = "",
 ) -> AsyncIterator[Y.YDoc]:
@@ -246,19 +268,26 @@ async def async_get_ydoc(
     # Debug log omitted to reduce noise in dev logs.
     session_started = time.perf_counter()
     ystore = get_ystore_for_webspace(webspace_id)
-    ydoc = Y.YDoc()
-    stage_started = time.perf_counter()
-    await ystore.start()
-    _record_doc_timing(timings, "ystore_start", stage_started, prefix=timing_prefix)
+    room = _resolve_live_room(webspace_id) if prefer_live_room else None
+    use_live_room = _can_access_live_room_directly(room)
+    ydoc = room.ydoc if use_live_room else Y.YDoc()
+    if use_live_room:
+        _set_doc_timing(timings, "ystore_start", 0.0, prefix=timing_prefix)
+        _set_doc_timing(timings, "ystore_apply_updates", 0.0, prefix=timing_prefix)
+    else:
+        stage_started = time.perf_counter()
+        await ystore.start()
+        _record_doc_timing(timings, "ystore_start", stage_started, prefix=timing_prefix)
     try:
-        try:
-            stage_started = time.perf_counter()
-            await ystore.apply_updates(ydoc)
-            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
-        except BaseException:
-            # Treat corrupted updates as "no state"; start from empty doc.
-            _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
-            pass
+        if not use_live_room:
+            try:
+                stage_started = time.perf_counter()
+                await ystore.apply_updates(ydoc)
+                _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
+            except BaseException:
+                # Treat corrupted updates as "no state"; start from empty doc.
+                _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
+                pass
         before = None
         if not read_only:
             try:
@@ -284,20 +313,26 @@ async def async_get_ydoc(
                 except Exception as exc:
                     _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                     _log.warning("async_get_ydoc write_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-                stage_started = time.perf_counter()
-                _schedule_room_update(webspace_id, update)
-                _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                if use_live_room:
+                    _set_doc_timing(timings, "room_update", 0.0, prefix=timing_prefix)
+                else:
+                    stage_started = time.perf_counter()
+                    _schedule_room_update(webspace_id, update)
+                    _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
             else:
                 _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
                 _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)
                 _set_doc_timing(timings, "room_update", 0.0, prefix=timing_prefix)
     finally:
-        stage_started = time.perf_counter()
-        try:
-            ystore.stop()
-        except Exception:
-            pass
-        _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
+        if use_live_room:
+            _set_doc_timing(timings, "ystore_stop", 0.0, prefix=timing_prefix)
+        else:
+            stage_started = time.perf_counter()
+            try:
+                ystore.stop()
+            except Exception:
+                pass
+            _record_doc_timing(timings, "ystore_stop", stage_started, prefix=timing_prefix)
         _record_doc_timing(timings, "total", session_started, prefix=timing_prefix)
 
 
@@ -311,6 +346,7 @@ async def async_read_ydoc(
     async with async_get_ydoc(
         webspace_id,
         read_only=True,
+        prefer_live_room=True,
         timings=timings,
         timing_prefix=timing_prefix,
     ) as ydoc:

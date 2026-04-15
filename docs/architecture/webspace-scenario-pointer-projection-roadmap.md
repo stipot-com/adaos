@@ -450,6 +450,18 @@ rebroadcast, instead of appending a fresh full
 work is therefore expected to shift even more clearly toward replay/open cost
 (`apply_updates`) and toward whole-room reopen/reload behavior under pressure.
 
+The next hot-path reduction has also started landing: when a webspace already
+has an attached live room, read-only control/status reads and semantic rebuild
+now prefer that in-memory `room.ydoc` instead of reopening a temporary YDoc and
+replaying the full store snapshot again. This means:
+
+- attached pointer-first switch + rebuild should no longer pay the previous
+  `ydoc_timings_ms.ystore_apply_updates` tax on every run
+- materialization/control reads can observe the live room directly instead of
+  forcing another store replay
+- the remaining replay bottleneck becomes more clearly a cold-room /
+  reconnect / reload path problem
+
 Operator recovery paths were also tightened so performance work is not masked
 by recovery fan-out:
 
@@ -554,8 +566,9 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Reduce `YStore.apply_updates` / `encode_state_as_update` envelope cost
   now that pointer-switch latency is no longer the dominant bottleneck.
   Current slice: diff-writeback replaced the full-state flush on normal YDoc
-  exit; replay/open cost still needs another pass before this item can be
-  considered complete.
+  exit, and attached live-room rebuild/read paths now bypass repeated replay.
+  Cold-room replay/open plus reload/reconnect memory pressure still need
+  another pass before this item can be considered complete.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.

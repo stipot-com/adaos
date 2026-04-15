@@ -2089,7 +2089,11 @@ class WebspaceScenarioRuntime:
         ydoc_timings: Dict[str, float] = {}
         self._last_rebuild_ydoc_timings_ms = None
         try:
-            async with async_get_ydoc(webspace_id, timings=ydoc_timings) as ydoc:
+            async with async_get_ydoc(
+                webspace_id,
+                prefer_live_room=True,
+                timings=ydoc_timings,
+            ) as ydoc:
                 stage_started = time.perf_counter()
                 entry = self._rebuild_in_doc(
                     ydoc,
