@@ -426,6 +426,15 @@ That means the next short-term performance slices should focus on:
 - reducing YStore open/load/flush cost
 - only then pushing deeper fragmented apply/diff work
 
+Operator recovery paths were also tightened so performance work is not masked
+by recovery fan-out:
+
+- `desktop.webspace.reload` now keeps the live room attached and refreshes the
+  scenario projection in place
+- only `desktop.webspace.reset` performs destructive room/store reset
+- reload/reset no longer intentionally trigger both `scenarios.synced`
+  side-effect rebuild and an explicit rebuild for the same operator action
+
 Reader/writer audit for migration planning:
 
 - reader of legacy materialized scenario branches:
@@ -516,6 +525,8 @@ Use this checklist as the authoritative progress tracker for the migration.
   snapshots where helpful.
 - [x] Use live-room fast paths for `ui.current_scenario` reads/writes when an
   active room is already attached.
+- [x] Split operator `reload` from destructive `reset` so reload stays on the
+  live room and does not fan out into duplicate semantic rebuilds.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.

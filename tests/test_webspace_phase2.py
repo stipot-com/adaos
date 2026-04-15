@@ -2311,3 +2311,200 @@ def test_phase3_reload_and_reset_rebuild_sync_workflow_for_target_scenario(monke
         assert result["scenario_resolution"] == "explicit"
         assert result["projection_refresh"]["scenario_resolution"] == "explicit"
         assert "workflow_sync" in result["timings_ms"]
+
+
+def test_phase3_reload_reuses_live_runtime_without_reset(monkeypatch) -> None:
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    fake_ctx = SimpleNamespace(bus=SimpleNamespace(publish=lambda _event: None))
+    project_calls: list[tuple[str, str, bool]] = []
+    seed_calls: list[tuple[str, str, bool]] = []
+    reset_calls: list[tuple[str, str]] = []
+    rebuilds: list[str] = []
+    listing_syncs: list[str] = []
+
+    async def _fake_project(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        dev: bool | None = None,  # noqa: ARG001
+        emit_event: bool = True,
+    ) -> None:
+        project_calls.append((webspace_id, scenario_id, emit_event))
+
+    async def _fake_seed(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        dev: bool | None = None,  # noqa: ARG001
+        emit_event: bool = True,
+    ) -> None:
+        seed_calls.append((webspace_id, scenario_id, emit_event))
+
+    async def _fake_refresh(
+        ctx,  # noqa: ARG001
+        webspace_id: str,
+        *,
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "attempted": True,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "space": "workspace",
+            "rules_loaded": 1,
+        }
+
+    async def _fake_rebuild(self, webspace_id: str):
+        rebuilds.append(webspace_id)
+        self._last_rebuild_timings_ms = {"total": 1.0}
+        self._last_apply_summary = {"changed_branches": 1, "unchanged_branches": 0}
+        return SimpleNamespace(scenario_id="prompt_engineer_scenario", apps=[], widgets=[])
+
+    async def _fake_listing() -> None:
+        listing_syncs.append("default")
+
+    async def _fake_reset_live_room(_webspace_id: str, close_reason: str = "webspace_reset") -> dict[str, object]:
+        reset_calls.append(("room", close_reason))
+        return {"accepted": True}
+
+    def _fake_reset_ystore(_webspace_id: str) -> None:
+        reset_calls.append(("ystore", "reset"))
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(webspace_runtime_module, "_project_webspace_from_scenario", _fake_project)
+    monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario_with_options", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_listing)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway",
+        types.SimpleNamespace(reset_live_webspace_room=_fake_reset_live_room),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        types.SimpleNamespace(reset_ystore_for_webspace=_fake_reset_ystore),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.rebuild_webspace_from_sources(
+            "phase3-soft-reload",
+            action="reload",
+            scenario_id="prompt_engineer_scenario",
+            scenario_resolution="explicit",
+            source_of_truth="scenario",
+            reseed_from_scenario=True,
+        )
+    )
+
+    assert project_calls == [("phase3-soft-reload", "prompt_engineer_scenario", False)]
+    assert seed_calls == []
+    assert reset_calls == []
+    assert rebuilds == ["phase3-soft-reload"]
+    assert listing_syncs == ["default"]
+    assert result["accepted"] is True
+    assert "project_scenario_payload" in result["timings_ms"]
+    assert "reset_runtime_state" not in result["timings_ms"]
+
+
+def test_phase3_reset_keeps_hard_runtime_reset(monkeypatch) -> None:
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    fake_ctx = SimpleNamespace(bus=SimpleNamespace(publish=lambda _event: None))
+    project_calls: list[tuple[str, str, bool]] = []
+    seed_calls: list[tuple[str, str, bool]] = []
+    reset_calls: list[tuple[str, str]] = []
+
+    async def _fake_project(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        dev: bool | None = None,  # noqa: ARG001
+        emit_event: bool = True,
+    ) -> None:
+        project_calls.append((webspace_id, scenario_id, emit_event))
+
+    async def _fake_seed(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        dev: bool | None = None,  # noqa: ARG001
+        emit_event: bool = True,
+    ) -> None:
+        seed_calls.append((webspace_id, scenario_id, emit_event))
+
+    async def _fake_refresh(
+        ctx,  # noqa: ARG001
+        webspace_id: str,
+        *,
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "attempted": True,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "space": "workspace",
+            "rules_loaded": 1,
+        }
+
+    async def _fake_rebuild(self, webspace_id: str):  # noqa: ARG001
+        self._last_rebuild_timings_ms = {"total": 1.0}
+        self._last_apply_summary = {"changed_branches": 1, "unchanged_branches": 0}
+        return SimpleNamespace(scenario_id="prompt_engineer_scenario", apps=[], widgets=[])
+
+    async def _fake_listing() -> None:
+        return None
+
+    async def _fake_reset_live_room(_webspace_id: str, close_reason: str = "webspace_reset") -> dict[str, object]:
+        reset_calls.append(("room", close_reason))
+        return {"accepted": True}
+
+    def _fake_reset_ystore(_webspace_id: str) -> None:
+        reset_calls.append(("ystore", "reset"))
+
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(webspace_runtime_module, "_project_webspace_from_scenario", _fake_project)
+    monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario_with_options", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+    monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_listing)
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway",
+        types.SimpleNamespace(reset_live_webspace_room=_fake_reset_live_room),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        types.SimpleNamespace(reset_ystore_for_webspace=_fake_reset_ystore),
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.rebuild_webspace_from_sources(
+            "phase3-hard-reset",
+            action="reset",
+            scenario_id="prompt_engineer_scenario",
+            scenario_resolution="explicit",
+            source_of_truth="scenario",
+            reseed_from_scenario=True,
+        )
+    )
+
+    assert project_calls == []
+    assert seed_calls == [("phase3-hard-reset", "prompt_engineer_scenario", False)]
+    assert reset_calls == [("room", "webspace_reset"), ("ystore", "reset")]
+    assert result["accepted"] is True
+    assert "reset_runtime_state" in result["timings_ms"]
+    assert "seed_from_scenario" in result["timings_ms"]

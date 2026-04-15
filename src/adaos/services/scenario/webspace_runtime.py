@@ -2644,7 +2644,15 @@ async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str, *, de
     ScenarioManager.sync_to_yjs* projection path, falling back to static
     seeds inside ensure_webspace_seeded_from_scenario when needed.
     """
-    ystore = get_ystore_for_webspace(webspace_id)
+    await _seed_webspace_from_scenario_with_options(
+        webspace_id,
+        scenario_id,
+        dev=dev,
+        emit_event=True,
+    )
+
+
+def _resolve_webspace_source_mode(webspace_id: str, *, dev: Optional[bool] = None) -> str:
     source_mode = "workspace"
     if dev is None:
         try:
@@ -2658,6 +2666,66 @@ async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str, *, de
             dev = False
     elif dev:
         source_mode = "dev"
+    return source_mode
+
+
+def _build_scenario_manager():
+    from adaos.adapters.db import SqliteScenarioRegistry  # pylint: disable=import-outside-toplevel
+    from adaos.services.scenario.manager import ScenarioManager  # pylint: disable=import-outside-toplevel
+
+    ctx = get_ctx()
+    reg = SqliteScenarioRegistry(ctx.sql)
+    return ScenarioManager(
+        repo=ctx.scenarios_repo,
+        registry=reg,
+        git=ctx.git,
+        paths=ctx.paths,
+        bus=ctx.bus,
+        caps=ctx.caps,
+    )
+
+
+async def _project_webspace_from_scenario(
+    webspace_id: str,
+    scenario_id: str,
+    *,
+    dev: Optional[bool] = None,
+    emit_event: bool = True,
+) -> None:
+    source_mode = _resolve_webspace_source_mode(webspace_id, dev=dev)
+    _log.debug(
+        "projecting webspace=%s scenario=%s source_mode=%s emit_event=%s",
+        webspace_id,
+        scenario_id,
+        source_mode,
+        emit_event,
+    )
+    try:
+        mgr = _build_scenario_manager()
+        await mgr.sync_to_yjs_async(
+            scenario_id or "web_desktop",
+            webspace_id,
+            space=source_mode,
+            emit_event=emit_event,
+        )
+    except Exception:
+        _log.warning(
+            "failed to project webspace=%s from scenario=%s",
+            webspace_id,
+            scenario_id,
+            exc_info=True,
+        )
+
+
+async def _seed_webspace_from_scenario_with_options(
+    webspace_id: str,
+    scenario_id: str,
+    *,
+    dev: Optional[bool] = None,
+    emit_event: bool = True,
+) -> None:
+    ystore = get_ystore_for_webspace(webspace_id)
+    source_mode = _resolve_webspace_source_mode(webspace_id, dev=dev)
     _log.debug("seeding webspace=%s scenario=%s dev=%s", webspace_id, scenario_id, dev)
     try:
         await ensure_webspace_seeded_from_scenario(
@@ -2665,6 +2733,7 @@ async def _seed_webspace_from_scenario(webspace_id: str, scenario_id: str, *, de
             webspace_id=webspace_id,
             default_scenario_id=scenario_id or "web_desktop",
             space=source_mode,
+            emit_event=emit_event,
         )
     except Exception:
         _log.warning("failed to seed webspace=%s from scenario=%s", webspace_id, scenario_id, exc_info=True)
@@ -2872,29 +2941,42 @@ async def rebuild_webspace_from_sources(
             pass
         _record_timing(timings_ms, "invalidate_loader_cache", stage_started)
 
-        stage_started = time.perf_counter()
-        try:
-            from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
-            from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
-
+        if requested_action == "reset":
+            stage_started = time.perf_counter()
             try:
-                await reset_live_webspace_room(
-                    webspace_id,
-                    close_reason="webspace_reset" if requested_action == "reset" else "webspace_reload",
-                )
-            except Exception:
-                pass
-            try:
-                reset_ystore_for_webspace(webspace_id)
-            except Exception:
-                pass
-        except Exception:
-            _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
-        _record_timing(timings_ms, "reset_runtime_state", stage_started)
+                from adaos.services.yjs.gateway import reset_live_webspace_room  # pylint: disable=import-outside-toplevel
+                from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
 
-        stage_started = time.perf_counter()
-        await _seed_webspace_from_scenario(webspace_id, target_scenario)
-        _record_timing(timings_ms, "seed_from_scenario", stage_started)
+                try:
+                    await reset_live_webspace_room(
+                        webspace_id,
+                        close_reason="webspace_reset",
+                    )
+                except Exception:
+                    pass
+                try:
+                    reset_ystore_for_webspace(webspace_id)
+                except Exception:
+                    pass
+            except Exception:
+                _log.warning("failed to reset ystore for webspace=%s", webspace_id, exc_info=True)
+            _record_timing(timings_ms, "reset_runtime_state", stage_started)
+
+            stage_started = time.perf_counter()
+            await _seed_webspace_from_scenario_with_options(
+                webspace_id,
+                target_scenario,
+                emit_event=False,
+            )
+            _record_timing(timings_ms, "seed_from_scenario", stage_started)
+        else:
+            stage_started = time.perf_counter()
+            await _project_webspace_from_scenario(
+                webspace_id,
+                target_scenario,
+                emit_event=False,
+            )
+            _record_timing(timings_ms, "project_scenario_payload", stage_started)
 
         stage_started = time.perf_counter()
         await _sync_webspace_listing()
@@ -3975,10 +4057,10 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
 @subscribe("desktop.webspace.reset")
 async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
     """
-    Hard reset of the current webspace from its scenario. For now this
-    mirrors desktop.webspace.reload behaviour; it is introduced as a
-    separate event so that future versions can differentiate between
-    soft reload (updatable-only) and full reset.
+    Hard reset of the current webspace from its scenario.
+
+    Unlike desktop.webspace.reload, this recovery path intentionally resets
+    the live room and persisted YStore before reseeding the scenario payload.
     """
     payload = _payload(evt)
     webspace_id = _webspace_id(payload)

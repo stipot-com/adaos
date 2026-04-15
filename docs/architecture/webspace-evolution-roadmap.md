@@ -314,9 +314,14 @@ Implemented today:
   `ensure_webspace_seeded_from_scenario()` seeds an empty room from
   `scenario.json` through `ScenarioManager.sync_to_yjs*`
 - operator reload/reset:
-  `reload_webspace_from_scenario()` clears the live room and store, reseeds
-  from the selected scenario source, refreshes compatibility listing, and then
-  calls `WebspaceScenarioRuntime.rebuild_webspace_async()`
+  `reload_webspace_from_scenario()` now differentiates between soft reload and
+  hard reset:
+  - `reload` refreshes scenario projection in-place, keeps the live room
+    attached, suppresses nested `scenarios.synced` rebuild fan-out, refreshes
+    compatibility listing, and then runs one semantic rebuild
+  - `reset` remains the destructive recovery path: it clears the live room and
+    store, reseeds from the selected scenario source, refreshes compatibility
+    listing, and then runs semantic rebuild
 - scenario switch:
   `switch_webspace_scenario()` projects a new scenario payload into the room
   and then rebuilds effective UI plus workflow state
@@ -380,9 +385,10 @@ The current codebase is close, but still fragmented:
 
 - bootstrap seeding relies on `scenarios.synced -> rebuild_webspace_async()`
   as an event side effect rather than an explicit rebuild pipeline
-- reload/reset is the closest thing to the target contract, but it still
-  mixes room reset, scenario reseed, compatibility listing refresh, and UI
-  rebuild in one ad-hoc flow
+- reload/reset is closer to the target contract now that soft reload no longer
+  tears down the room or piggybacks on a second rebuild via
+  `scenarios.synced`, but the recovery family is still broader than the final
+  single reconcile contract
 - scenario switch uses a different projection path than reload/reset instead of
   reusing the same semantic rebuild primitive
 - snapshot restore restores persisted Yjs state without a follow-up semantic

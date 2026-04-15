@@ -270,7 +270,14 @@ class ScenarioManager:
                         ",".join(sorted(set(skipped_runtime_owned))),
                     )
 
-    def sync_to_yjs(self, scenario_id: str, webspace_id: str | None = None, *, space: str = "workspace") -> None:
+    def sync_to_yjs(
+        self,
+        scenario_id: str,
+        webspace_id: str | None = None,
+        *,
+        space: str = "workspace",
+        emit_event: bool = True,
+    ) -> None:
         """
         Project the declarative scenario payload into the webspace YDoc.
 
@@ -287,9 +294,17 @@ class ScenarioManager:
         with get_ydoc(target_webspace) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
 
-        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
+        if emit_event:
+            emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
 
-    async def sync_to_yjs_async(self, scenario_id: str, webspace_id: str | None = None, *, space: str = "workspace") -> None:
+    async def sync_to_yjs_async(
+        self,
+        scenario_id: str,
+        webspace_id: str | None = None,
+        *,
+        space: str = "workspace",
+        emit_event: bool = True,
+    ) -> None:
         """
         Async variant of :meth:`sync_to_yjs` for use inside running event loops.
         """
@@ -300,7 +315,8 @@ class ScenarioManager:
         async with async_get_ydoc(target_webspace) as ydoc:
             self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
 
-        emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
+        if emit_event:
+            emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
 
     def _post_install_bootstrap(self, scenario_id: str, webspace_id: str | None = None) -> None:
         """
