@@ -310,6 +310,25 @@ Current rollback guidance if pointer-only switch regresses runtime behavior:
   issue is frontend/client readiness or legacy-branch coupling, not scenario
   existence validation or pointer write itself
 
+Semantic rebuild target resolution is now also centralized behind a shared
+backend helper instead of being partially inferred in each action path.
+Current precedence is:
+
+- scenario switch: explicit scenario from the command remains authoritative
+- reload/reset: explicit override -> stored manifest home -> live current
+  scenario -> `web_desktop`
+- restore / generic rebuild refresh: explicit override -> live current
+  scenario -> effective home scenario -> `web_desktop`
+
+This keeps the action-specific semantics explicit while ensuring projection
+refresh, rebuild status, and workflow sync all operate on the same resolved
+scenario token and resolution label.
+
+Workflow synchronization is now also aligned with semantic rebuild for
+`reload`, `reset`, `restore`, and asynchronous scenario switch reconcile, so
+the workflow layer no longer lags behind the rebuilt active scenario after
+recovery operations.
+
 Reader/writer audit for migration planning:
 
 - reader of legacy materialized scenario branches:
@@ -367,8 +386,8 @@ Use this checklist as the authoritative progress tracker for the migration.
   `ui.application`, `data.catalog`, `data.installed`, `data.desktop`, and
   `registry.merged`.
 - [x] Remove duplicated writes between switch and rebuild paths.
-- [ ] Keep workflow/runtime sync aligned with the rebuilt active scenario.
-- [ ] Verify reload/reset/restore/switch all use the same source resolution
+- [x] Keep workflow/runtime sync aligned with the rebuilt active scenario.
+- [x] Verify reload/reset/restore/switch all use the same source resolution
   rules.
 - [ ] Reshape rebuild around phase-aware reconcile steps instead of a single
   monolithic "all ready at once" materialization assumption.

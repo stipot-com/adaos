@@ -1076,6 +1076,60 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     assert result["scenario_resolution"] == "manifest_home"
 
 
+def test_phase3_resolve_rebuild_target_prefers_current_before_manifest_home(monkeypatch) -> None:
+    webspace_id = "phase3-resolve-current-first"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Resolve Current First",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    state, scenario_id, scenario_resolution = asyncio.run(
+        webspace_runtime_module._resolve_rebuild_scenario_target(webspace_id, None)
+    )
+
+    assert state.webspace_id == webspace_id
+    assert scenario_id == "prompt_engineer_scenario"
+    assert scenario_resolution == "current_scenario"
+
+
+def test_phase3_reload_target_preserves_manifest_home_before_current(monkeypatch) -> None:
+    webspace_id = "phase3-resolve-home-first"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Resolve Home First",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+
+    fake_state = {
+        "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+        "registry": _FakeMap(),
+        "data": _FakeMap(),
+    }
+    monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    state, scenario_id, scenario_resolution = asyncio.run(
+        webspace_runtime_module._resolve_reload_scenario_target(webspace_id, None)
+    )
+
+    assert state.webspace_id == webspace_id
+    assert scenario_id == "web_desktop"
+    assert scenario_resolution == "manifest_home"
+
+
 def test_sync_webspace_listing_skips_unchanged_payload(monkeypatch) -> None:
     webspace_id = "phase2-listing-noop"
     ensure_workspace(webspace_id)
@@ -1608,9 +1662,21 @@ def test_phase5_resolver_prefers_scenario_page_schema_and_topbar_over_overlay() 
 def test_phase4_semantic_rebuild_refreshes_projection_rules_before_runtime_rebuild(monkeypatch) -> None:
     order: list[str] = []
 
-    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
+    async def _fake_refresh(
+        ctx,
+        webspace_id: str,
+        *,
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+    ) -> dict[str, object]:  # noqa: ARG001
         order.append("refresh")
-        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 1}
+        return {
+            "attempted": True,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "space": "workspace",
+            "rules_loaded": 1,
+        }
 
     async def _fake_rebuild(self, webspace_id: str):
         order.append("rebuild")
@@ -1710,8 +1776,20 @@ def test_phase4_rebuild_from_sources_succeeds_without_materialized_yjs_scenario_
         "data": _FakeMap(),
     }
 
-    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
-        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 0}
+    async def _fake_refresh(
+        ctx,
+        webspace_id: str,
+        *,
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+    ) -> dict[str, object]:  # noqa: ARG001
+        return {
+            "attempted": True,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "space": "workspace",
+            "rules_loaded": 0,
+        }
 
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
     monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
@@ -1960,8 +2038,20 @@ def test_phase4_rebuild_status_exposes_legacy_resolver_fallback(monkeypatch) -> 
         ),
     }
 
-    async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None) -> dict[str, object]:  # noqa: ARG001
-        return {"attempted": True, "scenario_id": scenario_id, "space": "workspace", "rules_loaded": 0}
+    async def _fake_refresh(
+        ctx,
+        webspace_id: str,
+        *,
+        scenario_id: str | None = None,
+        scenario_resolution: str | None = None,
+    ) -> dict[str, object]:  # noqa: ARG001
+        return {
+            "attempted": True,
+            "scenario_id": scenario_id,
+            "scenario_resolution": scenario_resolution,
+            "space": "workspace",
+            "rules_loaded": 0,
+        }
 
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
     monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
@@ -2057,4 +2147,96 @@ def test_restore_webspace_from_snapshot_reconciles_runtime(monkeypatch) -> None:
     ]
     assert result["accepted"] is True
     assert result["scenario_id"] == "restored_prompt_scenario"
+    assert result["scenario_resolution"] == "current_scenario"
     assert result["source_of_truth"] == "snapshot"
+    assert result["projection_refresh"]["scenario_id"] == "restored_prompt_scenario"
+    assert result["projection_refresh"]["scenario_resolution"] == "current_scenario"
+
+
+def test_phase3_reload_and_reset_rebuild_sync_workflow_for_target_scenario(monkeypatch) -> None:
+    class _Bus:
+        def publish(self, _event) -> None:
+            return None
+
+    for action in ("reload", "reset"):
+        fake_state = {
+            "ui": _FakeMap({"current_scenario": "prompt_engineer_scenario"}),
+            "registry": _FakeMap(),
+            "data": _FakeMap(),
+        }
+        rebuilds: list[str] = []
+        workflows: list[tuple[str, str]] = []
+        emitted: list[tuple[str, dict[str, object], str]] = []
+        fake_ctx = SimpleNamespace(bus=_Bus())
+
+        async def _fake_rebuild(self, webspace_id: str):
+            rebuilds.append(webspace_id)
+            self._last_rebuild_timings_ms = {
+                "collect_inputs": 1.0,
+                "resolve": 2.0,
+                "apply": 3.0,
+                "to_registry_entry": 0.5,
+                "total": 6.5,
+            }
+            self._last_apply_summary = {
+                "branch_count": 6,
+                "changed_branches": 2,
+                "unchanged_branches": 4,
+                "failed_branches": 0,
+                "changed_paths": ["ui.application", "registry.merged"],
+                "defaults_failed": False,
+            }
+            return SimpleNamespace(scenario_id="prompt_engineer_scenario", apps=[{"id": "app-1"}], widgets=[])
+
+        async def _fake_workflow_sync(self, scenario_id: str, webspace_id: str):
+            workflows.append((scenario_id, webspace_id))
+            return None
+
+        async def _fake_refresh(ctx, webspace_id: str, *, scenario_id: str | None = None, scenario_resolution: str | None = None):
+            return {
+                "attempted": True,
+                "scenario_id": scenario_id,
+                "scenario_resolution": scenario_resolution,
+                "space": "workspace",
+                "rules_loaded": 1,
+                "source": "scenario_manifest",
+            }
+
+        monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+        monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+        monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
+        monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
+        monkeypatch.setattr(webspace_runtime_module.ScenarioWorkflowRuntime, "sync_workflow_for_webspace", _fake_workflow_sync)
+        monkeypatch.setattr(
+            webspace_runtime_module,
+            "emit",
+            lambda bus, topic, payload, source: emitted.append((topic, dict(payload), source)),
+        )
+
+        result = asyncio.run(
+            webspace_runtime_module.rebuild_webspace_from_sources(
+                f"phase3-{action}-workflow-sync",
+                action=action,
+                scenario_id="prompt_engineer_scenario",
+                scenario_resolution="explicit",
+                source_of_truth="scenario",
+            )
+        )
+
+        assert rebuilds == [f"phase3-{action}-workflow-sync"]
+        assert workflows == [("prompt_engineer_scenario", f"phase3-{action}-workflow-sync")]
+        assert emitted == [
+            (
+                "desktop.webspace.reloaded",
+                {
+                    "webspace_id": f"phase3-{action}-workflow-sync",
+                    "action": action,
+                    "scenario_id": "prompt_engineer_scenario",
+                },
+                "scenario.webspace_runtime",
+            )
+        ]
+        assert result["accepted"] is True
+        assert result["scenario_resolution"] == "explicit"
+        assert result["projection_refresh"]["scenario_resolution"] == "explicit"
+        assert "workflow_sync" in result["timings_ms"]

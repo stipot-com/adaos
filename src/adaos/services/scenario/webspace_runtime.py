@@ -1566,22 +1566,40 @@ def _webspace_id(payload: Dict[str, Any]) -> str:
     return default_webspace_id()
 
 
-async def _resolve_projection_refresh_target(
+async def _resolve_rebuild_scenario_target(
     webspace_id: str,
+    requested_scenario_id: str | None,
     *,
-    scenario_id: str | None = None,
-) -> str | None:
-    explicit = str(scenario_id or "").strip()
-    if explicit:
-        return explicit
-    try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            ui_map = ydoc.get_map("ui")
-            current = str(ui_map.get("current_scenario") or "").strip()
-            return current or None
-    except Exception:
-        _log.debug("failed to resolve projection refresh target for webspace=%s", webspace_id, exc_info=True)
-        return None
+    prefer_manifest_home_before_current: bool = False,
+) -> tuple[WebspaceOperationalState, str, str]:
+    """
+    Resolve the effective scenario target for backend-owned rebuild flows.
+
+    ``prefer_manifest_home_before_current`` preserves legacy reload/reset
+    behaviour where the stored manifest home scenario remains authoritative
+    unless the caller explicitly overrides it.
+    """
+    state = await describe_webspace_operational_state(webspace_id)
+    requested = str(requested_scenario_id or "").strip()
+    if requested:
+        return state, requested, "explicit"
+
+    stored_home = str(state.stored_home_scenario or "").strip() or None
+    current = str(state.current_scenario or "").strip() or None
+    effective_home = str(state.effective_home_scenario or "").strip() or None
+
+    if prefer_manifest_home_before_current:
+        if stored_home:
+            return state, stored_home, "manifest_home"
+        if current:
+            return state, current, "current_scenario"
+    else:
+        if current:
+            return state, current, "current_scenario"
+        if effective_home:
+            return state, effective_home, "manifest_home"
+
+    return state, "web_desktop", "default"
 
 
 def _resolve_projection_refresh_space(webspace_id: str) -> str:
@@ -1597,13 +1615,31 @@ async def _refresh_projection_rules_for_rebuild(
     webspace_id: str,
     *,
     scenario_id: str | None = None,
+    scenario_resolution: str | None = None,
 ) -> dict[str, Any]:
-    target_scenario = await _resolve_projection_refresh_target(webspace_id, scenario_id=scenario_id)
+    target_scenario = str(scenario_id or "").strip() or None
+    target_resolution = str(scenario_resolution or "").strip() or None
+    if not target_scenario or not target_resolution:
+        try:
+            _state, resolved_scenario, resolved_resolution = await _resolve_rebuild_scenario_target(
+                webspace_id,
+                target_scenario,
+                prefer_manifest_home_before_current=False,
+            )
+            if not target_scenario:
+                target_scenario = resolved_scenario
+            if not target_resolution:
+                target_resolution = resolved_resolution
+        except Exception:
+            _log.debug("failed to resolve projection refresh target for webspace=%s", webspace_id, exc_info=True)
+            target_scenario = target_scenario or None
+            target_resolution = target_resolution or None
     target_space = _resolve_projection_refresh_space(webspace_id)
     if not target_scenario:
         return {
             "attempted": False,
             "scenario_id": None,
+            "scenario_resolution": target_resolution,
             "space": target_space,
             "rules_loaded": 0,
             "source": "none",
@@ -1613,6 +1649,7 @@ async def _refresh_projection_rules_for_rebuild(
         return {
             "attempted": True,
             "scenario_id": target_scenario,
+            "scenario_resolution": target_resolution,
             "space": target_space,
             "rules_loaded": rules_loaded,
             "source": "scenario_manifest",
@@ -1628,6 +1665,7 @@ async def _refresh_projection_rules_for_rebuild(
         return {
             "attempted": True,
             "scenario_id": target_scenario,
+            "scenario_resolution": target_resolution,
             "space": target_space,
             "rules_loaded": 0,
             "source": "scenario_manifest",
@@ -1814,15 +1852,11 @@ async def _resolve_reload_scenario_target(
     3. current live scenario for legacy spaces without stored home
     4. default ``web_desktop``
     """
-    state = await describe_webspace_operational_state(webspace_id)
-    requested = str(requested_scenario_id or "").strip()
-    if requested:
-        return state, requested, "explicit"
-    if state.stored_home_scenario:
-        return state, state.stored_home_scenario, "manifest_home"
-    if state.current_scenario:
-        return state, state.current_scenario, "current_scenario"
-    return state, "web_desktop", "default"
+    return await _resolve_rebuild_scenario_target(
+        webspace_id,
+        requested_scenario_id,
+        prefer_manifest_home_before_current=True,
+    )
 
 
 async def _sync_webspace_listing() -> None:
@@ -2203,7 +2237,21 @@ async def rebuild_webspace_from_sources(
     timings_ms: Dict[str, float] = {}
     requested_action = str(action or "").strip().lower() or "rebuild"
     target_scenario = str(scenario_id or "").strip() or None
+    resolved_scenario_resolution = str(scenario_resolution or "").strip() or None
     status_started_at = time.time()
+    if not target_scenario or not resolved_scenario_resolution:
+        stage_started = time.perf_counter()
+        _state, resolved_target_scenario, resolved_target_resolution = await _resolve_rebuild_scenario_target(
+            webspace_id,
+            target_scenario,
+            prefer_manifest_home_before_current=requested_action in {"reload", "reset"},
+        )
+        if not target_scenario:
+            target_scenario = resolved_target_scenario
+        if not resolved_scenario_resolution:
+            resolved_scenario_resolution = resolved_target_resolution
+        _record_timing(timings_ms, "resolve_rebuild_target", stage_started)
+
     previous_status = describe_webspace_rebuild_state(webspace_id)
     effective_switch_timings = _copy_timing_map(switch_timings_ms) or _copy_timing_map(previous_status.get("switch_timings_ms"))
     effective_switch_mode = str(switch_mode or previous_status.get("switch_mode") or "").strip() or None
@@ -2216,7 +2264,7 @@ async def rebuild_webspace_from_sources(
         action=requested_action,
         source_of_truth=source_of_truth,
         scenario_id=target_scenario,
-        scenario_resolution=scenario_resolution,
+        scenario_resolution=resolved_scenario_resolution,
         switch_mode=effective_switch_mode,
         requested_at=previous_status.get("requested_at") or status_started_at,
         started_at=status_started_at,
@@ -2287,6 +2335,7 @@ async def rebuild_webspace_from_sources(
         ctx,
         webspace_id,
         scenario_id=target_scenario,
+        scenario_resolution=resolved_scenario_resolution,
     )
     _record_timing(timings_ms, "projection_refresh", stage_started)
     runtime = WebspaceScenarioRuntime(ctx)
@@ -2312,6 +2361,7 @@ async def rebuild_webspace_from_sources(
             finished_at=time.time(),
             error="webspace_rebuild_failed",
             switch_mode=effective_switch_mode,
+            scenario_resolution=resolved_scenario_resolution,
             projection_refresh=projection_refresh,
             resolver=resolver_debug or None,
             apply_summary=apply_summary or None,
@@ -2336,7 +2386,7 @@ async def rebuild_webspace_from_sources(
             "source_of_truth": source_of_truth,
             "webspace_id": webspace_id,
             "scenario_id": target_scenario,
-            "scenario_resolution": scenario_resolution,
+            "scenario_resolution": resolved_scenario_resolution,
             "request_id": request_id,
             "switch_mode": effective_switch_mode,
             "projection_refresh": projection_refresh,
@@ -2353,16 +2403,24 @@ async def rebuild_webspace_from_sources(
     resolver_debug = dict(getattr(runtime, "_last_resolver_debug", None) or {})
     apply_summary = dict(getattr(runtime, "_last_apply_summary", None) or {})
 
-    if not target_scenario:
+    if not target_scenario or not resolved_scenario_resolution:
         stage_started = time.perf_counter()
         try:
-            state_after = await describe_webspace_operational_state(webspace_id)
-            target_scenario = state_after.current_scenario or state_after.effective_home_scenario
+            state_after, resolved_target_scenario, resolved_target_resolution = await _resolve_rebuild_scenario_target(
+                webspace_id,
+                target_scenario,
+                prefer_manifest_home_before_current=requested_action in {"reload", "reset"},
+            )
+            if not target_scenario:
+                target_scenario = resolved_target_scenario
+            if not resolved_scenario_resolution:
+                resolved_scenario_resolution = resolved_target_resolution
         except Exception:
-            target_scenario = None
+            target_scenario = target_scenario or None
+            resolved_scenario_resolution = resolved_scenario_resolution or None
         _record_timing(timings_ms, "resolve_active_scenario", stage_started)
 
-    should_sync_workflow = requested_action in {"scenario_switch_rebuild", "restore"}
+    should_sync_workflow = requested_action in {"scenario_switch_rebuild", "restore", "reload", "reset"}
     if target_scenario and should_sync_workflow:
         stage_started = time.perf_counter()
         try:
@@ -2412,7 +2470,7 @@ async def rebuild_webspace_from_sources(
         "source_of_truth": source_of_truth,
         "webspace_id": webspace_id,
         "scenario_id": target_scenario,
-        "scenario_resolution": scenario_resolution,
+        "scenario_resolution": resolved_scenario_resolution,
         "request_id": request_id,
         "switch_mode": effective_switch_mode,
         "projection_refresh": projection_refresh,
@@ -2437,6 +2495,7 @@ async def rebuild_webspace_from_sources(
         error=None,
         switch_mode=effective_switch_mode,
         scenario_id=target_scenario,
+        scenario_resolution=resolved_scenario_resolution,
         projection_refresh=projection_refresh,
         registry_summary=result.get("registry_summary"),
         resolver=resolver_debug or None,
