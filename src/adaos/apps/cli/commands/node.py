@@ -970,21 +970,31 @@ def _wait_for_benchmark_rebuild(
     interval = max(float(poll_interval_sec or 0.0), 0.05)
 
     while True:
-        code, payload = _control_get_json(
-            control=control,
-            path=f"/api/node/yjs/webspaces/{webspace}",
-            token=token,
-            timeout=max(8.0, interval + 2.0),
-        )
-        if code is None:
-            typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
-            raise typer.Exit(code=2)
-        if code != 200 or not isinstance(payload, dict):
-            typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {code}", fg=typer.colors.RED)
-            if payload:
-                typer.echo(payload)
-            raise typer.Exit(code=1)
-        current_rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+        payload = None
+        code = None
+        current_rebuild: dict[str, Any] = {}
+        for path in (
+            f"/api/node/yjs/webspaces/{webspace}/rebuild",
+            f"/api/node/yjs/webspaces/{webspace}",
+        ):
+            code, payload = _control_get_json(
+                control=control,
+                path=path,
+                token=token,
+                timeout=max(3.0, interval + 1.0),
+            )
+            if code == 404 and path.endswith("/rebuild"):
+                continue
+            if code is None:
+                typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
+                raise typer.Exit(code=2)
+            if code != 200 or not isinstance(payload, dict):
+                typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {code}", fg=typer.colors.RED)
+                if payload:
+                    typer.echo(payload)
+                raise typer.Exit(code=1)
+            current_rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+            break
         if current_rebuild:
             rebuild_state = dict(current_rebuild)
             current_request_id = str(rebuild_state.get("request_id") or "").strip() or None

@@ -720,6 +720,46 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["runtime"]["webspace_id"] == "dev_prompt"
 
 
+def test_node_yjs_webspace_rebuild_state_endpoint_returns_lightweight_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "running",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "infrascope",
+            "request_id": "req-bench-1",
+        },
+    )
+    monkeypatch.setattr(
+        node_api_module,
+        "yjs_sync_runtime_snapshot",
+        lambda **kwargs: {"role": kwargs.get("role"), "webspace_id": kwargs.get("webspace_id")},
+    )
+
+    result = asyncio.run(node_api_module.node_yjs_webspace_rebuild_state("default"))
+
+    assert result == {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": "default",
+        "rebuild": {
+            "webspace_id": "default",
+            "status": "running",
+            "pending": True,
+            "background": True,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "infrascope",
+            "request_id": "req-bench-1",
+        },
+        "runtime": {"role": "hub", "webspace_id": "default"},
+    }
+
+
 def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_branches(monkeypatch) -> None:
     fake_state = {
         "ui": _FakeMap(
@@ -1280,6 +1320,7 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
 def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkeypatch) -> None:
     echoed: list[str] = []
     posted: list[str] = []
+    polled_paths: list[str] = []
     perf_values = iter(
         [
             0.000,
@@ -1464,6 +1505,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         ),
     )
     def _fake_get_json(**kwargs):
+        polled_paths.append(str(kwargs.get("path") or ""))
         get_call_count["value"] += 1
         if get_call_count["value"] == 1:
             return (
@@ -1523,6 +1565,8 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     )
 
     assert posted == ["infrascope", "web_desktop", "infrascope", "web_desktop"]
+    assert polled_paths[0] == "/api/node/yjs/webspaces/default"
+    assert all(path == "/api/node/yjs/webspaces/default/rebuild" for path in polled_paths[1:])
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
         "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 status=ready"
