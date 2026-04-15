@@ -1718,6 +1718,311 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     assert any("summary.semantic_rebuild_timings_ms:" in line for line in echoed)
 
 
+def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(monkeypatch) -> None:
+    echoed: list[str] = []
+    posted: list[str] = []
+    polled_paths: list[str] = []
+    perf_values = iter([0.000, 0.010, 0.010, 0.030, 0.070])
+    describe_calls = {"value": 0}
+    rebuild_calls = {"value": 0}
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+
+    def _fake_get_json(**kwargs):
+        path = str(kwargs.get("path") or "")
+        polled_paths.append(path)
+        if path == "/api/node/yjs/webspaces/default":
+            describe_calls["value"] += 1
+            assert describe_calls["value"] == 1
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace": {
+                        "webspace_id": "default",
+                        "home_scenario": "web_desktop",
+                        "current_scenario": "web_desktop",
+                    },
+                },
+            )
+        if path == "/api/node/yjs/webspaces/default/rebuild?include_runtime=0":
+            rebuild_calls["value"] += 1
+            if rebuild_calls["value"] == 1:
+                return None, {"error": "timeout", "detail": "read timed out"}
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "rebuild": {
+                        "request_id": "req-target-1",
+                        "status": "ready",
+                        "pending": False,
+                        "background": True,
+                        "scenario_id": "infrascope",
+                        "resolver": {"source": "loader:workspace", "cache_hit": False},
+                        "apply_summary": {"changed_branches": 2, "unchanged_branches": 4},
+                        "switch_timings_ms": {"write_switch_pointer": 4.0, "total": 10.0},
+                        "timings_ms": {"resolve_rebuild_target": 8.0, "semantic_rebuild": 52.0, "total": 60.0},
+                        "semantic_rebuild_timings_ms": {
+                            "collect_inputs": 5.0,
+                            "resolve": 10.0,
+                            "apply_structure": 15.0,
+                            "apply_interactive": 12.0,
+                            "total": 52.0,
+                        },
+                        "phase_timings_ms": {
+                            "time_to_accept": 10.0,
+                            "time_to_pointer_update": 4.0,
+                            "time_to_first_structure": 33.0,
+                            "time_to_interactive_focus": 45.0,
+                            "time_to_full_hydration": 70.0,
+                        },
+                    },
+                },
+            )
+        if path == "/api/node/yjs/webspaces/default/materialization?include_runtime=0":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "materialization": {
+                        "ready": True,
+                        "webspace_id": "default",
+                        "current_scenario": "infrascope",
+                        "readiness_state": "ready",
+                        "missing_branches": [],
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected poll path: {path}")
+
+    monkeypatch.setattr(node_cli_module, "_control_get_json", _fake_get_json)
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            posted.append(str((kwargs.get("body") or {}).get("scenario_id") or ""))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "scenario_id": "infrascope",
+                    "scenario_switch_mode": "pointer_only",
+                    "switch_skipped": False,
+                    "phase_timings_ms": {
+                        "time_to_accept": 10.0,
+                        "time_to_pointer_update": 4.0,
+                    },
+                    "timings_ms": {"write_switch_pointer": 4.0, "total": 10.0},
+                    "rebuild": {
+                        "request_id": "req-target-1",
+                        "status": "scheduled",
+                        "pending": True,
+                        "scenario_id": "infrascope",
+                    },
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(node_cli_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._node_yjs_benchmark_scenario_action(
+        webspace="default",
+        scenario_id="infrascope",
+        baseline_scenario="infrascope",
+        iterations=1,
+        wait_ready=True,
+        ready_timeout_sec=30.0,
+        poll_interval_sec=0.01,
+        detail=False,
+        control="http://127.0.0.1:8080",
+        json_output=False,
+    )
+
+    assert posted == ["infrascope"]
+    assert polled_paths == [
+        "/api/node/yjs/webspaces/default",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
+    ]
+    assert any(
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=33.000 interactive=45.000 full=70.000 polls=rebuild:2/materialization:1 status=ready"
+        in line
+        for line in echoed
+    )
+    assert any("summary.polls.rebuild_transient_failures: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
+    assert any("summary.flags: skipped=0/1 cache_hits=0/1 ready_timeouts=0/1" in line for line in echoed)
+
+
+def test_node_cli_benchmark_scenario_falls_back_from_lightweight_poll_endpoints(monkeypatch) -> None:
+    echoed: list[str] = []
+    posted: list[str] = []
+    polled_paths: list[str] = []
+    perf_values = iter([0.000, 0.008, 0.008, 0.040])
+    describe_calls = {"value": 0}
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+
+    def _fallback_describe_payload() -> tuple[int, dict[str, object]]:
+        return (
+            200,
+            {
+                "ok": True,
+                "accepted": True,
+                "webspace": {
+                    "webspace_id": "default",
+                    "home_scenario": "web_desktop",
+                    "current_scenario": "infrascope",
+                },
+                "rebuild": {
+                    "request_id": "req-target-1",
+                    "status": "ready",
+                    "pending": False,
+                    "background": True,
+                    "scenario_id": "infrascope",
+                    "resolver": {"source": "loader:workspace", "cache_hit": False},
+                    "apply_summary": {"changed_branches": 1, "unchanged_branches": 5},
+                    "switch_timings_ms": {"write_switch_pointer": 3.0, "total": 8.0},
+                    "timings_ms": {"resolve_rebuild_target": 7.0, "semantic_rebuild": 40.0, "total": 47.0},
+                    "semantic_rebuild_timings_ms": {
+                        "collect_inputs": 4.0,
+                        "resolve": 8.0,
+                        "apply_structure": 11.0,
+                        "apply_interactive": 10.0,
+                        "total": 40.0,
+                    },
+                    "phase_timings_ms": {
+                        "time_to_accept": 8.0,
+                        "time_to_pointer_update": 3.0,
+                        "time_to_first_structure": 26.0,
+                        "time_to_interactive_focus": 36.0,
+                        "time_to_full_hydration": 55.0,
+                    },
+                },
+                "materialization": {
+                    "ready": True,
+                    "webspace_id": "default",
+                    "current_scenario": "infrascope",
+                    "readiness_state": "ready",
+                    "missing_branches": [],
+                },
+            },
+        )
+
+    def _fake_get_json(**kwargs):
+        path = str(kwargs.get("path") or "")
+        polled_paths.append(path)
+        if path == "/api/node/yjs/webspaces/default":
+            describe_calls["value"] += 1
+            if describe_calls["value"] == 1:
+                return (
+                    200,
+                    {
+                        "ok": True,
+                        "accepted": True,
+                        "webspace": {
+                            "webspace_id": "default",
+                            "home_scenario": "web_desktop",
+                            "current_scenario": "web_desktop",
+                        },
+                    },
+                )
+            return _fallback_describe_payload()
+        if path == "/api/node/yjs/webspaces/default/rebuild?include_runtime=0":
+            return 404, {"detail": "not found"}
+        if path == "/api/node/yjs/webspaces/default/materialization?include_runtime=0":
+            return 404, {"detail": "not found"}
+        raise AssertionError(f"unexpected poll path: {path}")
+
+    monkeypatch.setattr(node_cli_module, "_control_get_json", _fake_get_json)
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            posted.append(str((kwargs.get("body") or {}).get("scenario_id") or ""))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "scenario_id": "infrascope",
+                    "scenario_switch_mode": "pointer_only",
+                    "switch_skipped": False,
+                    "phase_timings_ms": {
+                        "time_to_accept": 8.0,
+                        "time_to_pointer_update": 3.0,
+                    },
+                    "timings_ms": {"write_switch_pointer": 3.0, "total": 8.0},
+                    "rebuild": {
+                        "request_id": "req-target-1",
+                        "status": "scheduled",
+                        "pending": True,
+                        "scenario_id": "infrascope",
+                    },
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(node_cli_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._node_yjs_benchmark_scenario_action(
+        webspace="default",
+        scenario_id="infrascope",
+        baseline_scenario="infrascope",
+        iterations=1,
+        wait_ready=True,
+        ready_timeout_sec=30.0,
+        poll_interval_sec=0.01,
+        detail=False,
+        control="http://127.0.0.1:8080",
+        json_output=False,
+    )
+
+    assert posted == ["infrascope"]
+    assert polled_paths == [
+        "/api/node/yjs/webspaces/default",
+        "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
+        "/api/node/yjs/webspaces/default",
+        "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
+        "/api/node/yjs/webspaces/default",
+    ]
+    assert any(
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 accept=8.000 ready=32.000 first=26.000 interactive=36.000 full=55.000 polls=rebuild:1/materialization:1 status=ready"
+        in line
+        for line in echoed
+    )
+    assert any("summary.polls.rebuild_describe_fallback: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
+    assert any("summary.polls.materialization_describe_fallback: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
+
+
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []

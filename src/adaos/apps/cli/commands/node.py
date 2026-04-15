@@ -889,8 +889,10 @@ def _benchmark_poll_counts() -> dict[str, int]:
     return {
         "rebuild": 0,
         "rebuild_describe_fallback": 0,
+        "rebuild_transient_failures": 0,
         "materialization": 0,
         "materialization_describe_fallback": 0,
+        "materialization_transient_failures": 0,
     }
 
 
@@ -901,6 +903,18 @@ def _benchmark_note_poll(counts: dict[str, int] | None, key: str) -> None:
     if not name:
         return
     counts[name] = int(counts.get(name) or 0) + 1
+
+
+def _is_transient_benchmark_poll_failure(code: int | None, payload: Any) -> bool:
+    if code is None:
+        if not isinstance(payload, dict):
+            return True
+        error = str(payload.get("error") or "").strip().lower()
+        return error in {"timeout", "connection_error", "request_error"} or not error
+    try:
+        return int(code) in {502, 503, 504}
+    except Exception:
+        return False
 
 
 def _benchmark_materialization_milestones(materialization: dict[str, Any] | None, *, elapsed_ms: float) -> dict[str, float]:
@@ -929,7 +943,7 @@ def _best_effort_benchmark_materialization_poll(
         f"/api/node/yjs/webspaces/{webspace}/materialization?include_runtime=0",
         f"/api/node/yjs/webspaces/{webspace}",
     ):
-        if path.endswith("/materialization?include_runtime=0"):
+        if "/materialization?" in path:
             _benchmark_note_poll(poll_counts, "materialization")
         else:
             _benchmark_note_poll(poll_counts, "materialization_describe_fallback")
@@ -939,8 +953,11 @@ def _best_effort_benchmark_materialization_poll(
             token=token,
             timeout=timeout_sec,
         )
-        if code == 404 and path.endswith("/materialization"):
+        if code == 404 and "/materialization?" in path:
             continue
+        if _is_transient_benchmark_poll_failure(code, payload):
+            _benchmark_note_poll(poll_counts, "materialization_transient_failures")
+            return None, True
         if code != 200 or not isinstance(payload, dict):
             return None, False
         materialization = payload.get("materialization") if isinstance(payload.get("materialization"), dict) else {}
@@ -1055,11 +1072,12 @@ def _wait_for_benchmark_rebuild(
         payload = None
         code = None
         current_rebuild: dict[str, Any] = {}
+        transient_rebuild_failure = False
         for path in (
             f"/api/node/yjs/webspaces/{webspace}/rebuild?include_runtime=0",
             f"/api/node/yjs/webspaces/{webspace}",
         ):
-            if path.endswith("/rebuild?include_runtime=0"):
+            if "/rebuild?" in path:
                 _benchmark_note_poll(poll_counts, "rebuild")
             else:
                 _benchmark_note_poll(poll_counts, "rebuild_describe_fallback")
@@ -1069,11 +1087,12 @@ def _wait_for_benchmark_rebuild(
                 token=token,
                 timeout=max(5.0, interval + 1.0),
             )
-            if code == 404 and path.endswith("/rebuild"):
+            if code == 404 and "/rebuild?" in path:
                 continue
-            if code is None:
-                typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
-                raise typer.Exit(code=2)
+            if _is_transient_benchmark_poll_failure(code, payload):
+                _benchmark_note_poll(poll_counts, "rebuild_transient_failures")
+                transient_rebuild_failure = True
+                break
             if code != 200 or not isinstance(payload, dict):
                 typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {code}", fg=typer.colors.RED)
                 if payload:
@@ -1081,13 +1100,18 @@ def _wait_for_benchmark_rebuild(
                 raise typer.Exit(code=1)
             current_rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
             break
+        loop_now = time.perf_counter()
+        elapsed_ms = round((loop_now - wait_started) * 1000.0, 3)
+        if transient_rebuild_failure:
+            if loop_now >= deadline:
+                return rebuild_state if rebuild_state else None, materialization_state, observed_timings, elapsed_ms, True, poll_counts
+            time.sleep(interval)
+            continue
         if current_rebuild:
             rebuild_state = dict(current_rebuild)
             current_request_id = str(rebuild_state.get("request_id") or "").strip() or None
             if current_request_id:
                 request_id = current_request_id
-        loop_now = time.perf_counter()
-        elapsed_ms = round((loop_now - wait_started) * 1000.0, 3)
         if materialization_supported and not materialization_complete:
             current_materialization, materialization_supported = _best_effort_benchmark_materialization_poll(
                 control=control,
@@ -1286,8 +1310,10 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
     for poll_name in (
         "rebuild",
         "rebuild_describe_fallback",
+        "rebuild_transient_failures",
         "materialization",
         "materialization_describe_fallback",
+        "materialization_transient_failures",
     ):
         item = poll_summary.get(poll_name) if isinstance(poll_summary.get(poll_name), dict) else {}
         if not item:
