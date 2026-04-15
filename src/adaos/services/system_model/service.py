@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,25 @@ def current_node_status_payload() -> dict[str, Any]:
         "route_mode": route_mode,
         "connected_to_hub": connected,
     }
+
+
+def node_status_push_heartbeat_s() -> float:
+    try:
+        interval_s = float(
+            os.getenv("ADAOS_NODE_STATUS_PUSH_HEARTBEAT_S", "5") or "5"
+        )
+    except Exception:
+        interval_s = 5.0
+    if interval_s < 2.0:
+        interval_s = 2.0
+    return interval_s
+
+
+def current_node_status_push_payload(*, updated_at: float | None = None) -> dict[str, Any]:
+    payload = current_node_status_payload()
+    payload["updated_at"] = float(updated_at or time.time())
+    payload["heartbeat_interval_s"] = float(node_status_push_heartbeat_s())
+    return payload
 
 
 def _control_plane_scope_refs() -> tuple[str | None, str | None]:
@@ -462,6 +482,7 @@ __all__ = [
     "current_inventory_projection",
     "current_neighborhood_projection",
     "current_node_object",
+    "current_node_status_push_payload",
     "current_node_status_payload",
     "current_object_inspector",
     "current_object_model",
@@ -472,5 +493,6 @@ __all__ = [
     "current_subnet_planning_context",
     "current_task_packet",
     "current_topology_projection",
+    "node_status_push_heartbeat_s",
     "route_info",
 ]

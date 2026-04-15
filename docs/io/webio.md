@@ -28,7 +28,10 @@ For the target architecture and the agreed evolutionary path, see
 4. **Event mesh** - UI commands travel over `/ws` (`events_ws`). Each command
    becomes a domain event (`desktop.*`) with metadata containing the current
    `webspace_id`. Skills subscribe to these events and mutate the associated
-   YDoc.
+   YDoc. The same control channel now also carries lightweight hub status
+   pushes such as `node.status` and `core.update.status`, so browser shell
+   badges can stay mostly push-driven and use HTTP polling only as a stale
+   fallback when the control path goes quiet.
 5. **Frontend** - the Angular/Ionic runtime consumes Yjs data through
    `YDocService`. It renders apps/widgets from the merged runtime state and
    exposes CRUD for switching or managing webspaces.

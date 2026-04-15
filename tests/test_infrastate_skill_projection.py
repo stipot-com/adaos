@@ -264,6 +264,66 @@ def test_infrastate_supervisor_transition_note_covers_planned_and_subsequent_upd
     assert "subsequent transition queued" in planned["description"]
 
 
+def test_infrastate_highlight_changed_summary_text_marks_only_changed_segments():
+    mod = _load_infrastate_module()
+
+    rendered = mod._highlight_changed_summary_text(
+        "countdown completed | pending_acks=2 | protocol=degraded | action: cancel_update",
+        "countdown completed | pending_acks=1 | protocol=degraded | action: start_update",
+    )
+
+    assert "countdown completed" in rendered
+    assert "**pending_acks=2**" in rendered
+    assert "protocol=degraded" in rendered
+    assert "**action: cancel_update**" in rendered
+
+
+def test_infrastate_summary_highlights_against_previous_render(monkeypatch):
+    mod = _load_infrastate_module()
+    memory: dict[str, object] = {}
+
+    monkeypatch.setattr(mod, "skill_memory_get", lambda key, default=None: memory.get(key, default))
+    monkeypatch.setattr(mod, "skill_memory_set", lambda key, value: memory.__setitem__(key, value))
+    monkeypatch.setattr(mod, "_node_tabs", lambda conf, ui_state, reliability: ([], {"kind": "local", "node_id": "hub-1", "label": "hub"}))
+    monkeypatch.setattr(mod, "_skill_runtime_migration_report", lambda status, last_result: {})
+    monkeypatch.setattr(mod, "_skill_runtime_migration_note", lambda report: "")
+    monkeypatch.setattr(mod, "_skill_runtime_rollback_report", lambda status, last_result: {})
+    monkeypatch.setattr(mod, "_skill_runtime_rollback_note", lambda report: "")
+    monkeypatch.setattr(mod, "_skill_post_commit_checks_report", lambda status, last_result: {})
+    monkeypatch.setattr(mod, "_skill_post_commit_checks_note", lambda report: "")
+    monkeypatch.setattr(mod, "_supervisor_transition_note", lambda status: {})
+    monkeypatch.setattr(mod, "_reliability_summary_note", lambda reliability, transport_diag: "")
+    monkeypatch.setattr(mod, "_hub_root_strategy", lambda reliability, transport_diag: {})
+    monkeypatch.setattr(mod, "_effective_channel_view", lambda *args, **kwargs: ("ready", "stable", {}))
+    monkeypatch.setattr(mod, "_selected_yjs_webspace_id", lambda ui_state, reliability: "default")
+
+    common_kwargs = dict(
+        last_result={},
+        slots_payload={"active_slot": "A"},
+        lifecycle={},
+        conf=SimpleNamespace(role="hub", node_id="hub-1"),
+        build={"runtime_git_short_commit": "77fab7d"},
+        ui_state={},
+        reliability={"runtime": {}},
+        transport_diag={},
+        selected_member=None,
+    )
+
+    first = mod._summary(
+        status={"state": "countdown", "message": "countdown completed", "phase": "countdown"},
+        **common_kwargs,
+    )
+    second = mod._summary(
+        status={"state": "restarting", "message": "countdown completed | pending_acks=2", "phase": "shutdown"},
+        **common_kwargs,
+    )
+
+    assert "**" not in first["value"]
+    assert second["value"] == "**restarting**"
+    assert "countdown completed" in second["description"]
+    assert "**pending_acks=2**" in second["description"]
+
+
 def test_infrastate_summary_buttons_offer_defer_during_countdown():
     mod = _load_infrastate_module()
 

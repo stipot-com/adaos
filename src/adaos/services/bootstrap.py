@@ -821,6 +821,50 @@ class BootstrapService:
                 await asyncio.sleep(_control_lifecycle_heartbeat_s)
                 await _report_control_lifecycle("heartbeat")
 
+        try:
+            from adaos.services.system_model.service import (
+                current_node_status_push_payload as _current_node_status_push_payload,
+                node_status_push_heartbeat_s as _node_status_push_heartbeat_s,
+            )
+        except Exception:
+            _current_node_status_push_payload = None
+            _node_status_push_heartbeat_s = None
+
+        async def _emit_node_status(trigger: str) -> None:
+            try:
+                if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+                    return
+                if not callable(_current_node_status_push_payload):
+                    return
+                payload = _current_node_status_push_payload()
+                payload["trigger"] = str(trigger or "").strip() or "runtime"
+                await bus.emit(
+                    "node.status",
+                    payload,
+                    source="lifecycle",
+                    actor="system",
+                )
+            except Exception:
+                self._log.debug("failed to emit node.status trigger=%s", trigger, exc_info=True)
+
+        try:
+            _node_status_push_heartbeat_interval_s = (
+                float(_node_status_push_heartbeat_s())
+                if callable(_node_status_push_heartbeat_s)
+                else 5.0
+            )
+        except Exception:
+            _node_status_push_heartbeat_interval_s = 5.0
+        if _node_status_push_heartbeat_interval_s < 2.0:
+            _node_status_push_heartbeat_interval_s = 2.0
+
+        async def _node_status_push_heartbeat() -> None:
+            if getattr(conf, "role", None) != "hub":
+                return
+            while True:
+                await asyncio.sleep(_node_status_push_heartbeat_interval_s)
+                await _emit_node_status("heartbeat")
+
         self._prepare_environment()
         # local adapter over LocalEventBus
         core_bus = self.ctx.bus if isinstance(self.ctx.bus, LocalEventBus) else LocalEventBus()
@@ -866,9 +910,26 @@ class BootstrapService:
                     except Exception:
                         self._log.debug("failed to mirror core.update.status to members", exc_info=True)
 
+                def _forward_node_status_to_members(ev: Event) -> None:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type="node.status",
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror node.status to members", exc_info=True)
+
                 core_bus.subscribe("core.update.status", _forward_core_update_status_to_members)
+                core_bus.subscribe("node.status", _forward_node_status_to_members)
             except Exception:
-                self._log.debug("failed to install member core.update.status forwarder", exc_info=True)
+                self._log.debug(
+                    "failed to install member status forwarders",
+                    exc_info=True,
+                )
         try:
             from adaos.services.core_update import (
                 finalize_runtime_boot_status as _finalize_runtime_boot_status,
@@ -884,6 +945,7 @@ class BootstrapService:
         except Exception:
             _finalize_runtime_boot_status = None
             self._log.debug("failed to emit initial core.update.status", exc_info=True)
+        await _emit_node_status("boot")
         await bus.emit("sys.bus.ready", {}, source="lifecycle", actor="system")
         # Start in-process scheduler after the bus is ready.
         try:
@@ -1060,6 +1122,7 @@ class BootstrapService:
             self._ready.set()
             self._booted = True
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+            await _emit_node_status("sys.ready")
             try:
                 if callable(_finalize_runtime_boot_status):
                     _finalize_runtime_boot_status()
@@ -1072,6 +1135,12 @@ class BootstrapService:
                     name="adaos-control-lifecycle-heartbeat",
                 )
             )
+            self._boot_tasks.append(
+                asyncio.create_task(
+                    _node_status_push_heartbeat(),
+                    name="adaos-node-status-push-heartbeat",
+                )
+            )
         else:
             task = await self._member_register_and_heartbeat(conf)
             if task:
@@ -1079,6 +1148,7 @@ class BootstrapService:
                 self._ready.set()
                 self._booted = True
                 await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+                await _emit_node_status("sys.ready")
                 try:
                     if callable(_finalize_runtime_boot_status):
                         _finalize_runtime_boot_status()

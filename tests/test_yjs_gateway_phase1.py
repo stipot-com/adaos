@@ -460,6 +460,44 @@ def test_register_ws_event_subscriptions_installs_forwarder_once(monkeypatch) ->
     ]
 
 
+def test_iter_initial_ws_event_messages_includes_hub_node_status(monkeypatch) -> None:
+    from adaos.services import bootstrap as bootstrap_module
+    from adaos.services.system_model import service as system_model_service
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "load_config",
+        lambda *args, **kwargs: SimpleNamespace(role="hub"),
+    )
+    monkeypatch.setattr(
+        system_model_service,
+        "current_node_status_push_payload",
+        lambda: {
+            "ready": True,
+            "updated_at": 123.0,
+            "heartbeat_interval_s": 5.0,
+        },
+    )
+    monkeypatch.setattr(gateway_module.time, "time", lambda: 321.0)
+
+    messages = gateway_module._iter_initial_ws_event_messages({"node.status"})
+
+    assert messages == [
+        {
+            "ch": "events",
+            "t": "evt",
+            "kind": "node.status",
+            "payload": {
+                "ready": True,
+                "updated_at": 123.0,
+                "heartbeat_interval_s": 5.0,
+            },
+            "source": "node.status",
+            "ts": 321.0,
+        }
+    ]
+
+
 def test_forward_ws_bus_event_delivers_core_update_status(monkeypatch) -> None:
     websocket = _FakeEventWebSocket()
 

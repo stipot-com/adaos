@@ -193,6 +193,24 @@ async def _send_ws_event_message(websocket: WebSocket, message: dict[str, Any]) 
 
 def _iter_initial_ws_event_messages(topics: set[str]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
+    if any(_ws_event_topic_matches(topic, "node.status") for topic in topics):
+        try:
+            from adaos.services.bootstrap import load_config as _load_config
+            from adaos.services.system_model.service import (
+                current_node_status_push_payload as _current_node_status_push_payload,
+            )
+
+            conf = _load_config()
+            if str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+                messages.append(
+                    _build_ws_event_message(
+                        "node.status",
+                        _current_node_status_push_payload(),
+                        source="node.status",
+                    )
+                )
+        except Exception:
+            _ylog.debug("failed to snapshot node.status for ws subscriber", exc_info=True)
     if any(_ws_event_topic_matches(topic, "core.update.status") for topic in topics):
         try:
             from adaos.services.core_update import read_status as _read_core_update_status
