@@ -16,6 +16,7 @@ if "ypy_websocket" not in sys.modules:
 
 from adaos.apps.api import node_api as node_api_module
 from adaos.apps.cli.commands import node as node_cli_module
+from adaos.services.scenario import webspace_runtime as webspace_runtime_module
 
 
 async def _awaitable(value):
@@ -1437,6 +1438,43 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
     assert any("apply.phase.interactive: changed=0/4 unchanged=4 failed=0" in line for line in echoed)
 
 
+def test_node_cli_apply_summary_prints_fingerprint_skip_breakdown(monkeypatch) -> None:
+    echoed: list[str] = []
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._print_apply_summary(
+        {
+            "apply_summary": {
+                "branch_count": 6,
+                "changed_branches": 0,
+                "unchanged_branches": 6,
+                "failed_branches": 0,
+                "fingerprint_unchanged_branches": 6,
+                "phases": {
+                    "structure": {
+                        "branch_count": 2,
+                        "changed_branches": 0,
+                        "unchanged_branches": 2,
+                        "failed_branches": 0,
+                        "fingerprint_unchanged_branches": 2,
+                    },
+                    "interactive": {
+                        "branch_count": 4,
+                        "changed_branches": 0,
+                        "unchanged_branches": 4,
+                        "failed_branches": 0,
+                        "fingerprint_unchanged_branches": 4,
+                    },
+                },
+            }
+        }
+    )
+
+    assert any("apply: changed=0/6 unchanged=6 failed=0 fingerprint_skip=6" in line for line in echoed)
+    assert any("apply.phase.structure: changed=0/2 unchanged=2 failed=0 fingerprint_skip=2" in line for line in echoed)
+    assert any("apply.phase.interactive: changed=0/4 unchanged=4 failed=0 fingerprint_skip=4" in line for line in echoed)
+
+
 def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkeypatch) -> None:
     echoed: list[str] = []
     posted: list[str] = []
@@ -1755,12 +1793,12 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
     ]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
     assert any(
-        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 fp_skip=0 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -1925,7 +1963,7 @@ def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(mo
         "/api/node/yjs/webspaces/default/materialization?include_runtime=0",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=33.000 interactive=45.000 full=70.000 polls=rebuild:2/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 fp_skip=0 accept=10.000 ready=60.000 first=33.000 interactive=45.000 full=70.000 polls=rebuild:2/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -2077,7 +2115,7 @@ def test_node_cli_benchmark_scenario_falls_back_from_lightweight_poll_endpoints(
         "/api/node/yjs/webspaces/default",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 accept=8.000 ready=32.000 first=26.000 interactive=36.000 full=55.000 polls=rebuild:1/materialization:1 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=8.000 ready=32.000 first=26.000 interactive=36.000 full=55.000 polls=rebuild:1/materialization:1 status=ready"
         in line
         for line in echoed
     )
@@ -2217,10 +2255,317 @@ def test_node_cli_benchmark_scenario_uses_embedded_rebuild_materialization(monke
         "/api/node/yjs/webspaces/default/rebuild?include_runtime=0",
     ]
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 accept=6.000 ready=20.000 first=11.000 interactive=16.000 full=26.000 polls=rebuild:1/materialization:0 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=0 accept=6.000 ready=20.000 first=11.000 interactive=16.000 full=26.000 polls=rebuild:1/materialization:0 status=ready"
         in line
         for line in echoed
     )
+
+
+def test_node_cli_benchmark_scenario_falls_back_to_active_runtime_from_supervisor(monkeypatch) -> None:
+    echoed: list[str] = []
+    posted: list[tuple[str, str]] = []
+    perf_values = iter([0.000, 0.006, 0.006, 0.024])
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8777",
+            resolve_control_token=lambda explicit=None, base_url=None: explicit or "secret",
+        ),
+    )
+
+    def _fake_get_json(**kwargs):
+        control = str(kwargs.get("control") or "")
+        path = str(kwargs.get("path") or "")
+        if control == "http://127.0.0.1:8776" and path == "/api/supervisor/public/update-status":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "runtime": {
+                        "runtime_url": "http://127.0.0.1:8778",
+                        "candidate_runtime_url": "http://127.0.0.1:8777",
+                        "slot_urls": {
+                            "A": "http://127.0.0.1:8777",
+                            "B": "http://127.0.0.1:8778",
+                        },
+                    },
+                },
+            )
+        if control == "http://127.0.0.1:8777" and path == "/api/node/yjs/webspaces/default":
+            return None, {"error": "timeout", "detail": "read timeout"}
+        if control == "http://127.0.0.1:8778" and path == "/api/node/yjs/webspaces/default":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace": {
+                        "webspace_id": "default",
+                        "home_scenario": "web_desktop",
+                        "current_scenario": "web_desktop",
+                    },
+                    "runtime": {
+                        "transition_role": "active",
+                        "admin_mutation_allowed": True,
+                    },
+                },
+            )
+        if control == "http://127.0.0.1:8778" and path == "/api/node/yjs/webspaces/default/rebuild?include_runtime=0":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "rebuild": {
+                        "request_id": "req-fallback-1",
+                        "status": "ready",
+                        "pending": False,
+                        "background": True,
+                        "scenario_id": "infrascope",
+                        "resolver": {"source": "loader:workspace", "cache_hit": False},
+                        "apply_summary": {
+                            "changed_branches": 1,
+                            "unchanged_branches": 5,
+                            "fingerprint_unchanged_branches": 2,
+                        },
+                        "switch_timings_ms": {"write_switch_pointer": 2.0, "total": 6.0},
+                        "timings_ms": {"resolve_rebuild_target": 4.0, "semantic_rebuild": 18.0, "total": 22.0},
+                        "semantic_rebuild_timings_ms": {
+                            "collect_inputs": 2.0,
+                            "resolve": 4.0,
+                            "apply_structure": 4.0,
+                            "apply_interactive": 4.0,
+                            "total": 18.0,
+                        },
+                        "phase_timings_ms": {
+                            "time_to_accept": 6.0,
+                            "time_to_pointer_update": 2.0,
+                            "time_to_first_structure": 10.0,
+                            "time_to_interactive_focus": 14.0,
+                            "time_to_full_hydration": 24.0,
+                        },
+                        "materialization": {
+                            "ready": True,
+                            "webspace_id": "default",
+                            "current_scenario": "infrascope",
+                            "readiness_state": "ready",
+                            "missing_branches": [],
+                        },
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected request: control={control} path={path}")
+
+    monkeypatch.setattr(node_cli_module, "_control_get_json", _fake_get_json)
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_post_json",
+        lambda **kwargs: (
+            posted.append((str(kwargs.get("control") or ""), str((kwargs.get("body") or {}).get("scenario_id") or "")))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace_id": "default",
+                    "scenario_id": "infrascope",
+                    "scenario_switch_mode": "pointer_only",
+                    "switch_skipped": False,
+                    "phase_timings_ms": {
+                        "time_to_accept": 6.0,
+                        "time_to_pointer_update": 2.0,
+                    },
+                    "timings_ms": {"write_switch_pointer": 2.0, "total": 6.0},
+                    "rebuild": {
+                        "request_id": "req-fallback-1",
+                        "status": "scheduled",
+                        "pending": True,
+                        "scenario_id": "infrascope",
+                    },
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(node_cli_module.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(node_cli_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._node_yjs_benchmark_scenario_action(
+        webspace="default",
+        scenario_id="infrascope",
+        baseline_scenario="infrascope",
+        iterations=1,
+        wait_ready=True,
+        ready_timeout_sec=30.0,
+        poll_interval_sec=0.01,
+        detail=True,
+        control="http://127.0.0.1:8777",
+        json_output=False,
+    )
+
+    assert posted == [("http://127.0.0.1:8778", "infrascope")]
+    assert any(
+        "benchmark.control: requested=http://127.0.0.1:8777 selected=http://127.0.0.1:8778 reason=supervisor_runtime_fallback"
+        in line
+        for line in echoed
+    )
+    assert any(
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=2 accept=6.000 ready=24.000 first=10.000 interactive=14.000 full=24.000 polls=rebuild:1/materialization:0 status=ready"
+        in line
+        for line in echoed
+    )
+    assert any("summary.fingerprint_unchanged_branches: avg=2.000 min=2.000 max=2.000" in line for line in echoed)
+
+
+def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(monkeypatch) -> None:
+    class _Txn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class _TrackingMap(dict):
+        def __init__(self, initial: dict | None = None, *, forbidden_get_keys: set[str] | None = None) -> None:
+            super().__init__(initial or {})
+            self.forbidden_get_keys = set(forbidden_get_keys or set())
+
+        def get(self, key, default=None):
+            if key in self.forbidden_get_keys:
+                raise AssertionError(f"unexpected get for {key}")
+            return dict.get(self, key, default)
+
+        def set(self, txn, key, value):
+            self[key] = value
+
+    class _TrackingDoc:
+        def __init__(self, state: dict[str, _TrackingMap]) -> None:
+            self._state = state
+
+        def get_map(self, name: str) -> _TrackingMap:
+            return self._state[name]
+
+        def begin_transaction(self):
+            return _Txn()
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(ctx=SimpleNamespace())
+    monkeypatch.setattr(runtime, "_apply_ydoc_defaults_in_txn", lambda ydoc, txn, skill_decls: None)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {"webspace_id": webspace_id, "status": "ready", "pending": False},
+    )
+
+    resolved = webspace_runtime_module.WebspaceResolverOutputs(
+        webspace_id="default",
+        scenario_id="infrascope",
+        source_mode="workspace",
+        application={
+            "desktop": {"topbar": [], "pageSchema": {"widgets": []}, "pinnedWidgets": []},
+            "modals": {"apps_catalog": {}, "widgets_catalog": {}},
+        },
+        catalog={"apps": [], "widgets": []},
+        registry={"modals": [], "widgets": []},
+        installed={"apps": [], "widgets": []},
+        desktop={"installed": {"apps": [], "widgets": []}, "topbar": [], "pageSchema": {"widgets": []}, "pinnedWidgets": []},
+        routing={"routes": {}},
+        skill_decls=[],
+    )
+    fingerprints = webspace_runtime_module._resolved_output_branch_fingerprints(resolved)
+    ydoc = _TrackingDoc(
+        {
+            "ui": _TrackingMap(
+                {"application": {"stale": True}},
+                forbidden_get_keys={"application"},
+            ),
+            "data": _TrackingMap(
+                {
+                    "catalog": {"stale": True},
+                    "installed": {"stale": True},
+                    "desktop": {"stale": True},
+                    "routing": {"stale": True},
+                },
+                forbidden_get_keys={"catalog", "installed", "desktop", "routing"},
+            ),
+            "registry": _TrackingMap(
+                {
+                    "merged": {"stale": True},
+                    "runtime_meta": {
+                        webspace_runtime_module._RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY: dict(fingerprints)
+                    },
+                },
+                forbidden_get_keys={"merged"},
+            ),
+        }
+    )
+    inputs = webspace_runtime_module.WebspaceResolverInputs(
+        webspace_id="default",
+        scenario_id="infrascope",
+        source_mode="workspace",
+        metadata={},
+        scenario_application={},
+        scenario_catalog={},
+        scenario_registry={},
+        overlay_snapshot={},
+        live_state={"desktop": {}, "routing": {}},
+        compatibility_cache_presence={
+            "scenario_ui_application": False,
+            "scenario_registry_entry": False,
+            "scenario_catalog": False,
+        },
+        skill_decls=[],
+        desktop_scenarios=[],
+        scenario_source="loader:workspace",
+        legacy_scenario_fallback=False,
+    )
+
+    runtime._apply_resolved_state_in_doc(ydoc, "default", resolved, inputs=inputs)
+
+    assert runtime._last_apply_summary == {
+        "branch_count": 6,
+        "changed_branches": 0,
+        "unchanged_branches": 6,
+        "failed_branches": 0,
+        "changed_paths": [],
+        "defaults_failed": False,
+        "phases": {
+            "structure": {
+                "branch_count": 2,
+                "changed_branches": 0,
+                "unchanged_branches": 2,
+                "failed_branches": 0,
+                "changed_paths": [],
+                "fingerprint_unchanged_branches": 2,
+                "fingerprint_unchanged_paths": ["ui.application", "registry.merged"],
+            },
+            "interactive": {
+                "branch_count": 4,
+                "changed_branches": 0,
+                "unchanged_branches": 4,
+                "failed_branches": 0,
+                "changed_paths": [],
+                "fingerprint_unchanged_branches": 4,
+                "fingerprint_unchanged_paths": [
+                    "data.catalog",
+                    "data.installed",
+                    "data.desktop",
+                    "data.routing",
+                ],
+            },
+        },
+        "fingerprint_unchanged_branches": 6,
+        "fingerprint_unchanged_paths": [
+            "ui.application",
+            "registry.merged",
+            "data.catalog",
+            "data.installed",
+            "data.desktop",
+            "data.routing",
+        ],
+    }
 
 
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:

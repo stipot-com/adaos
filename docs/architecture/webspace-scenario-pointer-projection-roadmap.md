@@ -284,6 +284,12 @@ Browser fallback diagnostics now also prefer those lightweight materialization
 surfaces for reload/catalog recovery paths instead of fetching the full
 `/api/node/yjs/webspaces/<id>` snapshot when only readiness metadata is needed.
 
+Benchmark control resolution now also self-heals around local supervisor
+prewarm/candidate transitions: when the requested local runtime endpoint stops
+answering the Yjs control surface, the CLI can consult supervisor public
+status, pick the currently active runtime URL, and continue the benchmark from
+that control path instead of failing on the first timeout.
+
 Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,
 `time_to_full_hydration`). They are now derived from measured
@@ -301,6 +307,14 @@ scenario payload, skill UI contributions, overlay snapshot, and live runtime
 inputs. Those fingerprints back an in-process resolved-output cache and are
 surfaced in rebuild diagnostics together with resolver source, cache-hit state,
 and whether the rebuild had to fall back to legacy Yjs scenario branches.
+
+Semantic rebuild apply now also keeps lightweight fingerprints for effective
+top-level branches under internal runtime metadata. When the rebuilt output for
+`ui.application`, `data.catalog`, `data.installed`, `data.desktop`,
+`data.routing`, or `registry.merged` matches the last applied fingerprint, the
+runtime can skip reopening that heavy branch for deep equality checks. This is
+an intermediate fast-path before full top-level diff-apply, and benchmark/apply
+diagnostics now surface those `fingerprint_unchanged_branches` counts.
 
 Rebuild diagnostics now also expose an `apply_summary` for the top-level
 derived branches (`ui.application`, `data.catalog`, `data.installed`,

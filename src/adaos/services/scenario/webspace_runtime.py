@@ -36,6 +36,15 @@ _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 _WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
 _RESOLVED_WEBSPACE_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _RESOLVED_WEBSPACE_CACHE_LIMIT = 64
+_EFFECTIVE_BRANCH_PATHS = (
+    "ui.application",
+    "data.catalog",
+    "data.installed",
+    "data.desktop",
+    "data.routing",
+    "registry.merged",
+)
+_RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY = "effective_branch_fingerprints"
 _WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
 _WEBUI_LOAD_FOCUS = frozenset({"primary", "supporting", "off_focus", "background"})
 _WEBUI_READINESS_STATES = frozenset({"pending_structure", "first_paint", "interactive", "hydrating", "ready", "degraded"})
@@ -360,6 +369,55 @@ def _fingerprint_json_like(value: Any) -> str:
     except Exception:
         normalized = repr(value)
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+def _resolved_output_branch_fingerprints(resolved: "WebspaceResolverOutputs") -> Dict[str, str]:
+    return {
+        "ui.application": _fingerprint_json_like(resolved.application),
+        "data.catalog": _fingerprint_json_like(resolved.catalog),
+        "data.installed": _fingerprint_json_like(resolved.installed),
+        "data.desktop": _fingerprint_json_like(resolved.desktop),
+        "data.routing": _fingerprint_json_like(resolved.routing),
+        "registry.merged": _fingerprint_json_like(resolved.registry),
+    }
+
+
+def _read_effective_branch_fingerprints(registry_map: Any) -> Dict[str, str]:
+    runtime_meta = _coerce_dict(registry_map.get("runtime_meta") or {})
+    stored = _coerce_dict(runtime_meta.get(_RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY) or {})
+    fingerprints: Dict[str, str] = {}
+    for path in _EFFECTIVE_BRANCH_PATHS:
+        token = str(stored.get(path) or "").strip()
+        if token:
+            fingerprints[path] = token
+    return fingerprints
+
+
+def _write_effective_branch_fingerprints(
+    registry_map: Any,
+    txn: Any,
+    *,
+    current: Mapping[str, str],
+    updates: Mapping[str, str],
+) -> bool:
+    runtime_meta = _coerce_dict(registry_map.get("runtime_meta") or {})
+    next_runtime_meta = dict(runtime_meta)
+    next_fingerprints = _coerce_dict(next_runtime_meta.get(_RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY) or {})
+    changed = False
+    for path in _EFFECTIVE_BRANCH_PATHS:
+        current_value = str(current.get(path) or "").strip()
+        next_value = str(updates.get(path) or current_value).strip()
+        if not next_value:
+            continue
+        if str(next_fingerprints.get(path) or "").strip() == next_value:
+            continue
+        next_fingerprints[path] = next_value
+        changed = True
+    if not changed:
+        return False
+    next_runtime_meta[_RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY] = next_fingerprints
+    _set_map_value_if_changed(registry_map, txn, "runtime_meta", next_runtime_meta)
+    return True
 
 
 def _resolver_cache_keys(inputs: WebspaceResolverInputs) -> Dict[str, str]:
@@ -1724,20 +1782,16 @@ class WebspaceScenarioRuntime:
         ui_map = ydoc.get_map("ui")
         data_map = ydoc.get_map("data")
         registry_map = ydoc.get_map("registry")
-        target_paths = (
-            "ui.application",
-            "data.catalog",
-            "data.installed",
-            "data.desktop",
-            "data.routing",
-            "registry.merged",
-        )
+        target_paths = _EFFECTIVE_BRANCH_PATHS
         changed_paths: List[str] = []
         failed_paths: List[str] = []
+        fingerprint_unchanged_paths: List[str] = []
         defaults_failed = False
         phase_summaries: Dict[str, Dict[str, Any]] = {}
         phase_timings_ms: Dict[str, float] = {}
         compatibility_presence = dict(inputs.compatibility_cache_presence or {})
+        resolved_branch_fingerprints = _resolved_output_branch_fingerprints(resolved)
+        effective_branch_fingerprints = _read_effective_branch_fingerprints(registry_map)
 
         def _update_materialization_snapshot(phase_name: str) -> None:
             application = _coerce_dict(resolved.application or {})
@@ -1775,7 +1829,21 @@ class WebspaceScenarioRuntime:
                 materialization=snapshot,
             )
 
-        def _apply_branch(txn: Any, path: str, y_map: Any, key: str, value: Any, *, ignore_errors: bool = False) -> None:
+        def _apply_branch(
+            txn: Any,
+            path: str,
+            y_map: Any,
+            key: str,
+            value: Any,
+            *,
+            fingerprint_updates: Dict[str, str],
+            ignore_errors: bool = False,
+        ) -> None:
+            fingerprint = str(resolved_branch_fingerprints.get(path) or "").strip()
+            if fingerprint and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint:
+                fingerprint_unchanged_paths.append(path)
+                fingerprint_updates[path] = fingerprint
+                return
             try:
                 changed = _set_map_value_if_changed(y_map, txn, key, value)
             except Exception:
@@ -1783,6 +1851,9 @@ class WebspaceScenarioRuntime:
                     raise
                 failed_paths.append(path)
                 return
+            if fingerprint:
+                effective_branch_fingerprints[path] = fingerprint
+                fingerprint_updates[path] = fingerprint
             if changed:
                 changed_paths.append(path)
 
@@ -1796,9 +1867,11 @@ class WebspaceScenarioRuntime:
             phase_started = time.perf_counter()
             phase_changed_before = len(changed_paths)
             phase_failed_before = len(failed_paths)
+            phase_fingerprint_unchanged_before = len(fingerprint_unchanged_paths)
             phase_defaults_failed = False
 
             with ydoc.begin_transaction() as txn:
+                phase_fingerprint_updates: Dict[str, str] = {}
                 if apply_defaults:
                     try:
                         self._apply_ydoc_defaults_in_txn(ydoc, txn, resolved.skill_decls)
@@ -1808,10 +1881,25 @@ class WebspaceScenarioRuntime:
                         _log.warning("failed to apply ydoc_defaults for webspace=%s", webspace_id, exc_info=True)
 
                 for path, y_map, key, value, ignore_errors in branch_specs:
-                    _apply_branch(txn, path, y_map, key, value, ignore_errors=ignore_errors)
+                    _apply_branch(
+                        txn,
+                        path,
+                        y_map,
+                        key,
+                        value,
+                        fingerprint_updates=phase_fingerprint_updates,
+                        ignore_errors=ignore_errors,
+                    )
+                _write_effective_branch_fingerprints(
+                    registry_map,
+                    txn,
+                    current=effective_branch_fingerprints,
+                    updates=phase_fingerprint_updates,
+                )
 
             phase_changed_paths = list(changed_paths[phase_changed_before:])
             phase_failed_paths = list(failed_paths[phase_failed_before:])
+            phase_fingerprint_unchanged_paths = list(fingerprint_unchanged_paths[phase_fingerprint_unchanged_before:])
             branch_count = len(branch_specs)
             phase_summary: Dict[str, Any] = {
                 "branch_count": branch_count,
@@ -1820,6 +1908,9 @@ class WebspaceScenarioRuntime:
                 "failed_branches": len(phase_failed_paths),
                 "changed_paths": phase_changed_paths,
             }
+            if phase_fingerprint_unchanged_paths:
+                phase_summary["fingerprint_unchanged_branches"] = len(phase_fingerprint_unchanged_paths)
+                phase_summary["fingerprint_unchanged_paths"] = phase_fingerprint_unchanged_paths
             if phase_failed_paths:
                 phase_summary["failed_paths"] = phase_failed_paths
             if phase_defaults_failed:
@@ -1855,6 +1946,9 @@ class WebspaceScenarioRuntime:
             "defaults_failed": defaults_failed,
             "phases": phase_summaries,
         }
+        if fingerprint_unchanged_paths:
+            self._last_apply_summary["fingerprint_unchanged_branches"] = len(fingerprint_unchanged_paths)
+            self._last_apply_summary["fingerprint_unchanged_paths"] = list(fingerprint_unchanged_paths)
         if failed_paths:
             self._last_apply_summary["failed_paths"] = list(failed_paths)
         self._last_apply_phase_timings_ms = phase_timings_ms or None

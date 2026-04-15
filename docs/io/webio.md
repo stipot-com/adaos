@@ -194,6 +194,7 @@ pointer-only scenario switch can be evaluated against real runtime slices:
 * `phase_timings_ms.time_to_full_hydration`
 * `apply_summary.phases.structure`
 * `apply_summary.phases.interactive`
+* `apply_summary.fingerprint_unchanged_branches`
 
 For repeated operator measurements, use:
 
@@ -216,6 +217,11 @@ When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`
 endpoint, which further reduces polling pressure on the hub during repeated
 scenario switch measurements.
+
+If the requested local control endpoint becomes stale during supervisor
+prewarm/candidate activity, the benchmark CLI can now consult supervisor
+public status and retry against the currently active local runtime URL before
+failing the measurement.
 
 `readiness_state` follows a coarse ladder:
 

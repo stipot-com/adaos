@@ -71,6 +71,108 @@ def _supervisor_transition_probe(*, control: str, token: str) -> tuple[int | Non
     )
 
 
+def _is_local_control_url(control: str | None) -> bool:
+    raw = str(control or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    return str(parsed.hostname or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def _append_control_candidate(candidates: list[str], seen: set[str], raw: Any) -> None:
+    value = str(raw or "").strip().rstrip("/")
+    if not value or value in seen:
+        return
+    candidates.append(value)
+    seen.add(value)
+
+
+def _supervisor_runtime_control_candidates(control: str, token: str) -> list[str]:
+    if not _is_local_control_url(control):
+        return []
+    try:
+        parsed = urlparse(str(control or "").strip())
+        port = parsed.port
+    except Exception:
+        parsed = None
+        port = None
+    if port not in {8777, 8778, 8779}:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    code, payload = _supervisor_transition_probe(control=control, token=token)
+    if code == 200 and isinstance(payload, dict):
+        for container in (
+            payload,
+            payload.get("status") if isinstance(payload.get("status"), dict) else {},
+            payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {},
+        ):
+            if not isinstance(container, dict):
+                continue
+            _append_control_candidate(candidates, seen, container.get("runtime_url"))
+            _append_control_candidate(candidates, seen, container.get("candidate_runtime_url"))
+            slot_urls = container.get("slot_urls") if isinstance(container.get("slot_urls"), dict) else {}
+            for raw_url in slot_urls.values():
+                _append_control_candidate(candidates, seen, raw_url)
+    scheme = parsed.scheme if parsed is not None and parsed.scheme else "http"
+    for raw_url in (
+        f"{scheme}://127.0.0.1:8777",
+        f"{scheme}://127.0.0.1:8778",
+        f"{scheme}://127.0.0.1:8779",
+        f"{scheme}://localhost:8777",
+        f"{scheme}://localhost:8778",
+        f"{scheme}://localhost:8779",
+    ):
+        _append_control_candidate(candidates, seen, raw_url)
+    return candidates
+
+
+def _is_active_runtime_control_payload(payload: Any) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    transition_role = str(runtime.get("transition_role") or "").strip().lower()
+    if transition_role == "candidate":
+        return False
+    if runtime.get("admin_mutation_allowed") is False:
+        return False
+    return True
+
+
+def _resolve_benchmark_control(
+    *,
+    control: str,
+    token: str,
+    webspace: str,
+    timeout_sec: float = 5.0,
+) -> tuple[str, str, int | None, Any]:
+    requested = str(control or "").strip()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    _append_control_candidate(candidates, seen, requested)
+    for candidate in _supervisor_runtime_control_candidates(requested, token):
+        _append_control_candidate(candidates, seen, candidate)
+
+    first_code: int | None = None
+    first_payload: Any = None
+    for index, candidate in enumerate(candidates):
+        code, payload = _control_get_json(
+            control=candidate,
+            path=f"/api/node/yjs/webspaces/{webspace}",
+            token=token,
+            timeout=timeout_sec,
+        )
+        if first_payload is None:
+            first_code = code
+            first_payload = payload
+        if code == 200 and isinstance(payload, dict) and _is_active_runtime_control_payload(payload):
+            reason = "requested" if index == 0 else "supervisor_runtime_fallback"
+            return candidate, reason, code, payload
+    return requested, "requested", first_code, first_payload
+
+
 def _is_supervisor_controlled_transition(payload: Any) -> bool:
     data = payload if isinstance(payload, dict) else {}
     status = data.get("status") if isinstance(data.get("status"), dict) else {}
@@ -782,6 +884,10 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
         failed = int(apply.get("failed_branches") or 0)
     except Exception:
         failed = 0
+    try:
+        fingerprint_unchanged = int(apply.get("fingerprint_unchanged_branches") or 0)
+    except Exception:
+        fingerprint_unchanged = 0
     changed_paths = [
         str(raw_path or "").strip()
         for raw_path in list(apply.get("changed_paths") or [])
@@ -791,6 +897,8 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
         f"{indent}apply: changed={changed}/{branch_count or max(changed + unchanged + failed, 1)} "
         f"unchanged={unchanged} failed={failed}"
     )
+    if fingerprint_unchanged:
+        summary += f" fingerprint_skip={fingerprint_unchanged}"
     if changed_paths:
         summary += f" paths={','.join(changed_paths)}"
     typer.echo(summary)
@@ -815,6 +923,10 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
             phase_failed = int(phase.get("failed_branches") or 0)
         except Exception:
             phase_failed = 0
+        try:
+            phase_fingerprint_unchanged = int(phase.get("fingerprint_unchanged_branches") or 0)
+        except Exception:
+            phase_fingerprint_unchanged = 0
         phase_changed_paths = [
             str(raw_path or "").strip()
             for raw_path in list(phase.get("changed_paths") or [])
@@ -825,6 +937,8 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
             f"{phase_branch_count or max(phase_changed + phase_unchanged + phase_failed, 1)} "
             f"unchanged={phase_unchanged} failed={phase_failed}"
         )
+        if phase_fingerprint_unchanged:
+            phase_summary += f" fingerprint_skip={phase_fingerprint_unchanged}"
         if phase_changed_paths:
             phase_summary += f" paths={','.join(phase_changed_paths)}"
         typer.echo(phase_summary)
@@ -1171,6 +1285,10 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         unchanged_branches = int(apply_summary.get("unchanged_branches") or 0)
     except Exception:
         unchanged_branches = 0
+    try:
+        fingerprint_unchanged_branches = int(apply_summary.get("fingerprint_unchanged_branches") or 0)
+    except Exception:
+        fingerprint_unchanged_branches = 0
     poll_counts = dict(payload.get("poll_counts") or {}) if isinstance(payload.get("poll_counts"), dict) else {}
     return {
         "accepted": bool(payload.get("accepted")),
@@ -1182,10 +1300,13 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         "resolver_source": str(resolver.get("source") or "").strip() or None,
         "changed_branches": changed_branches,
         "unchanged_branches": unchanged_branches,
+        "fingerprint_unchanged_branches": fingerprint_unchanged_branches,
         "rebuild_status": str(rebuild.get("status") or "").strip() or None,
         "materialization_state": str(materialization.get("readiness_state") or "").strip() or None,
         "rebuild_wait_timeout": bool(payload.get("rebuild_wait_timeout")),
         "poll_counts": poll_counts,
+        "control": str(payload.get("control") or "").strip() or None,
+        "control_selection": str(payload.get("control_selection") or "").strip() or None,
         "phase_timings_ms": dict(phase_timings),
         "observed_timings_ms": dict(payload.get("observed_timings_ms") or {})
         if isinstance(payload.get("observed_timings_ms"), dict)
@@ -1239,6 +1360,11 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for run in runs
         if run.get("unchanged_branches") is not None
     ]
+    fingerprint_unchanged_values = [
+        float(run.get("fingerprint_unchanged_branches") or 0)
+        for run in runs
+        if run.get("fingerprint_unchanged_branches") is not None
+    ]
     skipped_total = sum(1 for run in runs if bool(run.get("switch_skipped")))
     cache_hit_total = sum(1 for run in runs if bool(run.get("resolver_cache_hit")))
     ready_timeout_total = sum(1 for run in runs if bool(run.get("rebuild_wait_timeout")))
@@ -1270,6 +1396,9 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     unchanged_aggregate = _aggregate_benchmark_values(unchanged_values)
     if unchanged_aggregate:
         summary["unchanged_branches"] = unchanged_aggregate
+    fingerprint_unchanged_aggregate = _aggregate_benchmark_values(fingerprint_unchanged_values)
+    if fingerprint_unchanged_aggregate:
+        summary["fingerprint_unchanged_branches"] = fingerprint_unchanged_aggregate
     if rebuild_status_totals:
         summary["rebuild_status_totals"] = dict(sorted(rebuild_status_totals.items()))
     return summary
@@ -1315,6 +1444,16 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
         typer.echo(
             f"summary.unchanged_branches: avg={float(unchanged.get('avg')):.3f} "
             f"min={float(unchanged.get('min')):.3f} max={float(unchanged.get('max')):.3f}"
+        )
+    fingerprint_unchanged = (
+        summary.get("fingerprint_unchanged_branches")
+        if isinstance(summary.get("fingerprint_unchanged_branches"), dict)
+        else {}
+    )
+    if fingerprint_unchanged:
+        typer.echo(
+            f"summary.fingerprint_unchanged_branches: avg={float(fingerprint_unchanged.get('avg')):.3f} "
+            f"min={float(fingerprint_unchanged.get('min')):.3f} max={float(fingerprint_unchanged.get('max')):.3f}"
         )
     rebuild_status_totals = summary.get("rebuild_status_totals") if isinstance(summary.get("rebuild_status_totals"), dict) else {}
     if rebuild_status_totals:
@@ -2115,14 +2254,14 @@ def _node_yjs_benchmark_scenario_action(
 
     cfg = load_config()
     control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
-    token = _resolved_local_control_token(control0, cfg)
-
-    status_code, describe_payload = _control_get_json(
+    token0 = _resolved_local_control_token(control0, cfg)
+    selected_control, control_selection, status_code, describe_payload = _resolve_benchmark_control(
         control=control0,
-        path=f"/api/node/yjs/webspaces/{webspace}",
-        token=token,
-        timeout=8.0,
+        token=token0,
+        webspace=webspace,
+        timeout_sec=8.0,
     )
+    token = _resolved_local_control_token(selected_control, cfg)
     if status_code is None:
         typer.secho(_control_error_message("yjs benchmark-scenario", describe_payload), fg=typer.colors.RED)
         raise typer.Exit(code=2)
@@ -2150,7 +2289,7 @@ def _node_yjs_benchmark_scenario_action(
     def _switch_or_exit(target_scenario: str) -> dict[str, Any]:
         request_started = time.perf_counter()
         code, payload = _control_post_json(
-            control=control0,
+            control=selected_control,
             path=f"/api/node/yjs/webspaces/{webspace}/scenario",
             token=token,
             body={"scenario_id": target_scenario},
@@ -2181,7 +2320,7 @@ def _node_yjs_benchmark_scenario_action(
                 timed_out,
                 poll_counts,
             ) = _wait_for_benchmark_rebuild(
-                control=control0,
+                control=selected_control,
                 token=token,
                 webspace=webspace,
                 scenario_id=target_scenario,
@@ -2210,6 +2349,8 @@ def _node_yjs_benchmark_scenario_action(
                 observed_timings.setdefault("time_to_ready", round(observed_accept_ms + float(wait_elapsed_ms), 3))
             merged_payload["observed_timings_ms"] = observed_timings
             merged_payload["poll_counts"] = dict(poll_counts or {})
+        merged_payload["control"] = selected_control
+        merged_payload["control_selection"] = control_selection
         return merged_payload
 
     runs: list[dict[str, Any]] = []
@@ -2229,6 +2370,8 @@ def _node_yjs_benchmark_scenario_action(
         "scenario_id": scenario_id,
         "baseline_scenario": resolved_baseline or None,
         "iterations": len(runs),
+        "control": selected_control,
+        "control_selection": control_selection,
         "runs": runs,
         "summary": summary,
     }
@@ -2240,6 +2383,10 @@ def _node_yjs_benchmark_scenario_action(
         f"yjs benchmark-scenario: webspace={webspace} "
         f"scenario={scenario_id} baseline={resolved_baseline or '-'} iterations={len(runs)}"
     )
+    if detail or selected_control != control0:
+        typer.echo(
+            f"benchmark.control: requested={control0} selected={selected_control} reason={control_selection}"
+        )
     for run in runs:
         phase = run.get("phase_timings_ms") if isinstance(run.get("phase_timings_ms"), dict) else {}
         observed = run.get("observed_timings_ms") if isinstance(run.get("observed_timings_ms"), dict) else {}
@@ -2250,6 +2397,7 @@ def _node_yjs_benchmark_scenario_action(
             f"skipped={'yes' if run.get('switch_skipped') else 'no'} "
             f"cache_hit={'yes' if run.get('resolver_cache_hit') else 'no'} "
             f"changed={int(run.get('changed_branches') or 0)} "
+            f"fp_skip={int(run.get('fingerprint_unchanged_branches') or 0)} "
             f"accept={float(phase.get('time_to_accept') or 0.0):.3f} "
             f"ready={float(observed.get('time_to_ready') or 0.0):.3f} "
             f"first={float(phase.get('time_to_first_structure') or 0.0):.3f} "
