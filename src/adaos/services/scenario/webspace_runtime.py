@@ -629,13 +629,7 @@ def _pointer_first_scenario_switch_enabled() -> bool:
     return _env_flag_enabled("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH")
 
 
-def _scenario_switch_compat_cache_writes_enabled() -> bool:
-    return _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
-
-
 def _scenario_switch_mode() -> str:
-    if _scenario_switch_compat_cache_writes_enabled():
-        return "materialize_and_copy"
     if _pointer_first_scenario_switch_enabled():
         return "pointer_first"
     return "pointer_only"
@@ -707,40 +701,6 @@ def _resolve_scenario_sections_in_doc(
         source_mode,
     )
     return {}, {}, {}, "missing", True
-
-
-def _materialize_scenario_switch_content_in_doc(
-    ydoc: Any,
-    *,
-    scenario_id: str,
-    content: Mapping[str, Any],
-) -> None:
-    ui_section, catalog_section, registry_section = _extract_scenario_sections_from_content(content)
-
-    ui_map = ydoc.get_map("ui")
-    registry_map = ydoc.get_map("registry")
-    data_map = ydoc.get_map("data")
-
-    with ydoc.begin_transaction() as txn:
-        scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
-        updated_ui = dict(scenarios_ui)
-        updated_ui[scenario_id] = {"application": ui_section}
-        _set_map_value_if_changed(ui_map, txn, "scenarios", updated_ui)
-        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
-
-        reg_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
-        reg_updated = dict(reg_scenarios)
-        reg_updated[scenario_id] = registry_section
-        _set_map_value_if_changed(registry_map, txn, "scenarios", reg_updated)
-
-        data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
-        data_updated = dict(data_scenarios)
-        entry_raw = data_updated.get(scenario_id) or {}
-        entry = dict(entry_raw) if isinstance(entry_raw, Mapping) else {}
-        entry["catalog"] = catalog_section
-        entry.pop("data", None)
-        data_updated[scenario_id] = entry
-        _set_map_value_if_changed(data_map, txn, "scenarios", data_updated)
 
 
 def _scenario_supports_catalog_controls(
@@ -868,14 +828,12 @@ def _describe_compatibility_caches(
         else {}
     )
     legacy_fallback_active = bool(resolver.get("legacy_fallback"))
-    switch_writes_enabled = _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
+    switch_writes_enabled = False
     runtime_removal_blockers: list[str] = []
     if not str(current_scenario or "").strip():
         runtime_removal_blockers.append("current_scenario_missing")
     if not effective_ready:
         runtime_removal_blockers.append("effective_materialization_not_ready")
-    if switch_writes_enabled:
-        runtime_removal_blockers.append("switch_compat_cache_writes_enabled")
     if legacy_fallback_active:
         runtime_removal_blockers.append("resolver_legacy_fallback_active")
     return {
@@ -3760,81 +3718,25 @@ async def switch_webspace_scenario(
             ),
         }
 
-    if switch_mode == "materialize_and_copy":
-        stage_started = time.perf_counter()
-        switch_content = _load_scenario_switch_content(scenario_id, space=loader_space)
-        _record_timing(timings_ms, "load_scenario", stage_started)
-        if not isinstance(switch_content, dict) or not switch_content:
-            _log.warning("desktop.scenario.set: no scenario.json for %s", scenario_id)
-            finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
-            _set_webspace_rebuild_status(
-                webspace_id,
-                status="failed",
-                pending=False,
-                background=not wait_for_rebuild,
-                action="scenario_switch_rebuild",
-                source_of_truth="scenario_switch",
-                scenario_id=scenario_id,
-                scenario_resolution="explicit",
-                switch_mode=switch_mode,
-                requested_at=time.time(),
-                finished_at=time.time(),
-                error="scenario_not_found",
-                projection_refresh=None,
-                registry_summary=None,
-                resolver=None,
-                apply_summary=None,
-                timings_ms=finalized_timings,
-                phase_timings_ms=_derive_phase_timings(
-                    switch_timings_ms=finalized_timings,
-                    switch_mode=switch_mode,
-                ),
-            )
-            return {
-                "ok": False,
-                "accepted": False,
-                "error": "scenario_not_found",
-                "webspace_id": webspace_id,
-                "scenario_id": scenario_id,
-                "scenario_switch_mode": switch_mode,
-                "timings_ms": finalized_timings,
-                "phase_timings_ms": _derive_phase_timings(
-                    switch_timings_ms=finalized_timings,
-                    switch_mode=switch_mode,
-                ),
-            }
-
     try:
-        if switch_mode in {"pointer_first", "pointer_only"}:
-            stage_started = time.perf_counter()
+        stage_started = time.perf_counter()
 
-            def _mutator(doc: Any, txn: Any) -> None:
-                ui_map = doc.get_map("ui")
-                _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+        def _mutator(doc: Any, txn: Any) -> None:
+            ui_map = doc.get_map("ui")
+            _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
 
-            live_applied = mutate_live_room(webspace_id, _mutator)
-            if live_applied:
-                _record_timing(timings_ms, "write_switch_pointer", stage_started)
-            else:
-                stage_started = time.perf_counter()
-                async with async_get_ydoc(webspace_id) as ydoc:
-                    _record_timing(timings_ms, "open_doc", stage_started)
-                    ui_map = ydoc.get_map("ui")
-                    stage_started = time.perf_counter()
-                    with ydoc.begin_transaction() as txn:
-                        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
-                    _record_timing(timings_ms, "write_switch_pointer", stage_started)
+        live_applied = mutate_live_room(webspace_id, _mutator)
+        if live_applied:
+            _record_timing(timings_ms, "write_switch_pointer", stage_started)
         else:
             stage_started = time.perf_counter()
             async with async_get_ydoc(webspace_id) as ydoc:
                 _record_timing(timings_ms, "open_doc", stage_started)
+                ui_map = ydoc.get_map("ui")
                 stage_started = time.perf_counter()
-                _materialize_scenario_switch_content_in_doc(
-                    ydoc,
-                    scenario_id=scenario_id,
-                    content=switch_content or {},
-                )
-                _record_timing(timings_ms, "materialize_switch_payload", stage_started)
+                with ydoc.begin_transaction() as txn:
+                    _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+                _record_timing(timings_ms, "write_switch_pointer", stage_started)
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
         _set_webspace_rebuild_status(

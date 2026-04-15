@@ -440,7 +440,7 @@ def test_switch_webspace_scenario_default_pointer_only_can_schedule_background_r
     assert "time_to_full_hydration" not in result["phase_timings_ms"]
 
 
-def test_switch_webspace_scenario_compat_cache_rollback_can_materialize_switch_payload(monkeypatch) -> None:
+def test_switch_webspace_scenario_compat_env_is_ignored_and_keeps_pointer_only_contract(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", "1")
 
     webspace_id = "phase2-scenario-compat-rollback"
@@ -500,59 +500,25 @@ def test_switch_webspace_scenario_compat_cache_rollback_can_materialize_switch_p
 
     assert result["ok"] is True
     assert result["background_rebuild"] is True
-    assert result["scenario_switch_mode"] == "materialize_and_copy"
-    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit", "materialize_and_copy", True)]
+    assert result["scenario_switch_mode"] == "pointer_only"
+    assert scheduled == [(webspace_id, "prompt_engineer_scenario", "explicit", "pointer_only", True)]
     assert fake_state["ui"]["current_scenario"] == "prompt_engineer_scenario"
     assert fake_state["ui"]["application"]["desktop"]["pageSchema"]["id"] == "old-page"
     assert fake_state["registry"]["merged"]["modals"] == ["old-modal"]
     assert fake_state["data"]["catalog"]["apps"] == [{"id": "old-app"}]
     assert fake_state["data"]["status"] == {"scenario": "web_desktop"}
-    assert fake_state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "page-prompt_engineer_scenario"
-    assert fake_state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["modal:workspace:prompt_engineer_scenario"]
-    assert fake_state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "app:prompt_engineer_scenario"}]
-    assert "data" not in fake_state["data"]["scenarios"]["prompt_engineer_scenario"]
+    assert "prompt_engineer_scenario" not in fake_state["ui"]["scenarios"]
+    assert "prompt_engineer_scenario" not in fake_state["registry"]["scenarios"]
+    assert "prompt_engineer_scenario" not in fake_state["data"]["scenarios"]
     assert isinstance(result["timings_ms"], dict)
     assert "validate_scenario" in result["timings_ms"]
-    assert "load_scenario" in result["timings_ms"]
-    assert "materialize_switch_payload" in result["timings_ms"]
+    assert "write_switch_pointer" in result["timings_ms"]
+    assert "load_scenario" not in result["timings_ms"]
+    assert "materialize_switch_payload" not in result["timings_ms"]
     assert "schedule_background_rebuild" in result["timings_ms"]
     assert isinstance(result["phase_timings_ms"], dict)
     assert "time_to_accept" in result["phase_timings_ms"]
     assert "time_to_full_hydration" not in result["phase_timings_ms"]
-
-
-def test_materialize_switch_content_compat_cache_drops_stale_data_payload() -> None:
-    fake_state = {
-        "ui": _FakeMap(),
-        "registry": _FakeMap(),
-        "data": _FakeMap(
-            {
-                "scenarios": {
-                    "prompt_engineer_scenario": {
-                        "catalog": {"apps": [{"id": "old-app"}]},
-                        "data": {"status": {"scenario": "stale"}},
-                    }
-                }
-            }
-        ),
-    }
-    fake_doc = _FakeDoc(fake_state)
-
-    webspace_runtime_module._materialize_scenario_switch_content_in_doc(
-        fake_doc,
-        scenario_id="prompt_engineer_scenario",
-        content={
-            "ui": {"application": {"desktop": {"pageSchema": {"id": "new-page"}}}},
-            "registry": {"modals": ["new-modal"]},
-            "catalog": {"apps": [{"id": "new-app"}]},
-            "data": {"status": {"scenario": "new"}},
-        },
-    )
-
-    entry = fake_state["data"]["scenarios"]["prompt_engineer_scenario"]
-    assert entry["catalog"]["apps"] == [{"id": "new-app"}]
-    assert "data" not in entry
-
 
 def test_switch_webspace_scenario_pointer_first_updates_pointer_without_eager_materialization(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_WEBSPACE_POINTER_SCENARIO_SWITCH", "1")
@@ -730,7 +696,7 @@ def test_switch_webspace_scenario_pointer_first_preserves_dev_auto_home_policy(m
     assert result["scenario_switch_mode"] == "pointer_first"
 
 
-def test_switch_webspace_scenario_compat_cache_rollback_validates_before_loading_content(monkeypatch) -> None:
+def test_switch_webspace_scenario_compat_env_is_ignored_and_does_not_load_content(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", "1")
 
     webspace_id = "phase2-materialize-validate-order"
@@ -759,15 +725,7 @@ def test_switch_webspace_scenario_compat_cache_rollback_validates_before_loading
     monkeypatch.setattr(
         webspace_runtime_module,
         "_load_scenario_switch_content",
-        lambda scenario_id, *, space: (
-            calls.append(f"load:{space}:{scenario_id}") or {
-                "id": scenario_id,
-                "ui": {"application": {"desktop": {"pageSchema": {"id": f"page-{scenario_id}"}}}},
-                "registry": {"modals": [f"modal:{scenario_id}"]},
-                "catalog": {"apps": [{"id": f"app:{scenario_id}"}]},
-                "data": {"status": {"scenario": scenario_id}},
-            }
-        ),
+        lambda scenario_id, *, space: (_ for _ in ()).throw(AssertionError("should not load scenario content")),
     )
     monkeypatch.setattr(
         webspace_runtime_module,
@@ -784,16 +742,13 @@ def test_switch_webspace_scenario_compat_cache_rollback_validates_before_loading
     )
 
     assert result["accepted"] is True
-    assert calls == [
-        "validate:workspace:prompt_engineer_scenario",
-        "load:workspace:prompt_engineer_scenario",
-    ]
-    assert result["scenario_switch_mode"] == "materialize_and_copy"
+    assert calls == ["validate:workspace:prompt_engineer_scenario"]
+    assert result["scenario_switch_mode"] == "pointer_only"
     assert "validate_scenario" in result["timings_ms"]
-    assert "load_scenario" in result["timings_ms"]
+    assert "load_scenario" not in result["timings_ms"]
 
 
-def test_switch_webspace_scenario_compat_cache_rollback_missing_scenario_fails_without_loading_content(monkeypatch) -> None:
+def test_switch_webspace_scenario_compat_env_ignored_missing_scenario_fails_without_loading_content(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", "1")
 
     webspace_id = "phase2-materialize-missing"
@@ -830,7 +785,7 @@ def test_switch_webspace_scenario_compat_cache_rollback_missing_scenario_fails_w
 
     assert result["accepted"] is False
     assert result["error"] == "scenario_not_found"
-    assert result["scenario_switch_mode"] == "materialize_and_copy"
+    assert result["scenario_switch_mode"] == "pointer_only"
     assert "validate_scenario" in result["timings_ms"]
     assert "load_scenario" not in result["timings_ms"]
 

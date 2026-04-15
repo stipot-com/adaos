@@ -299,14 +299,12 @@ def _describe_compatibility_caches(
         else {}
     )
     legacy_fallback_active = bool(resolver.get("legacy_fallback"))
-    switch_writes_enabled = _env_flag_enabled("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES")
+    switch_writes_enabled = False
     runtime_removal_blockers: list[str] = []
     if not str(current_scenario or "").strip():
         runtime_removal_blockers.append("current_scenario_missing")
     if not effective_ready:
         runtime_removal_blockers.append("effective_materialization_not_ready")
-    if switch_writes_enabled:
-        runtime_removal_blockers.append("switch_compat_cache_writes_enabled")
     if legacy_fallback_active:
         runtime_removal_blockers.append("resolver_legacy_fallback_active")
     return {
@@ -605,6 +603,7 @@ class MemberUpdateRequest(BaseModel):
 class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
     set_home: bool | None = None
+    wait_for_rebuild: bool | None = None
     requested_id: str | None = None
     title: str | None = None
 
@@ -1452,7 +1451,7 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
         str(webspace_id or "default") or "default",
         scenario_id,
         set_home=payload.set_home,
-        wait_for_rebuild=False,
+        wait_for_rebuild=bool(payload.wait_for_rebuild),
     )
     result = _attach_runtime_and_rebuild(
         result,

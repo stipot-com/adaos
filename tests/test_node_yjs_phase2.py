@@ -126,6 +126,56 @@ def test_node_yjs_switch_scenario_endpoint_preserves_implicit_set_home(monkeypat
     assert result["set_home"] is None
 
 
+def test_node_yjs_switch_scenario_endpoint_can_wait_for_rebuild(monkeypatch) -> None:
+    captured: list[tuple[str, str, bool | None, bool]] = []
+
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool | None = None,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": webspace_id,
+            "scenario_id": scenario_id,
+            "background_rebuild": not wait_for_rebuild,
+        }
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "switch_webspace_scenario", _fake_switch)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "ready",
+            "pending": False,
+            "background": False,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "prompt_engineer_scenario",
+        },
+    )
+
+    result = asyncio.run(
+        node_api_module.node_yjs_switch_scenario(
+            "phase2-node",
+            node_api_module.WebspaceYjsActionRequest(
+                scenario_id="prompt_engineer_scenario",
+                wait_for_rebuild=True,
+            ),
+        )
+    )
+
+    assert captured == [("phase2-node", "prompt_engineer_scenario", None, True)]
+    assert result["background_rebuild"] is False
+    assert result["rebuild"]["status"] == "ready"
+
+
 def test_node_yjs_switch_scenario_endpoint_propagates_skip_metadata(monkeypatch) -> None:
     async def _fake_switch(
         webspace_id: str,
@@ -974,8 +1024,6 @@ def test_describe_yjs_materialization_reports_hydrating_readiness_and_missing_br
 
 
 def test_describe_compatibility_caches_reports_runtime_removal_ready_when_runtime_is_clean(monkeypatch) -> None:
-    monkeypatch.delenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", raising=False)
-
     result = node_api_module._describe_compatibility_caches(
         current_scenario="prompt_engineer_scenario",
         has_scenario_ui_application=True,
@@ -994,8 +1042,6 @@ def test_describe_compatibility_caches_reports_runtime_removal_ready_when_runtim
 
 
 def test_describe_compatibility_caches_reports_runtime_removal_blockers(monkeypatch) -> None:
-    monkeypatch.setenv("ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES", "1")
-
     result = node_api_module._describe_compatibility_caches(
         current_scenario="prompt_engineer_scenario",
         has_scenario_ui_application=False,
@@ -1006,12 +1052,11 @@ def test_describe_compatibility_caches_reports_runtime_removal_blockers(monkeypa
     )
 
     assert result["client_fallback_readable"] is False
-    assert result["switch_writes_enabled"] is True
+    assert result["switch_writes_enabled"] is False
     assert result["legacy_fallback_active"] is True
     assert result["runtime_removal_ready"] is False
     assert set(result["runtime_removal_blockers"]) == {
         "effective_materialization_not_ready",
-        "switch_compat_cache_writes_enabled",
         "resolver_legacy_fallback_active",
     }
 

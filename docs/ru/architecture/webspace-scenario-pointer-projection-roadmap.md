@@ -3,7 +3,7 @@
 Этот документ фиксирует целевую архитектуру и дорожную карту миграции
 переключения сценариев в Yjs-backed webspace.
 
-Цель: перевести подсистему от текущей модели `materialize-and-copy` к модели
+Цель: перевести подсистему от legacy-модели `materialize-and-copy` к модели
 `pointer + resolved projection`, не ломая текущий renderer, recovery-потоки и
 операторские control surface.
 
@@ -14,7 +14,9 @@
 
 ## Статус
 
-- Текущая реализация: `materialize-and-copy`
+- Текущая реализация: `pointer_only` по умолчанию; semantic rebuild владеет
+  effective runtime branches, а switch-time compatibility cache writes убраны
+  из hot path
 - Целевая реализация: `pointer + resolved projection`
 - Режим миграции: поэтапный, с совместимостью по умолчанию
 
@@ -361,7 +363,7 @@ rebuild latency на реальных сценариях.
 - [ ] Перестать считать `ui.scenarios`, `registry.scenarios` и
   `data.scenarios` обязательными runtime inputs.
 - [ ] Понизить эти ветки до optional compatibility cache.
-- [ ] Удалить obsolete switch-time materialize-and-copy code paths.
+- [x] Удалить obsolete switch-time materialize-and-copy code paths.
 - [ ] Обновить архитектурные и операторские документы под новую ownership
   model.
 

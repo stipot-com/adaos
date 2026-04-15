@@ -3,7 +3,7 @@
 This document fixes the target architecture and migration plan for scenario
 switching in Yjs-backed webspaces.
 
-The goal is to move from the current `materialize-and-copy` approach toward a
+The goal is to move from the legacy `materialize-and-copy` approach toward a
 `pointer + resolved projection` model without breaking the current renderer,
 runtime recovery flows, or operational control surfaces.
 
@@ -15,21 +15,21 @@ phase-aware materialization.
 ## Status
 
 - Current implementation: `pointer_only` switch by default; semantic rebuild
-  owns effective runtime branches, while legacy compatibility cache writes
-  remain available only as rollback mode via
-  `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1`
+  owns effective runtime branches, and switch-time compatibility cache writes
+  have been removed from the hot path
 - Target implementation: `pointer + resolved projection`
 - Migration mode: phased, compatibility-first, with explicit readiness
   diagnostics for partially hydrated UI
 
 ## Problem Statement
 
-Today `switch_webspace_scenario()` still spans both:
+The migration started from a `switch_webspace_scenario()` implementation that
+spanned both:
 
 - a runtime selection operation
 - a migration-era compatibility cache materialization operation
 
-In practice that means a single legacy scenario switch currently:
+In practice that legacy switch path used to:
 
 - validates the target scenario
 - loads the target `scenario.json`
@@ -342,15 +342,12 @@ branch hydration. The older feature flag
 pointer-path compatibility alias, but pointer writes are now the normal path
 instead of the opt-in experiment.
 
-The remaining `materialize_and_copy` path now also performs the same
-lightweight scenario existence preflight before loading `scenario.json`, but it
-is rollback-only behind `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1`.
-When enabled, it limits itself to compatibility cache writes plus
-`ui.current_scenario`; active runtime branches are left to semantic rebuild, so
-normal scenario switch no longer duplicates effective writes before reconcile.
-Compatibility cache payloads are now also trimmed to the sections the current
-runtime still uses for fallback (`ui.application`, `registry`, `catalog`)
-instead of copying arbitrary scenario `data` into switch-time caches.
+The remaining `materialize_and_copy` path has now been removed entirely.
+Scenario switch no longer loads `scenario.json` or writes
+`ui.scenarios`, `registry.scenarios`, or `data.scenarios` on the hot path.
+The only switch-time state mutation is the scenario pointer plus minimal
+manifest/home bookkeeping; semantic rebuild remains the sole owner of
+effective runtime branches after reconcile.
 
 When an active live room is already attached, pointer-only switch can now also
 update `ui.current_scenario` in-memory first and persist that pointer
@@ -361,14 +358,14 @@ Current rollback guidance if pointer-only switch regresses runtime behavior:
 
 - if `ui.current_scenario` flips quickly but the visible UI stays stale until a
   late rebuild or never catches up, suspect a remaining consumer that still
-  depends on eagerly materialized `ui.scenarios`, `registry.scenarios`, or
-  `data.scenarios`
-- temporarily enable `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES=1` and restart
-  the hub to restore switch-time compatibility cache writes while comparing
-  `phase_timings_ms`, resolver diagnostics, and client behavior
-- if rollback fixes the regression, treat that as proof that the remaining
-  issue is frontend/client readiness or legacy-branch coupling, not scenario
-  existence validation or pointer write itself
+  depends on legacy `ui.scenarios`, `registry.scenarios`, or `data.scenarios`
+- compare `phase_timings_ms`, `compatibility_caches`, and resolver diagnostics
+  before changing code: `legacy_fallback_active`, `missing_branches`, and the
+  rebuild/materialization state now identify whether the gap is in backend
+  reconcile or in a client that still expects legacy cache timing
+- treat any regression that would previously have required switch-time cache
+  writes as a bug to fix in the remaining consumer path rather than a mode to
+  restore permanently
 
 Semantic rebuild target resolution is now also centralized behind a shared
 backend helper instead of being partially inferred in each action path.
@@ -492,8 +489,7 @@ Reader/writer audit for migration planning:
 - reader of legacy materialized scenario branches:
   `WebspaceScenarioRuntime._read_legacy_materialized_scenario_sections()`
 - writers of legacy materialized scenario branches:
-  `ScenarioManager._project_to_doc()` for seed/sync flows and
-  `_materialize_scenario_switch_content_in_doc()` for legacy switch
+  `ScenarioManager._project_to_doc()` for seed/sync flows
 - no active runtime resolver path requires materialized Yjs scenario payload
   when loader-backed content is available; legacy branches are now fallback-only
 - `ScenarioManager._project_to_doc()` now skips runtime-owned top-level data
@@ -615,7 +611,7 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [x] Stop treating `ui.scenarios`, `registry.scenarios`, and `data.scenarios`
   as mandatory runtime inputs.
 - [x] Demote those branches to optional compatibility caches.
-- [ ] Remove obsolete switch-time materialize-and-copy code paths.
+- [x] Remove obsolete switch-time materialize-and-copy code paths.
 - [x] Update architecture and operator docs to describe the new ownership
   model.
 

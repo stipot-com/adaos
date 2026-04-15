@@ -309,14 +309,13 @@ operators:
   has `ui.scenarios/<current>.application`
 * `present_count` / `required_count` and `missing_branches` show how much of
   the active scenario's legacy cache surface still exists
-* `switch_writes_enabled` reports whether switch-time compatibility cache
-  materialization is still enabled via
-  `ADAOS_WEBSPACE_SWITCH_COMPAT_CACHE_WRITES`
+* `switch_writes_enabled` is retained for diagnostics compatibility and now
+  always reports `false`; switch-time compatibility cache materialization has
+  been removed
 * `legacy_fallback_active` reports whether semantic rebuild had to read legacy
   scenario branches instead of canonical loader-backed content
 * `runtime_removal_ready` becomes `true` only when effective runtime branches
-  are ready, switch-time compat writes are disabled, and resolver fallback is
-  no longer using legacy caches
+  are ready and resolver fallback is no longer using legacy caches
 
 ## `webui.json` schema
 

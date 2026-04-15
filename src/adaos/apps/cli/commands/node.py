@@ -2378,10 +2378,13 @@ def _node_yjs_benchmark_scenario_action(
             control=selected_control,
             path=f"/api/node/yjs/webspaces/{webspace}/scenario",
             token=token,
-            body={"scenario_id": target_scenario},
+            body={
+                "scenario_id": target_scenario,
+                "wait_for_rebuild": bool(wait_ready),
+            },
             timeout=90.0,
         )
-        observed_accept_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
+        request_elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
         if code is None:
             typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
             raise typer.Exit(code=2)
@@ -2395,46 +2398,75 @@ def _node_yjs_benchmark_scenario_action(
             typer.echo(payload)
             raise typer.Exit(code=1)
         merged_payload = dict(payload)
-        merged_payload["observed_timings_ms"] = {"time_to_accept": observed_accept_ms}
+        observed_timings = (
+            dict(merged_payload.get("observed_timings_ms") or {})
+            if isinstance(merged_payload.get("observed_timings_ms"), dict)
+            else {}
+        )
+        observed_timings["time_to_accept"] = request_elapsed_ms
+        merged_payload["observed_timings_ms"] = observed_timings
         if wait_ready:
             rebuild_state = merged_payload.get("rebuild") if isinstance(merged_payload.get("rebuild"), dict) else {}
-            (
-                final_rebuild,
-                final_materialization,
-                materialization_observed_timings,
-                wait_elapsed_ms,
-                timed_out,
-                poll_counts,
-            ) = _wait_for_benchmark_rebuild(
-                control=selected_control,
-                token=token,
-                webspace=webspace,
-                scenario_id=target_scenario,
-                initial_rebuild=rebuild_state,
-                timeout_sec=ready_timeout_sec,
-                poll_interval_sec=poll_interval_sec,
+            inline_wait_completed = (
+                not bool(merged_payload.get("background_rebuild"))
+                and _benchmark_rebuild_is_terminal(
+                    rebuild_state,
+                    request_id=str(rebuild_state.get("request_id") or "").strip() or None,
+                    scenario_id=target_scenario,
+                )
             )
-            if final_rebuild:
-                merged_payload = _merge_benchmark_rebuild_payload(merged_payload, final_rebuild)
-            if final_materialization:
-                merged_payload["materialization"] = dict(final_materialization)
-            merged_payload["rebuild_wait_timeout"] = bool(timed_out)
-            observed_timings = (
-                dict(merged_payload.get("observed_timings_ms") or {})
-                if isinstance(merged_payload.get("observed_timings_ms"), dict)
-                else {}
-            )
-            observed_timings.update(
-                {
-                    key: value
-                    for key, value in materialization_observed_timings.items()
-                    if key and value is not None
-                }
-            )
-            if wait_elapsed_ms is not None:
-                observed_timings.setdefault("time_to_ready", round(observed_accept_ms + float(wait_elapsed_ms), 3))
-            merged_payload["observed_timings_ms"] = observed_timings
-            merged_payload["poll_counts"] = dict(poll_counts or {})
+            if inline_wait_completed:
+                embedded_materialization = (
+                    dict(rebuild_state.get("materialization") or {})
+                    if isinstance(rebuild_state.get("materialization"), dict)
+                    else None
+                )
+                if embedded_materialization and not isinstance(merged_payload.get("materialization"), dict):
+                    merged_payload["materialization"] = embedded_materialization
+                accept_from_phase = _timing_value(merged_payload, key="phase_timings_ms", name="time_to_accept")
+                observed_timings["time_to_accept"] = accept_from_phase if accept_from_phase is not None else request_elapsed_ms
+                observed_timings.setdefault("time_to_ready", request_elapsed_ms)
+                merged_payload["observed_timings_ms"] = observed_timings
+                merged_payload["rebuild_wait_timeout"] = False
+                merged_payload["poll_counts"] = _benchmark_poll_counts()
+            else:
+                (
+                    final_rebuild,
+                    final_materialization,
+                    materialization_observed_timings,
+                    wait_elapsed_ms,
+                    timed_out,
+                    poll_counts,
+                ) = _wait_for_benchmark_rebuild(
+                    control=selected_control,
+                    token=token,
+                    webspace=webspace,
+                    scenario_id=target_scenario,
+                    initial_rebuild=rebuild_state,
+                    timeout_sec=ready_timeout_sec,
+                    poll_interval_sec=poll_interval_sec,
+                )
+                if final_rebuild:
+                    merged_payload = _merge_benchmark_rebuild_payload(merged_payload, final_rebuild)
+                if final_materialization:
+                    merged_payload["materialization"] = dict(final_materialization)
+                merged_payload["rebuild_wait_timeout"] = bool(timed_out)
+                observed_timings = (
+                    dict(merged_payload.get("observed_timings_ms") or {})
+                    if isinstance(merged_payload.get("observed_timings_ms"), dict)
+                    else {}
+                )
+                observed_timings.update(
+                    {
+                        key: value
+                        for key, value in materialization_observed_timings.items()
+                        if key and value is not None
+                    }
+                )
+                if wait_elapsed_ms is not None:
+                    observed_timings.setdefault("time_to_ready", round(request_elapsed_ms + float(wait_elapsed_ms), 3))
+                merged_payload["observed_timings_ms"] = observed_timings
+                merged_payload["poll_counts"] = dict(poll_counts or {})
         ready_alignment, ready_alignment_source = _benchmark_ready_alignment(
             merged_payload,
             request_started_at=request_started_at,
