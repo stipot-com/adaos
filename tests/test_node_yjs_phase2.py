@@ -1280,7 +1280,27 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
 def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkeypatch) -> None:
     echoed: list[str] = []
     posted: list[str] = []
-    target_runs = [
+    perf_values = iter(
+        [
+            0.000,
+            0.010,
+            0.010,
+            0.060,
+            1.000,
+            1.008,
+            1.008,
+            1.028,
+            2.000,
+            2.012,
+            2.012,
+            2.066,
+            3.000,
+            3.007,
+            3.007,
+            3.025,
+        ]
+    )
+    target_posts = [
         {
             "ok": True,
             "accepted": True,
@@ -1288,14 +1308,12 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             "scenario_id": "infrascope",
             "scenario_switch_mode": "pointer_only",
             "switch_skipped": False,
-            "resolver": {"source": "loader:workspace", "cache_hit": False},
-            "apply_summary": {"changed_branches": 2, "unchanged_branches": 4},
             "phase_timings_ms": {
                 "time_to_accept": 10.0,
-                "time_to_first_structure": 30.0,
-                "time_to_interactive_focus": 40.0,
-                "time_to_full_hydration": 60.0,
+                "time_to_pointer_update": 4.0,
             },
+            "timings_ms": {"write_switch_pointer": 4.0, "total": 10.0},
+            "rebuild": {"request_id": "req-target-1", "status": "scheduled", "pending": True, "scenario_id": "infrascope"},
         },
         {
             "ok": True,
@@ -1304,16 +1322,137 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             "scenario_id": "infrascope",
             "scenario_switch_mode": "pointer_only",
             "switch_skipped": False,
-            "resolver": {"source": "loader:workspace", "cache_hit": True},
-            "apply_summary": {"changed_branches": 1, "unchanged_branches": 5},
             "phase_timings_ms": {
                 "time_to_accept": 12.0,
-                "time_to_first_structure": 24.0,
-                "time_to_interactive_focus": 36.0,
-                "time_to_full_hydration": 54.0,
+                "time_to_pointer_update": 5.0,
+            },
+            "timings_ms": {"write_switch_pointer": 5.0, "total": 12.0},
+            "rebuild": {"request_id": "req-target-2", "status": "scheduled", "pending": True, "scenario_id": "infrascope"},
+        },
+    ]
+    poll_payloads = [
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace": {
+                "webspace_id": "default",
+                "home_scenario": "web_desktop",
+                "current_scenario": "infrascope",
+            },
+            "rebuild": {
+                "request_id": "req-target-1",
+                "status": "ready",
+                "pending": False,
+                "background": True,
+                "scenario_id": "infrascope",
+                "resolver": {"source": "loader:workspace", "cache_hit": False},
+                "apply_summary": {"changed_branches": 2, "unchanged_branches": 4},
+                "switch_timings_ms": {"write_switch_pointer": 4.0, "total": 10.0},
+                "timings_ms": {"resolve_rebuild_target": 6.0, "semantic_rebuild": 50.0, "total": 56.0},
+                "semantic_rebuild_timings_ms": {
+                    "collect_inputs": 5.0,
+                    "resolve": 10.0,
+                    "apply_structure": 15.0,
+                    "apply_interactive": 10.0,
+                    "total": 50.0,
+                },
+                "phase_timings_ms": {
+                    "time_to_accept": 10.0,
+                    "time_to_pointer_update": 4.0,
+                    "time_to_first_structure": 30.0,
+                    "time_to_interactive_focus": 40.0,
+                    "time_to_full_hydration": 60.0,
+                },
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace": {
+                "webspace_id": "default",
+                "home_scenario": "web_desktop",
+                "current_scenario": "web_desktop",
+            },
+            "rebuild": {
+                "request_id": "req-base-1",
+                "status": "ready",
+                "pending": False,
+                "background": True,
+                "scenario_id": "web_desktop",
+                "switch_timings_ms": {"write_switch_pointer": 3.0, "total": 8.0},
+                "timings_ms": {"resolve_rebuild_target": 4.0, "semantic_rebuild": 16.0, "total": 20.0},
+                "semantic_rebuild_timings_ms": {"collect_inputs": 2.0, "resolve": 5.0, "apply_structure": 4.0, "total": 16.0},
+                "phase_timings_ms": {
+                    "time_to_accept": 8.0,
+                    "time_to_pointer_update": 3.0,
+                    "time_to_first_structure": 12.0,
+                    "time_to_interactive_focus": 18.0,
+                    "time_to_full_hydration": 28.0,
+                },
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace": {
+                "webspace_id": "default",
+                "home_scenario": "web_desktop",
+                "current_scenario": "infrascope",
+            },
+            "rebuild": {
+                "request_id": "req-target-2",
+                "status": "ready",
+                "pending": False,
+                "background": True,
+                "scenario_id": "infrascope",
+                "resolver": {"source": "loader:workspace", "cache_hit": True},
+                "apply_summary": {"changed_branches": 1, "unchanged_branches": 5},
+                "switch_timings_ms": {"write_switch_pointer": 5.0, "total": 12.0},
+                "timings_ms": {"resolve_rebuild_target": 7.0, "semantic_rebuild": 42.0, "total": 49.0},
+                "semantic_rebuild_timings_ms": {
+                    "collect_inputs": 4.0,
+                    "resolve": 8.0,
+                    "apply_structure": 12.0,
+                    "apply_interactive": 12.0,
+                    "total": 42.0,
+                },
+                "phase_timings_ms": {
+                    "time_to_accept": 12.0,
+                    "time_to_pointer_update": 5.0,
+                    "time_to_first_structure": 24.0,
+                    "time_to_interactive_focus": 36.0,
+                    "time_to_full_hydration": 54.0,
+                },
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace": {
+                "webspace_id": "default",
+                "home_scenario": "web_desktop",
+                "current_scenario": "web_desktop",
+            },
+            "rebuild": {
+                "request_id": "req-base-2",
+                "status": "ready",
+                "pending": False,
+                "background": True,
+                "scenario_id": "web_desktop",
+                "switch_timings_ms": {"write_switch_pointer": 2.0, "total": 7.0},
+                "timings_ms": {"resolve_rebuild_target": 3.0, "semantic_rebuild": 15.0, "total": 18.0},
+                "semantic_rebuild_timings_ms": {"collect_inputs": 2.0, "resolve": 4.0, "apply_structure": 4.0, "total": 15.0},
+                "phase_timings_ms": {
+                    "time_to_accept": 7.0,
+                    "time_to_pointer_update": 2.0,
+                    "time_to_first_structure": 10.0,
+                    "time_to_interactive_focus": 15.0,
+                    "time_to_full_hydration": 25.0,
+                },
             },
         },
     ]
+    get_call_count = {"value": 0}
 
     monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
     monkeypatch.setitem(
@@ -1324,29 +1463,31 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             resolve_control_token=lambda explicit=None: explicit or "secret",
         ),
     )
-    monkeypatch.setattr(
-        node_cli_module,
-        "_control_get_json",
-        lambda **kwargs: (
-            200,
-            {
-                "ok": True,
-                "accepted": True,
-                "webspace": {
-                    "webspace_id": "default",
-                    "home_scenario": "web_desktop",
-                    "current_scenario": "web_desktop",
+    def _fake_get_json(**kwargs):
+        get_call_count["value"] += 1
+        if get_call_count["value"] == 1:
+            return (
+                200,
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webspace": {
+                        "webspace_id": "default",
+                        "home_scenario": "web_desktop",
+                        "current_scenario": "web_desktop",
+                    },
                 },
-            },
-        ),
-    )
+            )
+        return 200, poll_payloads.pop(0)
+
+    monkeypatch.setattr(node_cli_module, "_control_get_json", _fake_get_json)
 
     def _fake_post_json(**kwargs):
         body = dict(kwargs.get("body") or {})
         scenario = str(body.get("scenario_id") or "")
         posted.append(scenario)
         if scenario == "infrascope":
-            payload = target_runs[len([item for item in posted if item == "infrascope"]) - 1]
+            payload = target_posts[len([item for item in posted if item == "infrascope"]) - 1]
             return 200, payload
         return 200, {
             "ok": True,
@@ -1354,9 +1495,18 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
             "webspace_id": "default",
             "scenario_id": scenario,
             "scenario_switch_mode": "pointer_only",
+            "phase_timings_ms": {"time_to_accept": 8.0 if len([item for item in posted if item == "web_desktop"]) == 1 else 7.0},
+            "rebuild": {
+                "request_id": "req-base-1" if len([item for item in posted if item == "web_desktop"]) == 1 else "req-base-2",
+                "status": "scheduled",
+                "pending": True,
+                "scenario_id": scenario,
+            },
         }
 
     monkeypatch.setattr(node_cli_module, "_control_post_json", _fake_post_json)
+    monkeypatch.setattr(node_cli_module.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(node_cli_module.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
 
     node_cli_module._node_yjs_benchmark_scenario_action(
@@ -1364,17 +1514,36 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         scenario_id="infrascope",
         baseline_scenario=None,
         iterations=2,
+        wait_ready=True,
+        ready_timeout_sec=30.0,
+        poll_interval_sec=0.01,
+        detail=True,
         control="http://127.0.0.1:8080",
         json_output=False,
     )
 
     assert posted == ["infrascope", "web_desktop", "infrascope", "web_desktop"]
     assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
-    assert any("run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 first=30.000 interactive=40.000 full=60.000" in line for line in echoed)
-    assert any("run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 first=24.000 interactive=36.000 full=54.000" in line for line in echoed)
+    assert any(
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 ready=60.000 first=30.000 interactive=40.000 full=60.000 status=ready"
+        in line
+        for line in echoed
+    )
+    assert any(
+        "run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 ready=66.000 first=24.000 interactive=36.000 full=54.000 status=ready"
+        in line
+        for line in echoed
+    )
     assert any("summary.time_to_accept: avg=11.000 min=10.000 max=12.000" in line for line in echoed)
+    assert any("summary.time_to_pointer_update: avg=4.500 min=4.000 max=5.000" in line for line in echoed)
     assert any("summary.time_to_full_hydration: avg=57.000 min=54.000 max=60.000" in line for line in echoed)
-    assert any("summary.flags: skipped=0/2 cache_hits=1/2" in line for line in echoed)
+    assert any("summary.observed.time_to_accept: avg=11.000 min=10.000 max=12.000" in line for line in echoed)
+    assert any("summary.observed.time_to_ready: avg=63.000 min=60.000 max=66.000" in line for line in echoed)
+    assert any("summary.rebuild_status: ready=2" in line for line in echoed)
+    assert any("summary.flags: skipped=0/2 cache_hits=1/2 ready_timeouts=0/2" in line for line in echoed)
+    assert any("summary.switch_timings_ms:" in line for line in echoed)
+    assert any("summary.rebuild_timings_ms:" in line for line in echoed)
+    assert any("summary.semantic_rebuild_timings_ms:" in line for line in echoed)
 
 
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:

@@ -80,6 +80,20 @@ REM pick zone explicitly when needed:
 REM powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -ZoneId ru
 ```
 
+## Переключить текущий shell на runtime активного core slot, не трогая корневой `.venv`, используйте source-able script из `tools/`
+
+```bash
+source tools/slot-shell.sh
+source tools/slot-shell.sh --cd
+```
+
+Для PowerShell:
+
+```powershell
+. .\tools\slot-shell.ps1
+. .\tools\slot-shell.ps1 -Cd
+```
+
 ## AdaOS Service management
 
 ```bash

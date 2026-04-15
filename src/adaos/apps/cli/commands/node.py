@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+import time
 from urllib.parse import urlparse, urlunparse
 from typing import Any
 
@@ -853,10 +854,167 @@ def _aggregate_benchmark_values(values: list[float]) -> dict[str, float] | None:
     }
 
 
+def _aggregate_benchmark_timing_maps(
+    runs: list[dict[str, Any]],
+    *,
+    key: str,
+    names: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, float]]:
+    values_by_name: dict[str, list[float]] = {}
+    allowed = set(names or ())
+    for run in runs:
+        timing_map = run.get(key) if isinstance(run.get(key), dict) else {}
+        if not timing_map:
+            continue
+        for raw_name, raw_value in timing_map.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if allowed and name not in allowed:
+                continue
+            try:
+                value = round(float(raw_value), 3)
+            except Exception:
+                continue
+            values_by_name.setdefault(name, []).append(value)
+    out: dict[str, dict[str, float]] = {}
+    for name in sorted(values_by_name):
+        aggregate = _aggregate_benchmark_values(values_by_name[name])
+        if aggregate:
+            out[name] = aggregate
+    return out
+
+
+def _merge_benchmark_rebuild_payload(payload: dict[str, Any], rebuild: dict[str, Any] | None) -> dict[str, Any]:
+    merged = dict(payload)
+    rebuild_state = dict(rebuild or {})
+    if not rebuild_state:
+        return merged
+    merged["rebuild"] = rebuild_state
+
+    resolver = rebuild_state.get("resolver") if isinstance(rebuild_state.get("resolver"), dict) else {}
+    if resolver:
+        merged["resolver"] = dict(resolver)
+
+    apply_summary = rebuild_state.get("apply_summary") if isinstance(rebuild_state.get("apply_summary"), dict) else {}
+    if apply_summary:
+        merged["apply_summary"] = dict(apply_summary)
+
+    phase_timings = dict(merged.get("phase_timings_ms") or {}) if isinstance(merged.get("phase_timings_ms"), dict) else {}
+    rebuild_phase_timings = rebuild_state.get("phase_timings_ms") if isinstance(rebuild_state.get("phase_timings_ms"), dict) else {}
+    if rebuild_phase_timings:
+        phase_timings.update(dict(rebuild_phase_timings))
+    if phase_timings:
+        merged["phase_timings_ms"] = phase_timings
+
+    switch_timings = dict(merged.get("timings_ms") or {}) if isinstance(merged.get("timings_ms"), dict) else {}
+    rebuild_switch_timings = rebuild_state.get("switch_timings_ms") if isinstance(rebuild_state.get("switch_timings_ms"), dict) else {}
+    if rebuild_switch_timings:
+        switch_timings.update(dict(rebuild_switch_timings))
+    if switch_timings:
+        merged["timings_ms"] = switch_timings
+
+    rebuild_timings = rebuild_state.get("timings_ms") if isinstance(rebuild_state.get("timings_ms"), dict) else {}
+    if rebuild_timings:
+        merged["rebuild_timings_ms"] = dict(rebuild_timings)
+
+    semantic_timings = (
+        rebuild_state.get("semantic_rebuild_timings_ms")
+        if isinstance(rebuild_state.get("semantic_rebuild_timings_ms"), dict)
+        else {}
+    )
+    if semantic_timings:
+        merged["semantic_rebuild_timings_ms"] = dict(semantic_timings)
+    return merged
+
+
+def _benchmark_rebuild_is_terminal(
+    rebuild: dict[str, Any] | None,
+    *,
+    request_id: str | None,
+    scenario_id: str | None,
+) -> bool:
+    state = rebuild if isinstance(rebuild, dict) else {}
+    if not state:
+        return False
+    pending = bool(state.get("pending"))
+    status = str(state.get("status") or "").strip().lower()
+    state_request_id = str(state.get("request_id") or "").strip() or None
+    state_scenario_id = str(state.get("scenario_id") or "").strip() or None
+    if request_id and state_request_id and state_request_id != request_id:
+        return False
+    if not request_id and scenario_id and state_scenario_id and state_scenario_id != scenario_id:
+        return False
+    if pending:
+        return False
+    return status in {"ready", "failed", "cancelled"}
+
+
+def _wait_for_benchmark_rebuild(
+    *,
+    control: str,
+    token: str,
+    webspace: str,
+    scenario_id: str,
+    initial_rebuild: dict[str, Any] | None,
+    timeout_sec: float,
+    poll_interval_sec: float,
+) -> tuple[dict[str, Any] | None, float | None, bool]:
+    rebuild_state = dict(initial_rebuild or {})
+    request_id = str(rebuild_state.get("request_id") or "").strip() or None
+    if _benchmark_rebuild_is_terminal(rebuild_state, request_id=request_id, scenario_id=scenario_id):
+        return rebuild_state, 0.0, False
+
+    wait_started = time.perf_counter()
+    deadline = wait_started + max(float(timeout_sec or 0.0), 0.0)
+    interval = max(float(poll_interval_sec or 0.0), 0.05)
+
+    while True:
+        code, payload = _control_get_json(
+            control=control,
+            path=f"/api/node/yjs/webspaces/{webspace}",
+            token=token,
+            timeout=max(8.0, interval + 2.0),
+        )
+        if code is None:
+            typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
+            raise typer.Exit(code=2)
+        if code != 200 or not isinstance(payload, dict):
+            typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {code}", fg=typer.colors.RED)
+            if payload:
+                typer.echo(payload)
+            raise typer.Exit(code=1)
+        current_rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+        if current_rebuild:
+            rebuild_state = dict(current_rebuild)
+            current_request_id = str(rebuild_state.get("request_id") or "").strip() or None
+            if current_request_id:
+                request_id = current_request_id
+        if _benchmark_rebuild_is_terminal(rebuild_state, request_id=request_id, scenario_id=scenario_id):
+            elapsed_ms = round((time.perf_counter() - wait_started) * 1000.0, 3)
+            return rebuild_state, elapsed_ms, False
+        if time.perf_counter() >= deadline:
+            elapsed_ms = round((time.perf_counter() - wait_started) * 1000.0, 3)
+            return rebuild_state if rebuild_state else None, elapsed_ms, True
+        time.sleep(interval)
+
+
 def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
-    phase_timings = payload.get("phase_timings_ms") if isinstance(payload.get("phase_timings_ms"), dict) else {}
+    rebuild = payload.get("rebuild") if isinstance(payload.get("rebuild"), dict) else {}
+    phase_timings = dict(payload.get("phase_timings_ms") or {}) if isinstance(payload.get("phase_timings_ms"), dict) else {}
+    rebuild_phase_timings = rebuild.get("phase_timings_ms") if isinstance(rebuild.get("phase_timings_ms"), dict) else {}
+    if rebuild_phase_timings:
+        phase_timings.update(dict(rebuild_phase_timings))
     resolver = payload.get("resolver") if isinstance(payload.get("resolver"), dict) else {}
+    if not resolver and isinstance(rebuild.get("resolver"), dict):
+        resolver = rebuild.get("resolver")
     apply_summary = payload.get("apply_summary") if isinstance(payload.get("apply_summary"), dict) else {}
+    if not apply_summary and isinstance(rebuild.get("apply_summary"), dict):
+        apply_summary = rebuild.get("apply_summary")
+    switch_timings = dict(payload.get("timings_ms") or {}) if isinstance(payload.get("timings_ms"), dict) else {}
+    rebuild_switch_timings = rebuild.get("switch_timings_ms") if isinstance(rebuild.get("switch_timings_ms"), dict) else {}
+    if rebuild_switch_timings:
+        switch_timings.update(dict(rebuild_switch_timings))
     try:
         changed_branches = int(apply_summary.get("changed_branches") or 0)
     except Exception:
@@ -875,36 +1033,48 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         "resolver_source": str(resolver.get("source") or "").strip() or None,
         "changed_branches": changed_branches,
         "unchanged_branches": unchanged_branches,
+        "rebuild_status": str(rebuild.get("status") or "").strip() or None,
+        "rebuild_wait_timeout": bool(payload.get("rebuild_wait_timeout")),
         "phase_timings_ms": dict(phase_timings),
-        "timings_ms": dict(payload.get("timings_ms") or {}) if isinstance(payload.get("timings_ms"), dict) else {},
-        "rebuild_timings_ms": dict(payload.get("rebuild_timings_ms") or {})
-        if isinstance(payload.get("rebuild_timings_ms"), dict)
+        "observed_timings_ms": dict(payload.get("observed_timings_ms") or {})
+        if isinstance(payload.get("observed_timings_ms"), dict)
         else {},
+        "timings_ms": switch_timings,
+        "rebuild_timings_ms": (
+            dict(payload.get("rebuild_timings_ms") or {})
+            if isinstance(payload.get("rebuild_timings_ms"), dict)
+            else dict(rebuild.get("timings_ms") or {})
+            if isinstance(rebuild.get("timings_ms"), dict)
+            else {}
+        ),
         "semantic_rebuild_timings_ms": dict(payload.get("semantic_rebuild_timings_ms") or {})
         if isinstance(payload.get("semantic_rebuild_timings_ms"), dict)
+        else dict(rebuild.get("semantic_rebuild_timings_ms") or {})
+        if isinstance(rebuild.get("semantic_rebuild_timings_ms"), dict)
         else {},
     }
 
 
 def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    metric_specs = (
-        ("time_to_accept", "phase_timings_ms"),
-        ("time_to_pointer_update", "phase_timings_ms"),
-        ("time_to_first_structure", "phase_timings_ms"),
-        ("time_to_interactive_focus", "phase_timings_ms"),
-        ("time_to_full_hydration", "phase_timings_ms"),
+    phase_summary = _aggregate_benchmark_timing_maps(
+        runs,
+        key="phase_timings_ms",
+        names=(
+            "time_to_accept",
+            "time_to_pointer_update",
+            "time_to_first_structure",
+            "time_to_interactive_focus",
+            "time_to_full_hydration",
+        ),
     )
-    phase_summary: dict[str, Any] = {}
-    for metric_name, metric_key in metric_specs:
-        values: list[float] = []
-        for run in runs:
-            payload = {metric_key: run.get(metric_key) if isinstance(run.get(metric_key), dict) else {}}
-            value = _timing_value(payload, key=metric_key, name=metric_name)
-            if value is not None:
-                values.append(value)
-        aggregate = _aggregate_benchmark_values(values)
-        if aggregate:
-            phase_summary[metric_name] = aggregate
+    observed_summary = _aggregate_benchmark_timing_maps(
+        runs,
+        key="observed_timings_ms",
+        names=("time_to_accept", "time_to_ready"),
+    )
+    switch_summary = _aggregate_benchmark_timing_maps(runs, key="timings_ms")
+    rebuild_summary = _aggregate_benchmark_timing_maps(runs, key="rebuild_timings_ms")
+    semantic_summary = _aggregate_benchmark_timing_maps(runs, key="semantic_rebuild_timings_ms")
 
     changed_values = [
         float(run.get("changed_branches") or 0)
@@ -918,18 +1088,35 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     skipped_total = sum(1 for run in runs if bool(run.get("switch_skipped")))
     cache_hit_total = sum(1 for run in runs if bool(run.get("resolver_cache_hit")))
+    ready_timeout_total = sum(1 for run in runs if bool(run.get("rebuild_wait_timeout")))
+    rebuild_status_totals: dict[str, int] = {}
+    for run in runs:
+        status = str(run.get("rebuild_status") or "").strip().lower()
+        if not status:
+            continue
+        rebuild_status_totals[status] = int(rebuild_status_totals.get(status) or 0) + 1
     summary: dict[str, Any] = {
         "iterations": len(runs),
         "switch_skipped_total": skipped_total,
         "resolver_cache_hit_total": cache_hit_total,
+        "rebuild_wait_timeout_total": ready_timeout_total,
         "phase_timings_ms": phase_summary,
+        "observed_timings_ms": observed_summary,
     }
+    if switch_summary:
+        summary["timings_ms"] = switch_summary
+    if rebuild_summary:
+        summary["rebuild_timings_ms"] = rebuild_summary
+    if semantic_summary:
+        summary["semantic_rebuild_timings_ms"] = semantic_summary
     changed_aggregate = _aggregate_benchmark_values(changed_values)
     if changed_aggregate:
         summary["changed_branches"] = changed_aggregate
     unchanged_aggregate = _aggregate_benchmark_values(unchanged_values)
     if unchanged_aggregate:
         summary["unchanged_branches"] = unchanged_aggregate
+    if rebuild_status_totals:
+        summary["rebuild_status_totals"] = dict(sorted(rebuild_status_totals.items()))
     return summary
 
 
@@ -951,6 +1138,17 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
             f"min={float(item.get('min')):.3f} "
             f"max={float(item.get('max')):.3f}"
         )
+    observed_summary = summary.get("observed_timings_ms") if isinstance(summary.get("observed_timings_ms"), dict) else {}
+    for metric_name in ("time_to_accept", "time_to_ready"):
+        item = observed_summary.get(metric_name) if isinstance(observed_summary.get(metric_name), dict) else {}
+        if not item:
+            continue
+        typer.echo(
+            f"summary.observed.{metric_name}: "
+            f"avg={float(item.get('avg')):.3f} "
+            f"min={float(item.get('min')):.3f} "
+            f"max={float(item.get('max')):.3f}"
+        )
     changed = summary.get("changed_branches") if isinstance(summary.get("changed_branches"), dict) else {}
     if changed:
         typer.echo(
@@ -963,10 +1161,35 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
             f"summary.unchanged_branches: avg={float(unchanged.get('avg')):.3f} "
             f"min={float(unchanged.get('min')):.3f} max={float(unchanged.get('max')):.3f}"
         )
+    rebuild_status_totals = summary.get("rebuild_status_totals") if isinstance(summary.get("rebuild_status_totals"), dict) else {}
+    if rebuild_status_totals:
+        parts = [f"{status}={int(total)}" for status, total in rebuild_status_totals.items()]
+        typer.echo(f"summary.rebuild_status: {' '.join(parts)}")
     typer.echo(
         f"summary.flags: skipped={int(summary.get('switch_skipped_total') or 0)}/{int(summary.get('iterations') or 0)} "
-        f"cache_hits={int(summary.get('resolver_cache_hit_total') or 0)}/{int(summary.get('iterations') or 0)}"
+        f"cache_hits={int(summary.get('resolver_cache_hit_total') or 0)}/{int(summary.get('iterations') or 0)} "
+        f"ready_timeouts={int(summary.get('rebuild_wait_timeout_total') or 0)}/{int(summary.get('iterations') or 0)}"
     )
+
+
+def _print_benchmark_timing_group(summary: dict[str, Any], *, key: str, label: str) -> None:
+    group = summary.get(key) if isinstance(summary.get(key), dict) else {}
+    if not group:
+        return
+    typer.echo(f"summary.{label}:")
+    ranked = sorted(
+        (
+            (str(name or "").strip(), dict(item or {}))
+            for name, item in group.items()
+            if str(name or "").strip() and isinstance(item, dict)
+        ),
+        key=lambda entry: (-float(entry[1].get("avg") or 0.0), entry[0]),
+    )
+    for name, item in ranked:
+        typer.echo(
+            f"  {name}: avg={float(item.get('avg')):.3f} "
+            f"min={float(item.get('min')):.3f} max={float(item.get('max')):.3f}"
+        )
 
 
 def _print_switch_summary(payload: dict[str, Any]) -> None:
@@ -1666,6 +1889,10 @@ def _node_yjs_benchmark_scenario_action(
     scenario_id: str,
     baseline_scenario: str | None,
     iterations: int,
+    wait_ready: bool,
+    ready_timeout_sec: float,
+    poll_interval_sec: float,
+    detail: bool,
     control: str | None,
     json_output: bool,
 ) -> None:
@@ -1706,6 +1933,7 @@ def _node_yjs_benchmark_scenario_action(
         resolved_baseline = ""
 
     def _switch_or_exit(target_scenario: str) -> dict[str, Any]:
+        request_started = time.perf_counter()
         code, payload = _control_post_json(
             control=control0,
             path=f"/api/node/yjs/webspaces/{webspace}/scenario",
@@ -1713,6 +1941,7 @@ def _node_yjs_benchmark_scenario_action(
             body={"scenario_id": target_scenario},
             timeout=90.0,
         )
+        observed_accept_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
         if code is None:
             typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
             raise typer.Exit(code=2)
@@ -1725,7 +1954,31 @@ def _node_yjs_benchmark_scenario_action(
             typer.secho("[AdaOS] yjs benchmark-scenario failed: scenario switch was not accepted", fg=typer.colors.RED)
             typer.echo(payload)
             raise typer.Exit(code=1)
-        return payload
+        merged_payload = dict(payload)
+        merged_payload["observed_timings_ms"] = {"time_to_accept": observed_accept_ms}
+        if wait_ready:
+            rebuild_state = merged_payload.get("rebuild") if isinstance(merged_payload.get("rebuild"), dict) else {}
+            final_rebuild, wait_elapsed_ms, timed_out = _wait_for_benchmark_rebuild(
+                control=control0,
+                token=token,
+                webspace=webspace,
+                scenario_id=target_scenario,
+                initial_rebuild=rebuild_state,
+                timeout_sec=ready_timeout_sec,
+                poll_interval_sec=poll_interval_sec,
+            )
+            if final_rebuild:
+                merged_payload = _merge_benchmark_rebuild_payload(merged_payload, final_rebuild)
+            merged_payload["rebuild_wait_timeout"] = bool(timed_out)
+            if wait_elapsed_ms is not None:
+                observed_timings = (
+                    dict(merged_payload.get("observed_timings_ms") or {})
+                    if isinstance(merged_payload.get("observed_timings_ms"), dict)
+                    else {}
+                )
+                observed_timings["time_to_ready"] = round(observed_accept_ms + float(wait_elapsed_ms), 3)
+                merged_payload["observed_timings_ms"] = observed_timings
+        return merged_payload
 
     runs: list[dict[str, Any]] = []
     for iteration in range(1, max(iterations, 1) + 1):
@@ -1757,6 +2010,7 @@ def _node_yjs_benchmark_scenario_action(
     )
     for run in runs:
         phase = run.get("phase_timings_ms") if isinstance(run.get("phase_timings_ms"), dict) else {}
+        observed = run.get("observed_timings_ms") if isinstance(run.get("observed_timings_ms"), dict) else {}
         typer.echo(
             f"run={int(run.get('iteration') or 0)} "
             f"mode={run.get('scenario_switch_mode') or '-'} "
@@ -1764,11 +2018,22 @@ def _node_yjs_benchmark_scenario_action(
             f"cache_hit={'yes' if run.get('resolver_cache_hit') else 'no'} "
             f"changed={int(run.get('changed_branches') or 0)} "
             f"accept={float(phase.get('time_to_accept') or 0.0):.3f} "
+            f"ready={float(observed.get('time_to_ready') or 0.0):.3f} "
             f"first={float(phase.get('time_to_first_structure') or 0.0):.3f} "
             f"interactive={float(phase.get('time_to_interactive_focus') or 0.0):.3f} "
-            f"full={float(phase.get('time_to_full_hydration') or 0.0):.3f}"
+            f"full={float(phase.get('time_to_full_hydration') or 0.0):.3f} "
+            f"status={run.get('rebuild_status') or '-'}"
         )
+        if detail:
+            _print_timings_summary(run, key="observed_timings_ms", label="  observed_timings_ms")
+            _print_timings_summary(run, key="timings_ms", label="  switch_timings_ms")
+            _print_timings_summary(run, key="rebuild_timings_ms", label="  rebuild_timings_ms")
+            _print_timings_summary(run, key="semantic_rebuild_timings_ms", label="  semantic_rebuild_timings_ms")
     _print_benchmark_summary(summary)
+    if detail:
+        _print_benchmark_timing_group(summary, key="timings_ms", label="switch_timings_ms")
+        _print_benchmark_timing_group(summary, key="rebuild_timings_ms", label="rebuild_timings_ms")
+        _print_benchmark_timing_group(summary, key="semantic_rebuild_timings_ms", label="semantic_rebuild_timings_ms")
 
 
 @yjs_app.command("create")
@@ -1911,6 +2176,28 @@ def node_yjs_benchmark_scenario(
         help="Optional scenario to restore between runs (defaults to home/current if different)",
     ),
     iterations: int = typer.Option(3, "--iterations", min=1, help="How many measured target switches to run"),
+    wait_ready: bool = typer.Option(
+        True,
+        "--wait-ready/--no-wait-ready",
+        help="Wait for terminal background rebuild state and include ready/full metrics",
+    ),
+    ready_timeout_sec: float = typer.Option(
+        60.0,
+        "--ready-timeout-sec",
+        min=1.0,
+        help="How long to wait for each background rebuild to reach a terminal state",
+    ),
+    poll_interval_sec: float = typer.Option(
+        0.25,
+        "--poll-interval-sec",
+        min=0.05,
+        help="Polling interval while waiting for rebuild completion",
+    ),
+    detail: bool = typer.Option(
+        False,
+        "--detail/--no-detail",
+        help="Print per-run and aggregated switch/rebuild/semantic timing breakdown",
+    ),
     control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
@@ -1919,6 +2206,10 @@ def node_yjs_benchmark_scenario(
         scenario_id=scenario_id,
         baseline_scenario=baseline_scenario,
         iterations=iterations,
+        wait_ready=wait_ready,
+        ready_timeout_sec=ready_timeout_sec,
+        poll_interval_sec=poll_interval_sec,
+        detail=detail,
         control=control,
         json_output=json_output,
     )
