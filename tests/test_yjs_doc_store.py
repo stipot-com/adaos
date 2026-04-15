@@ -67,6 +67,52 @@ async def test_async_get_ydoc_skips_noop_flush() -> None:
         reset_ystore_for_webspace(webspace_id)
 
 
+async def test_async_get_ydoc_byte_budget_compacts_replay_window(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_MAX_UPDATES", "128")
+    monkeypatch.setenv("ADAOS_YSTORE_REPLAY_WINDOW", "32")
+    monkeypatch.setenv("ADAOS_YSTORE_MAX_REPLAY_BYTES", "700")
+    webspace_id = _webspace_id("byte-budget")
+    store = get_ystore_for_webspace(webspace_id)
+    value = "x" * 256
+    try:
+        for idx in range(6):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"key_{idx}", value)
+
+        snapshot = store.runtime_snapshot()
+        assert snapshot["compact_total"] >= 1
+        assert snapshot["last_compact_reason"] == "byte_limit"
+        assert snapshot["base_snapshot_present"] is True
+        assert snapshot["update_log_entries"] < 6
+        assert snapshot["replay_window_byte_limit"] == 700
+
+        async with async_read_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            for idx in range(6):
+                assert data_map.get(f"key_{idx}") == value
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_ystore_runtime_snapshot_reports_replay_byte_budget(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_MAX_REPLAY_BYTES", "2048")
+    webspace_id = _webspace_id("runtime-byte-budget")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ydoc.get_map("ui").set(txn, "current_scenario", "infrascope")
+
+        snapshot = store.runtime_snapshot()
+        assert snapshot["replay_window_byte_limit"] == 2048
+        assert snapshot["replay_window_bytes"] >= 0
+        assert "base_snapshot_present" in snapshot
+        assert "last_compact_reason" in snapshot
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
 async def test_ystore_encode_state_as_update_keeps_snapshot_path_for_seed_flows() -> None:
     webspace_id = _webspace_id("snapshot-write")
     store = get_ystore_for_webspace(webspace_id)

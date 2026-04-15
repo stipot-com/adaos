@@ -171,8 +171,10 @@ class AdaosMemoryYStore(BaseYStore):
             self.max_updates - 1,
             _env_int("ADAOS_YSTORE_REPLAY_WINDOW", 32, minimum=0),
         )
+        self.max_replay_bytes = _env_int("ADAOS_YSTORE_MAX_REPLAY_BYTES", 512 * 1024, minimum=0)
         self._lock: Lock = Lock()
         self._updates: List[Tuple[bytes, bytes, float]] = []
+        self._base_snapshot_present = False
         self._loaded_from_disk = False
         self._started: Event | None = None
         self._starting: bool = False
@@ -189,6 +191,7 @@ class AdaosMemoryYStore(BaseYStore):
         self._applied_update_bytes = 0
         self._last_write_at = 0.0
         self._last_compact_at = 0.0
+        self._last_compact_reason = ""
         self._last_backup_at = 0.0
         self._last_apply_at = 0.0
         self._last_loaded_from_disk_at = 0.0
@@ -238,6 +241,8 @@ class AdaosMemoryYStore(BaseYStore):
                 self._diff_write_total += 1
             elif update_kind == "snapshot":
                 self._snapshot_write_total += 1
+                if not self._updates:
+                    self._base_snapshot_present = True
             self._last_write_at = now
             self._last_update_bytes = len(payload)
             if self.document_ttl is not None and self._updates:
@@ -245,11 +250,12 @@ class AdaosMemoryYStore(BaseYStore):
                 if now - last_ts > self.document_ttl:
                     # Squash stale history into a snapshot and continue with a
                     # fresh append-only window.
-                    self._compact_updates_locked(now=now, keep_tail=0)
+                    self._compact_updates_locked(now=now, keep_tail=0, reason="document_ttl")
 
             self._updates.append((payload, metadata, now))
-            if len(self._updates) > self.max_updates:
-                self._compact_updates_locked(now=now, keep_tail=self.replay_window)
+            compact_reason = self._replay_compaction_reason_locked()
+            if compact_reason:
+                self._compact_updates_locked(now=now, keep_tail=self.replay_window, reason=compact_reason)
         if notify:
             try:
                 _notify_write_listeners(self.path, payload)
@@ -285,14 +291,52 @@ class AdaosMemoryYStore(BaseYStore):
                 self._last_apply_update_total = applied_total
                 self._last_apply_bytes = applied_bytes
 
-    def _compact_updates_locked(self, *, now: float, keep_tail: int | None = None) -> None:
+    def _replay_window_bytes_locked(self, updates: List[Tuple[bytes, bytes, float]] | None = None) -> int:
+        snapshot = list(updates if updates is not None else self._updates)
+        if not snapshot:
+            return 0
+        start_idx = 1 if self._base_snapshot_present and len(snapshot) > 0 else 0
+        return sum(len(update) for update, _meta, _ts in snapshot[start_idx:])
+
+    def _replay_compaction_reason_locked(self) -> str | None:
+        total = len(self._updates)
+        if total <= 1:
+            return None
+        if total > self.max_updates:
+            return "entry_limit"
+        if self.max_replay_bytes > 0 and self._replay_window_bytes_locked() > self.max_replay_bytes:
+            return "byte_limit"
+        return None
+
+    def _compact_updates_locked(
+        self,
+        *,
+        now: float,
+        keep_tail: int | None = None,
+        reason: str | None = None,
+    ) -> None:
         updates = list(self._updates)
         if not updates:
             return
         total = len(updates)
         tail_count = self.replay_window if keep_tail is None else int(keep_tail)
         tail_count = max(0, min(tail_count, max(0, total - 1)))
-        prefix_count = max(1, total - tail_count)
+        tail_byte_limit = int(self.max_replay_bytes) if self.max_replay_bytes > 0 else 0
+        keep_from = total
+        kept_total = 0
+        kept_bytes = 0
+        while keep_from > 0 and kept_total < tail_count:
+            candidate_index = keep_from - 1
+            if candidate_index <= 0:
+                break
+            candidate_update = updates[candidate_index][0]
+            candidate_size = len(candidate_update)
+            if tail_byte_limit > 0 and kept_total > 0 and kept_bytes + candidate_size > tail_byte_limit:
+                break
+            keep_from = candidate_index
+            kept_total += 1
+            kept_bytes += candidate_size
+        prefix_count = max(1, keep_from)
         prefix = updates[:prefix_count]
         tail = updates[prefix_count:]
         ydoc = Y.YDoc()
@@ -301,8 +345,10 @@ class AdaosMemoryYStore(BaseYStore):
         snapshot = Y.encode_state_as_update(ydoc)  # type: ignore[arg-type]
         metadata = prefix[-1][1] if prefix else b""
         self._updates = [(snapshot, metadata, now), *tail]
+        self._base_snapshot_present = True
         self._compact_total += 1
         self._last_compact_at = now
+        self._last_compact_reason = str(reason or "manual").strip() or "manual"
         self._last_snapshot_bytes = len(snapshot)
 
     async def _load_from_disk_if_needed(self) -> None:
@@ -325,6 +371,7 @@ class AdaosMemoryYStore(BaseYStore):
         async with self._lock:
             if not self._updates:
                 self._updates.append((data, metadata, now))
+                self._base_snapshot_present = True
                 self._last_loaded_from_disk_at = now
                 self._last_snapshot_bytes = len(data)
         self._loaded_from_disk = True
@@ -368,8 +415,9 @@ class AdaosMemoryYStore(BaseYStore):
         updates = list(self._updates)
         update_log_entries = len(updates)
         update_log_bytes = sum(len(update) for update, _meta, _ts in updates)
-        base_snapshot_present = bool(updates) and bool(self._loaded_from_disk or self._compact_total > 0)
+        base_snapshot_present = bool(updates) and bool(self._base_snapshot_present)
         replay_window_entries = max(0, update_log_entries - (1 if base_snapshot_present else 0))
+        replay_window_bytes = self._replay_window_bytes_locked(updates)
         if update_log_entries <= 0:
             log_mode = "empty"
         elif base_snapshot_present:
@@ -381,8 +429,11 @@ class AdaosMemoryYStore(BaseYStore):
             "log_mode": log_mode,
             "update_log_entries": update_log_entries,
             "update_log_bytes": int(update_log_bytes),
+            "base_snapshot_present": bool(base_snapshot_present),
             "replay_window_entries": replay_window_entries,
             "replay_window_limit": int(self.replay_window),
+            "replay_window_bytes": int(replay_window_bytes),
+            "replay_window_byte_limit": int(self.max_replay_bytes),
             "max_update_log_entries": int(self.max_updates),
             "loaded_from_disk": bool(self._loaded_from_disk),
             "running": bool(self._running),
@@ -404,6 +455,7 @@ class AdaosMemoryYStore(BaseYStore):
             "last_write_at": self._last_write_at or None,
             "last_write_ago_s": round(max(0.0, now - self._last_write_at), 3) if self._last_write_at else None,
             "last_compact_at": self._last_compact_at or None,
+            "last_compact_reason": self._last_compact_reason or None,
             "last_compact_ago_s": round(max(0.0, now - self._last_compact_at), 3) if self._last_compact_at else None,
             "last_backup_at": self._last_backup_at or None,
             "last_backup_ago_s": round(max(0.0, now - self._last_backup_at), 3) if self._last_backup_at else None,

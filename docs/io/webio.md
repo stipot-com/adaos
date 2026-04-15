@@ -237,6 +237,10 @@ reconnect/reload problem rather than a steady-state switch problem.
 YStore runtime diagnostics now also expose extra pressure indicators such as:
 
 * `update_log_bytes`
+* `replay_window_bytes`
+* `replay_window_byte_limit`
+* `base_snapshot_present`
+* `last_compact_reason`
 * `diff_write_total`
 * `snapshot_write_total`
 * `apply_total`
@@ -245,6 +249,12 @@ YStore runtime diagnostics now also expose extra pressure indicators such as:
 
 Those counters help distinguish "slow because we keep replaying a large log"
 from "slow because we are still writing whole snapshots too often".
+
+The replay window is now bounded both by entry count and by bytes. The
+operator knob `ADAOS_YSTORE_MAX_REPLAY_BYTES` sets the byte budget for the
+bounded replay tail, and compaction reason reporting makes it explicit whether
+the store compacted because of the update-count cap or because replay bytes
+grew too large.
 
 When `rebuild.materialization` is present, benchmark polling now reuses that
 embedded snapshot before falling back to the separate `materialization`

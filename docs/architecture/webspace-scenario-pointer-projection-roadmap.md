@@ -436,6 +436,16 @@ critical-path target:
   `ydoc_timings_ms.ystore_apply_updates` and
   `ydoc_timings_ms.ystore_encode_state_as_update`
 
+Recent `benchmark-scenario --detail` runs on the current pointer-first path
+make that split even clearer:
+
+- `time_to_accept` is already around `2-3 ms`
+- `time_to_first_structure` is already around `20-90 ms`
+- observed `time_to_ready` is still dominated by cold-room YDoc reopen cost
+- the heaviest envelope term is now typically `ydoc_timings_ms.ystore_apply_updates`,
+  while writeback has moved down toward `ydoc_timings_ms.ystore_write_update`
+  after diff-based flush landed
+
 That means the next optimization slice should prioritize:
 
 - reducing full replay cost on YDoc open
@@ -461,6 +471,19 @@ replaying the full store snapshot again. This means:
   forcing another store replay
 - the remaining replay bottleneck becomes more clearly a cold-room /
   reconnect / reload path problem
+
+YStore replay pressure is now also bounded by bytes, not only by entry count.
+The bounded replay window can compact when either the update count or the
+byte-size tail grows too large. Runtime diagnostics now surface:
+
+- `replay_window_bytes`
+- `replay_window_byte_limit`
+- `base_snapshot_present`
+- `last_compact_reason`
+
+The byte budget is controlled by `ADAOS_YSTORE_MAX_REPLAY_BYTES` and should
+help repeated switch/rebuild loops converge toward smaller cold-room replay
+windows over time, even when many small diff updates accumulate.
 
 Operator recovery paths were also tightened so performance work is not masked
 by recovery fan-out:
@@ -566,9 +589,10 @@ Use this checklist as the authoritative progress tracker for the migration.
 - [ ] Reduce `YStore.apply_updates` / `encode_state_as_update` envelope cost
   now that pointer-switch latency is no longer the dominant bottleneck.
   Current slice: diff-writeback replaced the full-state flush on normal YDoc
-  exit, and attached live-room rebuild/read paths now bypass repeated replay.
-  Cold-room replay/open plus reload/reconnect memory pressure still need
-  another pass before this item can be considered complete.
+  exit, attached live-room rebuild/read paths now bypass repeated replay, and
+  bounded replay now also compacts by byte budget (`ADAOS_YSTORE_MAX_REPLAY_BYTES`).
+  The remaining gap is cold-room replay/open cost (`apply_updates`) plus
+  reload/reconnect memory pressure under repeated room rebuilds.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.
@@ -592,11 +616,11 @@ Use this checklist as the authoritative progress tracker for the migration.
 
 ### 6. Legacy Cleanup
 
-- [ ] Stop treating `ui.scenarios`, `registry.scenarios`, and `data.scenarios`
+- [x] Stop treating `ui.scenarios`, `registry.scenarios`, and `data.scenarios`
   as mandatory runtime inputs.
-- [ ] Demote those branches to optional compatibility caches.
+- [x] Demote those branches to optional compatibility caches.
 - [ ] Remove obsolete switch-time materialize-and-copy code paths.
-- [ ] Update architecture and operator docs to describe the new ownership
+- [x] Update architecture and operator docs to describe the new ownership
   model.
 
 ## Success Criteria

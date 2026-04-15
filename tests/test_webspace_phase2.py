@@ -2130,7 +2130,8 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
     assert "apply_interactive" in runtime._last_apply_phase_timings_ms
     assert fake_state["ui"].set_count == 1
     assert fake_state["data"].set_count == 4
-    assert fake_state["registry"].set_count == 1
+    assert fake_state["registry"].set_count == 2
+    assert "runtime_meta" in fake_state["registry"]
 
 
 def test_phase5_derive_phase_timings_uses_semantic_phase_breakdown() -> None:

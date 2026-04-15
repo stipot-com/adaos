@@ -1833,7 +1833,9 @@ class WebspaceScenarioRuntime:
         phase_timings_ms: Dict[str, float] = {}
         compatibility_presence = dict(effective_inputs.compatibility_cache_presence or {})
         resolved_branch_fingerprints = _resolved_output_branch_fingerprints(resolved)
-        effective_branch_fingerprints = _read_effective_branch_fingerprints(registry_map)
+        persisted_branch_fingerprints = _read_effective_branch_fingerprints(registry_map)
+        effective_branch_fingerprints = dict(persisted_branch_fingerprints)
+        pending_fingerprint_updates: Dict[str, str] = {}
 
         def _update_materialization_snapshot(phase_name: str) -> None:
             application = _coerce_dict(resolved.application or {})
@@ -1885,6 +1887,7 @@ class WebspaceScenarioRuntime:
             if fingerprint and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint:
                 fingerprint_unchanged_paths.append(path)
                 fingerprint_updates[path] = fingerprint
+                pending_fingerprint_updates[path] = fingerprint
                 return
             try:
                 changed = _set_map_value_if_changed(y_map, txn, key, value)
@@ -1896,6 +1899,7 @@ class WebspaceScenarioRuntime:
             if fingerprint:
                 effective_branch_fingerprints[path] = fingerprint
                 fingerprint_updates[path] = fingerprint
+                pending_fingerprint_updates[path] = fingerprint
             if changed:
                 changed_paths.append(path)
 
@@ -1933,12 +1937,6 @@ class WebspaceScenarioRuntime:
                         fingerprint_updates=phase_fingerprint_updates,
                         ignore_errors=ignore_errors,
                     )
-                _write_effective_branch_fingerprints(
-                    registry_map,
-                    txn,
-                    current=effective_branch_fingerprints,
-                    updates=phase_fingerprint_updates,
-                )
 
             phase_changed_paths = list(changed_paths[phase_changed_before:])
             phase_failed_paths = list(failed_paths[phase_failed_before:])
@@ -1979,6 +1977,15 @@ class WebspaceScenarioRuntime:
                 ("data.routing", data_map, "routing", resolved.routing, True),
             ),
         )
+
+        if pending_fingerprint_updates:
+            with ydoc.begin_transaction() as txn:
+                _write_effective_branch_fingerprints(
+                    registry_map,
+                    txn,
+                    current=persisted_branch_fingerprints,
+                    updates=pending_fingerprint_updates,
+                )
 
         self._last_apply_summary = {
             "branch_count": len(target_paths),
@@ -2089,9 +2096,8 @@ class WebspaceScenarioRuntime:
         ydoc_timings: Dict[str, float] = {}
         self._last_rebuild_ydoc_timings_ms = None
         try:
-            async with async_get_ydoc(
+            async with _open_rebuild_ydoc_session(
                 webspace_id,
-                prefer_live_room=True,
                 timings=ydoc_timings,
             ) as ydoc:
                 stage_started = time.perf_counter()
@@ -2336,7 +2342,7 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
         )
 
     try:
-        async with async_read_ydoc(target_webspace_id) as ydoc:
+        async with _open_readonly_operational_ydoc(target_webspace_id) as ydoc:
             ui_map = ydoc.get_map("ui")
             raw_current = ui_map.get("current_scenario")
             if raw_current is not None:
@@ -2447,6 +2453,49 @@ def _try_read_live_current_scenario(webspace_id: str) -> str | None:
     if not live_hit:
         return None
     return _normalize_optional_token(raw_current)
+
+
+def _open_readonly_operational_ydoc(webspace_id: str):
+    """
+    Open a read-only YDoc session for operational/status reads.
+
+    Prefer the modern live-room-aware accessor, but degrade gracefully to the
+    legacy helper or a bare async getter while tests and older wrappers still
+    patch narrower call signatures during the migration.
+    """
+    try:
+        return async_get_ydoc(
+            webspace_id,
+            read_only=True,
+            prefer_live_room=True,
+        )
+    except TypeError:
+        try:
+            return async_get_ydoc(webspace_id)
+        except TypeError:
+            return async_read_ydoc(webspace_id)
+
+
+def _open_rebuild_ydoc_session(
+    webspace_id: str,
+    *,
+    timings: dict[str, float] | None = None,
+):
+    """
+    Open a writable YDoc session for semantic rebuild.
+
+    Production code prefers the live-room-aware async accessor with timing
+    capture, but tests and older shims may still expose a narrower
+    `async_get_ydoc(webspace_id)` contract.
+    """
+    try:
+        return async_get_ydoc(
+            webspace_id,
+            prefer_live_room=True,
+            timings=timings,
+        )
+    except TypeError:
+        return async_get_ydoc(webspace_id)
 
 
 async def _sync_webspace_listing() -> None:
