@@ -749,6 +749,182 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
     if changed_paths:
         summary += f" paths={','.join(changed_paths)}"
     typer.echo(summary)
+    phases = apply.get("phases") if isinstance(apply.get("phases"), dict) else {}
+    for phase_name in ("structure", "interactive"):
+        phase = phases.get(phase_name) if isinstance(phases.get(phase_name), dict) else {}
+        if not phase:
+            continue
+        try:
+            phase_branch_count = int(phase.get("branch_count") or 0)
+        except Exception:
+            phase_branch_count = 0
+        try:
+            phase_changed = int(phase.get("changed_branches") or 0)
+        except Exception:
+            phase_changed = 0
+        try:
+            phase_unchanged = int(phase.get("unchanged_branches") or 0)
+        except Exception:
+            phase_unchanged = 0
+        try:
+            phase_failed = int(phase.get("failed_branches") or 0)
+        except Exception:
+            phase_failed = 0
+        phase_changed_paths = [
+            str(raw_path or "").strip()
+            for raw_path in list(phase.get("changed_paths") or [])
+            if str(raw_path or "").strip()
+        ]
+        phase_summary = (
+            f"{indent}  apply.phase.{phase_name}: changed={phase_changed}/"
+            f"{phase_branch_count or max(phase_changed + phase_unchanged + phase_failed, 1)} "
+            f"unchanged={phase_unchanged} failed={phase_failed}"
+        )
+        if phase_changed_paths:
+            phase_summary += f" paths={','.join(phase_changed_paths)}"
+        typer.echo(phase_summary)
+
+
+def _timing_value(payload: dict[str, Any], *, key: str, name: str) -> float | None:
+    timing_map = payload.get(key) if isinstance(payload.get(key), dict) else {}
+    if not timing_map:
+        return None
+    try:
+        raw = timing_map.get(name)
+    except Exception:
+        raw = None
+    if raw is None:
+        return None
+    try:
+        return round(float(raw), 3)
+    except Exception:
+        return None
+
+
+def _aggregate_benchmark_values(values: list[float]) -> dict[str, float] | None:
+    if not values:
+        return None
+    return {
+        "avg": round(sum(values) / len(values), 3),
+        "min": round(min(values), 3),
+        "max": round(max(values), 3),
+    }
+
+
+def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
+    phase_timings = payload.get("phase_timings_ms") if isinstance(payload.get("phase_timings_ms"), dict) else {}
+    resolver = payload.get("resolver") if isinstance(payload.get("resolver"), dict) else {}
+    apply_summary = payload.get("apply_summary") if isinstance(payload.get("apply_summary"), dict) else {}
+    try:
+        changed_branches = int(apply_summary.get("changed_branches") or 0)
+    except Exception:
+        changed_branches = 0
+    try:
+        unchanged_branches = int(apply_summary.get("unchanged_branches") or 0)
+    except Exception:
+        unchanged_branches = 0
+    return {
+        "accepted": bool(payload.get("accepted")),
+        "scenario_id": str(payload.get("scenario_id") or "").strip() or None,
+        "scenario_switch_mode": str(payload.get("scenario_switch_mode") or "").strip() or None,
+        "switch_skipped": bool(payload.get("switch_skipped")),
+        "skip_reason": str(payload.get("skip_reason") or "").strip() or None,
+        "resolver_cache_hit": bool(resolver.get("cache_hit")),
+        "resolver_source": str(resolver.get("source") or "").strip() or None,
+        "changed_branches": changed_branches,
+        "unchanged_branches": unchanged_branches,
+        "phase_timings_ms": dict(phase_timings),
+        "timings_ms": dict(payload.get("timings_ms") or {}) if isinstance(payload.get("timings_ms"), dict) else {},
+        "rebuild_timings_ms": dict(payload.get("rebuild_timings_ms") or {})
+        if isinstance(payload.get("rebuild_timings_ms"), dict)
+        else {},
+        "semantic_rebuild_timings_ms": dict(payload.get("semantic_rebuild_timings_ms") or {})
+        if isinstance(payload.get("semantic_rebuild_timings_ms"), dict)
+        else {},
+    }
+
+
+def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    metric_specs = (
+        ("time_to_accept", "phase_timings_ms"),
+        ("time_to_pointer_update", "phase_timings_ms"),
+        ("time_to_first_structure", "phase_timings_ms"),
+        ("time_to_interactive_focus", "phase_timings_ms"),
+        ("time_to_full_hydration", "phase_timings_ms"),
+    )
+    phase_summary: dict[str, Any] = {}
+    for metric_name, metric_key in metric_specs:
+        values: list[float] = []
+        for run in runs:
+            payload = {metric_key: run.get(metric_key) if isinstance(run.get(metric_key), dict) else {}}
+            value = _timing_value(payload, key=metric_key, name=metric_name)
+            if value is not None:
+                values.append(value)
+        aggregate = _aggregate_benchmark_values(values)
+        if aggregate:
+            phase_summary[metric_name] = aggregate
+
+    changed_values = [
+        float(run.get("changed_branches") or 0)
+        for run in runs
+        if run.get("changed_branches") is not None
+    ]
+    unchanged_values = [
+        float(run.get("unchanged_branches") or 0)
+        for run in runs
+        if run.get("unchanged_branches") is not None
+    ]
+    skipped_total = sum(1 for run in runs if bool(run.get("switch_skipped")))
+    cache_hit_total = sum(1 for run in runs if bool(run.get("resolver_cache_hit")))
+    summary: dict[str, Any] = {
+        "iterations": len(runs),
+        "switch_skipped_total": skipped_total,
+        "resolver_cache_hit_total": cache_hit_total,
+        "phase_timings_ms": phase_summary,
+    }
+    changed_aggregate = _aggregate_benchmark_values(changed_values)
+    if changed_aggregate:
+        summary["changed_branches"] = changed_aggregate
+    unchanged_aggregate = _aggregate_benchmark_values(unchanged_values)
+    if unchanged_aggregate:
+        summary["unchanged_branches"] = unchanged_aggregate
+    return summary
+
+
+def _print_benchmark_summary(summary: dict[str, Any]) -> None:
+    phase_summary = summary.get("phase_timings_ms") if isinstance(summary.get("phase_timings_ms"), dict) else {}
+    for metric_name in (
+        "time_to_accept",
+        "time_to_pointer_update",
+        "time_to_first_structure",
+        "time_to_interactive_focus",
+        "time_to_full_hydration",
+    ):
+        item = phase_summary.get(metric_name) if isinstance(phase_summary.get(metric_name), dict) else {}
+        if not item:
+            continue
+        typer.echo(
+            f"summary.{metric_name}: "
+            f"avg={float(item.get('avg')):.3f} "
+            f"min={float(item.get('min')):.3f} "
+            f"max={float(item.get('max')):.3f}"
+        )
+    changed = summary.get("changed_branches") if isinstance(summary.get("changed_branches"), dict) else {}
+    if changed:
+        typer.echo(
+            f"summary.changed_branches: avg={float(changed.get('avg')):.3f} "
+            f"min={float(changed.get('min')):.3f} max={float(changed.get('max')):.3f}"
+        )
+    unchanged = summary.get("unchanged_branches") if isinstance(summary.get("unchanged_branches"), dict) else {}
+    if unchanged:
+        typer.echo(
+            f"summary.unchanged_branches: avg={float(unchanged.get('avg')):.3f} "
+            f"min={float(unchanged.get('min')):.3f} max={float(unchanged.get('max')):.3f}"
+        )
+    typer.echo(
+        f"summary.flags: skipped={int(summary.get('switch_skipped_total') or 0)}/{int(summary.get('iterations') or 0)} "
+        f"cache_hits={int(summary.get('resolver_cache_hit_total') or 0)}/{int(summary.get('iterations') or 0)}"
+    )
 
 
 def _print_switch_summary(payload: dict[str, Any]) -> None:
@@ -1441,6 +1617,117 @@ def _node_yjs_desktop_action(
         _print_yjs_runtime_summary({"runtime": runtime})
 
 
+def _node_yjs_benchmark_scenario_action(
+    *,
+    webspace: str,
+    scenario_id: str,
+    baseline_scenario: str | None,
+    iterations: int,
+    control: str | None,
+    json_output: bool,
+) -> None:
+    from adaos.apps.cli.active_control import resolve_control_base_url
+
+    cfg = load_config()
+    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    token = _resolved_local_control_token(control0, cfg)
+
+    status_code, describe_payload = _control_get_json(
+        control=control0,
+        path=f"/api/node/yjs/webspaces/{webspace}",
+        token=token,
+        timeout=8.0,
+    )
+    if status_code is None:
+        typer.secho(_control_error_message("yjs benchmark-scenario", describe_payload), fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    if status_code != 200 or not isinstance(describe_payload, dict):
+        typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {status_code}", fg=typer.colors.RED)
+        if describe_payload:
+            typer.echo(describe_payload)
+        raise typer.Exit(code=1)
+
+    webspace_payload = describe_payload.get("webspace") if isinstance(describe_payload.get("webspace"), dict) else {}
+    resolved_baseline = str(baseline_scenario or "").strip()
+    if not resolved_baseline:
+        for candidate in (
+            webspace_payload.get("home_scenario"),
+            webspace_payload.get("current_scenario"),
+            "web_desktop",
+        ):
+            token_candidate = str(candidate or "").strip()
+            if token_candidate and token_candidate != scenario_id:
+                resolved_baseline = token_candidate
+                break
+    if resolved_baseline == scenario_id:
+        resolved_baseline = ""
+
+    def _switch_or_exit(target_scenario: str) -> dict[str, Any]:
+        code, payload = _control_post_json(
+            control=control0,
+            path=f"/api/node/yjs/webspaces/{webspace}/scenario",
+            token=token,
+            body={"scenario_id": target_scenario},
+            timeout=90.0,
+        )
+        if code is None:
+            typer.secho(_control_error_message("yjs benchmark-scenario", payload), fg=typer.colors.RED)
+            raise typer.Exit(code=2)
+        if code != 200 or not isinstance(payload, dict):
+            typer.secho(f"[AdaOS] yjs benchmark-scenario failed: HTTP {code}", fg=typer.colors.RED)
+            if payload:
+                typer.echo(payload)
+            raise typer.Exit(code=1)
+        if not bool(payload.get("accepted")):
+            typer.secho("[AdaOS] yjs benchmark-scenario failed: scenario switch was not accepted", fg=typer.colors.RED)
+            typer.echo(payload)
+            raise typer.Exit(code=1)
+        return payload
+
+    runs: list[dict[str, Any]] = []
+    for iteration in range(1, max(iterations, 1) + 1):
+        payload = _switch_or_exit(scenario_id)
+        run = _extract_benchmark_run(payload)
+        run["iteration"] = iteration
+        runs.append(run)
+        if resolved_baseline:
+            _switch_or_exit(resolved_baseline)
+
+    summary = _benchmark_summary(runs)
+    result = {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": webspace,
+        "scenario_id": scenario_id,
+        "baseline_scenario": resolved_baseline or None,
+        "iterations": len(runs),
+        "runs": runs,
+        "summary": summary,
+    }
+    if json_output:
+        _print(result, json_output=True)
+        return
+
+    typer.echo(
+        f"yjs benchmark-scenario: webspace={webspace} "
+        f"scenario={scenario_id} baseline={resolved_baseline or '-'} iterations={len(runs)}"
+    )
+    for run in runs:
+        phase = run.get("phase_timings_ms") if isinstance(run.get("phase_timings_ms"), dict) else {}
+        typer.echo(
+            f"run={int(run.get('iteration') or 0)} "
+            f"mode={run.get('scenario_switch_mode') or '-'} "
+            f"skipped={'yes' if run.get('switch_skipped') else 'no'} "
+            f"cache_hit={'yes' if run.get('resolver_cache_hit') else 'no'} "
+            f"changed={int(run.get('changed_branches') or 0)} "
+            f"accept={float(phase.get('time_to_accept') or 0.0):.3f} "
+            f"first={float(phase.get('time_to_first_structure') or 0.0):.3f} "
+            f"interactive={float(phase.get('time_to_interactive_focus') or 0.0):.3f} "
+            f"full={float(phase.get('time_to_full_hydration') or 0.0):.3f}"
+        )
+    _print_benchmark_summary(summary)
+
+
 @yjs_app.command("create")
 def node_yjs_create(
     webspace: str | None = typer.Option(None, "--webspace", help="Preferred webspace id"),
@@ -1566,6 +1853,29 @@ def node_yjs_scenario(
         webspace=webspace,
         scenario_id=scenario_id,
         set_home=True if set_home else None,
+        control=control,
+        json_output=json_output,
+    )
+
+
+@yjs_app.command("benchmark-scenario")
+def node_yjs_benchmark_scenario(
+    webspace: str = typer.Option("default", "--webspace", help="Webspace id to benchmark"),
+    scenario_id: str = typer.Option(..., "--scenario-id", help="Target scenario id to measure"),
+    baseline_scenario: str | None = typer.Option(
+        None,
+        "--baseline-scenario",
+        help="Optional scenario to restore between runs (defaults to home/current if different)",
+    ),
+    iterations: int = typer.Option(3, "--iterations", min=1, help="How many measured target switches to run"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL (default: active server)"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    _node_yjs_benchmark_scenario_action(
+        webspace=webspace,
+        scenario_id=scenario_id,
+        baseline_scenario=baseline_scenario,
+        iterations=iterations,
         control=control,
         json_output=json_output,
     )

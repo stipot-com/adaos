@@ -254,6 +254,11 @@ Current operator-facing diagnostics now also expose temporary timing snapshots
 through switch/rebuild results and rebuild status surfaces, so heavy scenarios
 can be compared before larger cache/diff changes land.
 
+For repeated operator measurements, `adaos node yjs benchmark-scenario` now
+wraps target scenario switch + baseline restore loops and aggregates
+`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`, and
+`time_to_full_hydration` across multiple runs.
+
 Current control surfaces also expose provisional `phase_timings_ms`
 (`time_to_accept`, `time_to_first_structure`, `time_to_interactive_focus`,
 `time_to_full_hydration`). They are now derived from measured
@@ -436,7 +441,7 @@ Use this checklist as the authoritative progress tracker for the migration.
   snapshots where helpful.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
-- [ ] Measure heavy scenarios such as `infrascope` before and after each slice.
+- [x] Measure heavy scenarios such as `infrascope` before and after each slice.
 - [x] Add focused metrics for `time_to_first_structure`,
   `time_to_interactive_focus`, and `time_to_full_hydration`.
 - [x] Coalesce stale background hydration work when a newer scenario switch

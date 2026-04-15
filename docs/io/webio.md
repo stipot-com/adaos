@@ -174,6 +174,14 @@ pointer-only scenario switch can be evaluated against real runtime slices:
 * `apply_summary.phases.structure`
 * `apply_summary.phases.interactive`
 
+For repeated operator measurements, use:
+
+* `adaos node yjs benchmark-scenario --webspace <id> --scenario-id <target> --baseline-scenario <baseline>`
+
+The command runs measured target switches, restores the baseline scenario
+between iterations, and prints aggregated phase timing stats so heavy scenarios
+such as `infrascope` can be compared across optimization slices.
+
 `readiness_state` follows a coarse ladder:
 
 * `pending_structure`

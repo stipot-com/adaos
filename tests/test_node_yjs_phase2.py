@@ -1146,6 +1146,143 @@ def test_node_cli_rebuild_summary_prints_resolver_debug(monkeypatch) -> None:
     assert any("apply: changed=0/6 unchanged=6 failed=0" in line for line in echoed)
 
 
+def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
+    echoed: list[str] = []
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._print_apply_summary(
+        {
+            "apply_summary": {
+                "branch_count": 6,
+                "changed_branches": 2,
+                "unchanged_branches": 4,
+                "failed_branches": 0,
+                "changed_paths": ["ui.application", "registry.merged"],
+                "phases": {
+                    "structure": {
+                        "branch_count": 2,
+                        "changed_branches": 2,
+                        "unchanged_branches": 0,
+                        "failed_branches": 0,
+                        "changed_paths": ["ui.application", "registry.merged"],
+                    },
+                    "interactive": {
+                        "branch_count": 4,
+                        "changed_branches": 0,
+                        "unchanged_branches": 4,
+                        "failed_branches": 0,
+                        "changed_paths": [],
+                    },
+                },
+            }
+        }
+    )
+
+    assert any("apply: changed=2/6 unchanged=4 failed=0 paths=ui.application,registry.merged" in line for line in echoed)
+    assert any("apply.phase.structure: changed=2/2 unchanged=0 failed=0 paths=ui.application,registry.merged" in line for line in echoed)
+    assert any("apply.phase.interactive: changed=0/4 unchanged=4 failed=0" in line for line in echoed)
+
+
+def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkeypatch) -> None:
+    echoed: list[str] = []
+    posted: list[str] = []
+    target_runs = [
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "scenario_id": "infrascope",
+            "scenario_switch_mode": "pointer_only",
+            "switch_skipped": False,
+            "resolver": {"source": "loader:workspace", "cache_hit": False},
+            "apply_summary": {"changed_branches": 2, "unchanged_branches": 4},
+            "phase_timings_ms": {
+                "time_to_accept": 10.0,
+                "time_to_first_structure": 30.0,
+                "time_to_interactive_focus": 40.0,
+                "time_to_full_hydration": 60.0,
+            },
+        },
+        {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "scenario_id": "infrascope",
+            "scenario_switch_mode": "pointer_only",
+            "switch_skipped": False,
+            "resolver": {"source": "loader:workspace", "cache_hit": True},
+            "apply_summary": {"changed_branches": 1, "unchanged_branches": 5},
+            "phase_timings_ms": {
+                "time_to_accept": 12.0,
+                "time_to_first_structure": 24.0,
+                "time_to_interactive_focus": 36.0,
+                "time_to_full_hydration": 54.0,
+            },
+        },
+    ]
+
+    monkeypatch.setattr(node_cli_module, "load_config", lambda: SimpleNamespace(role="hub", hub_url=None, token="secret"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.apps.cli.active_control",
+        types.SimpleNamespace(
+            resolve_control_base_url=lambda explicit=None, hub_url=None: explicit or "http://127.0.0.1:8080",
+            resolve_control_token=lambda explicit=None: explicit or "secret",
+        ),
+    )
+    monkeypatch.setattr(
+        node_cli_module,
+        "_control_get_json",
+        lambda **kwargs: (
+            200,
+            {
+                "ok": True,
+                "accepted": True,
+                "webspace": {
+                    "webspace_id": "default",
+                    "home_scenario": "web_desktop",
+                    "current_scenario": "web_desktop",
+                },
+            },
+        ),
+    )
+
+    def _fake_post_json(**kwargs):
+        body = dict(kwargs.get("body") or {})
+        scenario = str(body.get("scenario_id") or "")
+        posted.append(scenario)
+        if scenario == "infrascope":
+            payload = target_runs[len([item for item in posted if item == "infrascope"]) - 1]
+            return 200, payload
+        return 200, {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": "default",
+            "scenario_id": scenario,
+            "scenario_switch_mode": "pointer_only",
+        }
+
+    monkeypatch.setattr(node_cli_module, "_control_post_json", _fake_post_json)
+    monkeypatch.setattr(node_cli_module.typer, "echo", lambda message="": echoed.append(str(message)))
+
+    node_cli_module._node_yjs_benchmark_scenario_action(
+        webspace="default",
+        scenario_id="infrascope",
+        baseline_scenario=None,
+        iterations=2,
+        control="http://127.0.0.1:8080",
+        json_output=False,
+    )
+
+    assert posted == ["infrascope", "web_desktop", "infrascope", "web_desktop"]
+    assert any("yjs benchmark-scenario: webspace=default scenario=infrascope baseline=web_desktop iterations=2" in line for line in echoed)
+    assert any("run=1 mode=pointer_only skipped=no cache_hit=no changed=2 accept=10.000 first=30.000 interactive=40.000 full=60.000" in line for line in echoed)
+    assert any("run=2 mode=pointer_only skipped=no cache_hit=yes changed=1 accept=12.000 first=24.000 interactive=36.000 full=54.000" in line for line in echoed)
+    assert any("summary.time_to_accept: avg=11.000 min=10.000 max=12.000" in line for line in echoed)
+    assert any("summary.time_to_full_hydration: avg=57.000 min=54.000 max=60.000" in line for line in echoed)
+    assert any("summary.flags: skipped=0/2 cache_hits=1/2" in line for line in echoed)
+
+
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     rendered: list[tuple[object, bool]] = []
