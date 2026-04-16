@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import sys
 import types
 
@@ -150,8 +149,11 @@ def test_attach_room_observers_retries_after_failed_attach(monkeypatch) -> None:
 
 def test_weather_observer_reattaches_for_new_doc(monkeypatch) -> None:
     monkeypatch.setattr(weather_observer, "_YDOC_OBSERVERS", {})
+    monkeypatch.setattr(weather_observer, "_YDOC_LOOPS", {})
+    monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
     monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
     monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
     monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
 
     first_doc = _FakeYDoc()
@@ -164,3 +166,71 @@ def test_weather_observer_reattaches_for_new_doc(monkeypatch) -> None:
     assert len(first_doc.observe_after_transaction_calls) == 1
     assert len(second_doc.observe_after_transaction_calls) == 1
     assert weather_observer._YDOC_OBSERVERS["default"][0] == id(second_doc)
+
+
+class _FakeLoop:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def is_closed(self) -> bool:
+        return False
+
+    def call_soon_threadsafe(self, callback) -> None:
+        self.callbacks.append(callback)
+
+
+def test_weather_observer_schedules_on_captured_loop(monkeypatch) -> None:
+    monkeypatch.setattr(weather_observer, "_YDOC_OBSERVERS", {})
+    monkeypatch.setattr(weather_observer, "_YDOC_LOOPS", {})
+    monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
+    monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
+    monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
+    monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
+
+    loop = _FakeLoop()
+    monkeypatch.setattr(weather_observer.asyncio, "get_running_loop", lambda: loop)
+    ydoc = _FakeYDoc()
+
+    weather_observer._ensure_city_observer("default", ydoc)
+
+    callback = ydoc.observe_after_transaction_calls[0]
+    callback()
+
+    assert len(loop.callbacks) == 1
+    selected = weather_observer.weather_observer_snapshot(webspace_id="default")["selected"]
+    assert selected["scheduled_total"] == 1
+    assert selected["inline_total"] == 0
+    assert selected["pending"] is True
+
+    loop.callbacks.pop()()
+
+    selected = weather_observer.weather_observer_snapshot(webspace_id="default")["selected"]
+    assert selected["pending"] is False
+    assert selected["loop_bound"] is True
+
+
+def test_weather_observer_runs_inline_without_loop(monkeypatch) -> None:
+    monkeypatch.setattr(weather_observer, "_YDOC_OBSERVERS", {})
+    monkeypatch.setattr(weather_observer, "_YDOC_LOOPS", {})
+    monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
+    monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
+    monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
+    monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
+
+    def _raise_runtime_error():
+        raise RuntimeError("no running loop")
+
+    monkeypatch.setattr(weather_observer.asyncio, "get_running_loop", _raise_runtime_error)
+    ydoc = _FakeYDoc()
+
+    weather_observer._ensure_city_observer("default", ydoc)
+
+    callback = ydoc.observe_after_transaction_calls[0]
+    callback()
+
+    selected = weather_observer.weather_observer_snapshot(webspace_id="default")["selected"]
+    assert selected["inline_total"] == 1
+    assert selected["loop_missing_total"] == 1
+    assert selected["pending"] is False

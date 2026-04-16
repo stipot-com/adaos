@@ -4340,6 +4340,12 @@ def yjs_sync_runtime_snapshot(
         gateway = gateway_transport_snapshot()
     except Exception:
         gateway = {}
+    try:
+        from adaos.services.weather.observer import weather_observer_snapshot
+
+        weather_observer = weather_observer_snapshot(webspace_id=selected_webspace_id or None)
+    except Exception:
+        weather_observer = {}
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
     ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
@@ -4457,6 +4463,9 @@ def yjs_sync_runtime_snapshot(
             **selected_webspace,
             "gateway_room": dict(gateway_rooms.get(selected_webspace_id) or {})
             if isinstance(gateway_rooms.get(selected_webspace_id), dict)
+            else {},
+            "weather_observer": dict(weather_observer.get("selected") or {})
+            if isinstance(weather_observer, dict)
             else {},
         },
         "webspace_guidance": webspace_guidance,

@@ -244,6 +244,9 @@ def _runtime_debug_slice(runtime: Mapping[str, Any] | None) -> dict[str, Any]:
             "gateway_room": dict(selected.get("gateway_room") or {})
             if isinstance(selected.get("gateway_room"), Mapping)
             else {},
+            "weather_observer": dict(selected.get("weather_observer") or {})
+            if isinstance(selected.get("weather_observer"), Mapping)
+            else {},
         },
     }
 
