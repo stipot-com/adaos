@@ -2953,6 +2953,9 @@ async def rebuild_webspace_from_sources(
         materialization=running_materialization,
     )
 
+    reset_room_result: dict[str, Any] | None = None
+    ystore_reset = False
+
     if reseed_from_scenario:
         if not target_scenario:
             raise ValueError("scenario_id is required when reseed_from_scenario is enabled")
@@ -2981,7 +2984,7 @@ async def rebuild_webspace_from_sources(
                 from adaos.services.yjs.store import reset_ystore_for_webspace  # pylint: disable=import-outside-toplevel
 
                 try:
-                    await reset_live_webspace_room(
+                    reset_room_result = await reset_live_webspace_room(
                         webspace_id,
                         close_reason="webspace_reset",
                     )
@@ -2989,6 +2992,7 @@ async def rebuild_webspace_from_sources(
                     pass
                 try:
                     reset_ystore_for_webspace(webspace_id)
+                    ystore_reset = True
                 except Exception:
                     pass
             except Exception:
@@ -3239,6 +3243,12 @@ async def rebuild_webspace_from_sources(
         "ydoc_timings_ms": ydoc_timings,
         "phase_timings_ms": phase_timings,
     }
+    if requested_action == "reset":
+        result["reset_room"] = reset_room_result or {
+            "webspace_id": webspace_id,
+            "room_dropped": False,
+        }
+        result["ystore_reset"] = bool(ystore_reset)
     _set_webspace_rebuild_status_if_current(
         webspace_id,
         request_id,
@@ -4085,10 +4095,11 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
     webspace_id = _webspace_id(payload)
     if not webspace_id:
         return
+    recreate_room = bool(payload.get("recreate_room"))
     await reload_webspace_from_scenario(
         webspace_id,
         scenario_id=str(payload.get("scenario_id") or "").strip() or None,
-        action="reload",
+        action="reset" if recreate_room else "reload",
     )
 
 

@@ -210,6 +210,54 @@ def _attach_runtime_and_rebuild(
     return result
 
 
+def _runtime_debug_slice(runtime: Mapping[str, Any] | None) -> dict[str, Any]:
+    runtime_map = dict(runtime) if isinstance(runtime, Mapping) else {}
+    transport = runtime_map.get("transport") if isinstance(runtime_map.get("transport"), Mapping) else {}
+    assessment = runtime_map.get("assessment") if isinstance(runtime_map.get("assessment"), Mapping) else {}
+    selected = runtime_map.get("selected_webspace") if isinstance(runtime_map.get("selected_webspace"), Mapping) else {}
+    return {
+        "assessment": {
+            "state": str(assessment.get("state") or "").strip() or None,
+            "reason": str(assessment.get("reason") or "").strip() or None,
+        },
+        "transport": {
+            "active_yws_connections": int(transport.get("active_yws_connections") or 0),
+            "recent_open_10s": int(transport.get("recent_open_10s") or 0),
+            "storm_detected": bool(transport.get("storm_detected")),
+            "room_total": int(transport.get("room_total") or 0),
+            "server_ready": bool(transport.get("server_ready")),
+            "server_error": str(transport.get("server_error") or "").strip() or None,
+        },
+        "selected_webspace": {
+            "id": str(runtime_map.get("selected_webspace_id") or "").strip() or None,
+            "runtime_compaction_eligible": bool(selected.get("runtime_compaction_eligible")),
+            "update_log_entries": int(selected.get("update_log_entries") or 0),
+            "replay_window_entries": int(selected.get("replay_window_entries") or 0),
+            "replay_window_bytes": int(selected.get("replay_window_bytes") or 0),
+        },
+    }
+
+
+def _attach_yjs_action_debug(
+    result: dict[str, Any],
+    *,
+    requested_endpoint: str,
+    recreate_room_requested: bool,
+    runtime_before: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    reset_room = result.get("reset_room") if isinstance(result.get("reset_room"), Mapping) else {}
+    result["action_debug"] = {
+        "requested_endpoint": str(requested_endpoint or "").strip() or None,
+        "requested_action": str(result.get("action") or requested_endpoint or "").strip() or None,
+        "recreate_room_requested": bool(recreate_room_requested),
+        "room_recreated": bool(reset_room.get("room_dropped")),
+        "reset_room": dict(reset_room) if reset_room else None,
+        "runtime_before": _runtime_debug_slice(runtime_before),
+        "runtime_after": _runtime_debug_slice(result.get("runtime")),
+    }
+    return result
+
+
 def _collect_materialization_missing_branches(
     *,
     has_ui_application: bool,
@@ -604,6 +652,7 @@ class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
     set_home: bool | None = None
     wait_for_rebuild: bool | None = None
+    recreate_room: bool | None = None
     requested_id: str | None = None
     title: str | None = None
 
@@ -1257,25 +1306,41 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
 @router.post("/yjs/webspaces/{webspace_id}/reload", dependencies=[Depends(require_token)])
 async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = str(webspace_id or "default").strip() or "default"
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
-    result = await reload_webspace_from_scenario(
-        str(webspace_id or "default") or "default",
-        scenario_id=str(payload.scenario_id or "").strip() or None,
-        action="reload",
-    )
-    result["runtime"] = yjs_sync_runtime_snapshot(
+    scenario_id = str(payload.scenario_id or "").strip() or None
+    recreate_room_requested = bool(payload.recreate_room)
+    requested_action = "reset" if recreate_room_requested else "reload"
+    runtime_before = yjs_sync_runtime_snapshot(
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
+    )
+    result = await reload_webspace_from_scenario(
+        target_webspace_id,
+        scenario_id=scenario_id,
+        action=requested_action,
+    )
+    result = _attach_runtime_and_rebuild(
+        result,
+        role=conf.role,
+        webspace_id=target_webspace_id,
+        include_rebuild=recreate_room_requested,
+    )
+    result = _attach_yjs_action_debug(
+        result,
+        requested_endpoint="reload",
+        recreate_room_requested=recreate_room_requested,
+        runtime_before=runtime_before,
     )
     _publish_yjs_control_event(
-        action="scenario",
-        webspace_id=str(webspace_id or "default") or "default",
+        action="reload",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=scenario_id,
     )
@@ -1607,27 +1672,38 @@ async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
 @router.post("/yjs/webspaces/{webspace_id}/reset", dependencies=[Depends(require_token)])
 async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = str(webspace_id or "default").strip() or "default"
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
+    runtime_before = yjs_sync_runtime_snapshot(
+        role=conf.role,
+        webspace_id=target_webspace_id,
+    )
     result = await reload_webspace_from_scenario(
-        str(webspace_id or "default") or "default",
+        target_webspace_id,
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reset",
     )
     result = _attach_runtime_and_rebuild(
         result,
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         include_rebuild=True,
+    )
+    result = _attach_yjs_action_debug(
+        result,
+        requested_endpoint="reset",
+        recreate_room_requested=True,
+        runtime_before=runtime_before,
     )
     _publish_yjs_control_event(
         action="reset",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=str(payload.scenario_id or "").strip() or None,
     )
