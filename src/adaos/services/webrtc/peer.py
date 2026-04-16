@@ -14,6 +14,7 @@ Events WebSocket which is already tunnelled via NATS.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import time
@@ -540,6 +541,12 @@ class HubPeer:
     # -- lifecycle ------------------------------------------------------------
 
     async def close(self) -> None:
+        adapter = self._yjs_adapter
+        if adapter is not None:
+            try:
+                adapter.close()
+            except Exception:
+                pass
         try:
             if self._yjs_task and not self._yjs_task.done():
                 self._yjs_task.cancel()
@@ -553,9 +560,20 @@ class HubPeer:
         self._incoming_tracks.clear()
         self._loopback_tracks.clear()
         self._cleanup_media_upload(remove_temp=True)
+        yjs_task = self._yjs_task
+        local_desc_task = self._local_desc_task
+        self._yjs_task = None
+        self._local_desc_task = None
+        self._yjs_adapter = None
         self._events_channel = None
         self._yjs_channel = None
         self._media_channel = None
+        if yjs_task is not None:
+            with suppress(asyncio.CancelledError, Exception):
+                await yjs_task
+        if local_desc_task is not None:
+            with suppress(asyncio.CancelledError, Exception):
+                await local_desc_task
         try:
             await self.pc.close()
         except Exception:
@@ -610,6 +628,36 @@ async def handle_remote_ice(device_id: str, candidate: dict[str, Any] | None) ->
         _log.debug("rtc.ice for unknown device=%s (ignored)", device_id)
         return
     await peer.add_ice_candidate(candidate or {})
+
+
+async def close_peers_for_webspace(
+    webspace_id: str,
+    *,
+    reason: str = "webspace_reload",
+) -> int:
+    key = str(webspace_id or "").strip() or "default"
+    peers = [
+        peer
+        for peer in list(_peers.values())
+        if str(getattr(peer, "webspace_id", "") or "").strip() == key
+    ]
+    if not peers:
+        return 0
+    _log.info("closing webrtc peers for webspace=%s count=%s reason=%s", key, len(peers), reason)
+    closed = 0
+    for peer in peers:
+        try:
+            await peer.close()
+            closed += 1
+        except Exception:
+            _log.debug(
+                "failed to close webrtc peer device=%s webspace=%s reason=%s",
+                getattr(peer, "device_id", "unknown"),
+                key,
+                reason,
+                exc_info=True,
+            )
+    return closed
 
 
 def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:

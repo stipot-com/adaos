@@ -192,3 +192,34 @@ def test_handle_rtc_offer_replaces_failed_peer(monkeypatch) -> None:
     assert new_peer.webspace_id == "desk"
     assert new_peer._send_ice is send_ice_cb
     assert new_peer.emitted_reasons == ["offer.accepted"]
+
+
+def test_close_peers_for_webspace_closes_matching_peers(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+
+    class DummyPeer:
+        def __init__(self, device_id: str, webspace_id: str) -> None:
+            self.device_id = device_id
+            self.webspace_id = webspace_id
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+            if peer_mod._peers.get(self.device_id) is self:
+                del peer_mod._peers[self.device_id]
+
+    peer_mod._peers.clear()
+    keep = DummyPeer("browser-keep", "desktop")
+    close_a = DummyPeer("browser-a", "default")
+    close_b = DummyPeer("browser-b", "default")
+    peer_mod._peers[keep.device_id] = keep
+    peer_mod._peers[close_a.device_id] = close_a
+    peer_mod._peers[close_b.device_id] = close_b
+
+    closed = asyncio.run(peer_mod.close_peers_for_webspace("default", reason="room_reset"))
+
+    assert closed == 2
+    assert close_a.closed is True
+    assert close_b.closed is True
+    assert keep.closed is False
+    assert list(peer_mod._peers.keys()) == ["browser-keep"]

@@ -259,6 +259,9 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     async def _fake_close(_webspace_id: str, *, code: int = 1012, reason: str = "webspace_reload") -> int:  # noqa: ARG001
         return 0
 
+    async def _fake_close_webrtc(_webspace_id: str, *, reason: str = "webspace_reload") -> int:  # noqa: ARG001
+        return 2
+
     room = _FakeRoom()
     compaction_reasons: list[str] = []
 
@@ -271,6 +274,7 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     gateway_module._room_locks["gateway-room-reset"] = asyncio.Lock()
 
     monkeypatch.setattr(gateway_module, "close_webspace_yws_connections", _fake_close)
+    monkeypatch.setattr(gateway_module, "close_webspace_webrtc_peers", _fake_close_webrtc)
     monkeypatch.setattr(gateway_module.gc, "collect", lambda: 7)
 
     result = asyncio.run(gateway_module.reset_live_webspace_room("gateway-room-reset"))
@@ -283,6 +287,7 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     assert result["room_dropped"] is True
     assert result["room_stopped"] is True
     assert result["ystore_stopped"] is True
+    assert result["closed_webrtc_peers"] == 2
     assert result["runtime_compaction_requested"] is True
     assert result["room_refs_released"] is True
     assert result["gc_collected"] == 7
@@ -332,6 +337,7 @@ def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:
         room=room,
         room_dropped=False,
         closed_connections=1,
+        closed_webrtc_peers=2,
     )
 
     snapshot = gateway_module.gateway_transport_snapshot()
@@ -344,6 +350,7 @@ def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:
     assert room_info["update_send_stream"]["current_buffer_used"] == 5
     assert room_info["update_send_stream"]["tasks_waiting_send"] == 2
     assert room_info["last_reset_reason"] == "manual_test"
+    assert room_info["last_reset_closed_webrtc_peers"] == 2
     assert transport["active_room_total"] >= 1
     assert transport["room_generation_max"] >= 1
     assert transport["update_stream_buffer_used_total"] >= 5

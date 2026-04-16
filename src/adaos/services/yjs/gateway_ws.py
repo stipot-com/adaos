@@ -138,6 +138,7 @@ def _mark_room_reset(
     room: Any | None,
     room_dropped: bool,
     closed_connections: int,
+    closed_webrtc_peers: int,
 ) -> None:
     key = str(webspace_id or "").strip() or "default"
     ydoc = getattr(room, "ydoc", None) if room is not None else None
@@ -148,6 +149,7 @@ def _mark_room_reset(
         entry["last_reset_at"] = now
         entry["last_reset_reason"] = str(close_reason or "").strip() or "webspace_reload"
         entry["last_reset_closed_connections"] = int(closed_connections or 0)
+        entry["last_reset_closed_webrtc_peers"] = int(closed_webrtc_peers or 0)
         entry["last_reset_room_dropped"] = bool(room_dropped)
         if room is not None:
             entry["last_reset_room_object_id"] = id(room)
@@ -186,6 +188,7 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
         "last_dropped_ago_s": _seconds_ago(meta.get("last_dropped_at"), now),
         "last_reset_reason": str(meta.get("last_reset_reason") or "").strip() or None,
         "last_reset_closed_connections": int(meta.get("last_reset_closed_connections") or 0),
+        "last_reset_closed_webrtc_peers": int(meta.get("last_reset_closed_webrtc_peers") or 0),
         "last_reset_room_dropped": bool(meta.get("last_reset_room_dropped")),
         "room_object_id": id(room) if room is not None else meta.get("last_room_object_id"),
         "ydoc_object_id": id(ydoc) if ydoc is not None else meta.get("last_ydoc_object_id"),
@@ -692,18 +695,43 @@ async def close_webspace_yws_connections(
     return closed
 
 
+async def close_webspace_webrtc_peers(
+    webspace_id: str,
+    *,
+    reason: str = "webspace_reload",
+) -> int:
+    try:
+        from adaos.services.webrtc.peer import close_peers_for_webspace
+    except Exception:
+        return 0
+    try:
+        return int(await close_peers_for_webspace(webspace_id, reason=reason) or 0)
+    except Exception:
+        _ylog.debug(
+            "failed to close webrtc peers for webspace=%s reason=%s",
+            webspace_id,
+            reason,
+            exc_info=True,
+        )
+        return 0
+
+
 async def reset_live_webspace_room(
     webspace_id: str,
     *,
     close_reason: str = "webspace_reload",
 ) -> dict[str, Any]:
     key = str(webspace_id or "").strip() or "default"
+    closed_webrtc_peers = await close_webspace_webrtc_peers(
+        key,
+        reason=close_reason,
+    )
     closed_connections = await close_webspace_yws_connections(
         key,
         code=1012,
         reason=close_reason,
     )
-    if closed_connections:
+    if closed_connections or closed_webrtc_peers:
         # Let the active serve() coroutines observe disconnect and run cleanup before
         # a new room is created for the same webspace.
         await asyncio.sleep(0.15)
@@ -715,6 +743,7 @@ async def reset_live_webspace_room(
         room=room,
         room_dropped=room is not None,
         closed_connections=closed_connections,
+        closed_webrtc_peers=closed_webrtc_peers,
     )
     _room_locks.pop(key, None)
     room_stopped = False
@@ -756,6 +785,7 @@ async def reset_live_webspace_room(
 
     return {
         "webspace_id": key,
+        "closed_webrtc_peers": closed_webrtc_peers,
         "closed_connections": closed_connections,
         "room_dropped": room is not None,
         "room_stopped": room_stopped,

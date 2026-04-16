@@ -71,6 +71,13 @@ class DataChannelYjsAdapter:
 
     # -- lifecycle ------------------------------------------------------------
 
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._recv_queue.put_nowait(b"")
+        except Exception:
+            return
+
     async def serve(self) -> None:
         """Start serving Yjs sync on this DataChannel."""
         await start_y_server()
