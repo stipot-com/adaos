@@ -180,6 +180,7 @@ adaos --help
 Using `uv`:
 
 ```powershell
+Set-ExecutionPolicy RemoteSigned -Scope Process
 powershell -ExecutionPolicy Bypass -File tools/bootstrap_uv.ps1
 .\.venv\Scripts\Activate.ps1
 adaos --help
