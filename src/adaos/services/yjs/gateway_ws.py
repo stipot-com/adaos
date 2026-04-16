@@ -30,9 +30,9 @@ except ImportError as exc:  # pragma: no cover - import guard for dev envs
 
 from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
+from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
 from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.scheduler import get_scheduler
-from adaos.services.yjs.observers import attach_room_observers
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
 
@@ -62,6 +62,8 @@ _ACTIVE_YWS_CONNECTIONS: dict[str, list[WebSocket]] = {}
 _ACTIVE_YWS_CLIENTS: dict[str, dict[str, int]] = {}
 _YWS_OPEN_HISTORY: deque[float] = deque(maxlen=512)
 _YWS_CLIENT_OPEN_HISTORY: dict[str, deque[float]] = {}
+_YROOM_LIFECYCLE_LOCK = threading.RLock()
+_YROOM_LIFECYCLE: dict[str, dict[str, Any]] = {}
 _WS_EVENT_SUBSCRIPTIONS_LOCK = threading.RLock()
 _WS_EVENT_SUBSCRIBERS: dict[int, dict[str, Any]] = {}
 _WS_EVENT_FORWARDER_INSTALLED = False
@@ -89,9 +91,224 @@ async def _stop_ystore_maybe_async(ystore: Any) -> None:
             return
 
 
-def _release_room_refs(room: Any) -> bool:
+def _seconds_ago(value: Any, now: float) -> float | None:
+    if not isinstance(value, (int, float)):
+        return None
+    stamp = float(value)
+    if stamp <= 0.0:
+        return None
+    return round(max(0.0, now - stamp), 3)
+
+
+def _memory_stream_statistics(stream: Any) -> dict[str, Any]:
+    stats = getattr(stream, "statistics", None)
+    if not callable(stats):
+        return {}
+    try:
+        snapshot = stats()
+    except Exception:
+        return {}
+    return {
+        "current_buffer_used": int(getattr(snapshot, "current_buffer_used", 0) or 0),
+        "max_buffer_size": int(getattr(snapshot, "max_buffer_size", 0) or 0),
+        "open_send_streams": int(getattr(snapshot, "open_send_streams", 0) or 0),
+        "open_receive_streams": int(getattr(snapshot, "open_receive_streams", 0) or 0),
+        "tasks_waiting_send": int(getattr(snapshot, "tasks_waiting_send", 0) or 0),
+        "tasks_waiting_receive": int(getattr(snapshot, "tasks_waiting_receive", 0) or 0),
+    }
+
+
+def _mark_room_created(webspace_id: str, room: Any) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    ydoc = getattr(room, "ydoc", None)
+    now = time.time()
+    with _YROOM_LIFECYCLE_LOCK:
+        entry = _YROOM_LIFECYCLE.setdefault(key, {})
+        entry["generation"] = int(entry.get("generation") or 0) + 1
+        entry["create_total"] = int(entry.get("create_total") or 0) + 1
+        entry["last_created_at"] = now
+        entry["last_room_object_id"] = id(room)
+        entry["last_ydoc_object_id"] = id(ydoc) if ydoc is not None else None
+
+
+def _mark_room_reset(
+    webspace_id: str,
+    *,
+    close_reason: str,
+    room: Any | None,
+    room_dropped: bool,
+    closed_connections: int,
+) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    ydoc = getattr(room, "ydoc", None) if room is not None else None
+    now = time.time()
+    with _YROOM_LIFECYCLE_LOCK:
+        entry = _YROOM_LIFECYCLE.setdefault(key, {})
+        entry["reset_total"] = int(entry.get("reset_total") or 0) + 1
+        entry["last_reset_at"] = now
+        entry["last_reset_reason"] = str(close_reason or "").strip() or "webspace_reload"
+        entry["last_reset_closed_connections"] = int(closed_connections or 0)
+        entry["last_reset_room_dropped"] = bool(room_dropped)
+        if room is not None:
+            entry["last_reset_room_object_id"] = id(room)
+        if ydoc is not None:
+            entry["last_reset_ydoc_object_id"] = id(ydoc)
+        if room_dropped:
+            entry["drop_total"] = int(entry.get("drop_total") or 0) + 1
+            entry["last_dropped_at"] = now
+
+
+def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict[str, Any]:
+    key = str(webspace_id or "").strip() or "default"
+    with _YROOM_LIFECYCLE_LOCK:
+        meta = dict(_YROOM_LIFECYCLE.get(key) or {})
+
+    ydoc = getattr(room, "ydoc", None) if room is not None else None
+    ystore = getattr(room, "ystore", None) if room is not None else None
+    clients = getattr(room, "clients", None) if room is not None else None
+    send_stream_stats = _memory_stream_statistics(getattr(room, "_update_send_stream", None) if room is not None else None)
+    recv_stream_stats = _memory_stream_statistics(getattr(room, "_update_receive_stream", None) if room is not None else None)
+    started_event = getattr(room, "_started", None) if room is not None else None
+    task_group = getattr(room, "_task_group", None) if room is not None else None
+
+    return {
+        "webspace_id": key,
+        "active": bool(room is not None),
+        "generation": int(meta.get("generation") or 0),
+        "create_total": int(meta.get("create_total") or 0),
+        "reset_total": int(meta.get("reset_total") or 0),
+        "drop_total": int(meta.get("drop_total") or 0),
+        "last_created_at": meta.get("last_created_at"),
+        "last_created_ago_s": _seconds_ago(meta.get("last_created_at"), now),
+        "last_reset_at": meta.get("last_reset_at"),
+        "last_reset_ago_s": _seconds_ago(meta.get("last_reset_at"), now),
+        "last_dropped_at": meta.get("last_dropped_at"),
+        "last_dropped_ago_s": _seconds_ago(meta.get("last_dropped_at"), now),
+        "last_reset_reason": str(meta.get("last_reset_reason") or "").strip() or None,
+        "last_reset_closed_connections": int(meta.get("last_reset_closed_connections") or 0),
+        "last_reset_room_dropped": bool(meta.get("last_reset_room_dropped")),
+        "room_object_id": id(room) if room is not None else meta.get("last_room_object_id"),
+        "ydoc_object_id": id(ydoc) if ydoc is not None else meta.get("last_ydoc_object_id"),
+        "client_total": len(clients) if isinstance(clients, list) else 0,
+        "ready": bool(getattr(room, "_ready", False)) if room is not None else False,
+        "started": bool(getattr(started_event, "is_set", lambda: False)()) if started_event is not None else False,
+        "task_group_active": bool(task_group is not None),
+        "ystore_attached": bool(ystore is not None),
+        "update_send_stream": send_stream_stats,
+        "update_receive_stream": recv_stream_stats,
+    }
+
+
+def _room_debug_snapshot_all(now: float) -> tuple[dict[str, Any], dict[str, int]]:
+    room_keys = set()
+    try:
+        room_keys.update(str(key) for key in getattr(y_server, "rooms", {}).keys())
+    except Exception:
+        pass
+    with _YROOM_LIFECYCLE_LOCK:
+        room_keys.update(str(key) for key in _YROOM_LIFECYCLE.keys())
+
+    room_details: dict[str, Any] = {}
+    aggregated = {
+        "active_room_total": 0,
+        "room_create_total": 0,
+        "room_reset_total": 0,
+        "room_drop_total": 0,
+        "room_generation_max": 0,
+        "update_stream_buffer_used_total": 0,
+        "update_stream_waiting_send_total": 0,
+        "update_stream_waiting_receive_total": 0,
+    }
+    for key in sorted(room_keys):
+        room = getattr(y_server, "rooms", {}).get(key)
+        snapshot = _room_debug_snapshot(key, room, now)
+        room_details[key] = snapshot
+        aggregated["active_room_total"] += 1 if snapshot.get("active") else 0
+        aggregated["room_create_total"] += int(snapshot.get("create_total") or 0)
+        aggregated["room_reset_total"] += int(snapshot.get("reset_total") or 0)
+        aggregated["room_drop_total"] += int(snapshot.get("drop_total") or 0)
+        aggregated["room_generation_max"] = max(
+            aggregated["room_generation_max"],
+            int(snapshot.get("generation") or 0),
+        )
+        send_stream = snapshot.get("update_send_stream") if isinstance(snapshot.get("update_send_stream"), dict) else {}
+        aggregated["update_stream_buffer_used_total"] += int(send_stream.get("current_buffer_used") or 0)
+        aggregated["update_stream_waiting_send_total"] += int(send_stream.get("tasks_waiting_send") or 0)
+        aggregated["update_stream_waiting_receive_total"] += int(send_stream.get("tasks_waiting_receive") or 0)
+    return room_details, aggregated
+
+
+async def _close_room_stream_maybe(stream: Any) -> bool:
+    if stream is None:
+        return False
+    closed = False
+    close = getattr(stream, "close", None)
+    if callable(close):
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+            closed = True
+        except Exception:
+            closed = False
+    aclose = getattr(stream, "aclose", None)
+    if callable(aclose):
+        try:
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
+            closed = True
+        except Exception:
+            pass
+    return closed
+
+
+async def _release_room_refs(webspace_id: str, room: Any) -> bool:
     released = False
-    for attr in ("ydoc", "ystore", "_loop", "_thread_id", "ready", "log"):
+    ydoc = getattr(room, "ydoc", None)
+    if ydoc is not None:
+        try:
+            forget_room_observers(webspace_id, ydoc)
+        except Exception:
+            pass
+        try:
+            from adaos.services.weather.observer import forget_weather_room_observer
+
+            forget_weather_room_observer(webspace_id, id(ydoc))
+        except Exception:
+            pass
+
+    for attr in ("_update_send_stream", "_update_receive_stream"):
+        try:
+            stream = getattr(room, attr, None)
+        except Exception:
+            stream = None
+        try:
+            released = await _close_room_stream_maybe(stream) or released
+        except Exception:
+            pass
+
+    clients = getattr(room, "clients", None)
+    if isinstance(clients, list):
+        try:
+            clients.clear()
+            released = True
+        except Exception:
+            pass
+
+    for attr in (
+        "awareness",
+        "_on_message",
+        "_started",
+        "_exit_stack",
+        "_task_group",
+        "ydoc",
+        "ystore",
+        "_loop",
+        "_thread_id",
+        "ready",
+        "log",
+    ):
         if not hasattr(room, attr):
             continue
         try:
@@ -492,6 +709,13 @@ async def reset_live_webspace_room(
         await asyncio.sleep(0.15)
 
     room = y_server.rooms.pop(key, None)
+    _mark_room_reset(
+        key,
+        close_reason=close_reason,
+        room=room,
+        room_dropped=room is not None,
+        closed_connections=closed_connections,
+    )
     _room_locks.pop(key, None)
     room_stopped = False
     ystore_stopped = False
@@ -523,7 +747,7 @@ async def reset_live_webspace_room(
                     runtime_compaction_requested = bool(await result) if inspect.isawaitable(result) else bool(result)
                 except Exception:
                     runtime_compaction_requested = False
-        room_refs_released = _release_room_refs(room)
+        room_refs_released = await _release_room_refs(key, room)
         if room_refs_released:
             try:
                 gc_collected = int(gc.collect() or 0)
@@ -660,11 +884,15 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
     yws_state = state.get("yws") if isinstance(state.get("yws"), dict) else None
     if yws_state is not None:
         yws_state.update(_yws_storm_snapshot(now))
+    room_details, room_aggregates = _room_debug_snapshot_all(now)
+    if yws_state is not None:
+        yws_state.update(room_aggregates)
     return {
         "transports": state,
         "servers": {
             "yws": _y_server_runtime_snapshot(),
         },
+        "rooms": room_details,
         "ownership": _gateway_transport_ownership_snapshot(),
         "updated_at": now,
     }
@@ -750,6 +978,7 @@ class WorkspaceWebsocketServer(WebsocketServer):
                     except BaseException:
                         _ylog.warning("apply_updates failed for webspace=%s", webspace_id, exc_info=True)
                     self.rooms[name] = room
+                    _mark_room_created(webspace_id, room)
         room = self.rooms[name]
         room._thread_id = getattr(room, "_thread_id", threading.get_ident())
         room._loop = getattr(room, "_loop", asyncio.get_running_loop())

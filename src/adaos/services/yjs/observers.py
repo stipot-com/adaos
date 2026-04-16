@@ -71,3 +71,20 @@ def attach_room_observers(webspace_id: str, ydoc: Y.YDoc) -> None:
                 exc_info=True,
             )
 
+
+def forget_room_observers(webspace_id: str, ydoc: Y.YDoc | None = None) -> None:
+    """
+    Drop observer bookkeeping for a webspace/YDoc pair during room teardown.
+
+    This does not unregister low-level y_py callbacks (there is no public API
+    for that), but it prevents our own attachment registries from retaining
+    stale room identities across repeated recreate/reset cycles.
+    """
+    key = str(webspace_id or "").strip() or "default"
+    active_ydoc_id = _ACTIVE_YDOC_IDS.get(key)
+    target_ydoc_id = id(ydoc) if ydoc is not None else active_ydoc_id
+    if target_ydoc_id is not None:
+        _ATTACHED_OBSERVERS.pop((key, target_ydoc_id), None)
+    if active_ydoc_id is not None and target_ydoc_id == active_ydoc_id:
+        _ACTIVE_YDOC_IDS.pop(key, None)
+

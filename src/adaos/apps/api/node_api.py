@@ -225,6 +225,13 @@ def _runtime_debug_slice(runtime: Mapping[str, Any] | None) -> dict[str, Any]:
             "recent_open_10s": int(transport.get("recent_open_10s") or 0),
             "storm_detected": bool(transport.get("storm_detected")),
             "room_total": int(transport.get("room_total") or 0),
+            "active_room_total": int(transport.get("active_room_total") or 0),
+            "room_reset_total": int(transport.get("room_reset_total") or 0),
+            "room_drop_total": int(transport.get("room_drop_total") or 0),
+            "room_generation_max": int(transport.get("room_generation_max") or 0),
+            "update_stream_buffer_used_total": int(transport.get("update_stream_buffer_used_total") or 0),
+            "update_stream_waiting_send_total": int(transport.get("update_stream_waiting_send_total") or 0),
+            "update_stream_waiting_receive_total": int(transport.get("update_stream_waiting_receive_total") or 0),
             "server_ready": bool(transport.get("server_ready")),
             "server_error": str(transport.get("server_error") or "").strip() or None,
         },
@@ -234,6 +241,9 @@ def _runtime_debug_slice(runtime: Mapping[str, Any] | None) -> dict[str, Any]:
             "update_log_entries": int(selected.get("update_log_entries") or 0),
             "replay_window_entries": int(selected.get("replay_window_entries") or 0),
             "replay_window_bytes": int(selected.get("replay_window_bytes") or 0),
+            "gateway_room": dict(selected.get("gateway_room") or {})
+            if isinstance(selected.get("gateway_room"), Mapping)
+            else {},
         },
     }
 

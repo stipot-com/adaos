@@ -24,6 +24,9 @@ if existing_ypy_websocket is None or not hasattr(existing_ypy_websocket, "__path
         async def wait(self) -> None:
             return None
 
+        def is_set(self) -> bool:
+            return False
+
     class _StubWebsocketServer:
         def __init__(self, *args, **kwargs) -> None:
             self.rooms = {}
@@ -284,6 +287,69 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     assert result["room_refs_released"] is True
     assert result["gc_collected"] == 7
     assert compaction_reasons == ["room_reset"]
+
+
+def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:
+    class _FakeStatsStream:
+        def __init__(self, *, buffer_used: int, waiting_send: int, waiting_receive: int) -> None:
+            self._buffer_used = buffer_used
+            self._waiting_send = waiting_send
+            self._waiting_receive = waiting_receive
+
+        def statistics(self):
+            return SimpleNamespace(
+                current_buffer_used=self._buffer_used,
+                max_buffer_size=65536,
+                open_send_streams=1,
+                open_receive_streams=1,
+                tasks_waiting_send=self._waiting_send,
+                tasks_waiting_receive=self._waiting_receive,
+            )
+
+    class _Started:
+        def is_set(self) -> bool:
+            return True
+
+    class _FakeRoom:
+        def __init__(self) -> None:
+            self.ydoc = object()
+            self.ystore = object()
+            self.clients = [object(), object()]
+            self._ready = True
+            self._started = _Started()
+            self._task_group = object()
+            self._update_send_stream = _FakeStatsStream(buffer_used=5, waiting_send=2, waiting_receive=1)
+            self._update_receive_stream = _FakeStatsStream(buffer_used=5, waiting_send=2, waiting_receive=1)
+
+    key = "gateway-room-debug"
+    room = _FakeRoom()
+    gateway_module.y_server.rooms[key] = room
+    gateway_module._YROOM_LIFECYCLE.clear()
+    gateway_module._mark_room_created(key, room)
+    gateway_module._mark_room_reset(
+        key,
+        close_reason="manual_test",
+        room=room,
+        room_dropped=False,
+        closed_connections=1,
+    )
+
+    snapshot = gateway_module.gateway_transport_snapshot()
+    room_info = snapshot["rooms"][key]
+    transport = snapshot["transports"]["yws"]
+
+    assert room_info["active"] is True
+    assert room_info["generation"] == 1
+    assert room_info["client_total"] == 2
+    assert room_info["update_send_stream"]["current_buffer_used"] == 5
+    assert room_info["update_send_stream"]["tasks_waiting_send"] == 2
+    assert room_info["last_reset_reason"] == "manual_test"
+    assert transport["active_room_total"] >= 1
+    assert transport["room_generation_max"] >= 1
+    assert transport["update_stream_buffer_used_total"] >= 5
+
+    gateway_module.y_server.rooms.pop(key, None)
+    gateway_module._YROOM_LIFECYCLE.clear()
 
 
 def test_process_events_command_publishes_go_home(monkeypatch) -> None:

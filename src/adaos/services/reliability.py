@@ -4346,6 +4346,7 @@ def yjs_sync_runtime_snapshot(
     yws_ownership = ownership.get("yws") if isinstance(ownership.get("yws"), dict) else {}
     servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
     yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
+    gateway_rooms = gateway.get("rooms") if isinstance(gateway.get("rooms"), dict) else {}
 
     webspaces = store_runtime.get("webspaces") if isinstance(store_runtime.get("webspaces"), dict) else {}
     webspace_total = int(store_runtime.get("webspace_total") or len(webspaces))
@@ -4440,11 +4441,24 @@ def yjs_sync_runtime_snapshot(
             "room_total": int(yws_server.get("room_total") or 0),
             "server_ready": bool(yws_server.get("ready")),
             "server_error": yws_server.get("error"),
+            "active_room_total": int(yws_transport.get("active_room_total") or 0),
+            "room_create_total": int(yws_transport.get("room_create_total") or 0),
+            "room_reset_total": int(yws_transport.get("room_reset_total") or 0),
+            "room_drop_total": int(yws_transport.get("room_drop_total") or 0),
+            "room_generation_max": int(yws_transport.get("room_generation_max") or 0),
+            "update_stream_buffer_used_total": int(yws_transport.get("update_stream_buffer_used_total") or 0),
+            "update_stream_waiting_send_total": int(yws_transport.get("update_stream_waiting_send_total") or 0),
+            "update_stream_waiting_receive_total": int(yws_transport.get("update_stream_waiting_receive_total") or 0),
         },
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
         "recovery_guidance": recovery_guidance,
-        "selected_webspace": selected_webspace,
+        "selected_webspace": {
+            **selected_webspace,
+            "gateway_room": dict(gateway_rooms.get(selected_webspace_id) or {})
+            if isinstance(gateway_rooms.get(selected_webspace_id), dict)
+            else {},
+        },
         "webspace_guidance": webspace_guidance,
         "webspace_total": webspace_total,
         "active_webspace_total": active_webspace_total,

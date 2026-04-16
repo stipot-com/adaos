@@ -140,3 +140,13 @@ except Exception:
 
 __all__ = ["_room_observer"]
 
+
+def forget_weather_room_observer(webspace_id: str, ydoc_id: int | None = None) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    attached = _YDOC_OBSERVERS.get(key)
+    if attached is not None:
+        current_ydoc_id, _sub_id = attached
+        if ydoc_id is None or current_ydoc_id == int(ydoc_id):
+            _YDOC_OBSERVERS.pop(key, None)
+    _LAST_DOC_CHECK_AT.pop(key, None)
+
