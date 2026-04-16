@@ -262,6 +262,9 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     async def _fake_close_webrtc(_webspace_id: str, *, reason: str = "webspace_reload") -> int:  # noqa: ARG001
         return 2
 
+    async def _fake_route_reset(*, reason: str = "route_reset", notify_browser: bool = True) -> dict[str, object]:  # noqa: ARG001
+        return {"ok": True, "closed_tunnels": 1, "notify_browser": notify_browser, "reason": reason}
+
     room = _FakeRoom()
     compaction_reasons: list[str] = []
 
@@ -275,6 +278,7 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
 
     monkeypatch.setattr(gateway_module, "close_webspace_yws_connections", _fake_close)
     monkeypatch.setattr(gateway_module, "close_webspace_webrtc_peers", _fake_close_webrtc)
+    monkeypatch.setattr(gateway_module, "reset_hub_route_runtime", _fake_route_reset)
     monkeypatch.setattr(gateway_module.gc, "collect", lambda: 7)
 
     result = asyncio.run(gateway_module.reset_live_webspace_room("gateway-room-reset"))
@@ -288,6 +292,7 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     assert result["room_stopped"] is True
     assert result["ystore_stopped"] is True
     assert result["closed_webrtc_peers"] == 2
+    assert result["route_reset"]["closed_tunnels"] == 1
     assert result["runtime_compaction_requested"] is True
     assert result["room_refs_released"] is True
     assert result["gc_collected"] == 7

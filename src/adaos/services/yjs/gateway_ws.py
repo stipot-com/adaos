@@ -716,12 +716,50 @@ async def close_webspace_webrtc_peers(
         return 0
 
 
+async def reset_hub_route_runtime(
+    *,
+    reason: str = "webspace_reload",
+    notify_browser: bool = True,
+) -> dict[str, Any]:
+    try:
+        from adaos.services.bootstrap import request_hub_root_route_reset
+    except Exception:
+        return {
+            "ok": False,
+            "reason": str(reason or "").strip() or "route_reset",
+            "notify_browser": bool(notify_browser),
+            "skipped": "route_reset_unavailable",
+        }
+    try:
+        result = await request_hub_root_route_reset(
+            reason=str(reason or "").strip() or "route_reset",
+            notify_browser=bool(notify_browser),
+        )
+    except Exception as exc:
+        _ylog.debug(
+            "failed to reset hub route runtime reason=%s",
+            reason,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "reason": str(reason or "").strip() or "route_reset",
+            "notify_browser": bool(notify_browser),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return dict(result) if isinstance(result, dict) else {"ok": True, "result": result}
+
+
 async def reset_live_webspace_room(
     webspace_id: str,
     *,
     close_reason: str = "webspace_reload",
 ) -> dict[str, Any]:
     key = str(webspace_id or "").strip() or "default"
+    route_reset = await reset_hub_route_runtime(
+        reason=f"yjs:{close_reason}",
+        notify_browser=True,
+    )
     closed_webrtc_peers = await close_webspace_webrtc_peers(
         key,
         reason=close_reason,
@@ -731,7 +769,7 @@ async def reset_live_webspace_room(
         code=1012,
         reason=close_reason,
     )
-    if closed_connections or closed_webrtc_peers:
+    if closed_connections or closed_webrtc_peers or bool(route_reset.get("closed_tunnels")):
         # Let the active serve() coroutines observe disconnect and run cleanup before
         # a new room is created for the same webspace.
         await asyncio.sleep(0.15)
@@ -785,6 +823,7 @@ async def reset_live_webspace_room(
 
     return {
         "webspace_id": key,
+        "route_reset": route_reset,
         "closed_webrtc_peers": closed_webrtc_peers,
         "closed_connections": closed_connections,
         "room_dropped": room is not None,

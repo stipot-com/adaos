@@ -640,6 +640,17 @@ class BootstrapService:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
+    async def request_hub_root_route_reset(
+        self,
+        *,
+        reason: str,
+        notify_browser: bool = True,
+    ) -> dict[str, Any]:
+        return await self._reset_hub_root_route_runtime(
+            reason=str(reason or "").strip() or "route_reset",
+            notify_browser=bool(notify_browser),
+        )
+
     def _prepare_environment(self) -> None:
         """
         Гарантированная подготовка окружения:
@@ -7093,6 +7104,13 @@ def is_ready() -> bool:
 
 async def request_hub_root_reconnect(*, transport: str | None = None, url_override: str | None = None) -> dict[str, Any]:
     return await _svc().request_hub_root_reconnect(transport=transport, url_override=url_override)
+
+
+async def request_hub_root_route_reset(*, reason: str, notify_browser: bool = True) -> dict[str, Any]:
+    return await _svc().request_hub_root_route_reset(
+        reason=str(reason or "").strip() or "route_reset",
+        notify_browser=bool(notify_browser),
+    )
 
 
 async def run_boot_sequence(app: Any) -> None:
