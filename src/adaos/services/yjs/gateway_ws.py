@@ -549,6 +549,8 @@ def _y_server_runtime_snapshot() -> dict[str, Any]:
     task_running = bool(task is not None and not task.done())
     task_done = bool(task is not None and task.done())
     task_cancelled = bool(task is not None and task.cancelled())
+    rooms = getattr(y_server, "rooms", None)
+    room_total = len(rooms) if isinstance(rooms, dict) else 0
     error: str | None = None
     if task_done and not task_cancelled:
         try:
@@ -565,6 +567,7 @@ def _y_server_runtime_snapshot() -> dict[str, Any]:
         "task_running": task_running,
         "task_done": task_done,
         "task_cancelled": task_cancelled,
+        "room_total": room_total,
         "ready": ready,
         "error": error,
     }

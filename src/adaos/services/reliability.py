@@ -4354,16 +4354,24 @@ def yjs_sync_runtime_snapshot(
     reasons: list[str] = []
     max_fill_ratio = 0.0
     compacted_total = 0
+    compaction_eligible_total = 0
     replay_window_total = 0
+    replay_window_byte_total = 0
     update_log_total = 0
+    backup_fast_path_total = 0
+    backup_skipped_total = 0
     for item in webspaces.values():
         if not isinstance(item, dict):
             continue
         update_entries = int(item.get("update_log_entries") or 0)
         max_entries = int(item.get("max_update_log_entries") or 0)
         replay_window_total += int(item.get("replay_window_entries") or 0)
+        replay_window_byte_total += int(item.get("replay_window_bytes") or 0)
         update_log_total += update_entries
         compacted_total += 1 if int(item.get("compact_total") or 0) > 0 else 0
+        compaction_eligible_total += 1 if bool(item.get("runtime_compaction_eligible")) else 0
+        backup_fast_path_total += int(item.get("backup_fast_path_total") or 0)
+        backup_skipped_total += int(item.get("backup_skipped_total") or 0)
         if max_entries > 0:
             max_fill_ratio = max(max_fill_ratio, float(update_entries) / float(max_entries))
     if webspace_total <= 0:
@@ -4374,6 +4382,10 @@ def yjs_sync_runtime_snapshot(
         reasons.append("bounded_replay_window_near_limit")
     else:
         reasons.append("bounded_sync_runtime_observed")
+    if bool(yws_transport.get("storm_detected")):
+        if assessment_state in {"nominal", "idle"}:
+            assessment_state = "pressure"
+        reasons.append("browser_yjs_reconnect_storm")
     if yws_server and not bool(yws_server.get("ready")):
         if assessment_state == "nominal":
             assessment_state = "degraded"
@@ -4410,9 +4422,11 @@ def yjs_sync_runtime_snapshot(
         "transport": {
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
+            "last_close_ago_s": yws_transport.get("last_close_ago_s"),
             "recent_open_10s": int(yws_transport.get("recent_open_10s") or 0),
             "recent_open_60s": int(yws_transport.get("recent_open_60s") or 0),
             "storm_detected": bool(yws_transport.get("storm_detected")),
+            "hot_client_total": len(list(yws_transport.get("hot_clients") or [])),
             "hot_clients": list(yws_transport.get("hot_clients") or []),
             "owner": yws_ownership.get("current_owner") or "runtime",
             "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
@@ -4423,6 +4437,7 @@ def yjs_sync_runtime_snapshot(
             "server_requested": bool(yws_server.get("requested")),
             "server_started_event": bool(yws_server.get("started_event")),
             "server_task_running": bool(yws_server.get("task_running")),
+            "room_total": int(yws_server.get("room_total") or 0),
             "server_ready": bool(yws_server.get("ready")),
             "server_error": yws_server.get("error"),
         },
@@ -4434,8 +4449,12 @@ def yjs_sync_runtime_snapshot(
         "webspace_total": webspace_total,
         "active_webspace_total": active_webspace_total,
         "compacted_webspace_total": compacted_total,
+        "compaction_eligible_webspace_total": compaction_eligible_total,
         "update_log_total": update_log_total,
         "replay_window_total": replay_window_total,
+        "replay_window_byte_total": replay_window_byte_total,
+        "backup_fast_path_total": backup_fast_path_total,
+        "backup_skipped_total": backup_skipped_total,
         "webspaces": webspaces,
     }
 

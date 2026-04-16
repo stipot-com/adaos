@@ -8,6 +8,7 @@ import pytest
 import y_py as Y
 
 from adaos.services.yjs import doc as ydoc_module
+from adaos.services.yjs import store as ystore_module
 from adaos.services.yjs.doc import async_get_ydoc, async_read_ydoc, get_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace, reset_ystore_for_webspace
 
@@ -141,6 +142,70 @@ async def test_ystore_backup_to_disk_compacts_runtime_log(monkeypatch) -> None:
             data_map = ydoc.get_map("data")
             for idx in range(3):
                 assert data_map.get(f"item_{idx}") == idx
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_ystore_backup_to_disk_reuses_runtime_base_snapshot_without_reencode(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", "0")
+    webspace_id = _webspace_id("backup-fast-path")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        for idx in range(3):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"item_{idx}", idx)
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+        path = ystore_module.ystore_path_for_webspace(webspace_id)
+        assert path.exists() is True
+        path.unlink()
+
+        monkeypatch.setattr(
+            ystore_module,
+            "_encode_snapshot_update",
+            lambda updates: (_ for _ in ()).throw(AssertionError("encode should not run for base snapshot fast-path")),
+        )
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+
+        snapshot = store.runtime_snapshot()
+        assert snapshot["snapshot_file_exists"] is True
+        assert snapshot["backup_fast_path_total"] >= 1
+        assert snapshot["last_backup_mode"] == "runtime_base_snapshot"
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_ystore_backup_to_disk_skips_when_persisted_generation_is_current(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_YSTORE_AUTOBACKUP_AFTER_COMPACT", "0")
+    webspace_id = _webspace_id("backup-skip")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        for idx in range(3):
+            async with async_get_ydoc(webspace_id) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    ydoc.get_map("data").set(txn, f"item_{idx}", idx)
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+
+        monkeypatch.setattr(
+            ystore_module,
+            "_encode_snapshot_update",
+            lambda updates: (_ for _ in ()).throw(AssertionError("encode should not run when persisted generation is current")),
+        )
+        monkeypatch.setattr(
+            ystore_module,
+            "_persist_snapshot",
+            lambda path, snapshot: (_ for _ in ()).throw(AssertionError("persist should not run when snapshot is already current")),
+        )
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+
+        snapshot = store.runtime_snapshot()
+        assert snapshot["backup_skipped_total"] >= 1
+        assert snapshot["persisted_up_to_date"] is True
+        assert snapshot["last_backup_mode"] == "runtime_base_snapshot:skipped"
     finally:
         reset_ystore_for_webspace(webspace_id)
 

@@ -616,10 +616,14 @@ Use this checklist as the authoritative progress tracker for the migration.
   Backup flows now also collapse the in-memory log to a single base snapshot,
   pressure compaction can trigger a debounced auto-backup so later cold-room
   opens have a shorter replay path, and bootstrap compatibility fallback now
-  prefers incremental diff writes over snapshot rewrites. Room reset/reload now
-  also releases dropped YRoom references aggressively and can request an idle
-  runtime compaction pass so the old replay tail is collapsed after the room is
-  torn down. The remaining gap is still the cold-room replay/open cost
+  prefers incremental diff writes over snapshot rewrites. Backup/restore now
+  also reuse an already-compacted runtime base snapshot when possible and skip
+  redundant backup writes when the persisted generation is already current.
+  Room reset/reload now also releases dropped YRoom references aggressively and
+  can request an idle runtime compaction pass so the old replay tail is
+  collapsed after the room is torn down. Reliability/CLI snapshots now surface
+  reconnect-storm pressure, room counts, and replay-byte pressure more
+  explicitly. The remaining gap is still the cold-room replay/open cost
   (`apply_updates`) plus deeper reload/reconnect memory pressure inside the
   live room itself under repeated room rebuilds.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is

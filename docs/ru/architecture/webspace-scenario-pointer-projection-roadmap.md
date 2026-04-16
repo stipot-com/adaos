@@ -356,7 +356,7 @@ rebuild latency на реальных сценариях.
 - [x] Добавить per-stage timing вокруг switch, scenario load, projection
   refresh, resolve и apply.
 - [x] Добавить `skip-if-unchanged` для больших derived writes.
-- [ ] Добавить cache keys для scenario content, skill UI contributions и
+- [x] Добавить cache keys для scenario content, skill UI contributions и
   overlay snapshot там, где это полезно.
 - [ ] Добавить diff-apply для top-level resolved branches там, где реализация
   остаётся простой и безопасной.
@@ -364,7 +364,7 @@ rebuild latency на реальных сценариях.
   `dict` / `list`, поэтому честный safe diff-apply потребует смены формы
   хранения (или явных nested Y types), а не косметической обёртки вокруг
   текущего branch-replace path.
-- [ ] Мерить тяжёлые сценарии вроде `infrascope` до и после каждого среза.
+- [x] Мерить тяжёлые сценарии вроде `infrascope` до и после каждого среза.
 - [x] Добавить метрики `time_to_first_structure`,
   `time_to_interactive_focus` и `time_to_full_hydration`.
 - [x] Коалесить stale background hydration work, если его уже supersede'нул
@@ -374,7 +374,13 @@ rebuild latency на реальных сценариях.
 предпочитает incremental diff write вместо snapshot rewrite, а room
 reset/reload агрессивнее освобождает ссылки на сброшенную YRoom и может
 запросить idle runtime compaction, чтобы схлопнуть replay tail уже после
-остановки комнаты.
+остановки комнаты. Backup/restore теперь также переиспользует уже
+схлопнутый runtime base snapshot там, где это возможно, и пропускает
+лишнюю backup-запись, если persisted generation уже актуален. В
+reliability/CLI явнее вынесены reconnect-storm pressure, число live rooms и
+replay-byte pressure. Основной незакрытый gap теперь сместился в
+cold-room replay/open cost (`apply_updates`) и deeper reload/reconnect
+memory pressure внутри live room при повторных rebuild/reload циклах.
 
 ### 5.5. ABI и renderer readiness contract
 

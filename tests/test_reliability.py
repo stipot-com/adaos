@@ -701,7 +701,11 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
                         "update_log_entries": 3,
                         "max_update_log_entries": 128,
                         "replay_window_entries": 2,
+                        "replay_window_bytes": 512,
                         "compact_total": 0,
+                        "runtime_compaction_eligible": True,
+                        "backup_fast_path_total": 1,
+                        "backup_skipped_total": 0,
                     }
                 },
             }
@@ -715,13 +719,14 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
                 "transports": {
                     "yws": {
                         "active_connections": 2,
+                        "last_close_ago_s": 4.0,
                         "recent_open_10s": 1,
                         "recent_open_60s": 2,
                         "storm_detected": False,
                         "hot_clients": [],
                     }
                 },
-                "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True}},
+                "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True, "room_total": 1}},
                 "ownership": {
                     "yws": {
                         "current_owner": "runtime",
@@ -757,6 +762,74 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert transport["lifecycle_manager"] == "supervisor"
     assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
     assert transport["handoff_ready"] is False
+    assert transport["room_total"] == 1
+    assert snapshot["compaction_eligible_webspace_total"] == 1
+    assert snapshot["replay_window_byte_total"] == 512
+    assert snapshot["backup_fast_path_total"] == 1
+
+
+def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.store",
+        SimpleNamespace(
+            ystore_runtime_snapshot=lambda **kwargs: {
+                "webspace_total": 1,
+                "active_webspace_total": 1,
+                "webspaces": {
+                    "default": {
+                        "log_mode": "snapshot_plus_diff",
+                        "update_log_entries": 1,
+                        "max_update_log_entries": 128,
+                        "replay_window_entries": 0,
+                        "replay_window_bytes": 0,
+                        "compact_total": 1,
+                        "runtime_compaction_eligible": False,
+                        "backup_fast_path_total": 0,
+                        "backup_skipped_total": 0,
+                    }
+                },
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.gateway_ws",
+        SimpleNamespace(
+            gateway_transport_snapshot=lambda: {
+                "transports": {
+                    "yws": {
+                        "active_connections": 1,
+                        "recent_open_10s": 9,
+                        "recent_open_60s": 12,
+                        "storm_detected": True,
+                        "hot_clients": [{"dev_id": "dev-1", "open_15s": 9}],
+                    }
+                },
+                "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True, "room_total": 1}},
+                "ownership": {"yws": {}},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_selected_webspace_snapshot",
+        lambda webspace_id: {"webspace_id": webspace_id or "default"},
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_recovery_policy",
+        lambda selected_entry, selected_webspace: ({}, {}, {}),
+    )
+    monkeypatch.setattr(
+        "adaos.services.reliability._build_yjs_webspace_guidance",
+        lambda selected_webspace, action_overrides: {},
+    )
+
+    snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
+
+    assert snapshot["assessment"]["state"] == "pressure"
+    assert "browser_yjs_reconnect_storm" in str(snapshot["assessment"]["reason"] or "")
+    assert snapshot["transport"]["storm_detected"] is True
+    assert snapshot["transport"]["hot_client_total"] == 1
 
 
 def test_media_plane_runtime_snapshot_exposes_live_update_guard(monkeypatch) -> None:
@@ -1039,8 +1112,10 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                         "webspace_total": 1,
                         "active_webspace_total": 1,
                         "compacted_webspace_total": 0,
+                        "compaction_eligible_webspace_total": 1,
                         "update_log_total": 3,
                         "replay_window_total": 2,
+                        "replay_window_byte_total": 512,
                         "webspaces": {
                             "default": {
                                 "log_mode": "snapshot_plus_diff",
@@ -1050,6 +1125,8 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                         },
                         "transport": {
                             "active_yws_connections": 2,
+                            "room_total": 1,
+                            "storm_detected": False,
                             "owner": "runtime",
                             "planned_owner": "sidecar",
                             "recent_open_10s": 1,
@@ -1098,6 +1175,9 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "yws=runtime->sidecar:not_implemented" in result.output
     assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "sidecar.route_tunnel.yws_blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
+    assert "eligible=1" in result.output
+    assert "replay=2/512B" in result.output
+    assert "rooms=1 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
     assert "media.update_guard: live=yes" in result.output
     assert "member=defer hub=preserve_sidecar" in result.output
