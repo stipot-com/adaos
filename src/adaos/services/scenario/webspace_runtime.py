@@ -386,6 +386,40 @@ def _clone_json_like(value: Any) -> Any:
         return value
 
 
+def _json_like_equal(current: Any, next_value: Any) -> bool:
+    if current is next_value:
+        return True
+
+    current_items = _mapping_items(current)
+    next_items = _mapping_items(next_value)
+    if current_items is not None or next_items is not None:
+        if current_items is None or next_items is None:
+            return False
+        if len(current_items) != len(next_items):
+            return False
+        next_lookup = {key: item for key, item in next_items}
+        if len(next_lookup) != len(next_items):
+            return False
+        for key, current_item in current_items:
+            if key not in next_lookup:
+                return False
+            if not _json_like_equal(current_item, next_lookup[key]):
+                return False
+        return True
+
+    if isinstance(current, (list, tuple)) or isinstance(next_value, (list, tuple)):
+        if not isinstance(current, (list, tuple)) or not isinstance(next_value, (list, tuple)):
+            return False
+        if len(current) != len(next_value):
+            return False
+        return all(_json_like_equal(left, right) for left, right in zip(current, next_value))
+
+    try:
+        return current == next_value
+    except Exception:
+        return _clone_json_like(current) == _clone_json_like(next_value)
+
+
 def _is_y_map_value(value: Any) -> bool:
     y_map_type = getattr(Y, "YMap", None)
     return bool(y_map_type) and isinstance(value, y_map_type)
@@ -420,13 +454,13 @@ def _reconcile_attached_y_map(node: Any, txn: Any, next_value: Any) -> bool:
     if next_items is None:
         return False
     changed = False
-    next_lookup = {key: item for key, item in next_items}
+    next_keys = {key for key, _item in next_items}
     try:
-        current_keys = [str(key) for key in list(node.keys()) if str(key)]
+        current_keys = tuple(str(key) for key in node.keys() if str(key))
     except Exception:
-        current_keys = []
+        current_keys = ()
     for current_key in current_keys:
-        if current_key in next_lookup:
+        if current_key in next_keys:
             continue
         try:
             node.pop(txn, current_key)
@@ -444,21 +478,19 @@ def _reconcile_attached_y_map(node: Any, txn: Any, next_value: Any) -> bool:
                 if _reconcile_attached_y_map(current_child, txn, raw_child):
                     changed = True
                 continue
-            normalized_child = _clone_json_like(raw_child)
-            if _clone_json_like(current_child) == normalized_child:
+            if _json_like_equal(current_child, raw_child):
                 continue
             attached_child = _attach_empty_y_map(node, txn, child_key)
             if attached_child is None:
-                node.set(txn, child_key, normalized_child)
+                node.set(txn, child_key, _clone_json_like(raw_child))
                 changed = True
                 continue
             changed = True
             _reconcile_attached_y_map(attached_child, txn, raw_child)
             continue
-        normalized_child = _clone_json_like(raw_child)
-        if _clone_json_like(current_child) == normalized_child:
+        if _json_like_equal(current_child, raw_child):
             continue
-        node.set(txn, child_key, normalized_child)
+        node.set(txn, child_key, _clone_json_like(raw_child))
         changed = True
     return changed
 
@@ -619,21 +651,19 @@ def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> tup
     except Exception:
         current = None
     if next_items is not None:
-        normalized = _clone_json_like(value)
         if _is_y_map_value(current):
             return _reconcile_attached_y_map(current, txn, value), "diff"
-        if _clone_json_like(current) == normalized:
+        if _json_like_equal(current, value):
             return False, "diff"
         attached = _attach_empty_y_map(y_map, txn, key)
         if attached is not None:
             _reconcile_attached_y_map(attached, txn, value)
             return True, "diff"
-        y_map.set(txn, key, normalized)
+        y_map.set(txn, key, _clone_json_like(value))
         return True, "replace"
-    next_value = _clone_json_like(value)
-    if _clone_json_like(current) == next_value:
+    if _json_like_equal(current, value):
         return False, "replace"
-    y_map.set(txn, key, next_value)
+    y_map.set(txn, key, _clone_json_like(value))
     return True, "replace"
 
 

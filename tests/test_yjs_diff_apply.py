@@ -5,6 +5,23 @@ import y_py as Y
 from adaos.services.scenario import webspace_runtime as webspace_runtime_module
 
 
+def _collect_container_ids(value, out: set[int]) -> None:
+    if isinstance(value, dict):
+        out.add(id(value))
+        for item in value.values():
+            _collect_container_ids(item, out)
+        return
+    if isinstance(value, list):
+        out.add(id(value))
+        for item in value:
+            _collect_container_ids(item, out)
+        return
+    if isinstance(value, tuple):
+        out.add(id(value))
+        for item in value:
+            _collect_container_ids(item, out)
+
+
 def test_set_map_value_if_changed_promotes_dict_branch_to_attached_y_map() -> None:
     ydoc = Y.YDoc()
     with ydoc.begin_transaction() as txn:
@@ -91,3 +108,53 @@ def test_set_map_value_if_changed_diff_deletes_missing_nested_keys() -> None:
     current = routing.get("current")
     assert isinstance(current, Y.YMap)
     assert current.get("path") == "/settings"
+
+
+def test_set_map_value_if_changed_unchanged_diff_avoids_cloning_current_containers(monkeypatch) -> None:
+    ydoc = Y.YDoc()
+    payload = {
+        "pageSchema": {
+            "id": "desktop",
+            "widgets": [
+                {"id": "weather"},
+                {"id": "infrascope"},
+            ],
+        },
+        "topbar": [
+            {"id": "home"},
+            {"id": "settings"},
+        ],
+    }
+
+    with ydoc.begin_transaction() as txn:
+        changed, mode = webspace_runtime_module._set_map_value_if_changed(
+            ydoc.get_map("data"),
+            txn,
+            "desktop",
+            payload,
+        )
+
+    assert changed is True
+    assert mode == "diff"
+
+    payload_container_ids: set[int] = set()
+    _collect_container_ids(payload, payload_container_ids)
+    original_clone = webspace_runtime_module._clone_json_like
+
+    def _guarded_clone(value):
+        if isinstance(value, (dict, list, tuple)) and id(value) not in payload_container_ids:
+            raise AssertionError(f"unexpected clone of current container: {type(value).__name__}")
+        return original_clone(value)
+
+    monkeypatch.setattr(webspace_runtime_module, "_clone_json_like", _guarded_clone)
+
+    with ydoc.begin_transaction() as txn:
+        changed, mode = webspace_runtime_module._set_map_value_if_changed(
+            ydoc.get_map("data"),
+            txn,
+            "desktop",
+            payload,
+        )
+
+    assert changed is False
+    assert mode == "diff"
