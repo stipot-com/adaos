@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import time
 import uuid
@@ -16,6 +17,47 @@ from adaos.services.yjs.doc import apply_update_to_live_room
 from adaos.services.yjs.store import get_ystore_for_webspace, suppress_ystore_write_notifications
 
 _log = logging.getLogger("adaos.subnet.link")
+
+
+def _snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    material = dict(snapshot)
+    material.pop("captured_at", None)
+    try:
+        return json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return repr(material)
+
+
+def _snapshot_event_payload(node_id: str, *, node_names: list[str], snapshot: dict[str, Any], captured_at: float) -> dict[str, Any]:
+    capacity = snapshot.get("capacity") if isinstance(snapshot.get("capacity"), dict) else {}
+    build = snapshot.get("build") if isinstance(snapshot.get("build"), dict) else {}
+    update_status = snapshot.get("update_status") if isinstance(snapshot.get("update_status"), dict) else {}
+    return {
+        "node_id": node_id,
+        "node_names": list(node_names),
+        "captured_at": captured_at,
+        "snapshot_role": str(snapshot.get("role") or "").strip(),
+        "snapshot_ready": bool(snapshot.get("ready")),
+        "snapshot_node_state": str(snapshot.get("node_state") or "").strip(),
+        "snapshot_route_mode": str(snapshot.get("route_mode") or "").strip(),
+        "snapshot_connected_to_hub": snapshot.get("connected_to_hub"),
+        "snapshot_capacity": {
+            "io_total": len(capacity.get("io") or []) if isinstance(capacity.get("io"), list) else 0,
+            "skill_total": len(capacity.get("skills") or []) if isinstance(capacity.get("skills"), list) else 0,
+            "scenario_total": len(capacity.get("scenarios") or []) if isinstance(capacity.get("scenarios"), list) else 0,
+        },
+        "snapshot_build": {
+            "runtime_version": str(build.get("runtime_version") or "").strip(),
+            "runtime_git_short_commit": str(build.get("runtime_git_short_commit") or "").strip(),
+        },
+        "snapshot_update": {
+            "state": str(update_status.get("state") or "").strip(),
+            "phase": str(update_status.get("phase") or "").strip(),
+            "action": str(update_status.get("action") or "").strip(),
+        },
+    }
 
 
 @dataclass
@@ -38,6 +80,7 @@ class HubMemberLink:
     last_control_result_at: float | None = None
     last_control_result: dict[str, Any] = field(default_factory=dict)
     last_snapshot_at: float | None = None
+    last_snapshot_fingerprint: str | None = None
     node_snapshot: dict[str, Any] = field(default_factory=dict)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_rpc: Dict[str, asyncio.Future] = field(default_factory=dict)
@@ -174,10 +217,13 @@ class HubLinkManager:
         if not link:
             return {"ok": False, "error": "member_not_connected"}
         snap = dict(snapshot or {})
+        snapshot_fingerprint = _snapshot_fingerprint(snap)
+        changed = snapshot_fingerprint != str(link.last_snapshot_fingerprint or "")
         node_names = snap.get("node_names")
         if isinstance(node_names, list):
             link.node_names = [str(item or "").strip() for item in node_names if str(item or "").strip()]
         link.node_snapshot = snap
+        link.last_snapshot_fingerprint = snapshot_fingerprint
         link.last_snapshot_at = time.time()
         link.last_message_at = link.last_snapshot_at
         update_status = snap.get("update_status")
@@ -188,30 +234,47 @@ class HubLinkManager:
                 link.last_hub_core_update_state = state
             if action:
                 link.last_hub_core_update_action = action
-        payload = {
-            "node_id": node_id,
-            "node_names": list(link.node_names),
-            "snapshot": dict(link.node_snapshot),
-            "captured_at": link.last_snapshot_at,
-        }
-        try:
-            get_ctx().bus.publish(
-                DomainEvent(
-                    type="subnet.member.snapshot.changed",
-                    payload=payload,
-                    source="subnet.link",
-                    ts=time.time(),
-                )
-            )
-        except Exception:
-            pass
+        payload = _snapshot_event_payload(
+            node_id,
+            node_names=list(link.node_names),
+            snapshot=snap,
+            captured_at=float(snap.get("captured_at") or link.last_snapshot_at or time.time()),
+        )
         try:
             from adaos.services.registry.subnet_directory import get_directory
 
-            get_directory().on_member_runtime_snapshot(node_id, snap)
+            directory = get_directory()
+            if changed:
+                directory.on_member_runtime_snapshot(node_id, snap)
+            else:
+                try:
+                    projection_captured_at = (
+                        float(snap.get("captured_at"))
+                        if snap.get("captured_at") is not None
+                        else None
+                    )
+                except Exception:
+                    projection_captured_at = None
+                directory.on_member_runtime_snapshot_heartbeat(
+                    node_id,
+                    captured_at=projection_captured_at,
+                    node_state=str(snap.get("node_state") or "").strip() or None,
+                )
         except Exception:
             pass
-        return {"ok": True, **payload}
+        if changed:
+            try:
+                get_ctx().bus.publish(
+                    DomainEvent(
+                        type="subnet.member.snapshot.changed",
+                        payload=payload,
+                        source="subnet.link",
+                        ts=time.time(),
+                    )
+                )
+            except Exception:
+                pass
+        return {"ok": True, "changed": changed, **payload}
 
     async def set_member_node_names(self, node_id: str, *, node_names: list[str]) -> dict[str, Any]:
         link = await self._get_link(node_id)

@@ -311,6 +311,28 @@ class SubnetRepo:
             )
             con.commit()
 
+    def touch_runtime_projection(self, node_id: str, *, captured_at: float | None = None, node_state: str | None = None) -> None:
+        fields: list[str] = []
+        params: list[Any] = []
+        if captured_at is not None:
+            try:
+                params.append(float(captured_at))
+            except Exception:
+                params.append(None)
+            fields.append("captured_at=?")
+        if node_state is not None:
+            fields.append("node_state=?")
+            params.append(str(node_state or "ready"))
+        fields.append("updated_at=?")
+        params.append(_now())
+        params.append(node_id)
+        with self.sql.connect() as con:
+            con.execute(
+                f"UPDATE subnet_runtime_projection SET {', '.join(fields)} WHERE node_id=?",
+                tuple(params),
+            )
+            con.commit()
+
     def runtime_projection_for_node(self, node_id: str) -> Dict[str, Any]:
         with self.sql.connect() as con:
             cur = con.execute(

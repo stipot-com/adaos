@@ -24,6 +24,7 @@ class _FakeRepo:
                 "node_state": "ready",
             }
         }
+        self.runtime_touches = []
 
     def list_nodes(self):
         return [dict(item) for item in self.nodes.values()]
@@ -34,6 +35,13 @@ class _FakeRepo:
 
     def upsert_node(self, node):
         self.nodes[str(node.get("node_id"))] = dict(node)
+
+    def touch_heartbeat(self, node_id: str, last_seen: float, capacity=None, *, node_state: str | None = None):
+        node = dict(self.nodes.get(node_id, {}))
+        node["last_seen"] = last_seen
+        if node_state is not None:
+            node["node_state"] = node_state
+        self.nodes[node_id] = node
 
     def io_for_node(self, node_id: str):
         return list(self.io.get(node_id, []))
@@ -58,6 +66,15 @@ class _FakeRepo:
 
     def upsert_runtime_projection(self, node_id: str, payload):
         self.runtime[node_id] = dict(payload or {})
+
+    def touch_runtime_projection(self, node_id: str, *, captured_at=None, node_state=None):
+        runtime = dict(self.runtime.get(node_id, {}))
+        if captured_at is not None:
+            runtime["captured_at"] = captured_at
+        if node_state is not None:
+            runtime["node_state"] = node_state
+        self.runtime[node_id] = runtime
+        self.runtime_touches.append((node_id, captured_at, node_state))
 
 
 def test_subnet_directory_get_node_returns_live_overlay_capacity_and_runtime_projection(monkeypatch) -> None:
@@ -124,3 +141,19 @@ def test_subnet_directory_ingest_snapshot_persists_scenarios_and_runtime_project
     assert node["capacity"]["scenarios"] == [{"name": "sleep"}]
     assert node["runtime_projection"]["primary_node_name"] == "Bedroom Member"
     assert node["runtime_projection"]["snapshot"]["update_status"]["state"] == "succeeded"
+
+
+def test_subnet_directory_snapshot_heartbeat_touches_runtime_projection(monkeypatch) -> None:
+    repo = _FakeRepo()
+    monkeypatch.setattr(mod, "get_ctx", lambda: type("Ctx", (), {"sql": object()})())
+    monkeypatch.setattr(mod, "SubnetRepo", lambda sql: repo)
+
+    directory = mod.SubnetDirectory()
+    directory.on_member_runtime_snapshot_heartbeat("member-1", captured_at=42.0, node_state="ready")
+
+    node = directory.get_node("member-1")
+
+    assert node is not None
+    assert node["online"] is True
+    assert node["runtime_projection"]["captured_at"] == 42.0
+    assert repo.runtime_touches == [("member-1", 42.0, "ready")]

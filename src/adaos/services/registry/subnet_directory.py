@@ -83,6 +83,21 @@ class SubnetDirectory:
         st["last_seen"] = ts
         self.live[node_id] = st
 
+    def on_member_runtime_snapshot_heartbeat(
+        self,
+        node_id: str,
+        *,
+        captured_at: float | None = None,
+        node_state: str | None = None,
+    ) -> None:
+        ts = time.time()
+        self.repo.touch_heartbeat(node_id, ts, None, node_state=node_state)
+        self.repo.touch_runtime_projection(node_id, captured_at=captured_at, node_state=node_state)
+        st = self.live.get(node_id) or {}
+        st["online"] = True
+        st["last_seen"] = ts
+        self.live[node_id] = st
+
     # ------ queries ------
     def mark_stale_if_expired(self, ttl: float = 45.0) -> None:
         now = time.time()
