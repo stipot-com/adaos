@@ -115,6 +115,15 @@ def _bounded_interval_seconds(raw: Any, *, default: float, minimum: float) -> fl
     return float(interval_s)
 
 
+def _should_forward_node_status_to_members(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    meta = payload.get("_meta")
+    if not isinstance(meta, dict):
+        return True
+    return not bool(meta.get("subnet_origin_node_id"))
+
+
 def _env_truthy(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1080,6 +1089,8 @@ class BootstrapService:
 
                 def _forward_node_status_to_members(ev: Event) -> None:
                     payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    if not _should_forward_node_status_to_members(payload):
+                        return
                     try:
                         asyncio.get_running_loop().create_task(
                             _get_hub_link_manager().broadcast_event(

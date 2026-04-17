@@ -305,6 +305,16 @@ def test_bootstrap_bounded_interval_rejects_non_finite_values() -> None:
     assert bootstrap_mod._bounded_interval_seconds("1", default=15.0, minimum=5.0) == 5.0
 
 
+def test_should_forward_node_status_to_members_skips_member_originated_payloads() -> None:
+    assert bootstrap_mod._should_forward_node_status_to_members({}) is True
+    assert (
+        bootstrap_mod._should_forward_node_status_to_members(
+            {"_meta": {"subnet_origin_node_id": "member-1"}}
+        )
+        is False
+    )
+
+
 def test_run_boot_sequence_deduplicates_concurrent_starts(monkeypatch) -> None:
     svc = bootstrap_mod.BootstrapService(
         SimpleNamespace(config=SimpleNamespace(role="hub")),

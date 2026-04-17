@@ -281,13 +281,19 @@ class MemberLinkClient:
                 if self._bus_prefixes is not None and not any(typ.startswith(p) for p in self._bus_prefixes):
                     return
                 payload = getattr(ev, "payload", None) if hasattr(ev, "payload") else (ev.get("payload") if isinstance(ev, dict) else None)
+                payload_dict = payload if isinstance(payload, dict) else {"value": payload}
+                meta = payload_dict.get("_meta") if isinstance(payload_dict, dict) else None
+                if isinstance(meta, dict) and (
+                    bool(meta.get("subnet_hub_mirrored")) or bool(meta.get("subnet_origin_node_id"))
+                ):
+                    return
                 source = getattr(ev, "source", None) if hasattr(ev, "source") else (ev.get("source") if isinstance(ev, dict) else None)
                 ts = getattr(ev, "ts", None) if hasattr(ev, "ts") else (ev.get("ts") if isinstance(ev, dict) else None)
                 msg = {
                     "t": "bus.emit",
                     "event": {
                         "type": typ,
-                        "payload": payload if isinstance(payload, dict) else {"value": payload},
+                        "payload": payload_dict,
                         "source": str(source or "member"),
                         "ts": float(ts or time.time()),
                     },
@@ -534,13 +540,23 @@ class MemberLinkClient:
         if not isinstance(payload, dict):
             payload = {"value": payload}
         source = str(event.get("source") or "hub").strip() or "hub"
+        mirrored_payload = dict(payload)
+        meta = mirrored_payload.get("_meta")
+        if isinstance(meta, dict):
+            meta = dict(meta)
+        else:
+            meta = {}
+        meta["subnet_hub_mirrored"] = True
+        if self._hub_node_id:
+            meta.setdefault("subnet_hub_node_id", self._hub_node_id)
+        mirrored_payload["_meta"] = meta
         self._last_hub_event_type = event_type
         self._last_hub_event_at = time.time()
         try:
             get_ctx().bus.publish(
                 DomainEvent(
                     type=event_type if event_type != "core.update.status" else "hub.core_update.status",
-                    payload=dict(payload),
+                    payload=mirrored_payload,
                     source=source,
                     ts=float(event.get("ts") or time.time()),
                 )

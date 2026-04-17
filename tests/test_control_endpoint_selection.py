@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 
@@ -206,3 +207,50 @@ def test_member_link_resolve_local_control_base_skips_candidate_ping(monkeypatch
     base = MemberLinkClient._resolve_local_control_base()
 
     assert base == "http://127.0.0.1:8779"
+
+
+def test_member_link_client_does_not_reemit_hub_mirrored_events(monkeypatch) -> None:
+    class _FakeBus:
+        def __init__(self) -> None:
+            self.subscriber = None
+            self.published = []
+
+        def subscribe(self, prefix, handler) -> None:
+            assert prefix == "*"
+            self.subscriber = handler
+
+        def publish(self, event) -> None:
+            self.published.append(event)
+
+    fake_bus = _FakeBus()
+    fake_ctx = types.SimpleNamespace(bus=fake_bus)
+    monkeypatch.setattr("adaos.services.subnet.link_client.get_ctx", lambda: fake_ctx)
+
+    client = MemberLinkClient()
+    client._connected.set()
+    client._bus_prefixes = None
+    client._hub_node_id = "hub-1"
+    client._ensure_bus_subscription()
+
+    asyncio.run(
+        client._on_hub_event(
+            {
+                "event": {
+                    "type": "node.status",
+                    "payload": {"ready": True},
+                    "source": "lifecycle",
+                    "ts": 123.0,
+                }
+            }
+        )
+    )
+
+    assert fake_bus.subscriber is not None
+    assert len(fake_bus.published) == 1
+    mirrored = fake_bus.published[0]
+    assert mirrored.payload["_meta"]["subnet_hub_mirrored"] is True
+    assert mirrored.payload["_meta"]["subnet_hub_node_id"] == "hub-1"
+
+    fake_bus.subscriber(mirrored)
+
+    assert client._out_q.empty()
