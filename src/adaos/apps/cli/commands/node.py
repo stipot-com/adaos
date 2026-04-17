@@ -448,6 +448,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"rtc_yjs={transport.get('webrtc_open_yjs_channels') or 0}/{transport.get('webrtc_peer_total') or 0} "
             f"rtc_pruned={transport.get('webrtc_pruned_stale_peers') or 0} "
             f"rooms={transport.get('room_total') or 0} "
+            f"opens={transport.get('room_cold_open_total') or 0}/{transport.get('room_reuse_total') or 0} "
+            f"single={transport.get('room_single_pass_bootstrap_total') or 0} "
             f"storm={'yes' if transport.get('storm_detected') else 'no'} "
             f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "
             f"yws10s={transport.get('recent_open_10s') or 0} "

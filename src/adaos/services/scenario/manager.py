@@ -279,6 +279,34 @@ class ScenarioManager:
                         ",".join(sorted(set(skipped_runtime_owned))),
                     )
 
+    def project_scenario_to_doc(
+        self,
+        ydoc: Y.YDoc,
+        scenario_id: str,
+        *,
+        space: str = "workspace",
+    ) -> None:
+        """
+        Project one scenario directly into an already-open YDoc.
+
+        This is the low-level single-pass helper for cold-open/bootstrap paths
+        that already own a live in-memory document and want to avoid a second
+        store-backed YDoc session.
+        """
+        self.caps.require("core", "scenarios.manage")
+        ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(
+            scenario_id,
+            space=space,
+        )
+        self._project_to_doc(
+            ydoc,
+            scenario_id,
+            ui_section,
+            registry_section,
+            catalog_section,
+            data_section,
+        )
+
     def sync_to_yjs(
         self,
         scenario_id: str,

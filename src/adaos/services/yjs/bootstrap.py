@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Mapping
 
 import y_py as Y
@@ -155,23 +156,44 @@ async def ensure_webspace_seeded_from_scenario(
     *,
     space: str = "workspace",
     emit_event: bool = True,
-) -> None:
+    ydoc: Y.YDoc | None = None,
+) -> dict[str, Any]:
     """
     If the YDoc has no ui.application yet, try to seed it from a scenario
     package (.adaos/workspace/scenarios/<id>/scenario.json). If not found or
     invalid, fall back to the static SEED.
     """
+    started = time.perf_counter()
+    result: dict[str, Any] = {
+        "webspace_id": str(webspace_id or "").strip() or default_webspace_id(),
+        "scenario_id": str(default_scenario_id or "").strip() or "web_desktop",
+        "space": str(space or "").strip() or "workspace",
+        "used_provided_ydoc": bool(ydoc is not None),
+        "mode": "unknown",
+        "persisted_via": None,
+        "apply_updates_ms": 0.0,
+        "total_ms": 0.0,
+        "emitted_rebuild_nudge": False,
+    }
+
+    def _finish(mode: str) -> dict[str, Any]:
+        result["mode"] = str(mode or "").strip() or "unknown"
+        result["total_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+        return result
+
     _log.debug("ensure_webspace_seeded_from_scenario start webspace=%s scenario=%s", webspace_id, default_scenario_id)
 
     try:
         await ystore.start()
     except Exception as exc:
         _log.warning("ystore.start() failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
-        return
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return _finish("ystore_start_failed")
 
-    ydoc = Y.YDoc()
+    target_doc = ydoc or Y.YDoc()
+    apply_started = time.perf_counter()
     try:
-        await ystore.apply_updates(ydoc)
+        await ystore.apply_updates(target_doc)
     except BaseException as exc:  # catch PanicException and similar
         _log.warning(
             "apply_updates failed for webspace=%s (treating as empty, exc=%r, type=%s)",
@@ -180,13 +202,16 @@ async def ensure_webspace_seeded_from_scenario(
             type(exc).__name__,
             exc_info=True,
         )
+        result["apply_updates_error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        result["apply_updates_ms"] = round((time.perf_counter() - apply_started) * 1000.0, 3)
     try:
-        before_state_vector = Y.encode_state_vector(ydoc)
+        before_state_vector = Y.encode_state_vector(target_doc)
     except Exception:
         before_state_vector = None
 
-    ui_map = ydoc.get_map("ui")
-    data_map = ydoc.get_map("data")
+    ui_map = target_doc.get_map("ui")
+    data_map = target_doc.get_map("data")
 
     def _is_seeded_state(app: object, catalog: object) -> bool:
         if not isinstance(app, dict) or not app:
@@ -208,6 +233,7 @@ async def ensure_webspace_seeded_from_scenario(
 
     application = ui_map.get("application")
     requested_scenario_id = _resolve_requested_scenario(ui_map, default_scenario_id)
+    result["scenario_id"] = requested_scenario_id
     if _is_seeded_state(application, data_map.get("catalog")):
         _log.debug(
             "webspace %s already seeded (ui keys=%s, data keys=%s)",
@@ -215,7 +241,7 @@ async def ensure_webspace_seeded_from_scenario(
             list(ui_map.keys()),
             list(data_map.keys()),
         )
-        return
+        return _finish("already_seeded")
 
     if _has_projected_scenario_seed(ui_map, data_map, requested_scenario_id):
         _log.info(
@@ -225,18 +251,33 @@ async def ensure_webspace_seeded_from_scenario(
         )
         if emit_event:
             _emit_bootstrap_rebuild_nudge(webspace_id, requested_scenario_id)
-        return
+            result["emitted_rebuild_nudge"] = True
+        return _finish("projected_seed_reuse")
 
     try:
         mgr = _scenario_manager()
         _log.info("seeding webspace %s from scenario %s (space=%s)", webspace_id, requested_scenario_id, space)
+        if ydoc is not None:
+            mgr.project_scenario_to_doc(target_doc, requested_scenario_id, space=space)
+            persisted_via = await _persist_bootstrap_seed_update(
+                ystore,
+                target_doc,
+                before_state_vector=before_state_vector,
+            )
+            result["persisted_via"] = persisted_via
+            if emit_event:
+                _emit_bootstrap_rebuild_nudge(webspace_id, requested_scenario_id)
+                result["emitted_rebuild_nudge"] = True
+            return _finish("scenario_projection")
+
         await mgr.sync_to_yjs_async(
             requested_scenario_id,
             webspace_id,
             space=space,
             emit_event=emit_event,
         )
-        return
+        result["emitted_rebuild_nudge"] = bool(emit_event)
+        return _finish("scenario_sync")
     except Exception as exc:
         _log.warning(
             "scenario-based seed failed for webspace=%s scenario=%s: %s",
@@ -245,21 +286,25 @@ async def ensure_webspace_seeded_from_scenario(
             exc,
             exc_info=True,
         )
+        result["scenario_seed_error"] = f"{type(exc).__name__}: {exc}"
 
     if webspace_id != default_webspace_id():
-        return
+        return _finish("non_default_unseeded")
 
     fallback_scenario_id = str(default_scenario_id or "").strip() or "web_desktop"
-    _project_seed_payload_to_compat_branches(ydoc, scenario_id=fallback_scenario_id)
+    _project_seed_payload_to_compat_branches(target_doc, scenario_id=fallback_scenario_id)
+    result["scenario_id"] = fallback_scenario_id
 
     try:
         persisted_via = await _persist_bootstrap_seed_update(
             ystore,
-            ydoc,
+            target_doc,
             before_state_vector=before_state_vector,
         )
         if emit_event:
             _emit_bootstrap_rebuild_nudge(webspace_id, fallback_scenario_id)
+            result["emitted_rebuild_nudge"] = True
+        result["persisted_via"] = persisted_via
         _log.info(
             "webspace %s seeded via compatibility fallback for scenario %s (persisted=%s, ui keys=%s, data keys=%s)",
             webspace_id,
@@ -268,8 +313,11 @@ async def ensure_webspace_seeded_from_scenario(
             list(ui_map.keys()),
             list(data_map.keys()),
         )
+        return _finish("compatibility_fallback")
     except Exception as exc:
         _log.warning("bootstrap seed persistence failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
+        result["persist_error"] = f"{type(exc).__name__}: {exc}"
+        return _finish("compatibility_fallback_failed")
 
 
 async def bootstrap_seed_if_empty(ystore: AdaosMemoryYStore) -> None:

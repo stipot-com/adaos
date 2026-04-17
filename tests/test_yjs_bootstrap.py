@@ -213,6 +213,61 @@ def test_bootstrap_prefers_current_pointer_when_projecting_missing_effective_ui(
     assert captured == [("prompt_engineer_scenario", default_webspace_id(), "dev", True)]
 
 
+def test_bootstrap_projects_into_provided_ydoc_in_single_pass(monkeypatch) -> None:
+    projected: list[tuple[str, str]] = []
+
+    class _ProjectingManager:
+        def project_scenario_to_doc(self, ydoc: Y.YDoc, scenario_id: str, *, space: str = "workspace") -> None:
+            projected.append((scenario_id, space))
+            with ydoc.begin_transaction() as txn:
+                ui_map = ydoc.get_map("ui")
+                data_map = ydoc.get_map("data")
+                registry_map = ydoc.get_map("registry")
+                ui_map.set(txn, "current_scenario", scenario_id)
+                ui_map.set(txn, "scenarios", {scenario_id: {"application": {"desktop": {"pageSchema": {"id": "prompt"}}}}})
+                data_map.set(txn, "scenarios", {scenario_id: {"catalog": {"apps": [{"id": "prompt"}], "widgets": []}}})
+                registry_map.set(txn, "scenarios", {scenario_id: {"widgets": [], "modals": ["prompt-modal"]}})
+
+    emitted: list[tuple[str, dict[str, object], str]] = []
+    store = _FakeStore()
+    provided_doc = Y.YDoc()
+
+    monkeypatch.setattr(bootstrap_module, "_scenario_manager", lambda: _ProjectingManager())
+    monkeypatch.setattr(bootstrap_module, "get_ctx", lambda: SimpleNamespace(bus=object()))
+    monkeypatch.setattr(
+        bootstrap_module,
+        "emit",
+        lambda bus, type_, payload, source: emitted.append((type_, dict(payload), source)),  # noqa: ARG005
+    )
+
+    result = asyncio.run(
+        bootstrap_module.ensure_webspace_seeded_from_scenario(
+            store,
+            webspace_id=default_webspace_id(),
+            default_scenario_id="prompt_engineer_scenario",
+            space="dev",
+            ydoc=provided_doc,
+        )
+    )
+
+    assert projected == [("prompt_engineer_scenario", "dev")]
+    assert store.start_calls == 1
+    assert store.apply_updates_calls == 1
+    assert store.write_calls == 1
+    assert store.encode_calls == 0
+    assert result["used_provided_ydoc"] is True
+    assert result["mode"] == "scenario_projection"
+    assert result["persisted_via"] == "diff"
+    assert provided_doc.get_map("ui").get("current_scenario") == "prompt_engineer_scenario"
+    assert emitted == [
+        (
+            "scenarios.synced",
+            {"scenario_id": "prompt_engineer_scenario", "webspace_id": default_webspace_id()},
+            "yjs.bootstrap",
+        )
+    ]
+
+
 def test_bootstrap_seed_fallback_uses_snapshot_when_incremental_write_fails(monkeypatch) -> None:
     class _FailingManager:
         async def sync_to_yjs_async(self, *args, **kwargs) -> None:  # noqa: ARG002

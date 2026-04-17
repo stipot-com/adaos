@@ -724,6 +724,10 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
                         "recent_open_60s": 2,
                         "storm_detected": False,
                         "hot_clients": [],
+                        "room_open_total": 5,
+                        "room_cold_open_total": 2,
+                        "room_reuse_total": 3,
+                        "room_single_pass_bootstrap_total": 2,
                     }
                 },
                 "servers": {"yws": {"requested": True, "started_event": True, "task_running": True, "ready": True, "room_total": 1}},
@@ -807,6 +811,9 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
     assert transport["handoff_ready"] is False
     assert transport["room_total"] == 1
+    assert transport["room_cold_open_total"] == 2
+    assert transport["room_reuse_total"] == 3
+    assert transport["room_single_pass_bootstrap_total"] == 2
     assert transport["webrtc_peer_total"] == 1
     assert transport["webrtc_open_yjs_channels"] == 1
     assert transport["reload_command_total"] == 3
@@ -1178,6 +1185,9 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                         "transport": {
                             "active_yws_connections": 2,
                             "room_total": 1,
+                            "room_cold_open_total": 2,
+                            "room_reuse_total": 3,
+                            "room_single_pass_bootstrap_total": 2,
                             "storm_detected": False,
                             "owner": "runtime",
                             "planned_owner": "sidecar",
@@ -1248,7 +1258,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "reloads=4/5 dup=3 resets=2/4 rdup=1" in result.output
     assert "sync_runtime.reload_last: client=http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301" in result.output
     assert "sync_runtime.reset_last: client=events_ws:127.0.0.1:54421" in result.output
-    assert "rooms=1 storm=no" in result.output
+    assert "rooms=1 opens=2/3 single=2 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
     assert "media.update_guard: live=yes" in result.output
     assert "member=defer hub=preserve_sidecar" in result.output

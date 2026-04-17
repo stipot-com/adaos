@@ -476,10 +476,12 @@ The next short-term performance slices should therefore focus on:
 
 The cheaper writeback path and live-room reuse are still important because they
 made this shift visible: normal YDoc session flush now persists the incremental
-diff it just produced, and attached read/control/rebuild flows can reuse the
-in-memory live room instead of replaying the store again. The remaining store
-work is therefore increasingly concentrated in cold reopen and recovery cases,
-not in the main pointer-first switch benchmark.
+diff it just produced, attached read/control/rebuild flows can reuse the
+in-memory live room instead of replaying the store again, and cold room
+creation now seeds the new live room in one pass instead of paying a duplicate
+bootstrap replay. The remaining store work is therefore increasingly
+concentrated in detached cold reopen and recovery cases, not in the main
+pointer-first switch benchmark.
 - the remaining replay bottleneck becomes more clearly a cold-room /
   reconnect / reload path problem
 
@@ -516,6 +518,19 @@ by recovery fan-out:
 - only `desktop.webspace.reset` performs destructive room/store reset
 - reload/reset no longer intentionally trigger both `scenarios.synced`
   side-effect rebuild and an explicit rebuild for the same operator action
+
+Cold-open room bootstrap now also stays on a single YDoc pass: room creation
+seeds the new live `YRoom.ydoc` directly instead of replaying YStore into a
+temporary bootstrap doc and then replaying the same updates again into the
+fresh room. Gateway/reliability diagnostics now distinguish:
+
+- total cold opens versus room reuses
+- single-pass bootstrap count for new rooms
+- last cold-open envelope timing (`apply_updates` and overall bootstrap/open)
+
+That means the remaining reopen cost is more clearly concentrated in true
+detached recovery paths after a room/store drop, rather than in routine room
+creation for an otherwise healthy runtime.
 
 Reader/writer audit for migration planning:
 

@@ -284,6 +284,52 @@ def _mark_room_created(webspace_id: str, room: Any) -> None:
         entry["last_ydoc_object_id"] = id(ydoc) if ydoc is not None else None
 
 
+def _mark_room_open(
+    webspace_id: str,
+    room: Any,
+    *,
+    created: bool,
+    open_total_ms: float | None = None,
+    seed_result: dict[str, Any] | None = None,
+) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    now = time.time()
+    lifecycle = dict(seed_result or {})
+    with _YROOM_LIFECYCLE_LOCK:
+        entry = _YROOM_LIFECYCLE.setdefault(key, {})
+        entry["open_total"] = int(entry.get("open_total") or 0) + 1
+        if created:
+            entry["cold_open_total"] = int(entry.get("cold_open_total") or 0) + 1
+            if bool(lifecycle.get("used_provided_ydoc")):
+                entry["single_pass_bootstrap_total"] = int(entry.get("single_pass_bootstrap_total") or 0) + 1
+        else:
+            entry["reuse_total"] = int(entry.get("reuse_total") or 0) + 1
+        entry["last_open_at"] = now
+        entry["last_open_mode"] = "cold_open" if created else "room_reuse"
+        entry["last_open_total_ms"] = round(float(open_total_ms), 3) if open_total_ms is not None else None
+        entry["last_open_apply_updates_ms"] = (
+            round(float(lifecycle.get("apply_updates_ms") or 0.0), 3)
+            if created and lifecycle
+            else None
+        )
+        entry["last_open_bootstrap_total_ms"] = (
+            round(float(lifecycle.get("total_ms") or 0.0), 3)
+            if created and lifecycle
+            else None
+        )
+        entry["last_open_bootstrap_mode"] = (
+            str(lifecycle.get("mode") or "").strip() or None
+            if created and lifecycle
+            else None
+        )
+        entry["last_open_bootstrap_persisted_via"] = (
+            str(lifecycle.get("persisted_via") or "").strip() or None
+            if created and lifecycle
+            else None
+        )
+        entry["last_open_bootstrap_single_pass"] = bool(lifecycle.get("used_provided_ydoc")) if created and lifecycle else False
+
+
 def _mark_room_reset(
     webspace_id: str,
     *,
@@ -335,10 +381,23 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
         "drop_total": int(meta.get("drop_total") or 0),
         "last_created_at": meta.get("last_created_at"),
         "last_created_ago_s": _seconds_ago(meta.get("last_created_at"), now),
+        "last_open_at": meta.get("last_open_at"),
+        "last_open_ago_s": _seconds_ago(meta.get("last_open_at"), now),
         "last_reset_at": meta.get("last_reset_at"),
         "last_reset_ago_s": _seconds_ago(meta.get("last_reset_at"), now),
         "last_dropped_at": meta.get("last_dropped_at"),
         "last_dropped_ago_s": _seconds_ago(meta.get("last_dropped_at"), now),
+        "open_total": int(meta.get("open_total") or 0),
+        "cold_open_total": int(meta.get("cold_open_total") or 0),
+        "reuse_total": int(meta.get("reuse_total") or 0),
+        "single_pass_bootstrap_total": int(meta.get("single_pass_bootstrap_total") or 0),
+        "last_open_mode": str(meta.get("last_open_mode") or "").strip() or None,
+        "last_open_total_ms": meta.get("last_open_total_ms"),
+        "last_open_apply_updates_ms": meta.get("last_open_apply_updates_ms"),
+        "last_open_bootstrap_total_ms": meta.get("last_open_bootstrap_total_ms"),
+        "last_open_bootstrap_mode": str(meta.get("last_open_bootstrap_mode") or "").strip() or None,
+        "last_open_bootstrap_persisted_via": str(meta.get("last_open_bootstrap_persisted_via") or "").strip() or None,
+        "last_open_bootstrap_single_pass": bool(meta.get("last_open_bootstrap_single_pass")),
         "last_reset_reason": str(meta.get("last_reset_reason") or "").strip() or None,
         "last_reset_closed_connections": int(meta.get("last_reset_closed_connections") or 0),
         "last_reset_closed_webrtc_peers": int(meta.get("last_reset_closed_webrtc_peers") or 0),
@@ -371,6 +430,10 @@ def _room_debug_snapshot_all(now: float) -> tuple[dict[str, Any], dict[str, int]
         "room_reset_total": 0,
         "room_drop_total": 0,
         "room_generation_max": 0,
+        "room_open_total": 0,
+        "room_cold_open_total": 0,
+        "room_reuse_total": 0,
+        "room_single_pass_bootstrap_total": 0,
         "update_stream_buffer_used_total": 0,
         "update_stream_waiting_send_total": 0,
         "update_stream_waiting_receive_total": 0,
@@ -383,6 +446,10 @@ def _room_debug_snapshot_all(now: float) -> tuple[dict[str, Any], dict[str, int]
         aggregated["room_create_total"] += int(snapshot.get("create_total") or 0)
         aggregated["room_reset_total"] += int(snapshot.get("reset_total") or 0)
         aggregated["room_drop_total"] += int(snapshot.get("drop_total") or 0)
+        aggregated["room_open_total"] += int(snapshot.get("open_total") or 0)
+        aggregated["room_cold_open_total"] += int(snapshot.get("cold_open_total") or 0)
+        aggregated["room_reuse_total"] += int(snapshot.get("reuse_total") or 0)
+        aggregated["room_single_pass_bootstrap_total"] += int(snapshot.get("single_pass_bootstrap_total") or 0)
         aggregated["room_generation_max"] = max(
             aggregated["room_generation_max"],
             int(snapshot.get("generation") or 0),
@@ -1150,6 +1217,9 @@ class WorkspaceWebsocketServer(WebsocketServer):
 
     async def get_room(self, name: str) -> YRoom:  # type: ignore[override]
         webspace_id = name or "default"
+        room_open_started = time.perf_counter()
+        created_room = False
+        seed_result: dict[str, Any] | None = None
 
         def _space_mode(ws_id: str) -> str:
             try:
@@ -1175,12 +1245,9 @@ class WorkspaceWebsocketServer(WebsocketServer):
                     ystore = get_ystore_for_webspace(webspace_id)
                     row = get_workspace(webspace_id)
                     space = _space_mode(webspace_id)
-                    await ensure_webspace_seeded_from_scenario(
-                        ystore,
-                        webspace_id=webspace_id,
-                        default_scenario_id=(row.effective_home_scenario if row and row.home_scenario else "web_desktop"),
-                        space=space,
-                    )
+                    room = YRoom(ready=self.rooms_ready, ystore=ystore, log=self.log)
+                    room._thread_id = threading.get_ident()
+                    room._loop = asyncio.get_running_loop()
                     # Ensure periodic in-memory snapshotting for this webspace.
                     try:
                         sched = get_scheduler()
@@ -1192,13 +1259,14 @@ class WorkspaceWebsocketServer(WebsocketServer):
                         )
                     except Exception:
                         _ylog.warning("failed to register YStore backup job for webspace=%s", webspace_id, exc_info=True)
-                    room = YRoom(ready=self.rooms_ready, ystore=ystore, log=self.log)
-                    room._thread_id = threading.get_ident()
-                    room._loop = asyncio.get_running_loop()
-                    try:
-                        await ystore.apply_updates(room.ydoc)
-                    except BaseException:
-                        _ylog.warning("apply_updates failed for webspace=%s", webspace_id, exc_info=True)
+                    created_room = True
+                    seed_result = await ensure_webspace_seeded_from_scenario(
+                        ystore,
+                        webspace_id=webspace_id,
+                        default_scenario_id=(row.effective_home_scenario if row and row.home_scenario else "web_desktop"),
+                        space=space,
+                        ydoc=room.ydoc,
+                    )
                     self.rooms[name] = room
                     _mark_room_created(webspace_id, room)
         room = self.rooms[name]
@@ -1209,6 +1277,13 @@ class WorkspaceWebsocketServer(WebsocketServer):
         except Exception:
             _ylog.warning("attach_room_observers failed for webspace=%s", webspace_id, exc_info=True)
         await self.start_room(room)
+        _mark_room_open(
+            webspace_id,
+            room,
+            created=created_room,
+            open_total_ms=(time.perf_counter() - room_open_started) * 1000.0,
+            seed_result=seed_result,
+        )
         try:
             ui_map = room.ydoc.get_map("ui")
             data_map = room.ydoc.get_map("data")

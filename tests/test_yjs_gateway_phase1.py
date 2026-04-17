@@ -128,13 +128,14 @@ def test_ensure_webspace_ready_uses_manifest_defaults(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     fake_store = _FakeYStore()
 
-    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str) -> None:
+    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str, ydoc=None) -> None:  # noqa: ANN001
         captured.append(
             {
                 "ystore": ystore,
                 "webspace_id": webspace_id,
                 "default_scenario_id": default_scenario_id,
                 "space": space,
+                "ydoc": ydoc,
             }
         )
 
@@ -149,6 +150,7 @@ def test_ensure_webspace_ready_uses_manifest_defaults(monkeypatch) -> None:
             "webspace_id": webspace_id,
             "default_scenario_id": "prompt_engineer_scenario",
             "space": "dev",
+            "ydoc": None,
         }
     ]
     assert fake_store.stop_calls == 1
@@ -168,13 +170,14 @@ def test_ensure_webspace_ready_explicit_scenario_overrides_manifest_home(monkeyp
     captured: list[dict[str, object]] = []
     fake_store = _FakeYStore()
 
-    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str) -> None:
+    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str, ydoc=None) -> None:  # noqa: ANN001
         captured.append(
             {
                 "ystore": ystore,
                 "webspace_id": webspace_id,
                 "default_scenario_id": default_scenario_id,
                 "space": space,
+                "ydoc": ydoc,
             }
         )
 
@@ -189,6 +192,7 @@ def test_ensure_webspace_ready_explicit_scenario_overrides_manifest_home(monkeyp
             "webspace_id": webspace_id,
             "default_scenario_id": "custom_scenario",
             "space": "workspace",
+            "ydoc": None,
         }
     ]
 
@@ -207,15 +211,23 @@ def test_get_room_uses_manifest_defaults_for_room_seed(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     fake_store = _FakeYStore()
 
-    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str) -> None:
+    async def _fake_seed(ystore, *, webspace_id: str, default_scenario_id: str, space: str, ydoc=None) -> dict[str, object]:  # noqa: ANN001
         captured.append(
             {
                 "ystore": ystore,
                 "webspace_id": webspace_id,
                 "default_scenario_id": default_scenario_id,
                 "space": space,
+                "ydoc": ydoc,
             }
         )
+        return {
+            "used_provided_ydoc": bool(ydoc is not None),
+            "mode": "scenario_projection",
+            "persisted_via": "diff",
+            "apply_updates_ms": 1.25,
+            "total_ms": 2.5,
+        }
 
     class _Scheduler:
         async def ensure_every(self, **kwargs) -> None:  # noqa: ARG002
@@ -231,13 +243,14 @@ def test_get_room_uses_manifest_defaults_for_room_seed(monkeypatch) -> None:
     room = asyncio.run(server.get_room(webspace_id))
 
     assert room is server.rooms[webspace_id]
-    assert fake_store.apply_updates_calls == 1
+    assert fake_store.apply_updates_calls == 0
     assert captured == [
         {
             "ystore": fake_store,
             "webspace_id": webspace_id,
             "default_scenario_id": "prompt_engineer_scenario",
             "space": "dev",
+            "ydoc": room.ydoc,
         }
     ]
 
@@ -336,6 +349,19 @@ def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:
     gateway_module.y_server.rooms[key] = room
     gateway_module._YROOM_LIFECYCLE.clear()
     gateway_module._mark_room_created(key, room)
+    gateway_module._mark_room_open(
+        key,
+        room,
+        created=True,
+        open_total_ms=12.5,
+        seed_result={
+            "used_provided_ydoc": True,
+            "mode": "scenario_projection",
+            "persisted_via": "diff",
+            "apply_updates_ms": 3.0,
+            "total_ms": 6.0,
+        },
+    )
     gateway_module._mark_room_reset(
         key,
         close_reason="manual_test",
@@ -352,12 +378,18 @@ def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:
     assert room_info["active"] is True
     assert room_info["generation"] == 1
     assert room_info["client_total"] == 2
+    assert room_info["cold_open_total"] == 1
+    assert room_info["single_pass_bootstrap_total"] == 1
+    assert room_info["last_open_mode"] == "cold_open"
+    assert room_info["last_open_bootstrap_mode"] == "scenario_projection"
     assert room_info["update_send_stream"]["current_buffer_used"] == 5
     assert room_info["update_send_stream"]["tasks_waiting_send"] == 2
     assert room_info["last_reset_reason"] == "manual_test"
     assert room_info["last_reset_closed_webrtc_peers"] == 2
     assert transport["active_room_total"] >= 1
     assert transport["room_generation_max"] >= 1
+    assert transport["room_cold_open_total"] >= 1
+    assert transport["room_single_pass_bootstrap_total"] >= 1
     assert transport["update_stream_buffer_used_total"] >= 5
 
     gateway_module.y_server.rooms.pop(key, None)
