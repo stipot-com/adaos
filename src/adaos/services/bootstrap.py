@@ -15,7 +15,7 @@ import traceback
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import nats as _nats
@@ -122,6 +122,47 @@ def _should_forward_node_status_to_members(payload: object) -> bool:
     if not isinstance(meta, dict):
         return True
     return not bool(meta.get("subnet_origin_node_id"))
+
+
+def _node_status_emit_fingerprint(payload: object) -> tuple[Any, ...]:
+    if not isinstance(payload, dict):
+        return ("invalid",)
+    node_names = payload.get("node_names")
+    if isinstance(node_names, list):
+        normalized_node_names = tuple(str(item or "").strip() for item in node_names if str(item or "").strip())
+    else:
+        normalized_node_names = ()
+    return (
+        str(payload.get("node_id") or "").strip(),
+        str(payload.get("subnet_id") or "").strip(),
+        str(payload.get("role") or "").strip(),
+        normalized_node_names,
+        str(payload.get("primary_node_name") or "").strip(),
+        bool(payload.get("ready")),
+        str(payload.get("node_state") or "").strip(),
+        bool(payload.get("draining")),
+        str(payload.get("route_mode") or "").strip(),
+        payload.get("connected_to_hub"),
+        str(payload.get("trigger") or "").strip(),
+    )
+
+
+def _should_emit_node_status(
+    *,
+    payload: object,
+    now: float,
+    last_emitted_at: float,
+    last_fingerprint: tuple[Any, ...] | None,
+    dedupe_window_s: float = 1.0,
+) -> tuple[bool, tuple[Any, ...]]:
+    fingerprint = _node_status_emit_fingerprint(payload)
+    if (
+        last_fingerprint is not None
+        and fingerprint == last_fingerprint
+        and (now - float(last_emitted_at or 0.0)) < float(dedupe_window_s)
+    ):
+        return False, fingerprint
+    return True, fingerprint
 
 
 def _env_truthy(value: Any, *, default: bool = False) -> bool:
@@ -609,6 +650,27 @@ class BootstrapService:
         # Best-effort route relay reset hook installed by the hub-route runtime once subscriptions are live.
         self._hub_root_route_reset: Any = None
 
+    def _find_live_boot_task(self, task_name: str) -> asyncio.Task | None:
+        live_tasks: list[asyncio.Task] = []
+        found: asyncio.Task | None = None
+        for task in self._boot_tasks:
+            if task.done():
+                continue
+            live_tasks.append(task)
+            if found is None and task.get_name() == task_name:
+                found = task
+        if len(live_tasks) != len(self._boot_tasks):
+            self._boot_tasks = live_tasks
+        return found
+
+    def _start_boot_task_once(self, task_name: str, coro_factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
+        existing = self._find_live_boot_task(task_name)
+        if existing is not None:
+            return existing
+        task = asyncio.create_task(coro_factory(), name=task_name)
+        self._boot_tasks.append(task)
+        return task
+
     def is_ready(self) -> bool:
         return self._ready.is_set()
 
@@ -1012,7 +1074,12 @@ class BootstrapService:
             _current_node_status_push_payload = None
             _node_status_push_heartbeat_s = None
 
+        _last_node_status_emit_at = 0.0
+        _last_node_status_fingerprint: tuple[Any, ...] | None = None
+        _suppressed_duplicate_node_status_total = 0
+
         async def _emit_node_status(trigger: str) -> None:
+            nonlocal _last_node_status_emit_at, _last_node_status_fingerprint, _suppressed_duplicate_node_status_total
             try:
                 if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
                     return
@@ -1020,6 +1087,26 @@ class BootstrapService:
                     return
                 payload = _current_node_status_push_payload()
                 payload["trigger"] = str(trigger or "").strip() or "runtime"
+                now = time.time()
+                should_emit, fingerprint = _should_emit_node_status(
+                    payload=payload,
+                    now=now,
+                    last_emitted_at=_last_node_status_emit_at,
+                    last_fingerprint=_last_node_status_fingerprint,
+                )
+                if not should_emit:
+                    _suppressed_duplicate_node_status_total += 1
+                    if _suppressed_duplicate_node_status_total in {1, 10} or (
+                        _suppressed_duplicate_node_status_total % 100 == 0
+                    ):
+                        self._log.warning(
+                            "suppressed duplicate node.status trigger=%s total=%s",
+                            payload["trigger"],
+                            _suppressed_duplicate_node_status_total,
+                        )
+                    return
+                _last_node_status_emit_at = now
+                _last_node_status_fingerprint = fingerprint
                 await bus.emit(
                     "node.status",
                     payload,
@@ -1208,7 +1295,7 @@ class BootstrapService:
                             except Exception:
                                 pass
 
-                self._boot_tasks.append(asyncio.create_task(_loop_lag_monitor(), name="adaos-loop-lag-monitor"))
+                self._start_boot_task_once("adaos-loop-lag-monitor", _loop_lag_monitor)
         except Exception:
             pass
 
@@ -1254,7 +1341,7 @@ class BootstrapService:
                             last_tick_box["t"] = time.monotonic()
                             await asyncio.sleep(0.2)
 
-                    self._boot_tasks.append(asyncio.create_task(_tick(), name="adaos-loop-tick"))
+                    self._start_boot_task_once("adaos-loop-tick", _tick)
 
                     def _watch() -> None:
                         last_dump = 0.0
@@ -1297,7 +1384,7 @@ class BootstrapService:
                         await bus.emit("net.subnet.node.down", {"node_id": getattr(info, "node_id", None)}, source="lifecycle", actor="system")
                     await asyncio.sleep(5)
 
-            self._boot_tasks.append(asyncio.create_task(lease_monitor(), name="adaos-lease-monitor"))
+            self._start_boot_task_once("adaos-lease-monitor", lease_monitor)
             self._ready.set()
             self._booted = True
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
@@ -1308,18 +1395,8 @@ class BootstrapService:
             except Exception:
                 self._log.debug("failed to finalize core.update.status after sys.ready", exc_info=True)
             await _report_control_lifecycle("sys.ready")
-            self._boot_tasks.append(
-                asyncio.create_task(
-                    _control_lifecycle_heartbeat(),
-                    name="adaos-control-lifecycle-heartbeat",
-                )
-            )
-            self._boot_tasks.append(
-                asyncio.create_task(
-                    _node_status_push_heartbeat(),
-                    name="adaos-node-status-push-heartbeat",
-                )
-            )
+            self._start_boot_task_once("adaos-control-lifecycle-heartbeat", _control_lifecycle_heartbeat)
+            self._start_boot_task_once("adaos-node-status-push-heartbeat", _node_status_push_heartbeat)
         else:
             task = await self._member_register_and_heartbeat(conf)
             if task:
@@ -7215,7 +7292,7 @@ class BootstrapService:
                                 delay = min(max(delay, 0.5), 2.0)
 
                 # TODO restore nats WS subscription
-                self._boot_tasks.append(asyncio.create_task(_nats_bridge_supervisor(), name="adaos-nats-io-bridge"))
+                self._start_boot_task_once("adaos-nats-io-bridge", _nats_bridge_supervisor)
         except Exception:
             try:
                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
