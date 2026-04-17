@@ -42,6 +42,10 @@ from adaos.services.eventbus import emit as bus_emit
 
 _log = logging.getLogger("adaos.webrtc.peer")
 _media_relay = MediaRelay()
+_REUSABLE_CONNECTION_STATES = {"new", "connecting", "connected"}
+_TERMINAL_CONNECTION_STATES = {"failed", "closed", "disconnected"}
+_LIVE_CHANNEL_STATES = {"connecting", "open"}
+_STUCK_PEER_GRACE_SECONDS = 5.0
 
 STUN_CONFIG = RTCConfiguration(
     iceServers=[
@@ -78,10 +82,16 @@ class HubPeer:
         self._loopback_tracks: dict[str, dict[str, Any]] = {}
         self._media_upload: dict[str, Any] | None = None
         self._offer_lock = asyncio.Lock()
+        self._scheduled_close_task: asyncio.Task[None] | None = None
+        self._closed = False
+        self._created_at = time.time()
+        self._last_activity_at = self._created_at
+        self._last_state_change_at = self._created_at
 
         # Browser creates the DataChannels – hub receives them here.
         @self.pc.on("datachannel")
         def on_datachannel(channel) -> None:  # type: ignore[no-untyped-def]
+            self._touch()
             _log.info("datachannel opened: label=%s device=%s", channel.label, self.device_id)
             if channel.label == "events":
                 self._setup_events_channel(channel)
@@ -104,13 +114,21 @@ class HubPeer:
 
         @self.pc.on("connectionstatechange")
         def on_state() -> None:  # type: ignore[no-untyped-def]
-            _log.info("peer %s connectionState=%s", self.device_id, self.pc.connectionState)
-            self._emit_state_event(reason=f"connection_state:{self.pc.connectionState}")
-            if self.pc.connectionState in ("failed", "closed"):
-                asyncio.ensure_future(self.close())
+            state = self._connection_state()
+            self._touch()
+            self._last_state_change_at = time.time()
+            _log.info("peer %s connectionState=%s", self.device_id, state)
+            self._emit_state_event(reason=f"connection_state:{state}")
+            if state == "connected":
+                self._cancel_scheduled_close()
+                return
+            if state in _TERMINAL_CONNECTION_STATES:
+                delay = 0.0 if state in {"failed", "closed"} else 1.0
+                self._schedule_close(reason=f"connection_state:{state}", delay=delay)
 
         @self.pc.on("track")
         def on_track(track) -> None:  # type: ignore[no-untyped-def]
+            self._touch()
             track_id = str(getattr(track, "id", "") or f"{track.kind}:{len(self._incoming_tracks) + 1}")
             now = time.time()
             self._incoming_tracks[track_id] = {
@@ -153,6 +171,7 @@ class HubPeer:
                 if rec is not None:
                     rec["ready_state"] = "ended"
                     rec["ended_at"] = time.time()
+                self._touch()
                 loopback = self._loopback_tracks.pop(track_id, None)
                 await self._detach_loopback_sender(loopback)
                 _log.info(
@@ -162,6 +181,109 @@ class HubPeer:
                     self.device_id,
                 )
                 self._emit_state_event(reason=f"track:{getattr(track, 'kind', 'unknown')}:ended")
+                self._touch()
+                self._schedule_close_if_orphaned(reason=f"track:{getattr(track, 'kind', 'unknown')}:ended")
+
+    def _touch(self) -> None:
+        self._last_activity_at = time.time()
+
+    def _connection_state(self) -> str:
+        try:
+            return str(getattr(self.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _channel_state(channel: Any | None) -> str:
+        try:
+            return str(getattr(channel, "readyState", "") or "missing").strip().lower() or "missing"
+        except Exception:
+            return "missing"
+
+    def _events_state(self) -> str:
+        return self._channel_state(self._events_channel)
+
+    def _yjs_state(self) -> str:
+        return self._channel_state(self._yjs_channel)
+
+    def _media_state(self) -> str:
+        return self._channel_state(self._media_channel)
+
+    def _has_live_channels_or_tracks(self) -> bool:
+        if any(
+            state in _LIVE_CHANNEL_STATES
+            for state in (self._events_state(), self._yjs_state(), self._media_state())
+        ):
+            return True
+        return bool(self._incoming_tracks or self._loopback_tracks)
+
+    def _cancel_scheduled_close(self) -> None:
+        task = self._scheduled_close_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        self._scheduled_close_task = None
+
+    def is_reusable_for_offer(self) -> bool:
+        if self._closed:
+            return False
+        if self._connection_state() not in _REUSABLE_CONNECTION_STATES:
+            return False
+        task = self._scheduled_close_task
+        return not bool(task and not task.done())
+
+    def is_stale(self, *, now_ts: float | None = None) -> bool:
+        if self._closed:
+            return True
+        state = self._connection_state()
+        if state in _TERMINAL_CONNECTION_STATES:
+            return True
+        if self._has_live_channels_or_tracks():
+            return False
+        now = time.time() if now_ts is None else float(now_ts)
+        last_seen = max(self._created_at, self._last_activity_at, self._last_state_change_at)
+        return (now - last_seen) >= _STUCK_PEER_GRACE_SECONDS
+
+    def _schedule_close(self, *, reason: str, delay: float = 0.0) -> bool:
+        if self._closed:
+            return False
+        task = self._scheduled_close_task
+        if task is not None and not task.done():
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        async def _runner() -> None:
+            try:
+                if delay > 0.0:
+                    await asyncio.sleep(delay)
+                if not self.is_stale():
+                    return
+                await self.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.debug("scheduled peer close failed device=%s reason=%s", self.device_id, reason, exc_info=True)
+            finally:
+                current = asyncio.current_task()
+                if self._scheduled_close_task is current:
+                    self._scheduled_close_task = None
+
+        self._scheduled_close_task = loop.create_task(
+            _runner(),
+            name=f"webrtc-peer-close:{self.device_id}:{reason}",
+        )
+        return True
+
+    def _schedule_close_if_orphaned(self, *, reason: str, delay: float = 1.0) -> bool:
+        if self._has_live_channels_or_tracks():
+            return False
+        if self._connection_state() == "connected":
+            return False
+        return self._schedule_close(reason=reason, delay=delay)
 
     # -- DataChannel handlers -------------------------------------------------
 
@@ -170,6 +292,7 @@ class HubPeer:
         from adaos.services.yjs.gateway_ws import process_events_command
 
         self._events_channel = channel
+        self._touch()
         state = {"webspace_id": self.webspace_id}
         self._emit_state_event(reason="events_channel:open")
 
@@ -181,6 +304,7 @@ class HubPeer:
 
         @channel.on("message")
         def on_message(data: str | bytes) -> None:
+            self._touch()
             text = data if isinstance(data, str) else data.decode("utf-8", errors="replace")
             try:
                 msg = json.loads(text)
@@ -212,12 +336,15 @@ class HubPeer:
 
         @channel.on("close")
         def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._touch()
             self._events_channel = None
             self._emit_state_event(reason="events_channel:closed")
+            self._schedule_close_if_orphaned(reason="events_channel:closed")
 
     def _setup_yjs_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Bridge *yjs* DataChannel to ``ypy-websocket``."""
         self._yjs_channel = channel
+        self._touch()
         self._yjs_adapter = DataChannelYjsAdapter(channel, self.webspace_id)
         self._yjs_task = asyncio.ensure_future(
             self._yjs_adapter.serve(),
@@ -230,12 +357,15 @@ class HubPeer:
 
         @channel.on("close")
         def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._touch()
             self._yjs_channel = None
             self._emit_state_event(reason="yjs_channel:closed")
+            self._schedule_close_if_orphaned(reason="yjs_channel:closed")
 
     def _setup_media_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Accept direct binary media upload chunks over a dedicated DataChannel."""
         self._media_channel = channel
+        self._touch()
 
         async def _send(msg: dict[str, Any]) -> None:
             try:
@@ -329,6 +459,7 @@ class HubPeer:
 
         @channel.on("message")
         def on_message(data: str | bytes) -> None:
+            self._touch()
             async def _handle() -> None:
                 if isinstance(data, str):
                     try:
@@ -371,8 +502,10 @@ class HubPeer:
 
         @channel.on("close")
         def on_close() -> None:  # type: ignore[no-untyped-def]
+            self._touch()
             self._cleanup_media_upload(remove_temp=True)
             self._media_channel = None
+            self._schedule_close_if_orphaned(reason="media_channel:closed")
 
     def _cleanup_media_upload(self, *, remove_temp: bool) -> None:
         upload = self._media_upload
@@ -428,6 +561,7 @@ class HubPeer:
 
     async def handle_offer(self, sdp: str, type: str = "offer") -> dict[str, str]:
         async with self._offer_lock:
+            self._touch()
             await self._cancel_local_desc_task()
             offer = RTCSessionDescription(sdp=sdp, type=type)
             await self.pc.setRemoteDescription(offer)
@@ -466,6 +600,7 @@ class HubPeer:
     async def add_ice_candidate(self, candidate_dict: dict[str, Any]) -> None:
         if not candidate_dict:
             return
+        self._touch()
         # Parse ICE candidate from SDP string format
         sdp_line = candidate_dict.get("candidate", "")
         if not sdp_line:
@@ -476,18 +611,9 @@ class HubPeer:
         await self.pc.addIceCandidate(candidate)
 
     def snapshot_record(self) -> dict[str, Any]:
-        try:
-            connection_state = str(getattr(self.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
-        except Exception:
-            connection_state = "unknown"
-        try:
-            events_state = str(getattr(getattr(self, "_events_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
-        except Exception:
-            events_state = "missing"
-        try:
-            yjs_state = str(getattr(getattr(self, "_yjs_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
-        except Exception:
-            yjs_state = "missing"
+        connection_state = self._connection_state()
+        events_state = self._events_state()
+        yjs_state = self._yjs_state()
         incoming = self._incoming_tracks if isinstance(getattr(self, "_incoming_tracks", None), dict) else {}
         loopback = self._loopback_tracks if isinstance(getattr(self, "_loopback_tracks", None), dict) else {}
         incoming_audio_tracks = sum(
@@ -541,6 +667,18 @@ class HubPeer:
     # -- lifecycle ------------------------------------------------------------
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        current = asyncio.current_task()
+        scheduled = self._scheduled_close_task
+        if scheduled is not None and scheduled is not current and not scheduled.done():
+            scheduled.cancel()
+        self._scheduled_close_task = None
+        if _peers.get(self.device_id) is self:
+            del _peers[self.device_id]
+        pc = self.pc
+        self.pc = None  # type: ignore[assignment]
         adapter = self._yjs_adapter
         if adapter is not None:
             try:
@@ -574,14 +712,13 @@ class HubPeer:
         if local_desc_task is not None:
             with suppress(asyncio.CancelledError, Exception):
                 await local_desc_task
-        try:
-            await self.pc.close()
-        except Exception:
-            pass
+        if pc is not None:
+            try:
+                await pc.close()
+            except Exception:
+                pass
         self._emit_state_event(reason="peer.closed")
         # Only remove ourselves — a replacement peer may already be registered.
-        if _peers.get(self.device_id) is self:
-            del _peers[self.device_id]
         _log.info("peer closed device=%s", self.device_id)
 
 
@@ -602,14 +739,15 @@ async def handle_rtc_offer(
     """
     existing = _peers.get(device_id)
     if existing:
-        state = str(getattr(existing.pc, "connectionState", "") or "").strip().lower()
-        if state not in {"failed", "closed"}:
+        state = existing._connection_state() if hasattr(existing, "_connection_state") else str(getattr(existing.pc, "connectionState", "") or "").strip().lower()
+        reusable = bool(getattr(existing, "is_reusable_for_offer", lambda: state in _REUSABLE_CONNECTION_STATES)())
+        if reusable:
             existing.webspace_id = webspace_id
             existing._send_ice = send_ice_cb
             existing._emit_state_event(reason="offer.renegotiate")
             return await existing.handle_offer(offer_sdp, offer_type)
         _log.info(
-            "replacing closed/failed peer for device=%s on new offer state=%s",
+            "replacing stale peer for device=%s on new offer state=%s",
             device_id,
             state or "unknown",
         )
@@ -662,6 +800,24 @@ async def close_peers_for_webspace(
 
 def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
+    stale_peers = [
+        peer
+        for peer in list(_peers.values())
+        if hasattr(peer, "is_stale") and bool(peer.is_stale(now_ts=now))
+    ]
+    for peer in stale_peers:
+        if _peers.get(getattr(peer, "device_id", None)) is peer:
+            del _peers[peer.device_id]
+        schedule_close = getattr(peer, "_schedule_close", None)
+        if callable(schedule_close):
+            try:
+                schedule_close(reason="stale_peer_prune", delay=0.0)
+            except Exception:
+                _log.debug(
+                    "failed to schedule stale peer prune device=%s",
+                    getattr(peer, "device_id", "unknown"),
+                    exc_info=True,
+                )
     peers: list[dict[str, Any]] = []
     connection_states: dict[str, int] = {}
     open_events_channels = 0
@@ -671,20 +827,11 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
     loopback_audio_tracks = 0
     loopback_video_tracks = 0
     for device_id, peer in list(_peers.items()):
-        try:
-            state = str(getattr(peer.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
-        except Exception:
-            state = "unknown"
+        state = peer._connection_state() if hasattr(peer, "_connection_state") else str(getattr(peer.pc, "connectionState", "") or "unknown").strip().lower() or "unknown"
         connection_states[state] = int(connection_states.get(state) or 0) + 1
 
-        try:
-            events_state = str(getattr(getattr(peer, "_events_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
-        except Exception:
-            events_state = "missing"
-        try:
-            yjs_state = str(getattr(getattr(peer, "_yjs_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
-        except Exception:
-            yjs_state = "missing"
+        events_state = peer._events_state() if hasattr(peer, "_events_state") else str(getattr(getattr(peer, "_events_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
+        yjs_state = peer._yjs_state() if hasattr(peer, "_yjs_state") else str(getattr(getattr(peer, "_yjs_channel", None), "readyState", "") or "missing").strip().lower() or "missing"
         if events_state == "open":
             open_events_channels += 1
         if yjs_state == "open":
@@ -744,6 +891,7 @@ def webrtc_peer_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
         "loopback_audio_tracks": loopback_audio_tracks,
         "loopback_video_tracks": loopback_video_tracks,
         "connection_states": connection_states,
+        "pruned_stale_peers": len(stale_peers),
         "peers": peers,
         "updated_at": now,
     }

@@ -436,6 +436,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"{sync_runtime.get('replay_window_byte_total') or 0}B "
             f"yws={transport.get('active_yws_connections') or 0} "
             f"rtc_yjs={transport.get('webrtc_open_yjs_channels') or 0}/{transport.get('webrtc_peer_total') or 0} "
+            f"rtc_pruned={transport.get('webrtc_pruned_stale_peers') or 0} "
             f"rooms={transport.get('room_total') or 0} "
             f"storm={'yes' if transport.get('storm_detected') else 'no'} "
             f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "

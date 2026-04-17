@@ -61,6 +61,9 @@ def _load_peer_module(monkeypatch):
             self.dc = dc
             self.webspace_id = webspace_id
 
+        def close(self) -> None:
+            return None
+
         async def serve(self) -> None:
             return None
 
@@ -194,6 +197,65 @@ def test_handle_rtc_offer_replaces_failed_peer(monkeypatch) -> None:
     assert new_peer.emitted_reasons == ["offer.accepted"]
 
 
+def test_handle_rtc_offer_replaces_disconnected_peer(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+
+    class DisconnectedPeer:
+        def __init__(self) -> None:
+            self.pc = SimpleNamespace(connectionState="disconnected")
+            self.close_called = False
+
+        async def close(self) -> None:
+            self.close_called = True
+
+        def _connection_state(self) -> str:
+            return "disconnected"
+
+        def is_reusable_for_offer(self) -> bool:
+            return False
+
+    class NewPeer:
+        def __init__(self, device_id: str, webspace_id: str, send_ice_cb) -> None:
+            self.device_id = device_id
+            self.webspace_id = webspace_id
+            self._send_ice = send_ice_cb
+            self.pc = SimpleNamespace(connectionState="new")
+            self.handled_offers: list[tuple[str, str]] = []
+            self.emitted_reasons: list[str] = []
+
+        async def handle_offer(self, sdp: str, type: str = "offer") -> dict[str, str]:
+            self.handled_offers.append((sdp, type))
+            return {"sdp": "fresh-answer", "type": "answer"}
+
+        def _emit_state_event(self, *, reason: str) -> None:
+            self.emitted_reasons.append(reason)
+
+    monkeypatch.setattr(peer_mod, "HubPeer", NewPeer)
+    existing = DisconnectedPeer()
+    peer_mod._peers.clear()
+    peer_mod._peers["browser-3"] = existing
+
+    async def send_ice_cb(candidate: dict[str, object]) -> None:
+        return None
+
+    answer = asyncio.run(
+        peer_mod.handle_rtc_offer(
+            offer_sdp="offer-sdp",
+            offer_type="offer",
+            device_id="browser-3",
+            webspace_id="desk",
+            send_ice_cb=send_ice_cb,
+        )
+    )
+
+    new_peer = peer_mod._peers["browser-3"]
+    assert existing.close_called is True
+    assert isinstance(new_peer, NewPeer)
+    assert answer == {"sdp": "fresh-answer", "type": "answer"}
+    assert new_peer.handled_offers == [("offer-sdp", "offer")]
+    assert new_peer.emitted_reasons == ["offer.accepted"]
+
+
 def test_close_peers_for_webspace_closes_matching_peers(monkeypatch) -> None:
     peer_mod = _load_peer_module(monkeypatch)
 
@@ -223,3 +285,45 @@ def test_close_peers_for_webspace_closes_matching_peers(monkeypatch) -> None:
     assert close_b.closed is True
     assert keep.closed is False
     assert list(peer_mod._peers.keys()) == ["browser-keep"]
+
+
+def test_webrtc_peer_snapshot_prunes_stale_peers(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+
+    class StalePeer:
+        def __init__(self, device_id: str, webspace_id: str) -> None:
+            self.device_id = device_id
+            self.webspace_id = webspace_id
+            self.pc = SimpleNamespace(connectionState="disconnected")
+            self._events_channel = None
+            self._yjs_channel = None
+            self._incoming_tracks = {}
+            self._loopback_tracks = {}
+            self.scheduled_reasons: list[str] = []
+
+        def is_stale(self, *, now_ts=None) -> bool:
+            return True
+
+        def _schedule_close(self, *, reason: str, delay: float = 0.0) -> bool:
+            self.scheduled_reasons.append(f"{reason}:{delay}")
+            return True
+
+        def _connection_state(self) -> str:
+            return "disconnected"
+
+        def _events_state(self) -> str:
+            return "missing"
+
+        def _yjs_state(self) -> str:
+            return "missing"
+
+    peer_mod._peers.clear()
+    stale = StalePeer("browser-stale", "default")
+    peer_mod._peers[stale.device_id] = stale
+
+    snapshot = peer_mod.webrtc_peer_snapshot()
+
+    assert snapshot["peer_total"] == 0
+    assert snapshot["pruned_stale_peers"] == 1
+    assert stale.device_id not in peer_mod._peers
+    assert stale.scheduled_reasons == ["stale_peer_prune:0.0"]

@@ -4471,6 +4471,7 @@ def yjs_sync_runtime_snapshot(
             "webrtc_connected_peers": int(webrtc.get("connected_peers") or 0),
             "webrtc_open_events_channels": int(webrtc.get("open_events_channels") or 0),
             "webrtc_open_yjs_channels": int(webrtc.get("open_yjs_channels") or 0),
+            "webrtc_pruned_stale_peers": int(webrtc.get("pruned_stale_peers") or 0),
         },
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
