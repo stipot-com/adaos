@@ -1660,7 +1660,10 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
 
 
 @router.post("/yjs/webspaces/{webspace_id}/go-home", dependencies=[Depends(require_token)])
-async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
+async def node_yjs_go_home(
+    webspace_id: str,
+    payload: WebspaceYjsActionRequest | None = None,
+) -> dict[str, Any]:
     conf = load_config()
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
@@ -1671,7 +1674,7 @@ async def node_yjs_go_home(webspace_id: str) -> dict[str, Any]:
         }
     result = await go_home_webspace(
         str(webspace_id or "default") or "default",
-        wait_for_rebuild=False,
+        wait_for_rebuild=bool(payload.wait_for_rebuild) if payload and payload.wait_for_rebuild is not None else False,
     )
     result = _attach_runtime_and_rebuild(
         result,

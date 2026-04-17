@@ -1401,6 +1401,59 @@ def test_desktop_scenario_set_preserves_explicit_false(monkeypatch) -> None:
     assert captured == [("phase2-forward", "prompt_engineer_scenario", False, False)]
 
 
+def test_desktop_scenario_set_forwards_explicit_wait_for_rebuild(monkeypatch) -> None:
+    captured: list[tuple[str, str, bool | None, bool]] = []
+
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool | None = None,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home, wait_for_rebuild))
+        return {"ok": True}
+
+    monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
+
+    asyncio.run(
+        webspace_runtime_module._on_desktop_scenario_set(
+            {
+                "webspace_id": "phase2-forward",
+                "scenario_id": "prompt_engineer_scenario",
+                "wait_for_rebuild": True,
+            }
+        )
+    )
+
+    assert captured == [("phase2-forward", "prompt_engineer_scenario", None, True)]
+
+
+def test_webspace_go_home_event_forwards_explicit_wait_for_rebuild(monkeypatch) -> None:
+    captured: list[tuple[str, bool]] = []
+
+    async def _fake_go_home(
+        webspace_id: str,
+        *,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, wait_for_rebuild))
+        return {"ok": True}
+
+    monkeypatch.setattr(webspace_runtime_module, "go_home_webspace", _fake_go_home)
+
+    asyncio.run(
+        webspace_runtime_module._on_webspace_go_home(
+            {
+                "webspace_id": "phase2-home",
+                "wait_for_rebuild": True,
+            }
+        )
+    )
+
+    assert captured == [("phase2-home", True)]
+
+
 def test_reload_preview_webspaces_for_scenario_project(monkeypatch) -> None:
     scenario_id = "prompt_engineer_scenario"
     preview_a = "dev-prompt-a"

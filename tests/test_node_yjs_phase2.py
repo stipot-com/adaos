@@ -285,6 +285,41 @@ def test_node_yjs_go_home_endpoint_uses_helper(monkeypatch) -> None:
     assert published == [("go_home", "phase2-home", "prompt_engineer_scenario")]
 
 
+def test_node_yjs_go_home_endpoint_can_wait_for_rebuild(monkeypatch) -> None:
+    captured: list[tuple[str, bool]] = []
+
+    async def _fake_go_home(webspace_id: str, *, wait_for_rebuild: bool = True) -> dict[str, object]:
+        captured.append((webspace_id, wait_for_rebuild))
+        return {"ok": True, "accepted": True, "webspace_id": webspace_id, "scenario_id": "web_desktop"}
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(node_api_module, "go_home_webspace", _fake_go_home)
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+    monkeypatch.setattr(
+        node_api_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {
+            "webspace_id": webspace_id,
+            "status": "ready",
+            "pending": False,
+            "background": False,
+            "action": "scenario_switch_rebuild",
+            "scenario_id": "web_desktop",
+        },
+    )
+
+    result = asyncio.run(
+        node_api_module.node_yjs_go_home(
+            "phase2-home",
+            node_api_module.WebspaceYjsActionRequest(wait_for_rebuild=True),
+        )
+    )
+
+    assert captured == [("phase2-home", True)]
+    assert result["scenario_id"] == "web_desktop"
+    assert result["rebuild"]["status"] == "ready"
+
+
 def test_node_yjs_set_home_current_publishes_correct_action(monkeypatch) -> None:
     published: list[tuple[str, str, str | None]] = []
     async def _fake_set_current(webspace_id: str) -> dict[str, object]:

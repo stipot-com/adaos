@@ -4431,7 +4431,8 @@ async def _on_webspace_go_home(evt: Dict[str, Any]) -> None:
     webspace_id = _webspace_id(payload)
     if not webspace_id:
         return
-    await go_home_webspace(webspace_id, wait_for_rebuild=False)
+    wait_for_rebuild = bool(payload.get("wait_for_rebuild")) if "wait_for_rebuild" in payload else False
+    await go_home_webspace(webspace_id, wait_for_rebuild=wait_for_rebuild)
 
 
 @subscribe("desktop.webspace.set_home")
@@ -4474,11 +4475,12 @@ async def _on_desktop_scenario_set(evt: Dict[str, Any]) -> None:
         set_home = bool(payload.get("set_home"))
     elif "persist_home" in payload:
         set_home = bool(payload.get("persist_home"))
+    wait_for_rebuild = bool(payload.get("wait_for_rebuild")) if "wait_for_rebuild" in payload else False
     await switch_webspace_scenario(
         webspace_id,
         scenario_id,
         set_home=set_home,
-        wait_for_rebuild=False,
+        wait_for_rebuild=wait_for_rebuild,
     )
 
 
