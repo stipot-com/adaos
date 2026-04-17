@@ -50,6 +50,7 @@ _EFFECTIVE_BRANCH_PATHS = (
     "data.routing",
     "registry.merged",
 )
+_WHOLE_BRANCH_REPLACE_PATHS = frozenset(_EFFECTIVE_BRANCH_PATHS)
 _RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY = "effective_branch_fingerprints"
 _WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
 _WEBUI_LOAD_FOCUS = frozenset({"primary", "supporting", "off_focus", "background"})
@@ -663,6 +664,11 @@ def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> tup
         return True, "replace"
     if _json_like_equal(current, value):
         return False, "replace"
+    y_map.set(txn, key, _clone_json_like(value))
+    return True, "replace"
+
+
+def _replace_map_value(y_map: Any, txn: Any, key: str, value: Any) -> tuple[bool, str]:
     y_map.set(txn, key, _clone_json_like(value))
     return True, "replace"
 
@@ -1994,7 +2000,10 @@ class WebspaceScenarioRuntime:
                 pending_fingerprint_updates[path] = fingerprint
                 return
             try:
-                changed, apply_mode = _set_map_value_if_changed(y_map, txn, key, value)
+                if path in _WHOLE_BRANCH_REPLACE_PATHS:
+                    changed, apply_mode = _replace_map_value(y_map, txn, key, value)
+                else:
+                    changed, apply_mode = _set_map_value_if_changed(y_map, txn, key, value)
             except Exception:
                 if not ignore_errors:
                     raise
