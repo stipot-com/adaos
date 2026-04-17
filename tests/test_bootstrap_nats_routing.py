@@ -24,6 +24,7 @@ if "ypy_websocket" not in sys.modules:
     sys.modules["ypy_websocket"] = pkg
 
 from adaos.services import bootstrap as bootstrap_mod
+from adaos.services.system_model import service as system_model_service
 
 
 def test_nats_url_needs_public_ws_refresh_for_legacy_public_tcp_url() -> None:
@@ -288,6 +289,56 @@ def test_bootstrap_shutdown_stops_scheduler(monkeypatch) -> None:
     assert "scheduler" in calls
     assert calls[0] == "sys.stopping"
     assert calls[-1] == "sys.stopped"
+
+
+def test_node_status_push_heartbeat_rejects_non_finite_values(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_NODE_STATUS_PUSH_HEARTBEAT_S", "nan")
+    assert system_model_service.node_status_push_heartbeat_s() == 5.0
+
+    monkeypatch.setenv("ADAOS_NODE_STATUS_PUSH_HEARTBEAT_S", "inf")
+    assert system_model_service.node_status_push_heartbeat_s() == 5.0
+
+
+def test_bootstrap_bounded_interval_rejects_non_finite_values() -> None:
+    assert bootstrap_mod._bounded_interval_seconds("nan", default=15.0, minimum=5.0) == 15.0
+    assert bootstrap_mod._bounded_interval_seconds("inf", default=15.0, minimum=5.0) == 15.0
+    assert bootstrap_mod._bounded_interval_seconds("1", default=15.0, minimum=5.0) == 5.0
+
+
+def test_run_boot_sequence_deduplicates_concurrent_starts(monkeypatch) -> None:
+    svc = bootstrap_mod.BootstrapService(
+        SimpleNamespace(config=SimpleNamespace(role="hub")),
+        heartbeat=SimpleNamespace(),
+        skills_loader=SimpleNamespace(),
+        subnet_registry=SimpleNamespace(),
+    )
+
+    calls = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _impl(self, app) -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        self._booted = True
+        self._ready.set()
+
+    monkeypatch.setattr(bootstrap_mod.BootstrapService, "_run_boot_sequence_impl", _impl)
+
+    async def _exercise() -> None:
+        t1 = asyncio.create_task(svc.run_boot_sequence(object()))
+        await entered.wait()
+        t2 = asyncio.create_task(svc.run_boot_sequence(object()))
+        await asyncio.sleep(0)
+        assert calls == 1
+        release.set()
+        await asyncio.gather(t1, t2)
+        assert calls == 1
+        assert svc._booted is True
+
+    asyncio.run(_exercise())
 
 
 def test_runtime_candidate_mode_follows_transition_role(monkeypatch) -> None:

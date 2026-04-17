@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json as _json
 import logging
+import math
 import os
 import socket
 import threading
@@ -100,6 +101,18 @@ from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 from adaos.services.subnet_alias import save_subnet_alias
 from adaos.integrations.telegram.sender import TelegramSender
+
+
+def _bounded_interval_seconds(raw: Any, *, default: float, minimum: float) -> float:
+    try:
+        interval_s = float(raw)
+    except Exception:
+        interval_s = float(default)
+    if not math.isfinite(interval_s):
+        interval_s = float(default)
+    if interval_s < float(minimum):
+        interval_s = float(minimum)
+    return float(interval_s)
 
 
 def _env_truthy(value: Any, *, default: bool = False) -> bool:
@@ -573,6 +586,10 @@ class BootstrapService:
         self.skills_loader = skills_loader
         self.subnet_registry = subnet_registry
         self._boot_tasks: List[asyncio.Task] = []
+        self._boot_lock = asyncio.Lock()
+        self._boot_done = asyncio.Event()
+        self._boot_done.set()
+        self._boot_in_progress = False
         self._ready = asyncio.Event()
         self._booted = False
         self._app: Any = None
@@ -899,6 +916,24 @@ class BootstrapService:
         return asyncio.create_task(loop(), name="adaos-heartbeat")
 
     async def run_boot_sequence(self, app: Any) -> None:
+        while True:
+            async with self._boot_lock:
+                if self._booted:
+                    return
+                if not self._boot_in_progress:
+                    self._boot_in_progress = True
+                    self._boot_done.clear()
+                    break
+                boot_done = self._boot_done
+            await boot_done.wait()
+        try:
+            await self._run_boot_sequence_impl(app)
+        finally:
+            async with self._boot_lock:
+                self._boot_in_progress = False
+                self._boot_done.set()
+
+    async def _run_boot_sequence_impl(self, app: Any) -> None:
         if self._booted:
             return
         self._app = app
@@ -946,14 +981,11 @@ class BootstrapService:
                     exc_info=True,
                 )
 
-        try:
-            _control_lifecycle_heartbeat_s = float(
-                os.getenv("HUB_CONTROL_LIFECYCLE_HEARTBEAT_S", "15") or "15"
-            )
-        except Exception:
-            _control_lifecycle_heartbeat_s = 15.0
-        if _control_lifecycle_heartbeat_s < 5.0:
-            _control_lifecycle_heartbeat_s = 5.0
+        _control_lifecycle_heartbeat_s = _bounded_interval_seconds(
+            os.getenv("HUB_CONTROL_LIFECYCLE_HEARTBEAT_S", "15") or "15",
+            default=15.0,
+            minimum=5.0,
+        )
 
         async def _control_lifecycle_heartbeat() -> None:
             if getattr(conf, "role", None) != "hub":
@@ -988,16 +1020,11 @@ class BootstrapService:
             except Exception:
                 self._log.debug("failed to emit node.status trigger=%s", trigger, exc_info=True)
 
-        try:
-            _node_status_push_heartbeat_interval_s = (
-                float(_node_status_push_heartbeat_s())
-                if callable(_node_status_push_heartbeat_s)
-                else 5.0
-            )
-        except Exception:
-            _node_status_push_heartbeat_interval_s = 5.0
-        if _node_status_push_heartbeat_interval_s < 2.0:
-            _node_status_push_heartbeat_interval_s = 2.0
+        _node_status_push_heartbeat_interval_s = _bounded_interval_seconds(
+            _node_status_push_heartbeat_s() if callable(_node_status_push_heartbeat_s) else 5.0,
+            default=5.0,
+            minimum=2.0,
+        )
 
         async def _node_status_push_heartbeat() -> None:
             if getattr(conf, "role", None) != "hub":
@@ -7214,6 +7241,8 @@ class BootstrapService:
         if self._boot_tasks:
             await asyncio.gather(*self._boot_tasks, return_exceptions=True)
             self._boot_tasks.clear()
+        self._boot_in_progress = False
+        self._boot_done.set()
         self._booted = False
         self._ready.clear()
         await bus.emit("sys.stopped", {}, source="lifecycle", actor="system")

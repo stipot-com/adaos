@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -92,16 +93,26 @@ def current_node_status_payload() -> dict[str, Any]:
     }
 
 
+def _bounded_interval_seconds(raw: Any, *, default: float, minimum: float) -> float:
+    try:
+        interval_s = float(raw)
+    except Exception:
+        interval_s = float(default)
+    if not math.isfinite(interval_s):
+        interval_s = float(default)
+    if interval_s < float(minimum):
+        interval_s = float(minimum)
+    return float(interval_s)
+
+
 def node_status_push_heartbeat_s() -> float:
     try:
-        interval_s = float(
+        raw = (
             os.getenv("ADAOS_NODE_STATUS_PUSH_HEARTBEAT_S", "5") or "5"
         )
     except Exception:
-        interval_s = 5.0
-    if interval_s < 2.0:
-        interval_s = 2.0
-    return interval_s
+        raw = "5"
+    return _bounded_interval_seconds(raw, default=5.0, minimum=2.0)
 
 
 def current_node_status_push_payload(*, updated_at: float | None = None) -> dict[str, Any]:
