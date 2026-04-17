@@ -7,6 +7,7 @@ Yjs websocket gateway implementation (service layer).
 import asyncio
 from collections import deque
 import gc
+import hashlib
 import inspect
 import json
 import time
@@ -68,6 +69,15 @@ _YROOM_LIFECYCLE: dict[str, dict[str, Any]] = {}
 _WS_EVENT_SUBSCRIPTIONS_LOCK = threading.RLock()
 _WS_EVENT_SUBSCRIBERS: dict[int, dict[str, Any]] = {}
 _WS_EVENT_FORWARDER_INSTALLED = False
+_COMMAND_TRACE_LOCK = threading.RLock()
+_COMMAND_TRACE_HISTORY: deque[dict[str, Any]] = deque(maxlen=128)
+_COMMAND_TRACE_STATS: dict[str, int] = {
+    "reload_total": 0,
+    "reload_duplicate_total": 0,
+    "reset_total": 0,
+    "reset_duplicate_total": 0,
+}
+_COMMAND_TRACE_SEQ = 0
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -116,6 +126,144 @@ def _memory_stream_statistics(stream: Any) -> dict[str, Any]:
         "open_receive_streams": int(getattr(snapshot, "open_receive_streams", 0) or 0),
         "tasks_waiting_send": int(getattr(snapshot, "tasks_waiting_send", 0) or 0),
         "tasks_waiting_receive": int(getattr(snapshot, "tasks_waiting_receive", 0) or 0),
+    }
+
+
+def _command_payload_fingerprint(kind: str, payload: Any) -> str:
+    raw = dict(payload or {}) if isinstance(payload, dict) else {}
+    raw.pop("_meta", None)
+    try:
+        encoded = json.dumps(
+            {
+                "kind": str(kind or "").strip(),
+                "payload": raw,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except Exception:
+        encoded = f"{kind}:{sorted(raw.items())}".encode("utf-8", errors="replace")
+    return hashlib.sha1(encoded).hexdigest()[:12]
+
+
+def _record_command_trace(
+    *,
+    kind: str,
+    cmd_id: str | None,
+    payload: dict[str, Any] | None,
+    device_id: str | None,
+    webspace_id: str | None,
+    client_label: str | None,
+) -> dict[str, Any]:
+    global _COMMAND_TRACE_SEQ
+
+    now = time.time()
+    normalized_kind = str(kind or "").strip() or "-"
+    effective_payload = dict(payload or {})
+    effective_webspace = str(
+        effective_payload.get("webspace_id")
+        or effective_payload.get("workspace_id")
+        or webspace_id
+        or "default"
+    ).strip() or "default"
+    fingerprint = _command_payload_fingerprint(normalized_kind, effective_payload)
+    scenario_id = str(effective_payload.get("scenario_id") or "").strip() or None
+    recreate_room = bool(effective_payload.get("recreate_room"))
+    duplicate_recent = False
+    duplicate_delta_ms: float | None = None
+    duplicate_count_10s = 0
+
+    with _COMMAND_TRACE_LOCK:
+        for previous in reversed(_COMMAND_TRACE_HISTORY):
+            if str(previous.get("kind") or "") != normalized_kind:
+                continue
+            if str(previous.get("webspace_id") or "") != effective_webspace:
+                continue
+            if str(previous.get("fingerprint") or "") != fingerprint:
+                continue
+            previous_ts = float(previous.get("ts") or 0.0)
+            if previous_ts <= 0.0:
+                continue
+            delta_s = now - previous_ts
+            if delta_s <= 10.0:
+                duplicate_count_10s += 1
+            if not duplicate_recent and delta_s <= 10.0:
+                duplicate_recent = True
+                duplicate_delta_ms = round(delta_s * 1000.0, 3)
+
+        _COMMAND_TRACE_SEQ += 1
+        record = {
+            "seq": int(_COMMAND_TRACE_SEQ),
+            "ts": now,
+            "kind": normalized_kind,
+            "cmd_id": str(cmd_id or "").strip() or None,
+            "device_id": str(device_id or "").strip() or None,
+            "webspace_id": effective_webspace,
+            "client": str(client_label or "").strip() or None,
+            "scenario_id": scenario_id,
+            "recreate_room": recreate_room,
+            "fingerprint": fingerprint,
+            "duplicate_recent": duplicate_recent,
+            "duplicate_delta_ms": duplicate_delta_ms,
+            "duplicate_count_10s": duplicate_count_10s,
+        }
+        _COMMAND_TRACE_HISTORY.append(record)
+        if normalized_kind == "desktop.webspace.reload":
+            _COMMAND_TRACE_STATS["reload_total"] = int(_COMMAND_TRACE_STATS.get("reload_total") or 0) + 1
+            if duplicate_recent:
+                _COMMAND_TRACE_STATS["reload_duplicate_total"] = int(_COMMAND_TRACE_STATS.get("reload_duplicate_total") or 0) + 1
+        elif normalized_kind == "desktop.webspace.reset":
+            _COMMAND_TRACE_STATS["reset_total"] = int(_COMMAND_TRACE_STATS.get("reset_total") or 0) + 1
+            if duplicate_recent:
+                _COMMAND_TRACE_STATS["reset_duplicate_total"] = int(_COMMAND_TRACE_STATS.get("reset_duplicate_total") or 0) + 1
+    return record
+
+
+def _command_trace_snapshot(now: float) -> dict[str, Any]:
+    with _COMMAND_TRACE_LOCK:
+        history = list(_COMMAND_TRACE_HISTORY)
+        stats = dict(_COMMAND_TRACE_STATS)
+    recent_reload_60s = 0
+    recent_reset_60s = 0
+    last_reload: dict[str, Any] | None = None
+    recent_items: list[dict[str, Any]] = []
+    for record in reversed(history):
+        ts = float(record.get("ts") or 0.0)
+        age_s = round(max(0.0, now - ts), 3) if ts > 0.0 else None
+        entry = {
+            "seq": int(record.get("seq") or 0),
+            "kind": str(record.get("kind") or ""),
+            "cmd_id": record.get("cmd_id"),
+            "device_id": record.get("device_id"),
+            "webspace_id": record.get("webspace_id"),
+            "client": record.get("client"),
+            "scenario_id": record.get("scenario_id"),
+            "recreate_room": bool(record.get("recreate_room")),
+            "fingerprint": record.get("fingerprint"),
+            "duplicate_recent": bool(record.get("duplicate_recent")),
+            "duplicate_delta_ms": record.get("duplicate_delta_ms"),
+            "duplicate_count_10s": int(record.get("duplicate_count_10s") or 0),
+            "age_s": age_s,
+        }
+        if entry["kind"] == "desktop.webspace.reload":
+            if age_s is not None and age_s <= 60.0:
+                recent_reload_60s += 1
+            if last_reload is None:
+                last_reload = dict(entry)
+        elif entry["kind"] == "desktop.webspace.reset" and age_s is not None and age_s <= 60.0:
+            recent_reset_60s += 1
+        if len(recent_items) < 8:
+            recent_items.append(entry)
+    return {
+        "reload_total": int(stats.get("reload_total") or 0),
+        "reload_duplicate_total": int(stats.get("reload_duplicate_total") or 0),
+        "reload_recent_60s": int(recent_reload_60s),
+        "reset_total": int(stats.get("reset_total") or 0),
+        "reset_duplicate_total": int(stats.get("reset_duplicate_total") or 0),
+        "reset_recent_60s": int(recent_reset_60s),
+        "last_reload": last_reload or {},
+        "recent": recent_items,
     }
 
 
@@ -969,6 +1117,7 @@ def gateway_transport_snapshot(*, now_ts: float | None = None) -> dict[str, Any]
             "yws": _y_server_runtime_snapshot(),
         },
         "rooms": room_details,
+        "commands": _command_trace_snapshot(now),
         "ownership": _gateway_transport_ownership_snapshot(),
         "updated_at": now,
     }
@@ -1360,6 +1509,7 @@ async def process_events_command(
     device_id: str,
     webspace_id: str,
     send_response: Callable[[dict[str, Any]], Awaitable[None]],
+    client_label: str | None = None,
 ) -> str | None:
     """
     Process a single events-channel command and send ack via *send_response*.
@@ -1540,11 +1690,66 @@ async def process_events_command(
         return None
 
     if kind == "desktop.webspace.reload":
+        payload = dict(payload or {})
+        trace = _record_command_trace(
+            kind=kind,
+            cmd_id=cmd_id,
+            payload=payload,
+            device_id=device_id,
+            webspace_id=webspace_id,
+            client_label=client_label,
+        )
+        meta = dict(payload.get("_meta") or {})
+        meta.setdefault("cmd_id", str(cmd_id or "").strip() or None)
+        meta.setdefault("gateway_client", str(client_label or "").strip() or None)
+        meta.setdefault("gateway_command_seq", int(trace.get("seq") or 0))
+        meta.setdefault("gateway_command_fingerprint", str(trace.get("fingerprint") or ""))
+        payload["_meta"] = meta
+        _ylog.warning(
+            "desktop.webspace.reload ingress cmd=%s seq=%s webspace=%s device=%s client=%s scenario=%s recreate_room=%s dup_recent=%s dup10s=%s fp=%s",
+            cmd_id or "-",
+            trace.get("seq") or 0,
+            trace.get("webspace_id") or webspace_id,
+            device_id or "-",
+            client_label or "-",
+            trace.get("scenario_id") or "-",
+            "yes" if trace.get("recreate_room") else "no",
+            "yes" if trace.get("duplicate_recent") else "no",
+            trace.get("duplicate_count_10s") or 0,
+            trace.get("fingerprint") or "-",
+        )
         _publish_bus("desktop.webspace.reload", payload)
         await _ack()
         return None
 
     if kind == "desktop.webspace.reset":
+        payload = dict(payload or {})
+        trace = _record_command_trace(
+            kind=kind,
+            cmd_id=cmd_id,
+            payload=payload,
+            device_id=device_id,
+            webspace_id=webspace_id,
+            client_label=client_label,
+        )
+        meta = dict(payload.get("_meta") or {})
+        meta.setdefault("cmd_id", str(cmd_id or "").strip() or None)
+        meta.setdefault("gateway_client", str(client_label or "").strip() or None)
+        meta.setdefault("gateway_command_seq", int(trace.get("seq") or 0))
+        meta.setdefault("gateway_command_fingerprint", str(trace.get("fingerprint") or ""))
+        payload["_meta"] = meta
+        _ylog.warning(
+            "desktop.webspace.reset ingress cmd=%s seq=%s webspace=%s device=%s client=%s scenario=%s dup_recent=%s dup10s=%s fp=%s",
+            cmd_id or "-",
+            trace.get("seq") or 0,
+            trace.get("webspace_id") or webspace_id,
+            device_id or "-",
+            client_label or "-",
+            trace.get("scenario_id") or "-",
+            "yes" if trace.get("duplicate_recent") else "no",
+            trace.get("duplicate_count_10s") or 0,
+            trace.get("fingerprint") or "-",
+        )
         _publish_bus("desktop.webspace.reset", payload)
         await _ack()
         return None
@@ -1751,6 +1956,7 @@ async def events_ws(websocket: WebSocket):
                 payload=payload,
                 device_id=device_id or "dev-unknown",
                 webspace_id=webspace_id,
+                client_label=_ws_client_str(websocket),
                 send_response=_ws_send,
             )
             # Update connection-scoped state when a command changed it.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import time
@@ -614,6 +615,77 @@ def test_infrastate_marketplace_catalog_prefers_remote_registry_and_local_scan(m
     items = mod._marketplace_catalog_entries("scenarios")
 
     assert [item["name"] for item in items] == ["infrascope", "remote_scene"]
+
+
+def test_infrastate_marketplace_catalog_uses_ttl_cache(monkeypatch, tmp_path: Path):
+    mod = _load_infrastate_module()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    calls = {"git": 0, "scan": 0}
+
+    monkeypatch.setattr(
+        mod,
+        "get_ctx",
+        lambda: SimpleNamespace(paths=SimpleNamespace(workspace_dir=lambda: workspace)),
+    )
+    monkeypatch.setattr(mod, "list_workspace_registry_entries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "_MARKETPLACE_CACHE_TTL_S", 30.0)
+    mod._marketplace_catalog_cache.clear()
+
+    def _fake_git_run(*args, **kwargs):
+        calls["git"] += 1
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"skills":[{"kind":"skill","id":"remote_skill","name":"remote_skill","version":"1.0.0"}]}',
+            stderr="",
+        )
+
+    def _fake_rebuild(workspace_root):
+        calls["scan"] += 1
+        return {"skills": [{"kind": "skill", "id": "local_skill", "name": "local_skill", "version": "0.1.0"}]}
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_git_run)
+    monkeypatch.setattr(mod, "rebuild_workspace_registry", _fake_rebuild)
+
+    first = mod._marketplace_catalog_entries("skills")
+    second = mod._marketplace_catalog_entries("skills")
+
+    assert [item["name"] for item in first] == ["local_skill", "remote_skill"]
+    assert [item["name"] for item in second] == ["local_skill", "remote_skill"]
+    assert calls == {"git": 1, "scan": 1}
+
+
+def test_infrastate_project_async_skips_snapshot_with_only_timestamp_changes(monkeypatch):
+    mod = _load_infrastate_module()
+    applied: list[tuple[str | None, str]] = []
+    mod._projection_fingerprints.clear()
+    mod._projection_diag.update({"apply_total": 0, "skip_total": 0, "cache_hit_total": 0})
+
+    async def _fake_set_async(slot, value, *, user_id=None, webspace_id=None):
+        applied.append((webspace_id, str(value.get("summary", {}).get("value") or "")))
+
+    monkeypatch.setattr(mod, "ctx_subnet", SimpleNamespace(set_async=_fake_set_async))
+    monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+
+    first = {
+        "summary": {"value": "ready", "updated_at": 10.0},
+        "projection_diag": {"apply_total": 0},
+        "last_refresh_ts": 10.0,
+        "events": [],
+    }
+    second = {
+        "summary": {"value": "ready", "updated_at": 11.0},
+        "projection_diag": {"apply_total": 999},
+        "last_refresh_ts": 11.0,
+        "events": [],
+    }
+
+    asyncio.run(mod._project_async(first, webspace_id="default"))
+    asyncio.run(mod._project_async(second, webspace_id="default"))
+
+    assert applied == [("default", "ready")]
+    assert mod._projection_diag["apply_total"] == 1
+    assert mod._projection_diag["skip_total"] == 1
 
 
 def test_infrastate_marketplace_hides_skills_installed_via_scenario_dependencies(monkeypatch):

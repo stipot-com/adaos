@@ -2102,6 +2102,20 @@ def _webspace_id(payload: Dict[str, Any]) -> str:
     return default_webspace_id()
 
 
+def _payload_command_trace(payload: Dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    return {
+        "cmd_id": str(meta.get("cmd_id") or "").strip() or None,
+        "gateway_client": str(meta.get("gateway_client") or "").strip() or None,
+        "gateway_command_seq": int(meta.get("gateway_command_seq") or 0),
+        "gateway_command_fingerprint": str(meta.get("gateway_command_fingerprint") or "").strip() or None,
+        "device_id": str(meta.get("device_id") or "").strip() or None,
+        "trace_id": str(meta.get("trace_id") or "").strip() or None,
+    }
+
+
 async def _resolve_rebuild_scenario_target(
     webspace_id: str,
     requested_scenario_id: str | None,
@@ -3452,6 +3466,7 @@ async def reload_webspace_from_scenario(
     *,
     scenario_id: str | None = None,
     action: str = "reload",
+    event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Re-seed a single webspace from its current or explicit scenario source and
@@ -3467,8 +3482,9 @@ async def reload_webspace_from_scenario(
     state, scenario_id, scenario_resolution = await _resolve_reload_scenario_target(webspace_id, scenario_id)
 
     verb = "resetting" if str(action or "").strip().lower() == "reset" else "reloading"
+    command_trace = _payload_command_trace(event_payload or {})
     _log.info(
-        "%s webspace %s from scenario %s (resolution=%s kind=%s source_mode=%s current=%s home=%s)",
+        "%s webspace %s from scenario %s (resolution=%s kind=%s source_mode=%s current=%s home=%s cmd=%s seq=%s client=%s device=%s trace=%s fp=%s)",
         verb,
         webspace_id,
         scenario_id,
@@ -3477,6 +3493,12 @@ async def reload_webspace_from_scenario(
         state.source_mode,
         state.current_scenario,
         state.effective_home_scenario,
+        command_trace.get("cmd_id") or "-",
+        command_trace.get("gateway_command_seq") or 0,
+        command_trace.get("gateway_client") or "-",
+        command_trace.get("device_id") or "-",
+        command_trace.get("trace_id") or "-",
+        command_trace.get("gateway_command_fingerprint") or "-",
     )
 
     result = await rebuild_webspace_from_sources(
@@ -3486,6 +3508,7 @@ async def reload_webspace_from_scenario(
         scenario_resolution=scenario_resolution,
         source_of_truth="scenario",
         reseed_from_scenario=True,
+        event_payload=event_payload,
     )
     result.update(
         {
@@ -4100,6 +4123,7 @@ async def _on_webspace_reload(evt: Dict[str, Any]) -> None:
         webspace_id,
         scenario_id=str(payload.get("scenario_id") or "").strip() or None,
         action="reset" if recreate_room else "reload",
+        event_payload=payload,
     )
 
 
@@ -4119,6 +4143,7 @@ async def _on_webspace_reset(evt: Dict[str, Any]) -> None:
         webspace_id,
         scenario_id=str(payload.get("scenario_id") or "").strip() or None,
         action="reset",
+        event_payload=payload,
     )
 
 

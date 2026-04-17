@@ -441,9 +441,21 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"storm={'yes' if transport.get('storm_detected') else 'no'} "
             f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "
             f"yws10s={transport.get('recent_open_10s') or 0} "
+            f"reloads={transport.get('reload_recent_60s') or 0}/{transport.get('reload_command_total') or 0} "
+            f"dup={transport.get('reload_duplicate_total') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
         )
+        last_reload_client = str(transport.get("last_reload_client") or "").strip()
+        if last_reload_client:
+            typer.echo(
+                "sync_runtime.reload_last: "
+                f"client={last_reload_client} "
+                f"webspace={transport.get('last_reload_webspace_id') or '-'} "
+                f"age={transport.get('last_reload_age_s') if transport.get('last_reload_age_s') is not None else '-'} "
+                f"dup={'yes' if transport.get('last_reload_duplicate_recent') else 'no'} "
+                f"fp={transport.get('last_reload_fingerprint') or '-'}"
+            )
     if media_runtime:
         assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}
         transport = media_runtime.get("transport") if isinstance(media_runtime.get("transport"), dict) else {}

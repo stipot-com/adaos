@@ -388,6 +388,58 @@ def test_process_events_command_publishes_go_home(monkeypatch) -> None:
     assert responses[-1]["ok"] is True
 
 
+def test_process_events_command_records_reload_command_trace(monkeypatch) -> None:
+    published: list[tuple[str, dict[str, object] | None]] = []
+    responses: list[dict[str, object]] = []
+
+    monkeypatch.setattr(gateway_module, "_make_publish_bus", lambda *args, **kwargs: (lambda topic, extra=None: published.append((topic, extra))))
+    gateway_module._COMMAND_TRACE_HISTORY.clear()
+    gateway_module._COMMAND_TRACE_STATS.update(
+        {
+            "reload_total": 0,
+            "reload_duplicate_total": 0,
+            "reset_total": 0,
+            "reset_duplicate_total": 0,
+        }
+    )
+    gateway_module._COMMAND_TRACE_SEQ = 0
+
+    async def _send_response(msg: dict[str, object]) -> None:
+        responses.append(msg)
+
+    asyncio.run(
+        gateway_module.process_events_command(
+            kind="desktop.webspace.reload",
+            cmd_id="cmd-reload-1",
+            payload={"webspace_id": "default", "scenario_id": "web_desktop"},
+            device_id="dev-1",
+            webspace_id="default",
+            send_response=_send_response,
+            client_label="events_ws:127.0.0.1:12345",
+        )
+    )
+
+    snapshot = gateway_module.gateway_transport_snapshot()
+    commands = snapshot["commands"]
+
+    assert published == [("desktop.webspace.reload", {"webspace_id": "default", "scenario_id": "web_desktop", "_meta": {"cmd_id": "cmd-reload-1", "gateway_client": "events_ws:127.0.0.1:12345", "gateway_command_seq": 1, "gateway_command_fingerprint": commands["last_reload"]["fingerprint"]}})]
+    assert responses[-1]["ok"] is True
+    assert commands["reload_total"] == 1
+    assert commands["reload_recent_60s"] == 1
+    assert commands["last_reload"]["cmd_id"] == "cmd-reload-1"
+    assert commands["last_reload"]["client"] == "events_ws:127.0.0.1:12345"
+    gateway_module._COMMAND_TRACE_HISTORY.clear()
+    gateway_module._COMMAND_TRACE_STATS.update(
+        {
+            "reload_total": 0,
+            "reload_duplicate_total": 0,
+            "reset_total": 0,
+            "reset_duplicate_total": 0,
+        }
+    )
+    gateway_module._COMMAND_TRACE_SEQ = 0
+
+
 def test_process_events_command_requires_scenario_id_for_set_home(monkeypatch) -> None:
     published: list[tuple[str, dict[str, object] | None]] = []
     responses: list[dict[str, object]] = []

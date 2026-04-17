@@ -325,6 +325,7 @@ class HubPeer:
                     payload=payload,
                     device_id=self.device_id,
                     webspace_id=state["webspace_id"],
+                    client_label=f"webrtc:{self.device_id}",
                     send_response=_send,
                 )
                 if new_ws:

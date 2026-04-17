@@ -193,6 +193,66 @@ def _publish_yjs_control_event(
         _log.debug("failed to publish %s for action=%s webspace=%s", event_type, action, webspace_id, exc_info=True)
 
 
+def _request_client_label(request: Request, *, endpoint: str) -> str:
+    client = request.client
+    host = str(getattr(client, "host", "") or "").strip() or "-"
+    port = getattr(client, "port", None)
+    remote = f"{host}:{port}" if port is not None else host
+    return f"http:{endpoint}:{remote}"
+
+
+def _trace_yjs_control_ingress(
+    *,
+    request: Request,
+    kind: str,
+    webspace_id: str,
+    scenario_id: str | None = None,
+    recreate_room: bool = False,
+) -> dict[str, Any]:
+    endpoint = str(request.url.path or "").strip() or "/api/node/yjs"
+    payload: dict[str, Any] = {"webspace_id": webspace_id}
+    if scenario_id:
+        payload["scenario_id"] = scenario_id
+    if recreate_room:
+        payload["recreate_room"] = True
+    meta = {
+        "cmd_id": str(request.headers.get("x-request-id") or request.headers.get("x-trace-id") or "").strip() or None,
+        "gateway_client": _request_client_label(request, endpoint=endpoint),
+        "trace_id": str(request.headers.get("x-trace-id") or request.headers.get("x-request-id") or "").strip() or None,
+        "device_id": str(request.headers.get("x-adaos-device-id") or "").strip() or None,
+    }
+    try:
+        from adaos.services.yjs.gateway_ws import _record_command_trace
+
+        trace = _record_command_trace(
+            kind=kind,
+            cmd_id=meta["cmd_id"],
+            payload=payload,
+            device_id=meta["device_id"],
+            webspace_id=webspace_id,
+            client_label=meta["gateway_client"],
+        )
+        meta["gateway_command_seq"] = int(trace.get("seq") or 0)
+        meta["gateway_command_fingerprint"] = str(trace.get("fingerprint") or "").strip() or None
+        _log.warning(
+            "%s ingress via control_api cmd=%s seq=%s webspace=%s client=%s scenario=%s recreate_room=%s dup_recent=%s dup10s=%s fp=%s",
+            kind,
+            meta["cmd_id"] or "-",
+            meta.get("gateway_command_seq") or 0,
+            webspace_id,
+            meta["gateway_client"] or "-",
+            scenario_id or "-",
+            "yes" if recreate_room else "no",
+            "yes" if trace.get("duplicate_recent") else "no",
+            trace.get("duplicate_count_10s") or 0,
+            meta.get("gateway_command_fingerprint") or "-",
+        )
+    except Exception:
+        _log.debug("failed to trace %s ingress for webspace=%s", kind, webspace_id, exc_info=True)
+    payload["_meta"] = meta
+    return payload
+
+
 def _attach_runtime_and_rebuild(
     result: dict[str, Any],
     *,
@@ -1317,7 +1377,7 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
 
 
 @router.post("/yjs/webspaces/{webspace_id}/reload", dependencies=[Depends(require_token)])
-async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest, request: Request) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "default").strip() or "default"
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
@@ -1330,6 +1390,13 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
     scenario_id = str(payload.scenario_id or "").strip() or None
     recreate_room_requested = bool(payload.recreate_room)
     requested_action = "reset" if recreate_room_requested else "reload"
+    event_payload = _trace_yjs_control_ingress(
+        request=request,
+        kind="desktop.webspace.reload",
+        webspace_id=target_webspace_id,
+        scenario_id=scenario_id,
+        recreate_room=recreate_room_requested,
+    )
     runtime_before = yjs_sync_runtime_snapshot(
         role=conf.role,
         webspace_id=target_webspace_id,
@@ -1338,6 +1405,7 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest) -
         target_webspace_id,
         scenario_id=scenario_id,
         action=requested_action,
+        event_payload=event_payload,
     )
     result = _attach_runtime_and_rebuild(
         result,
@@ -1683,7 +1751,7 @@ async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
 
 
 @router.post("/yjs/webspaces/{webspace_id}/reset", dependencies=[Depends(require_token)])
-async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
+async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest, request: Request) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "default").strip() or "default"
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
@@ -1697,10 +1765,18 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest) ->
         role=conf.role,
         webspace_id=target_webspace_id,
     )
+    event_payload = _trace_yjs_control_ingress(
+        request=request,
+        kind="desktop.webspace.reset",
+        webspace_id=target_webspace_id,
+        scenario_id=str(payload.scenario_id or "").strip() or None,
+        recreate_room=True,
+    )
     result = await reload_webspace_from_scenario(
         target_webspace_id,
         scenario_id=str(payload.scenario_id or "").strip() or None,
         action="reset",
+        event_payload=event_payload,
     )
     result = _attach_runtime_and_rebuild(
         result,

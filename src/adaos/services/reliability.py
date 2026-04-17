@@ -4353,6 +4353,7 @@ def yjs_sync_runtime_snapshot(
     servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
     yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
     gateway_rooms = gateway.get("rooms") if isinstance(gateway.get("rooms"), dict) else {}
+    gateway_commands = gateway.get("commands") if isinstance(gateway.get("commands"), dict) else {}
     try:
         from adaos.services.webrtc.peer import webrtc_peer_snapshot
 
@@ -4423,6 +4424,17 @@ def yjs_sync_runtime_snapshot(
             selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
     selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
     selected_webspace = _build_yjs_selected_webspace_snapshot(selected_webspace_id)
+    last_reload = (
+        dict(gateway_commands.get("last_reload") or {})
+        if isinstance(gateway_commands.get("last_reload"), dict)
+        else {}
+    )
+    recent_commands = [
+        dict(item)
+        for item in list(gateway_commands.get("recent") or [])
+        if isinstance(item, dict)
+        and str(item.get("webspace_id") or "").strip() == selected_webspace_id
+    ]
     (
         action_overrides,
         recovery_playbook,
@@ -4467,6 +4479,17 @@ def yjs_sync_runtime_snapshot(
             "update_stream_buffer_used_total": int(yws_transport.get("update_stream_buffer_used_total") or 0),
             "update_stream_waiting_send_total": int(yws_transport.get("update_stream_waiting_send_total") or 0),
             "update_stream_waiting_receive_total": int(yws_transport.get("update_stream_waiting_receive_total") or 0),
+            "reload_command_total": int(gateway_commands.get("reload_total") or 0),
+            "reload_duplicate_total": int(gateway_commands.get("reload_duplicate_total") or 0),
+            "reload_recent_60s": int(gateway_commands.get("reload_recent_60s") or 0),
+            "reset_command_total": int(gateway_commands.get("reset_total") or 0),
+            "reset_duplicate_total": int(gateway_commands.get("reset_duplicate_total") or 0),
+            "reset_recent_60s": int(gateway_commands.get("reset_recent_60s") or 0),
+            "last_reload_client": str(last_reload.get("client") or "").strip() or None,
+            "last_reload_age_s": last_reload.get("age_s"),
+            "last_reload_fingerprint": str(last_reload.get("fingerprint") or "").strip() or None,
+            "last_reload_duplicate_recent": bool(last_reload.get("duplicate_recent")),
+            "last_reload_webspace_id": str(last_reload.get("webspace_id") or "").strip() or None,
             "webrtc_peer_total": int(webrtc.get("peer_total") or 0),
             "webrtc_connected_peers": int(webrtc.get("connected_peers") or 0),
             "webrtc_open_events_channels": int(webrtc.get("open_events_channels") or 0),
@@ -4487,6 +4510,10 @@ def yjs_sync_runtime_snapshot(
             "transaction_probe": dict(txn_probe.get("selected") or {})
             if isinstance(txn_probe, dict)
             else {},
+            "command_trace": {
+                "last_reload": last_reload if str(last_reload.get("webspace_id") or "").strip() == selected_webspace_id else {},
+                "recent": recent_commands,
+            },
         },
         "webspace_guidance": webspace_guidance,
         "webspace_total": webspace_total,
