@@ -644,15 +644,17 @@ Use this checklist as the authoritative progress tracker for the migration.
   transactions instead of paying an extra post-apply YDoc write envelope.
   Reliability/CLI snapshots now also surface reconnect-storm pressure, room
   counts, replay-byte pressure, and detached state-vector fast-path reuse more
-  explicitly. The remaining YJS optimization gap is now less about ordinary
-  cold-open replay and more about safe diff-apply plus deeper live-room
-  memory/reconnect pressure under repeated rebuild cycles.
-- [ ] Add diff-apply for top-level resolved branches when the implementation is
+  explicitly.
+- [x] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
-  Current blocker: `y_py` currently materializes nested branch payloads as
-  plain `dict` / `list` values on read, so a real safe diff-apply slice needs
-  a storage-shape change (or explicit nested Y types) rather than a cosmetic
-  per-key wrapper around the existing branch replace path.
+  Current slice: dict-shaped top-level effective branches now lazily migrate to
+  attached `YMap` storage the first time they need a semantic write, after
+  which rebuild applies recurse through mapping subtrees instead of replacing
+  the full top-level branch payload on every change. Lists intentionally remain
+  atomic leaves for now, which keeps the implementation on a safe `y_py` path
+  while still eliminating most avoidable full-branch rewrites for
+  `ui.application`, `data.desktop`, `data.routing`, `data.installed`,
+  `data.catalog`, and `registry.merged`.
 - [x] Measure heavy scenarios such as `infrascope` before and after each slice.
 - [x] Add focused metrics for `time_to_first_structure`,
   `time_to_interactive_focus`, and `time_to_full_hydration`.

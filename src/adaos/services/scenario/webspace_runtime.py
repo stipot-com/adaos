@@ -386,6 +386,83 @@ def _clone_json_like(value: Any) -> Any:
         return value
 
 
+def _is_y_map_value(value: Any) -> bool:
+    y_map_type = getattr(Y, "YMap", None)
+    return bool(y_map_type) and isinstance(value, y_map_type)
+
+
+def _mapping_items(value: Any) -> list[tuple[str, Any]] | None:
+    if isinstance(value, Mapping):
+        return [(str(key), item) for key, item in value.items() if str(key)]
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return [(str(key), item) for key, item in items() if str(key)]
+        except Exception:
+            return None
+    return None
+
+
+def _attach_empty_y_map(parent_map: Any, txn: Any, key: str) -> Any | None:
+    y_map_type = getattr(Y, "YMap", None)
+    if not y_map_type or not _is_y_map_value(parent_map):
+        return None
+    try:
+        parent_map.set(txn, key, y_map_type({}))
+        attached = parent_map.get(key)
+    except Exception:
+        return None
+    return attached if _is_y_map_value(attached) else None
+
+
+def _reconcile_attached_y_map(node: Any, txn: Any, next_value: Any) -> bool:
+    next_items = _mapping_items(next_value)
+    if next_items is None:
+        return False
+    changed = False
+    next_lookup = {key: item for key, item in next_items}
+    try:
+        current_keys = [str(key) for key in list(node.keys()) if str(key)]
+    except Exception:
+        current_keys = []
+    for current_key in current_keys:
+        if current_key in next_lookup:
+            continue
+        try:
+            node.pop(txn, current_key)
+            changed = True
+        except Exception:
+            continue
+    for child_key, raw_child in next_items:
+        child_items = _mapping_items(raw_child)
+        try:
+            current_child = node.get(child_key)
+        except Exception:
+            current_child = None
+        if child_items is not None:
+            if _is_y_map_value(current_child):
+                if _reconcile_attached_y_map(current_child, txn, raw_child):
+                    changed = True
+                continue
+            normalized_child = _clone_json_like(raw_child)
+            if _clone_json_like(current_child) == normalized_child:
+                continue
+            attached_child = _attach_empty_y_map(node, txn, child_key)
+            if attached_child is None:
+                node.set(txn, child_key, normalized_child)
+                changed = True
+                continue
+            changed = True
+            _reconcile_attached_y_map(attached_child, txn, raw_child)
+            continue
+        normalized_child = _clone_json_like(raw_child)
+        if _clone_json_like(current_child) == normalized_child:
+            continue
+        node.set(txn, child_key, normalized_child)
+        changed = True
+    return changed
+
+
 def _fingerprint_json_like(value: Any) -> str:
     try:
         normalized = json.dumps(
@@ -535,16 +612,29 @@ def _remember_resolved_outputs(fingerprint: str, resolved: WebspaceResolverOutpu
         _RESOLVED_WEBSPACE_CACHE.popitem(last=False)
 
 
-def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> bool:
-    next_value = _clone_json_like(value)
+def _set_map_value_if_changed(y_map: Any, txn: Any, key: str, value: Any) -> tuple[bool, str]:
+    next_items = _mapping_items(value)
     try:
         current = y_map.get(key)
     except Exception:
         current = None
+    if next_items is not None:
+        normalized = _clone_json_like(value)
+        if _is_y_map_value(current):
+            return _reconcile_attached_y_map(current, txn, value), "diff"
+        if _clone_json_like(current) == normalized:
+            return False, "diff"
+        attached = _attach_empty_y_map(y_map, txn, key)
+        if attached is not None:
+            _reconcile_attached_y_map(attached, txn, value)
+            return True, "diff"
+        y_map.set(txn, key, normalized)
+        return True, "replace"
+    next_value = _clone_json_like(value)
     if _clone_json_like(current) == next_value:
-        return False
+        return False, "replace"
     y_map.set(txn, key, next_value)
-    return True
+    return True, "replace"
 
 
 def _merge_installed_with_auto(installed: Dict[str, Any], *, auto_apps: set[str], auto_widgets: set[str]) -> Dict[str, List[str]]:
@@ -1807,6 +1897,8 @@ class WebspaceScenarioRuntime:
         registry_map = ydoc.get_map("registry")
         target_paths = _EFFECTIVE_BRANCH_PATHS
         changed_paths: List[str] = []
+        diff_applied_paths: List[str] = []
+        replaced_paths: List[str] = []
         failed_paths: List[str] = []
         fingerprint_unchanged_paths: List[str] = []
         defaults_failed = False
@@ -1872,7 +1964,7 @@ class WebspaceScenarioRuntime:
                 pending_fingerprint_updates[path] = fingerprint
                 return
             try:
-                changed = _set_map_value_if_changed(y_map, txn, key, value)
+                changed, apply_mode = _set_map_value_if_changed(y_map, txn, key, value)
             except Exception:
                 if not ignore_errors:
                     raise
@@ -1884,6 +1976,10 @@ class WebspaceScenarioRuntime:
                 pending_fingerprint_updates[path] = fingerprint
             if changed:
                 changed_paths.append(path)
+                if apply_mode == "diff":
+                    diff_applied_paths.append(path)
+                else:
+                    replaced_paths.append(path)
 
         def _apply_phase(
             name: str,
@@ -1897,6 +1993,8 @@ class WebspaceScenarioRuntime:
             _raise_if_rebuild_request_superseded(webspace_id, expected_request_id)
             phase_started = time.perf_counter()
             phase_changed_before = len(changed_paths)
+            phase_diff_before = len(diff_applied_paths)
+            phase_replaced_before = len(replaced_paths)
             phase_failed_before = len(failed_paths)
             phase_fingerprint_unchanged_before = len(fingerprint_unchanged_paths)
             phase_defaults_failed = False
@@ -1931,6 +2029,8 @@ class WebspaceScenarioRuntime:
                     )
 
             phase_changed_paths = list(changed_paths[phase_changed_before:])
+            phase_diff_paths = list(diff_applied_paths[phase_diff_before:])
+            phase_replaced_paths = list(replaced_paths[phase_replaced_before:])
             phase_failed_paths = list(failed_paths[phase_failed_before:])
             phase_fingerprint_unchanged_paths = list(fingerprint_unchanged_paths[phase_fingerprint_unchanged_before:])
             branch_count = len(branch_specs)
@@ -1941,6 +2041,12 @@ class WebspaceScenarioRuntime:
                 "failed_branches": len(phase_failed_paths),
                 "changed_paths": phase_changed_paths,
             }
+            if phase_diff_paths:
+                phase_summary["diff_applied_branches"] = len(phase_diff_paths)
+                phase_summary["diff_applied_paths"] = phase_diff_paths
+            if phase_replaced_paths:
+                phase_summary["replaced_branches"] = len(phase_replaced_paths)
+                phase_summary["replaced_paths"] = phase_replaced_paths
             if phase_fingerprint_unchanged_paths:
                 phase_summary["fingerprint_unchanged_branches"] = len(phase_fingerprint_unchanged_paths)
                 phase_summary["fingerprint_unchanged_paths"] = phase_fingerprint_unchanged_paths
@@ -1982,6 +2088,12 @@ class WebspaceScenarioRuntime:
             "transaction_total": transaction_total,
             "phases": phase_summaries,
         }
+        if diff_applied_paths:
+            self._last_apply_summary["diff_applied_branches"] = len(diff_applied_paths)
+            self._last_apply_summary["diff_applied_paths"] = list(diff_applied_paths)
+        if replaced_paths:
+            self._last_apply_summary["replaced_branches"] = len(replaced_paths)
+            self._last_apply_summary["replaced_paths"] = list(replaced_paths)
         if fingerprint_unchanged_paths:
             self._last_apply_summary["fingerprint_unchanged_branches"] = len(fingerprint_unchanged_paths)
             self._last_apply_summary["fingerprint_unchanged_paths"] = list(fingerprint_unchanged_paths)

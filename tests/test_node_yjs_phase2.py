@@ -1624,6 +1624,8 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
                 "changed_branches": 2,
                 "unchanged_branches": 4,
                 "failed_branches": 0,
+                "diff_applied_branches": 1,
+                "replaced_branches": 1,
                 "changed_paths": ["ui.application", "registry.merged"],
                 "phases": {
                     "structure": {
@@ -1631,6 +1633,8 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
                         "changed_branches": 2,
                         "unchanged_branches": 0,
                         "failed_branches": 0,
+                        "diff_applied_branches": 1,
+                        "replaced_branches": 1,
                         "changed_paths": ["ui.application", "registry.merged"],
                     },
                     "interactive": {
@@ -1645,8 +1649,8 @@ def test_node_cli_apply_summary_prints_phase_breakdown(monkeypatch) -> None:
         }
     )
 
-    assert any("apply: changed=2/6 unchanged=4 failed=0 paths=ui.application,registry.merged" in line for line in echoed)
-    assert any("apply.phase.structure: changed=2/2 unchanged=0 failed=0 paths=ui.application,registry.merged" in line for line in echoed)
+    assert any("apply: changed=2/6 unchanged=4 failed=0 diff=1 replace=1 paths=ui.application,registry.merged" in line for line in echoed)
+    assert any("apply.phase.structure: changed=2/2 unchanged=0 failed=0 diff=1 replace=1 paths=ui.application,registry.merged" in line for line in echoed)
     assert any("apply.phase.interactive: changed=0/4 unchanged=4 failed=0" in line for line in echoed)
 
 
@@ -2600,6 +2604,8 @@ def test_node_cli_benchmark_scenario_falls_back_to_active_runtime_from_superviso
                             "changed_branches": 1,
                             "unchanged_branches": 5,
                             "fingerprint_unchanged_branches": 2,
+                            "diff_applied_branches": 1,
+                            "replaced_branches": 0,
                         },
                         "switch_timings_ms": {"write_switch_pointer": 2.0, "total": 6.0},
                         "timings_ms": {"resolve_rebuild_target": 4.0, "semantic_rebuild": 18.0, "total": 22.0},
@@ -2683,11 +2689,12 @@ def test_node_cli_benchmark_scenario_falls_back_to_active_runtime_from_superviso
         for line in echoed
     )
     assert any(
-        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=2 accept=6.000 ready=24.000 lag=0.000 first=10.000 interactive=14.000 full=24.000 polls=rebuild:1/materialization:0 status=ready"
+        "run=1 mode=pointer_only skipped=no cache_hit=no changed=1 fp_skip=2 diff=1 replace=0 accept=6.000 ready=24.000 lag=0.000 first=10.000 interactive=14.000 full=24.000 polls=rebuild:1/materialization:0 status=ready"
         in line
         for line in echoed
     )
     assert any("summary.fingerprint_unchanged_branches: avg=2.000 min=2.000 max=2.000" in line for line in echoed)
+    assert any("summary.diff_applied_branches: avg=1.000 min=1.000 max=1.000" in line for line in echoed)
 
 
 def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(monkeypatch) -> None:

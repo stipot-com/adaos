@@ -149,10 +149,10 @@ adaos autostart inspect --sample-sec 0.5
 
 # CPU inspection
 adaos autostart inspect --json
-runtime_pid = 19193 runtime_process.pid
-/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install py-spy
-/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install 'websockets>=13,<16'
-/root/adaos/.adaos/state/core_slots/slots/A/venv/bin/py-spy dump --pid <runtime_pid>
+runtime_pid = 26718 runtime_process.pid
+/root/.adaos/state/core_slots/slots/A/venv/bin/python -m pip install py-spy
+/root/adaos/.adaos/state/core_slots/slots/B/venv/bin/python -m pip install 'websockets>=13,<16'
+/root/.adaos/state/core_slots/slots/B/venv/bin/py-spy dump --pid 26718
 
 # Web client debug 
 # https://myinimatic.web.app/?boot_debug=1

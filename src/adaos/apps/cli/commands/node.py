@@ -967,6 +967,14 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
         fingerprint_unchanged = int(apply.get("fingerprint_unchanged_branches") or 0)
     except Exception:
         fingerprint_unchanged = 0
+    try:
+        diff_applied = int(apply.get("diff_applied_branches") or 0)
+    except Exception:
+        diff_applied = 0
+    try:
+        replaced = int(apply.get("replaced_branches") or 0)
+    except Exception:
+        replaced = 0
     changed_paths = [
         str(raw_path or "").strip()
         for raw_path in list(apply.get("changed_paths") or [])
@@ -978,6 +986,8 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
     )
     if fingerprint_unchanged:
         summary += f" fingerprint_skip={fingerprint_unchanged}"
+    if diff_applied or replaced:
+        summary += f" diff={diff_applied} replace={replaced}"
     if changed_paths:
         summary += f" paths={','.join(changed_paths)}"
     typer.echo(summary)
@@ -1006,6 +1016,14 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
             phase_fingerprint_unchanged = int(phase.get("fingerprint_unchanged_branches") or 0)
         except Exception:
             phase_fingerprint_unchanged = 0
+        try:
+            phase_diff_applied = int(phase.get("diff_applied_branches") or 0)
+        except Exception:
+            phase_diff_applied = 0
+        try:
+            phase_replaced = int(phase.get("replaced_branches") or 0)
+        except Exception:
+            phase_replaced = 0
         phase_changed_paths = [
             str(raw_path or "").strip()
             for raw_path in list(phase.get("changed_paths") or [])
@@ -1018,6 +1036,8 @@ def _print_apply_summary(payload: dict[str, Any], *, key: str = "apply_summary",
         )
         if phase_fingerprint_unchanged:
             phase_summary += f" fingerprint_skip={phase_fingerprint_unchanged}"
+        if phase_diff_applied or phase_replaced:
+            phase_summary += f" diff={phase_diff_applied} replace={phase_replaced}"
         if phase_changed_paths:
             phase_summary += f" paths={','.join(phase_changed_paths)}"
         typer.echo(phase_summary)
@@ -1424,6 +1444,14 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         fingerprint_unchanged_branches = int(apply_summary.get("fingerprint_unchanged_branches") or 0)
     except Exception:
         fingerprint_unchanged_branches = 0
+    try:
+        diff_applied_branches = int(apply_summary.get("diff_applied_branches") or 0)
+    except Exception:
+        diff_applied_branches = 0
+    try:
+        replaced_branches = int(apply_summary.get("replaced_branches") or 0)
+    except Exception:
+        replaced_branches = 0
     poll_counts = dict(payload.get("poll_counts") or {}) if isinstance(payload.get("poll_counts"), dict) else {}
     return {
         "accepted": bool(payload.get("accepted")),
@@ -1436,6 +1464,8 @@ def _extract_benchmark_run(payload: dict[str, Any]) -> dict[str, Any]:
         "changed_branches": changed_branches,
         "unchanged_branches": unchanged_branches,
         "fingerprint_unchanged_branches": fingerprint_unchanged_branches,
+        "diff_applied_branches": diff_applied_branches,
+        "replaced_branches": replaced_branches,
         "rebuild_status": str(rebuild.get("status") or "").strip() or None,
         "materialization_state": str(materialization.get("readiness_state") or "").strip() or None,
         "rebuild_wait_timeout": bool(payload.get("rebuild_wait_timeout")),
@@ -1511,6 +1541,16 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for run in runs
         if run.get("fingerprint_unchanged_branches") is not None
     ]
+    diff_applied_values = [
+        float(run.get("diff_applied_branches") or 0)
+        for run in runs
+        if run.get("diff_applied_branches") is not None
+    ]
+    replaced_values = [
+        float(run.get("replaced_branches") or 0)
+        for run in runs
+        if run.get("replaced_branches") is not None
+    ]
     skipped_total = sum(1 for run in runs if bool(run.get("switch_skipped")))
     cache_hit_total = sum(1 for run in runs if bool(run.get("resolver_cache_hit")))
     ready_timeout_total = sum(1 for run in runs if bool(run.get("rebuild_wait_timeout")))
@@ -1549,6 +1589,12 @@ def _benchmark_summary(runs: list[dict[str, Any]]) -> dict[str, Any]:
     fingerprint_unchanged_aggregate = _aggregate_benchmark_values(fingerprint_unchanged_values)
     if fingerprint_unchanged_aggregate:
         summary["fingerprint_unchanged_branches"] = fingerprint_unchanged_aggregate
+    diff_applied_aggregate = _aggregate_benchmark_values(diff_applied_values)
+    if diff_applied_aggregate and any(value > 0 for value in diff_applied_values):
+        summary["diff_applied_branches"] = diff_applied_aggregate
+    replaced_aggregate = _aggregate_benchmark_values(replaced_values)
+    if replaced_aggregate and any(value > 0 for value in replaced_values):
+        summary["replaced_branches"] = replaced_aggregate
     if rebuild_status_totals:
         summary["rebuild_status_totals"] = dict(sorted(rebuild_status_totals.items()))
     return summary
@@ -1617,6 +1663,18 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
         typer.echo(
             f"summary.fingerprint_unchanged_branches: avg={float(fingerprint_unchanged.get('avg')):.3f} "
             f"min={float(fingerprint_unchanged.get('min')):.3f} max={float(fingerprint_unchanged.get('max')):.3f}"
+        )
+    diff_applied = summary.get("diff_applied_branches") if isinstance(summary.get("diff_applied_branches"), dict) else {}
+    if diff_applied:
+        typer.echo(
+            f"summary.diff_applied_branches: avg={float(diff_applied.get('avg')):.3f} "
+            f"min={float(diff_applied.get('min')):.3f} max={float(diff_applied.get('max')):.3f}"
+        )
+    replaced = summary.get("replaced_branches") if isinstance(summary.get("replaced_branches"), dict) else {}
+    if replaced:
+        typer.echo(
+            f"summary.replaced_branches: avg={float(replaced.get('avg')):.3f} "
+            f"min={float(replaced.get('min')):.3f} max={float(replaced.get('max')):.3f}"
         )
     rebuild_status_totals = summary.get("rebuild_status_totals") if isinstance(summary.get("rebuild_status_totals"), dict) else {}
     if rebuild_status_totals:
@@ -2596,13 +2654,19 @@ def _node_yjs_benchmark_scenario_action(
         observed = run.get("observed_timings_ms") if isinstance(run.get("observed_timings_ms"), dict) else {}
         poll_counts = run.get("poll_counts") if isinstance(run.get("poll_counts"), dict) else {}
         ready_alignment = run.get("ready_alignment_ms") if isinstance(run.get("ready_alignment_ms"), dict) else {}
-        typer.echo(
+        line = (
             f"run={int(run.get('iteration') or 0)} "
             f"mode={run.get('scenario_switch_mode') or '-'} "
             f"skipped={'yes' if run.get('switch_skipped') else 'no'} "
             f"cache_hit={'yes' if run.get('resolver_cache_hit') else 'no'} "
             f"changed={int(run.get('changed_branches') or 0)} "
             f"fp_skip={int(run.get('fingerprint_unchanged_branches') or 0)} "
+        )
+        diff_applied = int(run.get("diff_applied_branches") or 0)
+        replaced = int(run.get("replaced_branches") or 0)
+        if diff_applied or replaced:
+            line += f"diff={diff_applied} replace={replaced} "
+        line += (
             f"accept={float(phase.get('time_to_accept') or 0.0):.3f} "
             f"ready={float(observed.get('time_to_ready') or 0.0):.3f} "
             f"lag={float(ready_alignment.get('observation_lag') or 0.0):.3f} "
@@ -2612,6 +2676,7 @@ def _node_yjs_benchmark_scenario_action(
             f"polls=rebuild:{int(poll_counts.get('rebuild') or 0)}/materialization:{int(poll_counts.get('materialization') or 0)} "
             f"status={run.get('rebuild_status') or '-'}"
         )
+        typer.echo(line)
         if detail:
             _print_timings_summary(run, key="poll_counts", label="  poll_counts")
             _print_timings_summary(run, key="observed_timings_ms", label="  observed_timings_ms")
