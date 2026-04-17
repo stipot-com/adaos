@@ -111,6 +111,10 @@ class _FakeScenarioManager:
         self.calls.append(f"install:{name}:{pin}")
         return _Meta(id=type("Id", (), {"value": name})(), name=name, version="0.1.0", path=f"/scenarios/{name}")
 
+    def install_with_deps(self, name: str, *, pin: str | None = None, webspace_id: str | None = None):
+        self.calls.append(f"install_with_deps:{name}:{pin}:{webspace_id}")
+        return _Meta(id=type("Id", (), {"value": name})(), name=name, version="0.1.0", path=f"/scenarios/{name}")
+
     def uninstall(self, name: str) -> None:
         self.calls.append(f"uninstall:{name}")
 
@@ -132,12 +136,16 @@ def _make_client(skill_mgr: _FakeSkillManager, scenario_mgr: _FakeScenarioManage
 def test_skill_api_exposes_management_routes() -> None:
     skill_mgr = _FakeSkillManager()
     scenario_mgr = _FakeScenarioManager()
+    rebuilds: list[tuple[str, str, str, str | None]] = []
     skills.submit_install_operation = lambda **kwargs: {
         "operation_id": "op-skill-demo",
         "target_id": kwargs["target_id"],
         "target_kind": kwargs["target_kind"],
         "status": "accepted",
     }
+    async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
+        rebuilds.append((webspace_id, action, source_of_truth, scenario_id))
+    skills.rebuild_webspace_from_sources = _rebuild
     client = _make_client(skill_mgr, scenario_mgr)
 
     resp = client.get("/api/skills/list")
@@ -151,6 +159,7 @@ def test_skill_api_exposes_management_routes() -> None:
     assert resp.status_code == 200
     assert resp.json()["skill"]["id"] == "demo"
     assert resp.json()["runtime"]["slot"] == "B"
+    assert ("desktop", "skill_install_sync", "skill_runtime", None) in rebuilds
 
     resp = client.post("/api/skills/install", json={"name": "demo", "async_operation": True, "webspace_id": "default"})
     assert resp.status_code == 200
@@ -161,7 +170,11 @@ def test_skill_api_exposes_management_routes() -> None:
     assert resp.status_code == 200
     assert resp.json()["skill"]["name"] == "demo"
 
+    assert client.post("/api/skills/uninstall", json={"name": "demo", "webspace_id": "desktop"}).status_code == 200
+    assert ("desktop", "skill_uninstall_sync", "skill_runtime", None) in rebuilds
+
     assert client.delete("/api/skills/demo").status_code == 200
+    assert ("desktop", "skill_uninstall_sync", "skill_runtime", None) in rebuilds
 
     resp = client.post("/api/skills/push", json={"name": "demo", "message": "msg"})
     assert resp.status_code == 200
@@ -176,12 +189,16 @@ def test_skill_api_exposes_management_routes() -> None:
 def test_scenario_api_matches_service_surface() -> None:
     skill_mgr = _FakeSkillManager()
     scenario_mgr = _FakeScenarioManager()
+    rebuilds: list[tuple[str, str, str, str | None]] = []
     scenarios.submit_install_operation = lambda **kwargs: {
         "operation_id": "op-scenario-scene",
         "target_id": kwargs["target_id"],
         "target_kind": kwargs["target_kind"],
         "status": "accepted",
     }
+    async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
+        rebuilds.append((webspace_id, action, source_of_truth, scenario_id))
+    scenarios.rebuild_webspace_from_sources = _rebuild
     client = _make_client(skill_mgr, scenario_mgr)
 
     resp = client.get("/api/scenarios/list?fs=1")
@@ -195,13 +212,18 @@ def test_scenario_api_matches_service_surface() -> None:
     resp = client.post("/api/scenarios/install", json={"name": "scene"})
     assert resp.status_code == 200
     assert resp.json()["scenario"]["id"] == "scene"
+    assert ("desktop", "scenario_install_sync", "scenario_projection", "scene") in rebuilds
 
     resp = client.post("/api/scenarios/install", json={"name": "scene", "async_operation": True, "webspace_id": "default"})
     assert resp.status_code == 200
     assert resp.json()["accepted"] is True
     assert resp.json()["operation"]["target_id"] == "scene"
 
+    assert client.post("/api/scenarios/uninstall", json={"name": "scene", "webspace_id": "desktop"}).status_code == 200
+    assert ("desktop", "scenario_uninstall_sync", "scenario_projection", None) in rebuilds
+
     assert client.delete("/api/scenarios/scene").status_code == 200
+    assert ("desktop", "scenario_uninstall_sync", "scenario_projection", None) in rebuilds
 
     resp = client.post("/api/scenarios/push", json={"name": "scene", "message": "msg", "signoff": True})
     assert resp.status_code == 200

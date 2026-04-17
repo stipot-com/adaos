@@ -6,8 +6,10 @@ from pydantic import BaseModel
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import get_ctx, AgentContext
 from adaos.services.scenario.manager import ScenarioManager
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.adapters.db import SqliteScenarioRegistry
 from adaos.services.operations import submit_install_operation
+from adaos.services.yjs.webspace import default_webspace_id
 
 
 router = APIRouter(tags=["scenarios"], dependencies=[Depends(require_token)])
@@ -67,6 +69,7 @@ class PushReq(BaseModel):
 
 class UninstallReq(BaseModel):
     name: str
+    webspace_id: str | None = None
 
 
 @router.get("/list")
@@ -107,7 +110,17 @@ async def install(body: InstallReq, mgr: ScenarioManager = Depends(_get_manager)
             "operation_id": operation["operation_id"],
             "operation": operation,
         }
-    meta = mgr.install(body.name, pin=body.pin)
+    webspace_id = body.webspace_id or default_webspace_id()
+    meta = mgr.install_with_deps(body.name, pin=body.pin, webspace_id=webspace_id)
+    try:
+        await rebuild_webspace_from_sources(
+            webspace_id,
+            action="scenario_install_sync",
+            scenario_id=body.name,
+            source_of_truth="scenario_projection",
+        )
+    except Exception:
+        pass
     # приведём к компактному виду как в CLI-эхо
     return {
         "ok": True,
@@ -122,11 +135,27 @@ async def install(body: InstallReq, mgr: ScenarioManager = Depends(_get_manager)
 @router.delete("/{name}")
 async def remove(name: str, mgr: ScenarioManager = Depends(_get_manager)):
     mgr.uninstall(name)
+    try:
+        await rebuild_webspace_from_sources(
+            default_webspace_id(),
+            action="scenario_uninstall_sync",
+            source_of_truth="scenario_projection",
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 @router.post("/uninstall")
 async def uninstall(body: UninstallReq, mgr: ScenarioManager = Depends(_get_manager)):
     mgr.uninstall(body.name)
+    try:
+        await rebuild_webspace_from_sources(
+            body.webspace_id or default_webspace_id(),
+            action="scenario_uninstall_sync",
+            source_of_truth="scenario_projection",
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 

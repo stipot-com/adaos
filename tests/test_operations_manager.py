@@ -179,6 +179,7 @@ def test_operation_manager_records_notifications_on_completion(monkeypatch) -> N
 def test_submit_skill_install_operation_prepares_and_activates_runtime(monkeypatch) -> None:
     docs: dict[str, _FakeYDoc] = {}
     calls: list[str] = []
+    rebuilds: list[tuple[str, str, str, str | None]] = []
 
     @contextmanager
     def _get_ydoc(webspace_id: str):
@@ -213,6 +214,9 @@ def test_submit_skill_install_operation_prepares_and_activates_runtime(monkeypat
     monkeypatch.setattr(operations_manager, "SkillManager", _FakeSkillManager)
     monkeypatch.setattr(operations_manager, "SqliteSkillRegistry", lambda sql: object())
     monkeypatch.setattr(operations_manager, "_MANAGERS", {})
+    async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
+        rebuilds.append((webspace_id, action, source_of_truth, scenario_id))
+    monkeypatch.setattr(operations_manager, "rebuild_webspace_from_sources", _rebuild)
 
     ctx = _make_ctx()
     result = operations_manager.submit_install_operation(
@@ -227,3 +231,53 @@ def test_submit_skill_install_operation_prepares_and_activates_runtime(monkeypat
     assert "install:demo_skill" in calls
     assert "prepare_runtime:demo_skill:0" in calls
     assert "activate_for_space:demo_skill:1.2.3:B:default:default" in calls
+    assert rebuilds == [("default", "skill_install_sync", "skill_runtime", None)]
+
+
+def test_submit_scenario_install_operation_rebuilds_target_webspace(monkeypatch) -> None:
+    docs: dict[str, _FakeYDoc] = {}
+    calls: list[str] = []
+    rebuilds: list[tuple[str, str, str, str | None]] = []
+
+    @contextmanager
+    def _get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    @asynccontextmanager
+    async def _async_get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    class _FakeScenarioManager:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def sync(self) -> None:
+            calls.append("sync")
+
+        def install_with_deps(self, name: str, *, pin: str | None = None, webspace_id: str | None = None):
+            calls.append(f"install_with_deps:{name}:{pin}:{webspace_id}")
+            return SimpleNamespace(version="0.1.0", path=f"/scenarios/{name}")
+
+    async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
+        rebuilds.append((webspace_id, action, source_of_truth, scenario_id))
+
+    monkeypatch.setattr(operations_manager, "get_ydoc", _get_ydoc)
+    monkeypatch.setattr(operations_manager, "async_get_ydoc", _async_get_ydoc)
+    monkeypatch.setattr(operations_manager, "WebToastService", _FakeToastService)
+    monkeypatch.setattr(operations_manager, "ScenarioManager", _FakeScenarioManager)
+    monkeypatch.setattr(operations_manager, "SqliteScenarioRegistry", lambda sql: object())
+    monkeypatch.setattr(operations_manager, "_MANAGERS", {})
+    monkeypatch.setattr(operations_manager, "rebuild_webspace_from_sources", _rebuild)
+
+    ctx = _make_ctx()
+    result = operations_manager.submit_install_operation(
+        target_kind="scenario",
+        target_id="demo_scene",
+        webspace_id="default",
+        ctx=ctx,
+    )
+
+    assert result["target_id"] == "demo_scene"
+    assert "sync" in calls
+    assert "install_with_deps:demo_scene:None:default" in calls
+    assert rebuilds == [("default", "scenario_install_sync", "scenario_projection", "demo_scene")]

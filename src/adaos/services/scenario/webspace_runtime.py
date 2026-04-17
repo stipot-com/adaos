@@ -2879,6 +2879,26 @@ async def _on_skill_rolled_back(evt: Dict[str, Any]) -> None:
     )
 
 
+@subscribe("skill.uninstalled")
+async def _on_skill_uninstalled(evt: Dict[str, Any]) -> None:
+    webspace_id = str(evt.get("webspace_id") or default_webspace_id())
+    await rebuild_webspace_from_sources(
+        webspace_id,
+        action="skill_uninstall_sync",
+        source_of_truth="skill_runtime",
+    )
+
+
+@subscribe("scenario.removed")
+async def _on_scenario_removed(evt: Dict[str, Any]) -> None:
+    webspace_id = str(evt.get("webspace_id") or default_webspace_id())
+    await rebuild_webspace_from_sources(
+        webspace_id,
+        action="scenario_uninstall_sync",
+        source_of_truth="scenario_projection",
+    )
+
+
 @subscribe("desktop.webspace.create")
 async def _on_webspace_create(evt: Dict[str, Any]) -> None:
     payload = _payload(evt)

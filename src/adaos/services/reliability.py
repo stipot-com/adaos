@@ -4377,13 +4377,6 @@ def yjs_sync_runtime_snapshot(
         webrtc = webrtc_peer_snapshot()
     except Exception:
         webrtc = {}
-    try:
-        from adaos.services.yjs.txn_probe import yjs_txn_probe_snapshot
-
-        txn_probe = yjs_txn_probe_snapshot(webspace_id=selected_webspace_id)
-    except Exception:
-        txn_probe = {}
-
     webspaces = store_runtime.get("webspaces") if isinstance(store_runtime.get("webspaces"), dict) else {}
     webspace_total = int(store_runtime.get("webspace_total") or len(webspaces))
     active_webspace_total = int(store_runtime.get("active_webspace_total") or 0)
@@ -4533,9 +4526,6 @@ def yjs_sync_runtime_snapshot(
             else {},
             "weather_observer": dict(weather_observer.get("selected") or {})
             if isinstance(weather_observer, dict)
-            else {},
-            "transaction_probe": dict(txn_probe.get("selected") or {})
-            if isinstance(txn_probe, dict)
             else {},
             "command_trace": {
                 "last_reload": last_reload if str(last_reload.get("webspace_id") or "").strip() == selected_webspace_id else {},

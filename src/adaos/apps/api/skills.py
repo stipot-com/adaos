@@ -283,6 +283,14 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
         "prepared": getattr(prep, "slot", None),
         "webspace_id": webspace_id,
     }
+    try:
+        await rebuild_webspace_from_sources(
+            webspace_id,
+            action="skill_install_sync",
+            source_of_truth="skill_runtime",
+        )
+    except Exception:
+        log.exception("webspace rebuild failed after skill install: %s", body.name)
     if report is not None:
         if hasattr(report, "to_dict"):
             payload["report"] = report.to_dict()  # type: ignore[call-arg]
@@ -293,9 +301,18 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
 
 @router.post("/uninstall")
 async def uninstall(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
+    webspace_id = body.webspace_id or default_webspace_id()
     mgr.uninstall(
         body.name,
     )
+    try:
+        await rebuild_webspace_from_sources(
+            webspace_id,
+            action="skill_uninstall_sync",
+            source_of_truth="skill_runtime",
+        )
+    except Exception:
+        log.exception("webspace rebuild failed after skill uninstall: %s", body.name)
     return {"ok": True}
 
 
@@ -310,6 +327,14 @@ async def get_skill(name: str, mgr: SkillManager = Depends(_get_manager)):
 @router.delete("/{name}")
 async def remove(name: str, mgr: SkillManager = Depends(_get_manager)):
     mgr.uninstall(name)
+    try:
+        await rebuild_webspace_from_sources(
+            default_webspace_id(),
+            action="skill_uninstall_sync",
+            source_of_truth="skill_runtime",
+        )
+    except Exception:
+        log.exception("webspace rebuild failed after skill delete: %s", name)
     return {"ok": True}
 
 

@@ -563,11 +563,12 @@ def uninstall(
     if not local and _hub_api_ready():
         # Server-side uninstall is always the correct behavior for AB core slots.
         # API currently does not expose `safe`; keep it for backward-compat but ignore in remote mode.
-        _hub_post("/api/skills/uninstall", body={"name": name})
+        _hub_post("/api/skills/uninstall", body={"name": name, "webspace_id": default_webspace_id()})
         typer.echo(_("cli.skill.uninstall.done", name=name))
         return
     mgr = _mgr()
     mgr.uninstall(name, safe=safe)
+    _rebuild_local_webspace(webspace_id=default_webspace_id())
     typer.echo(_("cli.skill.uninstall.done", name=name))
 
 

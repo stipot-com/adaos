@@ -122,6 +122,26 @@ def test_resolve_control_base_url_skips_candidate_ping_candidates(monkeypatch) -
     assert base == "http://127.0.0.1:8777"
 
 
+def test_resolve_control_base_url_prefer_local_ignores_member_hub_url(monkeypatch) -> None:
+    monkeypatch.setattr(active_control, "_node_config_control_url", lambda: ("member", "https://ru.api.inimatic.com"))
+    monkeypatch.setattr(active_control, "_pick_env_override_url", lambda: "https://ru.api.inimatic.com")
+    monkeypatch.setattr(active_control, "_pick_local_env_url", lambda: "http://127.0.0.1:8778")
+    monkeypatch.setattr(active_control, "_autostart_control_url", lambda: "")
+    monkeypatch.setattr(active_control, "_pidfile_control_urls", lambda: [])
+    monkeypatch.setattr(active_control, "resolve_control_token", lambda *args, **kwargs: "dev-local-token")
+
+    def _probe(*, base_url: str, token: str, timeout_s: float = 2.0):
+        if base_url.endswith(":8778"):
+            return 200, {"ok": True, "runtime": {"transition_role": "active", "admin_mutation_allowed": True}}
+        return None, None
+
+    monkeypatch.setattr(active_control, "probe_control_api", _probe)
+
+    base = active_control.resolve_control_base_url(prefer_local=True)
+
+    assert base == "http://127.0.0.1:8778"
+
+
 def test_resolve_control_token_prefers_candidate_that_authenticates_with_local_control(monkeypatch) -> None:
     monkeypatch.setattr(
         active_control,

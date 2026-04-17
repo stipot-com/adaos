@@ -300,6 +300,16 @@ def _resolved_local_control_token(control: str, cfg: Any) -> str:
         return resolve_control_token(explicit=explicit)
 
 
+def _resolve_node_control_base_url(*, explicit: str | None = None) -> str:
+    from adaos.apps.cli.active_control import resolve_control_base_url
+
+    try:
+        return resolve_control_base_url(explicit=explicit, prefer_local=True)
+    except TypeError:
+        # Test doubles may still expose the older two-argument signature.
+        return resolve_control_base_url(explicit=explicit)
+
+
 def _print_reliability_summary(payload: dict[str, Any]) -> None:
     node = payload.get("node") if isinstance(payload.get("node"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
@@ -730,11 +740,6 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"risk={risk_level}"
     )
     if selected_webspace:
-        txn_probe = (
-            selected_webspace.get("transaction_probe")
-            if isinstance(selected_webspace.get("transaction_probe"), dict)
-            else {}
-        )
         typer.echo(
             "  webspace: "
             f"title={selected_webspace.get('title') or selected or '-'} "
@@ -745,8 +750,6 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
             f"projection={'match' if selected_webspace.get('projection_matches_home') is True else 'drift' if selected_webspace.get('projection_matches_home') is False else 'unknown'} "
             f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
             f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
-            f"tx10s={txn_probe.get('recent_txn_10s') or 0} "
-            f"tx60s={txn_probe.get('recent_txn_60s') or 0} "
             f"next={recommended_webspace_action} "
             f"rebuild={rebuild.get('status') or '-'}:{rebuild.get('action') or '-'} "
             f"rdup={rebuild.get('recovery_duplicate_total') or 0} "
@@ -1873,7 +1876,7 @@ def node_status(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     result: dict[str, Any] = {
         "node_id": cfg.node_id,
         "subnet_id": cfg.subnet_id,
@@ -1904,7 +1907,7 @@ def node_reliability(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     token = _resolved_local_control_token(control0, cfg)
     status_code, payload = _control_get_json(
         control=control0,
@@ -1949,7 +1952,7 @@ def node_members(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_get_json(
         control=control0,
         path="/api/node/members",
@@ -2021,7 +2024,7 @@ def node_yjs_status(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     token = str(webspace or "").strip()
     path = f"/api/node/yjs/webspaces/{token}/runtime" if token else "/api/node/yjs/runtime"
     status_code, payload = _control_get_json(
@@ -2053,7 +2056,7 @@ def node_yjs_backup(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/backup",
@@ -2092,7 +2095,7 @@ def _node_yjs_control_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/{action}",
@@ -2144,7 +2147,7 @@ def _node_yjs_ensure_dev_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/dev-webspaces/ensure",
@@ -2190,7 +2193,7 @@ def _node_yjs_create_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path="/api/node/yjs/webspaces",
@@ -2237,7 +2240,7 @@ def _node_yjs_update_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_patch_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
@@ -2279,7 +2282,7 @@ def _node_yjs_describe_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}",
@@ -2324,7 +2327,7 @@ def _node_yjs_materialization_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/materialization?include_runtime=1",
@@ -2366,7 +2369,7 @@ def _node_yjs_desktop_action(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_get_json(
         control=control0,
         path=f"/api/node/yjs/webspaces/{webspace}/desktop",
@@ -2407,7 +2410,7 @@ def _node_yjs_benchmark_scenario_action(
     from adaos.apps.cli.active_control import resolve_control_base_url
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     token0 = _resolved_local_control_token(control0, cfg)
     selected_control, control_selection, status_code, describe_payload = _resolve_benchmark_control(
         control=control0,
@@ -2891,7 +2894,7 @@ def node_member_refresh(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/snapshot/request",
@@ -2932,7 +2935,7 @@ def node_member_update(
     from adaos.apps.cli.active_control import resolve_control_base_url, resolve_control_token
 
     cfg = load_config()
-    control0 = resolve_control_base_url(explicit=control, hub_url=cfg.hub_url if cfg.role == "member" else None)
+    control0 = _resolve_node_control_base_url(explicit=control)
     status_code, payload = _control_post_json(
         control=control0,
         path=f"/api/node/members/{node_id}/update",

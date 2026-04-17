@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import traceback
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -25,8 +26,10 @@ from adaos.services.node_config import load_config
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root.service import create_zip_bytes
 from adaos.services.scenario.manager import ScenarioManager
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.scenario.scaffold import create as scaffold_create
 from adaos.services.workspace_registry import build_registry_entry, list_workspace_registry_entries
+from adaos.services.yjs.webspace import default_webspace_id
 from adaos.sdk.scenarios.runtime import ScenarioRuntime, ensure_runtime_context, load_scenario
 
 app = typer.Typer(help=_("cli.help_scenario"))
@@ -471,7 +474,18 @@ def install_cmd(
 
     mgr = _mgr()
     # Stage A2: use extended install that also applies dependencies.
-    meta = mgr.install_with_deps(name, pin=pin)
+    meta = mgr.install_with_deps(name, pin=pin, webspace_id=default_webspace_id())
+    try:
+        asyncio.run(
+            rebuild_webspace_from_sources(
+                default_webspace_id(),
+                action="scenario_install_sync",
+                scenario_id=meta.id.value,
+                source_of_truth="scenario_projection",
+            )
+        )
+    except Exception:
+        pass
     typer.echo(_("cli.scenario.install.done", name=meta.id.value, version=meta.version, path=meta.path))
 
 
@@ -496,6 +510,16 @@ def uninstall_cmd(
 
     mgr = _mgr()
     mgr.uninstall(name, safe=safe)
+    try:
+        asyncio.run(
+            rebuild_webspace_from_sources(
+                default_webspace_id(),
+                action="scenario_uninstall_sync",
+                source_of_truth="scenario_projection",
+            )
+        )
+    except Exception:
+        pass
     typer.echo(_("cli.scenario.uninstall.done", name=name))
 
 

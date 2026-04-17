@@ -424,7 +424,17 @@ def test_node_infrastate_action_endpoint_publishes_event_and_returns_snapshot(mo
 
         def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object]) -> dict[str, object]:
             captured.append((skill_name, tool_name, dict(payload)))
-            return {"summary": {"label": "Infra State", "value": "ready"}, "last_refresh_ts": 123.0}
+            return {
+                "summary": {"label": "Infra State", "value": "ready"},
+                "last_refresh_ts": 123.0,
+                "ui_state": {
+                    "last_action": "select_node",
+                    "last_result": {
+                        "ok": True,
+                        "operation_id": "op-node-select",
+                    },
+                },
+            }
 
     async def _fake_run_sync(func, *args, **kwargs):
         return func(*args, **kwargs)
@@ -456,6 +466,8 @@ def test_node_infrastate_action_endpoint_publishes_event_and_returns_snapshot(mo
     assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "default"})]
     assert result["ok"] is True
     assert result["action"] == "select_node"
+    assert result["operation_id"] == "op-node-select"
+    assert result["result"]["operation_id"] == "op-node-select"
     assert result["snapshot"]["summary"]["value"] == "ready"
 
 

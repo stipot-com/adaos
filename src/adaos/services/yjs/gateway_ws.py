@@ -32,7 +32,6 @@ except ImportError as exc:  # pragma: no cover - import guard for dev envs
 from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
-from adaos.services.yjs import txn_probe as _txn_probe  # ensure transaction probe observer is registered
 from adaos.services.yjs.store import get_ystore_for_webspace
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
@@ -434,13 +433,6 @@ async def _release_room_refs(webspace_id: str, room: Any) -> bool:
             forget_weather_room_observer(webspace_id, id(ydoc))
         except Exception:
             pass
-        try:
-            from adaos.services.yjs.txn_probe import forget_yjs_txn_probe
-
-            forget_yjs_txn_probe(webspace_id, id(ydoc))
-        except Exception:
-            pass
-
     for attr in ("_update_send_stream", "_update_receive_stream"):
         try:
             stream = getattr(room, attr, None)

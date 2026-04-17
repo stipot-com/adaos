@@ -1152,11 +1152,21 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
         return result if isinstance(result, dict) else {"summary": {}, "raw": result}
 
     snapshot = await anyio.to_thread.run_sync(_load_snapshot)
+    ui_state = snapshot.get("ui_state") if isinstance(snapshot.get("ui_state"), dict) else {}
+    action_result = ui_state.get("last_result") if isinstance(ui_state.get("last_result"), dict) else {}
+    if str(ui_state.get("last_action") or "").strip() != event_payload["id"]:
+        action_result = {}
+    action_operation = action_result.get("operation") if isinstance(action_result.get("operation"), dict) else {}
+    operation_id = (
+        str(action_result.get("operation_id") or action_operation.get("operation_id") or "").strip() or None
+    )
     return {
         "ok": True,
         "accepted": True,
         "webspace_id": target_webspace_id,
         "action": event_payload["id"],
+        "operation_id": operation_id,
+        "result": action_result,
         "snapshot": snapshot,
     }
 

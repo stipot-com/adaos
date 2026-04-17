@@ -197,6 +197,7 @@ def resolve_control_base_url(
     *,
     explicit: str | None = None,
     hub_url: str | None = None,
+    prefer_local: bool = False,
 ) -> str:
     """
     Resolve which control API base URL to use.
@@ -211,17 +212,17 @@ def resolve_control_base_url(
         txt = _normalize_url(explicit)
         if txt:
             return txt
-    if hub_url is not None:
+    if not prefer_local and hub_url is not None:
         txt = _normalize_url(hub_url)
         if txt:
             return txt
 
     role, cfg_url = _node_config_control_url()
-    if role == "member" and cfg_url:
+    if not prefer_local and role == "member" and cfg_url:
         return cfg_url
 
     env_override = _pick_env_override_url()
-    if env_override:
+    if env_override and (not prefer_local or _is_local_url(env_override)):
         return env_override
 
     candidates: list[str] = []

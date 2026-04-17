@@ -15,6 +15,7 @@ from adaos.domain import Event
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.io_web.toast import WebToastService
 from adaos.services.scenario.manager import ScenarioManager
+from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.doc import async_get_ydoc, get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
@@ -31,6 +32,30 @@ def _now_iso() -> str:
 
 def _json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+async def _best_effort_rebuild_webspace(
+    *,
+    webspace_id: str,
+    action: str,
+    source_of_truth: str,
+    scenario_id: str | None = None,
+) -> None:
+    try:
+        await rebuild_webspace_from_sources(
+            webspace_id,
+            action=action,
+            scenario_id=scenario_id,
+            source_of_truth=source_of_truth,
+        )
+    except Exception:
+        _log.warning(
+            "operation webspace rebuild failed webspace=%s action=%s scenario=%s",
+            webspace_id,
+            action,
+            scenario_id or "-",
+            exc_info=True,
+        )
 
 
 @dataclass(slots=True)
@@ -434,6 +459,12 @@ def submit_install_operation(
                     webspace_id=ws,
                 )
             )
+            handle.update(progress=95, message="Refreshing webspace", current_step="webspace.rebuild")
+            await _best_effort_rebuild_webspace(
+                webspace_id=ws,
+                action="skill_install_sync",
+                source_of_truth="skill_runtime",
+            )
             payload = {
                 "target_kind": "skill",
                 "target_id": target_id,
@@ -461,6 +492,13 @@ def submit_install_operation(
         await asyncio.to_thread(mgr.sync)
         handle.update(progress=45, message="Installing scenario", current_step="scenario.install")
         meta = await asyncio.to_thread(partial(mgr.install_with_deps, target_id, pin=None, webspace_id=ws))
+        handle.update(progress=95, message="Refreshing webspace", current_step="webspace.rebuild")
+        await _best_effort_rebuild_webspace(
+            webspace_id=ws,
+            action="scenario_install_sync",
+            scenario_id=target_id,
+            source_of_truth="scenario_projection",
+        )
         payload = {
             "target_kind": "scenario",
             "target_id": target_id,

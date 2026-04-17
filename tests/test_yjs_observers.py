@@ -77,7 +77,6 @@ if existing_ypy_websocket is None or not hasattr(existing_ypy_websocket, "__path
 
 from adaos.services.weather import observer as weather_observer
 from adaos.services.yjs import observers as yjs_observers
-from adaos.services.yjs import txn_probe as yjs_txn_probe
 
 
 class _FakeYDoc:
@@ -235,41 +234,3 @@ def test_weather_observer_runs_inline_without_loop(monkeypatch) -> None:
     assert selected["inline_total"] == 1
     assert selected["loop_missing_total"] == 1
     assert selected["pending"] is False
-
-
-def test_txn_probe_reattaches_for_new_doc(monkeypatch) -> None:
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_OBSERVERS", {})
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_HISTORY", {})
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_STATS", {})
-
-    first_doc = _FakeYDoc()
-    second_doc = _FakeYDoc()
-
-    yjs_txn_probe._ensure_txn_probe("default", first_doc)
-    yjs_txn_probe._ensure_txn_probe("default", first_doc)
-    yjs_txn_probe._ensure_txn_probe("default", second_doc)
-
-    assert len(first_doc.observe_after_transaction_calls) == 1
-    assert len(second_doc.observe_after_transaction_calls) == 1
-    assert yjs_txn_probe._TXN_OBSERVERS["default"][0] == id(second_doc)
-
-
-def test_txn_probe_ignores_stale_doc_callbacks(monkeypatch) -> None:
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_OBSERVERS", {})
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_HISTORY", {})
-    monkeypatch.setattr(yjs_txn_probe, "_TXN_STATS", {})
-
-    first_doc = _FakeYDoc()
-    second_doc = _FakeYDoc()
-
-    yjs_txn_probe._ensure_txn_probe("default", first_doc)
-    stale_callback = first_doc.observe_after_transaction_calls[0]
-    yjs_txn_probe._ensure_txn_probe("default", second_doc)
-    fresh_callback = second_doc.observe_after_transaction_calls[0]
-
-    stale_callback()
-    fresh_callback()
-
-    selected = yjs_txn_probe.yjs_txn_probe_snapshot(webspace_id="default")["selected"]
-    assert selected["txn_total"] == 1
-    assert selected["recent_txn_10s"] == 1
