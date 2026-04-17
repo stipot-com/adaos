@@ -435,6 +435,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"replay={sync_runtime.get('replay_window_total') or 0}/"
             f"{sync_runtime.get('replay_window_byte_total') or 0}B "
             f"yws={transport.get('active_yws_connections') or 0} "
+            f"rtc_yjs={transport.get('webrtc_open_yjs_channels') or 0}/{transport.get('webrtc_peer_total') or 0} "
             f"rooms={transport.get('room_total') or 0} "
             f"storm={'yes' if transport.get('storm_detected') else 'no'} "
             f"owner={transport.get('owner') or '-'}->{transport.get('planned_owner') or '-'} "
@@ -675,6 +676,11 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"risk={risk_level}"
     )
     if selected_webspace:
+        txn_probe = (
+            selected_webspace.get("transaction_probe")
+            if isinstance(selected_webspace.get("transaction_probe"), dict)
+            else {}
+        )
         typer.echo(
             "  webspace: "
             f"title={selected_webspace.get('title') or selected or '-'} "
@@ -685,6 +691,8 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
             f"projection={'match' if selected_webspace.get('projection_matches_home') is True else 'drift' if selected_webspace.get('projection_matches_home') is False else 'unknown'} "
             f"go_home={'yes' if go_home_override.get('enabled') else 'no'} "
             f"set_home_current={'yes' if set_home_current_override.get('enabled') else 'no'} "
+            f"tx10s={txn_probe.get('recent_txn_10s') or 0} "
+            f"tx60s={txn_probe.get('recent_txn_60s') or 0} "
             f"next={recommended_webspace_action} "
             f"rebuild={rebuild.get('status') or '-'}"
         )

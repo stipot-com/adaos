@@ -740,6 +740,32 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
             }
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.webrtc.peer",
+        SimpleNamespace(
+            webrtc_peer_snapshot=lambda: {
+                "peer_total": 1,
+                "connected_peers": 1,
+                "open_events_channels": 1,
+                "open_yjs_channels": 1,
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.txn_probe",
+        SimpleNamespace(
+            yjs_txn_probe_snapshot=lambda **kwargs: {
+                "selected": {
+                    "webspace_id": str(kwargs.get("webspace_id") or "default"),
+                    "recent_txn_10s": 2,
+                    "recent_txn_60s": 4,
+                    "txn_total": 9,
+                }
+            }
+        ),
+    )
     monkeypatch.setattr(
         "adaos.services.reliability._build_yjs_selected_webspace_snapshot",
         lambda webspace_id: {"webspace_id": webspace_id or "default"},
@@ -763,9 +789,12 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert transport["migration_phase"] == "phase_2_route_tunnel_ownership"
     assert transport["handoff_ready"] is False
     assert transport["room_total"] == 1
+    assert transport["webrtc_peer_total"] == 1
+    assert transport["webrtc_open_yjs_channels"] == 1
     assert snapshot["compaction_eligible_webspace_total"] == 1
     assert snapshot["replay_window_byte_total"] == 512
     assert snapshot["backup_fast_path_total"] == 1
+    assert snapshot["selected_webspace"]["transaction_probe"]["recent_txn_10s"] == 2
 
 
 def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:

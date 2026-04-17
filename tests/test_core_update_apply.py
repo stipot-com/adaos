@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -100,6 +101,37 @@ def test_replace_slot_dir_refuses_nested_move_when_cleanup_leaves_destination(
         assert False, "expected RuntimeError when destination survives cleanup"
     except RuntimeError as exc:
         assert "refusing nested move" in str(exc)
+
+
+def test_cleanup_stale_temp_slot_dirs_removes_only_old_temp_dirs(tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    slots_root = tmp_path / "slots"
+    slots_root.mkdir(parents=True, exist_ok=True)
+    keep_regular = slots_root / "A"
+    keep_regular.mkdir()
+    stale = slots_root / "adaos-core-a-stale123"
+    recent = slots_root / "adaos-core-b-recent123"
+    stale.mkdir()
+    recent.mkdir()
+    old_now = 1_700_000_000.0
+    os.utime(stale, (old_now - 900.0, old_now - 900.0))
+    os.utime(recent, (old_now - 60.0, old_now - 60.0))
+
+    result = mod._cleanup_stale_temp_slot_dirs(
+        slots_root,
+        min_age_seconds=300.0,
+        now=old_now,
+    )
+
+    assert result["ok"] is True
+    assert result["removed_total"] == 1
+    assert str(stale) in result["removed_paths"]
+    assert stale.exists() is False
+    assert recent.exists() is True
+    assert keep_regular.exists() is True
+    assert result["skipped_recent_total"] == 1
+    assert str(recent) in result["skipped_recent_paths"]
 
 
 def test_migrate_installed_skill_runtimes_uses_target_python(monkeypatch, tmp_path: Path) -> None:
@@ -338,6 +370,13 @@ def test_prepare_slot_preserves_explicit_empty_repo_url(monkeypatch, tmp_path: P
     monkeypatch.setattr(mod, "_migrate_installed_skill_runtimes", lambda *args, **kwargs: {"ok": True, "skills": []})
     monkeypatch.setattr(mod, "_git_text", lambda *_args: "value")
     monkeypatch.setattr(mod, "_detect_bootstrap_promotion_requirement", lambda *_args, **_kwargs: {"required": False, "changed_paths": []})
+    cleanup_calls: list[tuple[str, float]] = []
+
+    def _fake_cleanup(slots_root: Path, *, min_age_seconds: float = 300.0, now=None):
+        cleanup_calls.append((str(slots_root), float(min_age_seconds)))
+        return {"ok": True, "removed_total": 0}
+
+    monkeypatch.setattr(mod, "_cleanup_stale_temp_slot_dirs", _fake_cleanup)
 
     slot_dir = tmp_path / "slots" / "A"
     manifest = mod.prepare_slot(
@@ -352,6 +391,7 @@ def test_prepare_slot_preserves_explicit_empty_repo_url(monkeypatch, tmp_path: P
 
     assert manifest["slot"] == "A"
     assert captured["repo_url"] == ""
+    assert cleanup_calls == [(str(slot_dir.parent.resolve()), 300.0)]
 
 
 def test_detect_bootstrap_promotion_requirement_reports_changed_paths(tmp_path: Path) -> None:

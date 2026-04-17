@@ -170,6 +170,64 @@ def _replace_slot_dir(prepared_slot: Path, slot_dir: Path) -> None:
     shutil.move(str(prepared_slot), str(slot_dir))
 
 
+def _cleanup_stale_temp_slot_dirs(
+    slots_root: Path,
+    *,
+    min_age_seconds: float = 300.0,
+    now: float | None = None,
+) -> dict[str, object]:
+    root = Path(slots_root).expanduser().resolve()
+    current_time = time.time() if now is None else float(now)
+    min_age = max(0.0, float(min_age_seconds or 0.0))
+    removed_paths: list[str] = []
+    skipped_recent_paths: list[str] = []
+    failed_paths: list[str] = []
+
+    if not root.exists():
+        return {
+            "ok": True,
+            "root": str(root),
+            "removed_total": 0,
+            "removed_paths": removed_paths,
+            "skipped_recent_total": 0,
+            "skipped_recent_paths": skipped_recent_paths,
+            "failed_total": 0,
+            "failed_paths": failed_paths,
+        }
+
+    for child in root.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if child.parent != root:
+            continue
+        if not child.name.startswith("adaos-core-"):
+            continue
+        try:
+            age_seconds = max(0.0, current_time - float(child.stat().st_mtime))
+        except Exception:
+            failed_paths.append(str(child))
+            continue
+        if age_seconds < min_age:
+            skipped_recent_paths.append(str(child))
+            continue
+        try:
+            shutil.rmtree(child, ignore_errors=False)
+            removed_paths.append(str(child))
+        except Exception:
+            failed_paths.append(str(child))
+
+    return {
+        "ok": not failed_paths,
+        "root": str(root),
+        "removed_total": len(removed_paths),
+        "removed_paths": removed_paths,
+        "skipped_recent_total": len(skipped_recent_paths),
+        "skipped_recent_paths": skipped_recent_paths,
+        "failed_total": len(failed_paths),
+        "failed_paths": failed_paths,
+    }
+
+
 def _migrate_installed_skill_runtimes(
     python_executable: Path,
     *,
@@ -436,6 +494,16 @@ def prepare_slot(
     slot_name = str(slot).strip().upper()
     slot_dir = Path(slot_dir_path).expanduser().resolve()
     slot_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cleanup_min_age_seconds = float(
+            str(os.getenv("ADAOS_CORE_SLOT_TMP_CLEANUP_MIN_AGE_S", "300") or "300").strip() or "300"
+        )
+    except Exception:
+        cleanup_min_age_seconds = 300.0
+    _cleanup_stale_temp_slot_dirs(
+        slot_dir.parent,
+        min_age_seconds=cleanup_min_age_seconds,
+    )
     repo_root_dir = Path(str(repo_root or "")).expanduser().resolve() if str(repo_root or "").strip() else None
     target_rev = str(target_rev or "").strip()
     target_version = str(target_version or "").strip()

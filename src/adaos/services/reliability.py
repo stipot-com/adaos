@@ -4353,6 +4353,18 @@ def yjs_sync_runtime_snapshot(
     servers = gateway.get("servers") if isinstance(gateway.get("servers"), dict) else {}
     yws_server = servers.get("yws") if isinstance(servers.get("yws"), dict) else {}
     gateway_rooms = gateway.get("rooms") if isinstance(gateway.get("rooms"), dict) else {}
+    try:
+        from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+        webrtc = webrtc_peer_snapshot()
+    except Exception:
+        webrtc = {}
+    try:
+        from adaos.services.yjs.txn_probe import yjs_txn_probe_snapshot
+
+        txn_probe = yjs_txn_probe_snapshot(webspace_id=selected_webspace_id)
+    except Exception:
+        txn_probe = {}
 
     webspaces = store_runtime.get("webspaces") if isinstance(store_runtime.get("webspaces"), dict) else {}
     webspace_total = int(store_runtime.get("webspace_total") or len(webspaces))
@@ -4455,6 +4467,10 @@ def yjs_sync_runtime_snapshot(
             "update_stream_buffer_used_total": int(yws_transport.get("update_stream_buffer_used_total") or 0),
             "update_stream_waiting_send_total": int(yws_transport.get("update_stream_waiting_send_total") or 0),
             "update_stream_waiting_receive_total": int(yws_transport.get("update_stream_waiting_receive_total") or 0),
+            "webrtc_peer_total": int(webrtc.get("peer_total") or 0),
+            "webrtc_connected_peers": int(webrtc.get("connected_peers") or 0),
+            "webrtc_open_events_channels": int(webrtc.get("open_events_channels") or 0),
+            "webrtc_open_yjs_channels": int(webrtc.get("open_yjs_channels") or 0),
         },
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
@@ -4466,6 +4482,9 @@ def yjs_sync_runtime_snapshot(
             else {},
             "weather_observer": dict(weather_observer.get("selected") or {})
             if isinstance(weather_observer, dict)
+            else {},
+            "transaction_probe": dict(txn_probe.get("selected") or {})
+            if isinstance(txn_probe, dict)
             else {},
         },
         "webspace_guidance": webspace_guidance,
