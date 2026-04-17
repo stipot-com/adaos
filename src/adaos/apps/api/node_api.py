@@ -28,6 +28,7 @@ from adaos.services.media_library import (
 )
 from adaos.services.node_config import set_node_names as save_node_names_config
 from adaos.services.reliability import media_plane_runtime_snapshot, yjs_sync_runtime_snapshot
+from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
@@ -762,7 +763,7 @@ class InfrastateActionRequest(BaseModel):
     id: str = Field(..., min_length=1)
     webspace_id: str | None = None
     node_id: str | None = None
-    value: str | None = None
+    value: Any | None = None
 
 
 def _raise_400(detail: str) -> None:
@@ -1120,6 +1121,40 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
             "error": "hub_role_required",
         }
     ctx = get_ctx()
+    action_id = str(payload.id or "").strip()
+    if action_id == "marketplace_install":
+        value = payload.value if isinstance(payload.value, dict) else {}
+        target_kind = str(value.get("kind") or value.get("target_kind") or "").strip().lower()
+        target_id = str(value.get("id") or value.get("target_id") or "").strip()
+        if target_kind not in {"skill", "scenario"} or not target_id:
+            return {
+                "ok": False,
+                "accepted": False,
+                "webspace_id": target_webspace_id,
+                "action": action_id,
+                "error": "marketplace_install_requires_target",
+            }
+        operation = submit_install_operation(
+            target_kind=target_kind,
+            target_id=target_id,
+            webspace_id=target_webspace_id,
+            initiator={"kind": "api.node", "id": "marketplace_install"},
+            ctx=ctx,
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "webspace_id": target_webspace_id,
+            "action": action_id,
+            "operation_id": operation.get("operation_id"),
+            "result": {
+                "ok": True,
+                "accepted": True,
+                "operation_id": operation.get("operation_id"),
+                "operation": operation,
+            },
+            "snapshot": {},
+        }
     mgr = SkillManager(
         repo=ctx.skills_repo,
         registry=SqliteSkillRegistry(ctx.sql),
@@ -1130,7 +1165,7 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
         settings=ctx.settings,
     )
     event_payload: dict[str, Any] = {
-        "id": str(payload.id or "").strip(),
+        "id": action_id,
         "webspace_id": target_webspace_id,
     }
     node_id = str(payload.node_id or "").strip()

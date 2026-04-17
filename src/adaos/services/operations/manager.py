@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -32,6 +33,19 @@ def _now_iso() -> str:
 
 def _json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _timeout_env_seconds(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except Exception:
+        return float(default)
+    if value <= 0:
+        return float(default)
+    return float(value)
 
 
 async def _best_effort_rebuild_webspace(
@@ -146,6 +160,7 @@ class OperationManager:
         self._operations_by_webspace: dict[str, dict[str, OperationState]] = {}
         self._order_by_webspace: dict[str, list[str]] = {}
         self._notifications_by_webspace: dict[str, list[OperationNotification]] = {}
+        self._tasks_by_operation_id: dict[str, asyncio.Task[Any]] = {}
 
     def create_operation(
         self,
@@ -233,7 +248,45 @@ class OperationManager:
         except RuntimeError:
             asyncio.run(_runner())
         else:
-            loop.create_task(_runner(), name=f"operation-{item.operation_id}")
+            task = loop.create_task(_runner(), name=f"operation-{item.operation_id}")
+            with self._lock:
+                self._tasks_by_operation_id[item.operation_id] = task
+
+            def _finalize(done: asyncio.Task[Any]) -> None:
+                with self._lock:
+                    self._tasks_by_operation_id.pop(item.operation_id, None)
+                try:
+                    current = self._get_operation(item.operation_id)
+                except KeyError:
+                    return
+                if current.status not in _ACTIVE_STATUSES:
+                    return
+                if done.cancelled():
+                    handle.failed(
+                        message="operation cancelled",
+                        error={"type": "CancelledError", "message": "operation cancelled"},
+                    )
+                    return
+                try:
+                    exc = done.exception()
+                except asyncio.CancelledError:
+                    handle.failed(
+                        message="operation cancelled",
+                        error={"type": "CancelledError", "message": "operation cancelled"},
+                    )
+                    return
+                if exc is not None:
+                    handle.failed(
+                        message=str(exc),
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
+                    return
+                handle.failed(
+                    message="operation ended without a terminal status",
+                    error={"type": "OperationAbandoned", "message": "operation ended without a terminal status"},
+                )
+
+            task.add_done_callback(_finalize)
         return item.to_dict()
 
     def snapshot(self, *, webspace_id: str | None = None) -> dict[str, Any]:
@@ -414,6 +467,44 @@ def submit_install_operation(
     )
 
     async def _worker(handle: OperationHandle) -> None:
+        async def _best_effort_phase(
+            *,
+            timeout_env: str,
+            timeout_default_s: float,
+            message: str,
+            current_step: str,
+            progress: int,
+            func: Any,
+        ) -> list[str]:
+            warnings: list[str] = []
+            handle.update(progress=progress, message=message, current_step=current_step)
+            timeout_s = _timeout_env_seconds(timeout_env, timeout_default_s)
+            try:
+                await asyncio.wait_for(asyncio.to_thread(func), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                warning = f"{current_step} timed out after {timeout_s:.0f}s"
+                warnings.append(warning)
+                _log.warning(
+                    "operation phase timeout op=%s kind=%s target=%s step=%s timeout_s=%s",
+                    handle.operation_id,
+                    target_kind,
+                    target_id,
+                    current_step,
+                    timeout_s,
+                )
+            except Exception as exc:
+                warning = f"{current_step} warning: {type(exc).__name__}: {exc}"
+                warnings.append(warning)
+                _log.warning(
+                    "operation phase warning op=%s kind=%s target=%s step=%s",
+                    handle.operation_id,
+                    target_kind,
+                    target_id,
+                    current_step,
+                    exc_info=True,
+                )
+            return warnings
+
         handle.running(progress=5, message="Preparing install", current_step="prepare")
         if target_kind == "skill":
             mgr = SkillManager(
@@ -488,17 +579,50 @@ def submit_install_operation(
             bus=getattr(runtime, "bus", None),
             caps=runtime.caps,
         )
+        warnings: list[str] = []
         handle.update(progress=15, message="Syncing scenarios workspace", current_step="workspace.sync")
         await asyncio.to_thread(mgr.sync)
         handle.update(progress=45, message="Installing scenario", current_step="scenario.install")
-        meta = await asyncio.to_thread(partial(mgr.install_with_deps, target_id, pin=None, webspace_id=ws))
-        handle.update(progress=95, message="Refreshing webspace", current_step="webspace.rebuild")
-        await _best_effort_rebuild_webspace(
-            webspace_id=ws,
-            action="scenario_install_sync",
-            scenario_id=target_id,
-            source_of_truth="scenario_projection",
+        meta = await asyncio.to_thread(partial(mgr.install, target_id, pin=None))
+        warnings.extend(
+            await _best_effort_phase(
+                timeout_env="ADAOS_SCENARIO_DEP_BOOTSTRAP_TIMEOUT_S",
+                timeout_default_s=60.0,
+                message="Activating scenario dependencies",
+                current_step="scenario.bootstrap_dependencies",
+                progress=65,
+                func=partial(mgr.bootstrap_dependencies, target_id, webspace_id=ws),
+            )
         )
+        warnings.extend(
+            await _best_effort_phase(
+                timeout_env="ADAOS_SCENARIO_SYNC_TIMEOUT_S",
+                timeout_default_s=20.0,
+                message="Syncing scenario into webspace",
+                current_step="scenario.sync_yjs",
+                progress=80,
+                func=partial(mgr.sync_to_yjs, target_id, webspace_id=ws, emit_event=False),
+            )
+        )
+        handle.update(progress=95, message="Refreshing webspace", current_step="webspace.rebuild")
+        try:
+            await asyncio.wait_for(
+                _best_effort_rebuild_webspace(
+                    webspace_id=ws,
+                    action="scenario_install_sync",
+                    scenario_id=target_id,
+                    source_of_truth="scenario_projection",
+                ),
+                timeout=_timeout_env_seconds("ADAOS_SCENARIO_REBUILD_TIMEOUT_S", 45.0),
+            )
+        except asyncio.TimeoutError:
+            warnings.append("webspace.rebuild timed out")
+            _log.warning(
+                "operation phase timeout op=%s kind=%s target=%s step=webspace.rebuild",
+                handle.operation_id,
+                target_kind,
+                target_id,
+            )
         payload = {
             "target_kind": "scenario",
             "target_id": target_id,
@@ -506,7 +630,12 @@ def submit_install_operation(
             "path": str(getattr(meta, "path", "")),
             "webspace_id": ws,
         }
-        handle.succeeded(result=payload, message=f"Installed scenario {target_id}")
+        if warnings:
+            payload["warnings"] = warnings
+        handle.succeeded(
+            result=payload,
+            message=f"Installed scenario {target_id}" + (" with warnings" if warnings else ""),
+        )
 
     manager.launch(operation.operation_id, _worker)
     return operation.to_dict()

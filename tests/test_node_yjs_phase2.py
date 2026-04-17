@@ -471,6 +471,66 @@ def test_node_infrastate_action_endpoint_publishes_event_and_returns_snapshot(mo
     assert result["snapshot"]["summary"]["value"] == "ready"
 
 
+def test_node_infrastate_action_marketplace_install_returns_fast_operation_ack(monkeypatch) -> None:
+    published: list[object] = []
+    wait_calls: list[float] = []
+    submitted: list[dict[str, object]] = []
+
+    class _FakeBus:
+        def publish(self, event) -> None:
+            published.append(event)
+
+        async def wait_for_idle(self, timeout: float = 0.0) -> bool:
+            wait_calls.append(timeout)
+            return True
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "get_ctx",
+        lambda: SimpleNamespace(skills_repo=None, sql=None, git=None, paths=None, bus=_FakeBus(), caps=None, settings=None),
+    )
+
+    def _submit_install_operation(**kwargs):
+        submitted.append(dict(kwargs))
+        return {
+            "operation_id": "op-scenario-install",
+            "target_kind": kwargs["target_kind"],
+            "target_id": kwargs["target_id"],
+            "status": "accepted",
+        }
+
+    monkeypatch.setattr(node_api_module, "submit_install_operation", _submit_install_operation)
+
+    result = asyncio.run(
+        node_api_module.node_infrastate_action(
+            node_api_module.InfrastateActionRequest(
+                id="marketplace_install",
+                webspace_id="default",
+                value={
+                    "kind": "scenario",
+                    "id": "prompt_engineer_scenario",
+                },
+            )
+        )
+    )
+
+    assert published == []
+    assert wait_calls == []
+    assert len(submitted) == 1
+    assert submitted[0]["target_kind"] == "scenario"
+    assert submitted[0]["target_id"] == "prompt_engineer_scenario"
+    assert submitted[0]["webspace_id"] == "default"
+    assert submitted[0]["initiator"] == {"kind": "api.node", "id": "marketplace_install"}
+    assert submitted[0]["ctx"] is not None
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["action"] == "marketplace_install"
+    assert result["operation_id"] == "op-scenario-install"
+    assert result["result"]["operation"]["target_id"] == "prompt_engineer_scenario"
+    assert result["snapshot"] == {}
+
+
 def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
 

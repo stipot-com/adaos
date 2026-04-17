@@ -254,8 +254,16 @@ def test_submit_scenario_install_operation_rebuilds_target_webspace(monkeypatch)
         def sync(self) -> None:
             calls.append("sync")
 
-        def install_with_deps(self, name: str, *, pin: str | None = None, webspace_id: str | None = None):
-            calls.append(f"install_with_deps:{name}:{pin}:{webspace_id}")
+        def install(self, name: str, *, pin: str | None = None):
+            calls.append(f"install:{name}:{pin}")
+            return SimpleNamespace(version="0.1.0", path=f"/scenarios/{name}")
+
+        def bootstrap_dependencies(self, name: str, *, webspace_id: str | None = None):
+            calls.append(f"bootstrap_dependencies:{name}:{webspace_id}")
+            return None
+
+        def sync_to_yjs(self, name: str, *, webspace_id: str | None = None, emit_event: bool = True):
+            calls.append(f"sync_to_yjs:{name}:{webspace_id}:{int(bool(emit_event))}")
             return SimpleNamespace(version="0.1.0", path=f"/scenarios/{name}")
 
     async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
@@ -279,5 +287,7 @@ def test_submit_scenario_install_operation_rebuilds_target_webspace(monkeypatch)
 
     assert result["target_id"] == "demo_scene"
     assert "sync" in calls
-    assert "install_with_deps:demo_scene:None:default" in calls
+    assert "install:demo_scene:None" in calls
+    assert "bootstrap_dependencies:demo_scene:default" in calls
+    assert "sync_to_yjs:demo_scene:default:0" in calls
     assert rebuilds == [("default", "scenario_install_sync", "scenario_projection", "demo_scene")]

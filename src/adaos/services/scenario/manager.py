@@ -152,7 +152,7 @@ class ScenarioManager:
         target_webspace = webspace_id or default_webspace_id()
         meta = self.install(name, pin=pin)
         try:
-            self._post_install_bootstrap(meta.id.value, webspace_id=target_webspace)
+            self.bootstrap_dependencies(meta.id.value, webspace_id=target_webspace)
         except Exception:
             # Best-effort; do not fail install on bootstrap errors.
             pass
@@ -161,6 +161,15 @@ class ScenarioManager:
         except Exception:
             pass
         return meta
+
+    def bootstrap_dependencies(self, scenario_id: str, *, webspace_id: str | None = None) -> None:
+        """
+        Best-effort dependency activation for an already installed scenario.
+
+        Split out from :meth:`install_with_deps` so async install operations can
+        report progress phase-by-phase instead of blocking in one opaque step.
+        """
+        self._post_install_bootstrap(scenario_id, webspace_id=webspace_id)
 
     def _ensure_yjs_payload(self, scenario_id: str, *, space: str = "workspace") -> tuple[dict, dict, dict, dict]:
         """
