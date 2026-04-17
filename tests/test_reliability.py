@@ -741,6 +741,13 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
                         "duplicate_recent": True,
                         "age_s": 1.25,
                     },
+                    "last_reset": {
+                        "client": "events_ws:127.0.0.1:54421",
+                        "webspace_id": "default",
+                        "fingerprint": "rst123def456",
+                        "duplicate_recent": False,
+                        "age_s": 0.75,
+                    },
                     "recent": [
                         {
                             "kind": "desktop.webspace.reload",
@@ -819,11 +826,13 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert transport["reload_command_total"] == 3
     assert transport["reload_duplicate_total"] == 2
     assert transport["last_reload_client"] == "http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301"
+    assert transport["last_reset_client"] == "events_ws:127.0.0.1:54421"
     assert snapshot["compaction_eligible_webspace_total"] == 1
     assert snapshot["replay_window_byte_total"] == 512
     assert snapshot["backup_fast_path_total"] == 1
     assert snapshot["selected_webspace"]["transaction_probe"]["recent_txn_10s"] == 2
     assert snapshot["selected_webspace"]["command_trace"]["last_reload"]["fingerprint"] == "abc123def456"
+    assert snapshot["selected_webspace"]["command_trace"]["last_reset"]["fingerprint"] == "rst123def456"
 
 
 def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:
@@ -1191,11 +1200,19 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "reload_recent_60s": 4,
                             "reload_command_total": 5,
                             "reload_duplicate_total": 3,
+                            "reset_recent_60s": 2,
+                            "reset_command_total": 4,
+                            "reset_duplicate_total": 1,
                             "last_reload_client": "http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301",
                             "last_reload_webspace_id": "default",
                             "last_reload_age_s": 1.25,
                             "last_reload_duplicate_recent": True,
                             "last_reload_fingerprint": "abc123def456",
+                            "last_reset_client": "events_ws:127.0.0.1:54421",
+                            "last_reset_webspace_id": "default",
+                            "last_reset_age_s": 0.75,
+                            "last_reset_duplicate_recent": False,
+                            "last_reset_fingerprint": "rst123def456",
                         },
                     },
                     "media_runtime": {
@@ -1243,8 +1260,9 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "sidecar.route_tunnel.yws_blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
     assert "eligible=1" in result.output
     assert "replay=2/512B" in result.output
-    assert "reloads=4/5 dup=3" in result.output
+    assert "reloads=4/5 dup=3 resets=2/4 rdup=1" in result.output
     assert "sync_runtime.reload_last: client=http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301" in result.output
+    assert "sync_runtime.reset_last: client=events_ws:127.0.0.1:54421" in result.output
     assert "rooms=1 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
     assert "media.update_guard: live=yes" in result.output

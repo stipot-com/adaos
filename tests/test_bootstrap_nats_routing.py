@@ -221,6 +221,44 @@ def test_build_hub_route_ws_bases_prefers_supervisor_active_runtime(monkeypatch)
     ]
 
 
+def test_build_hub_route_ws_bases_skips_discovery_when_runtime_port_available(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_discover_active_runtime_local_base",
+        lambda **_: (_ for _ in ()).throw(AssertionError("discovery should not run")),
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg)[:2] == [
+        "ws://127.0.0.1:8777",
+        "ws://127.0.0.1:8778",
+    ]
+
+
+def test_build_hub_route_http_bases_skips_discovery_when_runtime_port_available(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_discover_active_runtime_local_base",
+        lambda **_: (_ for _ in ()).throw(AssertionError("discovery should not run")),
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb")
+
+    assert bootstrap_mod._build_hub_route_http_bases(
+        path_norm="/api/ws/test",
+        method="GET",
+        cfg=cfg,
+    )[:2] == [
+        "http://127.0.0.1:8777",
+        "http://127.0.0.1:8778",
+    ]
+
+
 def test_bootstrap_shutdown_stops_scheduler(monkeypatch) -> None:
     calls: list[str] = []
 

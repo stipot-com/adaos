@@ -227,6 +227,7 @@ def _command_trace_snapshot(now: float) -> dict[str, Any]:
     recent_reload_60s = 0
     recent_reset_60s = 0
     last_reload: dict[str, Any] | None = None
+    last_reset: dict[str, Any] | None = None
     recent_items: list[dict[str, Any]] = []
     for record in reversed(history):
         ts = float(record.get("ts") or 0.0)
@@ -251,8 +252,11 @@ def _command_trace_snapshot(now: float) -> dict[str, Any]:
                 recent_reload_60s += 1
             if last_reload is None:
                 last_reload = dict(entry)
-        elif entry["kind"] == "desktop.webspace.reset" and age_s is not None and age_s <= 60.0:
-            recent_reset_60s += 1
+        elif entry["kind"] == "desktop.webspace.reset":
+            if age_s is not None and age_s <= 60.0:
+                recent_reset_60s += 1
+            if last_reset is None:
+                last_reset = dict(entry)
         if len(recent_items) < 8:
             recent_items.append(entry)
     return {
@@ -263,6 +267,7 @@ def _command_trace_snapshot(now: float) -> dict[str, Any]:
         "reset_duplicate_total": int(stats.get("reset_duplicate_total") or 0),
         "reset_recent_60s": int(recent_reset_60s),
         "last_reload": last_reload or {},
+        "last_reset": last_reset or {},
         "recent": recent_items,
     }
 

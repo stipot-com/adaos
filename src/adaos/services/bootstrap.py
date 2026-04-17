@@ -8,6 +8,7 @@ import json as _json
 import logging
 import os
 import socket
+import threading
 import time
 import traceback
 import uuid
@@ -168,35 +169,159 @@ def _supervisor_local_bases() -> list[str]:
     return [b for b in bases if (b not in seen and not seen.add(b))]
 
 
+_ROUTE_LOCAL_BASE_LOCK = threading.RLock()
+_ROUTE_LOCAL_BASE_CACHE: dict[str, Any] = {
+    "value": None,
+    "expires_at": 0.0,
+}
+_ROUTE_LOCAL_BASE_DIAG: dict[str, Any] = {
+    "local_base_discovery_total": 0,
+    "local_base_cache_hit_total": 0,
+    "local_base_error_total": 0,
+    "local_base_runtime_port_shortcut_total": 0,
+    "local_base_last_source": "",
+    "local_base_last_value": "",
+    "local_base_last_latency_ms": None,
+    "local_base_last_error": "",
+    "local_base_last_error_at": 0.0,
+    "local_base_last_discovered_at": 0.0,
+}
+
+
+def _route_local_base_cache_ttl_s() -> float:
+    raw = str(os.getenv("HUB_ROUTE_LOCAL_BASE_CACHE_TTL_S") or "").strip()
+    if not raw:
+        return 5.0
+    try:
+        value = float(raw)
+    except Exception:
+        return 5.0
+    if value < 0.0:
+        return 0.0
+    if value > 60.0:
+        return 60.0
+    return value
+
+
+def _runtime_port_local_http_base() -> str | None:
+    runtime_port = str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip()
+    if runtime_port.isdigit():
+        return f"http://127.0.0.1:{runtime_port}"
+    return None
+
+
+def _observe_route_local_base_diag(**details: Any) -> None:
+    with _ROUTE_LOCAL_BASE_LOCK:
+        _ROUTE_LOCAL_BASE_DIAG.update(details)
+        snapshot = dict(_ROUTE_LOCAL_BASE_DIAG)
+    try:
+        observe_hub_root_route_runtime(**snapshot)
+    except Exception:
+        pass
+
+
+def _note_route_local_base_shortcut(*, source: str, value: str | None) -> None:
+    now = time.time()
+    with _ROUTE_LOCAL_BASE_LOCK:
+        _ROUTE_LOCAL_BASE_DIAG["local_base_runtime_port_shortcut_total"] = int(
+            _ROUTE_LOCAL_BASE_DIAG.get("local_base_runtime_port_shortcut_total") or 0
+        ) + 1
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = str(source or "").strip() or "runtime_port_env"
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = str(value or "").strip()
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_discovered_at"] = now
+        snapshot = dict(_ROUTE_LOCAL_BASE_DIAG)
+    try:
+        observe_hub_root_route_runtime(**snapshot)
+    except Exception:
+        pass
+
+
 def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None:
     try:
         import requests  # type: ignore
     except Exception:
         return None
 
+    now = time.time()
+    ttl_s = _route_local_base_cache_ttl_s()
+    with _ROUTE_LOCAL_BASE_LOCK:
+        cached_value = str(_ROUTE_LOCAL_BASE_CACHE.get("value") or "").strip() or None
+        cached_expires_at = float(_ROUTE_LOCAL_BASE_CACHE.get("expires_at") or 0.0)
+        if cached_value and cached_expires_at > now:
+            _ROUTE_LOCAL_BASE_DIAG["local_base_cache_hit_total"] = int(
+                _ROUTE_LOCAL_BASE_DIAG.get("local_base_cache_hit_total") or 0
+            ) + 1
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = "cache"
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = cached_value
+            snapshot = dict(_ROUTE_LOCAL_BASE_DIAG)
+            try:
+                observe_hub_root_route_runtime(**snapshot)
+            except Exception:
+                pass
+            return cached_value
+
+    started = time.monotonic()
+    result: str | None = None
+    last_error = ""
     sess = requests.Session()
     try:
-        sess.trust_env = False
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+
+        for supervisor_base in _supervisor_local_bases():
+            try:
+                response = sess.get(
+                    supervisor_base + "/api/supervisor/public/update-status",
+                    headers={"Accept": "application/json"},
+                    timeout=max(0.1, float(timeout_s)),
+                )
+                if int(response.status_code) != 200:
+                    last_error = f"status:{response.status_code}"
+                    continue
+                payload = response.json()
+                runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+                runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
+                if runtime_url and _is_local_http_base(runtime_url):
+                    result = runtime_url
+                    break
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass
+
+    latency_ms = round((time.monotonic() - started) * 1000.0, 3)
+    with _ROUTE_LOCAL_BASE_LOCK:
+        _ROUTE_LOCAL_BASE_DIAG["local_base_discovery_total"] = int(
+            _ROUTE_LOCAL_BASE_DIAG.get("local_base_discovery_total") or 0
+        ) + 1
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_latency_ms"] = latency_ms
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = "supervisor_public_status" if result else "supervisor_public_status_failed"
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = str(result or "").strip()
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_discovered_at"] = time.time()
+        if result:
+            _ROUTE_LOCAL_BASE_CACHE["value"] = result
+            _ROUTE_LOCAL_BASE_CACHE["expires_at"] = time.time() + max(0.0, ttl_s)
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_error"] = ""
+        else:
+            _ROUTE_LOCAL_BASE_DIAG["local_base_error_total"] = int(
+                _ROUTE_LOCAL_BASE_DIAG.get("local_base_error_total") or 0
+            ) + 1
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_error"] = last_error
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_error_at"] = time.time()
+            _ROUTE_LOCAL_BASE_CACHE["value"] = None
+            _ROUTE_LOCAL_BASE_CACHE["expires_at"] = 0.0
+        snapshot = dict(_ROUTE_LOCAL_BASE_DIAG)
+    try:
+        observe_hub_root_route_runtime(**snapshot)
     except Exception:
         pass
-
-    for supervisor_base in _supervisor_local_bases():
-        try:
-            response = sess.get(
-                supervisor_base + "/api/supervisor/public/update-status",
-                headers={"Accept": "application/json"},
-                timeout=max(0.1, float(timeout_s)),
-            )
-            if int(response.status_code) != 200:
-                continue
-            payload = response.json()
-            runtime = payload.get("runtime") if isinstance(payload, dict) else {}
-            runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
-            if runtime_url and _is_local_http_base(runtime_url):
-                return runtime_url
-        except Exception:
-            continue
-    return None
+    return result
 
 
 def _build_hub_route_http_bases(*, path_norm: str, method: str, cfg: Any | None) -> list[str]:
@@ -213,9 +338,13 @@ def _build_hub_route_http_bases(*, path_norm: str, method: str, cfg: Any | None)
     if _hub_route_prefers_supervisor_public_status(path_norm, method):
         bases.extend(_supervisor_local_bases())
     else:
-        active_runtime_base = _discover_active_runtime_local_base()
-        if active_runtime_base:
-            bases.append(active_runtime_base.rstrip("/"))
+        runtime_port_base = _runtime_port_local_http_base()
+        if runtime_port_base:
+            _note_route_local_base_shortcut(source="runtime_port_env", value=runtime_port_base)
+        else:
+            active_runtime_base = _discover_active_runtime_local_base()
+            if active_runtime_base:
+                bases.append(active_runtime_base.rstrip("/"))
 
     if env_base:
         bases.append(env_base.rstrip("/"))
@@ -244,19 +373,20 @@ def _build_hub_route_ws_bases(*, cfg: Any | None) -> list[str]:
     bases: list[str] = []
     env_base = str(os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
     cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
-    active_runtime_base = _discover_active_runtime_local_base()
-
-    if active_runtime_base:
-        bases.append(_http_base_to_ws_base(active_runtime_base))
 
     if env_base and _is_local_http_base(env_base):
         bases.append(_http_base_to_ws_base(env_base))
     if cfg_base and _is_local_http_base(cfg_base):
         bases.append(_http_base_to_ws_base(cfg_base))
 
-    runtime_port = str(os.getenv("ADAOS_RUNTIME_PORT") or "").strip()
-    if runtime_port.isdigit():
-        bases.append(f"ws://127.0.0.1:{runtime_port}")
+    runtime_port_base = _runtime_port_local_http_base()
+    if runtime_port_base:
+        _note_route_local_base_shortcut(source="runtime_port_env", value=runtime_port_base)
+        bases.append(_http_base_to_ws_base(runtime_port_base))
+    else:
+        active_runtime_base = _discover_active_runtime_local_base()
+        if active_runtime_base:
+            bases.append(_http_base_to_ws_base(active_runtime_base))
 
     bases.extend(["ws://127.0.0.1:8778", "ws://127.0.0.1:8777"])
 
@@ -3814,6 +3944,16 @@ class BootstrapService:
                             except Exception:
                                 pass
 
+                        route_diag_state: dict[str, Any] = {
+                            "open_request_total": 0,
+                            "http_request_total": 0,
+                            "last_open_path": "",
+                            "last_open_query_has_token": False,
+                            "last_open_base_total": 0,
+                            "last_http_path": "",
+                            "last_http_method": "",
+                        }
+
                         def _update_route_protocol_runtime(**details: Any) -> None:
                             try:
                                 pending_events = 0
@@ -3839,6 +3979,7 @@ class BootstrapService:
                                     no_upstream_close_after_s=_route_no_upstream_close_after_s,
                                     legacy_v1_enabled=bool(route_sub is not None),
                                     v2_enabled=bool(route_sub_v2 is not None),
+                                    **route_diag_state,
                                     **details,
                                 )
                             except Exception:
@@ -5057,6 +5198,10 @@ class BootstrapService:
                                         pass
                                     return
                                 if t == "http":
+                                    route_diag_state["http_request_total"] = int(route_diag_state.get("http_request_total") or 0) + 1
+                                    route_diag_state["last_http_path"] = str((data or {}).get("path") or "")
+                                    route_diag_state["last_http_method"] = str((data or {}).get("method") or "GET").upper()
+                                    _update_route_protocol_runtime()
                                     try:
                                         http_method = str((data or {}).get("method") or "GET").upper()
                                         http_path = str((data or {}).get("path") or "")
@@ -5164,6 +5309,9 @@ class BootstrapService:
                                         return
                                     path = str((data or {}).get("path") or "/ws")
                                     query = str((data or {}).get("query") or "")
+                                    route_diag_state["open_request_total"] = int(route_diag_state.get("open_request_total") or 0) + 1
+                                    route_diag_state["last_open_path"] = path
+                                    route_diag_state["last_open_query_has_token"] = bool(_query_has_token(query))
                                     # Local hub server is always reachable inside the hub machine/container.
                                     try:
                                         from adaos.services.node_config import load_config
@@ -5174,6 +5322,8 @@ class BootstrapService:
                                     except Exception:
                                         ws_bases = _build_hub_route_ws_bases(cfg=None)
                                         token_local = os.getenv("ADAOS_TOKEN", "") or None
+                                    route_diag_state["last_open_base_total"] = len(list(ws_bases or []))
+                                    _update_route_protocol_runtime()
                                     # Translate root-proxy JWT token into local hub token for upstream hub WS auth.
                                     # Local hub expects `token=<X-AdaOS-Token>`; forwarding the session JWT makes the
                                     # hub close immediately and the browser retries endlessly.

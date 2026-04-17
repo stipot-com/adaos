@@ -596,6 +596,23 @@ def _new_protocol_runtime() -> dict[str, Any]:
             "last_reset_dropped_pending": 0,
             "last_reset_notified_browser": 0,
             "reset_total": 0,
+            "local_base_discovery_total": 0,
+            "local_base_cache_hit_total": 0,
+            "local_base_error_total": 0,
+            "local_base_runtime_port_shortcut_total": 0,
+            "local_base_last_source": "",
+            "local_base_last_value": "",
+            "local_base_last_latency_ms": None,
+            "local_base_last_error": "",
+            "local_base_last_error_at": 0.0,
+            "local_base_last_discovered_at": 0.0,
+            "open_request_total": 0,
+            "http_request_total": 0,
+            "last_open_path": "",
+            "last_open_query_has_token": False,
+            "last_open_base_total": 0,
+            "last_http_path": "",
+            "last_http_method": "",
             "flows": {
                 "control": _new_route_flow_state("control"),
                 "frame": _new_route_flow_state("frame"),
@@ -4429,6 +4446,11 @@ def yjs_sync_runtime_snapshot(
         if isinstance(gateway_commands.get("last_reload"), dict)
         else {}
     )
+    last_reset = (
+        dict(gateway_commands.get("last_reset") or {})
+        if isinstance(gateway_commands.get("last_reset"), dict)
+        else {}
+    )
     recent_commands = [
         dict(item)
         for item in list(gateway_commands.get("recent") or [])
@@ -4490,6 +4512,11 @@ def yjs_sync_runtime_snapshot(
             "last_reload_fingerprint": str(last_reload.get("fingerprint") or "").strip() or None,
             "last_reload_duplicate_recent": bool(last_reload.get("duplicate_recent")),
             "last_reload_webspace_id": str(last_reload.get("webspace_id") or "").strip() or None,
+            "last_reset_client": str(last_reset.get("client") or "").strip() or None,
+            "last_reset_age_s": last_reset.get("age_s"),
+            "last_reset_fingerprint": str(last_reset.get("fingerprint") or "").strip() or None,
+            "last_reset_duplicate_recent": bool(last_reset.get("duplicate_recent")),
+            "last_reset_webspace_id": str(last_reset.get("webspace_id") or "").strip() or None,
             "webrtc_peer_total": int(webrtc.get("peer_total") or 0),
             "webrtc_connected_peers": int(webrtc.get("connected_peers") or 0),
             "webrtc_open_events_channels": int(webrtc.get("open_events_channels") or 0),
@@ -4512,6 +4539,7 @@ def yjs_sync_runtime_snapshot(
             else {},
             "command_trace": {
                 "last_reload": last_reload if str(last_reload.get("webspace_id") or "").strip() == selected_webspace_id else {},
+                "last_reset": last_reset if str(last_reset.get("webspace_id") or "").strip() == selected_webspace_id else {},
                 "recent": recent_commands,
             },
         },

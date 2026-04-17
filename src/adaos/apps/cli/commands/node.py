@@ -443,6 +443,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"yws10s={transport.get('recent_open_10s') or 0} "
             f"reloads={transport.get('reload_recent_60s') or 0}/{transport.get('reload_command_total') or 0} "
             f"dup={transport.get('reload_duplicate_total') or 0} "
+            f"resets={transport.get('reset_recent_60s') or 0}/{transport.get('reset_command_total') or 0} "
+            f"rdup={transport.get('reset_duplicate_total') or 0} "
             f"default={default_ws.get('log_mode') or '-'}:"
             f"{default_ws.get('update_log_entries') or 0}/{default_ws.get('max_update_log_entries') or 0}"
         )
@@ -455,6 +457,16 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"age={transport.get('last_reload_age_s') if transport.get('last_reload_age_s') is not None else '-'} "
                 f"dup={'yes' if transport.get('last_reload_duplicate_recent') else 'no'} "
                 f"fp={transport.get('last_reload_fingerprint') or '-'}"
+            )
+        last_reset_client = str(transport.get("last_reset_client") or "").strip()
+        if last_reset_client:
+            typer.echo(
+                "sync_runtime.reset_last: "
+                f"client={last_reset_client} "
+                f"webspace={transport.get('last_reset_webspace_id') or '-'} "
+                f"age={transport.get('last_reset_age_s') if transport.get('last_reset_age_s') is not None else '-'} "
+                f"dup={'yes' if transport.get('last_reset_duplicate_recent') else 'no'} "
+                f"fp={transport.get('last_reset_fingerprint') or '-'}"
             )
     if media_runtime:
         assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}
@@ -545,6 +557,35 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"control_ack_age={control_lifecycle_stream.get('last_ack_ago_s') if control_lifecycle_stream.get('last_ack_ago_s') is not None else '-'} "
             f"core_update_cursor={core_update_stream.get('last_acked_cursor') or 0}/{core_update_stream.get('last_issued_cursor') or 0}"
         )
+        if (
+            int(route_runtime.get("local_base_discovery_total") or 0) > 0
+            or int(route_runtime.get("local_base_runtime_port_shortcut_total") or 0) > 0
+            or str(route_runtime.get("local_base_last_source") or "").strip()
+        ):
+            typer.echo(
+                "protocol.route_local_base: "
+                f"src={route_runtime.get('local_base_last_source') or '-'} "
+                f"value={route_runtime.get('local_base_last_value') or '-'} "
+                f"latency_ms={route_runtime.get('local_base_last_latency_ms') if route_runtime.get('local_base_last_latency_ms') is not None else '-'} "
+                f"discover={route_runtime.get('local_base_discovery_total') or 0} "
+                f"cache={route_runtime.get('local_base_cache_hit_total') or 0} "
+                f"shortcut={route_runtime.get('local_base_runtime_port_shortcut_total') or 0} "
+                f"errors={route_runtime.get('local_base_error_total') or 0}"
+            )
+            if str(route_runtime.get("local_base_last_error") or "").strip():
+                typer.echo(
+                    f"protocol.route_local_base_error: {route_runtime.get('local_base_last_error')}"
+                )
+        if int(route_runtime.get("open_request_total") or 0) > 0 or int(route_runtime.get("http_request_total") or 0) > 0:
+            typer.echo(
+                "protocol.route_requests: "
+                f"open={route_runtime.get('open_request_total') or 0} "
+                f"http={route_runtime.get('http_request_total') or 0} "
+                f"last_open={route_runtime.get('last_open_path') or '-'} "
+                f"token={'yes' if route_runtime.get('last_open_query_has_token') else 'no'} "
+                f"bases={route_runtime.get('last_open_base_total') or 0} "
+                f"last_http={route_runtime.get('last_http_method') or '-'}:{route_runtime.get('last_http_path') or '-'}"
+            )
     if hub_member:
         assessment = hub_member.get("assessment") if isinstance(hub_member.get("assessment"), dict) else {}
         channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}
@@ -707,7 +748,10 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
             f"tx10s={txn_probe.get('recent_txn_10s') or 0} "
             f"tx60s={txn_probe.get('recent_txn_60s') or 0} "
             f"next={recommended_webspace_action} "
-            f"rebuild={rebuild.get('status') or '-'}"
+            f"rebuild={rebuild.get('status') or '-'}:{rebuild.get('action') or '-'} "
+            f"rdup={rebuild.get('recovery_duplicate_total') or 0} "
+            f"reason={rebuild.get('recovery_last_duplicate_reason') or '-'} "
+            f"fp={rebuild.get('recovery_fingerprint') or '-'}"
         )
     operator_summary = str(recovery_guidance.get("operator_summary") or "").strip()
     if operator_summary:

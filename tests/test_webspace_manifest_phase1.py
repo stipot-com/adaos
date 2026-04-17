@@ -100,6 +100,15 @@ def _patch_reload_dependencies(
     async def _fake_seed(webspace_id: str, scenario_id: str, *, dev: bool | None = None) -> None:
         captured.append((webspace_id, scenario_id, dev))
 
+    async def _fake_project(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        dev: bool | None = None,
+        emit_event: bool = True,  # noqa: ARG001
+    ) -> None:
+        captured.append((webspace_id, scenario_id, dev))
+
     async def _fake_sync_listing() -> None:
         return None
 
@@ -107,6 +116,7 @@ def _patch_reload_dependencies(
         return SimpleNamespace(webspace_id=webspace_id)
 
     monkeypatch.setattr(webspace_runtime_module, "_seed_webspace_from_scenario", _fake_seed)
+    monkeypatch.setattr(webspace_runtime_module, "_project_webspace_from_scenario", _fake_project)
     monkeypatch.setattr(webspace_runtime_module, "_sync_webspace_listing", _fake_sync_listing)
     monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
@@ -261,6 +271,58 @@ def test_webspace_reload_falls_back_to_current_scenario_for_legacy_manifest(monk
     assert result["scenario_resolution"] == "current_scenario"
     assert result["current_scenario_before"] == "legacy_prompt_scenario"
     assert emitted[-1][1]["scenario_id"] == "legacy_prompt_scenario"
+
+
+def test_webspace_reset_deduplicates_recent_identical_recovery(monkeypatch) -> None:
+    webspace_id = "ws-reset-dedupe"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Reset Dedupe",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="web_desktop",
+    )
+    captured: list[tuple[str, str, bool | None]] = []
+    emitted: list[tuple[str, dict[str, object], str]] = []
+    _patch_reload_dependencies(monkeypatch, captured, emitted)
+
+    webspace_runtime_module._set_webspace_rebuild_status(
+        webspace_id,
+        status="ready",
+        pending=False,
+        action="reset",
+        scenario_id="web_desktop",
+        recovery_fingerprint="dup-reset-fp",
+    )
+
+    result = asyncio.run(
+        webspace_runtime_module.reload_webspace_from_scenario(
+            webspace_id,
+            action="reset",
+            event_payload={
+                "_meta": {
+                    "gateway_command_fingerprint": "dup-reset-fp",
+                    "gateway_client": "events_ws:127.0.0.1:12345",
+                    "gateway_command_seq": 7,
+                    "cmd_id": "cmd-reset-1",
+                }
+            },
+        )
+    )
+
+    assert result["accepted"] is True
+    assert result["deduplicated"] is True
+    assert result["skip_reason"] == "duplicate_recovery_request"
+    assert result["scenario_id"] == "web_desktop"
+    assert result["recovery_fingerprint"] == "dup-reset-fp"
+    assert captured == []
+    assert emitted == []
+
+    rebuild = webspace_runtime_module.describe_webspace_rebuild_state(webspace_id)
+    assert rebuild["recovery_duplicate_total"] >= 1
+    assert rebuild["recovery_last_duplicate_reason"] == "duplicate_recovery_request"
+    assert rebuild["recovery_last_command_client"] == "events_ws:127.0.0.1:12345"
 
 
 def test_get_workspace_backfills_legacy_manifest_defaults() -> None:
