@@ -291,3 +291,52 @@ def test_submit_scenario_install_operation_rebuilds_target_webspace(monkeypatch)
     assert "bootstrap_dependencies:demo_scene:default" in calls
     assert "sync_to_yjs:demo_scene:default:0" in calls
     assert rebuilds == [("default", "scenario_install_sync", "scenario_projection", "demo_scene")]
+
+
+def test_submit_install_operation_uses_isolated_subprocess_when_enabled(monkeypatch) -> None:
+    docs: dict[str, _FakeYDoc] = {}
+    spawned: list[dict[str, object]] = []
+
+    @contextmanager
+    def _get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    @asynccontextmanager
+    async def _async_get_ydoc(webspace_id: str):
+        yield docs.setdefault(webspace_id, _FakeYDoc())
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"installed", b"")
+
+        async def wait(self):
+            return self.returncode
+
+    async def _fake_create_subprocess_exec(*argv, **kwargs):
+        spawned.append({"argv": list(argv), "env": dict(kwargs.get("env") or {})})
+        return _FakeProc()
+
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    monkeypatch.setenv("ADAOS_OPERATIONS_INSTALL_SUBPROCESS", "1")
+    monkeypatch.setattr(operations_manager, "get_ydoc", _get_ydoc)
+    monkeypatch.setattr(operations_manager, "async_get_ydoc", _async_get_ydoc)
+    monkeypatch.setattr(operations_manager, "WebToastService", _FakeToastService)
+    monkeypatch.setattr(operations_manager.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(operations_manager, "_MANAGERS", {})
+
+    ctx = _make_ctx()
+    result = operations_manager.submit_install_operation(
+        target_kind="scenario",
+        target_id="demo_scene",
+        webspace_id="default",
+        ctx=ctx,
+    )
+
+    assert result["target_id"] == "demo_scene"
+    assert result["status"] == "succeeded"
+    assert len(spawned) == 1
+    assert spawned[0]["argv"][:4] == [sys.executable, "-m", "adaos", "scenario"]
+    assert spawned[0]["argv"][4:] == ["install", "demo_scene"]
+    assert spawned[0]["env"]["ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC"] == "1"

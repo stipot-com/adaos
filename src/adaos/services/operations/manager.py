@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -48,6 +49,47 @@ def _timeout_env_seconds(name: str, default: float) -> float:
     return float(value)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _use_subprocess_install() -> bool:
+    if os.getenv("ADAOS_TESTING") == "1":
+        return False
+    return _env_flag("ADAOS_OPERATIONS_INSTALL_SUBPROCESS", True)
+
+
+def _install_subprocess_argv(*, target_kind: str, target_id: str) -> list[str]:
+    argv = [sys.executable, "-m", "adaos"]
+    if target_kind == "skill":
+        return [*argv, "skill", "install", target_id, "--local", "--silent"]
+    return [*argv, "scenario", "install", target_id]
+
+
+def _install_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["ADAOS_DISABLE_PREFERRED_PYTHON_REEXEC"] = "1"
+    env["ADAOS_CLI_REEXECED"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def _tail_text(data: bytes | str | None, *, limit: int = 4000) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        text = data.decode("utf-8", errors="replace")
+    else:
+        text = str(data)
+    trimmed = text.strip()
+    if len(trimmed) <= limit:
+        return trimmed
+    return trimmed[-limit:]
+
+
 async def _best_effort_rebuild_webspace(
     *,
     webspace_id: str,
@@ -70,6 +112,30 @@ async def _best_effort_rebuild_webspace(
             scenario_id or "-",
             exc_info=True,
         )
+
+
+async def _terminate_subprocess(proc: asyncio.subprocess.Process, *, grace_s: float = 5.0) -> None:
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    except Exception:
+        _log.debug("failed to terminate install subprocess", exc_info=True)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_s)
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    except Exception:
+        _log.debug("failed to kill install subprocess", exc_info=True)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_s)
+    except Exception:
+        _log.debug("install subprocess did not exit after kill", exc_info=True)
 
 
 @dataclass(slots=True)
@@ -467,6 +533,64 @@ def submit_install_operation(
     )
 
     async def _worker(handle: OperationHandle) -> None:
+        if _use_subprocess_install():
+            timeout_name = (
+                "ADAOS_SKILL_INSTALL_PROCESS_TIMEOUT_S"
+                if target_kind == "skill"
+                else "ADAOS_SCENARIO_INSTALL_PROCESS_TIMEOUT_S"
+            )
+            timeout_default_s = 300.0 if target_kind == "skill" else 240.0
+            argv = _install_subprocess_argv(target_kind=target_kind, target_id=target_id)
+            handle.running(progress=10, message="Spawning isolated installer", current_step="install.subprocess.spawn")
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_install_subprocess_env(),
+            )
+            handle.update(progress=35, message="Installing in isolated process", current_step="install.subprocess.run")
+            timeout_s = _timeout_env_seconds(timeout_name, timeout_default_s)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                await _terminate_subprocess(proc)
+                handle.failed(
+                    message=f"{target_kind} install timed out after {timeout_s:.0f}s",
+                    error={
+                        "type": "InstallSubprocessTimeout",
+                        "message": f"{target_kind} install timed out after {timeout_s:.0f}s",
+                        "argv": argv,
+                    },
+                )
+                return
+            rc = proc.returncode if proc.returncode is not None else -1
+            if rc != 0:
+                stdout_tail = _tail_text(stdout)
+                stderr_tail = _tail_text(stderr)
+                detail = stderr_tail or stdout_tail or f"installer exited with code {rc}"
+                handle.failed(
+                    message=detail,
+                    error={
+                        "type": "InstallSubprocessFailed",
+                        "message": detail,
+                        "returncode": rc,
+                        "argv": argv,
+                        "stdout_tail": stdout_tail,
+                        "stderr_tail": stderr_tail,
+                    },
+                )
+                return
+            handle.succeeded(
+                result={
+                    "target_kind": target_kind,
+                    "target_id": target_id,
+                    "webspace_id": ws,
+                    "mode": "subprocess",
+                },
+                message=f"Installed {target_kind} {target_id}",
+            )
+            return
+
         async def _best_effort_phase(
             *,
             timeout_env: str,
