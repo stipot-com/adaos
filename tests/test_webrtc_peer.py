@@ -94,7 +94,7 @@ def _load_peer_module(monkeypatch):
     return importlib.reload(module)
 
 
-def test_handle_rtc_offer_reuses_existing_live_peer(monkeypatch) -> None:
+def test_handle_rtc_offer_reuses_existing_clean_peer(monkeypatch) -> None:
     peer_mod = _load_peer_module(monkeypatch)
 
     class ExistingPeer:
@@ -112,6 +112,9 @@ def test_handle_rtc_offer_reuses_existing_live_peer(monkeypatch) -> None:
 
         async def close(self) -> None:
             self.close_called = True
+
+        def is_reusable_for_offer(self) -> bool:
+            return True
 
         def _emit_state_event(self, *, reason: str) -> None:
             self.emitted_reasons.append(reason)
@@ -140,6 +143,79 @@ def test_handle_rtc_offer_reuses_existing_live_peer(monkeypatch) -> None:
     assert existing.webspace_id == "desk-next"
     assert existing._send_ice is send_ice_cb
     assert existing.emitted_reasons == ["offer.renegotiate"]
+
+
+def test_hub_peer_is_not_reusable_with_live_channels(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+
+    async def send_ice_cb(candidate: dict[str, object]) -> None:
+        return None
+
+    peer = peer_mod.HubPeer("browser-live", "default", send_ice_cb)
+    peer._events_channel = SimpleNamespace(readyState="open")
+
+    try:
+        assert peer.is_reusable_for_offer() is False
+    finally:
+        asyncio.run(peer.close())
+
+
+def test_setup_yjs_channel_replaces_previous_adapter_and_channel(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+
+    class TrackingAdapter:
+        def __init__(self, dc, webspace_id: str):
+            self.dc = dc
+            self.webspace_id = webspace_id
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def serve(self) -> None:
+            await asyncio.sleep(3600)
+
+    class DummyChannel:
+        def __init__(self, label: str = "yjs") -> None:
+            self.label = label
+            self.readyState = "open"
+            self.close_called = 0
+
+        def on(self, _event):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def close(self) -> None:
+            self.close_called += 1
+
+    peer_mod.DataChannelYjsAdapter = TrackingAdapter
+
+    async def send_ice_cb(candidate: dict[str, object]) -> None:
+        return None
+
+    async def _run() -> None:
+        peer = peer_mod.HubPeer("browser-yjs", "default", send_ice_cb)
+        first = DummyChannel()
+        second = DummyChannel()
+        peer._setup_yjs_channel(first)
+        old_adapter = peer._yjs_adapter
+        old_task = peer._yjs_task
+        assert old_adapter is not None
+        assert old_task is not None
+
+        peer._setup_yjs_channel(second)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert old_adapter.closed is True
+        assert first.close_called == 1
+        assert old_task.cancelling() > 0 or old_task.cancelled() or old_task.done()
+        assert peer._yjs_channel is second
+        await peer.close()
+
+    asyncio.run(_run())
 
 
 def test_handle_rtc_offer_replaces_failed_peer(monkeypatch) -> None:

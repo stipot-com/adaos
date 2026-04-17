@@ -217,6 +217,42 @@ class HubPeer:
             return True
         return bool(self._incoming_tracks or self._loopback_tracks)
 
+    def _has_bound_transport(self) -> bool:
+        if self._events_channel is not None or self._yjs_channel is not None or self._media_channel is not None:
+            return True
+        if self._yjs_adapter is not None:
+            return True
+        task = self._yjs_task
+        return bool(task is not None and not task.done())
+
+    @staticmethod
+    def _close_data_channel(channel: Any | None) -> None:
+        if channel is None:
+            return
+        try:
+            close = getattr(channel, "close", None)
+            if callable(close):
+                result = close()
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+        except Exception:
+            _log.debug("datachannel close failed", exc_info=True)
+
+    @staticmethod
+    def _cancel_task(task: asyncio.Task[None] | None, *, label: str) -> None:
+        if task is None or task.done():
+            return
+        task.cancel()
+
+        async def _await_cancel() -> None:
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+
+        try:
+            asyncio.create_task(_await_cancel(), name=label)
+        except Exception:
+            pass
+
     def _cancel_scheduled_close(self) -> None:
         task = self._scheduled_close_task
         if task is None:
@@ -231,7 +267,13 @@ class HubPeer:
         if self._connection_state() not in _REUSABLE_CONNECTION_STATES:
             return False
         task = self._scheduled_close_task
-        return not bool(task and not task.done())
+        if task and not task.done():
+            return False
+        if self._has_live_channels_or_tracks():
+            return False
+        if self._has_bound_transport():
+            return False
+        return True
 
     def is_stale(self, *, now_ts: float | None = None) -> bool:
         if self._closed:
@@ -291,6 +333,9 @@ class HubPeer:
         """Bridge *events* DataChannel to the same command processing as ``/ws``."""
         from adaos.services.yjs.gateway_ws import process_events_command
 
+        previous_channel = self._events_channel
+        if previous_channel is not None and previous_channel is not channel:
+            self._close_data_channel(previous_channel)
         self._events_channel = channel
         self._touch()
         state = {"webspace_id": self.webspace_id}
@@ -344,6 +389,18 @@ class HubPeer:
 
     def _setup_yjs_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Bridge *yjs* DataChannel to ``ypy-websocket``."""
+        previous_channel = self._yjs_channel
+        previous_adapter = self._yjs_adapter
+        previous_task = self._yjs_task
+        if previous_adapter is not None:
+            try:
+                previous_adapter.close()
+            except Exception:
+                _log.debug("previous yjs adapter close failed device=%s", self.device_id, exc_info=True)
+        if previous_task is not None:
+            self._cancel_task(previous_task, label=f"webrtc-yjs-replaced:{self.device_id}")
+        if previous_channel is not None and previous_channel is not channel:
+            self._close_data_channel(previous_channel)
         self._yjs_channel = channel
         self._touch()
         self._yjs_adapter = DataChannelYjsAdapter(channel, self.webspace_id)
@@ -365,6 +422,10 @@ class HubPeer:
 
     def _setup_media_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Accept direct binary media upload chunks over a dedicated DataChannel."""
+        previous_channel = self._media_channel
+        if previous_channel is not None and previous_channel is not channel:
+            self._cleanup_media_upload(remove_temp=True)
+            self._close_data_channel(previous_channel)
         self._media_channel = channel
         self._touch()
 
@@ -679,7 +740,10 @@ class HubPeer:
         if _peers.get(self.device_id) is self:
             del _peers[self.device_id]
         pc = self.pc
-        self.pc = None  # type: ignore[assignment]
+        loopbacks = list(self._loopback_tracks.values())
+        for loopback in loopbacks:
+            with suppress(asyncio.CancelledError, Exception):
+                await self._detach_loopback_sender(loopback)
         adapter = self._yjs_adapter
         if adapter is not None:
             try:
@@ -696,6 +760,9 @@ class HubPeer:
                 self._local_desc_task.cancel()
         except Exception:
             pass
+        self._close_data_channel(self._events_channel)
+        self._close_data_channel(self._yjs_channel)
+        self._close_data_channel(self._media_channel)
         self._incoming_tracks.clear()
         self._loopback_tracks.clear()
         self._cleanup_media_upload(remove_temp=True)
@@ -707,6 +774,7 @@ class HubPeer:
         self._events_channel = None
         self._yjs_channel = None
         self._media_channel = None
+        self.pc = None  # type: ignore[assignment]
         if yjs_task is not None:
             with suppress(asyncio.CancelledError, Exception):
                 await yjs_task
