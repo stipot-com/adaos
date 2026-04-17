@@ -127,3 +127,50 @@ def test_update_member_snapshot_publishes_only_material_changes(monkeypatch) -> 
     assert payload["snapshot_capacity"] == {"io_total": 1, "skill_total": 1, "scenario_total": 1}
     assert payload["snapshot_build"]["runtime_git_short_commit"] == "abc1234"
     assert payload["snapshot_update"]["state"] == "succeeded"
+
+
+def test_update_member_snapshot_ignores_nested_capacity_timestamps(monkeypatch) -> None:
+    fake_bus = _FakeBus()
+    fake_directory = _FakeDirectory()
+    monkeypatch.setattr(mod, "get_ctx", lambda: _FakeCtx(fake_bus))
+    monkeypatch.setattr("adaos.services.registry.subnet_directory.get_directory", lambda: fake_directory)
+
+    manager = mod.HubLinkManager()
+    manager._links["member-1"] = mod.HubMemberLink(node_id="member-1", websocket=_FakeWebSocket())
+
+    snapshot = {
+        "captured_at": 100.0,
+        "node_id": "member-1",
+        "subnet_id": "sn-1",
+        "role": "member",
+        "ready": True,
+        "node_state": "ready",
+        "route_mode": "ws",
+        "connected_to_hub": True,
+        "capacity": {
+            "io": [{"io_type": "webrtc_media", "updated_at": 10.0}],
+            "skills": [{"name": "voice_chat_skill", "updated_at": 10.0}],
+            "scenarios": [{"name": "web_desktop", "updated_at": 10.0}],
+        },
+    }
+
+    first = asyncio.run(manager.update_member_snapshot("member-1", snapshot=snapshot))
+    second = asyncio.run(
+        manager.update_member_snapshot(
+            "member-1",
+            snapshot={
+                **snapshot,
+                "captured_at": 101.0,
+                "capacity": {
+                    "io": [{"io_type": "webrtc_media", "updated_at": 20.0}],
+                    "skills": [{"name": "voice_chat_skill", "updated_at": 20.0}],
+                    "scenarios": [{"name": "web_desktop", "updated_at": 20.0}],
+                },
+            },
+        )
+    )
+
+    changed_events = [event for event in fake_bus.events if event.type == "subnet.member.snapshot.changed"]
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert len(changed_events) == 1

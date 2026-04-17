@@ -19,11 +19,33 @@ from adaos.services.yjs.store import get_ystore_for_webspace, suppress_ystore_wr
 _log = logging.getLogger("adaos.subnet.link")
 
 
+def _normalize_snapshot_material(value: Any, *, path: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            key_str = str(key)
+            if key_str in {"captured_at", "updated_at", "last_seen"}:
+                continue
+            normalized[key_str] = _normalize_snapshot_material(item, path=(*path, key_str))
+        return normalized
+    if isinstance(value, list):
+        items = [_normalize_snapshot_material(item, path=path) for item in value]
+        if path in {("capacity", "io"), ("capacity", "skills"), ("capacity", "scenarios")}:
+            try:
+                return sorted(
+                    items,
+                    key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+                )
+            except Exception:
+                return items
+        return items
+    return value
+
+
 def _snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
     if not isinstance(snapshot, dict):
         return ""
-    material = dict(snapshot)
-    material.pop("captured_at", None)
+    material = _normalize_snapshot_material(snapshot)
     try:
         return json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     except Exception:

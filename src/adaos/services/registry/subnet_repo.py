@@ -55,6 +55,63 @@ def _normalize_runtime_projection_payload(payload: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_capacity_snapshot(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    io_items: list[dict[str, Any]] = []
+    for item in list(data.get("io") or []):
+        if not isinstance(item, dict):
+            continue
+        io_items.append(
+            {
+                "io_type": str(item.get("io_type") or item.get("type") or "").strip(),
+                "capabilities": sorted(str(cap or "").strip() for cap in list(item.get("capabilities") or []) if str(cap or "").strip()),
+                "priority": int(item.get("priority") or 50),
+                "id_hint": str(item.get("id_hint") or "").strip(),
+            }
+        )
+    io_items.sort(key=lambda item: (item["io_type"], item["id_hint"], item["priority"], json.dumps(item["capabilities"], ensure_ascii=False)))
+
+    skill_items: list[dict[str, Any]] = []
+    for item in list(data.get("skills") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or "").strip()
+        if not name:
+            continue
+        skill_items.append(
+            {
+                "name": name,
+                "version": str(item.get("version") or "").strip() or "unknown",
+                "active": bool(item.get("active", True)),
+                "dev": bool(item.get("dev", False)),
+            }
+        )
+    skill_items.sort(key=lambda item: item["name"])
+
+    scenario_items: list[dict[str, Any]] = []
+    for item in list(data.get("scenarios") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or "").strip()
+        if not name:
+            continue
+        scenario_items.append(
+            {
+                "name": name,
+                "version": str(item.get("version") or "").strip() or "unknown",
+                "active": bool(item.get("active", True)),
+                "dev": bool(item.get("dev", False)),
+            }
+        )
+    scenario_items.sort(key=lambda item: item["name"])
+
+    return {
+        "io": io_items,
+        "skills": skill_items,
+        "scenarios": scenario_items,
+    }
+
+
 class SubnetRepo:
     """SQLite-backed repository for subnet nodes and their capacity.
 
@@ -196,12 +253,21 @@ class SubnetRepo:
                 )
             con.commit()
         if capacity:
-            if "io" in capacity:
-                self.replace_io_capacity(node_id, capacity.get("io") or [])
-            if "skills" in capacity:
-                self.replace_skill_capacity(node_id, capacity.get("skills") or [])
-            if "scenarios" in capacity:
-                self.replace_scenario_capacity(node_id, capacity.get("scenarios") or [])
+            incoming = _normalize_capacity_snapshot(capacity)
+            current = _normalize_capacity_snapshot(
+                {
+                    "io": self.io_for_node(node_id),
+                    "skills": self.skills_for_node(node_id),
+                    "scenarios": self.scenarios_for_node(node_id),
+                }
+            )
+            if incoming != current:
+                if "io" in capacity:
+                    self.replace_io_capacity(node_id, capacity.get("io") or [])
+                if "skills" in capacity:
+                    self.replace_skill_capacity(node_id, capacity.get("skills") or [])
+                if "scenarios" in capacity:
+                    self.replace_scenario_capacity(node_id, capacity.get("scenarios") or [])
 
     def list_nodes(self) -> List[Dict[str, Any]]:
         with self.sql.connect() as con:

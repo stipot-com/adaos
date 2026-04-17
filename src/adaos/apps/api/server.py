@@ -692,7 +692,7 @@ async def lifespan(app: FastAPI):
                 directory = get_directory()
                 while True:
                     try:
-                        directory.on_heartbeat(conf.node_id, get_local_capacity())
+                        directory.on_heartbeat(conf.node_id, None)
                     except Exception:
                         pass
                     directory.mark_stale_if_expired(45.0)
