@@ -2801,6 +2801,7 @@ def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(mon
         "failed_branches": 0,
         "changed_paths": [],
         "defaults_failed": False,
+        "transaction_total": 2,
         "phases": {
             "structure": {
                 "branch_count": 2,

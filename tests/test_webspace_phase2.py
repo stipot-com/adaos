@@ -55,11 +55,13 @@ class _CountingMap(_FakeMap):
 class _FakeDoc:
     def __init__(self, state: dict[str, _FakeMap]) -> None:
         self._state = state
+        self.transaction_count = 0
 
     def get_map(self, name: str) -> _FakeMap:
         return self._state.setdefault(name, _FakeMap())
 
     def begin_transaction(self) -> _FakeTxn:
+        self.transaction_count += 1
         return _FakeTxn()
 
 
@@ -2077,6 +2079,7 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
     assert second_summary["changed_branches"] == 0
     assert second_summary["unchanged_branches"] == 6
     assert second_summary["failed_branches"] == 0
+    assert second_summary["transaction_total"] == 2
     assert second_summary["changed_paths"] == []
     assert second_summary["phases"]["structure"]["unchanged_branches"] == 2
     assert second_summary["phases"]["interactive"]["unchanged_branches"] == 4
@@ -2086,6 +2089,7 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
     assert fake_state["ui"].set_count == 1
     assert fake_state["data"].set_count == 4
     assert fake_state["registry"].set_count == 2
+    assert fake_doc.transaction_count == 4
     assert "runtime_meta" in fake_state["registry"]
 
 

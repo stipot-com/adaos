@@ -623,7 +623,7 @@ Use this checklist as the authoritative progress tracker for the migration.
   active room is already attached.
 - [x] Split operator `reload` from destructive `reset` so reload stays on the
   live room and does not fan out into duplicate semantic rebuilds.
-- [ ] Reduce `YStore.apply_updates` / `encode_state_as_update` envelope cost
+- [x] Reduce `YStore.apply_updates` / `encode_state_as_update` envelope cost
   now that pointer-switch latency is no longer the dominant bottleneck.
   Current slice: diff-writeback replaced the full-state flush on normal YDoc
   exit, attached live-room rebuild/read paths now bypass repeated replay, and
@@ -636,11 +636,17 @@ Use this checklist as the authoritative progress tracker for the migration.
   redundant backup writes when the persisted generation is already current.
   Room reset/reload now also releases dropped YRoom references aggressively and
   can request an idle runtime compaction pass so the old replay tail is
-  collapsed after the room is torn down. Reliability/CLI snapshots now surface
-  reconnect-storm pressure, room counts, and replay-byte pressure more
-  explicitly. The remaining gap is still the cold-room replay/open cost
-  (`apply_updates`) plus deeper reload/reconnect memory pressure inside the
-  live room itself under repeated room rebuilds.
+  collapsed after the room is torn down. Cold-room bootstrap now seeds the live
+  `YRoom.ydoc` in one pass, detached restore/reopen paths cache the compacted
+  snapshot state vector so later `async_get_ydoc()` / `get_ydoc()` sessions can
+  skip one extra `encode_state_vector` pass on entry, and effective-branch
+  fingerprint bookkeeping now rides inside the existing rebuild phase
+  transactions instead of paying an extra post-apply YDoc write envelope.
+  Reliability/CLI snapshots now also surface reconnect-storm pressure, room
+  counts, replay-byte pressure, and detached state-vector fast-path reuse more
+  explicitly. The remaining YJS optimization gap is now less about ordinary
+  cold-open replay and more about safe diff-apply plus deeper live-room
+  memory/reconnect pressure under repeated rebuild cycles.
 - [ ] Add diff-apply for top-level resolved branches when the implementation is
   simple and safe.
   Current blocker: `y_py` currently materializes nested branch payloads as

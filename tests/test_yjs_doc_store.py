@@ -163,7 +163,7 @@ async def test_ystore_backup_to_disk_reuses_runtime_base_snapshot_without_reenco
 
         monkeypatch.setattr(
             ystore_module,
-            "_encode_snapshot_update",
+            "_encode_snapshot_artifacts",
             lambda updates: (_ for _ in ()).throw(AssertionError("encode should not run for base snapshot fast-path")),
         )
 
@@ -191,7 +191,7 @@ async def test_ystore_backup_to_disk_skips_when_persisted_generation_is_current(
 
         monkeypatch.setattr(
             ystore_module,
-            "_encode_snapshot_update",
+            "_encode_snapshot_artifacts",
             lambda updates: (_ for _ in ()).throw(AssertionError("encode should not run when persisted generation is current")),
         )
         monkeypatch.setattr(
@@ -283,6 +283,75 @@ async def test_ystore_request_runtime_compaction_collapses_runtime_log(monkeypat
         reset_ystore_for_webspace(webspace_id)
 
 
+async def test_async_get_ydoc_reuses_cached_state_vector_for_compacted_store(monkeypatch) -> None:
+    webspace_id = _webspace_id("cached-state-vector")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ydoc.get_map("data").set(txn, "flag", True)
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+        store_snapshot = store.runtime_snapshot()
+        assert store_snapshot["update_log_entries"] == 1
+        assert store_snapshot["cached_state_vector_bytes"] > 0
+
+        encode_calls = 0
+        original_encode_state_vector = ydoc_module.Y.encode_state_vector
+
+        def _counting_encode_state_vector(ydoc):
+            nonlocal encode_calls
+            encode_calls += 1
+            return original_encode_state_vector(ydoc)
+
+        monkeypatch.setattr(ydoc_module.Y, "encode_state_vector", _counting_encode_state_vector)
+
+        async with async_get_ydoc(webspace_id):
+            pass
+
+        assert encode_calls == 1
+        snapshot = store.runtime_snapshot()
+        assert snapshot["state_vector_fast_path_total"] >= 1
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
+async def test_async_get_ydoc_builds_state_vector_cache_after_restore(monkeypatch) -> None:
+    webspace_id = _webspace_id("restored-state-vector")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ydoc.get_map("data").set(txn, "flag", "restored")
+
+        await store.backup_to_disk(compact_runtime=True, backup_kind="manual")
+
+        ystore_module._YSTORE_CACHE.pop(webspace_id, None)
+        restored = get_ystore_for_webspace(webspace_id)
+        assert restored.runtime_snapshot()["cached_state_vector_bytes"] == 0
+
+        encode_calls = 0
+        original_encode_state_vector = ydoc_module.Y.encode_state_vector
+
+        def _counting_encode_state_vector(ydoc):
+            nonlocal encode_calls
+            encode_calls += 1
+            return original_encode_state_vector(ydoc)
+
+        monkeypatch.setattr(ydoc_module.Y, "encode_state_vector", _counting_encode_state_vector)
+
+        async with async_get_ydoc(webspace_id):
+            pass
+
+        assert encode_calls == 2
+        snapshot = restored.runtime_snapshot()
+        assert snapshot["state_vector_compute_total"] >= 1
+        assert snapshot["state_vector_fast_path_total"] >= 1
+        assert snapshot["cached_state_vector_bytes"] > 0
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
 async def test_ystore_encode_state_as_update_keeps_snapshot_path_for_seed_flows() -> None:
     webspace_id = _webspace_id("snapshot-write")
     store = get_ystore_for_webspace(webspace_id)
@@ -337,6 +406,9 @@ async def test_async_get_ydoc_prefers_live_room_when_requested(monkeypatch) -> N
 
         async def apply_updates(self, ydoc) -> None:  # noqa: ARG002
             self.apply_updates_calls += 1
+
+        async def current_state_vector(self) -> bytes | None:
+            return None
 
         async def write_update(self, update: bytes, *, update_kind: str = "raw") -> bool:  # noqa: ARG002
             self.write_updates.append(bytes(update or b""))

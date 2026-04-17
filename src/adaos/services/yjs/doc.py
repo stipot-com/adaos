@@ -226,8 +226,12 @@ def get_ydoc(
             pass
         if read_only:
             return None
+        stage_started = time.perf_counter()
+        before = await ystore.current_state_vector()
+        if before is not None:
+            _set_doc_timing(timings, "encode_state_vector", 0.0, prefix=timing_prefix)
+            return before
         try:
-            stage_started = time.perf_counter()
             before = Y.encode_state_vector(ydoc)
             _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
             return before
@@ -316,13 +320,17 @@ async def async_get_ydoc(
                 pass
         before = None
         if not read_only:
-            try:
-                stage_started = time.perf_counter()
-                before = Y.encode_state_vector(ydoc)
-                _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
-            except Exception:
-                _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
-                before = None
+            stage_started = time.perf_counter()
+            before = await ystore.current_state_vector()
+            if before is not None:
+                _set_doc_timing(timings, "encode_state_vector", 0.0, prefix=timing_prefix)
+            else:
+                try:
+                    before = Y.encode_state_vector(ydoc)
+                    _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
+                except Exception:
+                    _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
+                    before = None
         yield ydoc
         if not read_only:
             if _state_changed(ydoc, before, timings, prefix=timing_prefix):

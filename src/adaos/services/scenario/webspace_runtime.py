@@ -1817,6 +1817,7 @@ class WebspaceScenarioRuntime:
         persisted_branch_fingerprints = _read_effective_branch_fingerprints(registry_map)
         effective_branch_fingerprints = dict(persisted_branch_fingerprints)
         pending_fingerprint_updates: Dict[str, str] = {}
+        transaction_total = 0
 
         def _update_materialization_snapshot(phase_name: str) -> None:
             application = _coerce_dict(resolved.application or {})
@@ -1889,8 +1890,10 @@ class WebspaceScenarioRuntime:
             branch_specs: tuple[tuple[str, Any, str, Any, bool], ...],
             *,
             apply_defaults: bool = False,
+            flush_fingerprints: bool = False,
         ) -> None:
             nonlocal defaults_failed
+            nonlocal transaction_total
             _raise_if_rebuild_request_superseded(webspace_id, expected_request_id)
             phase_started = time.perf_counter()
             phase_changed_before = len(changed_paths)
@@ -1899,6 +1902,7 @@ class WebspaceScenarioRuntime:
             phase_defaults_failed = False
 
             with ydoc.begin_transaction() as txn:
+                transaction_total += 1
                 phase_fingerprint_updates: Dict[str, str] = {}
                 if apply_defaults:
                     try:
@@ -1917,6 +1921,13 @@ class WebspaceScenarioRuntime:
                         value,
                         fingerprint_updates=phase_fingerprint_updates,
                         ignore_errors=ignore_errors,
+                    )
+                if flush_fingerprints and pending_fingerprint_updates:
+                    _write_effective_branch_fingerprints(
+                        registry_map,
+                        txn,
+                        current=effective_branch_fingerprints,
+                        updates=pending_fingerprint_updates,
                     )
 
             phase_changed_paths = list(changed_paths[phase_changed_before:])
@@ -1948,6 +1959,7 @@ class WebspaceScenarioRuntime:
                 ("registry.merged", registry_map, "merged", resolved.registry, False),
             ),
             apply_defaults=True,
+            flush_fingerprints=False,
         )
         _apply_phase(
             "interactive",
@@ -1957,16 +1969,8 @@ class WebspaceScenarioRuntime:
                 ("data.desktop", data_map, "desktop", resolved.desktop, True),
                 ("data.routing", data_map, "routing", resolved.routing, True),
             ),
+            flush_fingerprints=True,
         )
-
-        if pending_fingerprint_updates:
-            with ydoc.begin_transaction() as txn:
-                _write_effective_branch_fingerprints(
-                    registry_map,
-                    txn,
-                    current=persisted_branch_fingerprints,
-                    updates=pending_fingerprint_updates,
-                )
 
         self._last_apply_summary = {
             "branch_count": len(target_paths),
@@ -1975,6 +1979,7 @@ class WebspaceScenarioRuntime:
             "failed_branches": len(failed_paths),
             "changed_paths": list(changed_paths),
             "defaults_failed": defaults_failed,
+            "transaction_total": transaction_total,
             "phases": phase_summaries,
         }
         if fingerprint_unchanged_paths:

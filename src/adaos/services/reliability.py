@@ -4390,6 +4390,8 @@ def yjs_sync_runtime_snapshot(
     update_log_total = 0
     backup_fast_path_total = 0
     backup_skipped_total = 0
+    state_vector_fast_path_total = 0
+    state_vector_compute_total = 0
     for item in webspaces.values():
         if not isinstance(item, dict):
             continue
@@ -4402,6 +4404,8 @@ def yjs_sync_runtime_snapshot(
         compaction_eligible_total += 1 if bool(item.get("runtime_compaction_eligible")) else 0
         backup_fast_path_total += int(item.get("backup_fast_path_total") or 0)
         backup_skipped_total += int(item.get("backup_skipped_total") or 0)
+        state_vector_fast_path_total += int(item.get("state_vector_fast_path_total") or 0)
+        state_vector_compute_total += int(item.get("state_vector_compute_total") or 0)
         if max_entries > 0:
             max_fill_ratio = max(max_fill_ratio, float(update_entries) / float(max_entries))
     if webspace_total <= 0:
@@ -4547,6 +4551,8 @@ def yjs_sync_runtime_snapshot(
         "replay_window_byte_total": replay_window_byte_total,
         "backup_fast_path_total": backup_fast_path_total,
         "backup_skipped_total": backup_skipped_total,
+        "state_vector_fast_path_total": state_vector_fast_path_total,
+        "state_vector_compute_total": state_vector_compute_total,
         "webspaces": webspaces,
     }
 
