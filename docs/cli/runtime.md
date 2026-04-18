@@ -5,12 +5,16 @@
 ```bash
 adaos runtime status
 adaos runtime logs
+adaos runtime memory-profile-start --profile-mode sampled_profile
+adaos runtime memory-profile-stop <SESSION_ID>
+adaos runtime memory-publish <SESSION_ID>
 adaos node status
 adaos node reliability
 ```
 
 These commands are useful for checking local readiness, runtime slots, and the broader node health model.
 If `node reliability` falls back to the supervisor during a controlled restart, it also prints the compact public Phase 1 memory summary when available.
+The `runtime memory-*` commands expose the Phase 1 profiling workflow directly through supervisor-owned APIs; in Phase 1 these are still `intent-only` controls and do not yet imply automatic restart-into-profile mode.
 
 ## Autostart and service mode
 

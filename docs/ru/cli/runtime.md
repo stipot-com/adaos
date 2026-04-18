@@ -8,12 +8,16 @@ adaos runtime logs
 adaos runtime memory-status
 adaos runtime memory-sessions
 adaos runtime memory-session <SESSION_ID>
+adaos runtime memory-profile-start --profile-mode sampled_profile
+adaos runtime memory-profile-stop <SESSION_ID>
+adaos runtime memory-publish <SESSION_ID>
 adaos node status
 adaos node reliability
 ```
 
 Эти команды полезны для проверки local readiness, runtime slots и общей health-модели узла.
 Если `node reliability` во время контролируемого restart fallback'ится на supervisor, команда также печатает compact public Phase 1 memory summary.
+Команды `runtime memory-*` напрямую открывают Phase 1 profiling workflow через supervisor-owned API; в рамках Phase 1 это всё ещё `intent-only` controls и они пока не означают автоматический restart-into-profile.
 
 ## Autostart и service mode
 

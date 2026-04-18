@@ -36,6 +36,18 @@ def _runtime_control_get(path: str, *, control: str | None = None) -> dict[str, 
     return payload
 
 
+def _runtime_control_post(path: str, *, body: dict[str, Any], control: str | None = None) -> dict[str, Any]:
+    base = resolve_control_base_url(explicit=control, prefer_local=True).rstrip("/")
+    token = resolve_control_token(base_url=base)
+    headers = {"X-AdaOS-Token": token}
+    response = requests.post(base + path, headers=headers, json=body, timeout=15.0)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid JSON payload for {path}")
+    return payload
+
+
 @app.command("logs")
 def show_logs() -> None:
     """Show runtime log file if present."""
@@ -172,3 +184,87 @@ def memory_session(
                 f"event={last.get('event') or '-'} "
                 f"seq={last.get('sequence') or '-'}"
             )
+
+
+@app.command("memory-profile-start")
+def memory_profile_start(
+    profile_mode: str = typer.Option("sampled_profile", "--profile-mode", help="sampled_profile|trace_profile"),
+    reason: str = typer.Option("cli.runtime.memory_profile_start", "--reason", help="Operator-visible reason"),
+    trigger_source: str = typer.Option("operator", "--trigger-source", help="Intent source label"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_post(
+        "/api/supervisor/memory/profile/start",
+        body={
+            "profile_mode": str(profile_mode or "sampled_profile"),
+            "reason": str(reason or "cli.runtime.memory_profile_start"),
+            "trigger_source": str(trigger_source or "operator"),
+        },
+        control=control,
+    )
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    typer.echo(
+        "memory profile start: "
+        f"id={session.get('session_id') or '-'} "
+        f"state={session.get('session_state') or '-'} "
+        f"mode={session.get('profile_mode') or '-'}"
+    )
+    if payload.get("control_mode"):
+        typer.echo(f"control mode: {payload.get('control_mode')}")
+
+
+@app.command("memory-profile-stop")
+def memory_profile_stop(
+    session_id: str,
+    reason: str = typer.Option("cli.runtime.memory_profile_stop", "--reason", help="Operator-visible reason"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_post(
+        f"/api/supervisor/memory/profile/{session_id}/stop",
+        body={"reason": str(reason or "cli.runtime.memory_profile_stop")},
+        control=control,
+    )
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    typer.echo(
+        "memory profile stop: "
+        f"id={session.get('session_id') or '-'} "
+        f"state={session.get('session_state') or '-'}"
+    )
+    if payload.get("control_mode"):
+        typer.echo(f"control mode: {payload.get('control_mode')}")
+
+
+@app.command("memory-publish")
+def memory_publish(
+    session_id: str,
+    reason: str = typer.Option("cli.runtime.memory_publish", "--reason", help="Operator-visible reason"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_post(
+        "/api/supervisor/memory/publish",
+        body={
+            "session_id": str(session_id or "").strip(),
+            "reason": str(reason or "cli.runtime.memory_publish"),
+        },
+        control=control,
+    )
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    typer.echo(
+        "memory publish: "
+        f"id={session.get('session_id') or '-'} "
+        f"publish={session.get('publish_state') or '-'}"
+    )
+    if payload.get("control_mode"):
+        typer.echo(f"control mode: {payload.get('control_mode')}")
