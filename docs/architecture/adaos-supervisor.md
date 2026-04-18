@@ -561,6 +561,23 @@ The current target adapter split is:
 The supervisor must treat profilers as pluggable adapters.
 The policy engine decides when to escalate; the adapter decides how profiling is started, stopped, and materialized into artifacts.
 
+### Runtime launch contract
+
+Escalation into profiling mode must not depend on ad-hoc runtime-specific flags.
+
+The supervisor-owned launch contract should therefore reserve explicit runtime environment keys for memory profiling:
+
+- `ADAOS_SUPERVISOR_PROFILE_MODE`
+- `ADAOS_SUPERVISOR_PROFILE_SESSION_ID`
+- `ADAOS_SUPERVISOR_PROFILE_TRIGGER`
+
+Rules:
+
+- `normal` remains the default when these keys are absent
+- Phase 1 may expose these keys as part of the contract before restart-into-profile is implemented
+- Phase 2 uses the same keys for the actual restart-into-profile flow instead of inventing a second launch mechanism
+- the runtime may treat these keys as read-only diagnostic context and must not promote itself into profiling mode by local guesswork alone
+
 ### Top-level operation log
 
 Profiling artifacts are much more useful when they can be aligned with top-level runtime activity.
@@ -582,6 +599,23 @@ The runtime should therefore emit a compact supervisor-consumable operation log 
 
 This log should stay high-level and bounded.
 It is not intended to mirror every internal event-bus message.
+
+Recommended `operations.ndjson` record shape:
+
+- `contract_version`
+- `event_id`
+- `event`
+- `emitted_at`
+- `session_id`
+- `profile_mode`
+- `slot`
+- `runtime_instance_id`
+- `transition_role`
+- `sample_source`
+- `sequence`
+- `details`
+
+Phase 1 should freeze this envelope even if the runtime is not yet emitting real operation traffic beyond supervisor-owned control intents.
 
 ### Persisted profiling state
 
@@ -625,32 +659,46 @@ The current Phase 1 implementation establishes the contract and storage baseline
 Current implementation artifacts:
 
 - `src/adaos/services/supervisor_memory.py`
-  - supervisor-owned schema normalization for memory telemetry samples, runtime state, session summaries, and artifact refs
+  - supervisor-owned schema normalization for memory telemetry samples, runtime state, session summaries, operation events, and artifact refs
   - dedicated state-path helpers for supervisor memory storage
 - `state/supervisor/memory/runtime.json`
   - persisted memory profiling runtime contract and current live-mode summary
 - `state/supervisor/memory/sessions/index.json`
   - persisted index for profiling sessions
+- `state/supervisor/memory/sessions/<session_id>/operations.ndjson`
+  - contract-stable per-session operation log used for later growth correlation
 
 Current implementation surfaces:
 
 - `GET /api/supervisor/memory/status`
 - `GET /api/supervisor/memory/sessions`
 - `GET /api/supervisor/memory/sessions/{session_id}`
+- `POST /api/supervisor/memory/profile/start`
+- `POST /api/supervisor/memory/profile/{session_id}/stop`
+- `POST /api/supervisor/memory/publish`
 
 Current implementation scope:
 
 - freezes the Phase 1 authority boundary under supervisor
 - defines the serializable state contracts needed for telemetry, sessions, and artifact metadata
+- freezes the runtime launch contract keys that later restart-into-profile work will use
 - exposes the selected profiler adapter and planned profiling modes as supervisor truth
 - exposes the top-level operation-event contract that later profiling sessions will correlate against
+- records explicit operator profiling intents and publish intents in supervisor-owned state without pretending that restart-into-profile or root publication already exists
+
+Current implementation control mode is intentionally `phase1_intent_only`:
+
+- `profile/start` creates a supervisor-owned profiling session intent
+- `profile/stop` resolves that intent locally
+- `publish` records publication intent for later root-facing transport
+- these controls are valuable because operator workflows and tests can already bind to stable contracts before heavier behavior lands
 
 Current implementation deliberately does not yet:
 
 - sample rolling telemetry automatically
 - restart the runtime into profiling mode
-- create profiling sessions automatically
-- publish profiling artifacts to root
+- create profiling sessions automatically from suspicion policy
+- publish profiling artifacts or summaries to root
 
 ### Local control surfaces
 
@@ -664,6 +712,13 @@ The target local supervisor memory API should include read-only status and expli
 - `POST /api/supervisor/memory/publish`
 
 The browser-safe read-only surface should eventually expose a compact memory incident summary without exposing mutating controls.
+
+For manual controls, the safety policy should be explicit:
+
+- manual profile start must be rejected while a core transition is already active
+- only one active profiling intent/session may exist at a time unless a future multi-session policy is documented explicitly
+- `publish` may record an operator request during Phase 1, but must not claim that root publication has completed until an explicit ack exists
+- low-memory or degraded nodes may keep these controls in intent-only mode instead of forcing heavy local artifact creation
 
 ### Root retrieval model
 
@@ -703,13 +758,15 @@ Supervisor policy should therefore preserve these rules:
 - define memory telemetry, profiling session, and artifact metadata schemas
 - document profiler adapter strategy with `tracemalloc` as the default automated path
 - define top-level operation-log contracts needed to correlate memory growth with runtime behavior
+- freeze the runtime launch contract for future restart-into-profile mode
+- expose explicit operator profiling intents in supervisor-owned APIs and state, even before policy-driven automatic restart is implemented
 
 ### Phase 2 - Local memory telemetry and profiler-mode restart
 
 - add supervisor-owned rolling process-family memory telemetry
 - add suspicion policy based on threshold + slope + stabilization window
 - add explicit runtime launch modes `normal`, `sampled_profile`, and `trace_profile`
-- implement restart-into-profile flow for the active slot when memory policy is breached
+- implement restart-into-profile flow for the active slot when memory policy is breached using the Phase 1 launch contract
 - persist local profiling sessions and summaries under `state/supervisor/memory`
 
 ### Phase 3 - Root publication and remote retrieval
