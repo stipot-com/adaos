@@ -1998,6 +1998,27 @@ class SupervisorManager:
             "updated_at": index.get("updated_at"),
         }
 
+    def memory_incidents(self, *, limit: int = 50) -> dict[str, Any]:
+        items = self._memory_session_index_items()
+        incidents: list[dict[str, Any]] = []
+        for item in reversed(items):
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("session_state") or "").strip().lower()
+            suspected = bool(item.get("suspected_leak"))
+            publish_state = str(item.get("publish_state") or "").strip().lower()
+            if state not in {"failed", "finished", "stopped"} and not suspected and publish_state != "publish_requested":
+                continue
+            incidents.append(dict(item))
+            if len(incidents) >= max(1, min(int(limit or 50), 200)):
+                break
+        return {
+            "ok": True,
+            "incidents": incidents,
+            "total": len(incidents),
+            "updated_at": read_memory_session_index().get("updated_at"),
+        }
+
     def memory_session(self, session_id: str) -> dict[str, Any] | None:
         token = str(session_id or "").strip()
         if not token:
@@ -2014,6 +2035,45 @@ class SupervisorManager:
             "artifacts_dir": str(artifacts_dir),
             "telemetry": self._memory_session_telemetry_window(payload, limit=100),
         }
+
+    def memory_session_artifact(self, session_id: str, artifact_id: str) -> dict[str, Any] | None:
+        token = str(session_id or "").strip()
+        ref_id = str(artifact_id or "").strip()
+        if not token or not ref_id:
+            return None
+        session = read_memory_session_summary(token)
+        if not isinstance(session, dict):
+            return None
+        refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+        artifact = next(
+            (
+                dict(item)
+                for item in refs
+                if isinstance(item, dict) and str(item.get("artifact_id") or "").strip() == ref_id
+            ),
+            None,
+        )
+        if artifact is None:
+            return None
+        path = Path(str(artifact.get("path") or "").strip()) if artifact.get("path") else None
+        payload: dict[str, Any] = {
+            "ok": True,
+            "session_id": token,
+            "artifact": artifact,
+        }
+        if path and path.exists():
+            payload["exists"] = True
+            if str(artifact.get("content_type") or "").strip().lower() == "application/json":
+                try:
+                    payload["content"] = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    payload["content"] = None
+            else:
+                payload["content"] = None
+        else:
+            payload["exists"] = False
+            payload["content"] = None
+        return payload
 
     def start_memory_profile(
         self,
@@ -3822,11 +3882,24 @@ async def supervisor_memory_sessions() -> dict[str, Any]:
     return _manager().memory_sessions()
 
 
+@app.get("/api/supervisor/memory/incidents", dependencies=[Depends(require_token)])
+async def supervisor_memory_incidents(limit: int = 50) -> dict[str, Any]:
+    return _manager().memory_incidents(limit=limit)
+
+
 @app.get("/api/supervisor/memory/sessions/{session_id}", dependencies=[Depends(require_token)])
 async def supervisor_memory_session(session_id: str) -> dict[str, Any]:
     payload = _manager().memory_session(session_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="memory profiling session was not found")
+    return payload
+
+
+@app.get("/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}", dependencies=[Depends(require_token)])
+async def supervisor_memory_session_artifact(session_id: str, artifact_id: str) -> dict[str, Any]:
+    payload = _manager().memory_session_artifact(session_id, artifact_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="memory profiling artifact was not found")
     return payload
 
 

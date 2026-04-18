@@ -187,6 +187,33 @@ def memory_telemetry(
     )
 
 
+@app.command("memory-incidents")
+def memory_incidents(
+    limit: int = typer.Option(20, "--limit", min=1, max=100, help="Incident count"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_get(f"/api/supervisor/memory/incidents?limit={int(limit)}", control=control)
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    incidents = payload.get("incidents") if isinstance(payload.get("incidents"), list) else []
+    typer.echo(f"incidents total: {payload.get('total') or 0}")
+    if not incidents:
+        typer.echo("incidents: (empty)")
+        return
+    for item in incidents[:20]:
+        if not isinstance(item, dict):
+            continue
+        typer.echo(
+            "incident: "
+            f"id={item.get('session_id') or '-'} "
+            f"state={item.get('session_state') or '-'} "
+            f"mode={item.get('profile_mode') or '-'} "
+            f"suspected={bool(item.get('suspected_leak'))}"
+        )
+
+
 @app.command("memory-session")
 def memory_session(
     session_id: str,
@@ -223,6 +250,35 @@ def memory_session(
     artifact_refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
     if artifact_refs:
         typer.echo(f"artifacts: {len(artifact_refs)}")
+        first = artifact_refs[0] if isinstance(artifact_refs[0], dict) else {}
+        if first:
+            typer.echo(f"first artifact: {first.get('artifact_id') or '-'}")
+
+
+@app.command("memory-artifact")
+def memory_artifact(
+    session_id: str,
+    artifact_id: str,
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_get(
+        f"/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}",
+        control=control,
+    )
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
+    typer.echo(
+        "artifact: "
+        f"id={artifact.get('artifact_id') or '-'} "
+        f"kind={artifact.get('kind') or '-'} "
+        f"exists={bool(payload.get('exists'))}"
+    )
+    content = payload.get("content")
+    if isinstance(content, dict):
+        typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
 
 
 @app.command("memory-profile-start")

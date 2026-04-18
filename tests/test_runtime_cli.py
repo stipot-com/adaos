@@ -99,6 +99,39 @@ def test_runtime_memory_telemetry_cli_prints_tail(monkeypatch) -> None:
     assert "last sample: mode=sampled_profile suspicion=suspected family_rss=256 growth=64" in result.output
 
 
+def test_runtime_memory_incidents_cli_prints_rows(monkeypatch) -> None:
+    runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
+
+    monkeypatch.setattr(runtime_cli, "resolve_control_base_url", lambda explicit=None, prefer_local=True: "http://127.0.0.1:8777")
+    monkeypatch.setattr(runtime_cli, "resolve_control_token", lambda explicit=None, base_url=None: "dev-token")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "ok": True,
+                "total": 1,
+                "incidents": [
+                    {
+                        "session_id": "mem-001",
+                        "session_state": "failed",
+                        "profile_mode": "sampled_profile",
+                        "suspected_leak": True,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
+
+    result = CliRunner().invoke(runtime_cli.app, ["memory-incidents", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert "incidents total: 1" in result.output
+    assert "incident: id=mem-001 state=failed mode=sampled_profile suspected=True" in result.output
+
+
 def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
     runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
 
@@ -124,6 +157,14 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
                     {"event": "tool_invoked", "sequence": 2},
                 ],
                 "telemetry": [{"sampled_at": 1.0}, {"sampled_at": 2.0}],
+                "session": {
+                    "session_id": "mem-001",
+                    "session_state": "requested",
+                    "profile_mode": "sampled_profile",
+                    "publish_state": "publish_requested",
+                    "trigger_reason": "operator.request",
+                    "artifact_refs": [{"artifact_id": "mem-001-final", "kind": "tracemalloc_final_snapshot"}],
+                },
             }
 
     monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
@@ -136,6 +177,38 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
     assert "operations: 2" in result.output
     assert "last operation: event=tool_invoked seq=2" in result.output
     assert "telemetry: 2" in result.output
+    assert "artifacts: 1" in result.output
+    assert "first artifact: mem-001-final" in result.output
+
+
+def test_runtime_memory_artifact_cli_prints_summary(monkeypatch) -> None:
+    runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
+
+    monkeypatch.setattr(runtime_cli, "resolve_control_base_url", lambda explicit=None, prefer_local=True: "http://127.0.0.1:8777")
+    monkeypatch.setattr(runtime_cli, "resolve_control_token", lambda explicit=None, base_url=None: "dev-token")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "ok": True,
+                "exists": True,
+                "artifact": {
+                    "artifact_id": "mem-001-growth",
+                    "kind": "tracemalloc_top_growth",
+                },
+                "content": {"session_id": "mem-001", "top_growth_sites": []},
+            }
+
+    monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
+
+    result = CliRunner().invoke(runtime_cli.app, ["memory-artifact", "mem-001", "mem-001-growth"])
+
+    assert result.exit_code == 0
+    assert "artifact: id=mem-001-growth kind=tracemalloc_top_growth exists=True" in result.output
+    assert "content keys: session_id, top_growth_sites" in result.output
 
 
 def test_runtime_memory_profile_start_cli_posts_intent(monkeypatch) -> None:

@@ -672,8 +672,10 @@ Current implementation surfaces:
 
 - `GET /api/supervisor/memory/status`
 - `GET /api/supervisor/memory/telemetry`
+- `GET /api/supervisor/memory/incidents`
 - `GET /api/supervisor/memory/sessions`
 - `GET /api/supervisor/memory/sessions/{session_id}`
+- `GET /api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}`
 - `POST /api/supervisor/memory/profile/start`
 - `POST /api/supervisor/memory/profile/{session_id}/stop`
 - `POST /api/supervisor/memory/publish`

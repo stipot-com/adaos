@@ -288,6 +288,39 @@ def test_supervisor_memory_telemetry_endpoint_and_session_details_include_tail(m
     assert details["artifacts_dir"].endswith(f"{session_id}\\artifacts") or details["artifacts_dir"].endswith(f"{session_id}/artifacts")
 
 
+def test_supervisor_memory_incidents_and_artifact_lookup(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    session = manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "failed",
+            "trigger_source": "policy",
+            "suspected_leak": True,
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-growth",
+                    "kind": "tracemalloc_top_growth",
+                    "path": str((tmp_path / "artifact.json").resolve()),
+                    "content_type": "application/json",
+                }
+            ],
+        }
+    )
+    (tmp_path / "artifact.json").write_text('{"top_growth_sites":[{"size_diff_bytes":128}]}', encoding="utf-8")
+
+    incidents = manager.memory_incidents(limit=10)
+    artifact = manager.memory_session_artifact("mem-001", "mem-001-growth")
+
+    assert incidents["total"] == 1
+    assert incidents["incidents"][0]["session_id"] == "mem-001"
+    assert artifact is not None
+    assert artifact["artifact"]["artifact_id"] == "mem-001-growth"
+    assert artifact["content"]["top_growth_sites"][0]["size_diff_bytes"] == 128
+
+
 def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
@@ -406,12 +439,23 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
         def memory_status(self) -> dict:
             return {"contract_version": "1", "current_profile_mode": "normal"}
 
+        def memory_telemetry(self, *, limit: int = 100) -> dict:
+            return {"ok": True, "items": [{"sampled_at": 1.0}], "total": 1, "limit": limit}
+
+        def memory_incidents(self, *, limit: int = 50) -> dict:
+            return {"ok": True, "incidents": [{"session_id": "mem-001", "session_state": "failed"}], "total": 1}
+
         def memory_sessions(self) -> dict:
             return {"ok": True, "sessions": [{"session_id": "mem-001"}], "total": 1}
 
         def memory_session(self, session_id: str) -> dict | None:
             if session_id == "mem-001":
-                return {"ok": True, "session": {"session_id": session_id}}
+                return {"ok": True, "session": {"session_id": session_id, "artifact_refs": [{"artifact_id": "art-1"}]}}
+            return None
+
+        def memory_session_artifact(self, session_id: str, artifact_id: str) -> dict | None:
+            if session_id == "mem-001" and artifact_id == "art-1":
+                return {"ok": True, "artifact": {"artifact_id": "art-1"}, "exists": True, "content": {"ok": True}}
             return None
 
         def start_memory_profile(self, *, profile_mode: str, reason: str, trigger_source: str = "operator") -> dict:
@@ -432,9 +476,13 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
     headers = {"X-AdaOS-Token": "dev-local-token"}
 
     status_response = client.get("/api/supervisor/memory/status", headers=headers)
+    telemetry_response = client.get("/api/supervisor/memory/telemetry?limit=5", headers=headers)
+    incidents_response = client.get("/api/supervisor/memory/incidents?limit=5", headers=headers)
     sessions_response = client.get("/api/supervisor/memory/sessions", headers=headers)
     session_response = client.get("/api/supervisor/memory/sessions/mem-001", headers=headers)
+    artifact_response = client.get("/api/supervisor/memory/sessions/mem-001/artifacts/art-1", headers=headers)
     missing_response = client.get("/api/supervisor/memory/sessions/missing", headers=headers)
+    missing_artifact_response = client.get("/api/supervisor/memory/sessions/mem-001/artifacts/missing", headers=headers)
     start_response = client.post(
         "/api/supervisor/memory/profile/start",
         headers=headers,
@@ -453,11 +501,18 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
 
     assert status_response.status_code == 200
     assert status_response.json()["current_profile_mode"] == "normal"
+    assert telemetry_response.status_code == 200
+    assert telemetry_response.json()["total"] == 1
+    assert incidents_response.status_code == 200
+    assert incidents_response.json()["incidents"][0]["session_state"] == "failed"
     assert sessions_response.status_code == 200
     assert sessions_response.json()["total"] == 1
     assert session_response.status_code == 200
     assert session_response.json()["session"]["session_id"] == "mem-001"
+    assert artifact_response.status_code == 200
+    assert artifact_response.json()["artifact"]["artifact_id"] == "art-1"
     assert missing_response.status_code == 404
+    assert missing_artifact_response.status_code == 404
     assert start_response.status_code == 200
     assert start_response.json()["session"]["profile_mode"] == "sampled_profile"
     assert stop_response.status_code == 200
