@@ -243,6 +243,33 @@ Later passes should add:
 4. explicit client-presence gating
 5. non-blocking refresh execution for heavy skills such as `infrascope_skill`
 
+## Current Implementation Status
+
+Implemented in the current pass:
+
+1. typed manifest parsing for:
+   - `skill.runtime.activation`
+   - `scenario.runtime.skills.required`
+   - `scenario.runtime.skills.optional`
+2. compatibility mapping from legacy `depends` to `runtime.skills.required`
+3. normalized activation and skill-binding metadata in workspace registry
+4. scenario dependency bootstrap now reads normalized required skill bindings
+5. `infrascope_skill` and `infrastate_skill` are marked as lazy scenario-support skills
+6. heavy background refresh work for `infrascope_skill` and `infrastate_skill` no longer runs on the event loop thread
+7. shutdown handling now suppresses executor-closing races for those background refresh workers
+8. skill context resolution now prefers workspace registry metadata before falling back to repository `ensure()` logic
+
+Important current limitation:
+
+- AdaOS does not yet have a global activation service.
+- Lazy skills are still loaded and subscribed at startup.
+- The current implementation only makes their hot paths cheaper and prevents the known startup stalls.
+
+This is an intentional transitional step:
+
+- first remove event-loop blocking and startup regressions
+- then centralize activation state and policy enforcement
+
 ## Migration Guidance
 
 Recommended migration order:
@@ -252,6 +279,18 @@ Recommended migration order:
 3. Add `runtime.activation` to scenario-support skills.
 4. Update runtime services to use normalized registry metadata.
 5. Remove legacy-only assumptions after the runtime path no longer depends on `depends`.
+
+## Remaining Work
+
+Still required for the target architecture:
+
+1. introduce a shared activation runtime that tracks `loaded` vs `active`
+2. respect `startup_allowed`, `background_refresh`, and `client_presence` centrally
+3. decide whether lazy skills should use:
+   - cheap always-registered handlers while inactive
+   - or truly deferred subscription wiring
+4. move more hot-path metadata reads from repository/git/config access into registry or SQLite-backed fast paths
+5. convert UI-heavy scenario skills to true on-demand detail loading instead of broad eager projection rebuilds
 
 ## Decision
 
