@@ -164,11 +164,13 @@ def test_restart_service_uses_unit_name_on_linux(monkeypatch, tmp_path: Path) ->
         stdout = ""
         stderr = ""
 
-    def _run(cmd, capture_output, text, timeout):
+    def _run(cmd, capture_output, text, timeout, encoding=None, errors=None):
         captured["cmd"] = cmd
         captured["capture_output"] = capture_output
         captured["text"] = text
         captured["timeout"] = timeout
+        captured["encoding"] = encoding
+        captured["errors"] = errors
         return _Proc()
 
     monkeypatch.setattr(autostart.subprocess, "run", _run)
@@ -178,6 +180,8 @@ def test_restart_service_uses_unit_name_on_linux(monkeypatch, tmp_path: Path) ->
     assert captured["cmd"] == ["systemctl", "restart", "adaos.service"]
     assert payload["service"] == "adaos.service"
     assert payload["service_ref"] == "/etc/systemd/system/adaos.service"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def test_linux_enable_without_user_bus_raises_helpful_error(monkeypatch, tmp_path: Path) -> None:

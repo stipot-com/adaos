@@ -7,6 +7,11 @@ from typing import Any, Iterable, Literal
 
 import yaml
 
+from adaos.domain.workspace_manifest import (
+    parse_scenario_skill_bindings,
+    parse_skill_activation_policy,
+)
+
 
 REGISTRY_FILE_NAME = "registry.json"
 REGISTRY_FORMAT_VERSION = 1
@@ -202,6 +207,9 @@ def build_registry_entry(kind: RegistryKind, artifact_dir: Path) -> dict[str, An
             runtime_python = _clean_text(runtime.get("python"))
             if runtime_python:
                 entry["runtime_python"] = runtime_python
+        activation = parse_skill_activation_policy(manifest)
+        if activation is not None:
+            entry["activation"] = activation.to_dict()
         tools = manifest.get("tools")
         if isinstance(tools, list):
             entry["tools_count"] = len(tools)
@@ -212,6 +220,10 @@ def build_registry_entry(kind: RegistryKind, artifact_dir: Path) -> dict[str, An
         trigger = _clean_text(manifest.get("trigger"))
         if trigger:
             entry["trigger"] = trigger
+        skills = parse_scenario_skill_bindings(manifest)
+        skills_payload = skills.to_dict()
+        if skills_payload:
+            entry["skills"] = skills_payload
         io_meta = manifest.get("io")
         if isinstance(io_meta, dict):
             io_entry: dict[str, Any] = {}

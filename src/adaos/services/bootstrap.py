@@ -9,13 +9,14 @@ import logging
 import math
 import os
 import socket
+import sys
 import threading
 import time
 import traceback
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import nats as _nats
@@ -122,6 +123,47 @@ def _should_forward_node_status_to_members(payload: object) -> bool:
     if not isinstance(meta, dict):
         return True
     return not bool(meta.get("subnet_origin_node_id"))
+
+
+def _node_status_emit_fingerprint(payload: object) -> tuple[Any, ...]:
+    if not isinstance(payload, dict):
+        return ("invalid",)
+    node_names = payload.get("node_names")
+    if isinstance(node_names, list):
+        normalized_node_names = tuple(str(item or "").strip() for item in node_names if str(item or "").strip())
+    else:
+        normalized_node_names = ()
+    return (
+        str(payload.get("node_id") or "").strip(),
+        str(payload.get("subnet_id") or "").strip(),
+        str(payload.get("role") or "").strip(),
+        normalized_node_names,
+        str(payload.get("primary_node_name") or "").strip(),
+        bool(payload.get("ready")),
+        str(payload.get("node_state") or "").strip(),
+        bool(payload.get("draining")),
+        str(payload.get("route_mode") or "").strip(),
+        payload.get("connected_to_hub"),
+        str(payload.get("trigger") or "").strip(),
+    )
+
+
+def _should_emit_node_status(
+    *,
+    payload: object,
+    now: float,
+    last_emitted_at: float,
+    last_fingerprint: tuple[Any, ...] | None,
+    dedupe_window_s: float = 1.0,
+) -> tuple[bool, tuple[Any, ...]]:
+    fingerprint = _node_status_emit_fingerprint(payload)
+    if (
+        last_fingerprint is not None
+        and fingerprint == last_fingerprint
+        and (now - float(last_emitted_at or 0.0)) < float(dedupe_window_s)
+    ):
+        return False, fingerprint
+    return True, fingerprint
 
 
 def _env_truthy(value: Any, *, default: bool = False) -> bool:
@@ -609,6 +651,27 @@ class BootstrapService:
         # Best-effort route relay reset hook installed by the hub-route runtime once subscriptions are live.
         self._hub_root_route_reset: Any = None
 
+    def _find_live_boot_task(self, task_name: str) -> asyncio.Task | None:
+        live_tasks: list[asyncio.Task] = []
+        found: asyncio.Task | None = None
+        for task in self._boot_tasks:
+            if task.done():
+                continue
+            live_tasks.append(task)
+            if found is None and task.get_name() == task_name:
+                found = task
+        if len(live_tasks) != len(self._boot_tasks):
+            self._boot_tasks = live_tasks
+        return found
+
+    def _start_boot_task_once(self, task_name: str, coro_factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
+        existing = self._find_live_boot_task(task_name)
+        if existing is not None:
+            return existing
+        task = asyncio.create_task(coro_factory(), name=task_name)
+        self._boot_tasks.append(task)
+        return task
+
     def is_ready(self) -> bool:
         return self._ready.is_set()
 
@@ -979,7 +1042,53 @@ class BootstrapService:
             try:
                 if getattr(conf, "role", None) != "hub":
                     return
-                await asyncio.to_thread(report_hub_control_lifecycle_state, conf)
+                done_box: dict[str, Any] = {"thread_done_at": None, "dumped": False}
+                main_tid = threading.get_ident()
+
+                def _run_report() -> Any:
+                    try:
+                        return report_hub_control_lifecycle_state(conf)
+                    finally:
+                        done_box["thread_done_at"] = time.monotonic()
+
+                def _watch_resume() -> None:
+                    while True:
+                        time.sleep(0.25)
+                        finished_at = done_box.get("thread_done_at")
+                        if finished_at is None:
+                            continue
+                        if done_box.get("dumped"):
+                            return
+                        lag_s = time.monotonic() - float(finished_at)
+                        if lag_s < 1.0:
+                            continue
+                        done_box["dumped"] = True
+                        try:
+                            fr = sys._current_frames().get(main_tid)  # type: ignore[attr-defined]
+                            if fr is None:
+                                self._log.warning(
+                                    "control lifecycle await resume delayed lag_s=%.3f main_frame=missing trigger=%s",
+                                    lag_s,
+                                    trigger,
+                                )
+                                return
+                            st = "".join(traceback.format_stack(fr, limit=40))
+                            self._log.warning(
+                                "control lifecycle await resume delayed lag_s=%.3f trigger=%s stack=\n%s",
+                                lag_s,
+                                trigger,
+                                st.rstrip(),
+                            )
+                        except Exception:
+                            return
+
+                watcher = threading.Thread(
+                    target=_watch_resume,
+                    name="adaos-control-lifecycle-await-watch",
+                    daemon=True,
+                )
+                watcher.start()
+                await asyncio.to_thread(_run_report)
             except Exception as exc:
                 # This is best-effort telemetry to Root; never break hub boot/loop on failures.
                 # Include the error string in the structured log so JSON log collectors still show it.
@@ -1012,7 +1121,12 @@ class BootstrapService:
             _current_node_status_push_payload = None
             _node_status_push_heartbeat_s = None
 
+        _last_node_status_emit_at = 0.0
+        _last_node_status_fingerprint: tuple[Any, ...] | None = None
+        _suppressed_duplicate_node_status_total = 0
+
         async def _emit_node_status(trigger: str) -> None:
+            nonlocal _last_node_status_emit_at, _last_node_status_fingerprint, _suppressed_duplicate_node_status_total
             try:
                 if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
                     return
@@ -1020,6 +1134,26 @@ class BootstrapService:
                     return
                 payload = _current_node_status_push_payload()
                 payload["trigger"] = str(trigger or "").strip() or "runtime"
+                now = time.time()
+                should_emit, fingerprint = _should_emit_node_status(
+                    payload=payload,
+                    now=now,
+                    last_emitted_at=_last_node_status_emit_at,
+                    last_fingerprint=_last_node_status_fingerprint,
+                )
+                if not should_emit:
+                    _suppressed_duplicate_node_status_total += 1
+                    if _suppressed_duplicate_node_status_total in {1, 10} or (
+                        _suppressed_duplicate_node_status_total % 100 == 0
+                    ):
+                        self._log.warning(
+                            "suppressed duplicate node.status trigger=%s total=%s",
+                            payload["trigger"],
+                            _suppressed_duplicate_node_status_total,
+                        )
+                    return
+                _last_node_status_emit_at = now
+                _last_node_status_fingerprint = fingerprint
                 await bus.emit(
                     "node.status",
                     payload,
@@ -1208,7 +1342,7 @@ class BootstrapService:
                             except Exception:
                                 pass
 
-                self._boot_tasks.append(asyncio.create_task(_loop_lag_monitor(), name="adaos-loop-lag-monitor"))
+                self._start_boot_task_once("adaos-loop-lag-monitor", _loop_lag_monitor)
         except Exception:
             pass
 
@@ -1254,7 +1388,7 @@ class BootstrapService:
                             last_tick_box["t"] = time.monotonic()
                             await asyncio.sleep(0.2)
 
-                    self._boot_tasks.append(asyncio.create_task(_tick(), name="adaos-loop-tick"))
+                    self._start_boot_task_once("adaos-loop-tick", _tick)
 
                     def _watch() -> None:
                         last_dump = 0.0
@@ -1281,15 +1415,38 @@ class BootstrapService:
                     t.start()
         except Exception:
             pass
+        startup_log = logging.getLogger("adaos.startup")
+
+        def _startup_stage_mark(stage: str, *, started: float | None = None, failed: Exception | None = None) -> float:
+            now = time.perf_counter()
+            if started is None:
+                startup_log.info("startup stage start stage=%s", stage)
+                return now
+            duration = now - started
+            if failed is None:
+                startup_log.info("startup stage done stage=%s duration_s=%.3f", stage, duration)
+            else:
+                startup_log.warning(
+                    "startup stage failed stage=%s duration_s=%.3f error=%s",
+                    stage,
+                    duration,
+                    type(failed).__name__,
+                )
+            return now
+
         try:
             from adaos.services.agent_context import get_ctx as _get_ctx
             from adaos.services.workspace_sync import reconcile_workspace_db_to_materialized as _reconcile_workspace_db_to_materialized
 
+            _reconcile_started = _startup_stage_mark("bootstrap_reconcile_workspace_registry")
             _reconcile_workspace_db_to_materialized(_get_ctx())
+            _startup_stage_mark("bootstrap_reconcile_workspace_registry", started=_reconcile_started)
         except Exception:
             self._log.debug("failed to reconcile workspace sqlite registry on boot", exc_info=True)
         if conf.role == "hub":
+            _hub_ready_started = _startup_stage_mark("bootstrap_emit_net_subnet_hub_ready")
             await bus.emit("net.subnet.hub.ready", {"subnet_id": conf.subnet_id}, source="lifecycle", actor="system")
+            _startup_stage_mark("bootstrap_emit_net_subnet_hub_ready", started=_hub_ready_started)
 
             async def lease_monitor() -> None:
                 while True:
@@ -1297,37 +1454,37 @@ class BootstrapService:
                         await bus.emit("net.subnet.node.down", {"node_id": getattr(info, "node_id", None)}, source="lifecycle", actor="system")
                     await asyncio.sleep(5)
 
-            self._boot_tasks.append(asyncio.create_task(lease_monitor(), name="adaos-lease-monitor"))
+            self._start_boot_task_once("adaos-lease-monitor", lease_monitor)
             self._ready.set()
             self._booted = True
+            _sys_ready_started = _startup_stage_mark("bootstrap_emit_sys_ready")
             await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+            _startup_stage_mark("bootstrap_emit_sys_ready", started=_sys_ready_started)
+            _node_status_started = _startup_stage_mark("bootstrap_emit_node_status")
             await _emit_node_status("sys.ready")
+            _startup_stage_mark("bootstrap_emit_node_status", started=_node_status_started)
             try:
                 if callable(_finalize_runtime_boot_status):
                     _finalize_runtime_boot_status()
             except Exception:
                 self._log.debug("failed to finalize core.update.status after sys.ready", exc_info=True)
+            _control_started = _startup_stage_mark("bootstrap_report_control_lifecycle")
             await _report_control_lifecycle("sys.ready")
-            self._boot_tasks.append(
-                asyncio.create_task(
-                    _control_lifecycle_heartbeat(),
-                    name="adaos-control-lifecycle-heartbeat",
-                )
-            )
-            self._boot_tasks.append(
-                asyncio.create_task(
-                    _node_status_push_heartbeat(),
-                    name="adaos-node-status-push-heartbeat",
-                )
-            )
+            _startup_stage_mark("bootstrap_report_control_lifecycle", started=_control_started)
+            self._start_boot_task_once("adaos-control-lifecycle-heartbeat", _control_lifecycle_heartbeat)
+            self._start_boot_task_once("adaos-node-status-push-heartbeat", _node_status_push_heartbeat)
         else:
             task = await self._member_register_and_heartbeat(conf)
             if task:
                 self._boot_tasks.append(task)
                 self._ready.set()
                 self._booted = True
+                _sys_ready_started = _startup_stage_mark("bootstrap_emit_sys_ready")
                 await bus.emit("sys.ready", {"ts": time.time()}, source="lifecycle", actor="system")
+                _startup_stage_mark("bootstrap_emit_sys_ready", started=_sys_ready_started)
+                _node_status_started = _startup_stage_mark("bootstrap_emit_node_status")
                 await _emit_node_status("sys.ready")
+                _startup_stage_mark("bootstrap_emit_node_status", started=_node_status_started)
                 try:
                     if callable(_finalize_runtime_boot_status):
                         _finalize_runtime_boot_status()
@@ -1335,8 +1492,10 @@ class BootstrapService:
                     self._log.debug("failed to finalize core.update.status after sys.ready", exc_info=True)
 
         # After IO bus is ready, wire outbound subscriber for Telegram if NATS/local
+        _post_ready_started = _startup_stage_mark("bootstrap_post_ready_tail")
         try:
             if hasattr(self._io_bus, "subscribe_output"):
+                _subscribe_output_started = _startup_stage_mark("bootstrap_subscribe_output")
 
                 # Subscribe to all bot ids ("tg.output.*") and use the single configured TG_BOT_TOKEN.
                 sender = TelegramSender("any-bot")
@@ -1360,11 +1519,13 @@ class BootstrapService:
                             pass
 
                 await self._io_bus.subscribe_output("*", _handler)
+                _startup_stage_mark("bootstrap_subscribe_output", started=_subscribe_output_started)
         except Exception:
             pass
 
         # Inbound bridge from root NATS -> local event bus (tg.input.<hub_id>)
         try:
+            _bridge_setup_started = _startup_stage_mark("bootstrap_inbound_bridge_setup")
             # Hot-reload friendly: read persisted runtime NATS config on every connect attempt.
             hub_id = load_config(ctx=self.ctx).subnet_id
             if hub_id:
@@ -7215,7 +7376,7 @@ class BootstrapService:
                                 delay = min(max(delay, 0.5), 2.0)
 
                 # TODO restore nats WS subscription
-                self._boot_tasks.append(asyncio.create_task(_nats_bridge_supervisor(), name="adaos-nats-io-bridge"))
+                self._start_boot_task_once("adaos-nats-io-bridge", _nats_bridge_supervisor)
         except Exception:
             try:
                 if os.getenv("HUB_NATS_VERBOSE", "0") == "1" or os.getenv("ADAOS_CLI_DEBUG", "0") == "1":
@@ -7238,8 +7399,11 @@ class BootstrapService:
             self._log.debug("control lifecycle report failed trigger=sys.stopping", exc_info=True)
         try:
             await get_service_supervisor().shutdown()
-        except Exception:
+            _startup_stage_mark("bootstrap_inbound_bridge_setup", started=_bridge_setup_started)
+        except Exception as e:
+            _startup_stage_mark("bootstrap_inbound_bridge_setup", started=_bridge_setup_started, failed=e)
             pass
+        _startup_stage_mark("bootstrap_post_ready_tail", started=_post_ready_started)
         try:
             await stop_scheduler()
         except Exception:

@@ -103,6 +103,24 @@ def test_replace_slot_dir_refuses_nested_move_when_cleanup_leaves_destination(
         assert "refusing nested move" in str(exc)
 
 
+def test_replace_slot_dir_removes_existing_partial_slot_dir(tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    prepared_slot = tmp_path / "tmp-build" / "A"
+    slot_dir = tmp_path / "slots" / "A"
+    (prepared_slot / "repo").mkdir(parents=True, exist_ok=True)
+    (prepared_slot / "repo" / "manifest.txt").write_text("fresh", encoding="utf-8")
+    (slot_dir / "repo" / ".git").mkdir(parents=True, exist_ok=True)
+    stale_file = slot_dir / "repo" / ".git" / "pack.idx"
+    stale_file.write_text("stale", encoding="utf-8")
+
+    mod._replace_slot_dir(prepared_slot, slot_dir)
+
+    assert slot_dir.exists() is True
+    assert (slot_dir / "repo" / "manifest.txt").read_text(encoding="utf-8") == "fresh"
+    assert stale_file.exists() is False
+
+
 def test_cleanup_stale_temp_slot_dirs_removes_only_old_temp_dirs(tmp_path: Path) -> None:
     import adaos.apps.core_update_apply as mod
 

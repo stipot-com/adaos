@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -160,9 +161,25 @@ def _repair_moved_venv(venv_dir: Path, *, original_venv_dir: Path) -> dict[str, 
     }
 
 
+def _force_remove_tree(path: Path) -> None:
+    target = Path(path).expanduser().resolve()
+
+    def _retry_with_writeable(func, value, _exc_info) -> None:
+        try:
+            os.chmod(value, stat.S_IWRITE)
+        except Exception:
+            pass
+        func(value)
+
+    shutil.rmtree(target, ignore_errors=False, onerror=_retry_with_writeable)
+
+
 def _replace_slot_dir(prepared_slot: Path, slot_dir: Path) -> None:
     if slot_dir.exists():
-        shutil.rmtree(slot_dir, ignore_errors=True)
+        try:
+            _force_remove_tree(slot_dir)
+        except Exception:
+            pass
     if slot_dir.exists():
         raise RuntimeError(
             f"slot directory cleanup failed; refusing nested move into existing path: {slot_dir}"

@@ -18,6 +18,10 @@ The usual control path is:
 - `webspace runtime`: Yjs-backed webspaces, desktop state, scenario switching, home scenario control
 - `developer workflows`: Root login/bootstrap, Forge-style push and publish commands
 
+## Architectural directions
+
+- [Skill Activation And Scenario Binding](skill-activation-and-scenario-binding.md)
+
 ## Storage and state
 
 AdaOS stores most local state under the active base directory, including:

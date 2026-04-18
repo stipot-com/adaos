@@ -6,6 +6,8 @@ import types
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
 
 if "nats" not in sys.modules:
     sys.modules["nats"] = types.SimpleNamespace()
@@ -44,6 +46,38 @@ def test_ping_exposes_runtime_identity_for_candidate(monkeypatch) -> None:
     assert payload["runtime"]["slot"] == "B"
     assert payload["runtime"]["runtime_port"] == 8778
     assert payload["runtime"]["admin_mutation_allowed"] is False
+
+
+def test_private_network_access_middleware_allows_cross_origin_loopback_probe() -> None:
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "OPTIONS",
+        "scheme": "http",
+        "path": "/api/ping",
+        "raw_path": b"/api/ping",
+        "query_string": b"",
+        "headers": [
+            (b"origin", b"https://myinimatic.web.app"),
+            (b"access-control-request-method", b"GET"),
+            (b"access-control-request-private-network", b"true"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8777),
+    }
+
+    async def _call_next(_request):
+        return Response(status_code=599)
+
+    response = asyncio.run(
+        api_server.private_network_access_middleware(Request(scope), _call_next)
+    )
+
+    assert response.status_code == 204
+    assert response.headers["Access-Control-Allow-Origin"] == "https://myinimatic.web.app"
+    assert response.headers["Access-Control-Allow-Methods"] == "GET"
+    assert response.headers["Access-Control-Allow-Private-Network"] == "true"
+    assert response.headers["Vary"] == "Origin"
 
 
 @pytest.mark.parametrize(

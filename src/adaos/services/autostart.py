@@ -215,7 +215,7 @@ def _bootstrap_core_slot(ctx: AgentContext, *, token: str | None = None) -> None
     shared_dotenv = _shared_dotenv_path(ctx)
     if shared_dotenv is not None:
         cmd.extend(["--shared-dotenv-path", str(shared_dotenv)])
-    completed = subprocess.run(cmd, capture_output=True, text=True)
+    completed = subprocess.run(cmd, capture_output=True, **_text_subprocess_kwargs())
     if completed.returncode != 0:
         raise RuntimeError(
             "failed to initialize bootstrap core slot\n"
@@ -264,8 +264,14 @@ def _write_wrapper_sh(path: Path, *, argv: Sequence[str], env: Mapping[str, str]
         pass
 
 
+def _text_subprocess_kwargs() -> dict[str, object]:
+    # Child tools on Windows often emit UTF-8 regardless of the active console code page.
+    # Decode defensively so autostart status/enable commands never fail in reader threads.
+    return {"text": True, "encoding": "utf-8", "errors": "replace"}
+
+
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, **_text_subprocess_kwargs())
 
 
 def _is_local_url(url: str | None) -> bool:
@@ -1275,7 +1281,7 @@ def restart_service(ctx: AgentContext) -> dict[str, object]:
             cmd = ["systemctl", "--user", "restart", service_name]
         else:
             raise RuntimeError(f"unsupported autostart scope for restart: {scope or 'unknown'}")
-        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        completed = subprocess.run(cmd, capture_output=True, timeout=30, **_text_subprocess_kwargs())
         if completed.returncode != 0:
             raise RuntimeError(
                 f"failed to restart {service_name}\n"

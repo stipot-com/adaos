@@ -148,6 +148,77 @@ def test_registry_entry_includes_tags_and_publisher(tmp_path: Path):
     assert entry["publisher"]["node_id"] == "hub-1"
 
 
+def test_registry_entry_normalizes_skill_activation_policy(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "infrascope_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        "\n".join(
+            [
+                "name: Infrascope",
+                "version: '1.0.0'",
+                "runtime:",
+                "  python: '3.11'",
+                "  activation:",
+                "    mode: lazy",
+                "    startup_allowed: false",
+                "    background_refresh: false",
+                "    when:",
+                "      scenarios_active:",
+                "        - infrascope",
+                "      client_presence: true",
+                "      webspace_scope: active",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = rebuild_workspace_registry(workspace)
+
+    assert payload["skills"][0]["activation"] == {
+        "mode": "lazy",
+        "startup_allowed": False,
+        "background_refresh": False,
+        "when": {
+            "scenarios_active": ["infrascope"],
+            "client_presence": True,
+            "webspace_scope": "active",
+        },
+    }
+
+
+def test_registry_entry_normalizes_scenario_skill_bindings(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    scenario_dir = workspace / "scenarios" / "infrascope"
+    scenario_dir.mkdir(parents=True)
+    (scenario_dir / "scenario.yaml").write_text(
+        "\n".join(
+            [
+                "id: infrascope",
+                "version: '0.6.0'",
+                "depends:",
+                "  - legacy_skill",
+                "runtime:",
+                "  skills:",
+                "    required:",
+                "      - infrascope_skill",
+                "    optional:",
+                "      - telemetry_skill",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = rebuild_workspace_registry(workspace)
+
+    assert payload["scenarios"][0]["skills"] == {
+        "required": ["legacy_skill", "infrascope_skill"],
+        "optional": ["telemetry_skill"],
+    }
+
+
 def test_registry_pattern_set_keeps_registry_json_first():
     patterns = registry_pattern_set(["skills/weather_skill", "registry.json", "scenarios/greet_on_boot"])
     assert patterns[0] == "registry.json"

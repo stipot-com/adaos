@@ -95,6 +95,7 @@ function Write-EnvVar {
         [string]$EnvFile = ".env"
     )
     if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    $escapedKey = [regex]::Escape($Key)
     if (-not (Test-Path $EnvFile)) {
         New-Item -ItemType File -Path $EnvFile -Force | Out-Null
     }
@@ -104,7 +105,7 @@ function Write-EnvVar {
     }
     $updated = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match "^\Q$Key\E=") {
+        if ($lines[$i] -match "^${escapedKey}=") {
             $lines[$i] = "$Key=$Value"
             $updated = $true
             break

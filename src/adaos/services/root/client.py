@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
 import httpx
 import ssl, os
+import logging
+import time
 
 
 class RootHttpError(RuntimeError):
@@ -16,6 +18,9 @@ class RootHttpError(RuntimeError):
         self.status_code = status_code
         self.error_code = error_code
         self.payload = payload
+
+
+_ROOT_HTTP_LOG = logging.getLogger("adaos.root-http")
 
 
 @dataclass(slots=True)
@@ -119,6 +124,8 @@ class RootHttpClient:
         timeout: float | None = None,
         accept_204: bool = False,
     ) -> Any:
+        trace_request = str(path or "").startswith("/v1/hub/control/")
+        started = time.perf_counter()
         request_headers: MutableMapping[str, str] | None = None
         if headers:
             request_headers = {str(k): str(v) for k, v in headers.items()}
@@ -148,6 +155,15 @@ class RootHttpClient:
                     headers=request_headers,
                 )
         except httpx.RequestError as exc:  # pragma: no cover - network errors are environment specific
+            if trace_request:
+                _ROOT_HTTP_LOG.warning(
+                    "root http failed method=%s path=%s duration_s=%.3f error_type=%s error=%s",
+                    method,
+                    path,
+                    time.perf_counter() - started,
+                    type(exc).__name__,
+                    str(exc),
+                )
             raise RootHttpError(f"{method} {path} failed: {exc}", status_code=0) from exc
 
         content: Any | None = None
@@ -158,6 +174,14 @@ class RootHttpClient:
                 content = response.text
 
         if response.status_code == 204 and accept_204:
+            if trace_request:
+                _ROOT_HTTP_LOG.info(
+                    "root http response method=%s path=%s duration_s=%.3f status=%s",
+                    method,
+                    path,
+                    time.perf_counter() - started,
+                    response.status_code,
+                )
             return {}
 
         if response.status_code >= 400:
@@ -170,8 +194,25 @@ class RootHttpClient:
                 code = content.get("code") or content.get("error")
                 if isinstance(code, str):
                     error_code = code
+            if trace_request:
+                _ROOT_HTTP_LOG.warning(
+                    "root http response method=%s path=%s duration_s=%.3f status=%s error_code=%s",
+                    method,
+                    path,
+                    time.perf_counter() - started,
+                    response.status_code,
+                    error_code,
+                )
             raise RootHttpError(message, status_code=response.status_code, error_code=error_code, payload=content)
 
+        if trace_request:
+            _ROOT_HTTP_LOG.info(
+                "root http response method=%s path=%s duration_s=%.3f status=%s",
+                method,
+                path,
+                time.perf_counter() - started,
+                response.status_code,
+            )
         return content if content is not None else {}
 
     # ------------------------------------------------------------------
