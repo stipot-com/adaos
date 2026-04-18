@@ -59,6 +59,18 @@ from adaos.services.realtime_sidecar import (
     stop_realtime_sidecar_subprocess,
 )
 from adaos.services.runtime_paths import current_base_dir
+from adaos.services.supervisor_memory import (
+    DEFAULT_PROFILER_ADAPTER,
+    TOP_LEVEL_OPERATION_EVENTS,
+    ensure_memory_store,
+    read_memory_runtime_state,
+    read_memory_session_index,
+    read_memory_session_summary,
+    supervisor_memory_runtime_state_path,
+    supervisor_memory_sessions_index_path,
+    supervisor_memory_telemetry_path,
+    write_memory_runtime_state,
+)
 
 
 _SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
@@ -110,6 +122,11 @@ def _supervisor_runtime_state_path() -> Path:
 
 def _supervisor_update_attempt_path() -> Path:
     return (_supervisor_state_dir() / "update_attempt.json").resolve()
+
+
+def _memory_profiler_adapter() -> str:
+    token = str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILER") or "").strip().lower()
+    return token or DEFAULT_PROFILER_ADAPTER
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -702,6 +719,7 @@ class SupervisorManager:
         self.runtime_host = str(runtime_host or "127.0.0.1").strip() or "127.0.0.1"
         self.runtime_port = int(runtime_port)
         self.token = str(token or "").strip() or None
+        ensure_memory_store()
         self._proc: subprocess.Popen[Any] | None = None
         self._candidate_proc: subprocess.Popen[Any] | None = None
         self._sidecar_proc: subprocess.Popen[Any] | None = None
@@ -731,6 +749,11 @@ class SupervisorManager:
         self._candidate_last_stop_reason: str | None = None
         self._service_restart_pending = False
         self._service_restart_thread: threading.Thread | None = None
+        self._memory_profiler_adapter = _memory_profiler_adapter()
+        self._memory_profile_mode = "normal"
+        self._memory_suspicion_state = "idle"
+        self._memory_active_session_id: str | None = None
+        self._memory_last_session_id: str | None = None
 
     def _schedule_service_restart(self, *, reason: str) -> dict[str, Any]:
         delay_sec = _root_restart_delay_sec()
@@ -1414,6 +1437,72 @@ class SupervisorManager:
     def _persist_runtime_state(self) -> None:
         with contextlib.suppress(Exception):
             _write_json(_supervisor_runtime_state_path(), self._runtime_state_payload())
+        with contextlib.suppress(Exception):
+            write_memory_runtime_state(self._memory_runtime_state_payload())
+
+    def _memory_runtime_state_payload(self) -> dict[str, Any]:
+        ensure_memory_store()
+        current_slot = str(active_slot() or "").strip().upper() or None
+        managed = _proc_details(self._proc, cwd_hint=self._managed_runtime_cwd)
+        managed_pid = managed.get("managed_pid")
+        process_rss_bytes, family_rss_bytes = _process_family_rss_bytes(managed_pid)
+        sessions_index = read_memory_session_index()
+        session_items = sessions_index.get("sessions") if isinstance(sessions_index.get("sessions"), list) else []
+        last_session_id = self._memory_last_session_id
+        if not last_session_id and session_items:
+            last_item = session_items[-1] if isinstance(session_items[-1], dict) else {}
+            last_session_id = str(last_item.get("session_id") or "").strip() or None
+        return {
+            "contract_version": "1",
+            "authority": "supervisor",
+            "selected_profiler_adapter": self._memory_profiler_adapter,
+            "implemented_profiler_adapters": ["tracemalloc"],
+            "planned_profiler_adapters": ["tracemalloc", "memray"],
+            "current_profile_mode": self._memory_profile_mode,
+            "implemented_profile_modes": ["normal"],
+            "planned_profile_modes": ["normal", "sampled_profile", "trace_profile"],
+            "suspicion_state": self._memory_suspicion_state,
+            "active_session_id": self._memory_active_session_id,
+            "last_session_id": last_session_id,
+            "active_slot": current_slot,
+            "runtime_instance_id": self._managed_runtime_instance_id,
+            "transition_role": self._managed_transition_role,
+            "managed_pid": managed_pid,
+            "current_process_rss_bytes": process_rss_bytes,
+            "current_family_rss_bytes": family_rss_bytes,
+            "telemetry_path": str(supervisor_memory_telemetry_path()),
+            "sessions_index_path": str(supervisor_memory_sessions_index_path()),
+            "implemented_operation_events": list(TOP_LEVEL_OPERATION_EVENTS),
+            "sessions_total": len(session_items),
+            "updated_at": time.time(),
+        }
+
+    def memory_status(self) -> dict[str, Any]:
+        payload = self._memory_runtime_state_payload()
+        payload["persisted_state"] = read_memory_runtime_state()
+        payload["sessions_index"] = read_memory_session_index()
+        payload["runtime_state_path"] = str(supervisor_memory_runtime_state_path())
+        return payload
+
+    def memory_sessions(self) -> dict[str, Any]:
+        index = read_memory_session_index()
+        items = index.get("sessions") if isinstance(index.get("sessions"), list) else []
+        return {
+            "ok": True,
+            "contract_version": str(index.get("contract_version") or "1"),
+            "sessions": items,
+            "total": len(items),
+            "updated_at": index.get("updated_at"),
+        }
+
+    def memory_session(self, session_id: str) -> dict[str, Any] | None:
+        token = str(session_id or "").strip()
+        if not token:
+            return None
+        payload = read_memory_session_summary(token)
+        if payload is None:
+            return None
+        return {"ok": True, "session": payload}
 
     def _runtime_self_heal_decision(self, *, now: float | None = None) -> dict[str, Any] | None:
         proc = self._proc
@@ -3051,6 +3140,24 @@ async def ping() -> dict[str, Any]:
 @app.get("/api/supervisor/status", dependencies=[Depends(require_token)])
 async def supervisor_status() -> dict[str, Any]:
     return _manager().status()
+
+
+@app.get("/api/supervisor/memory/status", dependencies=[Depends(require_token)])
+async def supervisor_memory_status() -> dict[str, Any]:
+    return _manager().memory_status()
+
+
+@app.get("/api/supervisor/memory/sessions", dependencies=[Depends(require_token)])
+async def supervisor_memory_sessions() -> dict[str, Any]:
+    return _manager().memory_sessions()
+
+
+@app.get("/api/supervisor/memory/sessions/{session_id}", dependencies=[Depends(require_token)])
+async def supervisor_memory_session(session_id: str) -> dict[str, Any]:
+    payload = _manager().memory_session(session_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="memory profiling session was not found")
+    return payload
 
 
 @app.get("/api/supervisor/sidecar/status", dependencies=[Depends(require_token)])

@@ -480,40 +480,277 @@ Standalone runtime-owned sidecar startup remains only as compatibility fallback 
 The sidecar must remain transport-only.
 The sidecar must not become the hidden owner of update status, rollback state, or degraded-mode business policy.
 
+## Memory leak detection and profiling
+
+The supervisor should also become the local authority for memory leak detection, profiling escalation, and remote retrieval of profiling evidence.
+
+This work is intentionally prioritized ahead of the broader supervisor rollout because:
+
+- core-slot evolution can change memory behavior even when update flow is otherwise healthy
+- skill runtime evolution can introduce long-lived leaks outside the narrow core-update path
+- low-memory devices need an explicit local guard before a leak turns into process death or unstable restart loops
+
+### Goal
+
+Provide an always-on supervisor-owned memory watchdog that can:
+
+- observe runtime process-family memory after start, restart, and slot switch
+- distinguish normal warm-up from suspicious sustained growth
+- restart the runtime in an explicit profiling mode when policy thresholds are crossed
+- correlate memory growth with top-level runtime operations
+- persist local profiling sessions and summaries
+- publish profiling summaries and artifacts to root so they can be retrieved remotely by zone-scoped operator workflows
+
+### Operating model
+
+The target model is policy-driven rather than "always profile everything".
+
+Supervisor should run the managed runtime in one of these modes:
+
+- `normal`
+- `sampled_profile`
+- `trace_profile`
+
+Target behavior:
+
+1. runtime starts in `normal`
+2. supervisor samples process-family memory and records a rolling baseline
+3. if the memory policy detects suspicious growth, supervisor records a profiling session intent
+4. supervisor restarts the same slot in `sampled_profile`
+5. if the profile confirms continued abnormal growth, supervisor records a leak incident and keeps the node recoverable through restart / rollback / quarantine policy
+6. operator or root workflows can later retrieve the profiling summary and, when configured, the heavier profiling artifacts
+
+The important rule is that profiling is an escalated diagnostic mode under supervisor policy, not a permanent runtime tax.
+
+### Signals and admission rules
+
+Supervisor should avoid triggering profiling from one instantaneous RSS sample.
+
+Memory suspicion should be based on a combination of:
+
+- absolute process-family RSS over a configured threshold
+- positive RSS growth slope over a time window
+- post-switch RSS significantly above the pre-switch baseline
+- threshold breach sustained beyond a stabilization grace period
+
+This is especially important because AdaOS runtimes may legitimately allocate memory during:
+
+- slot boot and dependency import
+- skill runtime preparation or activation
+- workspace materialization
+- model/session warm-up
+- cache rebuild after update or rollback
+
+### Profiler strategy
+
+The preferred default profiler strategy is:
+
+- built-in `tracemalloc` for automatic supervisor-triggered profiling sessions
+- optional heavier profiler adapters for deep-dive workflows on supported environments
+
+The current target adapter split is:
+
+- `TracemallocProfilerAdapter`
+  - lowest operational complexity
+  - safe for automated restart-into-profile mode
+  - useful for Python allocation growth snapshots and diffs
+- `MemrayProfilerAdapter`
+  - optional deep-dive adapter for environments where native-allocation analysis is worth the overhead and platform support is available
+  - not required for the first implementation
+
+The supervisor must treat profilers as pluggable adapters.
+The policy engine decides when to escalate; the adapter decides how profiling is started, stopped, and materialized into artifacts.
+
+### Top-level operation log
+
+Profiling artifacts are much more useful when they can be aligned with top-level runtime activity.
+
+The runtime should therefore emit a compact supervisor-consumable operation log for events such as:
+
+- `slot_started`
+- `slot_promoted`
+- `skill_loaded`
+- `skill_activated`
+- `skill_unloaded`
+- `scenario_started`
+- `workspace_opened`
+- `model_session_started`
+- `tool_invoked`
+- `core_update_prepare`
+- `core_update_apply`
+- `core_update_activate`
+
+This log should stay high-level and bounded.
+It is not intended to mirror every internal event-bus message.
+
+### Persisted profiling state
+
+In addition to the current supervisor state files, the target model should add local profiling storage under supervisor state.
+
+Recommended target layout:
+
+- `state/supervisor/memory/runtime.json`
+- `state/supervisor/memory/telemetry.ndjson`
+- `state/supervisor/memory/sessions/<session_id>/summary.json`
+- `state/supervisor/memory/sessions/<session_id>/operations.ndjson`
+- `state/supervisor/memory/sessions/<session_id>/artifacts/...`
+- `state/supervisor/memory/sessions/index.json`
+
+Recommended summary fields:
+
+- `session_id`
+- `slot`
+- `runtime_instance_id`
+- `transition_role`
+- `profile_mode`
+- `trigger_reason`
+- `trigger_threshold`
+- `baseline_rss_bytes`
+- `peak_rss_bytes`
+- `rss_growth_bytes`
+- `started_at`
+- `finished_at`
+- `suspected_leak`
+- `top_growth_sites`
+- `operation_window`
+- `published_to_root`
+- `artifact_refs`
+
+The important rule is that supervisor owns the diagnostic session record even if runtime produces the raw snapshots.
+
+### Phase 1 implementation baseline
+
+The current Phase 1 implementation establishes the contract and storage baseline without yet enabling automatic restart-into-profile behavior.
+
+Current implementation artifacts:
+
+- `src/adaos/services/supervisor_memory.py`
+  - supervisor-owned schema normalization for memory telemetry samples, runtime state, session summaries, and artifact refs
+  - dedicated state-path helpers for supervisor memory storage
+- `state/supervisor/memory/runtime.json`
+  - persisted memory profiling runtime contract and current live-mode summary
+- `state/supervisor/memory/sessions/index.json`
+  - persisted index for profiling sessions
+
+Current implementation surfaces:
+
+- `GET /api/supervisor/memory/status`
+- `GET /api/supervisor/memory/sessions`
+- `GET /api/supervisor/memory/sessions/{session_id}`
+
+Current implementation scope:
+
+- freezes the Phase 1 authority boundary under supervisor
+- defines the serializable state contracts needed for telemetry, sessions, and artifact metadata
+- exposes the selected profiler adapter and planned profiling modes as supervisor truth
+- exposes the top-level operation-event contract that later profiling sessions will correlate against
+
+Current implementation deliberately does not yet:
+
+- sample rolling telemetry automatically
+- restart the runtime into profiling mode
+- create profiling sessions automatically
+- publish profiling artifacts to root
+
+### Local control surfaces
+
+The target local supervisor memory API should include read-only status and explicit operator controls:
+
+- `GET /api/supervisor/memory/status`
+- `GET /api/supervisor/memory/sessions`
+- `GET /api/supervisor/memory/sessions/{session_id}`
+- `POST /api/supervisor/memory/profile/start`
+- `POST /api/supervisor/memory/profile/{session_id}/stop`
+- `POST /api/supervisor/memory/publish`
+
+The browser-safe read-only surface should eventually expose a compact memory incident summary without exposing mutating controls.
+
+### Root retrieval model
+
+Profiling evidence should follow the same general remote-access philosophy as other root control reports:
+
+- the node keeps local authoritative copies first
+- supervisor publishes summaries asynchronously
+- root indexes those summaries by hub, subnet, and zone
+- heavier artifacts can be fetched only when requested and authorized
+
+Target root-facing capabilities:
+
+- ingest a memory-profile summary report from a hub
+- list memory-profile incidents by `hub_id`, `subnet_id`, and `zone`
+- fetch a single profiling session summary
+- retrieve profiling artifacts when policy and size constraints allow it
+
+This should remain a separate report family rather than overloading generic lifecycle reports.
+
+### Safety and recovery rules
+
+Memory profiling must not reduce the node to an unrecoverable state.
+
+Supervisor policy should therefore preserve these rules:
+
+- profiling restarts must stay bounded by timeouts
+- repeated profile-trigger loops must trip a circuit breaker
+- low-memory devices may skip heavy artifact collection and keep only summaries
+- candidate prewarm and warm-switch memory admission must remain separate from leak suspicion policy
+- a confirmed leak may trigger rollback or quarantine policy, but profiling itself must not silently mutate slot authority
+
 ## Migration plan
 
-### Phase 1 - Documentation and state model
+### Phase 1 - Memory watchdog architecture and state model
+
+- freeze the supervisor-owned memory profiling authority boundary
+- define memory telemetry, profiling session, and artifact metadata schemas
+- document profiler adapter strategy with `tracemalloc` as the default automated path
+- define top-level operation-log contracts needed to correlate memory growth with runtime behavior
+
+### Phase 2 - Local memory telemetry and profiler-mode restart
+
+- add supervisor-owned rolling process-family memory telemetry
+- add suspicion policy based on threshold + slope + stabilization window
+- add explicit runtime launch modes `normal`, `sampled_profile`, and `trace_profile`
+- implement restart-into-profile flow for the active slot when memory policy is breached
+- persist local profiling sessions and summaries under `state/supervisor/memory`
+
+### Phase 3 - Root publication and remote retrieval
+
+- publish memory-profile summaries to root as a dedicated report family
+- scope retrieval by `hub_id`, `subnet_id`, and `zone`
+- expose lightweight operator retrieval flows before large artifact transport
+- keep local-first retention so profiling evidence survives root/network outages
+
+### Phase 4 - Documentation and baseline supervisor state model
 
 - freeze supervisor authority boundary
 - define persisted attempt schema
 - teach CLI to prefer supervisor-style state when available
 
-### Phase 2 - Resilience before full split
+### Phase 5 - Resilience before full split
 
 - add stale-attempt timeout handling
 - stop clearing update plan before validation commit
 - emit explicit failure state for interrupted restart/apply paths
 
-### Phase 3 - Introduce standalone supervisor process
+### Phase 6 - Introduce standalone supervisor process
 
 - add `adaos supervisor serve`
 - move update state and admin/update endpoints into supervisor
 - make systemd unit target supervisor instead of runtime
 
-### Phase 4 - Child runtime management
+### Phase 7 - Child runtime management
 
 - launch runtime as a child process of supervisor
 - move runtime restart and validation logic out of `autostart_runner`
 - persist child process metadata and restart reason in supervisor state
 
-### Phase 5 - Sidecar alignment
+### Phase 8 - Sidecar alignment
 
 - keep `adaos-realtime` lifecycle under supervisor in managed topology
 - keep runtime-owned startup/shutdown only as standalone fallback when supervisor is absent
 - keep sidecar contract transport-only
 - keep warm candidates memory-bounded: warm-switch admission should account for runtime process-family RSS, and candidate prewarm should defer external service-skill startup until cutover
 
-### Phase 6 - Operator UX
+### Phase 9 - Operator UX
 
 - `adaos autostart/update-status` resolves to supervisor API first
 - `adaos autostart update-defer` can reschedule a planned/countdown update window without losing the current supervisor attempt context
