@@ -171,6 +171,27 @@ def _memory_suspicion_slope_threshold_bytes_per_min() -> float:
         return float(48 * 1024 * 1024)
 
 
+def _memory_auto_profile_cooldown_sec() -> float:
+    try:
+        return max(60.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_COOLDOWN_SEC") or "600").strip()))
+    except Exception:
+        return 600.0
+
+
+def _memory_auto_profile_circuit_window_sec() -> float:
+    try:
+        return max(300.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_CIRCUIT_WINDOW_SEC") or "1800").strip()))
+    except Exception:
+        return 1800.0
+
+
+def _memory_auto_profile_circuit_limit() -> int:
+    try:
+        return max(1, int(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_CIRCUIT_LIMIT") or "3").strip()))
+    except Exception:
+        return 3
+
+
 def _available_memory_bytes() -> int | None:
     if psutil is None:
         return None
@@ -998,6 +1019,24 @@ class SupervisorManager:
         summary["rss_growth_bytes"] = self._memory_last_growth_bytes
         self._upsert_memory_session_summary(summary)
 
+    def _memory_policy_auto_profile_guard(self, *, now: float) -> tuple[bool, str | None]:
+        cooldown_cutoff = now - _memory_auto_profile_cooldown_sec()
+        circuit_cutoff = now - _memory_auto_profile_circuit_window_sec()
+        recent_policy_sessions = 0
+        for item in reversed(self._memory_session_index_items()):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("trigger_source") or "").strip().lower() != "policy":
+                continue
+            requested_at = float(item.get("requested_at") or 0.0)
+            if requested_at >= cooldown_cutoff:
+                return False, "auto_profile_cooldown"
+            if requested_at >= circuit_cutoff:
+                recent_policy_sessions += 1
+                if recent_policy_sessions >= _memory_auto_profile_circuit_limit():
+                    return False, "auto_profile_circuit_open"
+        return True, None
+
     async def _maybe_apply_memory_profile_mode(self) -> None:
         desired_mode = self._desired_memory_profile_mode()
         if desired_mode == self._memory_profile_mode:
@@ -1086,17 +1125,22 @@ class SupervisorManager:
             and self._desired_memory_profile_mode() == "normal"
             and not str(self._memory_active_session_id or "").strip()
         ):
-            try:
-                self._request_memory_profile_session(
-                    profile_mode="sampled_profile",
-                    reason=f"memory.{suspicion_reason or 'threshold'}",
-                    trigger_source="policy",
-                    trigger_threshold=(
-                        f"growth>={growth_threshold}; slope>={int(slope_threshold)}"
-                    ),
-                )
-            except HTTPException:
-                pass
+            auto_allowed, auto_block_reason = self._memory_policy_auto_profile_guard(now=now)
+            if auto_allowed:
+                try:
+                    self._request_memory_profile_session(
+                        profile_mode="sampled_profile",
+                        reason=f"memory.{suspicion_reason or 'threshold'}",
+                        trigger_source="policy",
+                        trigger_threshold=(
+                            f"growth>={growth_threshold}; slope>={int(slope_threshold)}"
+                        ),
+                    )
+                except HTTPException:
+                    pass
+            else:
+                self._memory_suspicion_state = "suppressed"
+                self._memory_suspicion_reason = auto_block_reason
         self._persist_runtime_state()
         return sample
 

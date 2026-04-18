@@ -256,6 +256,68 @@ def test_spawn_runtime_locked_sets_profile_launch_env_for_requested_session(monk
     assert manager.memory_status()["current_profile_mode"] == "trace_profile"
 
 
+def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC", "60")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_COOLDOWN_SEC", "600")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+    manager._persist_runtime_state = lambda: None
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-prev",
+            "profile_mode": "sampled_profile",
+            "session_state": "finished",
+            "trigger_source": "policy",
+            "trigger_reason": "memory.growth_and_slope_threshold",
+            "requested_at": 50.0,
+            "finished_at": 55.0,
+        }
+    )
+
+    samples = iter(
+        [
+            (100 * 1024 * 1024, 100 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+        ]
+    )
+    times = iter([100.0, 160.0])
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
+    monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
+    monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+
+    manager._sample_memory_telemetry()
+    manager._sample_memory_telemetry()
+    monkeypatch.setattr(
+        supervisor,
+        "_process_family_rss_bytes",
+        lambda pid: (100 * 1024 * 1024, 160 * 1024 * 1024),
+    )
+    monkeypatch.setattr(supervisor.time, "time", lambda: 170.0)
+
+    status = manager.memory_status()
+
+    assert status["suspicion_state"] == "suppressed"
+    assert status["suspicion_reason"] == "auto_profile_cooldown"
+    assert status["requested_session_id"] is None
+
+
 def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatch) -> None:
     class _Manager:
         def memory_status(self) -> dict:

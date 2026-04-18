@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 
 from adaos.apps import autostart_runner
+from adaos.services.supervisor_memory import read_memory_session_summary, supervisor_memory_session_artifacts_dir
 
 
 def test_autostart_runner_initializes_context_before_pidfile(monkeypatch) -> None:
@@ -84,6 +86,56 @@ def test_reconcile_post_root_promotion_restart_clears_stale_candidate_prewarm_fi
     assert payload["candidate_prewarm_state"] is None
     assert payload["candidate_prewarm_message"] is None
     assert payload["candidate_prewarm_ready_at"] is None
+
+
+def test_runtime_memory_profile_session_writes_artifacts(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PROFILE_MODE", "sampled_profile")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID", "mem-123")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PROFILE_TRIGGER", "policy:growth")
+
+    class _Stat:
+        def __init__(self, label: str, *, size: int = 0, count: int = 0, size_diff: int = 0, count_diff: int = 0) -> None:
+            self.traceback = label
+            self.size = size
+            self.count = count
+            self.size_diff = size_diff
+            self.count_diff = count_diff
+
+    class _Snapshot:
+        def __init__(self, start: bool) -> None:
+            self._start = start
+
+        def statistics(self, key: str):
+            assert key == "lineno"
+            return [_Stat("app.py:10", size=256 if self._start else 384, count=2)]
+
+        def compare_to(self, other, key: str):
+            assert key == "lineno"
+            return [_Stat("app.py:10", size=384, count=3, size_diff=128, count_diff=1)]
+
+    snapshots = iter([_Snapshot(True), _Snapshot(False)])
+    monkeypatch.setattr(autostart_runner.tracemalloc, "start", lambda frames: None)
+    monkeypatch.setattr(autostart_runner.tracemalloc, "is_tracing", lambda: True)
+    monkeypatch.setattr(autostart_runner.tracemalloc, "take_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(autostart_runner.tracemalloc, "stop", lambda: None)
+    monkeypatch.setattr(autostart_runner.time, "time", lambda: 100.0)
+
+    session = autostart_runner._RuntimeMemoryProfileSession()
+    session.start()
+    session.finish()
+
+    artifacts_dir = supervisor_memory_session_artifacts_dir("mem-123")
+    summary = read_memory_session_summary("mem-123")
+
+    assert (artifacts_dir / "tracemalloc-start.json").exists()
+    assert (artifacts_dir / "tracemalloc-final.json").exists()
+    assert (artifacts_dir / "tracemalloc-top-growth.json").exists()
+    assert summary is not None
+    assert summary["session_state"] == "finished"
+    assert len(summary["artifact_refs"]) == 3
+    growth_payload = json.loads((artifacts_dir / "tracemalloc-top-growth.json").read_text(encoding="utf-8"))
+    assert growth_payload["top_growth_sites"][0]["size_diff_bytes"] == 128
 
 
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:

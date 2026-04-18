@@ -151,6 +151,12 @@ def supervisor_memory_session_operations_path(session_id: str) -> Path:
     return (supervisor_memory_session_dir(session_id) / "operations.ndjson").resolve()
 
 
+def supervisor_memory_session_artifacts_dir(session_id: str) -> Path:
+    path = (supervisor_memory_session_dir(session_id) / "artifacts").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @dataclass(slots=True)
 class MemoryArtifactRef:
     artifact_id: str
@@ -714,6 +720,7 @@ __all__ = [
     "read_memory_session_index",
     "read_memory_session_summary",
     "supervisor_memory_runtime_state_path",
+    "supervisor_memory_session_artifacts_dir",
     "supervisor_memory_session_operations_path",
     "supervisor_memory_session_summary_path",
     "supervisor_memory_sessions_index_path",
