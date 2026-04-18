@@ -75,6 +75,7 @@ from adaos.services.supervisor_memory import (
     read_memory_session_index,
     read_memory_session_summary,
     supervisor_memory_runtime_state_path,
+    supervisor_memory_session_artifacts_dir,
     supervisor_memory_session_operations_path,
     supervisor_memory_sessions_index_path,
     supervisor_memory_telemetry_path,
@@ -848,6 +849,61 @@ class SupervisorManager:
         index = read_memory_session_index()
         items = index.get("sessions") if isinstance(index.get("sessions"), list) else []
         return [dict(item) for item in items if isinstance(item, dict)]
+
+    def _memory_session_telemetry_window(self, session: dict[str, Any], *, limit: int = 50) -> list[dict[str, Any]]:
+        runtime_instance_id = str(session.get("runtime_instance_id") or "").strip() or None
+        started_at = float(session.get("started_at") or session.get("requested_at") or 0.0)
+        finished_at = float(session.get("finished_at") or time.time())
+        items = read_memory_telemetry_tail(limit=5000)
+        window: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sampled_at = float(item.get("sampled_at") or 0.0)
+            if sampled_at and sampled_at < started_at:
+                continue
+            if finished_at and sampled_at and sampled_at > finished_at:
+                continue
+            if runtime_instance_id and str(item.get("runtime_instance_id") or "").strip() not in {"", runtime_instance_id}:
+                continue
+            window.append(item)
+        return window[-max(1, int(limit or 1)) :]
+
+    def _fail_active_memory_session(self, *, reason: str, exit_code: int | None = None) -> None:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id:
+            return
+        summary = read_memory_session_summary(session_id)
+        if not isinstance(summary, dict):
+            return
+        state = str(summary.get("session_state") or "").strip().lower()
+        if state in {"finished", "stopped", "cancelled", "failed"}:
+            return
+        now = time.time()
+        summary["session_state"] = "failed"
+        summary["stop_reason"] = reason
+        summary["stopped_at"] = now
+        summary["finished_at"] = summary.get("finished_at") or now
+        if exit_code is not None:
+            summary["operation_window"] = {
+                **(summary.get("operation_window") if isinstance(summary.get("operation_window"), dict) else {}),
+                "exit_code": int(exit_code),
+            }
+        updated = self._upsert_memory_session_summary(summary)
+        self._append_memory_operation(
+            session_id=session_id,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or self._memory_profile_mode),
+            details={
+                "action": "profile_failed",
+                "reason": reason,
+                "exit_code": int(exit_code) if exit_code is not None else None,
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            },
+        )
+        self._memory_active_session_id = None
+        self._memory_requested_profile_mode = None
+        self._memory_profile_mode = "normal"
 
     def _persist_memory_session_index_items(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
@@ -1921,6 +1977,16 @@ class SupervisorManager:
         payload["runtime_state_path"] = str(supervisor_memory_runtime_state_path())
         return payload
 
+    def memory_telemetry(self, *, limit: int = 100) -> dict[str, Any]:
+        items = read_memory_telemetry_tail(limit=max(1, min(int(limit or 100), 1000)))
+        return {
+            "ok": True,
+            "items": items,
+            "total": len(items),
+            "telemetry_path": str(supervisor_memory_telemetry_path()),
+            "runtime": self._memory_runtime_state_payload(),
+        }
+
     def memory_sessions(self) -> dict[str, Any]:
         index = read_memory_session_index()
         items = index.get("sessions") if isinstance(index.get("sessions"), list) else []
@@ -1939,11 +2005,14 @@ class SupervisorManager:
         payload = read_memory_session_summary(token)
         if payload is None:
             return None
+        artifacts_dir = supervisor_memory_session_artifacts_dir(token)
         return {
             "ok": True,
             "session": payload,
             "operations": read_memory_session_operations(token, limit=100),
             "operations_path": str(supervisor_memory_session_operations_path(token)),
+            "artifacts_dir": str(artifacts_dir),
+            "telemetry": self._memory_session_telemetry_window(payload, limit=100),
         }
 
     def start_memory_profile(
@@ -2537,12 +2606,18 @@ class SupervisorManager:
             self._last_exit_code = int(rc)
             self._last_exit_at = time.time()
             self._last_stop_reason = self._last_stop_reason or "supervisor.runtime.exited"
+            if self._memory_profile_mode != "normal" and not self._stopping and self._desired_running:
+                self._fail_active_memory_session(
+                    reason="runtime_exited_during_profile_mode",
+                    exit_code=int(rc),
+                )
             self._proc = None
             self._managed_runtime_instance_id = None
             self._managed_transition_role = None
             self._managed_runtime_cwd = None
             self._runtime_unhealthy_since = None
             self._runtime_unhealthy_kind = None
+            self._memory_profile_mode = "normal"
             self._persist_runtime_state()
             if self._stopping or not self._desired_running:
                 continue
@@ -3730,6 +3805,11 @@ async def supervisor_status() -> dict[str, Any]:
 @app.get("/api/supervisor/memory/status", dependencies=[Depends(require_token)])
 async def supervisor_memory_status() -> dict[str, Any]:
     return _manager().memory_status()
+
+
+@app.get("/api/supervisor/memory/telemetry", dependencies=[Depends(require_token)])
+async def supervisor_memory_telemetry(limit: int = 100) -> dict[str, Any]:
+    return _manager().memory_telemetry(limit=limit)
 
 
 @app.get("/api/supervisor/public/memory-status")

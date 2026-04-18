@@ -162,6 +162,31 @@ def memory_sessions(
         )
 
 
+@app.command("memory-telemetry")
+def memory_telemetry(
+    limit: int = typer.Option(20, "--limit", min=1, max=200, help="Tail sample count"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_get(f"/api/supervisor/memory/telemetry?limit={int(limit)}", control=control)
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    typer.echo(f"telemetry samples: {payload.get('total') or 0}")
+    if not items:
+        typer.echo("telemetry: (empty)")
+        return
+    last = items[-1] if isinstance(items[-1], dict) else {}
+    typer.echo(
+        "last sample: "
+        f"mode={last.get('profile_mode') or 'normal'} "
+        f"suspicion={last.get('suspicion_state') or 'idle'} "
+        f"family_rss={last.get('family_rss_bytes') or 0} "
+        f"growth={last.get('rss_growth_bytes') or 0}"
+    )
+
+
 @app.command("memory-session")
 def memory_session(
     session_id: str,
@@ -192,6 +217,12 @@ def memory_session(
                 f"event={last.get('event') or '-'} "
                 f"seq={last.get('sequence') or '-'}"
             )
+    telemetry = payload.get("telemetry") if isinstance(payload.get("telemetry"), list) else []
+    if telemetry:
+        typer.echo(f"telemetry: {len(telemetry)}")
+    artifact_refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+    if artifact_refs:
+        typer.echo(f"artifacts: {len(artifact_refs)}")
 
 
 @app.command("memory-profile-start")

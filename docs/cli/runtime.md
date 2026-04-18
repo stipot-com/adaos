@@ -6,6 +6,7 @@
 adaos runtime status
 adaos runtime logs
 adaos runtime memory-status
+adaos runtime memory-telemetry --limit 20
 adaos runtime memory-sessions
 adaos runtime memory-session <SESSION_ID>
 adaos runtime memory-profile-start --profile-mode sampled_profile
@@ -19,6 +20,7 @@ These commands are useful for checking local readiness, runtime slots, and the b
 If `node reliability` falls back to the supervisor during a controlled restart, it also prints the compact public memory summary when available.
 The `runtime memory-*` commands expose the supervisor-owned profiling workflow directly through the memory APIs.
 In the current Phase 2 baseline, `memory-profile-start` creates a requested profiling session and supervisor converges the runtime into the requested mode through a controlled restart.
+`memory-session` now includes compact operation/telemetry/artifact context for one profiling session, and `memory-telemetry` gives a quick tail view of rolling growth samples.
 
 ## Autostart and service mode
 

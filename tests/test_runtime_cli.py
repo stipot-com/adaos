@@ -70,6 +70,35 @@ def test_runtime_memory_sessions_cli_prints_session_rows(monkeypatch) -> None:
     assert "session: id=mem-001 state=requested mode=sampled_profile publish=local_only" in result.output
 
 
+def test_runtime_memory_telemetry_cli_prints_tail(monkeypatch) -> None:
+    runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
+
+    monkeypatch.setattr(runtime_cli, "resolve_control_base_url", lambda explicit=None, prefer_local=True: "http://127.0.0.1:8777")
+    monkeypatch.setattr(runtime_cli, "resolve_control_token", lambda explicit=None, base_url=None: "dev-token")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "ok": True,
+                "total": 2,
+                "items": [
+                    {"profile_mode": "normal", "suspicion_state": "idle", "family_rss_bytes": 128, "rss_growth_bytes": 0},
+                    {"profile_mode": "sampled_profile", "suspicion_state": "suspected", "family_rss_bytes": 256, "rss_growth_bytes": 64},
+                ],
+            }
+
+    monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
+
+    result = CliRunner().invoke(runtime_cli.app, ["memory-telemetry", "--limit", "2"])
+
+    assert result.exit_code == 0
+    assert "telemetry samples: 2" in result.output
+    assert "last sample: mode=sampled_profile suspicion=suspected family_rss=256 growth=64" in result.output
+
+
 def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
     runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
 
@@ -94,6 +123,7 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
                     {"event": "tool_invoked", "sequence": 1},
                     {"event": "tool_invoked", "sequence": 2},
                 ],
+                "telemetry": [{"sampled_at": 1.0}, {"sampled_at": 2.0}],
             }
 
     monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
@@ -105,6 +135,7 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
     assert "trigger: operator.request" in result.output
     assert "operations: 2" in result.output
     assert "last operation: event=tool_invoked seq=2" in result.output
+    assert "telemetry: 2" in result.output
 
 
 def test_runtime_memory_profile_start_cli_posts_intent(monkeypatch) -> None:

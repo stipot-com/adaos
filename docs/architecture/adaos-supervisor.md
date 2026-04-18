@@ -671,6 +671,7 @@ Current implementation artifacts:
 Current implementation surfaces:
 
 - `GET /api/supervisor/memory/status`
+- `GET /api/supervisor/memory/telemetry`
 - `GET /api/supervisor/memory/sessions`
 - `GET /api/supervisor/memory/sessions/{session_id}`
 - `POST /api/supervisor/memory/profile/start`
@@ -689,6 +690,7 @@ Current implementation scope now spans the completed Phase 1 baseline plus the f
 - materializes local `tracemalloc` start/final/top-growth artifacts under `state/supervisor/memory/sessions/<session_id>/artifacts`
 - records top growth sites and artifact refs back into the supervisor-owned session summary when a profiled runtime exits
 - suppresses repeated policy-triggered restart loops with cooldown/circuit-breaker guards before opening another automatic profiling session
+- exposes telemetry tail and richer per-session inspection so operators can inspect growth samples, operation log, and collected artifacts together
 
 Current implementation control mode is `phase2_supervisor_restart`:
 
@@ -701,7 +703,6 @@ Current implementation deliberately does not yet:
 
 - materialize runtime-produced profiler artifacts beyond the supervisor-owned session envelope
 - publish profiling artifacts or summaries to root
-- expose a dedicated telemetry-tail API beyond the current status/session views
 
 ### Local control surfaces
 

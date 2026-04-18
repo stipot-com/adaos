@@ -256,6 +256,38 @@ def test_spawn_runtime_locked_sets_profile_launch_env_for_requested_session(monk
     assert manager.memory_status()["current_profile_mode"] == "trace_profile"
 
 
+def test_supervisor_memory_telemetry_endpoint_and_session_details_include_tail(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    session = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")["session"]
+    session_id = session["session_id"]
+    manager._upsert_memory_session_summary({**session, "runtime_instance_id": "rt-a-a-1", "session_state": "running", "started_at": 10.0})
+    append_memory_telemetry_sample(
+        MemoryTelemetrySample(
+            sampled_at=11.0,
+            slot="A",
+            runtime_instance_id="rt-a-a-1",
+            profile_mode="sampled_profile",
+            suspicion_state="suspected",
+            family_rss_bytes=256,
+            rss_growth_bytes=64,
+        )
+    )
+
+    telemetry = manager.memory_telemetry(limit=10)
+    details = manager.memory_session(session_id)
+
+    assert telemetry["total"] == 1
+    assert telemetry["items"][0]["profile_mode"] == "sampled_profile"
+    assert details is not None
+    assert details["telemetry"][0]["runtime_instance_id"] == "rt-a-a-1"
+    assert details["artifacts_dir"].endswith(f"{session_id}\\artifacts") or details["artifacts_dir"].endswith(f"{session_id}/artifacts")
+
+
 def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
@@ -316,6 +348,57 @@ def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypat
     assert status["suspicion_state"] == "suppressed"
     assert status["suspicion_reason"] == "auto_profile_cooldown"
     assert status["requested_session_id"] is None
+
+
+def test_supervisor_marks_profile_session_failed_when_profiled_runtime_exits(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return 17
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+    manager._memory_profile_mode = "sampled_profile"
+    manager._desired_running = True
+    manager._stopping = False
+    manager._persist_runtime_state = lambda: None
+    manager._memory_active_session_id = "mem-001"
+    manager._memory_requested_profile_mode = "sampled_profile"
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "runtime_instance_id": "rt-a-a-1",
+            "started_at": 10.0,
+            "requested_at": 9.0,
+        }
+    )
+
+    calls = {"sleep": 0}
+
+    async def _sleep(_: float) -> None:
+        calls["sleep"] += 1
+        if calls["sleep"] > 1:
+            raise RuntimeError("stop-monitor")
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _sleep)
+
+    try:
+        asyncio.run(manager.monitor_forever())
+    except RuntimeError as exc:
+        assert str(exc) == "stop-monitor"
+
+    session = manager.memory_session("mem-001")
+    assert session is not None
+    assert session["session"]["session_state"] == "failed"
+    assert session["session"]["stop_reason"] == "runtime_exited_during_profile_mode"
+    assert session["operations"][-1]["details"]["action"] == "profile_failed"
 
 
 def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatch) -> None:
