@@ -30,36 +30,55 @@ from requests import ConnectionError as RequestsConnectionError
 
 def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
     runner = CliRunner()
-    monkeypatch.setattr(
-        setup_cmd,
-        "_autostart_admin_get",
-        lambda path, token=None: {
-            "ok": True,
-            "status": {"state": "idle", "message": "boot", "target_rev": "rev2026"},
-            "slots": {
-                "active_slot": "A",
-                "previous_slot": "B",
+    def _fake_supervisor_get(path, *, token=None):
+        if path == "/api/supervisor/update/status":
+            return {
+                "ok": True,
+                "status": {"state": "idle", "message": "boot", "target_rev": "rev2026"},
                 "slots": {
-                    "A": {
-                        "manifest": {
-                            "target_version": "0.1.0",
-                            "git_short_commit": "8e2f6e75",
-                            "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
-                            "git_branch": "rev2026",
-                            "git_subject": "feat: add git webhook",
-                        }
+                    "active_slot": "A",
+                    "previous_slot": "B",
+                    "slots": {
+                        "A": {
+                            "manifest": {
+                                "target_version": "0.1.0",
+                                "git_short_commit": "8e2f6e75",
+                                "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
+                                "git_branch": "rev2026",
+                                "git_subject": "feat: add git webhook",
+                            }
+                        },
+                        "B": {"manifest": {"target_version": "0.1.0", "git_short_commit": "4a525775", "git_branch": "rev2026"}},
                     },
-                    "B": {"manifest": {"target_version": "0.1.0", "git_short_commit": "4a525775", "git_branch": "rev2026"}},
                 },
-            },
-        },
-    )
+            }
+        if path == "/api/supervisor/public/memory-status":
+            return {
+                "ok": True,
+                "memory": {
+                    "current_profile_mode": "normal",
+                    "profile_control_mode": "phase1_intent_only",
+                    "suspicion_state": "idle",
+                    "sessions_total": 1,
+                    "last_session": {
+                        "session_id": "mem-001",
+                        "session_state": "planned",
+                        "profile_mode": "sampled_profile",
+                        "publish_state": "local_only",
+                    },
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_get", _fake_supervisor_get)
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "target rev: rev2026" in result.output
+    assert "memory: mode=normal control=phase1_intent_only suspicion=idle sessions=1" in result.output
+    assert "memory last session: id=mem-001 state=planned mode=sampled_profile publish=local_only" in result.output
     assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
@@ -538,6 +557,19 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
                 "git_commit": "8e2f6e7529b60f67094a7951e690558c67fdf333",
                 "git_branch": "rev2026",
             },
+            "memory": {
+                "profile_control_mode": "phase1_intent_only",
+                "current_profile_mode": "normal",
+                "requested_profile_mode": "sampled_profile",
+                "suspicion_state": "idle",
+                "sessions_total": 2,
+                "last_session": {
+                    "session_id": "mem-002",
+                    "session_state": "planned",
+                    "profile_mode": "sampled_profile",
+                    "publish_state": "publish_requested",
+                },
+            },
             "_local_fallback": True,
         },
     )
@@ -547,6 +579,7 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "message: autostart runner boot" in result.output
+    assert "memory: mode=normal control=phase1_intent_only suspicion=idle sessions=2 requested=sampled_profile" in result.output
     assert "active slot: B | 0.1.1 | 8e2f6e75 | rev2026" in result.output
 
 

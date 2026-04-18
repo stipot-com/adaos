@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -40,6 +41,7 @@ from adaos.services.core_update import last_result_path as core_update_last_resu
 from adaos.services.core_update import plan_path as core_update_plan_path
 from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
 from adaos.services.core_update import status_path as core_update_status_path
+from adaos.services.supervisor_memory import read_memory_runtime_state, read_memory_session_summary
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.setup.presets import get_preset
@@ -616,6 +618,9 @@ def _local_autostart_update_payload() -> dict | None:
     plan_path = selected_root / "plan.json"
     last_result_path = selected_root / "last_result.json"
     attempt_path = selected_root.parent / "supervisor" / "update_attempt.json"
+    memory_runtime = read_memory_runtime_state()
+    last_session_id = str(memory_runtime.get("last_session_id") or "").strip() or None
+    last_session = read_memory_session_summary(last_session_id) if last_session_id else None
     return {
         "ok": True,
         "status": _read_json_file(status_path) or {"state": "idle", "updated_at": time.time()},
@@ -624,6 +629,14 @@ def _local_autostart_update_payload() -> dict | None:
         "plan": _read_json_file(plan_path),
         "slots": core_slot_status(),
         "active_manifest": active_slot_manifest(),
+        "memory": {
+            "profile_control_mode": str(memory_runtime.get("profile_control_mode") or "").strip() or None,
+            "current_profile_mode": str(memory_runtime.get("current_profile_mode") or "").strip() or "normal",
+            "requested_profile_mode": str(memory_runtime.get("requested_profile_mode") or "").strip() or None,
+            "suspicion_state": str(memory_runtime.get("suspicion_state") or "").strip() or "idle",
+            "sessions_total": int(memory_runtime.get("sessions_total") or 0),
+            "last_session": last_session if isinstance(last_session, dict) else None,
+        },
         "_local_fallback": True,
         "_local_fallback_root": str(selected_root),
     }
@@ -631,7 +644,12 @@ def _local_autostart_update_payload() -> dict | None:
 
 def _autostart_update_get(*, token: Optional[str] = None) -> dict:
     try:
-        return _autostart_supervisor_get("/api/supervisor/update/status", token=token)
+        payload = _autostart_supervisor_get("/api/supervisor/update/status", token=token)
+        with contextlib.suppress(RuntimeError):
+            memory_payload = _autostart_supervisor_get("/api/supervisor/public/memory-status", token=token)
+            if isinstance(memory_payload, dict) and isinstance(memory_payload.get("memory"), dict):
+                payload["memory"] = dict(memory_payload.get("memory"))
+        return payload
     except RuntimeError:
         return _autostart_admin_get("/api/admin/update/status", token=token)
 
@@ -1303,6 +1321,7 @@ def autostart_update_status_cmd(
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     attempt = payload.get("attempt") if isinstance(payload.get("attempt"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    memory = payload.get("memory") if isinstance(payload.get("memory"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
     active_slot = str(slots.get("active_slot") or "")
@@ -1364,6 +1383,26 @@ def autostart_update_status_cmd(
         typer.echo(f"supervisor attempt: {attempt.get('state')}")
         if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
             typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
+    if memory:
+        memory_line = (
+            "memory: "
+            f"mode={memory.get('current_profile_mode') or 'normal'} "
+            f"control={memory.get('profile_control_mode') or '-'} "
+            f"suspicion={memory.get('suspicion_state') or 'idle'} "
+            f"sessions={memory.get('sessions_total') or 0}"
+        )
+        if memory.get("requested_profile_mode"):
+            memory_line += f" requested={memory.get('requested_profile_mode')}"
+        typer.echo(memory_line)
+        last_session = memory.get("last_session") if isinstance(memory.get("last_session"), dict) else {}
+        if last_session:
+            typer.echo(
+                "memory last session: "
+                f"id={last_session.get('session_id') or '-'} "
+                f"state={last_session.get('session_state') or '-'} "
+                f"mode={last_session.get('profile_mode') or '-'} "
+                f"publish={last_session.get('publish_state') or '-'}"
+            )
     if bool(status.get("subsequent_transition")) or bool(attempt.get("subsequent_transition")):
         requested_at = attempt.get("subsequent_transition_requested_at") or status.get("subsequent_transition_requested_at")
         line = "subsequent transition: queued"

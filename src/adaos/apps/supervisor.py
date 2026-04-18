@@ -2284,6 +2284,46 @@ class SupervisorManager:
     def public_update_status(self) -> dict[str, Any]:
         return _public_update_status_payload(self._local_supervisor_update_status_payload())
 
+    def public_memory_status(self) -> dict[str, Any]:
+        runtime = self._memory_runtime_state_payload()
+        last_session_id = str(runtime.get("last_session_id") or "").strip() or None
+        active_session_id = str(runtime.get("active_session_id") or "").strip() or None
+        last_session = read_memory_session_summary(last_session_id) if last_session_id else None
+        active_session = read_memory_session_summary(active_session_id) if active_session_id else None
+        session = active_session if isinstance(active_session, dict) and active_session else last_session
+        compact_session = None
+        if isinstance(session, dict):
+            compact_session = {
+                "session_id": str(session.get("session_id") or "").strip() or None,
+                "profile_mode": str(session.get("profile_mode") or "").strip() or None,
+                "session_state": str(session.get("session_state") or "").strip() or None,
+                "trigger_source": str(session.get("trigger_source") or "").strip() or None,
+                "trigger_reason": str(session.get("trigger_reason") or "").strip() or None,
+                "requested_at": session.get("requested_at"),
+                "finished_at": session.get("finished_at"),
+                "publish_state": str(session.get("publish_state") or "").strip() or None,
+                "suspected_leak": bool(session.get("suspected_leak")),
+            }
+        return {
+            "ok": True,
+            "memory": {
+                "authority": str(runtime.get("authority") or "supervisor"),
+                "profile_control_mode": str(runtime.get("profile_control_mode") or IMPLEMENTED_PROFILE_CONTROL_MODE),
+                "current_profile_mode": str(runtime.get("current_profile_mode") or "normal"),
+                "requested_profile_mode": str(runtime.get("requested_profile_mode") or "").strip() or None,
+                "requested_session_id": str(runtime.get("requested_session_id") or "").strip() or None,
+                "active_session_id": active_session_id,
+                "last_session_id": last_session_id,
+                "publish_request_session_id": str(runtime.get("publish_request_session_id") or "").strip() or None,
+                "suspicion_state": str(runtime.get("suspicion_state") or "idle"),
+                "selected_profiler_adapter": str(runtime.get("selected_profiler_adapter") or DEFAULT_PROFILER_ADAPTER),
+                "sessions_total": int(runtime.get("sessions_total") or 0),
+                "last_session": compact_session,
+                "updated_at": runtime.get("updated_at"),
+            },
+            "_served_by": "supervisor",
+        }
+
     async def _request_runtime_shutdown(self, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict[str, Any]:
         async with self._lock:
             proc = self._proc
@@ -3362,6 +3402,11 @@ async def supervisor_status() -> dict[str, Any]:
 @app.get("/api/supervisor/memory/status", dependencies=[Depends(require_token)])
 async def supervisor_memory_status() -> dict[str, Any]:
     return _manager().memory_status()
+
+
+@app.get("/api/supervisor/public/memory-status")
+async def supervisor_public_memory_status() -> dict[str, Any]:
+    return _manager().public_memory_status()
 
 
 @app.get("/api/supervisor/memory/sessions", dependencies=[Depends(require_token)])

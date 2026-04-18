@@ -10,6 +10,7 @@ adaos node reliability
 ```
 
 These commands are useful for checking local readiness, runtime slots, and the broader node health model.
+If `node reliability` falls back to the supervisor during a controlled restart, it also prints the compact public Phase 1 memory summary when available.
 
 ## Autostart and service mode
 
@@ -48,6 +49,7 @@ In service mode the authoritative update surface is the supervisor, not the tran
 - production runtime is launched from the active slot manifest, not from the root checkout
 - `update-status` should remain inspectable through supervisor-backed state even while `:8777` is restarting
 - root/bootstrap code may be promoted after a successful slot validation, but the restarted production runtime still comes from slot `A|B`
+- `update-status` may also include the compact Phase 1 supervisor memory summary so operators can see profiling intent/session state during the same rollout window
 
 Current autostart-managed flow for bootstrap/self-update:
 

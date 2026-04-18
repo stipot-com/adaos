@@ -713,6 +713,18 @@ The target local supervisor memory API should include read-only status and expli
 
 The browser-safe read-only surface should eventually expose a compact memory incident summary without exposing mutating controls.
 
+Phase 1 now also exposes a compact browser-safe memory summary:
+
+- `GET /api/supervisor/public/memory-status`
+
+That surface is intentionally small and read-only:
+
+- current profile/control mode
+- requested profiling intent, if any
+- suspicion state
+- session counters
+- compact last-session summary
+
 For manual controls, the safety policy should be explicit:
 
 - manual profile start must be rejected while a core transition is already active

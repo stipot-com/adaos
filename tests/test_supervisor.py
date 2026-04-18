@@ -2313,6 +2313,27 @@ def test_public_update_status_endpoint_is_unauthenticated(monkeypatch) -> None:
     assert response.json()["status"]["state"] == "restarting"
 
 
+def test_public_memory_status_endpoint_is_unauthenticated(monkeypatch) -> None:
+    class _Manager:
+        def public_memory_status(self) -> dict:
+            return {
+                "ok": True,
+                "memory": {
+                    "current_profile_mode": "normal",
+                    "profile_control_mode": "phase1_intent_only",
+                    "sessions_total": 2,
+                },
+            }
+
+    monkeypatch.setattr(supervisor, "_manager", lambda: _Manager())
+    client = TestClient(supervisor.app)
+
+    response = client.get("/api/supervisor/public/memory-status")
+
+    assert response.status_code == 200
+    assert response.json()["memory"]["profile_control_mode"] == "phase1_intent_only"
+
+
 def test_public_update_status_does_not_probe_runtime_admin_status(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
@@ -2346,6 +2367,21 @@ def test_public_update_status_does_not_probe_runtime_admin_status(monkeypatch, t
     assert payload["status"]["state"] == "restarting"
     assert payload["status"]["phase"] == "shutdown"
     assert payload["runtime"]["runtime_state"] == "spawned"
+
+
+def test_public_memory_status_uses_compact_last_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
+    session_id = manager.memory_status()["requested_session_id"]
+    manager.publish_memory_profile(session_id, reason="operator.publish")
+
+    payload = manager.public_memory_status()
+
+    assert payload["memory"]["profile_control_mode"] == "phase1_intent_only"
+    assert payload["memory"]["last_session"]["session_id"] == session_id
+    assert payload["memory"]["last_session"]["publish_state"] == "publish_requested"
 
 
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:
