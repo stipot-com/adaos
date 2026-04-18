@@ -31,20 +31,83 @@ def _clone_json_like(value: Any) -> Any:
         return value
 
 
-def _merge_nested_path(existing: Any, segments: List[str], payload: Any) -> Any:
+def _mapping_items(value: Any) -> list[tuple[str, Any]] | None:
+    if isinstance(value, dict):
+        return [(str(key), item) for key, item in value.items() if str(key)]
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return [(str(key), item) for key, item in items() if str(key)]
+        except Exception:
+            return None
+    return None
+
+
+def _json_like_equal(current: Any, next_value: Any) -> bool:
+    if current is next_value:
+        return True
+
+    current_items = _mapping_items(current)
+    next_items = _mapping_items(next_value)
+    if current_items is not None or next_items is not None:
+        if current_items is None or next_items is None:
+            return False
+        if len(current_items) != len(next_items):
+            return False
+        next_lookup = {key: item for key, item in next_items}
+        if len(next_lookup) != len(next_items):
+            return False
+        for key, current_item in current_items:
+            if key not in next_lookup:
+                return False
+            if not _json_like_equal(current_item, next_lookup[key]):
+                return False
+        return True
+
+    if isinstance(current, (list, tuple)) or isinstance(next_value, (list, tuple)):
+        if not isinstance(current, (list, tuple)) or not isinstance(next_value, (list, tuple)):
+            return False
+        if len(current) != len(next_value):
+            return False
+        return all(_json_like_equal(left, right) for left, right in zip(current, next_value))
+
+    try:
+        return current == next_value
+    except Exception:
+        return _clone_json_like(current) == _clone_json_like(next_value)
+
+
+def _merge_nested_path(existing: Any, segments: List[str], payload: Any) -> tuple[bool, Any]:
     if not segments:
-        return _clone_json_like(payload)
+        if _json_like_equal(existing, payload):
+            return False, existing
+        return True, _clone_json_like(payload)
 
     key = str(segments[0] or "")
     if not key:
-        return _clone_json_like(existing)
+        return False, _clone_json_like(existing)
+
+    child_existing = None
+    if isinstance(existing, dict):
+        child_existing = existing.get(key)
+    else:
+        items = _mapping_items(existing)
+        if items is not None:
+            for item_key, item_value in items:
+                if item_key == key:
+                    child_existing = item_value
+                    break
+
+    changed, merged_child = _merge_nested_path(child_existing, segments[1:], payload)
+    if not changed:
+        return False, existing
 
     base = _clone_json_like(existing)
     if not isinstance(base, dict):
         base = {}
     merged = dict(base)
-    merged[key] = _merge_nested_path(merged.get(key), segments[1:], payload)
-    return merged
+    merged[key] = merged_child
+    return True, merged
 
 
 @dataclass(slots=True)
@@ -117,7 +180,6 @@ class ProjectionService:
 
         def _mutator(doc, txn) -> None:
             root = doc.get_map(root_name)
-            payload = _clone_json_like(value)
 
             # For simple two-segment paths like ``data/weather`` keep the
             # legacy flat ``data["weather"]`` behaviour so existing widgets
@@ -126,14 +188,16 @@ class ProjectionService:
             # like other user ids are preserved.
             if len(segments) == 2:
                 key = segments[1]
-                if root.get(key) == payload:
+                current = root.get(key)
+                if _json_like_equal(current, value):
                     return
-                root.set(txn, key, payload)
+                root.set(txn, key, _clone_json_like(value))
                 return
 
             top_key = segments[1]
-            merged = _merge_nested_path(root.get(top_key), segments[2:], payload)
-            if root.get(top_key) == merged:
+            current_top = root.get(top_key)
+            changed, merged = _merge_nested_path(current_top, segments[2:], value)
+            if not changed:
                 return
             root.set(txn, top_key, merged)
 

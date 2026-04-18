@@ -1284,17 +1284,18 @@ class WorkspaceWebsocketServer(WebsocketServer):
             open_total_ms=(time.perf_counter() - room_open_started) * 1000.0,
             seed_result=seed_result,
         )
-        try:
-            ui_map = room.ydoc.get_map("ui")
-            data_map = room.ydoc.get_map("data")
-            _ylog.debug(
-                "YRoom ready webspace=%s ui keys=%s data keys=%s",
-                webspace_id,
-                list(ui_map.keys()),
-                list(data_map.keys()),
-            )
-        except Exception:
-            _ylog.warning("failed to inspect YDoc for webspace=%s", webspace_id, exc_info=True)
+        if _ylog.isEnabledFor(logging.DEBUG):
+            try:
+                ui_map = room.ydoc.get_map("ui")
+                data_map = room.ydoc.get_map("data")
+                _ylog.debug(
+                    "YRoom ready webspace=%s ui keys=%s data keys=%s",
+                    webspace_id,
+                    list(ui_map.keys()),
+                    list(data_map.keys()),
+                )
+            except Exception:
+                _ylog.warning("failed to inspect YDoc for webspace=%s", webspace_id, exc_info=True)
         return room
 
 
