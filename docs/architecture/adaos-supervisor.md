@@ -707,7 +707,13 @@ Current implementation control mode is `phase2_supervisor_restart`:
 Current implementation deliberately does not yet:
 
 - publish heavy profiling artifacts to root
-- provide remote retrieval/listing flows for the new memory-profile report family
+- provide remote retrieval of heavy artifacts for the new memory-profile report family
+
+The first active Phase 3 slice now exists:
+
+- supervisor publishes memory-profile summaries to root through a dedicated `memory_profile` report family
+- root-side retrieval can list those summaries by hub and optional session id before heavy artifact transport is added
+- operator surfaces can inspect that remote summary path through `adaos hub root reports --kind memory-profile`
 
 ### Local control surfaces
 

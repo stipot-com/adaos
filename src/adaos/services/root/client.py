@@ -641,6 +641,31 @@ class RootHttpClient:
             )
         )
 
+    def root_memory_profile_reports(
+        self,
+        *,
+        root_token: str,
+        hub_id: str | None = None,
+        session_id: str | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {}
+        if hub_id:
+            params["hub_id"] = hub_id
+        if session_id:
+            params["session_id"] = session_id
+        return dict(
+            self._request(
+                "GET",
+                "/v1/hubs/memory_profile/reports",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
     def root_core_update_subnets(
         self,
         *,

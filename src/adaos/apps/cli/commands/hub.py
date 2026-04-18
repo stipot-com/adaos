@@ -493,8 +493,9 @@ def hub_root_reconnect(
 
 @root_link_app.command("reports")
 def hub_root_reports(
-    kind: str = typer.Option("all", "--kind", help="all|control|core-update"),
+    kind: str = typer.Option("all", "--kind", help="all|control|core-update|memory-profile"),
     hub_id: str | None = typer.Option(None, "--hub-id", help="Hub/subnet id to inspect (default: current hub)"),
+    session_id: str | None = typer.Option(None, "--session-id", help="Memory-profile session id filter"),
     root: str | None = typer.Option(None, "--root", help="Root server base URL"),
     token: str | None = typer.Option(
         None,
@@ -504,7 +505,7 @@ def hub_root_reports(
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """
-    Fetch explicit root-side hub reports for control and core-update streams.
+    Fetch explicit root-side hub reports for control, core-update, and memory-profile streams.
     """
     ctx = get_ctx()
     conf = ctx.config
@@ -526,8 +527,8 @@ def hub_root_reports(
             target_hub_id = None
 
     kind_key = str(kind or "all").strip().lower()
-    if kind_key not in {"all", "control", "core-update", "core_update"}:
-        raise typer.BadParameter("kind must be one of: all, control, core-update")
+    if kind_key not in {"all", "control", "core-update", "core_update", "memory-profile", "memory_profile"}:
+        raise typer.BadParameter("kind must be one of: all, control, core-update, memory-profile")
 
     client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
     payload: dict[str, Any] = {"ok": True, "root_url": root_base}
@@ -535,6 +536,12 @@ def hub_root_reports(
         payload["control"] = client.root_control_reports(root_token=root_token, hub_id=target_hub_id)
     if kind_key in {"all", "core-update", "core_update"}:
         payload["core_update"] = client.root_core_update_reports(root_token=root_token, hub_id=target_hub_id)
+    if kind_key in {"all", "memory-profile", "memory_profile"}:
+        payload["memory_profile"] = client.root_memory_profile_reports(
+            root_token=root_token,
+            hub_id=target_hub_id,
+            session_id=session_id,
+        )
     if json_output:
         _print(payload, json_output=True)
         return
@@ -590,6 +597,30 @@ def hub_root_reports(
                 f"state={status.get('state') or '-'} "
                 f"phase={status.get('phase') or '-'} "
                 f"slot={slot.get('active_slot') or '-'}"
+            )
+
+    memory_items = payload.get("memory_profile", {}).get("reports") if isinstance(payload.get("memory_profile"), dict) else None
+    if isinstance(memory_items, list):
+        typer.echo("memory_profile reports:")
+        if not memory_items:
+            typer.echo("  (empty)")
+        for item in memory_items:
+            if not isinstance(item, dict):
+                continue
+            report = item.get("report") if isinstance(item.get("report"), dict) else {}
+            proto = _protocol(report)
+            session = report.get("session") if isinstance(report.get("session"), dict) else {}
+            typer.echo(
+                "  "
+                f"{item.get('hub_id') or report.get('subnet_id') or '-'} "
+                f"session={item.get('session_id') or session.get('session_id') or '-'} "
+                f"cursor={proto.get('cursor') or 0} "
+                f"message={proto.get('message_id') or '-'} "
+                f"root_received={report.get('root_received_at') or '-'} "
+                f"mode={session.get('profile_mode') or '-'} "
+                f"state={session.get('session_state') or '-'} "
+                f"suspected={bool(session.get('suspected_leak'))} "
+                f"artifacts={len(session.get('artifact_refs') or [])}"
             )
 
 
