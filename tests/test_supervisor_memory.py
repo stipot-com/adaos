@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from adaos.apps import supervisor
@@ -130,7 +132,7 @@ def test_supervisor_manager_memory_status_reports_live_rss(monkeypatch, tmp_path
     assert payload["current_family_rss_bytes"] == 222
     assert payload["sessions_total"] == 1
     assert payload["last_session_id"] == "mem-001"
-    assert payload["profile_control_mode"] == "phase1_intent_only"
+    assert payload["profile_control_mode"] == "phase2_supervisor_restart"
     assert payload["operation_log_contract_version"] == "1"
 
 
@@ -145,8 +147,8 @@ def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatc
     started = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
     session_id = started["session"]["session_id"]
 
-    assert started["control_mode"] == "phase1_intent_only"
-    assert started["session"]["session_state"] == "planned"
+    assert started["control_mode"] == "phase2_supervisor_restart"
+    assert started["session"]["session_state"] == "requested"
     assert started["runtime"]["requested_profile_mode"] == "sampled_profile"
     assert started["runtime"]["requested_session_id"] == session_id
 
@@ -162,6 +164,96 @@ def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatc
     assert stopped["session"]["session_state"] == "cancelled"
     assert stopped["runtime"]["requested_session_id"] is None
     assert stopped["runtime"]["requested_profile_mode"] is None
+
+
+def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC", "60")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    samples = iter(
+        [
+            (100 * 1024 * 1024, 100 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+        ]
+    )
+    times = iter([10.0, 70.0, 71.0, 72.0, 73.0, 74.0])
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
+    monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
+    monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
+
+    first = manager._sample_memory_telemetry()
+    second = manager._sample_memory_telemetry()
+    monkeypatch.setattr(
+        supervisor,
+        "_process_family_rss_bytes",
+        lambda pid: (100 * 1024 * 1024, 160 * 1024 * 1024),
+    )
+    monkeypatch.setattr(supervisor.time, "time", lambda: 80.0)
+    status = manager.memory_status()
+
+    assert first is not None
+    assert second is not None
+    assert status["telemetry_samples_total"] == 2
+    assert status["baseline_family_rss_bytes"] == 100 * 1024 * 1024
+    assert status["rss_growth_bytes"] == 60 * 1024 * 1024
+    assert status["suspicion_state"] == "suspected"
+    assert status["suspicion_reason"] == "growth_and_slope_threshold"
+    assert status["requested_profile_mode"] == "sampled_profile"
+    assert status["requested_session_id"]
+
+
+def test_spawn_runtime_locked_sets_profile_launch_env_for_requested_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "active_slot_manifest", lambda: {"slot": "A", "argv": ["/slot/python"], "cwd": "/slot/repo"})
+    monkeypatch.setattr(supervisor, "core_slot_status", lambda: {"slots": {"A": {"path": "/slots/A"}}})
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    started = manager.start_memory_profile(profile_mode="trace_profile", reason="operator.request")
+    session_id = started["session"]["session_id"]
+    asyncio.run(manager._spawn_runtime_locked(reason="test.memory.profile"))
+
+    env = captured["kwargs"]["env"]
+    assert env["ADAOS_SUPERVISOR_PROFILE_MODE"] == "trace_profile"
+    assert env["ADAOS_SUPERVISOR_PROFILE_SESSION_ID"] == session_id
+    assert env["ADAOS_SUPERVISOR_PROFILE_TRIGGER"].startswith("operator:")
+    assert manager.memory_status()["current_profile_mode"] == "trace_profile"
 
 
 def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatch) -> None:
@@ -180,7 +272,7 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
         def start_memory_profile(self, *, profile_mode: str, reason: str, trigger_source: str = "operator") -> dict:
             return {
                 "ok": True,
-                "control_mode": "phase1_intent_only",
+                "control_mode": "phase2_supervisor_restart",
                 "session": {"session_id": "mem-001", "profile_mode": profile_mode, "trigger_source": trigger_source},
             }
 

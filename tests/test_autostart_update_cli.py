@@ -57,12 +57,12 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
                 "ok": True,
                 "memory": {
                     "current_profile_mode": "normal",
-                    "profile_control_mode": "phase1_intent_only",
+                    "profile_control_mode": "phase2_supervisor_restart",
                     "suspicion_state": "idle",
                     "sessions_total": 1,
                     "last_session": {
                         "session_id": "mem-001",
-                        "session_state": "planned",
+                        "session_state": "requested",
                         "profile_mode": "sampled_profile",
                         "publish_state": "local_only",
                     },
@@ -77,8 +77,8 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "target rev: rev2026" in result.output
-    assert "memory: mode=normal control=phase1_intent_only suspicion=idle sessions=1" in result.output
-    assert "memory last session: id=mem-001 state=planned mode=sampled_profile publish=local_only" in result.output
+    assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output
+    assert "memory last session: id=mem-001 state=requested mode=sampled_profile publish=local_only" in result.output
     assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
@@ -558,14 +558,14 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
                 "git_branch": "rev2026",
             },
             "memory": {
-                "profile_control_mode": "phase1_intent_only",
+                "profile_control_mode": "phase2_supervisor_restart",
                 "current_profile_mode": "normal",
                 "requested_profile_mode": "sampled_profile",
                 "suspicion_state": "idle",
                 "sessions_total": 2,
                 "last_session": {
                     "session_id": "mem-002",
-                    "session_state": "planned",
+                    "session_state": "requested",
                     "profile_mode": "sampled_profile",
                     "publish_state": "publish_requested",
                 },
@@ -579,7 +579,7 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "message: autostart runner boot" in result.output
-    assert "memory: mode=normal control=phase1_intent_only suspicion=idle sessions=2 requested=sampled_profile" in result.output
+    assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=2 requested=sampled_profile" in result.output
     assert "active slot: B | 0.1.1 | 8e2f6e75 | rev2026" in result.output
 
 

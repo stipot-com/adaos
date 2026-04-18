@@ -229,6 +229,10 @@ def _print_supervisor_transition_summary(payload: dict[str, Any]) -> None:
         )
         if memory.get("requested_profile_mode"):
             summary += f" requested={memory.get('requested_profile_mode')}"
+        if memory.get("suspicion_reason"):
+            summary += f" reason={memory.get('suspicion_reason')}"
+        if memory.get("rss_growth_bytes") is not None:
+            summary += f" growth={memory.get('rss_growth_bytes')}"
         typer.echo(summary)
         last_session = memory.get("last_session") if isinstance(memory.get("last_session"), dict) else {}
         if last_session:

@@ -116,6 +116,14 @@ def memory_status(
         f"suspicion={payload.get('suspicion_state') or 'idle'} "
         f"sessions={payload.get('sessions_total') or 0}"
     )
+    if payload.get("suspicion_reason"):
+        typer.echo(f"suspicion reason: {payload.get('suspicion_reason')}")
+    if payload.get("rss_growth_bytes") is not None:
+        typer.echo(
+            "rss growth: "
+            f"bytes={payload.get('rss_growth_bytes')} "
+            f"per_min={payload.get('rss_growth_bytes_per_min') or 0}"
+        )
     if payload.get("requested_profile_mode"):
         typer.echo(
             "requested: "

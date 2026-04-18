@@ -2320,7 +2320,7 @@ def test_public_memory_status_endpoint_is_unauthenticated(monkeypatch) -> None:
                 "ok": True,
                 "memory": {
                     "current_profile_mode": "normal",
-                    "profile_control_mode": "phase1_intent_only",
+                    "profile_control_mode": "phase2_supervisor_restart",
                     "sessions_total": 2,
                 },
             }
@@ -2331,7 +2331,7 @@ def test_public_memory_status_endpoint_is_unauthenticated(monkeypatch) -> None:
     response = client.get("/api/supervisor/public/memory-status")
 
     assert response.status_code == 200
-    assert response.json()["memory"]["profile_control_mode"] == "phase1_intent_only"
+    assert response.json()["memory"]["profile_control_mode"] == "phase2_supervisor_restart"
 
 
 def test_public_update_status_does_not_probe_runtime_admin_status(monkeypatch, tmp_path) -> None:
@@ -2379,7 +2379,7 @@ def test_public_memory_status_uses_compact_last_session(monkeypatch, tmp_path) -
 
     payload = manager.public_memory_status()
 
-    assert payload["memory"]["profile_control_mode"] == "phase1_intent_only"
+    assert payload["memory"]["profile_control_mode"] == "phase2_supervisor_restart"
     assert payload["memory"]["last_session"]["session_id"] == session_id
     assert payload["memory"]["last_session"]["publish_state"] == "publish_requested"
 

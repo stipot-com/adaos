@@ -1393,6 +1393,10 @@ def autostart_update_status_cmd(
         )
         if memory.get("requested_profile_mode"):
             memory_line += f" requested={memory.get('requested_profile_mode')}"
+        if memory.get("suspicion_reason"):
+            memory_line += f" reason={memory.get('suspicion_reason')}"
+        if memory.get("rss_growth_bytes") is not None:
+            memory_line += f" growth={memory.get('rss_growth_bytes')}"
         typer.echo(memory_line)
         last_session = memory.get("last_session") if isinstance(memory.get("last_session"), dict) else {}
         if last_session:

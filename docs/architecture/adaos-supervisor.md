@@ -677,27 +677,27 @@ Current implementation surfaces:
 - `POST /api/supervisor/memory/profile/{session_id}/stop`
 - `POST /api/supervisor/memory/publish`
 
-Current implementation scope:
+Current implementation scope now spans the completed Phase 1 baseline plus the first active Phase 2 slice:
 
-- freezes the Phase 1 authority boundary under supervisor
-- defines the serializable state contracts needed for telemetry, sessions, and artifact metadata
-- freezes the runtime launch contract keys that later restart-into-profile work will use
-- exposes the selected profiler adapter and planned profiling modes as supervisor truth
-- exposes the top-level operation-event contract that later profiling sessions will correlate against
-- records explicit operator profiling intents and publish intents in supervisor-owned state without pretending that restart-into-profile or root publication already exists
+- keeps the authority boundary, launch contract, operation log, and local session store under supervisor ownership
+- records rolling process-family telemetry under `state/supervisor/memory/telemetry.ndjson`
+- persists baseline RSS, growth, slope, telemetry cadence, and compact suspicion state in `runtime.json`
+- exposes implemented launch modes `normal`, `sampled_profile`, and `trace_profile` as supervisor-managed runtime truth
+- lets `profile/start` and policy-created sessions converge through the same requested-profile workflow instead of separate ad-hoc paths
+- applies requested profile mode through a controlled supervisor restart using the Phase 1 launch contract keys
+- creates a supervisor-owned profiling session automatically when telemetry crosses both growth and slope thresholds
 
-Current implementation control mode is intentionally `phase1_intent_only`:
+Current implementation control mode is `phase2_supervisor_restart`:
 
-- `profile/start` creates a supervisor-owned profiling session intent
-- `profile/stop` resolves that intent locally
-- `publish` records publication intent for later root-facing transport
-- these controls are valuable because operator workflows and tests can already bind to stable contracts before heavier behavior lands
+- `profile/start` creates a supervisor-owned profiling request and the monitor applies it through restart-into-profile
+- `profile/stop` clears the requested mode and lets the monitor converge the runtime back to `normal`
+- suspicion policy can create a `sampled_profile` request automatically when growth remains both large and steep
+- `publish` still records publication intent locally and does not claim root publication until a later phase adds explicit transport/ack
 
 Current implementation deliberately does not yet:
 
-- sample rolling telemetry automatically
-- restart the runtime into profiling mode
-- create profiling sessions automatically from suspicion policy
+- materialize runtime-produced profiler artifacts beyond the supervisor-owned session envelope
+- add a circuit breaker for repeated suspicion-trigger loops
 - publish profiling artifacts or summaries to root
 
 ### Local control surfaces
@@ -713,7 +713,7 @@ The target local supervisor memory API should include read-only status and expli
 
 The browser-safe read-only surface should eventually expose a compact memory incident summary without exposing mutating controls.
 
-Phase 1 now also exposes a compact browser-safe memory summary:
+Phase 1 and the early Phase 2 slice expose a compact browser-safe memory summary:
 
 - `GET /api/supervisor/public/memory-status`
 
@@ -722,6 +722,7 @@ That surface is intentionally small and read-only:
 - current profile/control mode
 - requested profiling intent, if any
 - suspicion state
+- compact baseline/growth summary
 - session counters
 - compact last-session summary
 
@@ -730,7 +731,7 @@ For manual controls, the safety policy should be explicit:
 - manual profile start must be rejected while a core transition is already active
 - only one active profiling intent/session may exist at a time unless a future multi-session policy is documented explicitly
 - `publish` may record an operator request during Phase 1, but must not claim that root publication has completed until an explicit ack exists
-- low-memory or degraded nodes may keep these controls in intent-only mode instead of forcing heavy local artifact creation
+- low-memory or degraded nodes may still downgrade artifact collection even when restart-into-profile is supported
 
 ### Root retrieval model
 

@@ -1296,7 +1296,7 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
                     "ok": True,
                     "memory": {
                         "current_profile_mode": "normal",
-                        "profile_control_mode": "phase1_intent_only",
+                        "profile_control_mode": "phase2_supervisor_restart",
                         "suspicion_state": "idle",
                         "sessions_total": 1,
                         "last_session": {
@@ -1332,4 +1332,4 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
     assert "/api/supervisor/public/memory-status" in calls
     assert "runtime_restarting_under_supervisor: yes" in result.output
     assert "supervisor.attempt: awaiting_root_restart" in result.output
-    assert "supervisor.memory: mode=normal control=phase1_intent_only suspicion=idle sessions=1" in result.output
+    assert "supervisor.memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output

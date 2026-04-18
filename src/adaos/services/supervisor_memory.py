@@ -13,11 +13,11 @@ from adaos.services.runtime_paths import current_state_dir
 MEMORY_CONTRACT_VERSION = "1"
 MEMORY_OPERATION_CONTRACT_VERSION = "1"
 DEFAULT_PROFILER_ADAPTER = "tracemalloc"
-IMPLEMENTED_PROFILE_MODES = ("normal",)
+IMPLEMENTED_PROFILE_MODES = ("normal", "sampled_profile", "trace_profile")
 PLANNED_PROFILE_MODES = ("normal", "sampled_profile", "trace_profile")
 IMPLEMENTED_PROFILER_ADAPTERS = ("tracemalloc",)
 PLANNED_PROFILER_ADAPTERS = ("tracemalloc", "memray")
-IMPLEMENTED_PROFILE_CONTROL_MODE = "phase1_intent_only"
+IMPLEMENTED_PROFILE_CONTROL_MODE = "phase2_supervisor_restart"
 IMPLEMENTED_PROFILE_CONTROL_ACTIONS = ("profile_start", "profile_stop", "publish_request")
 PROFILE_LAUNCH_ENV_KEYS = (
     "ADAOS_SUPERVISOR_PROFILE_MODE",
@@ -446,6 +446,8 @@ class MemoryRuntimeState:
     requested_session_id: str | None = None
     publish_request_session_id: str | None = None
     suspicion_state: str = "idle"
+    suspicion_reason: str | None = None
+    suspicion_since: float | None = None
     active_session_id: str | None = None
     last_session_id: str | None = None
     active_slot: str | None = None
@@ -454,6 +456,15 @@ class MemoryRuntimeState:
     managed_pid: int | None = None
     current_process_rss_bytes: int | None = None
     current_family_rss_bytes: int | None = None
+    available_memory_bytes: int | None = None
+    telemetry_interval_sec: float | None = None
+    telemetry_window_sec: float | None = None
+    telemetry_samples_total: int = 0
+    baseline_family_rss_bytes: int | None = None
+    rss_growth_bytes: int | None = None
+    rss_growth_bytes_per_min: float | None = None
+    suspicion_growth_threshold_bytes: int | None = None
+    suspicion_slope_threshold_bytes_per_min: float | None = None
     telemetry_path: str | None = None
     sessions_index_path: str | None = None
     implemented_operation_events: tuple[str, ...] = TOP_LEVEL_OPERATION_EVENTS
@@ -500,6 +511,8 @@ class MemoryRuntimeState:
             requested_session_id=_optional_string(source.get("requested_session_id")),
             publish_request_session_id=_optional_string(source.get("publish_request_session_id")),
             suspicion_state=_string(source.get("suspicion_state"), default="idle"),
+            suspicion_reason=_optional_string(source.get("suspicion_reason")),
+            suspicion_since=_float(source.get("suspicion_since")),
             active_session_id=_optional_string(source.get("active_session_id")),
             last_session_id=_optional_string(source.get("last_session_id")),
             active_slot=_optional_string(source.get("active_slot")),
@@ -508,6 +521,15 @@ class MemoryRuntimeState:
             managed_pid=_int(source.get("managed_pid")),
             current_process_rss_bytes=_int(source.get("current_process_rss_bytes")),
             current_family_rss_bytes=_int(source.get("current_family_rss_bytes")),
+            available_memory_bytes=_int(source.get("available_memory_bytes")),
+            telemetry_interval_sec=_float(source.get("telemetry_interval_sec")),
+            telemetry_window_sec=_float(source.get("telemetry_window_sec")),
+            telemetry_samples_total=max(0, int(_int(source.get("telemetry_samples_total")) or 0)),
+            baseline_family_rss_bytes=_int(source.get("baseline_family_rss_bytes")),
+            rss_growth_bytes=_int(source.get("rss_growth_bytes")),
+            rss_growth_bytes_per_min=_float(source.get("rss_growth_bytes_per_min")),
+            suspicion_growth_threshold_bytes=_int(source.get("suspicion_growth_threshold_bytes")),
+            suspicion_slope_threshold_bytes_per_min=_float(source.get("suspicion_slope_threshold_bytes_per_min")),
             telemetry_path=_optional_string(source.get("telemetry_path")),
             sessions_index_path=_optional_string(source.get("sessions_index_path")),
             implemented_operation_events=_string_tuple(
@@ -539,6 +561,8 @@ class MemoryRuntimeState:
             "requested_session_id": self.requested_session_id,
             "publish_request_session_id": self.publish_request_session_id,
             "suspicion_state": self.suspicion_state,
+            "suspicion_reason": self.suspicion_reason,
+            "suspicion_since": self.suspicion_since,
             "active_session_id": self.active_session_id,
             "last_session_id": self.last_session_id,
             "active_slot": self.active_slot,
@@ -547,6 +571,15 @@ class MemoryRuntimeState:
             "managed_pid": self.managed_pid,
             "current_process_rss_bytes": self.current_process_rss_bytes,
             "current_family_rss_bytes": self.current_family_rss_bytes,
+            "available_memory_bytes": self.available_memory_bytes,
+            "telemetry_interval_sec": self.telemetry_interval_sec,
+            "telemetry_window_sec": self.telemetry_window_sec,
+            "telemetry_samples_total": self.telemetry_samples_total,
+            "baseline_family_rss_bytes": self.baseline_family_rss_bytes,
+            "rss_growth_bytes": self.rss_growth_bytes,
+            "rss_growth_bytes_per_min": self.rss_growth_bytes_per_min,
+            "suspicion_growth_threshold_bytes": self.suspicion_growth_threshold_bytes,
+            "suspicion_slope_threshold_bytes_per_min": self.suspicion_slope_threshold_bytes_per_min,
             "telemetry_path": self.telemetry_path,
             "sessions_index_path": self.sessions_index_path,
             "implemented_operation_events": list(self.implemented_operation_events),
