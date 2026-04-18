@@ -138,6 +138,54 @@ def test_runtime_memory_profile_session_writes_artifacts(monkeypatch, tmp_path: 
     assert growth_payload["top_growth_sites"][0]["size_diff_bytes"] == 128
 
 
+def test_runtime_trace_profile_session_writes_trace_artifacts(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PROFILE_MODE", "trace_profile")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID", "mem-trace")
+
+    class _Stat:
+        def __init__(self, label: str, *, size: int = 0, count: int = 0, size_diff: int = 0, count_diff: int = 0) -> None:
+            self.traceback = [label, "worker.py:20"]
+            self.size = size
+            self.count = count
+            self.size_diff = size_diff
+            self.count_diff = count_diff
+
+    class _Snapshot:
+        def __init__(self, start: bool) -> None:
+            self._start = start
+
+        def statistics(self, key: str):
+            assert key in {"lineno", "traceback"}
+            return [_Stat("app.py:10", size=256 if self._start else 512, count=2, size_diff=256, count_diff=1)]
+
+        def compare_to(self, other, key: str):
+            assert key == "lineno"
+            return [_Stat("app.py:10", size=512, count=3, size_diff=256, count_diff=1)]
+
+    snapshots = iter([_Snapshot(True), _Snapshot(False)])
+    monkeypatch.setattr(autostart_runner.tracemalloc, "start", lambda frames: None)
+    monkeypatch.setattr(autostart_runner.tracemalloc, "is_tracing", lambda: True)
+    monkeypatch.setattr(autostart_runner.tracemalloc, "take_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(autostart_runner.tracemalloc, "stop", lambda: None)
+    monkeypatch.setattr(autostart_runner.time, "time", lambda: 100.0)
+
+    session = autostart_runner._RuntimeMemoryProfileSession()
+    session.start()
+    session.finish()
+
+    artifacts_dir = supervisor_memory_session_artifacts_dir("mem-trace")
+    summary = read_memory_session_summary("mem-trace")
+
+    assert (artifacts_dir / "tracemalloc-trace-start.json").exists()
+    assert (artifacts_dir / "tracemalloc-trace-final.json").exists()
+    assert summary is not None
+    assert len(summary["artifact_refs"]) == 5
+    trace_payload = json.loads((artifacts_dir / "tracemalloc-trace-final.json").read_text(encoding="utf-8"))
+    assert trace_payload["trace_frames"] == 25
+    assert trace_payload["top_tracebacks"][0]["traceback"][0] == "app.py:10"
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(

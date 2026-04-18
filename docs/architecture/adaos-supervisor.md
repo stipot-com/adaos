@@ -690,9 +690,11 @@ Current implementation scope now spans the completed Phase 1 baseline plus the f
 - applies requested profile mode through a controlled supervisor restart using the Phase 1 launch contract keys
 - creates a supervisor-owned profiling session automatically when telemetry crosses both growth and slope thresholds
 - materializes local `tracemalloc` start/final/top-growth artifacts under `state/supervisor/memory/sessions/<session_id>/artifacts`
+- adds trace-oriented `tracemalloc` traceback artifacts when `trace_profile` is selected so that trace mode yields richer diagnostics than the sampled baseline
 - records top growth sites and artifact refs back into the supervisor-owned session summary when a profiled runtime exits
 - suppresses repeated policy-triggered restart loops with cooldown/circuit-breaker guards before opening another automatic profiling session
 - exposes telemetry tail and richer per-session inspection so operators can inspect growth samples, operation log, and collected artifacts together
+- exposes explicit retry flow for failed/cancelled/stopped profiling sessions instead of overloading manual start semantics
 
 Current implementation control mode is `phase2_supervisor_restart`:
 

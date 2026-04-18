@@ -337,6 +337,33 @@ def memory_profile_stop(
         typer.echo(f"control mode: {payload.get('control_mode')}")
 
 
+@app.command("memory-profile-retry")
+def memory_profile_retry(
+    session_id: str,
+    reason: str = typer.Option("cli.runtime.memory_profile_retry", "--reason", help="Operator-visible reason"),
+    control: str | None = typer.Option(None, "--control", help="Control API base URL"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    payload = _runtime_control_post(
+        f"/api/supervisor/memory/profile/{session_id}/retry",
+        body={"reason": str(reason or "cli.runtime.memory_profile_retry")},
+        control=control,
+    )
+    if json_output:
+        _print_json_or_lines(payload, json_output=True)
+        return
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    typer.echo(
+        "memory profile retry: "
+        f"from={payload.get('retry_of_session_id') or session_id} "
+        f"to={session.get('session_id') or '-'} "
+        f"state={session.get('session_state') or '-'} "
+        f"mode={session.get('profile_mode') or '-'}"
+    )
+    if payload.get("control_mode"):
+        typer.echo(f"control mode: {payload.get('control_mode')}")
+
+
 @app.command("memory-publish")
 def memory_publish(
     session_id: str,

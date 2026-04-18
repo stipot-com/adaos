@@ -287,6 +287,45 @@ def test_runtime_memory_profile_stop_cli_posts_intent(monkeypatch) -> None:
     assert "control mode: phase2_supervisor_restart" in result.output
 
 
+def test_runtime_memory_profile_retry_cli_posts_retry(monkeypatch) -> None:
+    runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
+
+    monkeypatch.setattr(runtime_cli, "resolve_control_base_url", lambda explicit=None, prefer_local=True: "http://127.0.0.1:8777")
+    monkeypatch.setattr(runtime_cli, "resolve_control_token", lambda explicit=None, base_url=None: "dev-token")
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "ok": True,
+                "retry_of_session_id": "mem-old",
+                "control_mode": "phase2_supervisor_restart",
+                "session": {
+                    "session_id": "mem-new",
+                    "session_state": "requested",
+                    "profile_mode": "trace_profile",
+                },
+            }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        return _Response()
+
+    monkeypatch.setattr(runtime_cli.requests, "post", _fake_post)
+
+    result = CliRunner().invoke(runtime_cli.app, ["memory-profile-retry", "mem-old"])
+
+    assert result.exit_code == 0
+    assert captured["url"] == "http://127.0.0.1:8777/api/supervisor/memory/profile/mem-old/retry"
+    assert "memory profile retry: from=mem-old to=mem-new state=requested mode=trace_profile" in result.output
+    assert "control mode: phase2_supervisor_restart" in result.output
+
+
 def test_runtime_memory_publish_cli_posts_intent(monkeypatch) -> None:
     runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
 

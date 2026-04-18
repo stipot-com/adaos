@@ -109,6 +109,19 @@ def _runtime_profile_tracemalloc_frames(mode: str) -> int:
     return 0
 
 
+def _traceback_stats_payload(snapshot, *, limit: int = 25) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for stat in snapshot.statistics("traceback")[: max(1, int(limit or 1))]:
+        items.append(
+            {
+                "traceback": [str(frame) for frame in stat.traceback],
+                "size_bytes": int(stat.size),
+                "count": int(stat.count),
+            }
+        )
+    return items
+
+
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -180,6 +193,29 @@ class _RuntimeMemoryProfileSession:
             ],
         }
         _write_json_file(path, payload)
+        extra_refs: list[dict[str, Any]] = []
+        if self.profile_mode == "trace_profile":
+            trace_path = (artifacts_dir / "tracemalloc-trace-start.json").resolve()
+            _write_json_file(
+                trace_path,
+                {
+                    "session_id": self.session_id,
+                    "profile_mode": self.profile_mode,
+                    "started_at": self.started_at,
+                    "trace_frames": _runtime_profile_tracemalloc_frames(self.profile_mode),
+                    "top_tracebacks": _traceback_stats_payload(snapshot),
+                },
+            )
+            extra_refs.append(
+                MemoryArtifactRef(
+                    artifact_id=f"{self.session_id}-trace-start",
+                    kind="tracemalloc_trace_start",
+                    path=str(trace_path),
+                    content_type="application/json",
+                    size_bytes=trace_path.stat().st_size if trace_path.exists() else None,
+                    created_at=self.started_at,
+                ).to_dict()
+            )
         self._update_session_summary(
             artifact_refs=[
                 MemoryArtifactRef(
@@ -189,7 +225,8 @@ class _RuntimeMemoryProfileSession:
                     content_type="application/json",
                     size_bytes=path.stat().st_size if path.exists() else None,
                     created_at=self.started_at,
-                ).to_dict()
+                ).to_dict(),
+                *extra_refs,
             ]
         )
 
@@ -237,6 +274,29 @@ class _RuntimeMemoryProfileSession:
                 "top_growth_sites": growth_sites,
             },
         )
+        extra_refs: list[dict[str, Any]] = []
+        if self.profile_mode == "trace_profile":
+            trace_path = (artifacts_dir / "tracemalloc-trace-final.json").resolve()
+            _write_json_file(
+                trace_path,
+                {
+                    "session_id": self.session_id,
+                    "profile_mode": self.profile_mode,
+                    "finished_at": finished_at,
+                    "trace_frames": _runtime_profile_tracemalloc_frames(self.profile_mode),
+                    "top_tracebacks": _traceback_stats_payload(snapshot),
+                },
+            )
+            extra_refs.append(
+                MemoryArtifactRef(
+                    artifact_id=f"{self.session_id}-trace-final",
+                    kind="tracemalloc_trace_final",
+                    path=str(trace_path),
+                    content_type="application/json",
+                    size_bytes=trace_path.stat().st_size if trace_path.exists() else None,
+                    created_at=finished_at,
+                ).to_dict()
+            )
         self._update_session_summary(
             artifact_refs=[
                 MemoryArtifactRef(
@@ -255,6 +315,7 @@ class _RuntimeMemoryProfileSession:
                     size_bytes=diff_path.stat().st_size if diff_path.exists() else None,
                     created_at=finished_at,
                 ).to_dict(),
+                *extra_refs,
             ],
             top_growth_sites=growth_sites,
             finished=True,

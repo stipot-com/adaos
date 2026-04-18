@@ -2094,6 +2094,47 @@ class SupervisorManager:
             "runtime": self.memory_status(),
         }
 
+    def retry_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        token = str(session_id or "").strip()
+        summary = read_memory_session_summary(token)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="memory profiling session was not found")
+        state = str(summary.get("session_state") or "").strip().lower()
+        if state not in {"failed", "cancelled", "stopped", "finished"}:
+            raise HTTPException(status_code=409, detail="memory profiling session is not retryable yet")
+        trigger_source = str(summary.get("trigger_source") or "operator").strip() or "operator"
+        retried = self._request_memory_profile_session(
+            profile_mode=str(summary.get("profile_mode") or "sampled_profile"),
+            reason=str(reason or "operator.retry"),
+            trigger_source=trigger_source,
+            trigger_threshold=str(summary.get("trigger_threshold") or "").strip() or None,
+        )
+        retried_window = (
+            retried.get("operation_window") if isinstance(retried.get("operation_window"), dict) else {}
+        )
+        retried_window["retry_of_session_id"] = token
+        retried_window["retry_reason"] = str(reason or "operator.retry")
+        retried["operation_window"] = retried_window
+        retried = self._upsert_memory_session_summary(retried)
+        self._append_memory_operation(
+            session_id=str(retried.get("session_id") or ""),
+            event="tool_invoked",
+            profile_mode=str(retried.get("profile_mode") or ""),
+            details={
+                "action": "profile_retry",
+                "retry_of_session_id": token,
+                "reason": str(reason or "operator.retry"),
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            },
+        )
+        return {
+            "ok": True,
+            "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "retry_of_session_id": token,
+            "session": retried,
+            "runtime": self.memory_status(),
+        }
+
     def stop_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
         token = str(session_id or "").strip()
         summary = read_memory_session_summary(token)
@@ -3917,6 +3958,12 @@ async def supervisor_memory_profile_start(payload: dict[str, Any] | None = None)
 async def supervisor_memory_profile_stop(session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     body = payload if isinstance(payload, dict) else {}
     return _manager().stop_memory_profile(session_id, reason=str(body.get("reason") or "operator.stop"))
+
+
+@app.post("/api/supervisor/memory/profile/{session_id}/retry", dependencies=[Depends(require_token)])
+async def supervisor_memory_profile_retry(session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    return _manager().retry_memory_profile(session_id, reason=str(body.get("reason") or "operator.retry"))
 
 
 @app.post("/api/supervisor/memory/publish", dependencies=[Depends(require_token)])
